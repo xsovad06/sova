@@ -13,6 +13,7 @@ from sova.adapters.base import Task, TaskState
 from sova.config.models import SupervisorConfig
 from sova.dashboard.services.pr_service import get_pr_mergeability_map
 from sova.git.pr import PRInfo
+from sova.supervisor.gates.merge_conflict import check_merge_conflict_gate
 from sova.supervisor.progression import (
     ProgressionAction,
     TaskProgressionEngine,
@@ -50,41 +51,38 @@ def _make_engine(
 
 class TestMergeConflictGate:
     def test_conflicting_blocks(self) -> None:
-        engine = _make_engine()
         mergeability = {42: "CONFLICTING"}
-        result = engine._check_merge_conflict_gate(42, mergeability)
+        result = check_merge_conflict_gate(42, mergeability)
         assert result is not None
         assert result.gate == "conflict"
         assert "#42" in result.detail
 
     def test_mergeable_passes(self) -> None:
-        engine = _make_engine()
         mergeability = {42: "MERGEABLE"}
-        result = engine._check_merge_conflict_gate(42, mergeability)
+        result = check_merge_conflict_gate(42, mergeability)
         assert result is None
 
     def test_unknown_passes(self) -> None:
-        engine = _make_engine()
         mergeability = {42: "UNKNOWN"}
-        result = engine._check_merge_conflict_gate(42, mergeability)
+        result = check_merge_conflict_gate(42, mergeability)
         assert result is None
 
     def test_missing_issue_passes(self) -> None:
-        engine = _make_engine()
         mergeability = {99: "CONFLICTING"}
-        result = engine._check_merge_conflict_gate(42, mergeability)
+        result = check_merge_conflict_gate(42, mergeability)
         assert result is None
 
     def test_empty_status_passes(self) -> None:
-        engine = _make_engine()
         mergeability = {42: ""}
-        result = engine._check_merge_conflict_gate(42, mergeability)
+        result = check_merge_conflict_gate(42, mergeability)
         assert result is None
 
     def test_empty_map_passes(self) -> None:
-        engine = _make_engine()
-        result = engine._check_merge_conflict_gate(42, {})
+        result = check_merge_conflict_gate(42, {})
         assert result is None
+
+
+_P = "sova.supervisor.progression"
 
 
 class TestConflictGateIntegration:
@@ -104,12 +102,16 @@ class TestConflictGateIntegration:
                 new_callable=AsyncMock,
                 return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch(f"{_P}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_dependency_gate", return_value=None),
+            patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_P}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             decision = await engine._evaluate_single(
                 1,
@@ -130,12 +132,16 @@ class TestConflictGateIntegration:
         adapter.list_tasks = AsyncMock(return_value=[_task(1, state=TaskState.TRIAGED)])
         engine = _make_engine(config=SupervisorConfig(auto_research=True), adapter=adapter)
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch(f"{_P}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_dependency_gate", return_value=None),
+            patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_P}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             decision = await engine._evaluate_single(
                 1,
@@ -155,12 +161,16 @@ class TestConflictGateIntegration:
         adapter.list_tasks = AsyncMock(return_value=[_task(1, state=TaskState.RESEARCHED)])
         engine = _make_engine(config=SupervisorConfig(auto_develop=True), adapter=adapter)
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch(f"{_P}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_dependency_gate", return_value=None),
+            patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_P}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             decision = await engine._evaluate_single(
                 1,
@@ -186,12 +196,16 @@ class TestConflictGateIntegration:
                 new_callable=AsyncMock,
                 return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch(f"{_P}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_dependency_gate", return_value=None),
+            patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_P}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             decision = await engine._evaluate_single(
                 1,
@@ -219,13 +233,17 @@ class TestConflictGateIntegration:
                 new_callable=AsyncMock,
                 return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=None),
+            patch(f"{_P}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_dependency_gate", return_value=None),
+            patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_P}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch(f"{_P}.get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch(f"{_P}.check_memory_pressure_gate", return_value=None),
             patch(
                 "sova.dashboard.services.pr_service.get_pr_mergeability_map",
                 new_callable=AsyncMock,
@@ -253,13 +271,17 @@ class TestConflictGateIntegration:
                 new_callable=AsyncMock,
                 return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=None),
+            patch(f"{_P}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_dependency_gate", return_value=None),
+            patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_P}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch(f"{_P}.get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch(f"{_P}.check_memory_pressure_gate", return_value=None),
             patch(
                 "sova.dashboard.services.pr_service.get_pr_mergeability_map",
                 new_callable=AsyncMock,
@@ -283,12 +305,16 @@ class TestConflictGateIntegration:
                 new_callable=AsyncMock,
                 return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch(f"{_P}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_dependency_gate", return_value=None),
+            patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_P}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
             patch(
                 "sova.dashboard.services.pr_service.get_pr_mergeability_map",
                 new_callable=AsyncMock,
@@ -313,12 +339,16 @@ class TestConflictGateIntegration:
                 new_callable=AsyncMock,
                 return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch(f"{_P}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_dependency_gate", return_value=None),
+            patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_P}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
             patch(
                 "sova.dashboard.services.pr_service.get_pr_mergeability_map",
                 new_callable=AsyncMock,

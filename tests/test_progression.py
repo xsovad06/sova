@@ -11,6 +11,18 @@ import pytest
 from sova.adapters.base import Task, TaskAdapter, TaskState
 from sova.config.models import SupervisorConfig
 from sova.git.pr import PRInfo
+from sova.supervisor.gates.already_running import check_already_running
+from sova.supervisor.gates.budget import check_budget_gate
+from sova.supervisor.gates.ci_budget import check_ci_budget_gate
+from sova.supervisor.gates.circuit_breaker import check_address_review_circuit_breaker_gate
+from sova.supervisor.gates.dependency import check_dependency_gate
+from sova.supervisor.gates.file_conflict import check_file_overlap_gate
+from sova.supervisor.gates.human_involvement import check_human_involvement_gate
+from sova.supervisor.gates.memory_pressure import check_memory_pressure_gate
+from sova.supervisor.gates.ownership import check_ownership_gate
+from sova.supervisor.gates.quota import check_quota_gate
+from sova.supervisor.gates.repeated_failure import check_repeated_failures_gate
+from sova.supervisor.gates.slots import check_slot_gate, get_alive_count
 from sova.supervisor.progression import (
     BlockReason,
     ProgressionAction,
@@ -56,6 +68,25 @@ def _make_engine(
         project_dir=Path(tempfile.mkdtemp()),
         session_factory=mock_session_factory,
     )
+
+
+def _mock_db_session(
+    rows: list | None = None,
+    scalar: object | None = None,
+) -> MagicMock:
+    """Build a mock async session factory. Use ``rows`` for queries returning
+    lists (``scalars().all()``), ``scalar`` for single-value queries
+    (``scalar_one_or_none()``)."""
+    mock_result = MagicMock()
+    if rows is not None:
+        mock_result.scalars.return_value.all.return_value = rows
+    if scalar is not None:
+        mock_result.scalar_one_or_none.return_value = scalar
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    return MagicMock(return_value=mock_session)
 
 
 # ---------------------------------------------------------------------------
@@ -168,13 +199,9 @@ class TestDetermineTransition:
         engine = _make_engine()
         assert engine._determine_transition(TaskState.DONE) is None
 
-    def test_needs_spec_returns_checkpoint_when_auto_research_off(self) -> None:
+    def test_needs_spec_returns_none(self) -> None:
         engine = _make_engine()
-        assert engine._determine_transition(TaskState.NEEDS_SPEC) == ProgressionAction.CHECKPOINT_NEEDED
-
-    def test_needs_spec_returns_spawn_researcher_when_auto_research_on(self) -> None:
-        engine = _make_engine(SupervisorConfig(auto_research=True))
-        assert engine._determine_transition(TaskState.NEEDS_SPEC) == ProgressionAction.SPAWN_RESEARCHER
+        assert engine._determine_transition(TaskState.NEEDS_SPEC) is None
 
     def test_human_only_returns_none(self) -> None:
         engine = _make_engine()
@@ -204,8 +231,7 @@ class TestDependencyGate:
         from sova.supervisor.dependency_graph import DependencyGraph
 
         graph = DependencyGraph([_task(1, state=TaskState.TRIAGED)])
-        engine = _make_engine()
-        result = engine._check_dependency_gate(1, graph)
+        result = check_dependency_gate(1, graph)
         assert result is None
 
     def test_deps_all_done_passes(self) -> None:
@@ -216,8 +242,7 @@ class TestDependencyGate:
             _task(2, state=TaskState.DONE),
         ]
         graph = DependencyGraph(tasks)
-        engine = _make_engine()
-        result = engine._check_dependency_gate(1, graph)
+        result = check_dependency_gate(1, graph)
         assert result is None
 
     def test_deps_not_done_blocks(self) -> None:
@@ -228,8 +253,7 @@ class TestDependencyGate:
             _task(2, state=TaskState.IN_PROGRESS),
         ]
         graph = DependencyGraph(tasks)
-        engine = _make_engine()
-        result = engine._check_dependency_gate(1, graph)
+        result = check_dependency_gate(1, graph)
         assert result is not None
         assert result.gate == "dependency"
         assert "#2" in result.detail
@@ -241,8 +265,7 @@ class TestDependencyGate:
             _task(1, body="## Dependencies\n- #99\n", state=TaskState.TRIAGED),
         ]
         graph = DependencyGraph(tasks)
-        engine = _make_engine()
-        result = engine._check_dependency_gate(1, graph)
+        result = check_dependency_gate(1, graph)
         assert result is not None
         assert result.gate == "dependency"
         assert "missing" in result.detail.lower()
@@ -255,8 +278,7 @@ class TestDependencyGate:
             _task(1, body="## Dependencies\n- Part of #99\n", state=TaskState.TRIAGED),
         ]
         graph = DependencyGraph(tasks)
-        engine = _make_engine()
-        result = engine._check_dependency_gate(1, graph)
+        result = check_dependency_gate(1, graph)
         assert result is None
 
 
@@ -268,25 +290,32 @@ class TestDependencyGate:
 class TestQuotaGate:
     @pytest.mark.asyncio
     async def test_non_developer_action_skips(self) -> None:
-        engine = _make_engine()
-        result = await engine._check_quota_gate(ProgressionAction.SPAWN_RESEARCHER)
+        from sova.config.models import CodeRabbitQuotaConfig
+
+        result = await check_quota_gate(
+            is_developer=False,
+            quota_config=CodeRabbitQuotaConfig(),
+            session_factory=MagicMock(),
+        )
         assert result is None
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.load_config")
-    async def test_quota_disabled_passes(self, mock_cfg: MagicMock) -> None:
-        mock_cfg.return_value.coderabbit_quota.enabled = False
-        engine = _make_engine()
-        result = await engine._check_quota_gate(ProgressionAction.SPAWN_DEVELOPER)
+    async def test_quota_disabled_passes(self) -> None:
+        from sova.config.models import CodeRabbitQuotaConfig
+
+        result = await check_quota_gate(
+            is_developer=True,
+            quota_config=CodeRabbitQuotaConfig(enabled=False),
+            session_factory=MagicMock(),
+        )
         assert result is None
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.coderabbit_quota.get_quota_status")
-    @patch("sova.supervisor.progression.load_config")
-    async def test_quota_exhausted_blocks(self, mock_cfg: MagicMock, mock_quota: AsyncMock) -> None:
+    async def test_quota_exhausted_blocks(self, mock_quota: AsyncMock) -> None:
+        from sova.config.models import CodeRabbitQuotaConfig
         from sova.supervisor.coderabbit_quota import QuotaStatus
 
-        mock_cfg.return_value.coderabbit_quota.enabled = True
         mock_quota.return_value = QuotaStatus(
             enabled=True,
             reviews_in_window=4,
@@ -295,12 +324,11 @@ class TestQuotaGate:
             next_available_minutes=15.0,
             window_minutes=60,
         )
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        engine = _make_engine()
-        engine._session_factory = MagicMock(return_value=mock_session)
-        result = await engine._check_quota_gate(ProgressionAction.SPAWN_DEVELOPER)
+        result = await check_quota_gate(
+            is_developer=True,
+            quota_config=CodeRabbitQuotaConfig(enabled=True),
+            session_factory=_mock_db_session(rows=[]),
+        )
         assert result is not None
         assert result.gate == "quota"
 
@@ -313,67 +341,29 @@ class TestQuotaGate:
 class TestAlreadyRunning:
     @pytest.mark.asyncio
     async def test_no_runs_passes(self) -> None:
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = []
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        engine = _make_engine()
-        engine._session_factory = MagicMock(return_value=mock_session)
-        result = await engine._check_already_running(42)
+        result = await check_already_running(42, _mock_db_session(rows=[]))
         assert result is None
 
     @pytest.mark.asyncio
     async def test_alive_process_blocks(self) -> None:
-        mock_run = MagicMock()
-        mock_run.id = 1
-        mock_run.pid = 12345
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [mock_run]
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        engine = _make_engine()
-        engine._session_factory = MagicMock(return_value=mock_session)
-        with patch("sova.supervisor.progression._is_process_alive", return_value=True):
-            result = await engine._check_already_running(42)
+        mock_run = MagicMock(id=1, pid=12345)
+        with patch("sova.supervisor.gates.already_running.is_process_alive", return_value=True):
+            result = await check_already_running(42, _mock_db_session(rows=[mock_run]))
         assert result is not None
         assert result.gate == "already_running"
 
     @pytest.mark.asyncio
     async def test_dead_process_passes(self) -> None:
-        mock_run = MagicMock()
-        mock_run.id = 1
-        mock_run.pid = 12345
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [mock_run]
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        engine = _make_engine()
-        engine._session_factory = MagicMock(return_value=mock_session)
-        with patch("sova.supervisor.progression._is_process_alive", return_value=False):
-            result = await engine._check_already_running(42)
+        mock_run = MagicMock(id=1, pid=12345)
+        with patch("sova.supervisor.gates.already_running.is_process_alive", return_value=False):
+            result = await check_already_running(42, _mock_db_session(rows=[mock_run]))
         assert result is None
 
     @pytest.mark.asyncio
     async def test_pending_run_blocks(self) -> None:
         """PID-less nonterminal runs (agent starting up) block as active reservations."""
-        mock_run = MagicMock()
-        mock_run.id = 7
-        mock_run.pid = None
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [mock_run]
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        engine = _make_engine()
-        engine._session_factory = MagicMock(return_value=mock_session)
-        result = await engine._check_already_running(42)
+        mock_run = MagicMock(id=7, pid=None)
+        result = await check_already_running(42, _mock_db_session(rows=[mock_run]))
         assert result is not None
         assert result.gate == "already_running"
         assert "PID not yet assigned" in result.detail
@@ -381,19 +371,8 @@ class TestAlreadyRunning:
     @pytest.mark.asyncio
     async def test_awaiting_approval_blocks_unconditionally(self) -> None:
         """awaiting_approval runs block even though the agent process has exited."""
-        mock_run = MagicMock()
-        mock_run.id = 9
-        mock_run.pid = None
-        mock_run.status = "awaiting_approval"
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [mock_run]
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        engine = _make_engine()
-        engine._session_factory = MagicMock(return_value=mock_session)
-        result = await engine._check_already_running(42)
+        mock_run = MagicMock(id=9, pid=None, status="awaiting_approval")
+        result = await check_already_running(42, _mock_db_session(rows=[mock_run]))
         assert result is not None
         assert result.gate == "already_running"
         assert "awaiting human approval" in result.detail
@@ -406,56 +385,22 @@ class TestAlreadyRunning:
 
 class TestSlotGate:
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.load_config")
-    async def test_slots_available_passes(self, mock_cfg: MagicMock) -> None:
-        mock_cfg.return_value.max_parallel_agents = 3
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = []
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        engine = _make_engine()
-        engine._session_factory = MagicMock(return_value=mock_session)
-        result = await engine._check_slot_gate()
+    async def test_slots_available_passes(self) -> None:
+        result = await check_slot_gate(_mock_db_session(rows=[]), 3)
         assert result is None
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.load_config")
-    async def test_slots_full_blocks(self, mock_cfg: MagicMock) -> None:
-        mock_cfg.return_value.max_parallel_agents = 2
-        mock_run1, mock_run2 = MagicMock(), MagicMock()
-        mock_run1.pid = 100
-        mock_run2.pid = 200
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [mock_run1, mock_run2]
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        engine = _make_engine()
-        engine._session_factory = MagicMock(return_value=mock_session)
-        with patch("sova.supervisor.progression._is_process_alive", return_value=True):
-            result = await engine._check_slot_gate()
+    async def test_slots_full_blocks(self) -> None:
+        mock_run1, mock_run2 = MagicMock(pid=100), MagicMock(pid=200)
+        with patch("sova.supervisor.gates.slots.is_process_alive", return_value=True):
+            result = await check_slot_gate(_mock_db_session(rows=[mock_run1, mock_run2]), 2)
         assert result is not None
         assert result.gate == "slots"
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.load_config")
-    async def test_pending_run_counts_as_reservation(self, mock_cfg: MagicMock) -> None:
+    async def test_pending_run_counts_as_reservation(self) -> None:
         """PID-less nonterminal runs count as active reservations for slot capacity."""
-        mock_cfg.return_value.max_parallel_agents = 1
-        mock_run = MagicMock()
-        mock_run.pid = None  # pending: agent starting up
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [mock_run]
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        engine = _make_engine()
-        engine._session_factory = MagicMock(return_value=mock_session)
-        result = await engine._check_slot_gate()
+        result = await check_slot_gate(_mock_db_session(rows=[MagicMock(pid=None)]), 1)
         assert result is not None
         assert result.gate == "slots"
 
@@ -467,19 +412,17 @@ class TestSlotGate:
 
 class TestBudgetGate:
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression._check_issue_budget", new_callable=AsyncMock)
+    @patch("sova.supervisor.gates.budget._check_issue_budget", new_callable=AsyncMock)
     async def test_within_budget_passes(self, mock_budget: AsyncMock) -> None:
         mock_budget.return_value = None
-        engine = _make_engine()
-        result = await engine._check_budget_gate(42)
+        result = await check_budget_gate(42, Path(tempfile.mkdtemp()))
         assert result is None
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression._check_issue_budget", new_callable=AsyncMock)
+    @patch("sova.supervisor.gates.budget._check_issue_budget", new_callable=AsyncMock)
     async def test_over_budget_blocks(self, mock_budget: AsyncMock) -> None:
         mock_budget.return_value = {"error": "Issue #42 exceeded budget ($5.00 / $3.00)"}
-        engine = _make_engine()
-        result = await engine._check_budget_gate(42)
+        result = await check_budget_gate(42, Path(tempfile.mkdtemp()))
         assert result is not None
         assert result.gate == "budget"
         assert "#42" in result.detail
@@ -491,27 +434,14 @@ class TestBudgetGate:
 
 
 class TestRepeatedFailuresGate:
-    def _make_session(self, count: int) -> AsyncMock:
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = count
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        return mock_session
-
     @pytest.mark.asyncio
     async def test_below_threshold_passes(self) -> None:
-        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
-        engine._session_factory = MagicMock(return_value=self._make_session(2))
-        result = await engine._check_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(42, 3, _mock_db_session(scalar=2))
         assert result is None
 
     @pytest.mark.asyncio
     async def test_at_threshold_blocks(self) -> None:
-        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
-        engine._session_factory = MagicMock(return_value=self._make_session(3))
-        result = await engine._check_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(42, 3, _mock_db_session(scalar=3))
         assert result is not None
         assert result.gate == "repeated_failure"
         assert "42" in result.detail
@@ -520,29 +450,23 @@ class TestRepeatedFailuresGate:
     @pytest.mark.asyncio
     async def test_zero_disables_gate(self) -> None:
         """max_researcher_failures=0 disables the gate entirely."""
-        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=0))
-        engine._session_factory = MagicMock(return_value=self._make_session(999))
-        result = await engine._check_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(42, 0, _mock_db_session(scalar=999))
         assert result is None
 
     @pytest.mark.asyncio
     async def test_db_error_fails_open(self) -> None:
         """DB exceptions are swallowed and the gate passes (fail-open)."""
-        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
         bad_session = AsyncMock()
         bad_session.__aenter__ = AsyncMock(return_value=bad_session)
         bad_session.__aexit__ = AsyncMock(return_value=False)
         bad_session.execute = AsyncMock(side_effect=Exception("db error"))
-        engine._session_factory = MagicMock(return_value=bad_session)
-        result = await engine._check_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(42, 3, MagicMock(return_value=bad_session))
         assert result is None
 
     @pytest.mark.asyncio
     async def test_null_count_treated_as_zero(self) -> None:
         """scalar_one_or_none() returning None is treated as 0 failures."""
-        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
-        engine._session_factory = MagicMock(return_value=self._make_session(None))
-        result = await engine._check_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(42, 3, _mock_db_session(scalar=None))
         assert result is None
 
 
@@ -565,14 +489,18 @@ class TestDeveloperRepeatedFailuresGate:
     async def test_below_threshold_passes(self) -> None:
         engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
         engine._session_factory = MagicMock(return_value=self._make_session(2))
-        result = await engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, engine._config.max_developer_failures, engine._session_factory, role="developer"
+        )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_at_threshold_blocks(self) -> None:
         engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
         engine._session_factory = MagicMock(return_value=self._make_session(3))
-        result = await engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, engine._config.max_developer_failures, engine._session_factory, role="developer"
+        )
         assert result is not None
         assert result.gate == "developer_repeated_failure"
         assert "42" in result.detail
@@ -583,7 +511,9 @@ class TestDeveloperRepeatedFailuresGate:
         """max_developer_failures=0 disables the gate entirely."""
         engine = _make_engine(config=SupervisorConfig(max_developer_failures=0))
         engine._session_factory = MagicMock(return_value=self._make_session(999))
-        result = await engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, engine._config.max_developer_failures, engine._session_factory, role="developer"
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -595,7 +525,9 @@ class TestDeveloperRepeatedFailuresGate:
         bad_session.__aexit__ = AsyncMock(return_value=False)
         bad_session.execute = AsyncMock(side_effect=Exception("db error"))
         engine._session_factory = MagicMock(return_value=bad_session)
-        result = await engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, engine._config.max_developer_failures, engine._session_factory, role="developer"
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -603,7 +535,9 @@ class TestDeveloperRepeatedFailuresGate:
         """scalar_one_or_none() returning None is treated as 0 failures."""
         engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
         engine._session_factory = MagicMock(return_value=self._make_session(None))
-        result = await engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, engine._config.max_developer_failures, engine._session_factory, role="developer"
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -618,7 +552,7 @@ class TestDeveloperRepeatedFailuresGate:
 
         # Mock the gate to return a block
         block = BlockReason(gate="developer_repeated_failure", detail="too many failures")
-        with patch.object(engine, "_check_developer_repeated_failures_gate", return_value=block):
+        with patch("sova.supervisor.progression.check_repeated_failures_gate", return_value=block):
             decision = await engine.evaluate_task(42)
 
         # Verify the gate was called and the action was blocked
@@ -677,7 +611,9 @@ class TestDeveloperRepeatedFailuresGateIntegration:
                     ]
                 )
 
-        result = await db_engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, db_engine._config.max_developer_failures, db_engine._session_factory, role="developer"
+        )
         assert result is not None
         assert result.gate == "developer_repeated_failure"
 
@@ -695,13 +631,17 @@ class TestDeveloperRepeatedFailuresGateIntegration:
                     ]
                 )
 
-        result = await db_engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, db_engine._config.max_developer_failures, db_engine._session_factory, role="developer"
+        )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_no_runs_passes(self, db_engine: TaskProgressionEngine) -> None:
         """No developer runs at all -> passes."""
-        result = await db_engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, db_engine._config.max_developer_failures, db_engine._session_factory, role="developer"
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -716,7 +656,9 @@ class TestDeveloperRepeatedFailuresGateIntegration:
                     ]
                 )
 
-        result = await db_engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, db_engine._config.max_developer_failures, db_engine._session_factory, role="developer"
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -732,7 +674,9 @@ class TestDeveloperRepeatedFailuresGateIntegration:
                     ]
                 )
 
-        result = await db_engine._check_developer_repeated_failures_gate(42)
+        result = await check_repeated_failures_gate(
+            42, db_engine._config.max_developer_failures, db_engine._session_factory, role="developer"
+        )
         assert result is None
 
 
@@ -772,12 +716,16 @@ class TestEvaluateTask:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.SPAWN_RESEARCHER
@@ -797,11 +745,15 @@ class TestEvaluateTask:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.BLOCKED
@@ -821,11 +773,15 @@ class TestEvaluateTask:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.SPAWN_RESEARCHER
@@ -862,11 +818,15 @@ class TestEvaluateTask:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.BLOCKED
@@ -884,11 +844,15 @@ class TestEvaluateTask:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.BLOCKED
@@ -905,9 +869,13 @@ class TestEvaluateTask:
             config=SupervisorConfig(auto_research=True, respect_dependencies=False),
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
         ):
             blockers, _ = await engine._collect_gate_blockers(
                 1,
@@ -940,13 +908,17 @@ class TestEvaluateAll:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
         ):
             decisions = await engine.evaluate_all()
 
@@ -976,13 +948,17 @@ class TestEvaluateAll:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
         ):
             decisions = await engine.evaluate_all()
 
@@ -1019,13 +995,17 @@ class TestEvaluateAll:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
         ):
             decisions = await engine.evaluate_all()
 
@@ -1053,13 +1033,17 @@ class TestEvaluateAll:
         )
         quota_block = BlockReason(gate="quota", detail="CodeRabbit quota exhausted")
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=quota_block),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=quota_block),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
         ):
             decisions = await engine.evaluate_all()
 
@@ -1358,41 +1342,38 @@ class TestMemoryGuardConfig:
 
 class TestMemoryPressureGate:
     def test_below_block_threshold_blocks(self) -> None:
-        from sova.config.models import ProjectConfig
+        from sova.config.models import MemoryGuardConfig
 
-        engine = _make_engine()
         mem_mock = MagicMock()
         mem_mock.available = int(0.5 * 1024**3)  # 0.5 GB
-        cfg = ProjectConfig(memory_guard={"block_threshold_gb": 1.0, "warn_threshold_gb": 2.0})
+        mg = MemoryGuardConfig(block_threshold_gb=1.0, warn_threshold_gb=2.0)
         with patch("psutil.virtual_memory", return_value=mem_mock):
-            result = engine._check_memory_pressure_gate(cfg)
+            result = check_memory_pressure_gate(mg)
         assert result is not None
         assert result.gate == "memory"
         assert "0.5" in result.detail
 
     def test_above_block_threshold_passes(self) -> None:
-        from sova.config.models import ProjectConfig
+        from sova.config.models import MemoryGuardConfig
 
-        engine = _make_engine()
         mem_mock = MagicMock()
         mem_mock.available = int(4.0 * 1024**3)  # 4 GB
-        cfg = ProjectConfig(memory_guard={"block_threshold_gb": 1.0, "warn_threshold_gb": 2.0})
+        mg = MemoryGuardConfig(block_threshold_gb=1.0, warn_threshold_gb=2.0)
         with patch("psutil.virtual_memory", return_value=mem_mock):
-            result = engine._check_memory_pressure_gate(cfg)
+            result = check_memory_pressure_gate(mg)
         assert result is None
 
     def test_between_warn_and_block_logs_warning(self) -> None:
-        from sova.config.models import ProjectConfig
+        from sova.config.models import MemoryGuardConfig
 
-        engine = _make_engine()
         mem_mock = MagicMock()
         mem_mock.available = int(1.5 * 1024**3)  # 1.5 GB (between 1.0 block and 2.0 warn)
-        cfg = ProjectConfig(memory_guard={"block_threshold_gb": 1.0, "warn_threshold_gb": 2.0})
+        mg = MemoryGuardConfig(block_threshold_gb=1.0, warn_threshold_gb=2.0)
         with (
             patch("psutil.virtual_memory", return_value=mem_mock),
-            patch("sova.supervisor.progression.log") as mock_log,
+            patch("sova.supervisor.gates.memory_pressure.log") as mock_log,
         ):
-            result = engine._check_memory_pressure_gate(cfg)
+            result = check_memory_pressure_gate(mg)
         assert result is None  # warn does not block
         mock_log.warning.assert_called_once_with(
             "memory_pressure.warn",
@@ -1402,33 +1383,32 @@ class TestMemoryPressureGate:
 
     def test_disabled_memory_guard_skips_check(self) -> None:
         """When memory_guard.enabled is False, the gate is skipped entirely."""
-        from sova.config.models import ProjectConfig
+        from sova.config.models import MemoryGuardConfig
 
-        engine = _make_engine()
-        cfg = ProjectConfig(memory_guard={"enabled": False, "block_threshold_gb": 10.0, "warn_threshold_gb": 20.0})
-        result = engine._check_memory_pressure_gate(cfg)
+        mg = MemoryGuardConfig(enabled=False, block_threshold_gb=10.0, warn_threshold_gb=20.0)
+        result = check_memory_pressure_gate(mg)
         assert result is None
 
     def test_psutil_unavailable_fails_open(self) -> None:
         """When psutil is not installed, the gate fails open (no block)."""
-        engine = _make_engine()
-        with patch("sova.supervisor.progression._PSUTIL_AVAILABLE", False):
-            result = engine._check_memory_pressure_gate()
+        from sova.config.models import MemoryGuardConfig
+
+        with patch("sova.supervisor.gates.memory_pressure._PSUTIL_AVAILABLE", False):
+            result = check_memory_pressure_gate(MemoryGuardConfig())
         assert result is None
 
     def test_psutil_exception_fails_open(self) -> None:
         """Any exception during the check fails open."""
-        engine = _make_engine()
+        from sova.config.models import MemoryGuardConfig
+
         with patch("psutil.virtual_memory", side_effect=RuntimeError("fake error")):
-            result = engine._check_memory_pressure_gate()
+            result = check_memory_pressure_gate(MemoryGuardConfig())
         assert result is None
 
     def test_missing_memory_guard_attr_fails_open(self) -> None:
-        """When cfg.memory_guard raises AttributeError, the gate fails open."""
-        engine = _make_engine()
+        """When memory_guard has unexpected attributes, the gate fails open."""
         cfg_mock = MagicMock(spec=[])  # spec=[] means no attributes at all
-        with patch("sova.supervisor.progression.load_config", return_value=cfg_mock):
-            result = engine._check_memory_pressure_gate()
+        result = check_memory_pressure_gate(cfg_mock)
         assert result is None
 
     @pytest.mark.asyncio
@@ -1444,13 +1424,17 @@ class TestMemoryPressureGate:
         )
         memory_block = BlockReason(gate="memory", detail="Low memory")
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=memory_block),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("sova.supervisor.progression.check_memory_pressure_gate", return_value=memory_block),
         ):
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.BLOCKED
@@ -1476,13 +1460,17 @@ class TestMemoryPressureGate:
             detail="System memory pressure: 1.00 GB available < 2.00 GB threshold",
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=memory_block) as mock_mem_gate,
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.check_memory_pressure_gate", return_value=memory_block) as mock_mem_gate,
         ):
             decisions = await engine.evaluate_all()
 
@@ -1502,43 +1490,48 @@ class TestMemoryPressureGate:
 class TestExceptionPaths:
     @pytest.mark.asyncio
     async def test_quota_gate_exception_fails_open(self) -> None:
-        engine = _make_engine()
-        with patch("sova.supervisor.progression.load_config", side_effect=RuntimeError("boom")):
-            result = await engine._check_quota_gate(ProgressionAction.SPAWN_DEVELOPER)
+        from sova.config.models import CodeRabbitQuotaConfig
+
+        with patch("sova.supervisor.coderabbit_quota.get_quota_status", side_effect=RuntimeError("boom")):
+            result = await check_quota_gate(
+                is_developer=True,
+                quota_config=CodeRabbitQuotaConfig(enabled=True),
+                session_factory=MagicMock(),
+            )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_get_alive_count_exception_returns_zero(self) -> None:
-        engine = _make_engine()
-        engine._session_factory = MagicMock(side_effect=RuntimeError("db down"))
-        result = await engine._get_alive_count()
+        mock_session_factory = MagicMock(side_effect=RuntimeError("db down"))
+        result = await get_alive_count(mock_session_factory)
         assert result == 0
 
     @pytest.mark.asyncio
     async def test_slot_gate_exception_fails_open(self) -> None:
-        engine = _make_engine()
         with (
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, side_effect=RuntimeError("db down")),
+            patch(
+                "sova.supervisor.gates.slots.get_alive_count",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("db down"),
+            ),
         ):
-            result = await engine._check_slot_gate()
+            result = await check_slot_gate(MagicMock(), 3)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_budget_gate_exception_fails_open(self) -> None:
-        engine = _make_engine()
         with patch(
-            "sova.supervisor.progression._check_issue_budget",
+            "sova.supervisor.gates.budget._check_issue_budget",
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
         ):
-            result = await engine._check_budget_gate(42)
+            result = await check_budget_gate(42, Path(tempfile.mkdtemp()))
         assert result is None
 
     @pytest.mark.asyncio
     async def test_already_running_exception_fails_open(self) -> None:
-        engine = _make_engine()
-        engine._session_factory = MagicMock(side_effect=RuntimeError("db down"))
-        result = await engine._check_already_running(42)
+        mock_session_factory = MagicMock(side_effect=RuntimeError("db down"))
+        result = await check_already_running(42, mock_session_factory)
         assert result is None
 
 
@@ -1549,7 +1542,7 @@ class TestExceptionPaths:
 
 class TestFindPRForIssue:
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.git.pr.find_pr_for_issue", new_callable=AsyncMock)
     @patch("sova.supervisor.progression.load_config")
     async def test_finds_pr(self, mock_cfg: MagicMock, mock_find: AsyncMock) -> None:
         mock_cfg.return_value.github_repo = "owner/repo"
@@ -1562,7 +1555,7 @@ class TestFindPRForIssue:
         assert result.number == 55
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.git.pr.find_pr_for_issue", new_callable=AsyncMock)
     @patch("sova.supervisor.progression.load_config")
     async def test_no_pr_found(self, mock_cfg: MagicMock, mock_find: AsyncMock) -> None:
         mock_cfg.return_value.github_repo = "owner/repo"
@@ -1607,9 +1600,9 @@ class TestEvaluateAllCheckpoint:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.check_memory_pressure_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
         ):
             decisions = await engine.evaluate_all()
 
@@ -1631,13 +1624,17 @@ class TestEvaluateAllEdgeCases:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=None),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.check_memory_pressure_gate", return_value=None),
         ):
             decisions = await engine.evaluate_all()
 
@@ -1657,13 +1654,17 @@ class TestEvaluateAllEdgeCases:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=2),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=None),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=2),
+            patch("sova.supervisor.progression.check_memory_pressure_gate", return_value=None),
         ):
             decisions = await engine.evaluate_all()
 
@@ -1687,13 +1688,17 @@ class TestEvaluateAllEdgeCases:
             adapter=adapter,
         )
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_dependency_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=None),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.check_memory_pressure_gate", return_value=None),
         ):
             decisions = await engine.evaluate_all()
 
@@ -1711,25 +1716,26 @@ class TestEvaluateAllEdgeCases:
 # ---------------------------------------------------------------------------
 
 
-def _bypass_all_gates(engine: TaskProgressionEngine):
-    """Context manager that patches all gate checks to pass on a TaskProgressionEngine."""
+def _bypass_all_gates():
+    """Context manager that patches all gate checks to pass via module-level patches."""
     from contextlib import ExitStack
 
+    _PROG = "sova.supervisor.progression"
     stack = ExitStack()
     for gate, is_async, rv in [
-        ("_check_already_running", True, None),
-        ("_check_dependency_gate", False, None),
-        ("_check_quota_gate", True, None),
-        ("_check_slot_gate", True, None),
-        ("_check_budget_gate", True, None),
-        ("_check_ownership_gate", True, (None, None)),
-        ("_get_alive_count", True, 0),
-        ("_check_memory_pressure_gate", False, None),
+        ("check_already_running", True, None),
+        ("check_dependency_gate", False, None),
+        ("check_quota_gate", True, None),
+        ("check_slot_gate", True, None),
+        ("check_budget_gate", True, None),
+        ("check_ownership_gate", True, (None, None)),
+        ("get_alive_count", True, 0),
+        ("check_memory_pressure_gate", False, None),
     ]:
         kwargs: dict = {"return_value": rv}
         if is_async:
             kwargs["new_callable"] = AsyncMock
-        stack.enter_context(patch.object(engine, gate, **kwargs))
+        stack.enter_context(patch(f"{_PROG}.{gate}", **kwargs))
     return stack
 
 
@@ -1751,7 +1757,7 @@ class TestEvaluateAllTaskQueue:
             config=SupervisorConfig(auto_research=True, task_queue=[1, 3]),
             adapter=adapter,
         )
-        with _bypass_all_gates(engine):
+        with _bypass_all_gates():
             decisions = await engine.evaluate_all()
 
         # Only issues 1 and 3 should be evaluated (issue 2 is not in the queue)
@@ -1775,7 +1781,7 @@ class TestEvaluateAllTaskQueue:
             config=SupervisorConfig(auto_research=True, task_queue=[3, 1]),
             adapter=adapter,
         )
-        with _bypass_all_gates(engine):
+        with _bypass_all_gates():
             decisions = await engine.evaluate_all()
 
         assert decisions[0].issue_number == 3
@@ -1794,7 +1800,7 @@ class TestEvaluateAllTaskQueue:
             config=SupervisorConfig(auto_research=True, task_queue=[1, 999]),
             adapter=adapter,
         )
-        with _bypass_all_gates(engine):
+        with _bypass_all_gates():
             decisions = await engine.evaluate_all()
 
         # Only issue 1 exists in the graph, 999 is silently skipped
@@ -1817,7 +1823,7 @@ class TestEvaluateAllTaskQueue:
             config=SupervisorConfig(auto_research=True, task_queue=[]),
             adapter=adapter,
         )
-        with _bypass_all_gates(engine):
+        with _bypass_all_gates():
             decisions = await engine.evaluate_all()
 
         assert len(decisions) == 2
@@ -1929,7 +1935,7 @@ class TestResolveGlobalGates:
         from sova.supervisor.progression import _NOT_COMPUTED
 
         engine = _make_engine()
-        with patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None) as mock_q:
+        with patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None) as mock_q:
             blocks = await engine._resolve_global_gates(
                 ProgressionAction.SPAWN_DEVELOPER,
                 precomputed_quota=_NOT_COMPUTED,
@@ -1989,7 +1995,11 @@ class TestResolveGlobalGates:
 
         engine = _make_engine()
         ci_block = BlockReason(gate="ci_budget", detail="low minutes")
-        with patch.object(engine, "_check_ci_budget_gate", new_callable=AsyncMock, return_value=ci_block) as mock_cb:
+        with patch(
+            "sova.supervisor.progression.check_ci_budget_gate",
+            new_callable=AsyncMock,
+            return_value=ci_block,
+        ) as mock_cb:
             blocks = await engine._resolve_global_gates(
                 ProgressionAction.SPAWN_DEVELOPER,
                 precomputed_quota=None,
@@ -2003,11 +2013,15 @@ class TestResolveGlobalGates:
 
     @pytest.mark.asyncio
     async def test_on_demand_ci_budget_gate_skipped_for_researcher(self) -> None:
-        """When ci_budget is _NOT_COMPUTED and candidate is SPAWN_RESEARCHER, gate is skipped."""
+        """When ci_budget is _NOT_COMPUTED and candidate is SPAWN_RESEARCHER, gate returns None."""
         from sova.supervisor.progression import _NOT_COMPUTED
 
         engine = _make_engine()
-        with patch.object(engine, "_check_ci_budget_gate", new_callable=AsyncMock) as mock_cb:
+        with patch(
+            "sova.supervisor.progression.check_ci_budget_gate",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as mock_cb:
             blocks = await engine._resolve_global_gates(
                 ProgressionAction.SPAWN_RESEARCHER,
                 precomputed_quota=None,
@@ -2015,7 +2029,9 @@ class TestResolveGlobalGates:
                 precomputed_memory=None,
                 precomputed_ci_budget=_NOT_COMPUTED,
             )
-        mock_cb.assert_not_called()
+        mock_cb.assert_called_once()
+        call_kwargs = mock_cb.call_args[1]
+        assert call_kwargs["is_developer"] is False
         assert len(blocks) == 0
 
 
@@ -2029,11 +2045,11 @@ class TestFileOverlapGate:
     async def test_gate_disabled_skips(self) -> None:
         """Verify file_overlap_gate=False prevents _check_file_overlap_gate from running."""
         engine = _make_engine(SupervisorConfig(file_overlap_gate=False, respect_ownership=False))
+        from sova.supervisor.dependency_graph import DependencyGraph
         from sova.supervisor.file_overlap import BranchFileSet
-        from sova.supervisor.progression import DependencyGraph
 
         bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
-        with patch.object(engine, "_check_file_overlap_gate", wraps=engine._check_file_overlap_gate) as mock_gate:
+        with patch("sova.supervisor.progression.check_file_overlap_gate", wraps=check_file_overlap_gate) as mock_gate:
             blockers, _pr = await engine._collect_gate_blockers(
                 42,
                 ProgressionAction.SPAWN_DEVELOPER,
@@ -2049,53 +2065,47 @@ class TestFileOverlapGate:
             assert len(blockers) == 0
 
     def test_no_candidate_files_passes(self) -> None:
-        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
         from sova.supervisor.file_overlap import BranchFileSet
 
         bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
-        result = engine._check_file_overlap_gate(42, [bfs], [], "")
+        result = check_file_overlap_gate(42, [bfs], [], "", 0.0)
         assert result is None
 
     def test_overlap_detected_blocks(self) -> None:
-        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
         from sova.supervisor.file_overlap import BranchFileSet
 
         bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
-        result = engine._check_file_overlap_gate(42, [bfs], ["area:core"], "")
+        result = check_file_overlap_gate(42, [bfs], ["area:core"], "", 0.0)
         assert result is not None
         assert result.gate == "file_overlap"
         assert "#10" in result.detail
 
     def test_self_overlap_filtered(self) -> None:
         """A task's own prior branch should not block itself."""
-        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
         from sova.supervisor.file_overlap import BranchFileSet
 
         bfs = BranchFileSet("42", 1, None, "feat/issue-42", frozenset(["sova/core/foo.py"]))
-        result = engine._check_file_overlap_gate(42, [bfs], ["area:core"], "")
+        result = check_file_overlap_gate(42, [bfs], ["area:core"], "", 0.0)
         assert result is None
 
     def test_no_overlap_passes(self) -> None:
-        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
         from sova.supervisor.file_overlap import BranchFileSet
 
         bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/dashboard/app.py"]))
-        result = engine._check_file_overlap_gate(42, [bfs], ["area:cli"], "")
+        result = check_file_overlap_gate(42, [bfs], ["area:cli"], "", 0.0)
         assert result is None
 
     def test_multiple_overlapping_branches_reported(self) -> None:
-        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
         from sova.supervisor.file_overlap import BranchFileSet
 
         bfs1 = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
         bfs2 = BranchFileSet("20", 2, None, "feat/issue-20", frozenset(["sova/core/bar.py"]))
-        result = engine._check_file_overlap_gate(42, [bfs1, bfs2], ["area:core"], "")
+        result = check_file_overlap_gate(42, [bfs1, bfs2], ["area:core"], "", 0.0)
         assert result is not None
         assert "#10" in result.detail
         assert "#20" in result.detail
 
     def test_body_file_paths_used(self) -> None:
-        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
         from sova.supervisor.file_overlap import BranchFileSet
 
         bfs = BranchFileSet(
@@ -2105,55 +2115,26 @@ class TestFileOverlapGate:
             "feat/issue-10",
             frozenset(["sova/supervisor/progression.py"]),
         )
-        result = engine._check_file_overlap_gate(
+        result = check_file_overlap_gate(
             42,
             [bfs],
             [],
             "Fix `sova/supervisor/progression.py`",
+            0.0,
         )
         assert result is not None
         assert result.gate == "file_overlap"
 
     def test_exception_fails_open(self) -> None:
-        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
         with patch(
-            "sova.supervisor.progression.predict_candidate_files",
+            "sova.supervisor.gates.file_conflict.predict_candidate_files",
             side_effect=RuntimeError("boom"),
         ):
-            result = engine._check_file_overlap_gate(42, [], ["area:core"], "")
+            result = check_file_overlap_gate(42, [], ["area:core"], "", 0.0)
             assert result is None
 
     def test_empty_branch_file_set_no_block(self) -> None:
-        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
-        result = engine._check_file_overlap_gate(42, [], ["area:core"], "")
-        assert result is None
-
-
-# Merge conflict gate
-# ---------------------------------------------------------------------------
-
-
-class TestMergeConflictGate:
-    def test_no_conflict_passes(self) -> None:
-        engine = _make_engine()
-        result = engine._check_merge_conflict_gate(42, {42: "MERGEABLE"})
-        assert result is None
-
-    def test_conflicting_blocks(self) -> None:
-        engine = _make_engine()
-        result = engine._check_merge_conflict_gate(42, {42: "CONFLICTING"})
-        assert result is not None
-        assert result.gate == "conflict"
-        assert "#42" in result.detail
-
-    def test_missing_issue_passes(self) -> None:
-        engine = _make_engine()
-        result = engine._check_merge_conflict_gate(42, {10: "CONFLICTING"})
-        assert result is None
-
-    def test_unknown_status_passes(self) -> None:
-        engine = _make_engine()
-        result = engine._check_merge_conflict_gate(42, {42: "UNKNOWN"})
+        result = check_file_overlap_gate(42, [], ["area:core"], "", 0.0)
         assert result is None
 
 
@@ -2309,7 +2290,7 @@ class TestEvaluateAllRebase:
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
 
         with (
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
             patch.object(engine, "_evaluate_single", new_callable=AsyncMock) as mock_eval,
         ):
             # Both return SPAWN_REBASE
@@ -2335,8 +2316,14 @@ class TestOwnershipGate:
         """When respect_ownership=False, all ownership checks are bypassed."""
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
-        engine = _make_engine(SupervisorConfig(respect_ownership=False), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=False,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+        )
         assert block is None
 
     @pytest.mark.asyncio
@@ -2345,8 +2332,14 @@ class TestOwnershipGate:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         mock_adapter.get_task = AsyncMock(return_value=_task(42, state=TaskState.TRIAGED))
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+        )
         assert block is None
 
     @pytest.mark.asyncio
@@ -2357,8 +2350,14 @@ class TestOwnershipGate:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         mock_adapter.get_task = AsyncMock(return_value=task)
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+        )
         assert block is None
 
     @pytest.mark.asyncio
@@ -2369,8 +2368,14 @@ class TestOwnershipGate:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         mock_adapter.get_task = AsyncMock(return_value=task)
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+        )
         assert block is not None
         assert block.gate == "ownership"
         assert "bob" in block.detail
@@ -2383,8 +2388,14 @@ class TestOwnershipGate:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         mock_adapter.get_task = AsyncMock(return_value=task)
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+        )
         assert block is None
 
     @pytest.mark.asyncio
@@ -2395,13 +2406,19 @@ class TestOwnershipGate:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         mock_adapter.get_task = AsyncMock(return_value=task)
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+        )
         assert block is not None
         assert block.gate == "ownership"
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_review_phase_checks_pr_author(self, mock_find_pr: AsyncMock) -> None:
         """For review/integrate actions, gate on PR author instead of issue assignee."""
 
@@ -2414,14 +2431,20 @@ class TestOwnershipGate:
 
         mock_find_pr.return_value = PRInfo(number=55, url="https://...", branch="feat/42", author_login="alice")
 
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, pr_num = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        block, pr_num = await check_ownership_gate(
+            42,
+            is_integrate=True,
+            respect_ownership=True,
+            github_user="alice",
+            repo="owner/repo",
+            adapter=mock_adapter,
+        )
         assert block is None  # Passes because PR author matches github_user
         assert pr_num == 55  # PR number cached for execute_decision
         mock_find_pr.assert_awaited_once_with("42", repo="owner/repo", github_user="alice")
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_review_phase_pr_author_mismatch_blocks(self, mock_find_pr: AsyncMock) -> None:
         """Review/integrate actions block if PR author doesn't match github_user."""
 
@@ -2435,14 +2458,20 @@ class TestOwnershipGate:
         # PR was created by bob (teammate takeover)
         mock_find_pr.return_value = PRInfo(number=55, url="https://...", branch="feat/42", author_login="bob")
 
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=True,
+            respect_ownership=True,
+            github_user="alice",
+            repo="owner/repo",
+            adapter=mock_adapter,
+        )
         assert block is not None
         assert block.gate == "ownership"
         assert "bob" in block.detail
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_review_phase_no_pr_uses_issue_assignee(self, mock_find_pr: AsyncMock) -> None:
         """If PR not found during review phase, fall back to issue assignee."""
         task = _task(42, state=TaskState.IN_REVIEW)
@@ -2454,8 +2483,14 @@ class TestOwnershipGate:
 
         mock_find_pr.return_value = None  # No PR found
 
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=True,
+            respect_ownership=True,
+            github_user="alice",
+            repo="owner/repo",
+            adapter=mock_adapter,
+        )
         assert block is None  # Falls back to issue assignee (alice)
 
     @pytest.mark.asyncio
@@ -2468,8 +2503,14 @@ class TestOwnershipGate:
         mock_adapter.repo = ""  # No repo configured
         mock_adapter.get_task = AsyncMock(return_value=task)
 
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=True,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+        )
         assert block is None  # Falls back to issue assignee (alice)
 
     @pytest.mark.asyncio
@@ -2478,8 +2519,15 @@ class TestOwnershipGate:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         mock_adapter.get_task = AsyncMock()
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER, task_assignees=["alice"])
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+            task_assignees=["alice"],
+        )
         assert block is None
         mock_adapter.get_task.assert_not_awaited()
 
@@ -2489,8 +2537,15 @@ class TestOwnershipGate:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         mock_adapter.get_task = AsyncMock()
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER, task_assignees=["bob"])
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+            task_assignees=["bob"],
+        )
         assert block is not None
         assert block.gate == "ownership"
         mock_adapter.get_task.assert_not_awaited()
@@ -2501,8 +2556,15 @@ class TestOwnershipGate:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         mock_adapter.get_task = AsyncMock()
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER, task_assignees=[])
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+            task_assignees=[],
+        )
         assert block is None
         mock_adapter.get_task.assert_not_awaited()
 
@@ -2512,12 +2574,18 @@ class TestOwnershipGate:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         mock_adapter.get_task = AsyncMock(side_effect=Exception("API rate limit"))
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="",
+            adapter=mock_adapter,
+        )
         assert block is None  # Fail-open
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_find_pr_fails_open(self, mock_find_pr: AsyncMock) -> None:
         """If find_pr_for_issue() fails during review phase, fall back to issue assignee."""
         task = _task(42, state=TaskState.IN_REVIEW)
@@ -2528,8 +2596,14 @@ class TestOwnershipGate:
         mock_adapter.get_task = AsyncMock(return_value=task)
         mock_find_pr.side_effect = Exception("Network error")
 
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=True,
+            respect_ownership=True,
+            github_user="alice",
+            repo="owner/repo",
+            adapter=mock_adapter,
+        )
         assert block is None  # Fail-open on exception
 
     @pytest.mark.asyncio
@@ -2537,8 +2611,14 @@ class TestOwnershipGate:
         """When github_user is empty, ownership gate fails open."""
         mock_adapter = AsyncMock()
         mock_adapter.github_user = ""
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        block, _pr = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="",
+            repo="",
+            adapter=mock_adapter,
+        )
         assert block is None  # Fail-open on misconfiguration
 
     @pytest.mark.asyncio
@@ -2666,7 +2746,7 @@ class TestOwnershipGate:
             mock_adapter.assign.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_known_pr_info_skips_find_pr_api_call(self, mock_find_pr: AsyncMock) -> None:
         """When known_pr_info is passed with author matching github_user, find_pr_for_issue is not called."""
 
@@ -2675,14 +2755,21 @@ class TestOwnershipGate:
         mock_adapter.repo = "owner/repo"
 
         pr_info = PRInfo(number=55, url="", branch="feat/42", author_login="alice")
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, pr_num = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE, known_pr_info=pr_info)
+        block, pr_num = await check_ownership_gate(
+            42,
+            is_integrate=True,
+            respect_ownership=True,
+            github_user="alice",
+            repo="owner/repo",
+            adapter=mock_adapter,
+            known_pr_info=pr_info,
+        )
         assert block is None
         assert pr_num == 55
         mock_find_pr.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.supervisor.gates.ownership.find_pr_for_issue", new_callable=AsyncMock)
     async def test_known_pr_info_blocks_other_author(self, mock_find_pr: AsyncMock) -> None:
         """When known_pr_info has a different author, the ownership gate blocks."""
 
@@ -2691,8 +2778,15 @@ class TestOwnershipGate:
         mock_adapter.repo = "owner/repo"
 
         pr_info = PRInfo(number=55, url="", branch="feat/42", author_login="bob")
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, pr_num = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE, known_pr_info=pr_info)
+        block, pr_num = await check_ownership_gate(
+            42,
+            is_integrate=True,
+            respect_ownership=True,
+            github_user="alice",
+            repo="owner/repo",
+            adapter=mock_adapter,
+            known_pr_info=pr_info,
+        )
         assert block is not None
         assert block.gate == "ownership"
         assert "bob" in block.detail
@@ -2869,54 +2963,74 @@ class TestRefineInReviewAction:
 class TestAddressReviewCircuitBreakerGate:
     @pytest.mark.asyncio
     async def test_blocks_when_max_cycles_reached(self) -> None:
-        engine = _make_engine()
         with patch(
-            "sova.supervisor.progression._count_address_review_runs",
+            "sova.supervisor.gates.circuit_breaker.count_address_review_runs",
             new_callable=AsyncMock,
             return_value=2,
         ):
-            result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=55)
+            tmp = Path(tempfile.mkdtemp())
+            result = await check_address_review_circuit_breaker_gate(
+                42,
+                pr_number=55,
+                max_cycles=2,
+                project_dir=tmp,
+            )
         assert result is not None
         assert result.gate == "circuit_breaker"
         assert "2" in result.detail
 
     @pytest.mark.asyncio
     async def test_passes_when_under_limit(self) -> None:
-        engine = _make_engine()
         with patch(
-            "sova.supervisor.progression._count_address_review_runs",
+            "sova.supervisor.gates.circuit_breaker.count_address_review_runs",
             new_callable=AsyncMock,
             return_value=1,
         ):
-            result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=55)
+            tmp = Path(tempfile.mkdtemp())
+            result = await check_address_review_circuit_breaker_gate(
+                42,
+                pr_number=55,
+                max_cycles=2,
+                project_dir=tmp,
+            )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_passes_when_unlimited(self) -> None:
-        from sova.config.models import PipelineConfig
-
-        engine = _make_engine()
-        with (
-            patch("sova.supervisor.progression.load_config") as mock_cfg,
-        ):
-            mock_cfg.return_value = MagicMock(pipeline=PipelineConfig(max_address_review_cycles=0))
-            result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=55)
+        tmp = Path(tempfile.mkdtemp())
+        result = await check_address_review_circuit_breaker_gate(
+            42,
+            pr_number=55,
+            max_cycles=0,
+            project_dir=tmp,
+        )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_passes_when_no_pr_number(self) -> None:
-        engine = _make_engine()
-        result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=None)
+        tmp = Path(tempfile.mkdtemp())
+        result = await check_address_review_circuit_breaker_gate(
+            42,
+            pr_number=None,
+            max_cycles=2,
+            project_dir=tmp,
+        )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_fails_open_on_error(self) -> None:
-        engine = _make_engine()
         with patch(
-            "sova.supervisor.progression.load_config",
-            side_effect=Exception("config error"),
+            "sova.supervisor.gates.utils.count_address_review_runs",
+            new_callable=AsyncMock,
+            side_effect=Exception("count error"),
         ):
-            result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=55)
+            tmp = Path(tempfile.mkdtemp())
+            result = await check_address_review_circuit_breaker_gate(
+                42,
+                pr_number=55,
+                max_cycles=2,
+                project_dir=tmp,
+            )
         assert result is None
 
 
@@ -3014,13 +3128,16 @@ class TestEvaluateTaskAddressReview:
                 new_callable=AsyncMock,
                 return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, PRInfo(number=55, url="")),
             ),
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(
-                engine,
-                "_check_address_review_circuit_breaker_gate",
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch(
+                "sova.supervisor.progression.check_address_review_circuit_breaker_gate",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -3047,13 +3164,16 @@ class TestEvaluateTaskAddressReview:
                 new_callable=AsyncMock,
                 return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, PRInfo(number=55, url="")),
             ),
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-            patch.object(
-                engine,
-                "_check_address_review_circuit_breaker_gate",
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch(
+                "sova.supervisor.progression.check_address_review_circuit_breaker_gate",
                 new_callable=AsyncMock,
                 return_value=circuit_block,
             ),
@@ -3097,8 +3217,14 @@ class TestOwnershipGateAddressReview:
         mock_adapter.repo = "owner/repo"
         mock_adapter.get_task = AsyncMock(return_value=task)
 
-        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        block, pr_num = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_ADDRESS_REVIEW)
+        block, pr_num = await check_ownership_gate(
+            42,
+            is_integrate=False,
+            respect_ownership=True,
+            github_user="alice",
+            repo="owner/repo",
+            adapter=mock_adapter,
+        )
         assert block is None
         assert pr_num is None  # No PR lookup for development-style actions
 
@@ -3113,7 +3239,7 @@ class TestRateLimitGate:
     async def test_evaluate_all_returns_empty_when_rate_limited(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_research=True))
         rate_block = BlockReason(gate="rate_limit", detail="limited")
-        with patch.object(engine, "_check_github_rate_limit_gate", return_value=rate_block):
+        with patch("sova.supervisor.progression.check_github_rate_limit_gate", return_value=rate_block):
             decisions = await engine.evaluate_all()
         assert decisions == []
 
@@ -3127,7 +3253,7 @@ class TestRateLimitGate:
 
         call_count = 0
 
-        def rate_limit_after_first() -> BlockReason | None:
+        def rate_limit_after_first(github_user: str = "") -> BlockReason | None:
             nonlocal call_count
             call_count += 1
             if call_count <= 1:
@@ -3135,7 +3261,7 @@ class TestRateLimitGate:
             return BlockReason(gate="rate_limit", detail="mid-loop limit")
 
         with (
-            patch.object(engine, "_check_github_rate_limit_gate", side_effect=rate_limit_after_first),
+            patch("sova.supervisor.progression.check_github_rate_limit_gate", side_effect=rate_limit_after_first),
             patch("sova.supervisor.progression.build_dependency_graph", new_callable=AsyncMock) as mock_graph,
         ):
             graph = MagicMock()
@@ -3151,7 +3277,7 @@ class TestRateLimitGate:
     async def test_evaluate_task_returns_blocked_when_rate_limited(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_research=True))
         rate_block = BlockReason(gate="rate_limit", detail="limited")
-        with patch.object(engine, "_check_github_rate_limit_gate", return_value=rate_block):
+        with patch("sova.supervisor.progression.check_github_rate_limit_gate", return_value=rate_block):
             decision = await engine.evaluate_task(42)
         assert decision.action == ProgressionAction.BLOCKED
         assert "rate limit" in decision.reason.lower()
@@ -3179,9 +3305,8 @@ class TestRateLimitGate:
         graph = MagicMock()
         graph.get_dependencies = MagicMock(return_value=[])
 
-        with patch.object(
-            engine,
-            "_check_github_rate_limit_gate",
+        with patch(
+            "sova.supervisor.progression.check_github_rate_limit_gate",
             return_value=BlockReason(gate="rate_limit", detail="on-demand"),
         ):
             blockers, pr = await engine._collect_gate_blockers(
@@ -3196,7 +3321,7 @@ class TestRateLimitGate:
     async def test_auto_close_epics_skips_when_rate_limited(self) -> None:
         engine = _make_engine(SupervisorConfig())
         rate_block = BlockReason(gate="rate_limit", detail="limited")
-        with patch.object(engine, "_check_github_rate_limit_gate", return_value=rate_block):
+        with patch("sova.supervisor.progression.check_github_rate_limit_gate", return_value=rate_block):
             results = await engine.auto_close_epics()
         assert results == []
 
@@ -3208,98 +3333,86 @@ class TestRateLimitGate:
 
 class TestCIBudgetGate:
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.load_config")
-    async def test_no_repo_skips(self, mock_cfg: MagicMock) -> None:
-        mock_cfg.return_value.github_repo = ""
-        engine = _make_engine()
-        result = await engine._check_ci_budget_gate()
+    async def test_non_developer_skips(self) -> None:
+        result = await check_ci_budget_gate(
+            is_developer=False, github_user="user", github_repo="owner/repo", ci_block_minutes=50
+        )
         assert result is None
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.load_config")
-    async def test_block_threshold_zero_skips(self, mock_cfg: MagicMock) -> None:
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.supervisor.ci_block_minutes = 0
-        engine = _make_engine()
-        result = await engine._check_ci_budget_gate()
+    async def test_no_repo_skips(self) -> None:
+        result = await check_ci_budget_gate(is_developer=True, github_user="user", github_repo="", ci_block_minutes=50)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_block_threshold_zero_skips(self) -> None:
+        result = await check_ci_budget_gate(
+            is_developer=True, github_user="user", github_repo="owner/repo", ci_block_minutes=0
+        )
         assert result is None
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.ci_budget.get_ci_budget_tracker")
-    @patch("sova.supervisor.progression.load_config")
-    async def test_remaining_above_threshold_passes(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
+    async def test_remaining_above_threshold_passes(self, mock_factory: MagicMock) -> None:
         from sova.supervisor.ci_budget import CIBudget
 
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.github_user = "user"
-        mock_cfg.return_value.supervisor.ci_block_minutes = 50
         mock_tracker = AsyncMock()
         mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1800, remaining=200, pct_used=90.0))
         mock_factory.return_value = mock_tracker
-        engine = _make_engine()
-        result = await engine._check_ci_budget_gate()
+        result = await check_ci_budget_gate(
+            is_developer=True, github_user="user", github_repo="owner/repo", ci_block_minutes=50
+        )
         assert result is None
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.ci_budget.get_ci_budget_tracker")
-    @patch("sova.supervisor.progression.load_config")
-    async def test_remaining_below_threshold_blocks(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
+    async def test_remaining_below_threshold_blocks(self, mock_factory: MagicMock) -> None:
         from sova.supervisor.ci_budget import CIBudget
 
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.github_user = "user"
-        mock_cfg.return_value.supervisor.ci_block_minutes = 50
         mock_tracker = AsyncMock()
         mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1970, remaining=30, pct_used=98.5))
         mock_factory.return_value = mock_tracker
-        engine = _make_engine()
-        result = await engine._check_ci_budget_gate()
+        result = await check_ci_budget_gate(
+            is_developer=True, github_user="user", github_repo="owner/repo", ci_block_minutes=50
+        )
         assert result is not None
         assert result.gate == "ci_budget"
         assert "30 remaining" in result.detail
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.ci_budget.get_ci_budget_tracker")
-    @patch("sova.supervisor.progression.load_config")
-    async def test_unlimited_plan_passes(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
+    async def test_unlimited_plan_passes(self, mock_factory: MagicMock) -> None:
         from sova.supervisor.ci_budget import _UNLIMITED_SENTINEL, CIBudget
 
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.github_user = "user"
-        mock_cfg.return_value.supervisor.ci_block_minutes = 50
         mock_tracker = AsyncMock()
         mock_tracker.get_budget = AsyncMock(
             return_value=CIBudget(total=0, used=500, remaining=_UNLIMITED_SENTINEL, pct_used=0.0)
         )
         mock_factory.return_value = mock_tracker
-        engine = _make_engine()
-        result = await engine._check_ci_budget_gate()
+        result = await check_ci_budget_gate(
+            is_developer=True, github_user="user", github_repo="owner/repo", ci_block_minutes=50
+        )
         assert result is None
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.ci_budget.get_ci_budget_tracker", side_effect=Exception("import fail"))
-    @patch("sova.supervisor.progression.load_config")
-    async def test_exception_fails_open(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.supervisor.ci_block_minutes = 50
-        engine = _make_engine()
-        result = await engine._check_ci_budget_gate()
+    async def test_exception_fails_open(self, mock_factory: MagicMock) -> None:
+        result = await check_ci_budget_gate(
+            is_developer=True, github_user="user", github_repo="owner/repo", ci_block_minutes=50
+        )
         assert result is None
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.ci_budget.get_ci_budget_tracker")
-    @patch("sova.supervisor.progression.load_config")
-    async def test_api_error_zero_budget_fails_open(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
+    async def test_api_error_zero_budget_fails_open(self, mock_factory: MagicMock) -> None:
         from sova.supervisor.ci_budget import CIBudget
 
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.github_user = "user"
-        mock_cfg.return_value.supervisor.ci_block_minutes = 50
         mock_tracker = AsyncMock()
         mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=0, used=0, remaining=0, pct_used=0.0))
         mock_factory.return_value = mock_tracker
-        engine = _make_engine()
-        result = await engine._check_ci_budget_gate()
+        result = await check_ci_budget_gate(
+            is_developer=True, github_user="user", github_repo="owner/repo", ci_block_minutes=50
+        )
         assert result is None
 
 
@@ -3310,39 +3423,33 @@ class TestCIBudgetGate:
 
 class TestHumanInvolvementGate:
     def test_no_labels_passes(self) -> None:
-        engine = _make_engine()
-        result = engine._check_human_involvement_gate(1, [])
+        result = check_human_involvement_gate(1, [])
         assert result is None
 
     def test_unrelated_labels_pass(self) -> None:
-        engine = _make_engine()
-        result = engine._check_human_involvement_gate(1, ["area: dashboard", "priority: high"])
+        result = check_human_involvement_gate(1, ["area: dashboard", "priority: high"])
         assert result is None
 
     def test_human_only_label_blocks(self) -> None:
-        engine = _make_engine()
-        result = engine._check_human_involvement_gate(1, ["agent:human-only"])
+        result = check_human_involvement_gate(1, ["agent:human-only"])
         assert result is not None
         assert result.gate == "human_involvement"
         assert "human-only" in result.detail
 
     def test_interactive_recommended_label_blocks(self) -> None:
-        engine = _make_engine()
-        result = engine._check_human_involvement_gate(1, ["agent:interactive-recommended"])
+        result = check_human_involvement_gate(1, ["agent:interactive-recommended"])
         assert result is not None
         assert result.gate == "human_involvement"
         assert "interactive-recommended" in result.detail
         assert "manual start only" in result.detail
 
     def test_both_labels_blocks_human_only(self) -> None:
-        engine = _make_engine()
-        result = engine._check_human_involvement_gate(1, ["agent:human-only", "agent:interactive-recommended"])
+        result = check_human_involvement_gate(1, ["agent:human-only", "agent:interactive-recommended"])
         assert result is not None
         assert "human-only" in result.detail
 
     def test_case_insensitive(self) -> None:
-        engine = _make_engine()
-        result = engine._check_human_involvement_gate(1, ["Agent:Human-Only"])
+        result = check_human_involvement_gate(1, ["Agent:Human-Only"])
         assert result is not None
         assert result.gate == "human_involvement"
 
@@ -3370,7 +3477,7 @@ class TestStaleInProgressReset:
         """IN_PROGRESS with a live agent should return WAIT, not reset."""
         engine = _make_engine()
         block = BlockReason(gate="already_running", detail="Agent alive (PID 123)")
-        with patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=block):
+        with patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=block):
             from sova.supervisor.dependency_graph import DependencyGraph
 
             graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
@@ -3382,7 +3489,7 @@ class TestStaleInProgressReset:
     async def test_no_agent_returns_reset(self) -> None:
         """IN_PROGRESS with no alive agent should return RESET_STALE_STATE."""
         engine = _make_engine()
-        with patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None):
+        with patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None):
             from sova.supervisor.dependency_graph import DependencyGraph
 
             graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
@@ -3395,7 +3502,7 @@ class TestStaleInProgressReset:
         """RESET_STALE_STATE should be blocked when rate limited."""
         engine = _make_engine()
         rate_block = BlockReason(gate="rate_limit", detail="GitHub API throttled")
-        with patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None):
+        with patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None):
             from sova.supervisor.dependency_graph import DependencyGraph
 
             graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
@@ -3444,7 +3551,7 @@ class TestStaleInProgressReset:
 
         decision = ProgressionDecision(issue_number=10, action=ProgressionAction.RESET_STALE_STATE, reason="stale")
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
             patch("sova.dashboard.services.feed_service.emit_safe"),
         ):
             result = await engine.execute_decision(decision)
@@ -3466,7 +3573,11 @@ class TestStaleInProgressReset:
 
         alive_block = BlockReason(gate="already_running", detail="Agent started (PID 999)")
         decision = ProgressionDecision(issue_number=10, action=ProgressionAction.RESET_STALE_STATE, reason="stale")
-        with patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=alive_block):
+        with patch(
+            "sova.supervisor.progression.check_already_running",
+            new_callable=AsyncMock,
+            return_value=alive_block,
+        ):
             result = await engine.execute_decision(decision)
         assert result["skipped"] is True
         assert "PID 999" in result["reason"]
@@ -3509,7 +3620,7 @@ class TestStaleInProgressReset:
             return ProgressionDecision(issue_number=issue, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")
 
         with (
-            patch.object(engine, "_check_github_rate_limit_gate", return_value=None),
+            patch("sova.supervisor.progression.check_github_rate_limit_gate", return_value=None),
             patch(
                 "sova.supervisor.progression.build_dependency_graph",
                 new_callable=AsyncMock,
@@ -3519,10 +3630,10 @@ class TestStaleInProgressReset:
                 "sova.supervisor.progression.load_config",
                 return_value=MagicMock(max_parallel_agents=1, coderabbit_quota=MagicMock(enabled=False)),
             ),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ci_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch("sova.supervisor.progression.check_memory_pressure_gate", return_value=None),
+            patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_ci_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
             patch(
                 "sova.dashboard.services.pr_service.get_pr_mergeability_map",
                 new_callable=AsyncMock,
@@ -3559,7 +3670,7 @@ class TestStaleInProgressReset:
         graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
 
         with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine._adapter, "get_state", new_callable=AsyncMock, return_value=TaskState.IN_PROGRESS),
             patch(
                 "sova.supervisor.progression.build_dependency_graph",
