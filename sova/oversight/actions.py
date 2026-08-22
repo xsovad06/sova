@@ -52,6 +52,31 @@ def _issue_body(finding: OversightFinding) -> str:
     return "\n\n".join(parts)
 
 
+async def _find_existing_issue_by_fingerprint(fingerprint: str | None) -> int | None:
+    """Check DB for an existing issue created from a finding with the same fingerprint."""
+    if not fingerprint:
+        return None
+    from sova.db.session import get_session
+
+    try:
+        async with await get_session() as session:
+            from sqlalchemy import select
+
+            stmt = (
+                select(OversightFinding.github_issue_number)
+                .where(OversightFinding.fingerprint == fingerprint)
+                .where(OversightFinding.github_issue_number.isnot(None))
+                .order_by(OversightFinding.id.desc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            row = result.first()
+            return row[0] if row else None
+    except Exception:
+        log.debug("oversight.actions.fingerprint_check_failed", exc_info=True)
+        return None
+
+
 async def _is_issue_open(adapter: TaskAdapter, issue_number: int) -> bool:
     """Check whether an issue is still open on the tracker."""
     try:
@@ -108,6 +133,17 @@ async def propose_issues(
                 project_slug=finding.project_slug,
             )
             continue
+
+        existing_issue = await _find_existing_issue_by_fingerprint(finding.fingerprint)
+        if existing_issue is not None:
+            if await _is_issue_open(adapter, existing_issue):
+                log.debug(
+                    "oversight.actions.skip_fingerprint_match",
+                    title=finding.title,
+                    issue=existing_issue,
+                    fingerprint=finding.fingerprint,
+                )
+                continue
 
         if finding.github_issue_number is not None:
             if await _is_issue_open(adapter, finding.github_issue_number):
