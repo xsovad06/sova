@@ -1536,6 +1536,44 @@ class TestExceptionPaths:
 
 
 # ---------------------------------------------------------------------------
+# get_alive_count happy paths (standalone function in gates/slots.py)
+# ---------------------------------------------------------------------------
+
+
+class TestGetAliveCount:
+    @pytest.mark.asyncio
+    async def test_counts_pending_run_without_pid(self) -> None:
+        result = await get_alive_count(_mock_db_session(rows=[MagicMock(pid=None)]))
+        assert result == 1
+
+    @pytest.mark.asyncio
+    async def test_counts_alive_process(self) -> None:
+        with patch("sova.supervisor.gates.slots.is_process_alive", return_value=True):
+            result = await get_alive_count(_mock_db_session(rows=[MagicMock(pid=12345)]))
+        assert result == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_dead_process(self) -> None:
+        with patch("sova.supervisor.gates.slots.is_process_alive", return_value=False):
+            result = await get_alive_count(_mock_db_session(rows=[MagicMock(pid=99999)]))
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_mixed_pending_alive_dead(self) -> None:
+        pending_run = MagicMock(pid=None)
+        alive_run = MagicMock(pid=100)
+        dead_run = MagicMock(pid=200)
+        with patch("sova.supervisor.gates.slots.is_process_alive", side_effect=lambda pid: pid == 100):
+            result = await get_alive_count(_mock_db_session(rows=[pending_run, alive_run, dead_run]))
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_for_no_active_runs(self) -> None:
+        result = await get_alive_count(_mock_db_session(rows=[]))
+        assert result == 0
+
+
+# ---------------------------------------------------------------------------
 # _find_pr_for_issue
 # ---------------------------------------------------------------------------
 

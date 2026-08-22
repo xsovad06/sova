@@ -63,7 +63,7 @@ class ReviewResult:
 
     @property
     def actionable(self) -> list[ReviewFinding]:
-        return list(self.findings)
+        return [f for f in self.findings if f.category != "protected-path"]
 
 
 def _format_addressed_findings(findings: list[dict] | None) -> str:
@@ -340,6 +340,23 @@ def _verdict_label(findings: list[ReviewFinding]) -> str:
     if max_sev >= _SEVERITY_CRITICAL:
         return "BLOCK"
     return "REVISE"
+
+
+def _make_protected_path_finding(matched_files: list[str]) -> ReviewFinding:
+    """Create a finding for PR files matching protected path patterns.
+
+    ``matched_files`` must contain at least one entry (the caller guards
+    with ``if protected:`` before calling).
+    """
+    if not matched_files:
+        raise ValueError("matched_files must not be empty")
+    paths_str = ", ".join(sorted(matched_files))
+    return ReviewFinding(
+        file=matched_files[0],
+        severity=1,
+        category="protected-path",
+        description=f"PR touches protected path(s): {paths_str}. Human approval required.",
+    )
 
 
 def _format_findings_body(findings: list[ReviewFinding], summary: str) -> str:

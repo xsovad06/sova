@@ -51,6 +51,7 @@ from sova.roles._review_comments import (
     _format_findings_comment,
     _format_inline_comment,
     _format_review_body,
+    _make_protected_path_finding,
     _parse_findings,
     _safe_severity,
     _severity_label,
@@ -78,6 +79,7 @@ __all__ = [
     "_format_findings_comment",
     "_format_inline_comment",
     "_format_review_body",
+    "_make_protected_path_finding",
     "_MAX_COMPACT_SPEC_CHARS",
     "_parse_findings",
     "_safe_severity",
@@ -92,6 +94,17 @@ __all__ = [
 ]
 
 log = get_logger(component="role.reviewer")
+
+
+def _check_protected_paths(files: list[str], protected_paths: list[str]) -> list[str]:
+    """Return *files* whose path starts with any entry in *protected_paths*.
+
+    Performs case-sensitive prefix matching. Pattern ``.github/`` matches
+    ``.github/workflows`` but not ``.GitHub/`` or ``github/``.
+    """
+    if not protected_paths:
+        return []
+    return [f for f in files if any(f.startswith(p) for p in protected_paths)]
 
 
 class ReviewerRole(AgentRole):
@@ -147,6 +160,11 @@ class ReviewerRole(AgentRole):
             log.info("reviewer.addressed_findings_loaded", count=len(addressed))
 
         review = await self._run_review(ctx, task, diff, files, addressed_findings=addressed)
+
+        protected = _check_protected_paths(files, ctx.config.review.protected_paths)
+        if protected:
+            log.info("reviewer.protected_paths_hit", paths=protected)
+            review.findings.append(_make_protected_path_finding(protected))
 
         self._append_review_rationale(ctx, review)
 
@@ -496,8 +514,12 @@ class ReviewerRole(AgentRole):
         Removes any existing sova:* verdict labels first (idempotent), then adds
         the current verdict. Non-fatal: if the label write fails, the DB/marker
         fallback path in _fetch_sova_verdicts() remains functional.
+
+        Uses actionable findings (excludes protected-path) so that
+        protected-path-only reviews write ``sova:approved`` instead of
+        ``sova:revise``, preventing spurious address-review routing.
         """
-        label = _sova_verdict_label_name(review.findings)
+        label = _sova_verdict_label_name(review.actionable)
         issue = ctx.issue_number
         if not issue:
             return
@@ -578,7 +600,14 @@ class ReviewerRole(AgentRole):
                 finding_count=len(actionable),
             )
         else:
-            next_action = "address_review" if actionable else "approve"
+            has_protected_only = not actionable and review.findings
+            if actionable:
+                next_action = "address_review"
+            elif has_protected_only:
+                next_action = "needs_human_review"
+            else:
+                next_action = "approve"
+
             agent_handoff = AgentHandoff(
                 role="reviewer",
                 phase="review",
@@ -604,6 +633,19 @@ class ReviewerRole(AgentRole):
                         command="",
                         args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "developer"},
                         auto_execute=auto,
+                    ),
+                )
+            elif has_protected_only:
+                actions.append(
+                    HandoffAction(
+                        id="integrate",
+                        label="Integrate PR",
+                        description="Code review passed. Protected paths touched: human approval required.",
+                        style="approve",
+                        mode="claude-command",
+                        command=f"/integrate-pr {ctx.pr_number}",
+                        args={"issue": ctx.issue_number, "pr": ctx.pr_number},
+                        auto_execute=False,
                     ),
                 )
             else:
