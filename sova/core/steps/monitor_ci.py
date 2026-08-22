@@ -25,6 +25,7 @@ _LLMInvoker = Callable[..., Any]
 log = get_logger(component="step.monitor_ci")
 
 _MAX_CI_FIX_ATTEMPTS = 3
+_CI_LOG_LIMIT = 12_000
 
 
 def _redact_logs(text: str) -> str:
@@ -395,6 +396,8 @@ class MonitorCIStep(BaseStep):
                 github_user=ctx.config.github_user,
             )
             ci_logs = _redact_logs(raw_logs)
+            if len(ci_logs) > _CI_LOG_LIMIT:
+                ci_logs = "...(truncated)\n" + ci_logs[-_CI_LOG_LIMIT:]
             log_result = await run("git", "log", "--oneline", "-5", cwd=ctx.working_dir)
             recent_commits = log_result.stdout.strip() if log_result.success else ""
             prompt = self._build_fix_prompt(failed_checks, ci_logs, recent_commits, ctx)
