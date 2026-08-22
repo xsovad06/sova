@@ -320,18 +320,20 @@ async function enableSupervisor() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key: 'supervisor.enabled', value: 'true' }),
   });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    const msg = typeof body.detail === 'string' ? body.detail : `HTTP ${r.status}`;
+  const rBody = await r.json().catch(() => ({}));
+  if (!r.ok || rBody.error) {
+    const msg = rBody.error || rBody.detail || `HTTP ${r.status}`;
     showToast(`Failed to enable supervisor: ${msg}`, 'error');
     await loadStatus();
     return;
   }
   // 2. Start daemon (no server restart needed)
   const s = await fetch(`${apiBase}/supervisor/start`, { method: 'POST' });
-  if (!s.ok && s.status !== 409) {
-    const body = await s.json().catch(() => ({}));
-    console.warn('supervisor/start:', body.detail || s.status);
+  if (!s.ok) {
+    const sBody = await s.json().catch(() => ({}));
+    showToast(`Supervisor config saved but daemon failed to start: ${sBody.error || sBody.detail || `HTTP ${s.status}`}`, 'error');
+    await loadStatus();
+    return;
   }
   // 3. Refresh status, then poll briefly until daemon is confirmed running
   await loadStatus();
@@ -362,9 +364,9 @@ async function disableSupervisor() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key: 'supervisor.enabled', value: 'false' }),
   });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    const msg = typeof body.detail === 'string' ? body.detail : `HTTP ${r.status}`;
+  const rBody = await r.json().catch(() => ({}));
+  if (!r.ok || rBody.error) {
+    const msg = rBody.error || rBody.detail || `HTTP ${r.status}`;
     showToast(`Failed to disable supervisor: ${msg}`, 'error');
     throw new Error(msg);
   }

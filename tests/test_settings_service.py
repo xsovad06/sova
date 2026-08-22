@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from sova.dashboard.services.settings_service import _cast_value, _validate_value_type
@@ -72,51 +74,123 @@ class TestValidateValueType:
 
 
 class TestUpdateConfigIntegration:
-    def test_rejects_invalid_number_preserves_file(self, tmp_path, monkeypatch) -> None:
+    async def test_rejects_invalid_number_preserves_file(self, tmp_path, monkeypatch) -> None:
         toml_file = tmp_path / "sova.toml"
         toml_file.write_text("[agent]\nmax_budget = 10\n")
         original = toml_file.read_text()
 
         from sova.dashboard.services.settings_service import update_config
 
-        result = update_config(tmp_path, key="agent.max_budget", value="abc")
+        result = await update_config(tmp_path, key="agent.max_budget", value="abc")
         assert "error" in result
         assert "number" in result["error"]
         assert toml_file.read_text() == original
 
-    def test_rejects_invalid_boolean_preserves_file(self, tmp_path, monkeypatch) -> None:
+    async def test_rejects_invalid_boolean_preserves_file(self, tmp_path, monkeypatch) -> None:
         toml_file = tmp_path / "sova.toml"
         toml_file.write_text("[review]\nenabled = true\n")
         original = toml_file.read_text()
 
         from sova.dashboard.services.settings_service import update_config
 
-        result = update_config(tmp_path, key="review.enabled", value="yes")
+        result = await update_config(tmp_path, key="review.enabled", value="yes")
         assert "error" in result
         assert "true or false" in result["error"]
         assert toml_file.read_text() == original
 
-    def test_accepts_valid_number_writes_file(self, tmp_path) -> None:
+    async def test_accepts_valid_number_writes_file(self, tmp_path) -> None:
         toml_file = tmp_path / "sova.toml"
         toml_file.write_text("[agent]\nmax_budget = 10\n")
 
         from sova.dashboard.services.settings_service import update_config
 
-        result = update_config(tmp_path, key="agent.max_budget", value="25")
+        result = await update_config(tmp_path, key="agent.max_budget", value="25")
         assert result.get("status") == "ok"
         assert "25" in toml_file.read_text()
 
-    def test_rejects_unregistered_key(self, tmp_path) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "agent.max_budget")
+        assert db_value == 25
+
+    async def test_db_failure_falls_back_to_toml_only(self, tmp_path) -> None:
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[agent]\nmax_budget = 10\n")
+
+        from sova.dashboard.services.settings_service import update_config
+
+        with patch("sova.dashboard.services.settings_service._save_setting_to_db", return_value=False):
+            result = await update_config(tmp_path, key="agent.max_budget", value="25")
+        assert result.get("status") == "ok"
+        assert "25" in toml_file.read_text()
+
+    async def test_toml_missing_falls_back_to_db_only(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import update_config
+
+        result = await update_config(tmp_path, key="agent.max_budget", value="25")
+        assert result.get("status") == "ok"
+
+    async def test_both_persistence_fail_returns_error(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import update_config
+
+        with patch("sova.dashboard.services.settings_service._save_setting_to_db", return_value=False):
+            result = await update_config(tmp_path, key="agent.max_budget", value="25")
+        assert "error" in result
+        assert "Failed to persist" in result["error"]
+
+    async def test_db_exception_returns_false(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import _save_setting_to_db
+
+        with patch("sova.db.session.get_session", side_effect=Exception("db down")):
+            result = await _save_setting_to_db(tmp_path, "agent.max_budget", 25)
+        assert result is False
+
+    async def test_rejects_unregistered_key(self, tmp_path) -> None:
         toml_file = tmp_path / "sova.toml"
         toml_file.write_text("[agent]\nmax_budget = 10\n")
         original = toml_file.read_text()
 
         from sova.dashboard.services.settings_service import update_config
 
-        result = update_config(tmp_path, key="nonexistent.key", value="anything")
+        result = await update_config(tmp_path, key="nonexistent.key", value="anything")
         assert "error" in result
         assert "Unknown setting" in result["error"]
         assert toml_file.read_text() == original
+
+
+class TestSaveSettingToToml:
+    """Tests for _save_setting_to_toml error paths."""
+
+    def test_toml_file_missing(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import _save_setting_to_toml
+
+        result = _save_setting_to_toml(tmp_path, "agent.max_budget", 25)
+        assert result is False
+
+    def test_tomlkit_import_error(self, tmp_path) -> None:
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[agent]\nmax_budget = 10\n")
+
+        from sova.dashboard.services.settings_service import _save_setting_to_toml
+
+        with patch.dict("sys.modules", {"tomlkit": None}):
+            result = _save_setting_to_toml(tmp_path, "agent.max_budget", 25)
+        assert result is False
+
+    def test_toml_write_exception(self, tmp_path) -> None:
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[agent]\nmax_budget = 10\n")
+
+        from sova.dashboard.services.settings_service import _save_setting_to_toml
+
+        with (
+            patch("sova.dashboard.services.settings_service.get_config_file_path", return_value=tmp_path / "sova.toml"),
+            patch("tomlkit.parse", side_effect=RuntimeError("corrupt")),
+        ):
+            result = _save_setting_to_toml(tmp_path, "agent.max_budget", 25)
+        assert result is False
 
 
 class TestExtractValidationDetail:
@@ -230,7 +304,7 @@ class TestSettingsRouterErrors:
         assert resp.json()["detail"] == "Failed to fetch configuration"
 
     async def test_update_config_server_error(self, client, monkeypatch) -> None:
-        def raise_generic(*_a, **_kw):
+        async def raise_generic(*_a, **_kw):
             raise RuntimeError("disk full")
 
         monkeypatch.setattr("sova.dashboard.services.settings_service.update_config", raise_generic)
@@ -239,9 +313,12 @@ class TestSettingsRouterErrors:
         assert resp.json()["detail"] == "Failed to update configuration"
 
     async def test_update_config_validation_rejection(self, client, monkeypatch) -> None:
+        async def reject_validation(*_a, **_kw):
+            return {"error": "'x' expects a number, got 'abc'"}
+
         monkeypatch.setattr(
             "sova.dashboard.services.settings_service.update_config",
-            lambda *a, **kw: {"error": "'x' expects a number, got 'abc'"},
+            reject_validation,
         )
         resp = await client.post("/api/settings/config", json={"key": "x", "value": "abc"})
         assert resp.status_code == 200

@@ -272,11 +272,11 @@ class TestSupervisorRouter:
         finally:
             set_daemon_registry({})
 
-    async def test_stop_supervisor_no_project_returns_503(self, app) -> None:
+    async def test_stop_supervisor_no_project_no_daemon_returns_404(self, app) -> None:
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post("/api/supervisor/stop")
-        assert resp.status_code == 503
+        assert resp.status_code == 404
 
     async def test_stop_supervisor_no_daemon_returns_404(self, app) -> None:
         project_dir = Path.cwd().resolve()
@@ -408,12 +408,81 @@ class TestSupervisorRouter:
         finally:
             set_daemon_registry({})
 
-    async def test_start_supervisor_no_project_context(self, app) -> None:
-        """POST /supervisor/start returns 503 when no project context is set."""
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post("/api/supervisor/start")
-                assert resp.status_code == 503
+    async def test_start_supervisor_no_project_context_falls_back(self, app) -> None:
+        """POST /supervisor/start loads cwd config when context is unset."""
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.enabled = False
+        set_daemon_registry({})
+        try:
+            with (
+                patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None),
+                patch("sova.config.loader.load_config", return_value=mock_cfg) as mock_load,
+            ):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.post("/api/supervisor/start")
+            assert resp.status_code == 409
+            mock_load.assert_called_once_with(Path.cwd().resolve())
+        finally:
+            set_daemon_registry({})
+
+    async def test_get_daemon_single_registry_entry_fallback(self, app) -> None:
+        """_get_daemon returns sole daemon when project_dir is None and one daemon registered."""
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+
+        mock_daemon = MagicMock()
+        mock_daemon.get_status.return_value = {"enabled": True, "running": True}
+        set_daemon_registry({"/some/project": mock_daemon})
+        try:
+            with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.get("/api/supervisor/status")
+                    assert resp.status_code == 200
+                    assert resp.json()["running"] is True
+        finally:
+            set_daemon_registry({})
+
+    async def test_resolve_project_dir_single_registry_fallback(self, app) -> None:
+        """_resolve_project_dir returns sole registry key when context is unset."""
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.enabled = False
+        stale_daemon = MagicMock()
+        stale_daemon.running = False
+        set_daemon_registry({"/registered/project": stale_daemon})
+        try:
+            with (
+                patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None),
+                patch("sova.config.loader.load_config", return_value=mock_cfg) as mock_load,
+            ):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.post("/api/supervisor/start")
+            assert resp.status_code == 409
+            mock_load.assert_called_once_with(Path("/registered/project"))
+        finally:
+            set_daemon_registry({})
+
+    async def test_resolve_project_dir_cwd_fallback(self, app) -> None:
+        """_resolve_project_dir falls back to cwd when registry is empty and agent_pool has no default."""
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.enabled = False
+        set_daemon_registry({})
+        try:
+            with (
+                patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None),
+                patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=None),
+                patch("sova.config.loader.load_config", return_value=mock_cfg) as mock_load,
+            ):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.post("/api/supervisor/start")
+            assert resp.status_code == 409
+            mock_load.assert_called_once_with(Path.cwd().resolve())
+        finally:
+            set_daemon_registry({})
 
     async def test_get_decisions_load_config_error(self, app) -> None:
         """GET /supervisor/decisions falls back to project_slug=None when load_config raises."""

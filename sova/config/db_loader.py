@@ -59,11 +59,11 @@ async def save_setting(session: AsyncSession, key: str, value: Any) -> None:
         row.value = json_value
     else:
         try:
-            session.add(ProjectSetting(key=key, value=json_value))
-            await session.flush()
+            async with session.begin_nested():
+                session.add(ProjectSetting(key=key, value=json_value))
+                await session.flush()
             return
         except IntegrityError:
-            await session.rollback()
             result = await session.execute(select(ProjectSetting).where(ProjectSetting.key == key))
             row = result.scalar_one_or_none()
             if row is not None:
