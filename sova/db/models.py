@@ -492,6 +492,7 @@ class OversightFinding(Base):
     project_slug: Mapped[str] = mapped_column(String(100), default="")
     dismissed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     github_issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    fingerprint: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     run: Mapped["OversightRun"] = relationship(back_populates="findings", lazy="raise")
@@ -501,6 +502,7 @@ class OversightFinding(Base):
         Index("ix_oversight_findings_title", "title"),
         Index("ix_oversight_findings_scope", "scope"),
         Index("ix_oversight_findings_created", "created_at"),
+        Index("ix_oversight_findings_fingerprint", "fingerprint"),
     )
 
 
