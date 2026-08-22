@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from sova.core.context import ExecutionContext
+from sova.core.journal import RunJournal
 from sova.core.output import OutputWriter
 from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
@@ -30,6 +31,8 @@ from sova.ipc.notifications import notify
 from sova.utils.logging import get_logger
 
 log = get_logger(component="workflow")
+
+_UNKNOWN_ERROR = "Unknown error"
 
 _BILLING_FAILURE_PATTERNS: tuple[str, ...] = (
     "budget_exhausted",
@@ -109,6 +112,7 @@ class WorkflowEngine:
         self._ctx = ctx
         self._task_run_id: int | None = None
         self._output_writer: OutputWriter | None = None
+        self._journal: RunJournal | None = None
 
     async def run(self) -> WorkflowResult:
         """Execute all steps in order, respecting gates and retries."""
@@ -124,6 +128,21 @@ class WorkflowEngine:
         self._output_writer.write_line(f"=== Workflow started: {self._ctx.display_label}, role={self._ctx.role} ===")
         await self._output_writer.flush()
 
+        self._journal = RunJournal(self._ctx.project_dir, self._task_run_id)
+        self._journal.emit(
+            "run_created",
+            {
+                "run_id": self._task_run_id,
+                "issue": self._ctx.issue_number or "",
+                "role": self._ctx.role,
+                "label": self._ctx.display_label,
+                "model": self._ctx.resolved_model or self._ctx.config.agent.model,
+                "max_budget": str(self._ctx.config.agent.max_budget),
+                "steps": [s.name for s in self._steps],
+                "adapter_type": self._ctx.config.task_source.type,
+            },
+        )
+
         result = WorkflowResult(
             success=False,
             final_status=TaskStatus.PENDING,
@@ -132,6 +151,7 @@ class WorkflowEngine:
 
         await self._check_per_issue_budget(result)
         if result.error:
+            self._close_journal()
             return result
 
         log.info(
@@ -143,9 +163,11 @@ class WorkflowEngine:
 
         for step in self._steps:
             if not await self._execute_step(step, result):
+                self._close_journal()
                 return result
 
         await self._finalize(result)
+        self._close_journal()
         return result
 
     async def _execute_step(self, step: BaseStep, result: WorkflowResult) -> bool:
@@ -154,6 +176,15 @@ class WorkflowEngine:
             log.warning("workflow.budget_exceeded", cost=str(self._ctx.cost_usd))
             result.final_status = TaskStatus.PAUSED
             result.error = f"Budget exceeded: ${self._ctx.cost_usd}"
+            self._emit_journal(
+                "run_paused",
+                {
+                    "reason": "budget_exceeded",
+                    "step": step.name,
+                    "total_cost_usd": str(self._ctx.cost_usd),
+                    "max_budget": str(self._ctx.config.agent.max_budget),
+                },
+            )
             await self._write_output(f"PAUSED: {result.error}")
             await self._close_output()
             await self._record_failure(step.name, "budget_exceeded", result.error)
@@ -180,6 +211,13 @@ class WorkflowEngine:
 
         await self._set_current_step(step.name)
         await self._write_output(f"\n--- Step: {step.name} ---")
+        self._emit_journal(
+            "step_started",
+            {
+                "step": step.name,
+                "budget_remaining": str(self._ctx.config.agent.max_budget - self._ctx.cost_usd),
+            },
+        )
 
         record = await self._execute_with_retries(step)
         result.step_records.append(record)
@@ -195,6 +233,15 @@ class WorkflowEngine:
         result.total_cost_usd += record.result.cost_usd if record.result else Decimal("0")
         await self._sync_task_run_context()
 
+        self._emit_journal(
+            "step_completed",
+            {
+                "step": step.name,
+                "duration_ms": record.duration_ms,
+                "cost_usd": str(record.result.cost_usd) if record.result else "0",
+            },
+        )
+
         if record.result and record.result.awaiting_approval:
             await self._handle_step_approval(step, record, result)
             return False
@@ -208,7 +255,7 @@ class WorkflowEngine:
     async def _handle_step_failure(self, step: BaseStep, record: StepRecord, result: WorkflowResult) -> None:
         """Handle a failed step: record failure, notify, close output."""
         result.steps_failed += 1
-        result.error = record.result.error if record.result else "Unknown error"
+        result.error = record.result.error if record.result else _UNKNOWN_ERROR
 
         if record.gate and not record.gate.passed:
             result.final_status = TaskStatus.PAUSED
@@ -218,9 +265,19 @@ class WorkflowEngine:
             result.final_status = TaskStatus.FAILED
             failure_type = "exception"
 
-        await self._record_failure(step.name, failure_type, result.error or "Unknown error")
+        await self._record_failure(step.name, failure_type, result.error or _UNKNOWN_ERROR)
         await self._update_task_run_status(result.final_status, error=result.error)
         await self._sync_task_run_context()
+
+        self._emit_journal(
+            "run_failed",
+            {
+                "step": step.name,
+                "failure_type": failure_type,
+                "error": result.error or _UNKNOWN_ERROR,
+                "total_cost_usd": str(self._ctx.cost_usd),
+            },
+        )
 
         await self._write_output(f"FAILED: {result.error}")
         await self._close_output()
@@ -231,7 +288,7 @@ class WorkflowEngine:
         notify(
             self._ctx.config.notification,
             "SOVA",
-            f"{project_name} | Step '{step.name}' failed: {result.error or 'Unknown error'}",
+            f"{project_name} | Step '{step.name}' failed: {result.error or _UNKNOWN_ERROR}",
             subtitle=f"{role_label} failed {label}",
             group=self._ctx.notification_group,
         )
@@ -281,6 +338,16 @@ class WorkflowEngine:
         """Write final state after all steps complete successfully."""
         result.success = True
         result.final_status = TaskStatus.DONE
+
+        self._emit_journal(
+            "run_completed",
+            {
+                "total_cost_usd": str(result.total_cost_usd),
+                "steps_completed": result.steps_completed,
+                "steps_skipped": result.steps_skipped,
+            },
+        )
+
         await self._write_output(f"\n=== Workflow completed: ${result.total_cost_usd} ===")
         await self._close_output()
         await self._update_task_run_status(TaskStatus.DONE)
@@ -447,8 +514,10 @@ class WorkflowEngine:
         if not gate.passed:
             log.warning("workflow.gate.failed", step=step.name, reason=gate.reason)
             await self._update_step_execution_gate(step_exec_id, gate)
+            self._emit_journal("gate_failed", {"step": step.name, "reason": gate.reason or ""})
             return "failed"
 
+        self._emit_journal("gate_passed", {"step": step.name})
         return "done"
 
     def _has_fallback_models(self) -> bool:
@@ -649,6 +718,14 @@ class WorkflowEngine:
                 next_actions=result.handoff_actions or [],
             )
             write_handoff_file(self._ctx.project_dir, dashboard_handoff)
+            self._emit_journal(
+                "handoff_written",
+                {
+                    "step": step_name,
+                    "target": "dashboard",
+                    "action_type": "approval",
+                },
+            )
         except Exception:
             log.warning("workflow.approval_handoff.write_failed", step=step_name, exc_info=True)
 
@@ -703,6 +780,15 @@ class WorkflowEngine:
                         model_selection_reason=self._ctx.model_selection_reason,
                     )
                     session.add(cost_record)
+                    self._emit_journal(
+                        "cost_recorded",
+                        {
+                            "step": record.step_name,
+                            "cost_usd": str(result.cost_usd),
+                            "cumulative_cost_usd": str(self._ctx.cost_usd),
+                            "model": self._ctx.resolved_model or "claude",
+                        },
+                    )
 
     async def _update_step_execution_gate(self, step_exec_id: int, gate: GateCheckResult) -> None:
         """Record gate check result on the StepExecution."""
@@ -711,6 +797,17 @@ class WorkflowEngine:
             if record:
                 record.gate_check_result = gate.reason
                 record.status = "gate_failed"
+
+    # -- Journal helpers --
+
+    def _emit_journal(self, event: str, data: dict | None = None) -> None:
+        if self._journal:
+            self._journal.emit(event, data)
+
+    def _close_journal(self) -> None:
+        if self._journal:
+            self._journal.close()
+            self._journal = None
 
     async def _record_failure(self, step_name: str, failure_type: str, message: str) -> None:
         """Create a FailureRecord for dashboard observability."""

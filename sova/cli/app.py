@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 import sova
-from sova.cli.commands.admin import cleanup, costs, status
+from sova.cli.commands.admin import cleanup, costs, status, verify_run
 from sova.cli.commands.analyze_failures import app as analyze_failures_app
 from sova.cli.commands.commands import app as commands_app
 from sova.cli.commands.doctor import doctor
@@ -57,6 +57,7 @@ app.command(name="learn-from-pr")(learn_from_pr)
 app.command(name="status")(status)
 app.command(name="costs")(costs)
 app.command(name="cleanup")(cleanup)
+app.command(name="verify-run")(verify_run)
 app.command(name="doctor")(doctor)
 
 # MCP (subcommand group)

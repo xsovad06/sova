@@ -123,6 +123,25 @@ async def _costs(*, project_dir: Path | None) -> None:
         console.print(recent_table)
 
 
+def verify_run(
+    run_id: Annotated[int, typer.Argument(help="Run ID to verify.")],
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+) -> None:
+    """Verify the hash chain integrity of a run journal."""
+    from sova.core.journal import RunJournal
+
+    resolved_dir = project or Path.cwd()
+    result = RunJournal.verify(resolved_dir, run_id)
+
+    if result.valid:
+        console.print(f"[green]Run {run_id}: journal integrity verified ({result.event_count} events).[/green]")
+    else:
+        console.print(f"[red]Run {run_id}: journal integrity check FAILED.[/red]")
+        for error in result.errors:
+            console.print(f"  [red]{error}[/red]")
+        raise typer.Exit(code=1)
+
+
 def cleanup(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be cleaned up.")] = False,
