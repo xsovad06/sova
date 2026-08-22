@@ -116,7 +116,7 @@ class TestWatchdogFinding:
 
 
 class TestDetectAnomalies:
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
     def test_pipeline_not_adopted_within_timeout(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog()
         run = _make_run(
@@ -126,7 +126,7 @@ class TestDetectAnomalies:
         findings = wd._detect_anomalies(run, datetime.now(timezone.utc), {})
         assert len(findings) == 0
 
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
     def test_pipeline_not_adopted_past_timeout(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(pipeline_adopt_timeout_minutes=5)
         run = _make_run(
@@ -138,7 +138,7 @@ class TestDetectAnomalies:
         assert findings[0].signal == AnomalySignal.PIPELINE_NOT_ADOPTED
         assert findings[0].action == WatchdogAction.KILL
 
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=False)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=False)
     def test_zombie_process(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog()
         run = _make_run(pid=99999)
@@ -147,7 +147,7 @@ class TestDetectAnomalies:
         assert findings[0].signal == AnomalySignal.ZOMBIE_PROCESS
         assert findings[0].action == WatchdogAction.KILL
 
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
     def test_no_output_warn(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(no_output_warn_minutes=15, no_output_kill_minutes=25)
         now = datetime.now(timezone.utc)
@@ -158,7 +158,7 @@ class TestDetectAnomalies:
         assert len(no_output) == 1
         assert no_output[0].action == WatchdogAction.WARN
 
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
     def test_no_output_kill(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(no_output_warn_minutes=15, no_output_kill_minutes=25)
         now = datetime.now(timezone.utc)
@@ -168,7 +168,7 @@ class TestDetectAnomalies:
         assert len(no_output_kill) == 1
         assert no_output_kill[0].action == WatchdogAction.KILL
 
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
     def test_no_output_uses_last_output_time(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(no_output_warn_minutes=15, no_output_kill_minutes=25)
         now = datetime.now(timezone.utc)
@@ -179,7 +179,7 @@ class TestDetectAnomalies:
         no_output = [f for f in findings if "no_output" in f.signal.value]
         assert len(no_output) == 0
 
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
     def test_step_timeout_warn(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(step_warn_minutes=45)
         now = datetime.now(timezone.utc)
@@ -194,7 +194,7 @@ class TestDetectAnomalies:
         assert len(step_warn) == 1
         assert step_warn[0].action == WatchdogAction.WARN
 
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
     def test_step_timeout_kill(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(step_warn_minutes=45, step_kill_minutes=60)
         now = datetime.now(timezone.utc)
@@ -208,7 +208,7 @@ class TestDetectAnomalies:
         assert len(step_kill) == 1
         assert step_kill[0].action == WatchdogAction.KILL
 
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
     def test_no_anomalies_healthy_run(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog()
         now = datetime.now(timezone.utc)
@@ -370,7 +370,7 @@ class TestScanOnce:
         assert findings == []
 
     @patch("sova.supervisor.watchdog.emit_safe")
-    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
     @patch("sova.supervisor.watchdog.get_session")
     async def test_scan_detects_no_output_warn(
         self, mock_get_session: AsyncMock, _mock_alive: MagicMock, _mock_emit: MagicMock
