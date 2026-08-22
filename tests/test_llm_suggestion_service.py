@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from cachetools import TTLCache
@@ -14,26 +14,20 @@ from sova.dashboard.services.llm_suggestion_service import (
     clear_cache,
     get_llm_suggestion,
 )
+from sova.llm.models import LLMResult
 
 
 @pytest.fixture(autouse=True)
 def reset_cache() -> None:
-    import sova.dashboard.services.llm_suggestion_service as _mod
-
     clear_cache()
-    _mod._warned_no_key = False
     yield  # type: ignore[misc]
     clear_cache()
-    _mod._warned_no_key = False
 
 
-def _mock_response(action_id: str, reasoning: str = "test reason") -> MagicMock:
-    """Build a mock httpx response returning valid JSON."""
+def _mock_llm_result(action_id: str, reasoning: str = "test reason") -> LLMResult:
+    """Build a mock LLMResult returning valid JSON."""
     content = json.dumps({"action_id": action_id, "reasoning": reasoning})
-    mock = MagicMock()
-    mock.raise_for_status = MagicMock()
-    mock.json.return_value = {"content": [{"text": content}]}
-    return mock
+    return LLMResult(text=content, model="claude-haiku-4-5-20251001")
 
 
 def _kwargs(**overrides: object) -> dict:
@@ -54,135 +48,95 @@ def _kwargs(**overrides: object) -> dict:
 
 
 class TestGetLlmSuggestion:
-    async def test_returns_none_without_api_key(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
+    async def test_calls_provider_and_parses_response(self) -> None:
+        mock_result = _mock_llm_result("integrate", "PR is approved and CI green")
+        with patch(
+            "sova.dashboard.services.llm_suggestion_service.invoke",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
             result = await get_llm_suggestion(**_kwargs())
-        assert result is None
-
-    async def test_calls_anthropic_api_and_parses_response(self) -> None:
-        mock_resp = _mock_response("integrate", "PR is approved and CI green")
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.return_value = mock_resp
-                result = await get_llm_suggestion(**_kwargs())
 
         assert result is not None
         assert result["action_id"] == "integrate"
         assert result["action_label"] == "Integrate PR"
         assert result["reasoning"] == "PR is approved and CI green"
-        assert result["disagrees"] is True  # differs from "review_pr"
+        assert result["disagrees"] is True
 
     async def test_disagrees_false_when_llm_matches_deterministic(self) -> None:
-        mock_resp = _mock_response("review_pr")
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.return_value = mock_resp
-                result = await get_llm_suggestion(**_kwargs(deterministic_action_id="review_pr"))
+        mock_result = _mock_llm_result("review_pr")
+        with patch(
+            "sova.dashboard.services.llm_suggestion_service.invoke",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await get_llm_suggestion(**_kwargs(deterministic_action_id="review_pr"))
 
         assert result is not None
         assert result["disagrees"] is False
 
-    async def test_returns_none_on_api_error(self) -> None:
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.side_effect = Exception("network error")
-                result = await get_llm_suggestion(**_kwargs())
+    async def test_returns_none_on_provider_error(self) -> None:
+        with patch(
+            "sova.dashboard.services.llm_suggestion_service.invoke",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("provider error"),
+        ):
+            result = await get_llm_suggestion(**_kwargs())
         assert result is None
 
     async def test_returns_none_on_invalid_action_id(self) -> None:
-        content = json.dumps({"action_id": "not_a_valid_action", "reasoning": "test"})
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"content": [{"text": content}]}
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.return_value = mock_resp
-                result = await get_llm_suggestion(**_kwargs())
+        mock_result = LLMResult(
+            text=json.dumps({"action_id": "not_a_valid_action", "reasoning": "test"}),
+            model="claude-haiku-4-5-20251001",
+        )
+        with patch(
+            "sova.dashboard.services.llm_suggestion_service.invoke",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await get_llm_suggestion(**_kwargs())
         assert result is None
 
     async def test_returns_none_on_malformed_json(self) -> None:
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"content": [{"text": "not json at all"}]}
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.return_value = mock_resp
-                result = await get_llm_suggestion(**_kwargs())
+        mock_result = LLMResult(text="not json at all", model="claude-haiku-4-5-20251001")
+        with patch(
+            "sova.dashboard.services.llm_suggestion_service.invoke",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await get_llm_suggestion(**_kwargs())
         assert result is None
 
-    async def test_caches_result_second_call_skips_api(self) -> None:
-        mock_resp = _mock_response("integrate")
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.return_value = mock_resp
-
-                result1 = await get_llm_suggestion(**_kwargs())
-                result2 = await get_llm_suggestion(**_kwargs())
+    async def test_caches_result_second_call_skips_provider(self) -> None:
+        mock_result = _mock_llm_result("integrate")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        with patch("sova.dashboard.services.llm_suggestion_service.invoke", mock_invoke):
+            result1 = await get_llm_suggestion(**_kwargs())
+            result2 = await get_llm_suggestion(**_kwargs())
 
         assert result1 == result2
-        assert mock_client.post.call_count == 1
+        assert mock_invoke.call_count == 1
 
     async def test_different_pr_numbers_are_cached_separately(self) -> None:
-        mock_resp_integrate = _mock_response("integrate")
-        mock_resp_review = _mock_response("review_pr")
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.side_effect = [mock_resp_integrate, mock_resp_review]
-
-                result_a = await get_llm_suggestion(**_kwargs(pr_number=100))
-                result_b = await get_llm_suggestion(**_kwargs(pr_number=200))
+        results = [_mock_llm_result("integrate"), _mock_llm_result("review_pr")]
+        mock_invoke = AsyncMock(side_effect=results)
+        with patch("sova.dashboard.services.llm_suggestion_service.invoke", mock_invoke):
+            result_a = await get_llm_suggestion(**_kwargs(pr_number=100))
+            result_b = await get_llm_suggestion(**_kwargs(pr_number=200))
 
         assert result_a["action_id"] == "integrate"
         assert result_b["action_id"] == "review_pr"
-        assert mock_client.post.call_count == 2
+        assert mock_invoke.call_count == 2
 
     async def test_different_states_are_cached_separately(self) -> None:
-        mock_resp_integrate = _mock_response("integrate")
-        mock_resp_address = _mock_response("address_pr")
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.side_effect = [mock_resp_integrate, mock_resp_address]
-
-                result_a = await get_llm_suggestion(**_kwargs(deterministic_state="pr_sova_pending"))
-                result_b = await get_llm_suggestion(**_kwargs(deterministic_state="pr_awaiting_review"))
+        results = [_mock_llm_result("integrate"), _mock_llm_result("address_pr")]
+        mock_invoke = AsyncMock(side_effect=results)
+        with patch("sova.dashboard.services.llm_suggestion_service.invoke", mock_invoke):
+            result_a = await get_llm_suggestion(**_kwargs(deterministic_state="pr_sova_pending"))
+            result_b = await get_llm_suggestion(**_kwargs(deterministic_state="pr_awaiting_review"))
 
         assert result_a["action_id"] == "integrate"
         assert result_b["action_id"] == "address_pr"
-
-    async def test_warns_once_on_missing_api_key(self) -> None:
-        import sova.dashboard.services.llm_suggestion_service as mod
-
-        with patch.dict("os.environ", {}, clear=True):
-            with patch.object(mod.log, "warning") as mock_warn:
-                await get_llm_suggestion(**_kwargs())
-                await get_llm_suggestion(**_kwargs())
-                await get_llm_suggestion(**_kwargs())
-
-        assert mock_warn.call_count == 1
-
-    async def test_warned_flag_prevents_repeated_warnings(self) -> None:
-        import sova.dashboard.services.llm_suggestion_service as mod
-
-        assert mod._warned_no_key is False
-        with patch.dict("os.environ", {}, clear=True):
-            await get_llm_suggestion(**_kwargs())
-        assert mod._warned_no_key is True
 
     async def test_expired_cache_entry_is_deleted(self) -> None:
         import sova.dashboard.services.llm_suggestion_service as mod
@@ -190,64 +144,41 @@ class TestGetLlmSuggestion:
         fake_time = [0.0]
         test_cache: TTLCache[str, dict] = TTLCache(maxsize=100, ttl=mod._CACHE_TTL, timer=lambda: fake_time[0])
 
-        mock_resp = _mock_response("integrate")
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.return_value = mock_resp
+        mock_result = _mock_llm_result("integrate")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        with patch("sova.dashboard.services.llm_suggestion_service.invoke", mock_invoke):
+            original_cache = mod._cache
+            mod._cache = test_cache
+            try:
+                await get_llm_suggestion(**_kwargs())
+                assert len(mod._cache) == 1
 
-                original_cache = mod._cache
-                mod._cache = test_cache
-                try:
-                    await get_llm_suggestion(**_kwargs())
-                    assert len(mod._cache) == 1
+                fake_time[0] = mod._CACHE_TTL + 1
 
-                    fake_time[0] = mod._CACHE_TTL + 1
-
-                    await get_llm_suggestion(**_kwargs())
-                    assert mock_client.post.call_count == 2
-                finally:
-                    mod._cache = original_cache
+                await get_llm_suggestion(**_kwargs())
+                assert mock_invoke.call_count == 2
+            finally:
+                mod._cache = original_cache
 
     async def test_returns_none_on_prompt_format_error(self) -> None:
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch(
-                "sova.dashboard.services.llm_suggestion_service._PROMPT",
-                "{missing_key_that_does_not_exist}",
-            ):
-                result = await get_llm_suggestion(**_kwargs())
+        with patch(
+            "sova.dashboard.services.llm_suggestion_service._PROMPT",
+            "{missing_key_that_does_not_exist}",
+        ):
+            result = await get_llm_suggestion(**_kwargs())
         assert result is None
 
     async def test_state_change_invalidates_cache(self) -> None:
         """When deterministic_state changes, cached result for old state is not reused."""
-        mock_resp_a = _mock_response("review_pr")
-        mock_resp_b = _mock_response("integrate")
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client_cls.return_value.__aenter__.return_value = mock_client
-                mock_client.post.side_effect = [mock_resp_a, mock_resp_b]
-
-                result_a = await get_llm_suggestion(**_kwargs(deterministic_state="pr_sova_pending"))
-                result_b = await get_llm_suggestion(**_kwargs(deterministic_state="pr_approved"))
+        results = [_mock_llm_result("review_pr"), _mock_llm_result("integrate")]
+        mock_invoke = AsyncMock(side_effect=results)
+        with patch("sova.dashboard.services.llm_suggestion_service.invoke", mock_invoke):
+            result_a = await get_llm_suggestion(**_kwargs(deterministic_state="pr_sova_pending"))
+            result_b = await get_llm_suggestion(**_kwargs(deterministic_state="pr_approved"))
 
         assert result_a["action_id"] == "review_pr"
         assert result_b["action_id"] == "integrate"
-        assert mock_client.post.call_count == 2
-
-    async def test_warned_flag_reset_allows_new_warning(self) -> None:
-        """After resetting _warned_no_key, a new warning is emitted."""
-        import sova.dashboard.services.llm_suggestion_service as mod
-
-        with patch.dict("os.environ", {}, clear=True):
-            with patch.object(mod.log, "warning") as mock_warn:
-                await get_llm_suggestion(**_kwargs())
-                assert mock_warn.call_count == 1
-
-                mod._warned_no_key = False
-                await get_llm_suggestion(**_kwargs())
-                assert mock_warn.call_count == 2
+        assert mock_invoke.call_count == 2
 
 
 class TestMakeCacheKey:

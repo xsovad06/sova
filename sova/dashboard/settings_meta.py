@@ -1185,8 +1185,8 @@ _REGISTRY: list[SettingMeta] = [
         "supervisor.llm_planning",
         "LLM Planning",
         "Enable LLM-based planning before each supervisor cycle. "
-        "Requires ANTHROPIC_API_KEY. When disabled, the supervisor runs in "
-        "purely deterministic mode.",
+        "Uses the configured LLM provider (default: Claude Code CLI). "
+        "When disabled, the supervisor runs in purely deterministic mode.",
         "supervisor",
         "boolean",
     ),

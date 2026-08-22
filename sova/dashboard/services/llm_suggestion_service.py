@@ -1,6 +1,6 @@
 """LLM-based PR action suggestion service for the dual-evaluation experiment.
 
-Calls the Anthropic Messages API to suggest a next action for a PR, then compares
+Calls the LLM provider to suggest a next action for a PR, then compares
 it against the deterministic model's choice. Results are cached server-side for
 5 minutes per (pr_number, deterministic_state, pr_computed_state) triple.
 
@@ -12,22 +12,16 @@ The UI shows a comparison widget when the LLM disagrees, and a standalone
 from __future__ import annotations
 
 import json
-import os
 
-import httpx
 from cachetools import TTLCache
 
+from sova.llm.client import invoke
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.llm_suggestion")
 
-_ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _MODEL = "claude-haiku-4-5-20251001"
-# Process-lifetime flag: logs once when ANTHROPIC_API_KEY is missing.
-# Known limitation: if the key is added or removed at runtime (e.g., via
-# config reload), this flag won't re-trigger. Acceptable because the key
-# is typically set at process start and doesn't change.
-_warned_no_key = False
+_MAX_TOKENS = 200
 _CACHE_TTL = 300  # 5 minutes
 
 _cache: TTLCache[str, dict] = TTLCache(maxsize=100, ttl=_CACHE_TTL)
@@ -86,19 +80,11 @@ async def get_llm_suggestion(
     ci_passed: bool,
     external_reviews_enabled: bool = True,
 ) -> dict | None:
-    """Ask the LLM to suggest a PR action. Returns None if no API key or on any error.
+    """Ask the LLM to suggest a PR action. Returns None on any error.
 
     Result shape when non-None:
         {action_id, action_label, reasoning, disagrees}
     """
-    global _warned_no_key  # noqa: PLW0603
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        if not _warned_no_key:
-            log.warning("llm_suggestion.no_api_key: ANTHROPIC_API_KEY not set, LLM suggestions disabled")
-            _warned_no_key = True
-        return None
-
     cache_key = _make_cache_key(pr_number, deterministic_state, pr_computed_state)
     cached = _cache.get(cache_key)
     if cached is not None:
@@ -121,25 +107,14 @@ async def get_llm_suggestion(
         return None
 
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                _ANTHROPIC_API_URL,
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": _MODEL,
-                    "max_tokens": 200,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=10.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-            raw_text = data["content"][0]["text"]
-            parsed = json.loads(raw_text)
+        llm_result = await invoke(
+            prompt,
+            model=_MODEL,
+            task_type="llm_suggestion",
+            max_tokens=_MAX_TOKENS,
+            timeout=10.0,
+        )
+        parsed = json.loads(llm_result.text)
     except Exception:
         log.warning("llm_suggestion.call_failed", pr=pr_number, exc_info=True)
         return None

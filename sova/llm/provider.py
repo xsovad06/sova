@@ -88,6 +88,8 @@ class LLMProvider(ABC):
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
         timeout: float | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResult:
         """Run a prompt and return the parsed result."""
         ...
@@ -140,10 +142,6 @@ class LLMProvider(ABC):
 
         Default implementation calls invoke() sequentially.
         Batch-capable providers override this.
-
-        Limitation: invoke() accepts neither a system prompt nor a token cap,
-        so BatchRequest.system and BatchRequest.max_tokens are ignored on this
-        path. Batch-capable backends honor both.
         """
         results: list[BatchResult] = []
         deadline = time.monotonic() + timeout
@@ -157,6 +155,8 @@ class LLMProvider(ABC):
                     req.prompt,
                     model=req.model or None,
                     timeout=remaining,
+                    system_prompt=req.system or None,
+                    max_tokens=req.max_tokens,
                 )
                 results.append(BatchResult(request=req, result=r))
             except Exception as exc:

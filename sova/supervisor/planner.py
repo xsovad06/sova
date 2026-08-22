@@ -1,11 +1,11 @@
 """Supervisor planner: LLM-based resource-aware reasoning before action dispatch.
 
 Assembles a resource snapshot and work state, loads the supervisor persona,
-calls the LLM (Sonnet via direct Anthropic API), and returns a structured
+calls the LLM via the provider abstraction, and returns a structured
 PlanResult. The deterministic engine then filters its decisions against the
 approved plan.
 
-When ``ANTHROPIC_API_KEY`` is absent or any error occurs, ``plan()`` returns
+When the LLM provider is unavailable or any error occurs, ``plan()`` returns
 ``None`` and the engine runs in current deterministic mode (no failure, no
 warning spam).
 """
@@ -13,7 +13,6 @@ warning spam).
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -21,9 +20,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import httpx
-
 from sova.dashboard.services.pr_service import list_open_prs_with_state
+from sova.llm.client import invoke
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -34,11 +32,9 @@ if TYPE_CHECKING:
 
 log = get_logger(component="supervisor.planner")
 
-_ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _MODEL = "claude-sonnet-4-20250514"
 _MAX_TOKENS = 1024
 _TIMEOUT_SECONDS = 30.0
-_warned_no_key = False
 
 _VALID_ACTIONS = frozenset(
     {
@@ -144,17 +140,9 @@ class SupervisorPlanner:
     async def plan(self, adapter: TaskAdapter) -> PlanResult | None:
         """Assemble context, call LLM, return structured plan.
 
-        Returns None when ANTHROPIC_API_KEY is absent, the LLM call times out,
+        Returns None when the LLM provider is unavailable, the call times out,
         the response is unparseable, or any other error occurs.
         """
-        global _warned_no_key  # noqa: PLW0603
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            if not _warned_no_key:
-                log.info("planner.no_api_key", detail="ANTHROPIC_API_KEY not set; LLM planning disabled")
-                _warned_no_key = True
-            return None
-
         try:
             user_prompt = await self._assemble_context(adapter)
             persona = self._load_persona()
@@ -164,7 +152,7 @@ class SupervisorPlanner:
             log.debug("planner.llm_call_start", model=_MODEL, prompt_length=len(user_prompt))
             start = time.monotonic()
 
-            raw = await self._call_llm(api_key, system_prompt, user_prompt)
+            raw = await self._call_llm(system_prompt, user_prompt)
             if raw is None:
                 return None
 
@@ -407,34 +395,18 @@ class SupervisorPlanner:
             log.warning("supervisor.planner.issue_health_failed", exc_info=True)
             return "## Issue Health\nData unavailable"
 
-    async def _call_llm(self, api_key: str, system_prompt: str, user_prompt: str) -> dict | None:
+    async def _call_llm(self, system_prompt: str, user_prompt: str) -> dict | None:
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    _ANTHROPIC_API_URL,
-                    headers={
-                        "x-api-key": api_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": _MODEL,
-                        "max_tokens": _MAX_TOKENS,
-                        "system": system_prompt,
-                        "messages": [{"role": "user", "content": user_prompt}],
-                    },
-                    timeout=_TIMEOUT_SECONDS,
-                )
-                response.raise_for_status()
-                data = response.json()
-                raw_text = data["content"][0]["text"]
-                return json.loads(raw_text)
-        except httpx.TimeoutException:
-            log.warning("planner.llm_call_timeout", timeout_seconds=_TIMEOUT_SECONDS)
-            return None
-        except httpx.HTTPStatusError as exc:
-            log.warning("planner.llm_call_error", error=str(exc), status_code=exc.response.status_code)
-            return None
+            result = await invoke(
+                user_prompt,
+                model=_MODEL,
+                task_type="planner",
+                system_prompt=system_prompt,
+                max_tokens=_MAX_TOKENS,
+                timeout=_TIMEOUT_SECONDS,
+                cwd=self._project_dir,
+            )
+            return json.loads(result.text)
         except json.JSONDecodeError as exc:
             log.warning("planner.parse_error", raw_response=str(exc)[:200])
             return None
