@@ -1211,6 +1211,80 @@ class TestSpecService:
         assert questions[0]["text"] == "Use X or Y?"
         assert questions[0]["answer"] == "New answer"
 
+    def test_approve_spec_read_failure(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import approve_spec
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n")
+
+        with patch.object(Path, "read_text", side_effect=OSError("disk error")):
+            result = approve_spec("42", project_dir=tmp_path)
+        assert "error" in result
+        assert "Failed to read" in result["error"]
+
+    def test_approve_spec_write_failure(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import approve_spec
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n")
+
+        with patch.object(Path, "write_text", side_effect=OSError("read-only fs")):
+            result = approve_spec("42", project_dir=tmp_path)
+        assert "error" in result
+        assert "Failed to write" in result["error"]
+
+    def test_reject_spec_read_failure(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import reject_spec
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n")
+
+        with patch.object(Path, "read_text", side_effect=OSError("disk error")):
+            result = reject_spec("42", project_dir=tmp_path)
+        assert "error" in result
+        assert "Failed to read" in result["error"]
+
+    def test_reject_spec_write_failure(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import reject_spec
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n")
+
+        with patch.object(Path, "write_text", side_effect=OSError("read-only fs")):
+            result = reject_spec("42", project_dir=tmp_path)
+        assert "error" in result
+        assert "Failed to write" in result["error"]
+
+    def test_write_answers_read_failure(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import write_answers
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Q1?\n")
+
+        with patch.object(Path, "read_text", side_effect=OSError("disk error")):
+            write_answers("42", {"0": "answer"}, project_dir=tmp_path)
+
+    def test_write_answers_write_failure(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import write_answers
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Should we use X?\n")
+
+        with patch.object(Path, "write_text", side_effect=OSError("read-only fs")):
+            write_answers("42", {"0": "Use X"}, project_dir=tmp_path)
+
 
 # ---------------------------------------------------------------------------
 # Config
