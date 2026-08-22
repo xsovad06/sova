@@ -786,6 +786,11 @@ async def get_sova_review_verdict(
 
                 if next_action == "approve":
                     verdict = "approve"
+                elif next_action == "needs_human_review":
+                    # Protected-path-only review: code quality passed but
+                    # protected paths touched. Treat as approved for routing
+                    # purposes (no address-review needed).
+                    verdict = "approve"
                 elif next_action == "review_post_failed":
                     # Reviewer ran but could not post to GitHub. Return a distinct
                     # verdict so callers do not trigger address-review pipeline.

@@ -154,6 +154,7 @@ class ReviewConfig(BaseSettings):
     enabled: bool = True
     max_rounds: int = Field(2, gt=0)
     panel: ReviewPanelConfig = Field(default_factory=ReviewPanelConfig)
+    protected_paths: list[str] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_REVIEW_")
 

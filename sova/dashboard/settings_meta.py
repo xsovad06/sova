@@ -328,6 +328,14 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),
     SettingMeta(
+        "review.protected_paths",
+        "Protected paths",
+        "File path prefixes requiring human approval (e.g. .github/, deploy/, CODEOWNERS). "
+        "PRs touching these paths cannot receive an APPROVE verdict.",
+        "review",
+        "list",
+    ),
+    SettingMeta(
         "review.panel.enabled",
         "Panel review",
         "Use parallel focused dimension reviewers instead of a single monolithic review (3-5x cost)",
