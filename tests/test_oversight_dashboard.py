@@ -489,9 +489,11 @@ class TestRunCycleOnce:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", new_callable=AsyncMock, return_value={"test": True}),
             patch.object(agent, "_analyze", new_callable=AsyncMock, return_value=([], None)),
         ):
@@ -512,9 +514,13 @@ class TestRunCycleOnce:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
 
-        with patch.object(agent, "_observe", new_callable=AsyncMock, return_value=None):
+        with (
+            patch.object(agent, "_reload_config", return_value=cfg),
+            patch.object(agent, "_observe", new_callable=AsyncMock, return_value=None),
+        ):
             await agent.run_cycle_once()
 
         async with await get_session() as session:
@@ -529,9 +535,11 @@ class TestRunCycleOnce:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", new_callable=AsyncMock, return_value={"data": True}),
             patch.object(agent, "_analyze", new_callable=AsyncMock, return_value=([], "llm_timeout")),
         ):
@@ -549,9 +557,13 @@ class TestRunCycleOnce:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
 
-        with patch.object(agent, "_observe", new_callable=AsyncMock, side_effect=ValueError("boom")):
+        with (
+            patch.object(agent, "_reload_config", return_value=cfg),
+            patch.object(agent, "_observe", new_callable=AsyncMock, side_effect=ValueError("boom")),
+        ):
             await agent.run_cycle_once()
 
         async with await get_session() as session:
@@ -566,10 +578,12 @@ class TestRunCycleOnce:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
         mock_finding = MagicMock()
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", new_callable=AsyncMock, return_value={"data": True}),
             patch.object(agent, "_analyze", new_callable=AsyncMock, return_value=([mock_finding], None)),
             patch.object(agent, "_propose_issues", new_callable=AsyncMock) as mock_propose,
@@ -582,9 +596,11 @@ class TestRunCycleOnce:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", new_callable=AsyncMock, return_value=None),
         ):
             agent.start()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -20,6 +20,7 @@ from sova.oversight.analysis import (
     _serialize_snapshot,
     _truncate_projects,
     analyze_snapshot,
+    compute_fingerprint,
 )
 
 # ---------------------------------------------------------------------------
@@ -290,6 +291,7 @@ class TestAnalyzeSnapshot:
                         run_id="old-run",
                         title="Existing finding",
                         scope="global",
+                        fingerprint=compute_fingerprint("Existing finding", "global", ""),
                     )
                 )
 
@@ -390,7 +392,7 @@ class TestAgentAnalyzeWiring:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
         agent = OversightAgent(config=cfg)
 
         analyze_called = False
@@ -414,6 +416,7 @@ class TestAgentAnalyzeWiring:
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
@@ -431,7 +434,7 @@ class TestAgentAnalyzeWiring:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
         agent = OversightAgent(config=cfg)
 
         analyze_called = False
@@ -454,6 +457,7 @@ class TestAgentAnalyzeWiring:
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
@@ -474,7 +478,7 @@ class TestAgentAnalyzeWiring:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
         agent = OversightAgent(config=cfg)
 
         recorded: list[dict] = []
@@ -492,6 +496,7 @@ class TestAgentAnalyzeWiring:
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch.object(agent, "_analyze", side_effect=RuntimeError("LLM exploded")),
             patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
@@ -627,9 +632,9 @@ class TestAnalyzeSnapshotEdgeCases:
             async with session.begin():
                 session.add(OversightRun(id="run-dq", status="running", cycle_number=1))
 
-        # Patch _load_recent_titles to simulate DB failure during dedup
+        # Patch _load_recent_fingerprints to simulate DB failure during dedup
         with patch(
-            "sova.oversight.analysis._load_recent_titles",
+            "sova.oversight.analysis._load_recent_fingerprints",
             side_effect=RuntimeError("DB down"),
         ):
             result, error = await analyze_snapshot({"projects": []}, "run-dq", "", provider)
@@ -650,10 +655,9 @@ class TestAnalyzeSnapshotEdgeCases:
         with patch("sova.oversight.analysis._persist_findings", return_value=0):
             result, error = await analyze_snapshot({"projects": []}, "run-pf", "", provider)
 
-        assert len(result) == 1
+        assert result == []
         assert error is not None
-        assert "partial" in error
-        assert "persistence" in error
+        assert "persist failed" in error
 
     @pytest.mark.asyncio
     async def test_config_params_passed_through(self, db_session) -> None:
@@ -771,7 +775,7 @@ class TestOversightAgentUnit:
         from sova.config.models import OversightConfig
         from sova.oversight.agent import OversightAgent
 
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=1)
         agent = OversightAgent(config=cfg)
         recorded: list[dict] = []
 
@@ -784,6 +788,7 @@ class TestOversightAgentUnit:
         with (
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch.object(agent, "_record_error_safe", side_effect=_mock_record_error_safe),
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch("sova.oversight.agent.load_persona", return_value=""),
         ):
             task = agent.start()
@@ -806,3 +811,198 @@ class TestOversightFindingsMigration:
         mig = importlib.import_module("sova.db.migrations.versions.027_add_oversight_findings_table")
         assert mig.revision == "027"
         assert mig.down_revision == "026"
+
+
+# ---------------------------------------------------------------------------
+# Fingerprint migration test
+# ---------------------------------------------------------------------------
+
+
+class TestFingerprintMigration:
+    """Migration 031 adds fingerprint column."""
+
+    async def test_migration_revision(self) -> None:
+        from tests.test_db import _import_migration
+
+        mod = _import_migration("031")
+        assert mod.revision == "031"
+        assert mod.down_revision == "030"
+
+
+class TestComputeFingerprint:
+    """Tests for compute_fingerprint()."""
+
+    def test_basic(self) -> None:
+        fp = compute_fingerprint("CPU at 85%", "global", "")
+        assert isinstance(fp, str)
+        assert len(fp) == 16
+
+    def test_normalizes_numbers(self) -> None:
+        fp1 = compute_fingerprint("CPU at 85%", "global", "")
+        fp2 = compute_fingerprint("CPU at 92%", "global", "")
+        assert fp1 == fp2
+
+    def test_normalizes_issue_refs(self) -> None:
+        fp1 = compute_fingerprint("Issue #42 failing", "project", "sova")
+        fp2 = compute_fingerprint("Issue #99 failing", "project", "sova")
+        assert fp1 == fp2
+
+    def test_case_insensitive(self) -> None:
+        fp1 = compute_fingerprint("High CPU Usage", "global", "")
+        fp2 = compute_fingerprint("high cpu usage", "global", "")
+        assert fp1 == fp2
+
+    def test_different_scopes_differ(self) -> None:
+        fp1 = compute_fingerprint("Same title", "global", "")
+        fp2 = compute_fingerprint("Same title", "project", "")
+        assert fp1 != fp2
+
+    def test_different_projects_differ(self) -> None:
+        fp1 = compute_fingerprint("Same title", "project", "sova")
+        fp2 = compute_fingerprint("Same title", "project", "other")
+        assert fp1 != fp2
+
+    def test_whitespace_normalized(self) -> None:
+        fp1 = compute_fingerprint("  high   cpu  ", "global", "")
+        fp2 = compute_fingerprint("high cpu", "global", "")
+        assert fp1 == fp2
+
+    def test_different_titles_differ(self) -> None:
+        fp1 = compute_fingerprint("CPU issue", "global", "")
+        fp2 = compute_fingerprint("Memory issue", "global", "")
+        assert fp1 != fp2
+
+    def test_normalizes_start_of_title_numbers(self) -> None:
+        fp1 = compute_fingerprint("100 failures detected", "global", "")
+        fp2 = compute_fingerprint("200 failures detected", "global", "")
+        assert fp1 == fp2
+
+
+class TestConfigReload:
+    """Tests for OversightAgent config hot-reload."""
+
+    def test_reload_config_returns_config(self) -> None:
+        from sova.config.models import OversightConfig
+        from sova.oversight.agent import OversightAgent
+
+        cfg = OversightConfig(enabled=True)
+        agent = OversightAgent(config=cfg)
+        result = agent.reload_config()
+        assert isinstance(result, OversightConfig)
+
+    def test_reload_config_updates_on_success(self, tmp_path) -> None:
+        from sova.config.models import OversightConfig
+        from sova.oversight.agent import OversightAgent
+
+        cfg = OversightConfig(enabled=False, wake_interval_minutes=30)
+        agent = OversightAgent(config=cfg, project_dir=str(tmp_path))
+
+        new_cfg = OversightConfig(enabled=True, wake_interval_minutes=15)
+        mock_project_cfg = type("C", (), {"oversight": new_cfg})()
+
+        with patch("sova.config.loader.load_config", return_value=mock_project_cfg):
+            result = agent._reload_config()
+
+        assert result.enabled is True
+        assert result.wake_interval_minutes == 15
+
+    def test_reload_config_falls_back_on_error(self) -> None:
+        from sova.config.models import OversightConfig
+        from sova.oversight.agent import OversightAgent
+
+        cfg = OversightConfig(enabled=True, wake_interval_minutes=60)
+        agent = OversightAgent(config=cfg)
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+            result = agent._reload_config()
+
+        assert result is cfg
+        assert result.wake_interval_minutes == 60
+
+    def test_reload_starts_agent_when_enabled_from_disabled(self) -> None:
+        from sova.config.models import OversightConfig
+        from sova.dashboard.routers.settings import _reload_oversight_config
+
+        cfg = OversightConfig(enabled=False)
+        agent = MagicMock()
+        agent._config = cfg
+        agent.running = False
+        agent.reload_config.side_effect = lambda: setattr(agent, "_config", OversightConfig(enabled=True))
+
+        with patch(
+            "sova.dashboard.routers.oversight.get_oversight_agent",
+            return_value=agent,
+        ):
+            _reload_oversight_config()
+
+        agent.reload_config.assert_called_once()
+        agent.start.assert_called_once()
+
+    def test_reload_does_not_restart_already_running_agent(self) -> None:
+        from sova.config.models import OversightConfig
+        from sova.dashboard.routers.settings import _reload_oversight_config
+
+        cfg = OversightConfig(enabled=True)
+        agent = MagicMock()
+        agent._config = cfg
+        agent.running = True
+
+        with patch(
+            "sova.dashboard.routers.oversight.get_oversight_agent",
+            return_value=agent,
+        ):
+            _reload_oversight_config()
+
+        agent.reload_config.assert_called_once()
+        agent.start.assert_not_called()
+
+
+class TestFingerprintCrossCheck:
+    """Tests for _find_existing_issue_by_fingerprint in actions."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_match(self) -> None:
+        from sova.oversight.actions import _find_existing_issue_by_fingerprint
+
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.first.return_value = None
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("sova.db.session.get_session", return_value=mock_session):
+            result = await _find_existing_issue_by_fingerprint("abc123")
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_none_fingerprint(self) -> None:
+        from sova.oversight.actions import _find_existing_issue_by_fingerprint
+
+        result = await _find_existing_issue_by_fingerprint(None)
+        assert result is None
+
+
+class TestFindingFromDictFingerprint:
+    """Tests that _finding_from_dict sets the fingerprint field."""
+
+    def test_finding_has_fingerprint(self) -> None:
+        from sova.oversight.analysis import _finding_from_dict
+
+        finding = _finding_from_dict(
+            {"title": "Test finding", "scope": "global", "project_slug": ""},
+            "run-1",
+        )
+        assert finding is not None
+        assert finding.fingerprint is not None
+        assert len(finding.fingerprint) == 16
+
+    def test_finding_fingerprint_matches_compute(self) -> None:
+        from sova.oversight.analysis import _finding_from_dict
+
+        finding = _finding_from_dict(
+            {"title": "Test finding", "scope": "global", "project_slug": "sova"},
+            "run-1",
+        )
+        expected = compute_fingerprint("Test finding", "global", "sova")
+        assert finding.fingerprint == expected

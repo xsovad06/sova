@@ -1062,7 +1062,7 @@ class TestRunMigrationsAtHead:
 
 
 async def test_get_alembic_head_returns_current_head() -> None:
-    """_get_alembic_head must return the actual head revision ('030')."""
+    """_get_alembic_head must return the actual head revision ('031')."""
     import pathlib
 
     from alembic.config import Config
@@ -1074,7 +1074,7 @@ async def test_get_alembic_head_returns_current_head() -> None:
 
     alembic_cfg = Config(str(pathlib.Path(session_mod.__file__).parent / "alembic.ini"))
     head = _get_alembic_head(alembic_cfg)
-    assert head == "030"
+    assert head == "031"
 
 
 async def test_get_alembic_head_caches_result() -> None:
