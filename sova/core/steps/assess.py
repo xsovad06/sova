@@ -45,12 +45,16 @@ class AssessStep(BaseStep):
         )
         ctx.complexity = complexity
 
-        # Resolve model based on complexity and role
+        # Resolve model based on complexity and role.
+        # agent_model passes the pinned version from config so generic aliases
+        # (e.g. "opus") are replaced with it when they share the same family,
+        # preventing the CLI from resolving to an unavailable newer version.
         resolved = resolve_model(
             role=ctx.role,
             roles_config=ctx.config.roles,
             complexity=complexity,
             llm_config=ctx.config.llm,
+            agent_model=ctx.config.agent.model,
         )
         if resolved:
             ctx.resolved_model, ctx.model_selection_reason = resolved

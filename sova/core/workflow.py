@@ -38,11 +38,19 @@ _BILLING_FAILURE_PATTERNS: tuple[str, ...] = (
     "overloaded",
     "insufficient_quota",
     " 429",
+    "not available",
+    "model_not_available",
+    "not_available",
 )
 
 
 def _is_billing_failure(error: str | None) -> bool:
-    """Return True if the error string indicates a billing or rate-limit failure."""
+    """Return True if the error indicates a billing, rate-limit, or model availability failure.
+
+    "not available" covers Vertex AI rejections where the requested model
+    version is not enabled on the deployment (e.g. "claude-opus-5 is not
+    available on your vertex deployment").
+    """
     if not error:
         return False
     lower = error.lower()
