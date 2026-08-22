@@ -4035,6 +4035,124 @@ class TestBuildFixPromptEnhancements:
         assert "fix(core):" in prompt
 
 
+class TestCILogTruncation:
+    """Verify _invoke_fix truncates long CI logs before building the prompt."""
+
+    async def test_short_logs_unchanged(self) -> None:
+        from sova.core.steps.monitor_ci import _CI_LOG_LIMIT, MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+        short_log = "ERROR: something failed\n" * 10
+
+        run = AsyncMock(return_value=MagicMock(success=True, stdout="abc commit\n"))
+        invoke = AsyncMock(return_value=LLMResult(text="ok", model="m", cost_usd=Decimal("0")))
+
+        assert len(short_log) <= _CI_LOG_LIMIT
+
+        check = _make_ci_check("lint")
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=short_log),
+            patch("sova.core.steps.monitor_ci._redact_logs", side_effect=lambda t: t),
+        ):
+            await step._invoke_fix(ctx, [check], invoke, run)
+
+        prompt = invoke.call_args[0][0]
+        assert short_log in prompt
+        assert "...(truncated)" not in prompt
+
+    async def test_long_logs_truncated_to_tail(self) -> None:
+        from sova.core.steps.monitor_ci import _CI_LOG_LIMIT, MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+        long_log = "X" * (_CI_LOG_LIMIT + 5000)
+
+        run = AsyncMock(return_value=MagicMock(success=True, stdout="abc commit\n"))
+        invoke = AsyncMock(return_value=LLMResult(text="ok", model="m", cost_usd=Decimal("0")))
+
+        check = _make_ci_check("lint")
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=long_log),
+            patch("sova.core.steps.monitor_ci._redact_logs", side_effect=lambda t: t),
+        ):
+            await step._invoke_fix(ctx, [check], invoke, run)
+
+        prompt = invoke.call_args[0][0]
+        assert "...(truncated)" in prompt
+        assert long_log not in prompt
+        assert long_log[-_CI_LOG_LIMIT:] in prompt
+
+    async def test_exact_limit_not_truncated(self) -> None:
+        from sova.core.steps.monitor_ci import _CI_LOG_LIMIT, MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+        exact_log = "Y" * _CI_LOG_LIMIT
+
+        run = AsyncMock(return_value=MagicMock(success=True, stdout="abc commit\n"))
+        invoke = AsyncMock(return_value=LLMResult(text="ok", model="m", cost_usd=Decimal("0")))
+
+        check = _make_ci_check("lint")
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=exact_log),
+            patch("sova.core.steps.monitor_ci._redact_logs", side_effect=lambda t: t),
+        ):
+            await step._invoke_fix(ctx, [check], invoke, run)
+
+        prompt = invoke.call_args[0][0]
+        assert "...(truncated)" not in prompt
+        assert exact_log in prompt
+
+    async def test_truncation_happens_after_redaction(self) -> None:
+        from sova.core.steps.monitor_ci import _CI_LOG_LIMIT, MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+        raw_log = "A" * (_CI_LOG_LIMIT + 2000)
+
+        redacted_tail = "REDACTED_TAIL"
+        redacted_log = "B" * (_CI_LOG_LIMIT + 1000) + redacted_tail
+
+        run = AsyncMock(return_value=MagicMock(success=True, stdout="abc commit\n"))
+        invoke = AsyncMock(return_value=LLMResult(text="ok", model="m", cost_usd=Decimal("0")))
+
+        check = _make_ci_check("lint")
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=raw_log),
+            patch("sova.core.steps.monitor_ci._redact_logs", return_value=redacted_log),
+        ):
+            await step._invoke_fix(ctx, [check], invoke, run)
+
+        prompt = invoke.call_args[0][0]
+        assert redacted_tail in prompt
+        assert "...(truncated)" in prompt
+
+    async def test_empty_logs_not_truncated(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+
+        run = AsyncMock(return_value=MagicMock(success=True, stdout="abc commit\n"))
+        invoke = AsyncMock(return_value=LLMResult(text="ok", model="m", cost_usd=Decimal("0")))
+
+        check = _make_ci_check("lint")
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=""),
+            patch("sova.core.steps.monitor_ci._redact_logs", side_effect=lambda t: t),
+        ):
+            await step._invoke_fix(ctx, [check], invoke, run)
+
+        prompt = invoke.call_args[0][0]
+        assert "...(truncated)" not in prompt
+
+
 class TestCIConfigMaxWaitDefault:
     """Verify CIConfig.max_wait default is 1500."""
 
