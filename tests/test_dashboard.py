@@ -15836,8 +15836,9 @@ class TestGetPrimaryWorktreeRoot:
 class TestPrSuggestionEndpoint:
     """Tests for POST /api/prs/{pr_number}/suggestion."""
 
-    async def test_returns_204_when_no_api_key(self, client: AsyncClient, monkeypatch) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    async def test_returns_204_when_provider_fails(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
         from sova.dashboard.services.llm_suggestion_service import clear_cache
 
         clear_cache()
@@ -15851,32 +15852,36 @@ class TestPrSuggestionEndpoint:
             "review_decision": "APPROVED",
             "ci_passed": True,
         }
-        resp = await client.post("/api/prs/378/suggestion", json=body)
+        with patch(
+            "sova.dashboard.services.llm_suggestion_service.invoke",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("provider unavailable"),
+        ):
+            resp = await client.post("/api/prs/378/suggestion", json=body)
         assert resp.status_code == 204
 
-    async def test_returns_suggestion_when_llm_disagrees(self, client: AsyncClient, monkeypatch) -> None:
+    async def test_returns_suggestion_when_llm_disagrees(self, client: AsyncClient) -> None:
         import json
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services.llm_suggestion_service import clear_cache
+        from sova.llm.models import LLMResult
 
         clear_cache()
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
         content = json.dumps({"action_id": "integrate", "reasoning": "CI green and approved"})
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"content": [{"text": content}]}
+        mock_result = LLMResult(text=content, model="claude-haiku-4-5-20251001")
 
         body = {
             "deterministic_state": "pr_sova_pending",
             "deterministic_action_id": "review_pr",
             "pr_computed_state": "approved_ci_green",
         }
-        with patch("httpx.AsyncClient") as mock_cls:
-            mock_http = AsyncMock()
-            mock_cls.return_value.__aenter__.return_value = mock_http
-            mock_http.post.return_value = mock_resp
+        with patch(
+            "sova.dashboard.services.llm_suggestion_service.invoke",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
             resp = await client.post("/api/prs/378/suggestion", json=body)
 
         assert resp.status_code == 200

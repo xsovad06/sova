@@ -79,13 +79,13 @@ async def get_integration_gates(pr_number: int) -> dict:
     "/{pr_number}/suggestion",
     responses={
         200: {"description": "LLM suggestion (may agree or disagree with deterministic)"},
-        204: {"description": "No suggestion available (no API key or LLM error)"},
+        204: {"description": "No suggestion available (LLM provider unavailable or error)"},
     },
 )
 async def get_pr_action_suggestion(pr_number: int, body: PRSuggestionRequest) -> dict:
     """Get the LLM's suggested next action for a PR.
 
-    Returns 204 when ANTHROPIC_API_KEY is not set or the LLM call fails.
+    Returns 204 when the LLM provider is unavailable or the call fails.
     When 200, the response always includes a 'disagrees' boolean. The UI should
     only render the suggestion widget when disagrees=True.
     """
