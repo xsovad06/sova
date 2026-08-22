@@ -42,12 +42,14 @@ sova/
     scheduler/                     # Watch loop, parallel executor, server daemon
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
-      routers/                     # 28 API routers (overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, failure_analysis)
-      services/                    # 40 services (run, cost, memory, control, feed, handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, output, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, failure_analysis)
+      routers/                     # 28 API routers (overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp)
+      services/                    # 40 services (run, cost, memory, control, feed, handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, output, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     a2a/                           # A2A (Agent-to-Agent) protocol: agent card generation, task state mapping
-    mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)
+    mcp/                           # MCP stdio server (provider-agnostic agent tools via Model Context Protocol)
+    dashboard/routers/mcp.py       # MCP HTTP endpoint for agent self-inspection (read-only runtime queries)
+    dashboard/services/mcp_service.py  # MCP token generation/validation and tool handlers
     awareness/                     # Awareness subsystem (AwarenessProvider ABC, AwarenessItem, ItemCategory, provider registry, BriefingService aggregation engine, rendering models)
     oversight/                     # Oversight agent: background daemon, operations persona (user-maintained LLM guidance)
     supervisor/                    # Supervisor-level services (TaskProgressionEngine, CodeRabbit quota, task dependency graph)
@@ -67,7 +69,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 13161 at last count)
+  tests/                           # pytest suite (3200+ tests, 6706 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)

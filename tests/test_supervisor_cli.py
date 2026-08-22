@@ -76,7 +76,13 @@ class TestSupervisorStatusCommand:
     @patch(_PATCH_LOAD_CONFIG)
     def test_status_enabled_shows_config(self, mock_config, mock_asyncio) -> None:
         mock_config.return_value = _supervisor_config(enabled=True)
-        mock_asyncio.run.return_value = None
+
+        # Mock asyncio.run to properly close the coroutine instead of leaving it pending
+        def run_and_close(coro):
+            coro.close()
+            return None
+
+        mock_asyncio.run.side_effect = run_and_close
         result = runner.invoke(supervisor_app, ["status"])
         assert result.exit_code == 0
         assert "60" in result.output
@@ -88,7 +94,13 @@ class TestSupervisorStatusCommand:
     def test_status_enabled_with_project_path(self, mock_config, mock_asyncio, tmp_path) -> None:
         (tmp_path / "sova.toml").write_text("[task_source]\ntype = 'github'\n")
         mock_config.return_value = _supervisor_config(enabled=True)
-        mock_asyncio.run.return_value = None
+
+        # Mock asyncio.run to properly close the coroutine instead of leaving it pending
+        def run_and_close(coro):
+            coro.close()
+            return None
+
+        mock_asyncio.run.side_effect = run_and_close
         result = runner.invoke(supervisor_app, ["status", "--project", str(tmp_path)])
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()

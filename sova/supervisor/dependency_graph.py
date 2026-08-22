@@ -88,14 +88,15 @@ def _get_spec_meta(issue_id: int, project_dir: Path | None = None) -> dict | Non
     """Return spec metadata for an issue, or None if no spec file exists.
 
     Reads status, complexity, and open-question count from the spec file at
-    ``.claude/specs/{issue_id}-*.md``.
+    ``.claude/specs/{issue_id}-*.md``.  Lazy-imports spec_service to avoid a
+    hard dependency on the dashboard layer at module load time.
     """
     if project_dir is None:
         return None
 
-    from sova.core.spec_utils import read_spec
+    from sova.dashboard.services import spec_service  # lazy import -- dashboard layer
 
-    spec = read_spec(str(issue_id), project_dir)
+    spec = spec_service.read_spec(str(issue_id), project_dir)
     if spec is None:
         return None
     return {

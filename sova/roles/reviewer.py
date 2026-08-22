@@ -12,8 +12,6 @@ class.
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
@@ -58,11 +56,6 @@ from sova.roles._review_comments import (
     _severity_label,
     _sova_verdict_label_name,
     _verdict_label,
-)
-from sova.roles._reviewer_challenger import (
-    _apply_challenger_response,
-    _build_challenger_prompt,
-    _filter_diff_for_findings,
 )
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
@@ -154,9 +147,6 @@ class ReviewerRole(AgentRole):
             log.info("reviewer.addressed_findings_loaded", count=len(addressed))
 
         review = await self._run_review(ctx, task, diff, files, addressed_findings=addressed)
-
-        if ctx.config.review.challenger_enabled and review.findings:
-            review = await self._run_challenger_pass(ctx, review, diff)
 
         self._append_review_rationale(ctx, review)
 
@@ -457,49 +447,6 @@ class ReviewerRole(AgentRole):
                     result.summary = "LLM review unavailable -- manual review recommended"
 
         return result
-
-    async def _run_challenger_pass(
-        self,
-        ctx: ExecutionContext,
-        review: ReviewResult,
-        diff: str,
-    ) -> ReviewResult:
-        """Verify findings via a second LLM call, removing weak or unsupported ones."""
-        budget_remaining = ctx.config.agent.max_budget - ctx.cost_usd
-        if budget_remaining <= Decimal(0):
-            log.warning("reviewer.challenger_budget_skip", budget_remaining=str(budget_remaining))
-            return review
-
-        filtered_diff = _filter_diff_for_findings(diff, review.findings)
-        prompt = _build_challenger_prompt(review.findings, filtered_diff)
-        model = ctx.config.review.challenger_model or "sonnet"
-
-        try:
-            llm_result = await invoke(
-                prompt,
-                model=model,
-                cwd=ctx.working_dir,
-                max_budget_usd=budget_remaining,
-            )
-            ctx.add_cost(llm_result.cost_usd)
-            review.total_cost += llm_result.cost_usd
-            adjudicated = _apply_challenger_response(llm_result.text, review.findings)
-        except Exception:
-            log.warning("reviewer.challenger_llm_failed", exc_info=True)
-            return review
-
-        original_count = len(review.findings)
-        review.findings = adjudicated
-
-        log.info(
-            "reviewer.challenger_complete",
-            original=original_count,
-            surviving=len(adjudicated),
-            removed=original_count - len(adjudicated),
-            cost=str(llm_result.cost_usd),
-        )
-
-        return review
 
     def _load_spec_sections(self, ctx: ExecutionContext) -> dict[str, str] | None:
         """Load spec sections for intent-anchored review. Returns None if no spec exists."""

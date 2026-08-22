@@ -1042,16 +1042,22 @@ async def test_discover_edges_batch_boundaries() -> None:
     from sova.knowledge.memory import store
 
     batch1_ids = []
+    # Create batch 1 with small groups of similar memories (not all similar to each other)
+    # This prevents creating thousands of edges which would timeout
     for i in range(_DISCOVER_BATCH_SIZE):
-        # All batch-1 memories are very similar to each other
-        emb = [1.0 - i * 0.0001, i * 0.0001, 0.0]
+        # Group every 20 memories together (5 groups of 20)
+        # Each group is similar within itself but dissimilar to other groups
+        group = i // 20
+        offset = i % 20
+        # Base embedding shifts per group, small variations within group
+        emb = [1.0 - group * 0.2 - offset * 0.001, group * 0.2 + offset * 0.001, 0.0]
         m = await store(category="batch_test", title=f"B1_{i}", content=f"B1_{i}", tags=[], embedding=emb)
         batch1_ids.append(m.id)
 
     # Add a few memories in a second batch that are dissimilar to batch 1
     batch2_ids = []
     for i in range(5):
-        emb = [0.0, 1.0 - i * 0.001, i * 0.001]
+        emb = [0.0, 0.0, 1.0 - i * 0.001]
         m = await store(category="batch_test", title=f"B2_{i}", content=f"B2_{i}", tags=[], embedding=emb)
         batch2_ids.append(m.id)
 

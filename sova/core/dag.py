@@ -22,7 +22,17 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dag")
 
-CommandDispatcher = Callable[..., Awaitable[Any]]
+# Lazy import cache to avoid circular import (dashboard -> core)
+_start_command_fn: Callable[..., Awaitable[Any]] | None = None
+
+
+def _get_start_command() -> Callable[..., Awaitable[Any]]:
+    global _start_command_fn
+    if _start_command_fn is None:
+        from sova.dashboard.services.agent_lifecycle import start_command
+
+        _start_command_fn = start_command
+    return _start_command_fn
 
 
 @dataclass
@@ -52,18 +62,10 @@ class DAGResult:
 class DAGExecutor:
     """Execute a workflow DAG definition."""
 
-    def __init__(
-        self,
-        definition: WorkflowDefinition,
-        ctx: ExecutionContext,
-        command_dispatcher: CommandDispatcher,
-    ) -> None:
-        if command_dispatcher is None:
-            raise ValueError("command_dispatcher is required and cannot be None")
+    def __init__(self, definition: WorkflowDefinition, ctx: ExecutionContext) -> None:
         self.definition = definition
         self.ctx = ctx
         self.graph = definition.graph_json
-        self._command_dispatcher = command_dispatcher
 
         # Pre-build incoming edge index for O(1) lookup in _should_execute
         self._incoming: dict[str, list[dict]] = {}
@@ -126,7 +128,7 @@ class DAGExecutor:
         start_dt = datetime.now(timezone.utc)
 
         try:
-            result = await self._command_dispatcher(
+            result = await _get_start_command()(
                 command=command,
                 args=node.get("params"),
             )

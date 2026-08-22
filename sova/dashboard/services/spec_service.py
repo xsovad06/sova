@@ -20,7 +20,6 @@ from sova.core.spec_utils import (
 from sova.utils.logging import get_logger
 
 # Re-export core functions for backward compatibility.
-# Do NOT remove these; external modules depend on them.
 __all__ = [
     "_extract_open_questions",
     "_parse_spec",

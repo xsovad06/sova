@@ -145,6 +145,9 @@ async def build_snapshot(*, timeout: float = _DEFAULT_TIMEOUT) -> OversightSnaps
         )
         snapshot.partial = True
 
+    # Agent slot summary: total_max_slots from FleetService config; active_agents from
+    # per-project DB running counts (accurate) rather than FleetInsights.total_runs
+    # (which is the all-time historical total, not current active agents).
     fleet_slots = await _collect_fleet_slots(registry)
     active_agents = sum(p.runs.running for p in snapshot.projects)
     snapshot.agent_slots = AgentSlotSummary(
