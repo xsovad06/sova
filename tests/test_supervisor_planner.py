@@ -2,36 +2,21 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 from sova.config.models import ProjectConfig, SupervisorConfig
 from sova.dashboard.services.pr_service import list_open_prs_with_state
 from sova.supervisor.planner import (
+    _MODEL,
     _VALID_ACTIONS,
     DeferredAction,
     PlannedAction,
     PlanResult,
     SupervisorPlanner,
 )
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _reset_warned_flag():
-    """Reset the module-level warning flag before each test."""
-    import sova.supervisor.planner as mod
-
-    mod._warned_no_key = False
-    yield
-    mod._warned_no_key = False
 
 
 @pytest.fixture
@@ -120,29 +105,11 @@ class TestValidActions:
 # ---------------------------------------------------------------------------
 
 
-class TestPlanNoApiKey:
-    async def test_returns_none_without_api_key(self, planner: SupervisorPlanner, mock_adapter: AsyncMock) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("ANTHROPIC_API_KEY", None)
-            result = await planner.plan(mock_adapter)
-        assert result is None
-
-    async def test_logs_once_without_api_key(self, planner: SupervisorPlanner, mock_adapter: AsyncMock) -> None:
-        import sova.supervisor.planner as mod
-
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("ANTHROPIC_API_KEY", None)
-            await planner.plan(mock_adapter)
-            assert mod._warned_no_key is True
-            await planner.plan(mock_adapter)
-
-
 class TestPlanLLMCall:
     async def test_successful_plan(
         self, planner: SupervisorPlanner, mock_adapter: AsyncMock, valid_llm_response: dict
     ) -> None:
         with (
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}),
             patch.object(planner, "_assemble_context", new_callable=AsyncMock, return_value="context"),
             patch.object(planner, "_load_persona", return_value="persona"),
             patch.object(planner, "_call_llm", new_callable=AsyncMock, return_value=valid_llm_response),
@@ -160,7 +127,6 @@ class TestPlanLLMCall:
 
     async def test_llm_timeout_returns_none(self, planner: SupervisorPlanner, mock_adapter: AsyncMock) -> None:
         with (
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}),
             patch.object(planner, "_assemble_context", new_callable=AsyncMock, return_value="context"),
             patch.object(planner, "_load_persona", return_value="persona"),
             patch.object(planner, "_call_llm", new_callable=AsyncMock, return_value=None),
@@ -169,10 +135,7 @@ class TestPlanLLMCall:
         assert result is None
 
     async def test_exception_returns_none(self, planner: SupervisorPlanner, mock_adapter: AsyncMock) -> None:
-        with (
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}),
-            patch.object(planner, "_assemble_context", new_callable=AsyncMock, side_effect=RuntimeError("boom")),
-        ):
+        with patch.object(planner, "_assemble_context", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
             result = await planner.plan(mock_adapter)
         assert result is None
 
@@ -181,75 +144,40 @@ class TestPlanLLMCall:
     ) -> None:
         persona_with_braces = "Use {this} pattern and {{that}} pattern"
         with (
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}),
             patch.object(planner, "_assemble_context", new_callable=AsyncMock, return_value="context"),
             patch.object(planner, "_load_persona", return_value=persona_with_braces),
             patch.object(planner, "_call_llm", new_callable=AsyncMock, return_value=valid_llm_response) as mock_call,
         ):
             result = await planner.plan(mock_adapter)
         assert result is not None
-        system_prompt = mock_call.call_args[0][1]
+        system_prompt = mock_call.call_args[0][0]
         assert "{{this}}" in system_prompt
         assert "{{{{that}}}}" in system_prompt
 
 
 class TestCallLLM:
     async def test_successful_call(self, planner: SupervisorPlanner) -> None:
-        response_data = {
-            "content": [{"text": '{"reasoning": "test", "actions": [], "deferred": []}'}],
-        }
-        mock_response = MagicMock()
-        mock_response.json.return_value = response_data
-        mock_response.raise_for_status = MagicMock()
+        from sova.llm.models import LLMResult
 
-        with patch("sova.supervisor.planner.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await planner._call_llm("test-key", "system", "user")
+        mock_result = LLMResult(text='{"reasoning": "test", "actions": [], "deferred": []}', model=_MODEL)
+        with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result):
+            result = await planner._call_llm("system", "user")
 
         assert result == {"reasoning": "test", "actions": [], "deferred": []}
 
-    async def test_timeout_returns_none(self, planner: SupervisorPlanner) -> None:
-        with patch("sova.supervisor.planner.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
-            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await planner._call_llm("test-key", "system", "user")
-        assert result is None
-
-    async def test_http_error_returns_none(self, planner: SupervisorPlanner) -> None:
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_response.raise_for_status = MagicMock(
-            side_effect=httpx.HTTPStatusError("error", request=MagicMock(), response=mock_response)
-        )
-
-        with patch("sova.supervisor.planner.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await planner._call_llm("test-key", "system", "user")
+    async def test_provider_error_returns_none(self, planner: SupervisorPlanner) -> None:
+        with patch(
+            "sova.supervisor.planner.invoke", new_callable=AsyncMock, side_effect=RuntimeError("provider error")
+        ):
+            result = await planner._call_llm("system", "user")
         assert result is None
 
     async def test_json_parse_error_returns_none(self, planner: SupervisorPlanner) -> None:
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"content": [{"text": "not valid json"}]}
-        mock_response.raise_for_status = MagicMock()
+        from sova.llm.models import LLMResult
 
-        with patch("sova.supervisor.planner.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await planner._call_llm("test-key", "system", "user")
+        mock_result = LLMResult(text="not valid json", model=_MODEL)
+        with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result):
+            result = await planner._call_llm("system", "user")
         assert result is None
 
 
