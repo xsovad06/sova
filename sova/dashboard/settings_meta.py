@@ -35,6 +35,7 @@ GROUPS: dict[str, str] = {
     "external_reviews": "External Reviews",
     "security": "Security",
     "dashboard": "Dashboard",
+    "mcp": "MCP Endpoint",
     "integration": "Integration",
     "supervisor": "Supervisor",
     "agent_health": "Agent Health",
@@ -64,6 +65,7 @@ GROUP_ORDER: list[str] = [
     "external_reviews",
     "security",
     "dashboard",
+    "mcp",
     "integration",
     "supervisor",
     "agent_health",
@@ -325,19 +327,6 @@ _REGISTRY: list[SettingMeta] = [
     # -- Review --
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),
-    SettingMeta(
-        "review.challenger_enabled",
-        "Challenger pass",
-        "Run a second LLM call to verify, calibrate, and deduplicate findings before posting",
-        "review",
-        "boolean",
-    ),
-    SettingMeta(
-        "review.challenger_model",
-        "Challenger model",
-        "Model for the challenger pass (empty = same as review model, e.g. sonnet)",
-        "review",
-    ),
     SettingMeta(
         "review.panel.enabled",
         "Panel review",
@@ -799,6 +788,28 @@ _REGISTRY: list[SettingMeta] = [
         "Dashboard port",
         "TCP port the dashboard server listens on",
         "dashboard",
+        "number",
+    ),
+    # -- MCP --
+    SettingMeta(
+        "mcp.enabled",
+        "Enabled",
+        "Enable MCP (Model Context Protocol) endpoint for agent self-inspection",
+        "mcp",
+        "boolean",
+    ),
+    SettingMeta(
+        "mcp.token_secret",
+        "Token secret",
+        "HMAC secret for signing MCP tokens (auto-generated if empty)",
+        "mcp",
+        "secret",
+    ),
+    SettingMeta(
+        "mcp.token_expiry_hours",
+        "Token expiry (hours)",
+        "Hours before an MCP token expires (default 24)",
+        "mcp",
         "number",
     ),
     # -- Testing (in Development group) --
@@ -1442,13 +1453,6 @@ _REGISTRY: list[SettingMeta] = [
         "oversight.analysis_timeout_seconds",
         "Analysis timeout (sec)",
         "Timeout in seconds for the LLM analysis call (minimum 10)",
-        "oversight",
-        "number",
-    ),
-    SettingMeta(
-        "oversight.observation_timeout",
-        "Observation timeout (sec)",
-        "Timeout in seconds for the observation snapshot collection (minimum 5)",
         "oversight",
         "number",
     ),

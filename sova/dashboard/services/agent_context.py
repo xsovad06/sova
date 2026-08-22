@@ -289,6 +289,41 @@ async def _is_issue(number: str, project_dir: Path) -> bool:
         return True
 
 
+def _resolve_mcp_env(run_id: int, project_dir: Path) -> dict[str, str]:
+    """Generate MCP token and URL for the agent subprocess."""
+    from sova.config.loader import load_config
+    from sova.dashboard.services.mcp_service import generate_mcp_token, get_or_generate_secret
+
+    try:
+        cfg = load_config(project_dir)
+        if not cfg.mcp.enabled:
+            return {}
+
+        secret = get_or_generate_secret(project_dir)
+        token = generate_mcp_token(run_id, secret, cfg.mcp.token_expiry_hours)
+        url = f"http://127.0.0.1:{cfg.server.port}/mcp"
+
+        return {
+            "SOVA_MCP_TOKEN": token,
+            "SOVA_MCP_URL": url,
+        }
+    except Exception:
+        log.debug("mcp_env.resolve_failed", exc_info=True)
+        return {}
+
+
+def merge_mcp_env(gh_env: dict[str, str] | None, run_id: int, project_dir: Path) -> dict[str, str] | None:
+    """Merge MCP env vars into GH env."""
+    mcp_env = _resolve_mcp_env(run_id, project_dir)
+    if not mcp_env:
+        return gh_env
+
+    if gh_env:
+        gh_env.update(mcp_env)
+        return gh_env
+    return mcp_env
+
+
 async def _resolve_project_gh_env(project_dir: Path) -> dict[str, str] | None:
     """Resolve GH_TOKEN env for the project's configured github_user."""
     try:

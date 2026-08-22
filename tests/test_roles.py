@@ -1246,7 +1246,6 @@ class TestReviewerRole:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
-        ctx.config.review.challenger_enabled = False
 
         findings = [
             {
@@ -2976,7 +2975,6 @@ class TestReviewerLLMReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
-        ctx.config.review.challenger_enabled = False
 
         findings = [
             {
@@ -3073,7 +3071,6 @@ class TestReviewerLLMReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
-        ctx.config.review.challenger_enabled = False
 
         # Create a diff larger than DIFF_CHUNK_SIZE (100KB)
         large_diff = "diff --git a/a.py b/a.py\n" + ("+" + "x" * 200 + "\n") * 600
@@ -4034,7 +4031,7 @@ class TestCustomRole:
             input_states=["researched"],
             output_state="in_review",
         )
-        role = CustomRole(defn, command_dispatcher=AsyncMock())
+        role = CustomRole(defn)
         assert role.name == "my-role"
         assert role.description == "A custom role"
         assert TaskState.RESEARCHED in role.allowed_input_states
@@ -4052,7 +4049,7 @@ class TestCustomRole:
             input_states=[],
             output_state="",
         )
-        role = CustomRole(defn, command_dispatcher=AsyncMock())
+        role = CustomRole(defn)
         task = Task(id="1", title="Test", body="", state=TaskState.RESEARCHED)
         assessment = await role.assess_task(task)
         assert assessment.suitability == "ready"
@@ -4070,7 +4067,7 @@ class TestCustomRole:
             output_state="in_review",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn, command_dispatcher=AsyncMock())
+        role = CustomRole(defn)
         ctx = _make_ctx(state=TaskState.BACKLOG, force=False)
         result = await role.execute(ctx)
         assert not result.success
@@ -4093,7 +4090,7 @@ class TestCustomRole:
             output_state="in_review",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn, command_dispatcher=AsyncMock())
+        role = CustomRole(defn)
         ctx = _make_ctx(state=TaskState.RESEARCHED)
 
         mock_result = DAGResult(success=True, summary="DAG completed: 1 nodes executed", total_cost_usd=Decimal("0.5"))
@@ -4120,7 +4117,7 @@ class TestCustomRole:
             output_state="in_review",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn, command_dispatcher=AsyncMock())
+        role = CustomRole(defn)
         ctx = _make_ctx(state=TaskState.RESEARCHED)
 
         mock_result = DAGResult(success=False, summary="DAG failed at node n1", error="develop step crashed")
@@ -4143,7 +4140,7 @@ class TestCustomRole:
             output_state="",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn, command_dispatcher=AsyncMock())
+        role = CustomRole(defn)
         task = Task(id="1", title="Test", state=TaskState.BACKLOG)
         assert role.validate_preconditions(task)
 
@@ -4160,7 +4157,7 @@ class TestCustomRole:
             output_state="",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn, command_dispatcher=AsyncMock())
+        role = CustomRole(defn)
         assert role.output_state is None
 
 

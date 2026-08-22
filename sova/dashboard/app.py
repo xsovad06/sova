@@ -36,12 +36,12 @@ from sova.dashboard.routers import (
     control,
     costs,
     dependencies,
-    failure_analysis,
     feed,
     fleet_insights,
     handoff,
     lifecycle,
     logs,
+    mcp,
     memory,
     oversight,
     overview,
@@ -88,10 +88,10 @@ class UninstallRequest(BaseModel):
 BASE = Path(__file__).parent
 
 _AGENTS_URL = "/agents"
-_SWEEP_INTERVAL_SECONDS = 5
-_RECOVERY_INTERVAL_SECONDS = 300  # 5 minutes
+_SWEEP_INTERVAL = 5  # seconds
+_RECOVERY_INTERVAL = 300  # 5 minutes
 _SWEEP_WRITE_RETRY_ATTEMPTS = 3
-_SWEEP_WRITE_RETRY_DELAY = 1.0  # seconds between retry attempts on SQLite write lock
+_SWEEP_WRITE_RETRY_DELAY = 1.0
 
 
 def _try_load_config(project_path: Path) -> ProjectConfig | None:
@@ -257,7 +257,7 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
                             run.status = rec["final_status"]
                             run.error_message = rec["error_msg"]
                             run.ended_at = now
-                break  # write committed successfully
+                break
             except OperationalError as exc:
                 if _attempt < _SWEEP_WRITE_RETRY_ATTEMPTS - 1 and "database is locked" in str(exc).lower():
                     log.debug("sweep.write_locked_retry", attempt=_attempt + 1, directory=str(d))
@@ -269,7 +269,7 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
 async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:
     """Periodically check for dead agent processes and mark their TaskRuns."""
     while True:
-        await asyncio.sleep(_SWEEP_INTERVAL_SECONDS)
+        await asyncio.sleep(_SWEEP_INTERVAL)
         try:
             await _liveness_sweep_once(project_dir, is_multi=is_multi)
         except asyncio.CancelledError:
@@ -286,7 +286,7 @@ async def _periodic_recovery_loop(project_dir: Path | None, is_multi: bool) -> N
     to decide between "done" and "interrupted" outcomes.
     """
     while True:
-        await asyncio.sleep(_RECOVERY_INTERVAL_SECONDS)
+        await asyncio.sleep(_RECOVERY_INTERVAL)
         try:
             for d in _collect_sweep_dirs(project_dir, is_multi=is_multi):
                 await recover_stale_runs(d)
@@ -1011,9 +1011,9 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(resources.router, prefix=prefix)
     app.include_router(supervisor.router, prefix=prefix)
     app.include_router(oversight.router, prefix=prefix)
+    app.include_router(mcp.router, prefix=prefix)
     app.include_router(feed.router, prefix=prefix)
     app.include_router(fleet_insights.router, prefix=prefix)
-    app.include_router(failure_analysis.router, prefix=prefix)
 
 
 def _register_telemetry_router(app: FastAPI) -> None:

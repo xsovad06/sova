@@ -74,6 +74,7 @@ _NESTED_SECTIONS = (
     "egress",
     "security",
     "dashboard",
+    "mcp",
     "testing",
     "output",
     "monitoring",

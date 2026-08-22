@@ -105,9 +105,7 @@ async def get_role_async(name: str, *, config: RolesConfig | None = None) -> Age
                 result = await session.execute(stmt)
                 definition = result.scalar_one_or_none()
                 if definition is not None:
-                    from sova.dashboard.services.agent_lifecycle import start_command
-
-                    return CustomRole(definition, command_dispatcher=start_command)
+                    return CustomRole(definition)
     except Exception:
         log.warning("dispatcher.custom_lookup_failed", name=name, exc_info=True)
         raise

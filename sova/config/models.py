@@ -9,8 +9,6 @@ from typing import ClassVar, Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from sova.const import DEFAULT_SERVER_PORT
-
 _VALID_TASK_STATES = frozenset(
     {
         "backlog",
@@ -155,8 +153,6 @@ class ReviewConfig(BaseSettings):
 
     enabled: bool = True
     max_rounds: int = Field(2, gt=0)
-    challenger_enabled: bool = True
-    challenger_model: str = ""
     panel: ReviewPanelConfig = Field(default_factory=ReviewPanelConfig)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_REVIEW_")
@@ -246,7 +242,7 @@ class ServerConfig(BaseSettings):
     """Server daemon configuration."""
 
     host: str = "127.0.0.1"
-    port: int = DEFAULT_SERVER_PORT
+    port: int = 8111
     pid_file: str = ""
     scheduler_enabled: bool = True
     log_max_bytes: int = 10_485_760
@@ -374,9 +370,19 @@ class DashboardConfig(BaseSettings):
     kanban_columns: Literal["step_based", "role_based"] = "step_based"
     confirm_model: Literal["complex_only", "always", "never"] = "complex_only"
     gc_on_startup: bool = False
-    port: int = DEFAULT_SERVER_PORT
+    port: int = 8111
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
+
+
+class MCPConfig(BaseSettings):
+    """MCP (Model Context Protocol) endpoint configuration."""
+
+    enabled: bool = True
+    token_secret: str = ""
+    token_expiry_hours: int = Field(24, gt=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_MCP_")
 
 
 class OutputConfig(BaseSettings):
@@ -602,7 +608,6 @@ class OversightConfig(BaseSettings):
     analysis_model: str = "sonnet"
     dedup_window_days: int = Field(14, ge=1)
     analysis_timeout_seconds: int = Field(120, ge=10)
-    observation_timeout: float = Field(20.0, ge=5.0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_OVERSIGHT_")
 
@@ -705,6 +710,7 @@ class ProjectConfig(BaseSettings):
     egress: EgressConfig = Field(default_factory=EgressConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     testing: TestingConfig = Field(default_factory=TestingConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)

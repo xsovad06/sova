@@ -627,6 +627,10 @@ async def start_agent(
 
         effective_role = role or "developer"
         gh_env = await _resolve_project_gh_env(project_dir)
+
+        from sova.dashboard.services.agent_context import merge_mcp_env
+
+        gh_env = merge_mcp_env(gh_env, run_id, project_dir)
         output_dir = project_dir / ".claude" / "agent-output"
 
         try:
@@ -817,12 +821,17 @@ async def start_command(
         fallback_model = _resolve_config_fallback_model(project_dir)
 
         gh_env = await _resolve_project_gh_env(project_dir)
-        output_dir = project_dir / ".claude" / "agent-output"
 
+        # Create TaskRun first to get run_id for MCP token
         role = f"command:{command}"
         pre_run_id = await _create_task_run(issue, role, project_dir, pr_number=pr_number)
         if pre_run_id is None:
             return {"error": "Failed to create task run record"}
+
+        from sova.dashboard.services.agent_context import merge_mcp_env
+
+        gh_env = merge_mcp_env(gh_env, pre_run_id, project_dir)
+        output_dir = project_dir / ".claude" / "agent-output"
 
         try:
             output_dir.mkdir(parents=True, exist_ok=True)

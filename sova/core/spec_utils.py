@@ -112,12 +112,15 @@ def _extract_open_questions(text: str) -> list[dict]:
         cleaned = re.sub(r"^[-*\d.]+\s*", "", line)
         if not cleaned:
             continue
+        # Detect Q: ... A: ... format written by write_answers(); non-greedy first
+        # group ensures we split on the FIRST " A: " occurrence, so answers
+        # containing " A: " are preserved.
         answer = ""
         if cleaned.startswith("Q:"):
-            a_idx = cleaned.find(" A: ")
-            if a_idx != -1:
-                answer = cleaned[a_idx + 4 :].strip()
-                cleaned = cleaned[2:a_idx].strip()
+            qa_match = re.match(r"^Q:\s*(.+?)\s+A:\s*(.+)$", cleaned)
+            if qa_match:
+                cleaned = qa_match.group(1).strip()
+                answer = qa_match.group(2).strip()
             else:
                 cleaned = cleaned[2:].strip()
         questions.append({"id": question_id, "text": cleaned, "answer": answer})

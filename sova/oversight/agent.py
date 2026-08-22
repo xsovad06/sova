@@ -263,7 +263,7 @@ class OversightAgent:
         from sova.oversight.observation import build_snapshot
 
         try:
-            snapshot = await build_snapshot(timeout=self._config.observation_timeout)
+            snapshot = await build_snapshot()
             return snapshot.to_dict()
         except Exception:
             log.warning("oversight.observe_failed", exc_info=True)

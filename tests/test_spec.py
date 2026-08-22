@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -1963,104 +1963,3 @@ class TestSpecRouterTaskRunTransition:
             result = await approve_spec("42")
 
         assert result["status"] == "approved"
-
-
-class TestExtractOpenQuestions:
-    """Tests for _extract_open_questions in spec_utils (Q/A parsing)."""
-
-    def test_qa_format_splits_on_first_a_marker(self) -> None:
-        from sova.core.spec_utils import _extract_open_questions
-
-        text = "## Open Questions\n- Q: What database? A: PostgreSQL\n"
-        questions = _extract_open_questions(text)
-        assert len(questions) == 1
-        assert questions[0]["text"] == "What database?"
-        assert questions[0]["answer"] == "PostgreSQL"
-
-    def test_qa_answer_containing_a_colon(self) -> None:
-        from sova.core.spec_utils import _extract_open_questions
-
-        text = "## Open Questions\n- Q: How? A: Use A: B protocol\n"
-        questions = _extract_open_questions(text)
-        assert len(questions) == 1
-        assert questions[0]["text"] == "How?"
-        assert questions[0]["answer"] == "Use A: B protocol"
-
-    def test_q_without_answer(self) -> None:
-        from sova.core.spec_utils import _extract_open_questions
-
-        text = "## Open Questions\n- Q: Need clarification\n"
-        questions = _extract_open_questions(text)
-        assert len(questions) == 1
-        assert questions[0]["text"] == "Need clarification"
-        assert questions[0]["answer"] == ""
-
-    def test_plain_question_line(self) -> None:
-        from sova.core.spec_utils import _extract_open_questions
-
-        text = "## Open Questions\n- Should we use REST?\n"
-        questions = _extract_open_questions(text)
-        assert len(questions) == 1
-        assert questions[0]["text"] == "Should we use REST?"
-        assert questions[0]["answer"] == ""
-
-    def test_empty_section(self) -> None:
-        from sova.core.spec_utils import _extract_open_questions
-
-        text = "## Open Questions\nNone\n"
-        questions = _extract_open_questions(text)
-        assert len(questions) == 0
-
-    def test_omit_prefix(self) -> None:
-        from sova.core.spec_utils import _extract_open_questions
-
-        text = "## Open Questions\n(omit if none)\n"
-        questions = _extract_open_questions(text)
-        assert len(questions) == 0
-
-    def test_parenthetical_lines_skipped(self) -> None:
-        from sova.core.spec_utils import _extract_open_questions
-
-        text = "## Open Questions\n(context note)\n- Real question?\n"
-        questions = _extract_open_questions(text)
-        assert len(questions) == 1
-        assert questions[0]["text"] == "Real question?"
-
-    def test_sequential_ids(self) -> None:
-        from sova.core.spec_utils import _extract_open_questions
-
-        text = "## Open Questions\n- First?\n- Q: Second A: yes\n- Third?\n"
-        questions = _extract_open_questions(text)
-        assert [q["id"] for q in questions] == [0, 1, 2]
-
-
-class TestTryAutoApproveMethod:
-    """Tests for SpecStep._try_auto_approve extracted method."""
-
-    @pytest.mark.asyncio
-    async def test_returns_none_for_complex_spec(self, tmp_path: Path) -> None:
-        from sova.core.steps.spec import SpecStep
-
-        spec_path = tmp_path / "spec.md"
-        spec_path.write_text("**Complexity**: complex\n**Status**: draft\n")
-
-        step = SpecStep()
-        ctx = MagicMock()
-        ctx.issue_number = "1"
-        result = await step._try_auto_approve(ctx, spec_path, spec_path.read_text(), "complex")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_fails_when_no_status_line(self, tmp_path: Path) -> None:
-        from sova.core.steps.spec import SpecStep
-
-        spec_path = tmp_path / "spec.md"
-        spec_path.write_text("No status here\n")
-
-        step = SpecStep()
-        ctx = MagicMock()
-        ctx.issue_number = "1"
-        result = await step._try_auto_approve(ctx, spec_path, spec_path.read_text(), "simple")
-        assert result is not None
-        assert not result.success
-        assert "status line not found" in result.summary

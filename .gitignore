@@ -45,10 +45,10 @@ htmlcov/
 .claude/sova.db-wal
 .claude/sova.db-shm
 .claude/benchmark/.current_issue
-.claude/runs/
 .claude/worktrees/
 .claude/assets/
 .claude/specs/
+.claude/mcp_secret
 .agent-summary.md
 
 # Environment secrets

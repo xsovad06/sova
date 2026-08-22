@@ -10,8 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 import sova
-from sova.cli.commands.admin import cleanup, costs, status, verify_run
-from sova.cli.commands.analyze_failures import app as analyze_failures_app
+from sova.cli.commands.admin import cleanup, costs, status
 from sova.cli.commands.commands import app as commands_app
 from sova.cli.commands.doctor import doctor
 from sova.cli.commands.harden import harden
@@ -24,7 +23,6 @@ from sova.cli.commands.server import app as server_app
 from sova.cli.commands.supervisor import app as supervisor_app
 from sova.cli.commands.triage import triage
 from sova.config.loader import load_config
-from sova.const import DEFAULT_SERVER_PORT
 
 app = typer.Typer(
     name="sova",
@@ -57,7 +55,6 @@ app.command(name="learn-from-pr")(learn_from_pr)
 app.command(name="status")(status)
 app.command(name="costs")(costs)
 app.command(name="cleanup")(cleanup)
-app.command(name="verify-run")(verify_run)
 app.command(name="doctor")(doctor)
 
 # MCP (subcommand group)
@@ -74,9 +71,6 @@ app.add_typer(server_app)
 
 # Supervisor (subcommand group)
 app.add_typer(supervisor_app)
-
-# Failure analysis
-app.add_typer(analyze_failures_app, name="analyze-failures")
 
 console = Console(stderr=True)
 
@@ -158,7 +152,7 @@ def init_db_cmd(
 def dashboard(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     host: Annotated[str, typer.Option("--host", help="Host to bind to.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = DEFAULT_SERVER_PORT,
+    port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = 8111,
     reload: Annotated[bool, typer.Option("--reload", help="Auto-reload on source changes.")] = False,
 ) -> None:
     """Start the SOVA dashboard web UI."""
