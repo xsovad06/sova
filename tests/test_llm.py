@@ -1246,6 +1246,20 @@ class TestLLMProvider:
         args = _build_args("prompt", model="opus")
         assert "--fallback-model" not in args
 
+    def test_build_args_includes_system_prompt(self) -> None:
+        from sova.llm.providers.claude_code import _build_args
+
+        args = _build_args("prompt", system_prompt="You are a planner.")
+        assert "--system-prompt" in args
+        sp_idx = args.index("--system-prompt")
+        assert args[sp_idx + 1] == "You are a planner."
+
+    def test_build_args_omits_system_prompt_when_empty(self) -> None:
+        from sova.llm.providers.claude_code import _build_args
+
+        args = _build_args("prompt")
+        assert "--system-prompt" not in args
+
     async def test_invoke_command_delegates_to_invoke(self) -> None:
         from sova.llm.provider import LLMProvider
 

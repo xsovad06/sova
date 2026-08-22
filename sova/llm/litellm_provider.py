@@ -83,13 +83,22 @@ class LiteLLMProvider(LLMProvider):
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
         timeout: float | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResult:
         target_model = model or self.model
         effective_timeout = timeout if timeout is not None else self.timeout
         start = time.monotonic()
 
         try:
-            return await self._call(target_model, prompt, timeout=effective_timeout, start=start)
+            return await self._call(
+                target_model,
+                prompt,
+                timeout=effective_timeout,
+                start=start,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+            )
         except Exception as exc:
             if not self.fallback_model or target_model == self.fallback_model:
                 raise
@@ -101,7 +110,14 @@ class LiteLLMProvider(LLMProvider):
                 reason=reason,
             )
             start = time.monotonic()
-            return await self._call(self.fallback_model, prompt, timeout=effective_timeout, start=start)
+            return await self._call(
+                self.fallback_model,
+                prompt,
+                timeout=effective_timeout,
+                start=start,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+            )
 
     async def invoke_streaming(
         self,
@@ -211,9 +227,11 @@ class LiteLLMProvider(LLMProvider):
         *,
         timeout: float | None,
         start: float,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResult:
-        messages = _build_messages(prompt)
-        kwargs = self._base_kwargs(model)
+        messages = _build_messages(prompt, system_prompt=system_prompt)
+        kwargs = self._base_kwargs(model, max_tokens=max_tokens)
         if timeout:
             kwargs["timeout"] = timeout
 
@@ -242,18 +260,22 @@ class LiteLLMProvider(LLMProvider):
             stop_reason=stop if stop != "stop" else "end_turn",
         )
 
-    def _base_kwargs(self, model: str) -> dict:
+    def _base_kwargs(self, model: str, *, max_tokens: int | None = None) -> dict:
         kwargs: dict = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens if max_tokens is not None else 4096,
         }
         if self.api_base:
             kwargs["api_base"] = self.api_base
         return kwargs
 
 
-def _build_messages(prompt: str) -> list[dict[str, str]]:
-    return [{"role": "user", "content": prompt}]
+def _build_messages(prompt: str, *, system_prompt: str | None = None) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    return messages
 
 
 def _get_cost(

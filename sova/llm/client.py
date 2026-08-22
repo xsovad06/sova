@@ -58,6 +58,8 @@ async def invoke(
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
     timeout: float | None = None,
+    system_prompt: str | None = None,
+    max_tokens: int | None = None,
 ) -> LLMResult:
     """Run a prompt via the active LLM provider.
 
@@ -66,6 +68,8 @@ async def invoke(
             When set and *model* is ``None``, looks up ``llm.routing[task_type]``
             to select a model. Ignored when *model* is explicitly provided.
             Requires ``provider = "litellm"`` or ``"hybrid"``.
+        system_prompt: Optional system prompt for the LLM call.
+        max_tokens: Optional max output tokens (provider-dependent).
     """
     from sova.llm.guard import guard_prompt
 
@@ -80,6 +84,8 @@ async def invoke(
         cwd=cwd,
         max_budget_usd=max_budget_usd,
         timeout=resolved_timeout,
+        system_prompt=system_prompt,
+        max_tokens=max_tokens,
     )
 
 
