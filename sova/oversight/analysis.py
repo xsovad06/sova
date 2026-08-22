@@ -14,7 +14,9 @@ wake cycle.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -64,6 +66,21 @@ If there are no findings, return an empty array: []
 """
 
 _MAX_SNAPSHOT_CHARS = 50_000
+
+
+def compute_fingerprint(title: str, scope: str, project_slug: str) -> str:
+    """Compute a content-based fingerprint for deduplication.
+
+    Normalizes numbers, percentages, and issue references so findings about
+    the same topic with different metrics (e.g., "CPU at 85%" vs "CPU at 92%")
+    are recognized as duplicates.
+    """
+    normalized = re.sub(r"#\d+", "#N", title.lower().strip())
+    normalized = re.sub(r"\d+\.?\d*%", "N%", normalized)
+    normalized = re.sub(r"(?<!\S)\d{2,}(?=\s|$)", "N", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    key = f"{scope}:{project_slug}:{normalized}"
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
 def _to_dict(snapshot: Any) -> dict:
@@ -162,29 +179,36 @@ def _finding_from_dict(d: dict, run_id: str) -> OversightFinding | None:
         log.debug("oversight.analysis.invalid_scope", scope=scope_str, fallback="project")
         scope_str = "project"
 
+    title_str = str(title)[:300]
+    slug = str(d.get("project_slug", ""))[:100]
+    fp = compute_fingerprint(title_str, scope_str, slug)
+
     return OversightFinding(
         run_id=run_id,
-        title=str(title)[:300],
+        title=title_str,
         scope=scope_str,
         severity=severity,
         description=str(d.get("description", "")),
         recommendation=str(d.get("recommendation", "")),
         confidence=confidence,
-        project_slug=str(d.get("project_slug", ""))[:100],
+        project_slug=slug,
         dismissed=False,
         github_issue_number=None,
+        fingerprint=fp,
     )
 
 
-async def _load_recent_titles(session: Any, dedup_window_days: int = _DEFAULT_DEDUP_WINDOW_DAYS) -> set[str]:
-    """Load finding titles from the last N days.
+async def _load_recent_fingerprints(session: Any, dedup_window_days: int = _DEFAULT_DEDUP_WINDOW_DAYS) -> set[str]:
+    """Load finding fingerprints from the last N days.
 
     Limits to _MAX_DEDUP_TITLES most recent to prevent unbounded memory usage.
+    Uses fingerprints for content-based deduplication instead of exact titles.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=dedup_window_days)
     stmt = (
-        select(OversightFinding.title)
+        select(OversightFinding.fingerprint)
         .where(OversightFinding.created_at >= cutoff)
+        .where(OversightFinding.fingerprint.isnot(None))
         .order_by(OversightFinding.created_at.desc())
         .limit(_MAX_DEDUP_TITLES)
     )
@@ -249,15 +273,15 @@ async def analyze_snapshot(
             log.error("oversight.analysis.parse_failed", run_id=run_id, error=str(exc))
             return ([], "partial: parse failed")
 
-        # Deduplicate against recent history
+        # Deduplicate against recent history using fingerprints
         from sova.db.session import get_session
 
         try:
             async with await get_session() as session:
-                recent_titles = await _load_recent_titles(session, dedup_window_days)
+                recent_fps = await _load_recent_fingerprints(session, dedup_window_days)
         except Exception:
             log.warning("oversight.analysis.dedup_query_failed", run_id=run_id, exc_info=True)
-            recent_titles = set()
+            recent_fps = set()
 
         # Build findings, skipping duplicates and invalid entries
         new_findings: list[OversightFinding] = []
@@ -267,11 +291,12 @@ async def analyze_snapshot(
             finding = _finding_from_dict(entry, run_id)
             if finding is None:
                 continue
-            if finding.title in recent_titles:
-                log.debug("oversight.analysis.dedup_skip", title=finding.title)
+            if finding.fingerprint and finding.fingerprint in recent_fps:
+                log.debug("oversight.analysis.dedup_skip", title=finding.title, fingerprint=finding.fingerprint)
                 continue
             new_findings.append(finding)
-            recent_titles.add(finding.title)
+            if finding.fingerprint:
+                recent_fps.add(finding.fingerprint)
 
         persisted = await _persist_findings(new_findings, run_id)
 
@@ -286,7 +311,7 @@ async def analyze_snapshot(
         )
 
         if new_findings and persisted == 0:
-            return (new_findings, "partial: persistence failed")
+            return ([], "partial: persist failed, suppressing to prevent dedup gap")
 
         return (new_findings, None)
 

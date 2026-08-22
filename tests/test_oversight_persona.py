@@ -186,7 +186,7 @@ class TestOversightAgentPersona:
         persona_path = tmp_path / "persona.md"
         persona_path.write_text("# Test Persona", encoding="utf-8")
 
-        cfg = OversightConfig(wake_interval_minutes=1, persona_path=str(persona_path))
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True, persona_path=str(persona_path))
         agent = OversightAgent(config=cfg)
 
         recorded: list[dict] = []
@@ -201,6 +201,7 @@ class TestOversightAgentPersona:
             raise asyncio.CancelledError
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
@@ -221,7 +222,7 @@ class TestOversightAgentPersona:
         persona_path = tmp_path / "persona.md"
         persona_path.write_text("# Version 1", encoding="utf-8")
 
-        cfg = OversightConfig(wake_interval_minutes=1, persona_path=str(persona_path))
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True, persona_path=str(persona_path))
         agent = OversightAgent(config=cfg)
 
         personas_seen: list[str] = []
@@ -242,6 +243,7 @@ class TestOversightAgentPersona:
             raise asyncio.CancelledError
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
@@ -262,7 +264,7 @@ class TestOversightAgentPersona:
         persona_path = tmp_path / "persona.md"
         persona_path.write_text("# Priority: unblock downstream tasks first", encoding="utf-8")
 
-        cfg = OversightConfig(wake_interval_minutes=1, persona_path=str(persona_path))
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True, persona_path=str(persona_path))
         agent = OversightAgent(config=cfg)
 
         # Before any cycle, system prompt is empty (no persona loaded yet)
@@ -278,6 +280,7 @@ class TestOversightAgentPersona:
             raise asyncio.CancelledError
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),

@@ -50,13 +50,14 @@ class TestOversightAgent:
 
     @pytest.mark.asyncio
     async def test_start_and_stop(self) -> None:
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
-        task = agent.start()
-        assert task is not None
-        assert not task.done()
-        await agent.stop()
-        assert agent._task is None
+        with patch.object(agent, "_reload_config", return_value=cfg):
+            task = agent.start()
+            assert task is not None
+            assert not task.done()
+            await agent.stop()
+            assert agent._task is None
 
     @pytest.mark.asyncio
     async def test_stop_when_not_started(self) -> None:
@@ -67,7 +68,7 @@ class TestOversightAgent:
     @pytest.mark.asyncio
     async def test_cycle_records_done(self) -> None:
         """Verify that a wake cycle records a 'done' run to the DB."""
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
 
         recorded: list[dict] = []
@@ -90,6 +91,7 @@ class TestOversightAgent:
             return [], None
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_analyze", side_effect=_noop_analyze),
             patch.object(agent, "_record_run", side_effect=_mock_record),
@@ -111,7 +113,7 @@ class TestOversightAgent:
     @pytest.mark.asyncio
     async def test_cycle_handles_record_failure(self) -> None:
         """If _record_run raises, the loop continues (doesn't crash)."""
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
 
         call_count = 0
@@ -129,6 +131,7 @@ class TestOversightAgent:
             return None
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_failing_record),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
@@ -144,7 +147,7 @@ class TestOversightAgent:
     @pytest.mark.asyncio
     async def test_cancelled_during_sleep_completes_prior_cycle(self) -> None:
         """When cancelled during sleep between cycles, the prior cycle is recorded as done."""
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
 
         recorded: list[dict] = []
@@ -163,6 +166,7 @@ class TestOversightAgent:
 
         # First cycle runs immediately, then sleep raises CancelledError
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_analyze", side_effect=_noop_analyze),
             patch.object(agent, "_record_run", side_effect=_mock_record),
@@ -215,7 +219,7 @@ class TestOversightAgent:
     @pytest.mark.asyncio
     async def test_cancelled_during_cycle_body_records_error(self) -> None:
         """When CancelledError fires during the cycle body, record an ERROR run."""
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
 
         recorded: list[dict] = []
@@ -232,9 +236,6 @@ class TestOversightAgent:
                 return  # let cycle start
             raise asyncio.CancelledError  # won't be reached
 
-        # Patch _record_run to first raise CancelledError (simulating cancellation
-        # during the cycle body at the point where _record_run(DONE) is called),
-        # then succeed on the second call (the error-recording call in the except block).
         call_count = 0
         original_mock_record = _mock_record
 
@@ -258,6 +259,7 @@ class TestOversightAgent:
             return None
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_cancel_then_record),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
@@ -273,14 +275,12 @@ class TestOversightAgent:
     @pytest.mark.asyncio
     async def test_cancelled_during_cycle_body_record_fails(self) -> None:
         """When _record_run fails during CancelledError handling, CancelledError still propagates."""
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
 
         async def _fake_sleep(seconds):
             return  # let cycle start immediately
 
-        # Both calls to _record_run raise: first CancelledError (in try body),
-        # then RuntimeError (in except CancelledError handler).
         call_count = 0
 
         async def _failing_record(*args, **kwargs):
@@ -294,6 +294,7 @@ class TestOversightAgent:
             return None
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_failing_record),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
@@ -308,7 +309,7 @@ class TestOversightAgent:
     @pytest.mark.asyncio
     async def test_observe_none_records_error(self) -> None:
         """When _observe returns None the cycle is recorded as ERROR, not DONE."""
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
 
         recorded: list[dict] = []
@@ -320,6 +321,7 @@ class TestOversightAgent:
             return None
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_observe_none),
             patch.object(agent, "_record_run", side_effect=_mock_record),
         ):
@@ -337,21 +339,15 @@ class TestOversightAgent:
         assert recorded[0]["error"] == "observation_failed"
 
     @pytest.mark.asyncio
-    async def test_analyze_returns_early_when_disabled(self) -> None:
-        """_analyze returns ([], None) immediately when config.enabled is False."""
+    async def test_cycle_skips_when_disabled(self) -> None:
+        """run_cycle_once returns early when config.enabled is False."""
         cfg = OversightConfig(wake_interval_minutes=1, enabled=False)
         agent = OversightAgent(config=cfg)
 
-        with (
-            patch("sova.llm.client.get_provider") as mock_provider,
-            patch("sova.oversight.analysis.analyze_snapshot") as mock_analyze,
-        ):
-            findings, error = await agent._analyze({"projects": []}, "run-123")
+        with patch.object(agent, "_reload_config", return_value=cfg):
+            await agent.run_cycle_once()
 
-        assert findings == []
-        assert error is None
-        mock_provider.assert_not_called()
-        mock_analyze.assert_not_called()
+        assert agent._cycle_number == 0
 
     @pytest.mark.asyncio
     async def test_record_run_db_failure_does_not_raise(self) -> None:
@@ -375,7 +371,7 @@ class TestOversightActionWiring:
         """When _analyze returns findings and no error, _propose_issues is called."""
         from sova.db.models import OversightFinding
 
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
 
         finding = OversightFinding(run_id="r", title="t", scope="global", confidence=0.9)
@@ -399,6 +395,7 @@ class TestOversightActionWiring:
             raise asyncio.CancelledError
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_propose_issues", side_effect=_mock_propose),
@@ -416,7 +413,7 @@ class TestOversightActionWiring:
         """When _analyze returns an error, _propose_issues is NOT called."""
         from sova.db.models import OversightFinding
 
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
 
         finding = OversightFinding(run_id="r", title="t", scope="global", confidence=0.9)
@@ -439,6 +436,7 @@ class TestOversightActionWiring:
             raise asyncio.CancelledError
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_propose_issues", side_effect=_mock_propose),
@@ -454,7 +452,7 @@ class TestOversightActionWiring:
     @pytest.mark.asyncio
     async def test_propose_issues_skipped_with_empty_findings(self) -> None:
         """When _analyze returns no findings, _propose_issues is NOT called."""
-        cfg = OversightConfig(wake_interval_minutes=1)
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=True)
         agent = OversightAgent(config=cfg)
 
         propose_called = False
@@ -476,6 +474,7 @@ class TestOversightActionWiring:
             raise asyncio.CancelledError
 
         with (
+            patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_mock_observe),
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_propose_issues", side_effect=_mock_propose),

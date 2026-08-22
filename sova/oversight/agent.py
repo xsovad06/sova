@@ -27,12 +27,31 @@ log = get_logger(component="oversight.agent")
 class OversightAgent:
     """Server-global background daemon for autonomous project monitoring."""
 
-    def __init__(self, config: OversightConfig) -> None:
+    def __init__(self, config: OversightConfig, *, project_dir: str | None = None) -> None:
         self._config = config
+        self._project_dir = project_dir
         self._task: asyncio.Task | None = None
         self._cycle_number: int = 0
         self._persona: str = ""
         self._cycle_lock = asyncio.Lock()
+
+    def _reload_config(self) -> OversightConfig:
+        """Re-read config from disk so runtime sova.toml changes take effect."""
+        from pathlib import Path
+
+        from sova.config.loader import load_config
+
+        try:
+            project_dir = Path(self._project_dir) if self._project_dir else None
+            cfg = load_config(project_dir)
+            self._config = cfg.oversight
+        except Exception:
+            log.warning("oversight.config_reload_failed", exc_info=True)
+        return self._config
+
+    def reload_config(self) -> OversightConfig:
+        """Public API for settings router to trigger a config reload."""
+        return self._reload_config()
 
     def start(self) -> asyncio.Task:
         """Start the oversight background loop. Returns the task for cancellation."""
@@ -108,6 +127,11 @@ class OversightAgent:
         Serialized via ``_cycle_lock`` so a "Run Now" call waits for any
         in-progress scheduled cycle (and vice versa).
         """
+        self._reload_config()
+        if not self._config.enabled:
+            log.debug("oversight.cycle_skip_disabled")
+            return
+
         async with self._cycle_lock:
             run_id = str(uuid.uuid4())
             self._cycle_number += 1
@@ -147,9 +171,9 @@ class OversightAgent:
 
     async def _run_loop(self) -> None:
         """Main loop: execute a wake cycle, then sleep for the configured interval."""
-        interval_seconds = self._config.wake_interval_minutes * 60
         while True:
             await self.run_cycle_once()
+            interval_seconds = self._config.wake_interval_minutes * 60
             await asyncio.sleep(interval_seconds)
 
     async def _analyze(self, snapshot: dict, run_id: str) -> tuple[list[OversightFinding], str | None]:
@@ -158,9 +182,6 @@ class OversightAgent:
         Returns:
             Tuple of (list of findings, error message or None).
         """
-        if not self._config.enabled:
-            log.debug("oversight.analyze.disabled", run_id=run_id)
-            return [], None
         from sova.llm.client import get_provider
         from sova.oversight.analysis import analyze_snapshot
 

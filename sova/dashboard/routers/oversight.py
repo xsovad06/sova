@@ -28,6 +28,11 @@ def set_oversight_agent(agent: OversightAgent | None) -> None:
     _oversight_agent = agent
 
 
+def get_oversight_agent() -> OversightAgent | None:
+    """Return the module-level oversight agent (for settings reload)."""
+    return _oversight_agent
+
+
 async def cancel_run_now_tasks() -> None:
     """Cancel any in-flight 'Run Now' background tasks during shutdown."""
     for task in list(_background_tasks):

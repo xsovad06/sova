@@ -558,9 +558,8 @@ def create_app(
 
         ensure_persona_exists(cfg.oversight.persona_path)
 
-        oversight_agent: OversightAgent | None = None
+        oversight_agent = _OversightAgent(config=cfg.oversight, project_dir=str(resolved))
         if cfg.oversight.enabled:
-            oversight_agent = _OversightAgent(config=cfg.oversight)
             oversight_agent.start()
         set_oversight_agent(oversight_agent)
 
