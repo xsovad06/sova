@@ -112,6 +112,17 @@ def _validate_github_config(cfg: ProjectConfig) -> None:
         )
 
 
+def _reload_oversight_config() -> None:
+    """Trigger a config reload on the oversight agent, starting the loop if needed."""
+    from sova.dashboard.routers.oversight import get_oversight_agent
+
+    agent = get_oversight_agent()
+    if agent is not None:
+        agent.reload_config()
+        if agent._config.enabled and not agent.running:
+            agent.start()
+
+
 class ConfigUpdateRequest(BaseModel):
     key: str
     value: str | bool | int | float
@@ -164,6 +175,8 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
                 sync_max_concurrent(project_dir)
             if req.key.startswith("supervisor."):
                 _reload_daemon_config(project_dir)
+            if req.key.startswith("oversight."):
+                _reload_oversight_config()
         return result
     except Exception as exc:
         log.warning("settings.config.update.error", exc_info=True)
