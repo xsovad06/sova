@@ -441,7 +441,7 @@ class TestProjectCommands:
                 await _install(path=tmp_path, no_dashboard=True, update=False)
 
     async def test_install_creates_all_artifacts(self, tmp_path: Path) -> None:
-        """Successful install creates commands dir, agent-memory, and sova.toml."""
+        """Successful install creates commands dir, agent-memory, and saves config to DB."""
         from sova.cli.commands.project import _install
 
         def _install_cmds_side_effect(_canonical_dir, commands_dir, _cfg):
@@ -449,8 +449,32 @@ class TestProjectCommands:
             (commands_dir / "dummy.md").write_text("---\nname: dummy\n---\n")
             return MagicMock(installed=1)
 
+        saved_config: dict = {}
+
+        async def _capture_save(session, config):
+            from sova.config.db_loader import _flatten_config_dict
+
+            saved_config.update(_flatten_config_dict(config))
+
+        _try_load_calls = [0]
+
+        def _try_load_side_effect(project_dir):
+            _try_load_calls[0] += 1
+            if _try_load_calls[0] == 1:
+                return None
+            return {"github_repo": ""} if not saved_config else {"github_repo": saved_config.get("github_repo", "")}
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_begin = AsyncMock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
+        mock_session.begin = MagicMock(return_value=mock_begin)
+
         with (
             patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=mock_session),
+            patch("sova.config.db_loader._try_load_from_db", side_effect=_try_load_side_effect),
+            patch("sova.config.db_loader.save_config_to_db", side_effect=_capture_save),
             patch("sova.commands.distribution.install_commands") as mock_install_cmds,
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.distribution.install_skills") as mock_install_sk,
@@ -464,7 +488,8 @@ class TestProjectCommands:
             mock_install_sk.return_value = MagicMock(installed=0)
             await _install(path=tmp_path, no_dashboard=True, update=False)
 
-        assert (tmp_path / "sova.toml").exists()
+        assert saved_config
+        assert saved_config.get("base_branch") == "main"
         assert (tmp_path / ".claude" / "commands").is_dir()
         assert (tmp_path / ".claude" / "agent-memory").is_dir()
         assert (tmp_path / ".claude" / "agent-memory" / "MEMORY.md").exists()
@@ -1172,7 +1197,7 @@ class TestDoctorHelpers:
 
         checks = await _check_sova_config(tmp_path)
         assert len(checks) == 1
-        assert checks[0][0] == "sova.toml"
+        assert checks[0][0] == "config"
         assert checks[0][1] is False
 
     def test_check_github_config(self) -> None:
@@ -1760,8 +1785,21 @@ class TestSetupFunction:
     _MOD = "sova.cli.commands.project"
 
     async def test_setup_calls_helpers_and_offer_milestones(self, tmp_path: Path) -> None:
-        """_setup calls detect helpers, writes toml, installs, and offers milestones."""
+        """_setup calls detect helpers, saves config to DB, installs, and offers milestones."""
         from sova.cli.commands.project import _setup
+
+        saved_config: dict = {}
+
+        async def _capture_save(session, config):
+            from sova.config.db_loader import _flatten_config_dict
+
+            saved_config.update(_flatten_config_dict(config))
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_begin = AsyncMock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
+        mock_session.begin = MagicMock(return_value=mock_begin)
 
         with (
             patch(f"{self._MOD}._detect_github_repo", new_callable=AsyncMock, return_value="owner/repo"),
@@ -1769,7 +1807,11 @@ class TestSetupFunction:
             patch(f"{self._MOD}._detect_test_command", return_value="make test"),
             patch(f"{self._MOD}._install", new_callable=AsyncMock),
             patch(f"{self._MOD}._offer_starter_milestones", new_callable=AsyncMock),
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=mock_session),
+            patch("sova.config.db_loader.save_config_to_db", side_effect=_capture_save),
         ):
             await _setup(path=tmp_path)
 
-        assert (tmp_path / "sova.toml").exists()
+        assert saved_config.get("github_repo") == "owner/repo"
+        assert saved_config.get("github_user") == "owner"

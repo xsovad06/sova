@@ -128,11 +128,13 @@ jobs:
           sova install "$tmp/test-project"
 
           # Verify install artifacts
-          test -f "$tmp/test-project/sova.toml"
           test -d "$tmp/test-project/.claude"
           test -d "$tmp/test-project/.claude/commands"
           test -d "$tmp/test-project/.claude/agent-memory"
           test -f "$tmp/test-project/.claude/sova.db"
+          # Config is now DB-backed; verify project_settings table has rows
+          count=$(sqlite3 "$tmp/test-project/.claude/sova.db" "SELECT COUNT(*) FROM project_settings;")
+          test "$count" -gt 0
 
           echo "Integration test passed"
 

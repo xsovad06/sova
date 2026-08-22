@@ -348,6 +348,8 @@ Fully documented in `.claude/rules/` or `.claude/skills/`. One-line refs only.
 - **Configure `ci.exclude_checks` for external security checks agents cannot fix** -- projects with external CI checks like PlatSec-Security-Workflow or Red Hat Konflux need `exclude_checks = ["PlatSec-Security-Workflow", "Red Hat Konflux"]` in `[ci]` section of `sova.toml`. Without this, developer agents loop on CI failures they cannot resolve, burning $3+ per run. Discovered: uhc-auth-proxy had 4 consecutive developer failures on issue #49388 due to PlatSec check. [confirmed: 1]
 
 - **`money-decimal` invariant matches variable names containing `total`, `value`, `rate`, etc.** -- the pre-push invariant greps for `float()` near monetary-sounding variable names. Non-monetary variables like `total_used` (CI minutes) trigger false positives. Fix: rename to avoid the pattern (e.g., `used_minutes`), or use `isinstance()` checks instead of `float()` conversion. PR #634. [confirmed: 1]
+- **CI integration test must track install artifact changes** -- when install behavior changes (e.g., config moves from `sova.toml` to DB), update CI's `test -f` assertions in `ci.yml`. The integration test is the only end-to-end artifact check, so it goes stale when install output changes. PR #821. [confirmed: 1]
+- **DB-backed config: transient `init_db()` failure leaves empty config** -- when `_install()` Stage 1 catches `init_db()` failure, `_save_config_to_db_sync()` silently skips. If Stage 3 retries `init_db()` successfully, config defaults are never populated. Fix: backfill after Stage 3's success with `if _try_load_from_db() is None`. PR #821. [confirmed: 1]
 
 ## Resource Monitoring
 

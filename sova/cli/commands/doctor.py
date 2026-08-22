@@ -175,13 +175,28 @@ async def _check_git_hooks(project_dir: Path) -> _Check:
 
 
 async def _check_sova_config(project_dir: Path) -> list[_Check]:
-    """Check sova.toml presence and configuration."""
+    """Check project configuration (DB or sova.toml)."""
     checks: list[_Check] = []
+
+    from sova.config.db_loader import _try_load_from_db
+
+    db_config = _try_load_from_db(project_dir)
     toml_path = project_dir / "sova.toml"
     toml_exists = toml_path.exists()
-    checks.append(("sova.toml", toml_exists, str(toml_path) if toml_exists else f"not found at {toml_path}", False))
 
-    if toml_exists:
+    has_config = db_config is not None or toml_exists
+    if db_config is not None:
+        source = "database"
+    elif toml_exists:
+        source = str(toml_path)
+    else:
+        source = f"not found (checked DB and {toml_path})"
+    checks.append(("config", has_config, source, False))
+
+    if toml_exists and db_config is not None:
+        checks.append(("legacy sova.toml", False, "exists alongside DB config (DB takes priority)", False))
+
+    if has_config:
         checks.extend(_validate_sova_config(project_dir))
 
     return checks

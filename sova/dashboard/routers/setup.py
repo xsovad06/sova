@@ -118,7 +118,7 @@ async def install_project(req: InstallRequest) -> dict:
 
 @router.post("/setup/configure", responses={404: {"description": "Directory not found"}})
 async def configure_project(req: ConfigureRequest) -> dict:
-    """Generate sova.toml from wizard input and register the project."""
+    """Save project config to the database and register the project."""
     project = Path(req.project_path).expanduser().resolve()
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
@@ -146,13 +146,18 @@ async def configure_project(req: ConfigureRequest) -> dict:
         jira_status_mapping=req.jira_status_mapping,
         jira_track_agent_work=req.jira_track_agent_work,
     )
-    toml_content = setup_service.generate_sova_toml(toml_cfg)
+    config_dict = setup_service.generate_config_dict(toml_cfg)
 
-    toml_file = project / "sova.toml"
-    toml_file.write_text(toml_content)
+    from sova.config.db_loader import save_config_to_db
+    from sova.db.session import get_session, init_db
+
+    await init_db(project)
+    async with await get_session(project_dir=project) as session:
+        async with session.begin():
+            await save_config_to_db(session, config_dict)
 
     slug = register_project(project)
-    return {"status": "ok", "config_path": str(toml_file), "slug": slug}
+    return {"status": "ok", "config_source": "database", "slug": slug}
 
 
 @router.post("/setup/commands/sync")

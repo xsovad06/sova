@@ -871,3 +871,289 @@ block_threshold_gb = 2.0
 
         with pytest.raises(ValueError, match="block_threshold_gb.*must be less than.*warn_threshold_gb"):
             MemoryGuardConfig(warn_threshold_gb=2.0, block_threshold_gb=5.0)
+
+
+class TestFlattenConfigDict:
+    def test_flat_keys(self) -> None:
+        from sova.config.db_loader import _flatten_config_dict
+
+        result = _flatten_config_dict({"github_repo": "a/b", "base_branch": "main"})
+        assert result == {"github_repo": "a/b", "base_branch": "main"}
+
+    def test_nested_keys(self) -> None:
+        from sova.config.db_loader import _flatten_config_dict
+
+        result = _flatten_config_dict({"task_source": {"type": "github"}, "agent": {"model": "opus"}})
+        assert result == {"task_source.type": "github", "agent.model": "opus"}
+
+    def test_mixed_keys(self) -> None:
+        from sova.config.db_loader import _flatten_config_dict
+
+        result = _flatten_config_dict({"github_repo": "a/b", "review": {"enabled": True, "max_rounds": 2}})
+        assert result == {"github_repo": "a/b", "review.enabled": True, "review.max_rounds": 2}
+
+    def test_empty_dict(self) -> None:
+        from sova.config.db_loader import _flatten_config_dict
+
+        result = _flatten_config_dict({})
+        assert result == {}
+
+
+class TestSaveConfigToDbSync:
+    def test_save_and_load_roundtrip(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.config.db_loader import _save_config_to_db_sync, _try_load_from_db
+        from sova.db.session import init_db
+
+        asyncio.run(init_db(tmp_path))
+        config = {
+            "github_repo": "owner/repo",
+            "base_branch": "main",
+            "task_source": {"type": "github"},
+            "agent": {"model": "opus", "max_budget": "10.00"},
+        }
+        _save_config_to_db_sync(tmp_path, config)
+        loaded = _try_load_from_db(tmp_path)
+        assert loaded is not None
+        assert loaded["github_repo"] == "owner/repo"
+        assert loaded["base_branch"] == "main"
+        assert loaded["task_source"]["type"] == "github"
+        assert loaded["agent"]["model"] == "opus"
+
+    def test_skips_when_no_db_file(self, tmp_path: Path) -> None:
+        from sova.config.db_loader import _save_config_to_db_sync
+
+        _save_config_to_db_sync(tmp_path, {"github_repo": "a/b"})
+
+    def test_idempotent_upsert(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.config.db_loader import _save_config_to_db_sync, _try_load_from_db
+        from sova.db.session import init_db
+
+        asyncio.run(init_db(tmp_path))
+        _save_config_to_db_sync(tmp_path, {"github_repo": "first/repo"})
+        _save_config_to_db_sync(tmp_path, {"github_repo": "second/repo"})
+        loaded = _try_load_from_db(tmp_path)
+        assert loaded is not None
+        assert loaded["github_repo"] == "second/repo"
+
+    def test_jira_to_github_removes_stale_keys(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.config.db_loader import _save_config_to_db_sync, _try_load_from_db
+        from sova.db.session import init_db
+
+        asyncio.run(init_db(tmp_path))
+        jira_config = {
+            "github_repo": "",
+            "task_source": {
+                "type": "jira",
+                "jira_base_url": "https://jira.example.com",
+                "jira_email": "user@example.com",
+                "jira_project_key": "PROJ",
+                "jira_status_mapping": {"To Do": "backlog"},
+            },
+        }
+        _save_config_to_db_sync(tmp_path, jira_config)
+        loaded = _try_load_from_db(tmp_path)
+        assert loaded is not None
+        assert loaded["task_source"]["type"] == "jira"
+        assert "jira_base_url" in loaded["task_source"]
+
+        github_config = {
+            "github_repo": "owner/repo",
+            "task_source": {"type": "github"},
+        }
+        _save_config_to_db_sync(tmp_path, github_config)
+        loaded = _try_load_from_db(tmp_path)
+        assert loaded is not None
+        assert loaded["github_repo"] == "owner/repo"
+        assert loaded["task_source"]["type"] == "github"
+        assert "jira_base_url" not in loaded.get("task_source", {})
+        assert "jira_email" not in loaded.get("task_source", {})
+        assert "jira_project_key" not in loaded.get("task_source", {})
+        assert "jira_status_mapping" not in loaded.get("task_source", {})
+
+
+@pytest.mark.asyncio
+class TestSaveConfigToDbAsync:
+    async def test_save_and_load(self, tmp_path: Path, monkeypatch: object) -> None:
+        import os
+
+        from sova.config.db_loader import load_config_from_db, save_config_to_db
+        from sova.db.session import close_db, get_session, init_db
+
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")  # type: ignore[union-attr]
+        await init_db(run_migrations=False)
+        try:
+            async with await get_session() as session:
+                async with session.begin():
+                    await save_config_to_db(
+                        session,
+                        {
+                            "github_repo": "owner/repo",
+                            "task_source": {"type": "jira"},
+                        },
+                    )
+
+            async with await get_session() as session:
+                loaded = await load_config_from_db(session)
+            assert loaded is not None
+            assert loaded["github_repo"] == "owner/repo"
+            assert loaded["task_source"]["type"] == "jira"
+        finally:
+            await close_db()
+            os.environ.pop("SOVA_DATABASE_URL", None)
+
+    async def test_jira_to_github_removes_stale_keys_async(self, tmp_path: Path, monkeypatch: object) -> None:
+        import os
+
+        from sova.config.db_loader import load_config_from_db, save_config_to_db
+        from sova.db.session import close_db, get_session, init_db
+
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")  # type: ignore[union-attr]
+        await init_db(run_migrations=False)
+        try:
+            async with await get_session() as session:
+                async with session.begin():
+                    await save_config_to_db(
+                        session,
+                        {
+                            "github_repo": "",
+                            "task_source": {
+                                "type": "jira",
+                                "jira_base_url": "https://jira.example.com",
+                                "jira_email": "user@example.com",
+                            },
+                        },
+                    )
+
+            async with await get_session() as session:
+                async with session.begin():
+                    await save_config_to_db(
+                        session,
+                        {
+                            "github_repo": "owner/repo",
+                            "task_source": {"type": "github"},
+                        },
+                    )
+
+            async with await get_session() as session:
+                loaded = await load_config_from_db(session)
+            assert loaded is not None
+            assert loaded["github_repo"] == "owner/repo"
+            assert loaded["task_source"]["type"] == "github"
+            assert "jira_base_url" not in loaded.get("task_source", {})
+            assert "jira_email" not in loaded.get("task_source", {})
+        finally:
+            await close_db()
+            os.environ.pop("SOVA_DATABASE_URL", None)
+
+
+class TestGenerateConfigDict:
+    def test_github_config(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig, generate_config_dict
+
+        cfg = TomlConfig(github_repo="owner/repo", github_user="user1")
+        result = generate_config_dict(cfg)
+        assert result["github_repo"] == "owner/repo"
+        assert result["github_user"] == "user1"
+        assert result["task_source"] == {"type": "github"}
+        assert result["commit"]["branch_naming"] == "conventional"
+        assert result["commit"]["pr_title_format"] == "conventional"
+        assert result["commit"]["ai_coauthor"] is True
+        assert result["commit"]["pr_auto_link_issues"] is True
+
+    def test_jira_config(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig, generate_config_dict
+
+        cfg = TomlConfig(
+            task_source="jira",
+            jira_base_url="https://jira.example.com",
+            jira_email="user@example.com",
+            jira_project_key="PROJ",
+            jira_track_agent_work=True,
+            jira_status_mapping={"To Do": "backlog"},
+        )
+        result = generate_config_dict(cfg)
+        assert result["task_source"]["type"] == "jira"
+        assert result["task_source"]["jira_base_url"] == "https://jira.example.com"
+        assert result["task_source"]["jira_email"] == "user@example.com"
+        assert result["task_source"]["jira_project_key"] == "PROJ"
+        assert result["task_source"]["jira_track_agent_work"] is True
+        assert result["task_source"]["jira_status_mapping"] == {"To Do": "backlog"}
+
+    def test_branch_pr_fields_mapped_to_commit(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig, generate_config_dict
+
+        cfg = TomlConfig(branch_naming="kebab", pr_title_format="plain", ai_coauthor=False)
+        result = generate_config_dict(cfg)
+        assert result["commit"]["branch_naming"] == "kebab"
+        assert result["commit"]["pr_title_format"] == "plain"
+        assert result["commit"]["ai_coauthor"] is False
+        assert "branch" not in result
+        assert "pr" not in result
+
+
+class TestDefaultConfig:
+    def test_returns_dict(self) -> None:
+        from sova.cli.commands.project import _default_config
+
+        result = _default_config()
+        assert isinstance(result, dict)
+        assert result["github_repo"] == ""
+        assert result["base_branch"] == "main"
+        assert result["task_source"]["type"] == "github"
+        assert result["agent"]["model"] == "opus"
+
+    def test_with_overrides(self) -> None:
+        from sova.cli.commands.project import _default_config
+
+        result = _default_config(repo="owner/repo", test_cmd="pytest", github_user="user1")
+        assert result["github_repo"] == "owner/repo"
+        assert result["test_cmd"] == "pytest"
+        assert result["github_user"] == "user1"
+
+
+class TestVerifyInstall:
+    def test_no_config_anywhere(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _verify_install
+
+        (tmp_path / ".claude" / "commands").mkdir(parents=True)
+        (tmp_path / ".claude" / "commands" / "test.md").write_text("# test")
+        (tmp_path / ".claude" / "agent-memory").mkdir(parents=True)
+        problems, warnings = _verify_install(tmp_path)
+        assert any("no configuration found" in p for p in problems)
+
+    def test_db_config_only(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.cli.commands.project import _verify_install
+        from sova.config.db_loader import _save_config_to_db_sync
+        from sova.db.session import init_db
+
+        asyncio.run(init_db(tmp_path))
+        _save_config_to_db_sync(tmp_path, {"github_repo": "a/b"})
+        (tmp_path / ".claude" / "commands").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".claude" / "commands" / "test.md").write_text("# test")
+        (tmp_path / ".claude" / "agent-memory").mkdir(parents=True, exist_ok=True)
+        problems, warnings = _verify_install(tmp_path)
+        assert not any("no configuration found" in p for p in problems)
+
+    def test_warns_about_legacy_toml_alongside_db(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.cli.commands.project import _verify_install
+        from sova.config.db_loader import _save_config_to_db_sync
+        from sova.db.session import init_db
+
+        asyncio.run(init_db(tmp_path))
+        _save_config_to_db_sync(tmp_path, {"github_repo": "a/b"})
+        (tmp_path / "sova.toml").write_text("github_repo = 'a/b'")
+        (tmp_path / ".claude" / "commands").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".claude" / "commands" / "test.md").write_text("# test")
+        (tmp_path / ".claude" / "agent-memory").mkdir(parents=True, exist_ok=True)
+        problems, warnings = _verify_install(tmp_path)
+        assert any("legacy sova.toml" in w for w in warnings)
