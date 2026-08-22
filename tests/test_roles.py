@@ -2807,7 +2807,6 @@ class TestQualityGateIntegration:
 
         triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
         config = ProjectConfig(triage=triage_cfg)
-        # Body that heuristics mark "ready" but quality score is low
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(
@@ -2826,7 +2825,18 @@ class TestQualityGateIntegration:
             "## Out of Scope / Constraints\n- No new deps\n\n"
             "## References\n- #42\n"
         )
-        mock_result = LLMResult(text=enriched, cost_usd=Decimal("0.01"), model="sonnet")
+        llm_response = json.dumps(
+            {
+                "enriched_body": enriched,
+                "assessment": {
+                    "suitability": "ready",
+                    "confidence": 0.9,
+                    "reasoning": "Well-structured issue",
+                    "estimated_complexity": "moderate",
+                },
+            }
+        )
+        mock_result = LLMResult(text=llm_response, cost_usd=Decimal("0.01"), model="sonnet")
         mock_invoke = AsyncMock(return_value=mock_result)
         mock_record = AsyncMock()
 
@@ -2839,10 +2849,8 @@ class TestQualityGateIntegration:
             result = await role.execute(ctx)
 
         assert result.success
-        # The enriched body should have been written via edit_body
         edit_calls = [c for c in adapter.edit_body.call_args_list]
         assert len(edit_calls) >= 1
-        # First edit_body call is the enrichment (before the assessment comment)
         first_edit_body = edit_calls[0][0][1] if edit_calls[0][0] else edit_calls[0][1].get("body", "")
         assert "## Objective" in first_edit_body
 
@@ -2878,12 +2886,853 @@ class TestQualityGateIntegration:
 
 
 # ---------------------------------------------------------------------------
+# Combined assess-and-enrich (_assess_and_enrich)
+# ---------------------------------------------------------------------------
+
+
+class TestAssessAndEnrich:
+    """Tests for the combined LLM call that assesses AND enriches in one shot."""
+
+    async def test_combined_call_enriches_and_uses_original_assessment(self) -> None:
+        """Successful enrichment returns original heuristic assessment (quality gate is authority)."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        enriched = (
+            "## Objective\nUpdate the handler.\n\n"
+            "## Detailed Description\nUpdate `sova/handler.py` to work.\n\n"
+            "## Acceptance Criteria\n- [ ] It works\n- [ ] Tests pass\n\n"
+            "## Files / Modules to Change\n- `sova/handler.py`\n\n"
+            "## Out of Scope / Constraints\n- No new deps\n\n"
+            "## References\n- #42\n"
+        )
+        llm_response = json.dumps(
+            {
+                "enriched_body": enriched,
+                "assessment": {
+                    "suitability": "needs_spec",
+                    "confidence": 0.8,
+                    "reasoning": "LLM thinks it needs spec",
+                    "estimated_complexity": "moderate",
+                },
+            }
+        )
+        mock_result = LLMResult(text=llm_response, cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        # Quality gate authority: enrichment succeeded, so original "ready" assessment is returned
+        assert "ready" in result.summary or "triaged" in result.summary.lower()
+        edit_calls = [c for c in adapter.edit_body.call_args_list]
+        assert len(edit_calls) >= 1
+        first_edit_body = edit_calls[0][0][1] if edit_calls[0][0] else edit_calls[0][1].get("body", "")
+        assert "## Objective" in first_edit_body
+        mock_record.assert_called_once()
+        assert mock_record.call_args[1]["phase"] == "triage_assess_enrich"
+
+    async def test_combined_call_uses_llm_assessment_on_enrichment_failure(self) -> None:
+        """When enriched_body is too short, LLM assessment is used for the needs_spec downgrade."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        llm_response = json.dumps(
+            {
+                "enriched_body": "short",
+                "assessment": {
+                    "suitability": "needs_research",
+                    "confidence": 0.75,
+                    "reasoning": "LLM reasoning about the issue",
+                    "missing_context": ["acceptance criteria", "file references"],
+                    "estimated_complexity": "complex",
+                },
+            }
+        )
+        mock_result = LLMResult(text=llm_response, cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "needs_spec" in result.summary
+
+    async def test_combined_call_malformed_json_falls_back_to_heuristic(self) -> None:
+        """Malformed JSON from LLM falls back to heuristic needs_spec."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        mock_result = LLMResult(text="not valid json {{{", cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "needs_spec" in result.summary
+
+    async def test_combined_call_strips_markdown_fencing(self) -> None:
+        """LLM response wrapped in markdown fencing is parsed correctly."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        enriched = (
+            "## Objective\nDo it.\n\n"
+            "## Detailed Description\nDetails.\n\n"
+            "## Acceptance Criteria\n- [ ] It works\n\n"
+            "## Files / Modules to Change\n- `sova/handler.py`\n\n"
+            "## Out of Scope / Constraints\n- Nothing\n\n"
+            "## References\n- #42\n"
+        )
+        inner_json = json.dumps(
+            {
+                "enriched_body": enriched,
+                "assessment": {
+                    "suitability": "ready",
+                    "confidence": 0.9,
+                    "reasoning": "Looks good",
+                    "estimated_complexity": "simple",
+                },
+            }
+        )
+        fenced = f"```json\n{inner_json}\n```"
+        mock_result = LLMResult(text=fenced, cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        edit_calls = [c for c in adapter.edit_body.call_args_list]
+        assert len(edit_calls) >= 1
+
+    async def test_combined_call_no_enriched_body_uses_llm_assessment(self) -> None:
+        """LLM returns assessment fields but no enriched_body: uses LLM assessment for downgrade."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        llm_response = json.dumps(
+            {
+                "enriched_body": "",
+                "assessment": {
+                    "suitability": "needs_spec",
+                    "confidence": 0.85,
+                    "reasoning": "Issue lacks acceptance criteria and clear scope.",
+                    "missing_context": ["acceptance criteria", "scope definition"],
+                    "estimated_complexity": "moderate",
+                },
+            }
+        )
+        mock_result = LLMResult(text=llm_response, cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "needs_spec" in result.summary
+
+    async def test_auto_enrich_false_skips_llm_call(self) -> None:
+        """auto_enrich=False uses pure heuristic downgrade, no LLM call."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=False)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        mock_invoke = AsyncMock()
+
+        with patch("sova.llm.client.invoke", mock_invoke):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "needs_spec" in result.summary
+        mock_invoke.assert_not_called()
+
+    async def test_enriched_assessment_dataclass_frozen(self) -> None:
+        """EnrichedAssessment is frozen and immutable."""
+        from sova.roles.triage import EnrichedAssessment
+
+        ea = EnrichedAssessment(
+            assessment=TaskAssessment(
+                suitability="ready", confidence=0.9, reasoning="test", estimated_complexity="simple"
+            ),
+            enriched_body="## Objective\nTest\n",
+        )
+        assert ea.assessment.suitability == "ready"
+        assert ea.enriched_body == "## Objective\nTest\n"
+
+        with pytest.raises(AttributeError):
+            ea.enriched_body = "changed"  # type: ignore[misc]
+
+    async def test_assess_and_enrich_missing_suitability_defaults_to_needs_spec(self) -> None:
+        """Missing 'suitability' key in assessment defaults to needs_spec."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        llm_response = json.dumps({"enriched_body": "text", "assessment": {}})
+        mock_result = LLMResult(text=llm_response, cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "needs_spec" in result.summary
+
+    async def test_assess_and_enrich_generic_exception_returns_none(self) -> None:
+        """Generic exception from LLM invoke falls back to heuristic."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        mock_invoke = AsyncMock(side_effect=RuntimeError("LLM timeout"))
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "needs_spec" in result.summary
+
+    async def test_enrichment_insufficient_still_uses_llm_assessment(self) -> None:
+        """Enriched body exists but doesn't meet quality threshold: uses LLM assessment fields."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=7, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        enriched = (
+            "## Objective\nUpdate handler.\n\n"
+            "## Detailed Description\nUpdate `sova/handler.py`.\n\n"
+            "## Acceptance Criteria\n- [ ] It works\n\n"
+        )
+        llm_response = json.dumps(
+            {
+                "enriched_body": enriched,
+                "assessment": {
+                    "suitability": "needs_research",
+                    "confidence": 0.65,
+                    "reasoning": "Partially specified",
+                    "missing_context": ["scope boundaries"],
+                    "estimated_complexity": "complex",
+                },
+            }
+        )
+        mock_result = LLMResult(text=llm_response, cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "needs_spec" in result.summary
+        # LLM assessment values must be used for the downgrade, not heuristic defaults.
+        # The assessment comment (written to issue body) includes confidence and reasoning.
+        edit_calls = adapter.edit_body.call_args_list
+        assert len(edit_calls) >= 1
+        written_body = edit_calls[-1][0][1] if edit_calls[-1][0] else edit_calls[-1][1].get("body", "")
+        assert "65%" in written_body, "LLM confidence (0.65) should appear as 65%"
+        assert "Partially specified" in written_body, "LLM reasoning should be used"
+
+
+# ---------------------------------------------------------------------------
+# _strip_markdown_fencing helper
+# ---------------------------------------------------------------------------
+
+
+class TestStripMarkdownFencing:
+    """Tests for _strip_markdown_fencing helper."""
+
+    def test_no_fencing_passthrough(self) -> None:
+        from sova.roles.triage import _strip_markdown_fencing
+
+        assert _strip_markdown_fencing("plain text") == "plain text"
+
+    def test_fencing_with_closing_backticks(self) -> None:
+        from sova.roles.triage import _strip_markdown_fencing
+
+        text = '```json\n{"key": "val"}\n```'
+        assert _strip_markdown_fencing(text) == '{"key": "val"}'
+
+    def test_fencing_without_closing_backticks(self) -> None:
+        from sova.roles.triage import _strip_markdown_fencing
+
+        text = '```json\n{"key": "val"}\nmore text'
+        assert _strip_markdown_fencing(text) == '{"key": "val"}\nmore text'
+
+
+# ---------------------------------------------------------------------------
+# _parse_llm_assessment error paths
+# ---------------------------------------------------------------------------
+
+
+class TestParseLLMAssessmentErrors:
+    """Tests for _parse_llm_assessment error branches."""
+
+    def test_missing_suitability_key(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        result = role._parse_llm_assessment('{"confidence": 0.9}')
+        assert result is None
+
+    def test_invalid_confidence_value(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        result = role._parse_llm_assessment('{"suitability": "ready", "confidence": "not_a_number"}')
+        assert result is None
+
+    def test_valid_json_parses(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        result = role._parse_llm_assessment('{"suitability": "ready", "confidence": 0.85}')
+        assert result is not None
+        assert result.suitability == "ready"
+
+
+# ---------------------------------------------------------------------------
+# _estimate_complexity branches
+# ---------------------------------------------------------------------------
+
+
+class TestEstimateComplexity:
+    """Tests for _estimate_complexity branches."""
+
+    def test_short_body_simple(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        assert TriageRole._estimate_complexity("Short body.") == "simple"
+
+    def test_long_body_with_headings_complex(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        body = "A" * 1001 + "\n## Section One\nContent here."
+        assert TriageRole._estimate_complexity(body) == "complex"
+
+    def test_migration_keyword_complex(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        body = "A" * 200 + " This requires a database migration step."
+        assert TriageRole._estimate_complexity(body) == "complex"
+
+    def test_moderate_body(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        body = "A" * 200 + " regular work item."
+        assert TriageRole._estimate_complexity(body) == "moderate"
+
+
+# ---------------------------------------------------------------------------
+# execute() edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestTriageExecuteEdgeCases:
+    """Tests for execute() branches not covered by other test classes."""
+
+    async def test_below_confidence_threshold_logs(self) -> None:
+        """Low confidence triggers the below_confidence log path."""
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="dry_run", min_confidence=1.0, min_quality_score=0)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "Simple issue with no structured sections."
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        role = TriageRole()
+        result = await role.execute(ctx)
+
+        assert result.success
+        assert "dry run" in result.summary
+
+    async def test_comment_mode_posts_comment(self) -> None:
+        """mode='comment' calls post_comment instead of edit_body."""
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="comment", min_quality_score=0, write_body=False, write_transition=False)
+        config = ProjectConfig(triage=triage_cfg)
+        body = (
+            "## Objective\nDo the thing.\n\n"
+            "## Detailed Description\nDetails here.\n\n"
+            "## Acceptance Criteria\n- [ ] Done\n\n"
+            "## Files / Modules to Change\n- `sova/foo.py`\n\n"
+            "## Out of Scope / Constraints\n- Nothing\n\n"
+            "## References\n- #1\n"
+        )
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        role = TriageRole()
+        result = await role.execute(ctx)
+
+        assert result.success
+        adapter.post_comment.assert_called_once()
+        adapter.edit_body.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _build_assessment_comment sub_tasks branch
+# ---------------------------------------------------------------------------
+
+
+class TestBuildAssessmentComment:
+    """Tests for _build_assessment_comment rendering branches."""
+
+    def test_sub_tasks_rendered(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(id="42", title="Test", body="body", state=TaskState.BACKLOG)
+        assessment = TaskAssessment(
+            suitability="ready",
+            confidence=0.9,
+            reasoning="Good issue",
+            estimated_complexity="moderate",
+            sub_tasks=["Step 1: parse input", "Step 2: validate"],
+        )
+        comment = role._build_assessment_comment(task, assessment)
+        assert "### Suggested sub-tasks:" in comment
+        assert "- Step 1: parse input" in comment
+        assert "- Step 2: validate" in comment
+
+    def test_no_sub_tasks_omitted(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(id="42", title="Test", body="body", state=TaskState.BACKLOG)
+        assessment = TaskAssessment(
+            suitability="ready", confidence=0.9, reasoning="Good", estimated_complexity="simple"
+        )
+        comment = role._build_assessment_comment(task, assessment)
+        assert "### Suggested sub-tasks:" not in comment
+
+
+# ---------------------------------------------------------------------------
+# assess_tasks_batch and _sequential_fallback
+# ---------------------------------------------------------------------------
+
+
+class TestAssessTasksBatch:
+    """Tests for the batch assessment path and sequential fallback."""
+
+    async def test_all_heuristic_no_llm_batch(self) -> None:
+        """Tasks with empty bodies skip LLM, returning heuristic assessments."""
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(id="1", title="Empty body", body="", state=TaskState.BACKLOG),
+            Task(id="2", title="None body", body=None, state=TaskState.BACKLOG),
+        ]
+        role = TriageRole()
+        results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 2
+        for task, assessment in results:
+            assert assessment.suitability is not None
+
+    async def test_batch_exception_falls_back_to_sequential(self) -> None:
+        """Batch API failure falls back to sequential assess_task_with_llm."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(id="10", title="Real issue", body="A real description here.", state=TaskState.BACKLOG),
+        ]
+        role = TriageRole()
+
+        mock_batch = AsyncMock(side_effect=RuntimeError("batch API down"))
+        mock_assess = AsyncMock(
+            return_value=TaskAssessment(
+                suitability="ready", confidence=0.8, reasoning="ok", estimated_complexity="simple"
+            )
+        )
+
+        with (
+            patch("sova.llm.client.invoke_batch", mock_batch),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "batch")),
+            patch.object(role, "assess_task_with_llm", mock_assess),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 1
+        assert results[0][1].suitability == "ready"
+        mock_assess.assert_called_once()
+
+    async def test_batch_success_parses_results(self) -> None:
+        """Successful batch returns parsed assessments."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import BatchResult, LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(id="10", title="Issue A", body="Description for A.", state=TaskState.BACKLOG),
+        ]
+        role = TriageRole()
+
+        from sova.llm.models import BatchRequest
+
+        br_req = BatchRequest(custom_id="10", prompt="test", model="sonnet")
+        llm_result = LLMResult(
+            text=json.dumps(
+                {"suitability": "ready", "confidence": 0.9, "reasoning": "clear", "estimated_complexity": "simple"}
+            ),
+            cost_usd=Decimal("0.005"),
+            model="sonnet",
+        )
+        batch_result = BatchResult(request=br_req, result=llm_result, error=None)
+
+        mock_batch = AsyncMock(return_value=[batch_result])
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke_batch", mock_batch),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "batch")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 1
+        assert results[0][1].suitability == "ready"
+
+    async def test_batch_item_error_falls_back_to_heuristic(self) -> None:
+        """Batch item with error gets heuristic assessment."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import BatchResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(id="10", title="Issue", body="Some body text.", state=TaskState.BACKLOG),
+        ]
+        role = TriageRole()
+
+        from sova.llm.models import BatchRequest
+
+        br_req = BatchRequest(custom_id="10", prompt="test", model="sonnet")
+        batch_result = BatchResult(request=br_req, result=None, error="overloaded")
+
+        mock_batch = AsyncMock(return_value=[batch_result])
+
+        with (
+            patch("sova.llm.client.invoke_batch", mock_batch),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "batch")),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 1
+        assert results[0][1].suitability is not None
+
+    async def test_batch_unknown_custom_id_skipped(self) -> None:
+        """Batch result with unknown custom_id is logged and skipped."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import BatchRequest, BatchResult, LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(id="10", title="Issue", body="Some body text.", state=TaskState.BACKLOG),
+        ]
+        role = TriageRole()
+
+        br_req = BatchRequest(custom_id="unknown_id", prompt="test", model="sonnet")
+        llm_result = LLMResult(
+            text=json.dumps({"suitability": "ready", "confidence": 0.9}),
+            cost_usd=Decimal("0.005"),
+            model="sonnet",
+        )
+        batch_result = BatchResult(request=br_req, result=llm_result, error=None)
+
+        mock_batch = AsyncMock(return_value=[batch_result])
+
+        with (
+            patch("sova.llm.client.invoke_batch", mock_batch),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "batch")),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 1
+        assert results[0][1].suitability is not None
+
+    async def test_batch_missing_result_gets_heuristic(self) -> None:
+        """Task with no batch result (missing from response) gets heuristic fallback."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(id="10", title="Issue A", body="Body A.", state=TaskState.BACKLOG),
+            Task(id="11", title="Issue B", body="Body B.", state=TaskState.BACKLOG),
+        ]
+        role = TriageRole()
+
+        mock_batch = AsyncMock(return_value=[])
+
+        with (
+            patch("sova.llm.client.invoke_batch", mock_batch),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "batch")),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 2
+        for _, assessment in results:
+            assert assessment.suitability is not None
+
+    async def test_batch_cost_record_failure_non_fatal(self) -> None:
+        """record_cost failure during batch processing is non-fatal."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import BatchRequest, BatchResult, LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(id="10", title="Issue", body="Some body text.", state=TaskState.BACKLOG),
+        ]
+        role = TriageRole()
+
+        br_req = BatchRequest(custom_id="10", prompt="test", model="sonnet")
+        llm_result = LLMResult(
+            text=json.dumps({"suitability": "ready", "confidence": 0.9, "estimated_complexity": "simple"}),
+            cost_usd=Decimal("0.005"),
+            model="sonnet",
+        )
+        batch_result = BatchResult(request=br_req, result=llm_result, error=None)
+
+        mock_batch = AsyncMock(return_value=[batch_result])
+        mock_record = AsyncMock(side_effect=RuntimeError("DB error"))
+
+        with (
+            patch("sova.llm.client.invoke_batch", mock_batch),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "batch")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 1
+        assert results[0][1].suitability == "ready"
+
+    async def test_batch_human_only_heuristic_skip(self) -> None:
+        """Tasks that heuristic marks human_only skip LLM batch."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(
+                id="10",
+                title="Test",
+                body="Real body text.",
+                state=TaskState.BACKLOG,
+                labels=["agent:human-only"],
+            ),
+        ]
+        role = TriageRole()
+
+        mock_batch = AsyncMock(return_value=[])
+        with (
+            patch("sova.llm.client.invoke_batch", mock_batch),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "batch")),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 1
+        assert results[0][1].suitability == "human_only"
+        mock_batch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _collect_missing_sections helper
 # ---------------------------------------------------------------------------
 
 
 class TestCollectMissingSections:
-    """Tests for the _collect_missing_sections helper extracted from _enrich_body."""
+    """Tests for the _collect_missing_sections helper."""
 
     def test_all_present_returns_empty(self) -> None:
         from sova.roles.triage import QualityScore, _collect_missing_sections
