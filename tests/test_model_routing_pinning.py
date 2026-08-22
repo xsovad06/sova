@@ -336,7 +336,7 @@ class TestModelNotAvailableFallback:
         assert _is_billing_failure("model_not_available: claude-opus-5")
 
     def test_not_available_case_insensitive(self) -> None:
-        assert _is_billing_failure("Model Not Available on this region")
+        assert _is_billing_failure("Model is Not Available on this region")
 
     def test_existing_billing_patterns_still_work(self) -> None:
         assert _is_billing_failure("budget_exhausted")
@@ -351,3 +351,6 @@ class TestModelNotAvailableFallback:
         assert not _is_billing_failure("FileNotFoundError: no such file")
         assert not _is_billing_failure(None)
         assert not _is_billing_failure("")
+
+    def test_loose_not_available_not_matched(self) -> None:
+        assert not _is_billing_failure("feature not available in free tier")
