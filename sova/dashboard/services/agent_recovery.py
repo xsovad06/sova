@@ -11,6 +11,7 @@ from pathlib import Path
 from cachetools import TTLCache
 
 from sova.utils.logging import get_logger
+from sova.utils.process import is_process_alive
 
 log = get_logger(component="dashboard.control.recovery")
 
@@ -74,12 +75,11 @@ def _deduplicate_reviews(reviews: list) -> dict:
 
 
 def _is_process_alive(pid: int) -> bool:
-    """Check if a process with the given PID is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    """Check if a process with the given PID is still running.
+
+    Thin wrapper for backward compatibility. New code should import from sova.utils.process.
+    """
+    return is_process_alive(pid)
 
 
 async def _kill_process(pid: int) -> None:

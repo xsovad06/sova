@@ -12,47 +12,43 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.adapters.base import TaskAdapter, TaskState
 from sova.config.loader import load_config
-from sova.config.models import ProjectConfig, SupervisorConfig
+from sova.config.models import SupervisorConfig
 from sova.core.state import TASK_RUN_TERMINAL
-from sova.dashboard.services.agent_handoff import _count_address_review_runs
-from sova.dashboard.services.agent_recovery import _is_process_alive, get_sova_review_verdict
-from sova.dashboard.services.agent_validation import _check_issue_budget
-from sova.db.models import TaskRun
-from sova.git.pr import PRInfo, find_pr_for_issue
+from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+from sova.git.pr import PRInfo
 from sova.supervisor.dependency_graph import (
     DependencyGraph,
     build_dependency_graph,
     invalidate_graph_cache,
     is_epic,
-    is_human_only,
-    is_interactive_recommended,
 )
 from sova.supervisor.file_overlap import (
     BranchFileSet,
-    check_file_overlap,
     get_active_branch_file_sets,
-    predict_candidate_files,
 )
+from sova.supervisor.gates import BlockReason
+from sova.supervisor.gates.already_running import check_already_running
+from sova.supervisor.gates.budget import check_budget_gate
+from sova.supervisor.gates.ci_budget import check_ci_budget_gate
+from sova.supervisor.gates.circuit_breaker import check_address_review_circuit_breaker_gate
+from sova.supervisor.gates.dependency import check_dependency_gate
+from sova.supervisor.gates.file_conflict import check_file_overlap_gate
+from sova.supervisor.gates.human_involvement import check_human_involvement_gate
+from sova.supervisor.gates.memory_pressure import check_memory_pressure_gate
+from sova.supervisor.gates.merge_conflict import check_merge_conflict_gate
+from sova.supervisor.gates.ownership import check_ownership_gate
+from sova.supervisor.gates.quota import check_quota_gate
+from sova.supervisor.gates.rate_limit import check_github_rate_limit_gate
+from sova.supervisor.gates.repeated_failure import check_repeated_failures_gate
+from sova.supervisor.gates.slots import check_slot_gate, get_alive_count
 from sova.supervisor.planner import PlanResult
 from sova.utils.logging import get_logger
 
-try:
-    import psutil
-
-    _PSUTIL_AVAILABLE = True
-except ImportError:
-    _PSUTIL_AVAILABLE = False
-
 log = get_logger(component="supervisor.progression")
-
-# awaiting_approval is intentionally excluded: a completed researcher whose spec is pending
-# human review must still block re-spawn even though the agent process has exited.
-_ALREADY_RUNNING_TERMINAL = TASK_RUN_TERMINAL - {"awaiting_approval"}
 
 _NOT_COMPUTED = object()  # sentinel: distinguish "not precomputed" from "checked, no block"
 
@@ -68,12 +64,6 @@ class ProgressionAction(StrEnum):
     SPAWN_REBASE = "spawn_rebase"
     CHECKPOINT_NEEDED = "checkpoint_needed"
     RESET_STALE_STATE = "reset_stale_state"
-
-
-@dataclass(frozen=True, slots=True)
-class BlockReason:
-    gate: str
-    detail: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +197,7 @@ class TaskProgressionEngine:
         pair is not in the plan's approved list are converted to WAIT.
         Deterministic gates still hard-block regardless of the plan.
         """
-        global_rate_limit = self._check_github_rate_limit_gate()
+        global_rate_limit = check_github_rate_limit_gate(self._adapter.github_user)
         if global_rate_limit is not None:
             log.info("evaluate_all.skipped_rate_limited")
             return []
@@ -221,13 +211,20 @@ class TaskProgressionEngine:
         self._last_graph = graph
         cfg = load_config(self._project_dir)
 
-        global_memory = self._check_memory_pressure_gate(cfg)
-        global_quota = await self._check_quota_gate(ProgressionAction.SPAWN_DEVELOPER, cfg=cfg)
-        global_ci_budget = await self._check_ci_budget_gate(cfg=cfg)
+        global_memory = check_memory_pressure_gate(cfg.memory_guard)
+        global_quota = await check_quota_gate(
+            is_developer=True, quota_config=cfg.coderabbit_quota, session_factory=self._session_factory
+        )
+        global_ci_budget = await check_ci_budget_gate(
+            is_developer=True,
+            github_user=self._adapter.github_user,
+            github_repo=cfg.github_repo,
+            ci_block_minutes=cfg.supervisor.ci_block_minutes,
+        )
         precomputed_conflicts = await self._fetch_mergeability_map()
         precomputed_file_sets = await self._fetch_file_overlap_sets()
 
-        alive_count = await self._get_alive_count()
+        alive_count = await get_alive_count(self._session_factory)
         global_slots: BlockReason | None = None
         if alive_count >= cfg.max_parallel_agents:
             global_slots = BlockReason(
@@ -244,7 +241,7 @@ class TaskProgressionEngine:
             if task is None:
                 continue
 
-            mid_loop_rate_limit = self._check_github_rate_limit_gate()
+            mid_loop_rate_limit = check_github_rate_limit_gate(self._adapter.github_user)
             if mid_loop_rate_limit is not None:
                 log.info("evaluate_all.mid_loop_rate_limited", issue=int(task.id))
                 break
@@ -315,8 +312,7 @@ class TaskProgressionEngine:
 
     async def evaluate_task(self, issue_number: int) -> ProgressionDecision:
         """Evaluate a single task's readiness for progression."""
-        # Check rate limit before any GitHub API calls (get_state, build_dependency_graph, etc.)
-        rate_limit_block = self._check_github_rate_limit_gate()
+        rate_limit_block = check_github_rate_limit_gate(self._adapter.github_user)
         if rate_limit_block is not None:
             return ProgressionDecision(
                 issue_number=issue_number,
@@ -336,7 +332,6 @@ class TaskProgressionEngine:
                 blocked_by=(BlockReason(gate="adapter", detail="get_state() call failed"),),
             )
 
-        # Short-circuit: skip graph build if no transition is possible or automation is disabled
         candidate = self._determine_transition(state)
         if candidate is None:
             return ProgressionDecision(
@@ -421,17 +416,12 @@ class TaskProgressionEngine:
 
         kwargs: dict = {"issue": str(decision.issue_number), "role": role}
 
-        # Pass the correct project slug so start_agent writes to this project's DB
-        # (not the default project). Without this, multi-project supervisors spawn
-        # agents in the wrong project context and the circuit breaker never sees the
-        # failures.
         if self._project_dir is not None:
             slug = find_slug_for_path(self._project_dir)
             if slug is None:
                 return {"error": f"Project path is not registered: {self._project_dir}"}
             kwargs["slug"] = slug
 
-        # Actions that operate on an existing PR need the PR number
         if decision.action in (ProgressionAction.SPAWN_INTEGRATE, ProgressionAction.SPAWN_ADDRESS_REVIEW):
             pr_info = await self._find_pr_for_issue(decision.issue_number) if not decision.pr_number else None
             pr_number = decision.pr_number or (pr_info.number if pr_info else None)
@@ -439,11 +429,6 @@ class TaskProgressionEngine:
                 return {"error": f"No open PR found for issue #{decision.issue_number}"}
             kwargs["pr_number"] = pr_number
 
-        # Claim unassigned issues before spawning (distributed ownership).
-        # The ownership gate already verified this issue is either unassigned or assigned
-        # to us, so we attempt the assign unconditionally (idempotent on GitHub).
-        # Only assign for development actions (researcher, developer), not for post-work
-        # actions (integrate) where the work is already complete.
         if self._config.respect_ownership and decision.action in _ASSIGN_ACTIONS and role:
             try:
                 claimed = await self._adapter.assign(str(decision.issue_number), role)
@@ -497,7 +482,10 @@ class TaskProgressionEngine:
 
     async def _execute_stale_reset(self, issue_number: int) -> dict:
         """Execute a RESET_STALE_STATE decision: roll back the issue to the appropriate prior state."""
+        from sqlalchemy import select
+
         from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+        from sova.db.models import TaskRun
 
         try:
             async with self._session_factory() as session:
@@ -519,9 +507,7 @@ class TaskProgressionEngine:
                 await rollback_issue_state(last_run.id, self._project_dir)
                 target_desc = f"run {last_run.id} (role: {last_run.role or 'unknown'})"
             else:
-                # Re-check liveness: an agent may have started between evaluation and execution.
-                # rollback_issue_state has its own concurrent-run guard, but this direct path does not.
-                alive_block = await self._check_already_running(issue_number)
+                alive_block = await check_already_running(issue_number, self._session_factory)
                 if alive_block:
                     log.info("stale_reset.skipped_agent_alive", issue=issue_number, detail=alive_block.detail)
                     return {"skipped": True, "issue": issue_number, "reason": alive_block.detail}
@@ -584,7 +570,7 @@ class TaskProgressionEngine:
         if graph is None:
             graph = self._last_graph
         if graph is None:
-            if self._check_github_rate_limit_gate() is not None:
+            if check_github_rate_limit_gate(self._adapter.github_user) is not None:
                 log.info("auto_close_epics.skipped_rate_limited")
                 return []
             try:
@@ -639,7 +625,6 @@ class TaskProgressionEngine:
                 reason=f"No transition available from state '{state.value}'",
             )
 
-        # Short-circuit: CHECKPOINT_NEEDED means automation is disabled -- no gates to run
         if candidate == ProgressionAction.CHECKPOINT_NEEDED:
             return ProgressionDecision(
                 issue_number=issue_number,
@@ -647,9 +632,8 @@ class TaskProgressionEngine:
                 reason=f"Automation disabled for state '{state.value}': requires human approval",
             )
 
-        # Short-circuit: RESET_STALE_STATE only needs liveness + rate limit check
         if candidate == ProgressionAction.RESET_STALE_STATE:
-            alive_block = await self._check_already_running(issue_number)
+            alive_block = await check_already_running(issue_number, self._session_factory)
             if alive_block:
                 return ProgressionDecision(
                     issue_number=issue_number,
@@ -657,7 +641,7 @@ class TaskProgressionEngine:
                     reason=f"Agent still active for IN_PROGRESS #{issue_number}: {alive_block.detail}",
                 )
             if precomputed_rate_limit is _NOT_COMPUTED:
-                rate_limit_block = self._check_github_rate_limit_gate()
+                rate_limit_block = check_github_rate_limit_gate(self._adapter.github_user)
             else:
                 rate_limit_block = precomputed_rate_limit
             if rate_limit_block:
@@ -673,9 +657,6 @@ class TaskProgressionEngine:
                 reason=f"Stale IN_PROGRESS: no agent running for #{issue_number}",
             )
 
-        # Refine IN_REVIEW: check SOVA verdict to decide between address-review and integrate.
-        # _determine_transition returns SPAWN_INTEGRATE as a placeholder for IN_REVIEW when
-        # either auto flag is enabled; we refine it here based on the actual PR verdict.
         refined_pr_info: PRInfo | None = None
         if state == TaskState.IN_REVIEW and candidate == ProgressionAction.SPAWN_INTEGRATE:
             candidate, refined_pr_info = await self._refine_in_review_action(issue_number)
@@ -758,78 +739,90 @@ class TaskProgressionEngine:
         """Run all gate checks and return (active_blockers, discovered_pr_number)."""
         blockers: list[BlockReason] = []
 
-        # Rate limit gate first: if GitHub API is throttled, skip gates that make API calls
-        # (ownership calls find_pr_for_issue, repeated_failures/budget query DB only but
-        # circuit_breaker calls _count_address_review_runs which is DB-only too).
         if precomputed_rate_limit is _NOT_COMPUTED:
-            rate_limit_block = self._check_github_rate_limit_gate()
+            rate_limit_block = check_github_rate_limit_gate(self._adapter.github_user)
         else:
             rate_limit_block = precomputed_rate_limit
         if rate_limit_block:
             blockers.append(rate_limit_block)
             return blockers, None
 
-        # Dependency gate is sync (reads in-memory graph only)
         if self._config.respect_dependencies:
-            dep_block = self._check_dependency_gate(issue_number, graph)
+            dep_block = check_dependency_gate(issue_number, graph)
             if dep_block:
                 blockers.append(dep_block)
 
-        # Human involvement gate: pure in-memory label check, before API-calling gates.
-        # Extract labels from graph when caller didn't provide them (fail-closed).
         effective_labels = task_labels
         if effective_labels is None and graph is not None:
             task_node = graph.get_task(issue_number)
             effective_labels = task_node.labels if task_node else []
-        human_block = self._check_human_involvement_gate(issue_number, effective_labels or [])
+        human_block = check_human_involvement_gate(issue_number, effective_labels or [])
         if human_block:
             blockers.append(human_block)
 
-        # Run async per-task gates concurrently (ownership gate returns a tuple)
         running_result, budget_result, ownership_result = await asyncio.gather(
-            self._check_already_running(issue_number),
-            self._check_budget_gate(issue_number),
-            self._check_ownership_gate(
-                issue_number, candidate, task_assignees=task_assignees, known_pr_info=refined_pr_info
+            check_already_running(issue_number, self._session_factory),
+            check_budget_gate(issue_number, self._project_dir),
+            check_ownership_gate(
+                issue_number,
+                is_integrate=(candidate == ProgressionAction.SPAWN_INTEGRATE),
+                respect_ownership=self._config.respect_ownership,
+                github_user=self._adapter.github_user,
+                repo=getattr(self._adapter, "repo", ""),
+                adapter=self._adapter,
+                task_assignees=task_assignees,
+                known_pr_info=refined_pr_info,
             ),
         )
         ownership_block, discovered_pr = ownership_result
 
         simple_results: list[BlockReason | None] = [running_result, budget_result, ownership_block]
         if candidate == ProgressionAction.SPAWN_RESEARCHER:
-            simple_results.append(await self._check_repeated_failures_gate(issue_number))
+            simple_results.append(
+                await check_repeated_failures_gate(
+                    issue_number, self._config.max_researcher_failures, self._session_factory
+                )
+            )
         if candidate == ProgressionAction.SPAWN_DEVELOPER:
-            simple_results.append(await self._check_developer_repeated_failures_gate(issue_number))
+            simple_results.append(
+                await check_repeated_failures_gate(
+                    issue_number, self._config.max_developer_failures, self._session_factory, role="developer"
+                )
+            )
         if candidate == ProgressionAction.SPAWN_ADDRESS_REVIEW:
             cb_pr = (refined_pr_info.number if refined_pr_info else None) or discovered_pr
-            cb_block = await self._check_address_review_circuit_breaker_gate(issue_number, pr_number=cb_pr)
+            cfg = load_config(self._project_dir)
+            cb_block = await check_address_review_circuit_breaker_gate(
+                issue_number,
+                pr_number=cb_pr,
+                max_cycles=cfg.pipeline.max_address_review_cycles,
+                project_dir=self._project_dir,
+            )
             simple_results.append(cb_block)
         blockers.extend(r for r in simple_results if r is not None)
 
-        # Merge conflict gate (only blocks integrate actions)
         if precomputed_conflicts is not None and candidate == ProgressionAction.SPAWN_INTEGRATE:
-            conflict_block = self._check_merge_conflict_gate(issue_number, precomputed_conflicts)
+            conflict_block = check_merge_conflict_gate(issue_number, precomputed_conflicts)
             if conflict_block:
                 blockers.append(conflict_block)
 
-        # File overlap gate (per-task, uses precomputed file sets)
         if self._config.file_overlap_gate and precomputed_file_sets is not None:
-            overlap_block = self._check_file_overlap_gate(
+            overlap_block = check_file_overlap_gate(
                 issue_number,
                 precomputed_file_sets,
                 task_labels or [],
                 task_body,
+                self._config.file_overlap_threshold,
             )
             if overlap_block:
                 blockers.append(overlap_block)
 
-        # Add remaining precomputed global gates (rate limit already resolved above)
         global_blocks = await self._resolve_global_gates(
             candidate,
             precomputed_quota=precomputed_quota,
             precomputed_slots=precomputed_slots,
             precomputed_memory=precomputed_memory,
-            precomputed_rate_limit=rate_limit_block,  # already resolved, pass through
+            precomputed_rate_limit=rate_limit_block,
             precomputed_ci_budget=precomputed_ci_budget,
         )
         blockers.extend(global_blocks)
@@ -849,31 +842,41 @@ class TaskProgressionEngine:
         """Resolve precomputed-or-on-demand global gates and return active blockers."""
         blocks: list[BlockReason] = []
 
-        # GitHub API rate limit gate (runs first: if API is down, other gates may produce bad data)
         if precomputed_rate_limit is _NOT_COMPUTED:
-            rate_limit_block = self._check_github_rate_limit_gate()
+            rate_limit_block = check_github_rate_limit_gate(self._adapter.github_user)
         else:
             rate_limit_block = precomputed_rate_limit
         if rate_limit_block:
             blocks.append(rate_limit_block)
 
-        # Quota gate only applies to actions that produce PRs (SPAWN_DEVELOPER)
+        needs_config = any(
+            v is _NOT_COMPUTED
+            for v in (precomputed_quota, precomputed_ci_budget, precomputed_slots, precomputed_memory)
+        )
+        cfg = load_config(self._project_dir) if needs_config else None
+
+        is_developer = candidate == ProgressionAction.SPAWN_DEVELOPER
         if precomputed_quota is _NOT_COMPUTED:
-            quota_block = await self._check_quota_gate(candidate)
-        elif candidate == ProgressionAction.SPAWN_DEVELOPER:
+            quota_block = await check_quota_gate(
+                is_developer=is_developer,
+                quota_config=cfg.coderabbit_quota,
+                session_factory=self._session_factory,
+            )
+        elif is_developer:
             quota_block = precomputed_quota
         else:
             quota_block = None
         if quota_block:
             blocks.append(quota_block)
 
-        # CI budget gate only applies to SPAWN_DEVELOPER (developers trigger CI runs)
         if precomputed_ci_budget is _NOT_COMPUTED:
-            if candidate == ProgressionAction.SPAWN_DEVELOPER:
-                ci_budget_block = await self._check_ci_budget_gate()
-            else:
-                ci_budget_block = None
-        elif candidate == ProgressionAction.SPAWN_DEVELOPER:
+            ci_budget_block = await check_ci_budget_gate(
+                is_developer=is_developer,
+                github_user=self._adapter.github_user,
+                github_repo=cfg.github_repo,
+                ci_block_minutes=cfg.supervisor.ci_block_minutes,
+            )
+        elif is_developer:
             ci_budget_block = precomputed_ci_budget
         else:
             ci_budget_block = None
@@ -881,14 +884,14 @@ class TaskProgressionEngine:
             blocks.append(ci_budget_block)
 
         if precomputed_slots is _NOT_COMPUTED:
-            slot_block = await self._check_slot_gate()
+            slot_block = await check_slot_gate(self._session_factory, cfg.max_parallel_agents)
         else:
             slot_block = precomputed_slots
         if slot_block:
             blocks.append(slot_block)
 
         if precomputed_memory is _NOT_COMPUTED:
-            memory_block = self._check_memory_pressure_gate()
+            memory_block = check_memory_pressure_gate(cfg.memory_guard)
         else:
             memory_block = precomputed_memory
         if memory_block:
@@ -914,10 +917,6 @@ class TaskProgressionEngine:
                 ProgressionAction.SPAWN_DEVELOPER if self._config.auto_develop else ProgressionAction.CHECKPOINT_NEEDED
             )
         if state == TaskState.IN_REVIEW:
-            # IN_REVIEW has two possible actions: address-review (if SOVA verdict is revise/block)
-            # or integrate (if PR is approved). The actual action is refined in _refine_in_review_action
-            # which checks the SOVA verdict (requires I/O). Return SPAWN_INTEGRATE as a placeholder
-            # if either auto flag is enabled; CHECKPOINT_NEEDED if both are disabled.
             if self._config.auto_integrate or self._config.auto_address_review:
                 return ProgressionAction.SPAWN_INTEGRATE
             return ProgressionAction.CHECKPOINT_NEEDED
@@ -925,450 +924,13 @@ class TaskProgressionEngine:
             return ProgressionAction.SPAWN_TRIAGE if self._config.auto_triage else ProgressionAction.CHECKPOINT_NEEDED
         if state == TaskState.IN_PROGRESS:
             return ProgressionAction.RESET_STALE_STATE
-        if state == TaskState.NEEDS_SPEC:
-            return (
-                ProgressionAction.SPAWN_RESEARCHER
-                if self._config.auto_research
-                else ProgressionAction.CHECKPOINT_NEEDED
-            )
-        # DONE, HUMAN_ONLY: no action
         return None
-
-    def _check_dependency_gate(self, issue: int, graph: DependencyGraph) -> BlockReason | None:
-        """Check if all non-epic dependencies are DONE (no I/O: reads in-memory graph only).
-
-        Epic dependencies are skipped: epics are tracking containers,
-        not real blockers.
-        """
-        deps = graph.get_dependencies(issue)
-        if not deps:
-            return None
-
-        for dep_id in deps:
-            dep_task = graph.get_task(dep_id)
-            if dep_task is None:
-                return BlockReason(
-                    gate="dependency",
-                    detail=f"Dependency #{dep_id} not found (missing reference)",
-                )
-            if is_epic(dep_task.labels):
-                continue
-            if dep_task.state != TaskState.DONE:
-                return BlockReason(
-                    gate="dependency",
-                    detail=f"Blocked by #{dep_id} (state: {dep_task.state.value})",
-                )
-
-        return None
-
-    def _check_human_involvement_gate(self, issue: int, labels: list[str]) -> BlockReason | None:
-        """Block issues labeled agent:human-only or agent:interactive-recommended.
-
-        human-only is a hard block (defense-in-depth alongside state-based HUMAN_ONLY).
-        interactive-recommended blocks autonomous scheduling; manual dashboard starts
-        bypass the progression engine entirely.
-        """
-        if is_human_only(labels):
-            log.info("human_involvement_gate.blocked_human_only", issue=issue)
-            return BlockReason(
-                gate="human_involvement",
-                detail=f"Issue #{issue} is labeled agent:human-only",
-            )
-        if is_interactive_recommended(labels):
-            log.info("human_involvement_gate.blocked_interactive_recommended", issue=issue)
-            return BlockReason(
-                gate="human_involvement",
-                detail=f"Issue #{issue} is labeled agent:interactive-recommended (manual start only)",
-            )
-        return None
-
-    async def _check_quota_gate(
-        self, action: ProgressionAction, *, cfg: ProjectConfig | None = None
-    ) -> BlockReason | None:
-        """Check CodeRabbit quota headroom for actions that produce PRs."""
-        if action != ProgressionAction.SPAWN_DEVELOPER:
-            return None
-
-        try:
-            from sova.supervisor.coderabbit_quota import get_quota_status
-
-            if cfg is None:
-                cfg = load_config(self._project_dir)
-            if not cfg.coderabbit_quota.enabled:
-                return None
-
-            async with self._session_factory() as session:
-                status = await get_quota_status(session, cfg.coderabbit_quota)
-                if not status.can_create_pr:
-                    wait_msg = ""
-                    if status.next_available_minutes is not None:
-                        wait_msg = f" (available in {status.next_available_minutes:.0f}m)"
-                    return BlockReason(
-                        gate="quota",
-                        detail=f"CodeRabbit quota exhausted{wait_msg}",
-                    )
-        except Exception:
-            log.debug("quota_gate.check_failed", exc_info=True)
-
-        return None
-
-    async def _check_ci_budget_gate(self, *, cfg: ProjectConfig | None = None) -> BlockReason | None:
-        """Check GitHub Actions CI minutes headroom. Blocks SPAWN_DEVELOPER when low. Fail-open."""
-        try:
-            from sova.supervisor.ci_budget import _UNLIMITED_SENTINEL, get_ci_budget_tracker
-
-            if cfg is None:
-                cfg = load_config(self._project_dir)
-            if not cfg.github_repo:
-                return None
-            if cfg.supervisor.ci_block_minutes <= 0:
-                return None
-
-            tracker = get_ci_budget_tracker(self._adapter.github_user)
-            budget = await tracker.get_budget(cfg.github_repo, self._adapter.github_user)
-
-            if budget.remaining >= _UNLIMITED_SENTINEL:
-                return None
-
-            # Zero-state from API errors: data unavailable, fail open
-            if budget.total == 0 and budget.remaining == 0:
-                return None
-
-            if budget.remaining < cfg.supervisor.ci_block_minutes:
-                return BlockReason(
-                    gate="ci_budget",
-                    detail=(
-                        f"CI minutes low: {budget.remaining} remaining (threshold: {cfg.supervisor.ci_block_minutes})"
-                    ),
-                )
-        except Exception:
-            log.debug("ci_budget_gate.check_failed", exc_info=True)
-
-        return None
-
-    async def _get_alive_count(self) -> int:
-        """Count active agent reservations: alive processes plus pending (PID-less) runs."""
-        try:
-            async with self._session_factory() as session:
-                stmt = select(TaskRun).where(TaskRun.status.notin_(TASK_RUN_TERMINAL))
-                result = await session.execute(stmt)
-                active_runs = result.scalars().all()
-                count = 0
-                for run in active_runs:
-                    if run.pid is None:
-                        count += 1  # pending: PID not yet assigned, count as active reservation
-                    elif _is_process_alive(run.pid):
-                        count += 1
-                return count
-        except Exception:
-            log.debug("get_alive_count.failed", exc_info=True)
-            return 0
-
-    async def _check_slot_gate(self, *, cfg: ProjectConfig | None = None) -> BlockReason | None:
-        """Check agent slot availability against max_concurrent."""
-        try:
-            alive_count = await self._get_alive_count()
-            if cfg is None:
-                cfg = load_config(self._project_dir)
-            max_concurrent = cfg.max_parallel_agents
-            if alive_count >= max_concurrent:
-                return BlockReason(
-                    gate="slots",
-                    detail=f"All agent slots occupied ({alive_count}/{max_concurrent})",
-                )
-        except Exception:
-            log.debug("slot_gate.check_failed", exc_info=True)
-
-        return None
-
-    def _check_github_rate_limit_gate(self) -> BlockReason | None:
-        """Check if GitHub API rate limit is exhausted. Fail-open."""
-        try:
-            from sova.supervisor.github_quota import get_github_quota_tracker
-
-            tracker = get_github_quota_tracker(self._adapter.github_user)
-            if tracker.should_skip():
-                status = tracker.get_status()
-                return BlockReason(
-                    gate="rate_limit",
-                    detail=f"GitHub API rate limited (cooldown: {status.cooldown_remaining_seconds:.0f}s remaining)",
-                )
-        except Exception:
-            log.debug("rate_limit_gate.check_failed", exc_info=True)
-        return None
-
-    def _check_memory_pressure_gate(self, cfg: ProjectConfig | None = None) -> BlockReason | None:
-        """Check system memory pressure. Fail-open if psutil is unavailable."""
-        if not _PSUTIL_AVAILABLE:
-            return None
-
-        try:
-            if cfg is None:
-                cfg = load_config(self._project_dir)
-            if not cfg.memory_guard.enabled:
-                return None
-            mem = psutil.virtual_memory()
-            available_gb = mem.available / (1024**3)
-            block_threshold = cfg.memory_guard.block_threshold_gb
-            warn_threshold = cfg.memory_guard.warn_threshold_gb
-
-            if available_gb < block_threshold:
-                return BlockReason(
-                    gate="memory",
-                    detail=(
-                        f"System memory pressure: {available_gb:.2f} GB available < {block_threshold:.2f} GB threshold"
-                    ),
-                )
-            if available_gb < warn_threshold:
-                log.warning(
-                    "memory_pressure.warn",
-                    available_gb=round(available_gb, 2),
-                    warn_threshold_gb=warn_threshold,
-                )
-        except Exception:
-            log.debug("memory_gate.check_failed", exc_info=True)
-
-        return None
-
-    async def _check_budget_gate(self, issue: int) -> BlockReason | None:
-        """Check per-issue budget limit."""
-        try:
-            error = await _check_issue_budget(str(issue), self._project_dir)
-            if error:
-                return BlockReason(gate="budget", detail=error["error"])
-        except Exception:
-            log.debug("budget_gate.check_failed", issue=issue, exc_info=True)
-
-        return None
-
-    async def _check_already_running(self, issue: int) -> BlockReason | None:
-        """Check if an agent is already running or being started for this issue.
-
-        awaiting_approval runs (spec pending human review) block unconditionally: the researcher
-        completed its work and the issue should not be re-researched even though the process exited.
-        """
-        try:
-            async with self._session_factory() as session:
-                stmt = select(TaskRun).where(
-                    TaskRun.issue_number == str(issue),
-                    TaskRun.status.notin_(_ALREADY_RUNNING_TERMINAL),
-                )
-                result = await session.execute(stmt)
-                runs = result.scalars().all()
-                for run in runs:
-                    if run.status == "awaiting_approval":
-                        return BlockReason(
-                            gate="already_running",
-                            detail=f"Spec awaiting human approval for #{issue} (run {run.id})",
-                        )
-                    if run.pid is None:
-                        return BlockReason(
-                            gate="already_running",
-                            detail=f"Agent being started for #{issue} (run {run.id}, PID not yet assigned)",
-                        )
-                    if _is_process_alive(run.pid):
-                        return BlockReason(
-                            gate="already_running",
-                            detail=f"Agent already running for #{issue} (run {run.id}, PID {run.pid})",
-                        )
-        except Exception:
-            log.debug("already_running.check_failed", issue=issue, exc_info=True)
-
-        return None
-
-    async def _check_repeated_failures_gate(self, issue: int) -> BlockReason | None:
-        """Block researcher spawn after too many failures since the last success. Fail-open."""
-        return await self._check_role_repeated_failures(
-            issue, role="researcher", max_failures=self._config.max_researcher_failures, gate="repeated_failure"
-        )
-
-    async def _check_developer_repeated_failures_gate(self, issue: int) -> BlockReason | None:
-        """Block developer spawn after too many failures since the last success. Fail-open."""
-        return await self._check_role_repeated_failures(
-            issue, role="developer", max_failures=self._config.max_developer_failures, gate="developer_repeated_failure"
-        )
-
-    async def _check_role_repeated_failures(
-        self, issue: int, *, role: str, max_failures: int, gate: str
-    ) -> BlockReason | None:
-        """Block spawn after too many consecutive failures for a role. Fail-open."""
-        if max_failures == 0:
-            return None
-        try:
-            async with self._session_factory() as session:
-                last_success_subq = (
-                    select(func.coalesce(func.max(TaskRun.id), 0))
-                    .where(
-                        TaskRun.issue_number == str(issue),
-                        TaskRun.role == role,
-                        TaskRun.status == "done",
-                    )
-                    .scalar_subquery()
-                )
-                stmt = (
-                    select(func.count())
-                    .select_from(TaskRun)
-                    .where(
-                        TaskRun.issue_number == str(issue),
-                        TaskRun.role == role,
-                        TaskRun.status == "failed",
-                        TaskRun.id > last_success_subq,
-                    )
-                )
-                result = await session.execute(stmt)
-                count = result.scalar_one_or_none() or 0
-                if count >= max_failures:
-                    return BlockReason(
-                        gate=gate,
-                        detail=(
-                            f"{role.capitalize()} has failed {count} times for #{issue}; "
-                            f"human review required (threshold: {max_failures})"
-                        ),
-                    )
-        except Exception:
-            log.debug("%s.check_failed", gate, issue=issue, exc_info=True)
-
-        return None
-
-    def _check_merge_conflict_gate(self, issue_number: int, mergeability_map: dict[int, str]) -> BlockReason | None:
-        """Check if the PR for this issue has merge conflicts. Fail-open."""
-        status = mergeability_map.get(issue_number)
-        if status == "CONFLICTING":
-            return BlockReason(
-                gate="conflict",
-                detail=f"PR for #{issue_number} has merge conflicts with base branch",
-            )
-        return None
-
-    def _check_file_overlap_gate(
-        self,
-        issue_number: int,
-        active_file_sets: list[BranchFileSet],
-        labels: list[str],
-        body: str,
-    ) -> BlockReason | None:
-        """Check if candidate task's predicted files overlap with in-flight branches."""
-        try:
-            candidate_files = predict_candidate_files(labels, body)
-            if not candidate_files:
-                return None
-
-            filtered = [fs for fs in active_file_sets if fs.issue_number != str(issue_number)]
-            overlaps = check_file_overlap(candidate_files, filtered, threshold=self._config.file_overlap_threshold)
-            if not overlaps:
-                return None
-
-            details = []
-            for o in overlaps:
-                sample = sorted(o.overlapping_files)[:3]
-                files_str = ", ".join(sample)
-                if len(o.overlapping_files) > 3:
-                    files_str += f" (+{len(o.overlapping_files) - 3} more)"
-                issue_ref = f"#{o.conflicting_issue}" if o.conflicting_issue else o.conflicting_branch
-                details.append(f"overlaps with {issue_ref} on {files_str}")
-
-            return BlockReason(
-                gate="file_overlap",
-                detail="; ".join(details),
-            )
-        except Exception:
-            log.debug("file_overlap_gate.check_failed", issue=issue_number, exc_info=True)
-            return None
-
-    async def _check_ownership_gate(
-        self,
-        issue: int,
-        candidate: ProgressionAction,
-        *,
-        task_assignees: list[str] | None = None,
-        known_pr_info: PRInfo | None = None,
-    ) -> tuple[BlockReason | None, int | None]:
-        """Check if issue/PR is owned by the configured github_user.
-
-        For development actions (SPAWN_DEVELOPER, SPAWN_RESEARCHER), checks issue assignee.
-        For review actions (SPAWN_INTEGRATE), checks PR author instead (handles teammate takeover).
-        Fail-open on API errors (log warning and proceed).
-
-        ``task_assignees`` avoids a redundant API call when the caller already has the task data.
-        ``known_pr_info`` avoids a redundant find_pr_for_issue call when the caller already resolved it.
-
-        Returns (block_reason, discovered_pr_number). The PR number is populated when
-        the gate checks a PR (SPAWN_INTEGRATE) and can be reused by execute_decision
-        to avoid a duplicate API call.
-        """
-        if not self._config.respect_ownership:
-            return None, None
-
-        if not self._adapter.github_user:
-            log.warning("ownership_gate.github_user_not_configured", issue=issue)
-            return None, None
-
-        try:
-            # For review/integrate phases, check PR author (PR ownership is authoritative post-development)
-            discovered_pr: int | None = None
-            if candidate == ProgressionAction.SPAWN_INTEGRATE:
-                pr_result, discovered_pr = await self._check_pr_ownership(issue, known_pr_info=known_pr_info)
-                if pr_result is not _NOT_COMPUTED:
-                    return pr_result, discovered_pr
-
-            # Development phase or fallback: check issue assignee
-            block = await self._check_issue_ownership(issue, task_assignees)
-            return block, discovered_pr
-
-        except Exception:
-            log.warning("ownership_gate.check_failed", issue=issue, exc_info=True)
-            return None, None  # Fail-open
-
-    async def _check_pr_ownership(
-        self, issue: int, *, known_pr_info: PRInfo | None = None
-    ) -> tuple[BlockReason | object | None, int | None]:
-        """Check PR author ownership.
-
-        Returns (gate_result, pr_number) where gate_result is:
-        BlockReason if blocked, None if authorized,
-        _NOT_COMPUTED if should fall through.
-
-        ``known_pr_info`` reuses the PRInfo (with author_login) already
-        discovered by _refine_in_review_action, avoiding a redundant API call.
-        """
-        if not self._adapter.repo:
-            return _NOT_COMPUTED, None
-
-        pr = known_pr_info or await find_pr_for_issue(
-            str(issue), repo=self._adapter.repo, github_user=self._adapter.github_user
-        )
-        if not pr or not pr.author_login:
-            return _NOT_COMPUTED, pr.number if pr else None
-
-        # PR found with author: this is decisive
-        if pr.author_login != self._adapter.github_user:
-            return BlockReason(
-                gate="ownership",
-                detail=f"PR #{pr.number} is owned by {pr.author_login} (not {self._adapter.github_user})",
-            ), pr.number
-        return None, pr.number  # Authorized
-
-    async def _check_issue_ownership(self, issue: int, task_assignees: list[str] | None) -> BlockReason | None:
-        """Check issue assignee ownership. Returns None if unassigned or assigned to self."""
-        assignees = task_assignees if task_assignees is not None else []
-        if task_assignees is None:
-            # Fallback: fetch from API (single-task evaluation without precomputed data)
-            task = await self._adapter.get_task(str(issue))
-            assignees = task.assignees
-
-        if not assignees or self._adapter.github_user in assignees:
-            return None
-
-        # Assigned to someone else
-        assignee_str = ", ".join(assignees)
-        return BlockReason(
-            gate="ownership",
-            detail=f"Issue #{issue} is assigned to {assignee_str} (not {self._adapter.github_user})",
-        )
 
     async def _find_pr_for_issue(self, issue: int) -> PRInfo | None:
         """Find an open PR linked to this issue."""
         try:
+            from sova.git.pr import find_pr_for_issue
+
             if not self._adapter.repo:
                 return None
             return await find_pr_for_issue(str(issue), repo=self._adapter.repo, github_user=self._adapter.github_user)
@@ -1408,27 +970,3 @@ class TaskProgressionEngine:
         if self._config.auto_integrate:
             return ProgressionAction.SPAWN_INTEGRATE, pr_info
         return ProgressionAction.CHECKPOINT_NEEDED, pr_info
-
-    async def _check_address_review_circuit_breaker_gate(
-        self, issue: int, *, pr_number: int | None
-    ) -> BlockReason | None:
-        """Block SPAWN_ADDRESS_REVIEW when the address-review cycle limit is reached."""
-        if pr_number is None:
-            return None
-
-        try:
-            cfg = load_config(self._project_dir)
-            max_cycles = cfg.pipeline.max_address_review_cycles
-            if max_cycles <= 0:
-                return None
-
-            count = await _count_address_review_runs(str(issue), pr_number, self._project_dir)
-            if count >= max_cycles:
-                return BlockReason(
-                    gate="circuit_breaker",
-                    detail=f"Address-review circuit breaker: {count}/{max_cycles} cycles completed for PR #{pr_number}",
-                )
-        except Exception:
-            log.debug("circuit_breaker_gate.check_failed", issue=issue, exc_info=True)
-
-        return None

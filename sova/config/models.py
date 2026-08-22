@@ -169,7 +169,7 @@ class DevelopConfig(BaseSettings):
     check_timeout: int = Field(300, gt=0)
     guard_test_weakening: bool = True
     max_fix_time: int = Field(600, gt=0)
-    fix_timeout: int = Field(600, gt=0)
+    fix_timeout: int = Field(180, gt=0)
     step_timeout: int = Field(1200, gt=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DEVELOP_")
