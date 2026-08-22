@@ -228,10 +228,16 @@ def resolve_model(
     *,
     complexity: ComplexityTier | None = None,
     llm_config: LLMConfig | None = None,
+    agent_model: str | None = None,
 ) -> tuple[str, str] | None:
     """Resolve the model for a given agent role.
 
     Priority: role-specific config > complexity-based routing > None.
+
+    Args:
+        agent_model: pinned model from ``agent.model`` config. Passed through
+            to ``route_model()`` so generic aliases are replaced with the
+            pinned version when they share the same family.
 
     Returns:
         (model_alias, reason) tuple, or None if no model is resolved.
@@ -245,6 +251,6 @@ def resolve_model(
     if complexity is not None:
         from sova.llm.routing import route_model
 
-        return route_model(complexity, llm_config=llm_config)
+        return route_model(complexity, llm_config=llm_config, agent_model=agent_model)
 
     return None

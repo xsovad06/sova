@@ -45,12 +45,12 @@ class AssessStep(BaseStep):
         )
         ctx.complexity = complexity
 
-        # Resolve model based on complexity and role
         resolved = resolve_model(
             role=ctx.role,
             roles_config=ctx.config.roles,
             complexity=complexity,
             llm_config=ctx.config.llm,
+            agent_model=ctx.config.agent.model,
         )
         if resolved:
             ctx.resolved_model, ctx.model_selection_reason = resolved
