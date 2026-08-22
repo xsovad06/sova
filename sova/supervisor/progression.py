@@ -925,7 +925,12 @@ class TaskProgressionEngine:
             return ProgressionAction.SPAWN_TRIAGE if self._config.auto_triage else ProgressionAction.CHECKPOINT_NEEDED
         if state == TaskState.IN_PROGRESS:
             return ProgressionAction.RESET_STALE_STATE
-        # NEEDS_SPEC: human approves spec externally
+        if state == TaskState.NEEDS_SPEC:
+            return (
+                ProgressionAction.SPAWN_RESEARCHER
+                if self._config.auto_research
+                else ProgressionAction.CHECKPOINT_NEEDED
+            )
         # DONE, HUMAN_ONLY: no action
         return None
 

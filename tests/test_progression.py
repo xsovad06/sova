@@ -168,9 +168,13 @@ class TestDetermineTransition:
         engine = _make_engine()
         assert engine._determine_transition(TaskState.DONE) is None
 
-    def test_needs_spec_returns_none(self) -> None:
+    def test_needs_spec_returns_checkpoint_when_auto_research_off(self) -> None:
         engine = _make_engine()
-        assert engine._determine_transition(TaskState.NEEDS_SPEC) is None
+        assert engine._determine_transition(TaskState.NEEDS_SPEC) == ProgressionAction.CHECKPOINT_NEEDED
+
+    def test_needs_spec_returns_spawn_researcher_when_auto_research_on(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_research=True))
+        assert engine._determine_transition(TaskState.NEEDS_SPEC) == ProgressionAction.SPAWN_RESEARCHER
 
     def test_human_only_returns_none(self) -> None:
         engine = _make_engine()
