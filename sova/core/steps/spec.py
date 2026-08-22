@@ -69,9 +69,6 @@ def _extract_complexity(text: str) -> str:
     return match.group(1).lower() if match else "moderate"
 
 
-# _extract_section is imported from sova.utils.markdown above
-
-
 def _research_says_implemented(body: str) -> bool:
     """Return True if the Research section indicates the issue is already implemented.
 
