@@ -23,6 +23,15 @@ log = get_logger(component="role.triage")
 
 _ACCEPTANCE_CRITERIA = "acceptance criteria"
 
+
+def _strip_markdown_fencing(text: str) -> str:
+    """Remove markdown code fencing (```...```) wrapping from LLM output."""
+    if text.startswith("```"):
+        lines = text.split("\n")
+        return "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    return text
+
+
 # Line-initial patterns that indicate LLM-generated preamble/postamble.
 # Anchored to line start (after stripping) to avoid false positives on
 # legitimate mid-sentence occurrences like "Let me know if you have questions".
@@ -34,6 +43,17 @@ _LLM_LEAK_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^i'll ", re.IGNORECASE),
     re.compile(r"^(?:feel free|don't hesitate) to ", re.IGNORECASE),
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichedAssessment:
+    """Result of a combined assess-and-enrich LLM call.
+
+    Keeps enrichment concerns out of the TaskAssessment Pydantic model.
+    """
+
+    assessment: TaskAssessment
+    enriched_body: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,14 +201,20 @@ Respond with a JSON object (no markdown fencing):
 """
 
 
-_ENRICHMENT_PROMPT = """\
-You are an issue quality improver. The following GitHub issue body is missing \
-key structural sections that are needed for an autonomous agent to work on it.
+_ASSESS_AND_ENRICH_PROMPT = """\
+You are an issue quality improver AND assessor. The following GitHub issue \
+body is missing key structural sections that are needed for an autonomous \
+agent to work on it. Your job is to:
+1. Rewrite the issue body with all missing sections filled in.
+2. Assess the issue for autonomous AI agent suitability.
 
 ## Issue #{issue_id}: {title}
 
 ### Current Body
 {body}
+
+### Labels
+{labels}
 
 ### Missing Sections
 {missing_sections}
@@ -202,10 +228,34 @@ The issue should have these sections:
 - ## Out of Scope / Constraints (what must NOT happen)
 - ## References (related issues, code paths, docs)
 
-### Instructions
-Rewrite the issue body to include all missing sections while preserving \
-the existing content. Use the template section names exactly as shown above. \
-Output ONLY the improved issue body in markdown, no preamble or postamble.
+### Assessment Criteria
+Note: if enrichment succeeds (quality score meets threshold), the heuristic suitability
+will be used instead. Your assessment is used only if enrichment fails or is insufficient.
+Evaluate on these dimensions:
+1. Is the description specific enough? (acceptance criteria, steps, expected behavior)
+2. Does it reference specific files, functions, or components?
+3. Is the scope bounded? (single feature vs epic)
+4. Does it require domain knowledge the agent lacks?
+5. Are there external dependencies or environment requirements?
+
+### Output Format
+
+Respond with a JSON object (no markdown fencing) containing two top-level keys:
+
+{{
+    "enriched_body": "the complete rewritten issue body in markdown, preserving all existing details and context",
+    "assessment": {{
+        "suitability": "ready" | "needs_spec" | "needs_research" | "human_only",
+        "confidence": 0.0-1.0,
+        "reasoning": "one paragraph explanation",
+        "missing_context": ["list", "of", "missing", "items"],
+        "estimated_complexity": "trivial" | "simple" | "moderate" | "complex" | "epic",
+        "suggested_role": "researcher" | "developer" | "triage",
+        "sub_tasks": ["optional", "breakdown"]
+    }}
+}}
+
+IMPORTANT: Output ONLY the JSON object. No markdown fencing, no preamble, no postamble.
 """
 
 
@@ -573,11 +623,7 @@ class TriageRole(AgentRole):
     def _parse_llm_assessment(self, text: str) -> TaskAssessment | None:
         """Parse Claude's JSON response into a TaskAssessment."""
         try:
-            # Strip markdown fencing if present
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                lines = cleaned.split("\n")
-                cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+            cleaned = _strip_markdown_fencing(text.strip())
 
             data = json.loads(cleaned)
 
@@ -678,25 +724,30 @@ class TriageRole(AgentRole):
         original_assessment: TaskAssessment,
     ) -> TaskAssessment:
         """Apply quality gate: attempt enrichment, re-score, or downgrade to needs_spec."""
+        llm_assessment: TaskAssessment | None = None
+
         if triage_cfg.auto_enrich:
-            enriched_body = await self._enrich_body(ctx, task, quality)
-            if enriched_body:
-                new_quality = compute_quality_score(enriched_body)
-                if new_quality.meets_threshold(triage_cfg.min_quality_score):
+            result = await self._assess_and_enrich(ctx, task, quality)
+            if result:
+                llm_assessment = result.assessment
+                if result.enriched_body:
+                    new_quality = compute_quality_score(result.enriched_body)
+                    if new_quality.meets_threshold(triage_cfg.min_quality_score):
+                        log.info(
+                            "triage.enrichment_success",
+                            issue=ctx.issue_number,
+                            old_score=quality.total,
+                            new_score=new_quality.total,
+                        )
+                        await ctx.adapter.edit_body(ctx.issue_number, result.enriched_body)
+                        return original_assessment
                     log.info(
-                        "triage.enrichment_success",
+                        "triage.enrichment_insufficient",
                         issue=ctx.issue_number,
                         old_score=quality.total,
                         new_score=new_quality.total,
+                        threshold=triage_cfg.min_quality_score,
                     )
-                    await ctx.adapter.edit_body(ctx.issue_number, enriched_body)
-                    return original_assessment
-                log.info(
-                    "triage.enrichment_insufficient",
-                    issue=ctx.issue_number,
-                    new_score=new_quality.total,
-                    threshold=triage_cfg.min_quality_score,
-                )
 
         missing = []
         if not quality.has_acceptance_criteria:
@@ -706,6 +757,17 @@ class TriageRole(AgentRole):
         if not quality.has_description:
             missing.append("detailed description")
         log.info("triage.quality_gate_blocked", issue=ctx.issue_number, score=quality.total)
+
+        if llm_assessment:
+            return TaskAssessment(
+                suitability="needs_spec",
+                confidence=llm_assessment.confidence,
+                reasoning=llm_assessment.reasoning,
+                missing_context=llm_assessment.missing_context or missing,
+                estimated_complexity=llm_assessment.estimated_complexity,
+                suggested_role="triage",
+            )
+
         return TaskAssessment(
             suitability="needs_spec",
             confidence=0.9,
@@ -716,14 +778,17 @@ class TriageRole(AgentRole):
             suggested_role="triage",
         )
 
-    async def _enrich_body(self, ctx: ExecutionContext, task: Task, quality: QualityScore) -> str | None:
-        """Use a focused LLM call to add missing structural sections."""
+    async def _assess_and_enrich(
+        self, ctx: ExecutionContext, task: Task, quality: QualityScore
+    ) -> EnrichedAssessment | None:
+        """Combined LLM call: assess suitability AND enrich the issue body."""
         missing = _collect_missing_sections(quality)
 
-        prompt = _ENRICHMENT_PROMPT.format(
+        prompt = _ASSESS_AND_ENRICH_PROMPT.format(
             issue_id=task.id,
             title=task.title,
             body=task.body or "(empty)",
+            labels=", ".join(task.labels) if task.labels else "none",
             missing_sections="\n".join(f"- {s}" for s in missing),
         )
 
@@ -739,38 +804,54 @@ class TriageRole(AgentRole):
                 prompt,
                 model=model,
                 cwd=ctx.project_dir,
-                max_budget_usd=ctx.config.agent.max_budget / 20,
-                timeout=90,
+                max_budget_usd=ctx.config.agent.max_budget / 10,
+                timeout=120,
             )
 
             ctx.add_cost(result.cost_usd)
             await record_cost(
                 result,
-                phase="triage_enrich",
+                phase="triage_assess_enrich",
                 issue=str(task.id),
                 task_run_id=ctx.task_run_id,
                 model_selection_reason=model_reason,
             )
 
-            enriched = result.text.strip()
-            # Strip markdown fencing if the LLM wrapped its output
-            if enriched.startswith("```"):
-                lines = enriched.split("\n")
-                enriched = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+            cleaned = _strip_markdown_fencing(result.text.strip())
 
-            if enriched and len(enriched) > len(task.body or ""):
-                return enriched
+            data = json.loads(cleaned)
 
-            if enriched:
-                log.warning(
-                    "triage.enrich_too_short",
-                    issue=task.id,
-                    original_len=len(task.body or ""),
-                    enriched_len=len(enriched),
-                )
+            assessment_data = data.get("assessment", {})
+            assessment = TaskAssessment(
+                suitability=assessment_data.get("suitability", "needs_spec"),
+                confidence=float(assessment_data.get("confidence", 0.7)),
+                reasoning=assessment_data.get("reasoning", ""),
+                missing_context=assessment_data.get("missing_context", []),
+                estimated_complexity=assessment_data.get("estimated_complexity", "moderate"),
+                suggested_role=assessment_data.get("suggested_role", "researcher"),
+                sub_tasks=assessment_data.get("sub_tasks", []),
+            )
 
+            enriched_body: str | None = None
+            raw_body = data.get("enriched_body", "")
+            if isinstance(raw_body, str):
+                raw_body = _strip_markdown_fencing(raw_body.strip())
+                if raw_body and len(raw_body) > len(task.body or ""):
+                    enriched_body = raw_body
+                elif raw_body:
+                    log.warning(
+                        "triage.assess_enrich_body_too_short",
+                        issue=task.id,
+                        original_len=len(task.body or ""),
+                        enriched_len=len(raw_body),
+                    )
+
+            return EnrichedAssessment(assessment=assessment, enriched_body=enriched_body)
+
+        except (KeyError, ValueError) as exc:
+            log.warning("triage.assess_enrich_parse_failed", error=str(exc), exc_info=True)
         except Exception as exc:
-            log.warning("triage.enrich_failed", error=str(exc))
+            log.warning("triage.assess_enrich_failed", error=str(exc))
 
         return None
 
