@@ -104,8 +104,19 @@ async def scan_project(project_path: str) -> dict:
     lint_cmd = _detect_cmd(project, "lint", "lint", "")
     format_cmd = _detect_cmd(project, "format", "format", "")
 
-    already_installed = (project / _SOVA_TOML).exists()
-    existing_config = _read_existing_toml(project) if already_installed else {}
+    has_toml = (project / _SOVA_TOML).exists()
+    from sova.config.db_loader import _flatten_config_dict, _try_load_from_db
+
+    db_config = _try_load_from_db(project)
+    has_db = db_config is not None
+    already_installed = has_toml or has_db
+
+    existing_config: dict = {}
+    if has_toml:
+        existing_config = _read_existing_toml(project)
+    if db_config is not None:
+        db_flat = _flatten_config_dict(db_config)
+        existing_config.update({k: str(v) for k, v in db_flat.items()})
 
     return {
         "project_path": str(project),
@@ -150,81 +161,51 @@ class TomlConfig:
     jira_track_agent_work: bool = False
 
 
-def _add_jira_fields(task_source_table: object, config: TomlConfig) -> None:
-    """Populate Jira-specific fields on the task_source table."""
-    import tomlkit
+def generate_config_dict(config: TomlConfig) -> dict:
+    """Generate a config dict from wizard form data for DB storage.
 
-    jira_fields = [
-        ("jira_base_url", config.jira_base_url),
-        ("jira_email", config.jira_email),
-        ("jira_project_key", config.jira_project_key),
-        ("jira_component", config.jira_component),
-    ]
-    for key, value in jira_fields:
-        if value:
-            task_source_table.add(key, value)  # type: ignore[union-attr]
-    if config.jira_track_agent_work:
-        task_source_table.add("jira_track_agent_work", True)  # type: ignore[union-attr]
-    if config.jira_status_mapping:
-        mapping_table = tomlkit.inline_table()
-        for k, v in config.jira_status_mapping.items():
-            mapping_table.add(k, v)
-        task_source_table.add("jira_status_mapping", mapping_table)  # type: ignore[union-attr]
+    Maps ``[branch]`` and ``[pr]`` fields to the correct ``ProjectConfig``
+    fields: ``commit.branch_naming``, ``commit.pr_title_format``,
+    ``commit.ai_coauthor``.
+    """
+    result: dict = {
+        "github_repo": config.github_repo,
+        "github_user": config.github_user,
+        "base_branch": config.base_branch,
+        "test_cmd": config.test_cmd,
+        "lint_cmd": config.lint_cmd,
+        "format_cmd": config.format_cmd,
+        "task_source": {"type": config.task_source},
+        "agent": {"model": config.agent_model, "max_budget": config.max_budget},
+        "review": {"enabled": True, "max_rounds": config.review_max_rounds},
+        "commit": {
+            "format": config.commit_format,
+            "ai_coauthor": config.ai_coauthor,
+            "branch_naming": config.branch_naming,
+            "pr_title_format": config.pr_title_format,
+            "pr_auto_link_issues": config.pr_auto_link,
+        },
+        "triage": {"auto_label": True, "min_confidence": 0.7},
+        "roles": {"default": "developer"},
+    }
 
-
-def generate_sova_toml(config: TomlConfig) -> str:
-    """Generate sova.toml content from wizard form data."""
-    import tomlkit
-
-    doc = tomlkit.document()
-    doc.add(tomlkit.comment("SOVA configuration"))
-    doc.add("github_repo", config.github_repo)
-    doc.add("github_user", config.github_user)
-    doc.add("base_branch", config.base_branch)
-    doc.add("test_cmd", config.test_cmd)
-    doc.add("lint_cmd", config.lint_cmd)
-    doc.add("format_cmd", config.format_cmd)
-
-    task_source_table = tomlkit.table()
-    task_source_table.add("type", config.task_source)
     if config.task_source == "jira":
-        _add_jira_fields(task_source_table, config)
-    doc.add("task_source", task_source_table)
+        jira_fields: dict = {}
+        for key, value in [
+            ("jira_base_url", config.jira_base_url),
+            ("jira_email", config.jira_email),
+            ("jira_project_key", config.jira_project_key),
+            ("jira_component", config.jira_component),
+        ]:
+            if value:
+                jira_fields[key] = value
+        if config.jira_track_agent_work:
+            jira_fields["jira_track_agent_work"] = True
+        if config.jira_status_mapping:
+            jira_fields["jira_status_mapping"] = config.jira_status_mapping
+        result["task_source"].update(jira_fields)
 
-    agent_table = tomlkit.table()
-    agent_table.add("model", config.agent_model)
-    agent_table.add("max_budget", config.max_budget)
-    doc.add("agent", agent_table)
-
-    review_table = tomlkit.table()
-    review_table.add("enabled", True)
-    review_table.add("max_rounds", config.review_max_rounds)
-    doc.add("review", review_table)
-
-    commit_table = tomlkit.table()
-    commit_table.add("format", config.commit_format)
-    commit_table.add("ai_coauthor", config.ai_coauthor)
-    doc.add("commit", commit_table)
-
-    branch_table = tomlkit.table()
-    branch_table.add("naming", config.branch_naming)
-    doc.add("branch", branch_table)
-
-    pr_table = tomlkit.table()
-    pr_table.add("title_format", config.pr_title_format)
-    pr_table.add("auto_link_issues", config.pr_auto_link)
-    doc.add("pr", pr_table)
-
-    triage_table = tomlkit.table()
-    triage_table.add("auto_label", True)
-    triage_table.add("min_confidence", 0.7)
-    doc.add("triage", triage_table)
-
-    roles_table = tomlkit.table()
-    roles_table.add("default", "developer")
-    doc.add("roles", roles_table)
-
-    return tomlkit.dumps(doc)
+    return result
 
 
 # -- Detection helpers --------------------------------------------------------

@@ -159,6 +159,103 @@ async def load_task_queue(project_dir: Path | None) -> list[int]:
     return queue
 
 
+async def save_config_to_db(session: AsyncSession, config: dict[str, Any]) -> None:
+    """Bulk-save a flat config dict to the DB as ProjectSetting rows.
+
+    Keys use dot-notation (e.g. ``task_source.type``).  Values are
+    JSON-serialized.  Uses ``save_setting`` (upsert) so existing rows
+    are updated and new rows are inserted.
+
+    Stale keys under replaced sections are deleted: switching from Jira
+    to GitHub removes orphaned ``task_source.jira_*`` rows.
+    """
+    flat = _flatten_config_dict(config)
+    section_prefixes = [f"{k}." for k, v in config.items() if isinstance(v, dict)]
+    if section_prefixes:
+        result = await session.execute(select(ProjectSetting))
+        for row in result.scalars().all():
+            if any(row.key.startswith(p) for p in section_prefixes) and row.key not in flat:
+                await session.delete(row)
+        await session.flush()
+    for key, value in flat.items():
+        await save_setting(session, key, value)
+
+
+def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any]) -> None:
+    """Sync bridge: save config dict to DB using a sync engine.
+
+    Follows the same pattern as ``_try_load_from_db`` to avoid
+    forcing ``asyncio.run()`` into CLI callers.
+    """
+    db_path = project_dir / ".claude" / _DB_FILENAME
+    if not db_path.exists():
+        logger.debug("DB file does not exist at %s, skipping sync save", db_path)
+        return
+
+    flat = _flatten_config_dict(config)
+    if not flat:
+        return
+
+    try:
+        from sqlalchemy import create_engine, text
+
+        sync_url = f"sqlite:///{db_path}"
+        connect_args: dict = {"check_same_thread": False, "timeout": 5}
+        engine = create_engine(sync_url, connect_args=connect_args)
+        try:
+            with engine.begin() as conn:
+                try:
+                    conn.execute(text("SELECT 1 FROM project_settings LIMIT 0"))
+                except (OperationalError, ProgrammingError):
+                    logger.debug("project_settings table does not exist, skipping sync save")
+                    return
+
+                # Remove stale keys under replaced sections
+                section_prefixes = [f"{k}." for k, v in config.items() if isinstance(v, dict)]
+                if section_prefixes:
+                    existing_rows = conn.execute(text("SELECT key FROM project_settings")).fetchall()
+                    for row in existing_rows:
+                        if any(row[0].startswith(p) for p in section_prefixes) and row[0] not in flat:
+                            conn.execute(text("DELETE FROM project_settings WHERE key = :key"), {"key": row[0]})
+
+                for key, value in flat.items():
+                    json_value = json.dumps(value)
+                    row = conn.execute(
+                        text("SELECT id FROM project_settings WHERE key = :key"),
+                        {"key": key},
+                    ).fetchone()
+                    if row is not None:
+                        conn.execute(
+                            text("UPDATE project_settings SET value = :value WHERE key = :key"),
+                            {"key": key, "value": json_value},
+                        )
+                    else:
+                        conn.execute(
+                            text("INSERT INTO project_settings (key, value) VALUES (:key, :value)"),
+                            {"key": key, "value": json_value},
+                        )
+        finally:
+            engine.dispose()
+    except Exception:
+        logger.warning("Failed to save config to DB (sync)", exc_info=True)
+
+
+def _flatten_config_dict(config: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    """Flatten a nested dict into dot-notation keys for DB storage.
+
+    Example: {"task_source": {"type": "github"}} -> {"task_source.type": "github"}
+    Scalar top-level values are stored as-is: {"github_repo": "a/b"} -> {"github_repo": "a/b"}
+    """
+    flat: dict[str, Any] = {}
+    for key, value in config.items():
+        full_key = key if not prefix else f"{prefix}.{key}"
+        if isinstance(value, dict):
+            flat.update(_flatten_config_dict(value, full_key))
+        else:
+            flat[full_key] = value
+    return flat
+
+
 def _resolve_db_path(project_dir: Path | None) -> Path | None:
     """Resolve the SQLite DB path without side effects (no mkdir).
 

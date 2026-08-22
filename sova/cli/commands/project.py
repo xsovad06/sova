@@ -43,11 +43,20 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
 
-    # Stage 1: Config
-    toml_file = project_dir / "sova.toml"
-    if not toml_file.exists():
-        toml_file.write_text(_default_toml())
-        console.print(f"[green]Created {toml_file}[/green]")
+    # Stage 1: Config (write defaults to DB; skip if DB rows already exist)
+    from sova.config.db_loader import _try_load_from_db, save_config_to_db
+
+    if _try_load_from_db(project_dir) is None and not update:
+        try:
+            from sova.db.session import get_session, init_db
+
+            await init_db(project_dir)
+            async with await get_session(project_dir=project_dir) as session:
+                async with session.begin():
+                    await save_config_to_db(session, _default_config())
+            console.print("[green]Default configuration saved to database.[/green]")
+        except Exception:
+            pass  # Stage 3 will retry
 
     # Stage 2: Git hooks (non-fatal)
     try:
@@ -70,10 +79,21 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     # Stage 3: Database
     failed_stages: list[str] = []
     try:
-        from sova.db.session import init_db
+        from sova.db.session import get_session, init_db
 
         await init_db(project_dir)
         console.print("[green]Database initialized.[/green]")
+
+        # If Stage 1's init_db failed but Stage 3 succeeded, config was never
+        # populated. Backfill defaults now.
+        if _try_load_from_db(project_dir) is None and not update:
+            try:
+                async with await get_session(project_dir=project_dir) as session:
+                    async with session.begin():
+                        await save_config_to_db(session, _default_config())
+                console.print("[green]Default configuration saved to database.[/green]")
+            except Exception:
+                log.warning("Failed to backfill default config after init_db", exc_info=True)
     except Exception as exc:
         console.print(f"[red]Database initialization failed: {exc}[/red]")
         failed_stages.append("database")
@@ -270,8 +290,14 @@ def _verify_install(project_dir: Path, *, update: bool = False) -> tuple[list[st
     warnings: list[str] = []
 
     try:
-        if not (project_dir / "sova.toml").exists():
-            problems.append("sova.toml not found")
+        from sova.config.db_loader import _try_load_from_db
+
+        has_db_config = _try_load_from_db(project_dir) is not None
+        has_toml = (project_dir / "sova.toml").exists()
+        if not has_db_config and not has_toml:
+            problems.append("no configuration found (database or sova.toml)")
+        if has_toml and has_db_config:
+            warnings.append("legacy sova.toml exists alongside DB config (DB takes priority)")
 
         commands_dir = project_dir / ".claude" / "commands"
         command_count = len(list(commands_dir.glob("*.md"))) if commands_dir.is_dir() else 0
@@ -547,10 +573,26 @@ async def _setup(*, path: Path | None) -> None:
 
     test_cmd = _detect_test_command(project_dir)
 
-    toml_file = project_dir / "sova.toml"
-    toml_content = _default_toml(repo=repo, test_cmd=test_cmd, github_user=github_user)
-    toml_file.write_text(toml_content)
-    console.print(f"\n[green]Configuration written to {toml_file}[/green]")
+    # Initialize DB and save config
+    try:
+        from sova.db.session import get_session, init_db
+
+        await init_db(project_dir)
+    except Exception as exc:
+        console.print(f"[red]Database initialization failed: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    config = _default_config(repo=repo, test_cmd=test_cmd, github_user=github_user)
+    try:
+        from sova.config.db_loader import save_config_to_db
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                await save_config_to_db(session, config)
+        console.print("\n[green]Configuration saved to database.[/green]")
+    except Exception as exc:
+        console.print(f"[red]Failed to save configuration: {exc}[/red]")
+        raise typer.Exit(code=1)
 
     # Run install
     await _install(path=project_dir, no_dashboard=False, update=False)
@@ -604,30 +646,18 @@ async def _offer_starter_milestones(project_dir: Path) -> None:
             console.print(f"[red]Failed: {f['title']} -- {f['error']}[/red]")
 
 
-def _default_toml(repo: str = "", test_cmd: str = "make test", github_user: str = "") -> str:
-    return f"""# SOVA configuration
-github_repo = "{repo}"
-github_user = "{github_user}"
-base_branch = "main"
-test_cmd = "{test_cmd}"
-lint_cmd = "make lint"
-check_cmd = ""
-
-[task_source]
-type = "github"
-
-[agent]
-model = "opus"
-max_budget = "10.00"
-
-[review]
-enabled = true
-max_rounds = 2
-
-[triage]
-auto_label = true
-min_confidence = 0.7
-
-[roles]
-default = "developer"
-"""
+def _default_config(repo: str = "", test_cmd: str = "make test", github_user: str = "") -> dict:
+    """Return default config as a dict for DB storage."""
+    return {
+        "github_repo": repo,
+        "github_user": github_user,
+        "base_branch": "main",
+        "test_cmd": test_cmd,
+        "lint_cmd": "make lint",
+        "check_cmd": "",
+        "task_source": {"type": "github"},
+        "agent": {"model": "opus", "max_budget": "10.00"},
+        "review": {"enabled": True, "max_rounds": 2},
+        "triage": {"auto_label": True, "min_confidence": 0.7},
+        "roles": {"default": "developer"},
+    }

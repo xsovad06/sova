@@ -6176,9 +6176,17 @@ class TestSetupAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert (project / "sova.toml").exists()
-        toml_content = (project / "sova.toml").read_text()
-        assert 'github_repo = "user/test"' in toml_content
+        assert data["config_source"] == "database"
+        assert "slug" in data
+
+        # Verify via async session (in-memory DB is accessible async, not sync)
+        from sova.config.db_loader import load_config_from_db
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project) as session:
+            db_config = await load_config_from_db(session)
+        assert db_config is not None
+        assert db_config["github_repo"] == "user/test"
 
         reg_mod._REGISTRY_FILE = orig_file
         reg_mod._REGISTRY_DIR = orig_dir
@@ -11661,12 +11669,12 @@ class TestParseStreamLine:
 
 
 # ---------------------------------------------------------------------------
-# Setup Service -- TomlConfig and generate_sova_toml
+# Setup Service -- TomlConfig
 # ---------------------------------------------------------------------------
 
 
 class TestTomlConfigGeneration:
-    """Tests for TomlConfig dataclass and generate_sova_toml."""
+    """Tests for TomlConfig dataclass defaults."""
 
     def test_default_toml_config(self) -> None:
         from sova.dashboard.services.setup_service import TomlConfig
@@ -11678,67 +11686,6 @@ class TestTomlConfigGeneration:
         assert cfg.max_budget == "10.00"
         assert cfg.ai_coauthor is True
         assert cfg.pr_auto_link is True
-
-    def test_generate_sova_toml_includes_fields(self) -> None:
-        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
-
-        cfg = TomlConfig(github_repo="owner/repo", github_user="testuser", base_branch="develop")
-        content = generate_sova_toml(cfg)
-        assert 'github_repo = "owner/repo"' in content
-        assert 'github_user = "testuser"' in content
-        assert 'base_branch = "develop"' in content
-        assert "[task_source]" in content
-        assert "[agent]" in content
-
-    def test_generate_sova_toml_ai_coauthor(self) -> None:
-        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
-
-        cfg = TomlConfig(ai_coauthor=False)
-        content = generate_sova_toml(cfg)
-        assert "ai_coauthor = false" in content
-
-    def test_generate_sova_toml_custom_budget(self) -> None:
-        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
-
-        cfg = TomlConfig(max_budget="25.00")
-        content = generate_sova_toml(cfg)
-        assert 'max_budget = "25.00"' in content
-
-    def test_generate_sova_toml_jira_config(self) -> None:
-        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
-
-        cfg = TomlConfig(
-            task_source="jira",
-            jira_base_url="https://test.atlassian.net",
-            jira_email="user@example.com",
-            jira_project_key="PROJ",
-            jira_component="Backend",
-            jira_track_agent_work=True,
-            jira_status_mapping={"In Progress": "in_progress", "Done": "done"},
-        )
-        content = generate_sova_toml(cfg)
-        assert 'type = "jira"' in content
-        assert 'jira_base_url = "https://test.atlassian.net"' in content
-        assert 'jira_email = "user@example.com"' in content
-        assert 'jira_project_key = "PROJ"' in content
-        assert 'jira_component = "Backend"' in content
-        assert "jira_track_agent_work = true" in content
-        assert "jira_status_mapping" in content
-
-    def test_generate_sova_toml_jira_no_optional_fields(self) -> None:
-        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
-
-        cfg = TomlConfig(
-            task_source="jira",
-            jira_base_url="https://test.atlassian.net",
-            jira_email="user@example.com",
-            jira_project_key="PROJ",
-        )
-        content = generate_sova_toml(cfg)
-        assert 'type = "jira"' in content
-        assert "jira_component" not in content
-        assert "jira_track_agent_work" not in content
-        assert "jira_status_mapping" not in content
 
     def test_toml_config_jira_defaults(self) -> None:
         from sova.dashboard.services.setup_service import TomlConfig
