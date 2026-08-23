@@ -1215,6 +1215,14 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
+        "supervisor.planner_timeout_seconds",
+        "Planner timeout (seconds)",
+        "Maximum time to wait for the LLM planner response. "
+        "Increase if you see frequent planner.llm_call_error warnings after server restart.",
+        "supervisor",
+        "integer",
+    ),
+    SettingMeta(
         "supervisor.auto_queue",
         "Auto queue",
         "Enable deterministic queue maintenance: prune done issues, "
@@ -1233,7 +1241,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "supervisor.task_queue",
         "Task queue",
-        "Ordered list of issue numbers for the supervisor to evaluate (empty = evaluate all)",
+        "Ordered list of issue numbers for the supervisor to evaluate "
+        "(empty = evaluate nothing; use auto-queue to populate)",
         "supervisor",
         "list",
     ),
