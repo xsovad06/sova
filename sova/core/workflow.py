@@ -160,6 +160,19 @@ class WorkflowEngine:
 
     async def _execute_step(self, step: BaseStep, result: WorkflowResult) -> bool:
         """Execute a single pipeline step. Returns False to abort the pipeline."""
+        # Check worktree existence before any step logic
+        if self._ctx.worktree_dir is not None:
+            if not self._ctx.worktree_dir.exists():
+                error_msg = f"Worktree does not exist: {self._ctx.worktree_dir}"
+                log.error("workflow.worktree_deleted", path=str(self._ctx.worktree_dir), step=step.name)
+                result.final_status = TaskStatus.FAILED
+                result.error = error_msg
+                await self._write_output(f"FAILED: {error_msg}")
+                await self._close_output()
+                await self._record_failure(step.name, "worktree_deleted", error_msg)
+                await self._update_task_run_status(TaskStatus.FAILED, error=error_msg)
+                return False
+
         if self._ctx.is_budget_exceeded:
             log.warning("workflow.budget_exceeded", cost=str(self._ctx.cost_usd))
             result.final_status = TaskStatus.PAUSED
@@ -445,8 +458,6 @@ class WorkflowEngine:
 
         Returns True if partial work was committed, False otherwise.
         """
-        from pathlib import Path
-
         from sova.utils.shell import run
 
         # Guard: ensure we're in a valid git repo
@@ -455,8 +466,7 @@ class WorkflowEngine:
             log.debug("workflow.timeout.no_working_dir")
             return False
 
-        work_path = Path(work_dir)
-        if not (work_path / ".git").exists():
+        if not (work_dir / ".git").exists():
             log.debug("workflow.timeout.not_a_git_repo")
             return False
 
@@ -503,9 +513,27 @@ class WorkflowEngine:
             return "billing_exhausted"
         return "failed"
 
+    _GATE_TIMEOUT_CAP = 60
+
     async def _validate_step_gate(self, step: BaseStep, step_exec_id: int, record: StepRecord) -> str:
-        """Run gate check on successful step. Returns "done" or "failed"."""
-        gate = await step.validate_output(self._ctx)
+        """Run gate check on successful step. Returns "done" or "failed".
+
+        Wraps validate_output in timeout and exception handling to prevent
+        gate checks from hanging or crashing the pipeline.
+        """
+        timeout_seconds = min(self._step_timeout(step.name), self._GATE_TIMEOUT_CAP)
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                gate = await step.validate_output(self._ctx)
+        except TimeoutError:
+            log.warning("workflow.gate.timeout", step=step.name, timeout_seconds=timeout_seconds)
+            gate = GateCheckResult(passed=False, reason=f"Gate check timed out after {timeout_seconds}s")
+        except Exception as exc:
+            log.warning("workflow.gate.exception", step=step.name, error=str(exc), exc_info=True)
+            gate = GateCheckResult(
+                passed=False, reason=f"Gate check failed with exception: {type(exc).__name__}: {exc}"
+            )
+
         record.gate = gate
 
         if not gate.passed:

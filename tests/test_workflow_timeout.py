@@ -435,3 +435,151 @@ fix_timeout = 300
                     assert mock_invoke.call_count == 1
                     call_kwargs = mock_invoke.call_args[1]
                     assert call_kwargs["timeout"] == 300  # config.validation.fix_timeout
+
+
+class TestWorktreeDeletion:
+    """Test worktree deletion detection in _execute_step."""
+
+    @pytest.fixture
+    def mock_adapter(self) -> MagicMock:
+        adapter = MagicMock()
+        adapter.repo = "test/repo"
+        return adapter
+
+    @pytest.fixture
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
+        from sova.config.loader import load_config
+
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
+        cfg = load_config(tmp_path)
+        return ExecutionContext(
+            project_dir=tmp_path,
+            config=cfg,
+            adapter=mock_adapter,
+            issue_number="123",
+            role="developer",
+        )
+
+    async def test_execute_step_fails_when_worktree_deleted(self, ctx: ExecutionContext, tmp_path: Path) -> None:
+        """When worktree is deleted mid-pipeline, step fails immediately."""
+        from sova.core.state import TaskStatus
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import WorkflowResult
+
+        class DummyStep(BaseStep):
+            name = "dummy_step"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="Should not reach here")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        # Set worktree_dir to a non-existent path
+        deleted_worktree = tmp_path / "deleted_worktree"
+        ctx.worktree_dir = deleted_worktree
+        ctx.run_id = 999  # Mock run ID
+
+        engine = WorkflowEngine(steps=[DummyStep()], ctx=ctx)
+        result = WorkflowResult(success=True, final_status=TaskStatus.IN_PROGRESS)
+
+        # Mock the DB and output methods that _execute_step calls
+        with patch.object(engine, "_write_output", new_callable=AsyncMock) as mock_output:
+            with patch.object(engine, "_close_output", new_callable=AsyncMock):
+                with patch.object(engine, "_record_failure", new_callable=AsyncMock):
+                    with patch.object(engine, "_update_task_run_status", new_callable=AsyncMock):
+                        # Execute step should detect deleted worktree and fail
+                        success = await engine._execute_step(DummyStep(), result)
+
+        assert success is False
+        assert result.final_status == TaskStatus.FAILED
+        assert "Worktree does not exist" in result.error
+        # Verify failure was logged
+        mock_output.assert_called_once()
+        assert "FAILED" in mock_output.call_args[0][0]
+
+
+class TestGateCheckTimeout:
+    """Test gate check timeout and exception handling."""
+
+    @pytest.fixture
+    def mock_adapter(self) -> MagicMock:
+        adapter = MagicMock()
+        adapter.repo = "test/repo"
+        return adapter
+
+    @pytest.fixture
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
+        from sova.config.loader import load_config
+
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
+        cfg = load_config(tmp_path)
+        return ExecutionContext(
+            project_dir=tmp_path,
+            config=cfg,
+            adapter=mock_adapter,
+            issue_number="123",
+            role="developer",
+        )
+
+    async def test_validate_step_gate_timeout(self, ctx: ExecutionContext, tmp_path: Path) -> None:
+        """When gate check times out, it returns failed with timeout reason."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        class SlowGateStep(BaseStep):
+            name = "slow_gate"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="Executed")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                import asyncio
+
+                await asyncio.sleep(100)  # Will timeout
+                return GateCheckResult(passed=True)
+
+        ctx.run_id = 999  # Mock run ID
+        step_exec_id = 1  # Mock step execution ID
+
+        record = StepRecord(step_name="slow_gate", status="running")
+
+        # Mock a very short timeout and DB update
+        engine = WorkflowEngine(steps=[SlowGateStep()], ctx=ctx)
+        with patch.object(engine, "_step_timeout", return_value=1):
+            with patch.object(engine, "_update_step_execution", new_callable=AsyncMock):
+                status = await engine._validate_step_gate(SlowGateStep(), step_exec_id, record)
+
+        assert status == "failed"
+        assert record.gate is not None
+        assert record.gate.passed is False
+        assert "timed out" in record.gate.reason.lower()
+
+    async def test_validate_step_gate_exception(self, ctx: ExecutionContext, tmp_path: Path) -> None:
+        """When gate check raises an exception, it returns failed with error reason."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        class BrokenGateStep(BaseStep):
+            name = "broken_gate"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="Executed")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                raise ValueError("Simulated gate error")
+
+        ctx.run_id = 999  # Mock run ID
+        step_exec_id = 1  # Mock step execution ID
+
+        record = StepRecord(step_name="broken_gate", status="running")
+
+        engine = WorkflowEngine(steps=[BrokenGateStep()], ctx=ctx)
+        with patch.object(engine, "_update_step_execution", new_callable=AsyncMock):
+            status = await engine._validate_step_gate(BrokenGateStep(), step_exec_id, record)
+
+        assert status == "failed"
+        assert record.gate is not None
+        assert record.gate.passed is False
+        assert "ValueError" in record.gate.reason
+        assert "Simulated gate error" in record.gate.reason
