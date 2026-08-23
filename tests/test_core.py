@@ -1840,6 +1840,89 @@ class TestValidateStep:
         config_call = mock_run.call_args_list[2]
         assert config_call[0] == ("git", "config", "core.hooksPath", ".githooks")
 
+    def test_truncate_hook_output_under_limit(self) -> None:
+        from sova.core.steps.validate import _truncate_hook_output
+
+        short = "x" * 8000
+        assert _truncate_hook_output(short) == short
+
+    def test_truncate_hook_output_over_limit(self) -> None:
+        from sova.core.steps.validate import _truncate_hook_output
+
+        output = "A" * 4000 + "B" * 5000
+        result = _truncate_hook_output(output)
+        assert result.startswith("...(truncated)")
+        assert result.endswith("B" * 5000)
+        assert len(result.split("\n", 1)[1]) == 8000
+
+    def test_truncate_hook_output_empty(self) -> None:
+        from sova.core.steps.validate import _truncate_hook_output
+
+        assert _truncate_hook_output("") == ""
+
+    async def test_llm_prompt_uses_truncated_output(self) -> None:
+        from sova.core.steps.validate import _HOOK_OUTPUT_LIMIT, ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = ValidateStep()
+        large_output = "HEADER\n" * 2000 + "ACTUAL ERROR"
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout=large_output, stderr=""),
+                MagicMock(success=True, stdout="ok\n", stderr=""),
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="Fixed",
+                model="sonnet",
+                cost_usd=Decimal("0.01"),
+            )
+            await step.execute(ctx)
+
+        prompt = mock_invoke.call_args[0][0] if mock_invoke.call_args[0] else mock_invoke.call_args[1]["prompt"]
+        assert "ACTUAL ERROR" in prompt
+        assert "truncated" in prompt
+        code_block = prompt.split("```\n")[1].split("\n```")[0]
+        assert len(code_block) <= _HOOK_OUTPUT_LIMIT + 100
+
+    async def test_retry_path_also_truncates(self) -> None:
+        from sova.core.steps.validate import _HOOK_OUTPUT_LIMIT, ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = ValidateStep()
+        large_retry_output = "Z" * 10000 + "RETRY_ERROR"
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout="short error", stderr=""),
+                MagicMock(success=False, stdout=large_retry_output, stderr=""),
+                MagicMock(success=False, stdout=large_retry_output, stderr=""),
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="Attempted",
+                model="sonnet",
+                cost_usd=Decimal("0.01"),
+            )
+            await step.execute(ctx)
+
+        second_call_prompt = mock_invoke.call_args_list[1][0][0]
+        assert "RETRY_ERROR" in second_call_prompt
+        assert "truncated" in second_call_prompt
+        code_block = second_call_prompt.split("```\n")[1].split("\n```")[0]
+        assert len(code_block) <= _HOOK_OUTPUT_LIMIT + 100
+
 
 class TestPushStep:
     async def test_gate_check_requires_commits_ahead(self) -> None:

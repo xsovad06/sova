@@ -22,6 +22,14 @@ from sova.utils.shell import run
 log = get_logger(component="step.validate")
 
 _MAX_FIX_ATTEMPTS = 2
+_HOOK_OUTPUT_LIMIT = 8000
+
+
+def _truncate_hook_output(output: str) -> str:
+    """Keep the tail of hook output, where actionable errors appear."""
+    if len(output) <= _HOOK_OUTPUT_LIMIT:
+        return output
+    return "...(truncated)\n" + output[-_HOOK_OUTPUT_LIMIT:]
 
 
 async def find_pre_push_hook(cwd: Path | str | None) -> str | None:
@@ -84,7 +92,7 @@ class ValidateStep(BaseStep):
 
             prompt = (
                 f"The project's pre-push hook failed with the following output:\n\n"
-                f"```\n{hook_output}\n```\n\n"
+                f"```\n{_truncate_hook_output(hook_output)}\n```\n\n"
                 f"Fix ALL issues reported by the hook. After fixing, stage and commit "
                 f"the changes with message 'fix: address pre-push hook violations'. "
                 f"Do not modify or disable the hook itself."
