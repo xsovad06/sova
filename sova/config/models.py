@@ -382,6 +382,7 @@ class DashboardConfig(BaseSettings):
     confirm_model: Literal["complex_only", "always", "never"] = "complex_only"
     gc_on_startup: bool = False
     port: int = 8111
+    llm_suggestions: bool = True
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
 
