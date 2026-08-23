@@ -75,15 +75,7 @@ class ResearcherRole(AgentRole):
         return get_researcher_steps()
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
-        task = await ctx.adapter.get_task(ctx.issue_number)
-
-        if not self.validate_preconditions(task, force=ctx.force):
-            return RoleResult(
-                success=False,
-                summary=f"Issue #{ctx.issue_number} not in valid state for research",
-                error=f"Precondition failed: issue is in {task.state}, "
-                f"expected one of {', '.join(self.allowed_input_states)}",
-            )
+        ctx.allowed_input_states = self.allowed_input_states
 
         log.info("researcher.start", issue=ctx.issue_number)
 
@@ -94,7 +86,6 @@ class ResearcherRole(AgentRole):
         spec_awaiting = workflow_result.final_status == TaskStatus.AWAITING_APPROVAL
 
         if workflow_result.success or spec_awaiting:
-            # Update label even when spec awaits approval: prevents supervisor re-spawn on next poll
             await ctx.adapter.transition_state(ctx.issue_number, TaskState.RESEARCHED)
 
         if workflow_result.success:

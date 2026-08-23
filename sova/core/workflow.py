@@ -645,13 +645,27 @@ class WorkflowEngine:
         Clears the "agent" sentinel and preserves "running" status so the
         dashboard correctly reflects that steps are executing. Preserves the
         PID field (the dashboard uses the subprocess PID for process management).
+
+        Raises RuntimeError if the TaskRun does not exist in the DB,
+        which surfaces DB path mismatches instead of silently proceeding
+        with no step tracking.
         """
         async with await get_session() as session, session.begin():
             task_run = await session.get(TaskRun, self._task_run_id)
-            if task_run:
-                task_run.status = TaskStatus.RUNNING.value
-                task_run.current_step = None
-                task_run.resumed_from_id = self._ctx.resume_run_id
+            if not task_run:
+                db_url = os.environ.get("SOVA_DATABASE_URL", str(self._ctx.project_dir / ".claude" / "sova.db"))
+                log.error(
+                    "workflow.adopt_missing_task_run",
+                    run_id=self._task_run_id,
+                    project_dir=str(self._ctx.project_dir),
+                    db_url=db_url,
+                )
+                raise RuntimeError(
+                    f"TaskRun {self._task_run_id} not found in DB (project_dir={self._ctx.project_dir}, db={db_url})"
+                )
+            task_run.status = TaskStatus.RUNNING.value
+            task_run.current_step = None
+            task_run.resumed_from_id = self._ctx.resume_run_id
 
     async def _set_current_step(self, step_name: str) -> None:
         """Update the current_step field on the TaskRun."""

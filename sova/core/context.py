@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sova.adapters.base import Task, TaskAdapter
+from sova.adapters.base import Task, TaskAdapter, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.planning import PlanResult
 from sova.llm.complexity import ComplexityTier
@@ -44,6 +44,9 @@ class ExecutionContext:
     force: bool = False
     task_run_id: int | None = None
     plan_result: PlanResult | None = None
+
+    # State validation (set by roles that restrict input states)
+    allowed_input_states: frozenset[TaskState] | None = None
 
     # Resume checkpoint (populated when --resume is used)
     resume_run_id: int | None = None

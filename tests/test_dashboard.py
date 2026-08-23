@@ -10028,6 +10028,65 @@ class TestPipelineOutcomeValidation:
         result = await _validate_pipeline_outcome(run_id, agent)
         assert result is None
 
+    async def test_bypass_message_includes_diagnostics(self) -> None:
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="832",
+                    role="researcher",
+                    status="done",
+                    current_step="agent",
+                    worktree_path="/tmp/worktree/42",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "researcher"
+        agent.project_dir = Path("/tmp/project")
+        agent.prompt = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "Pipeline bypassed" in result
+        assert "worktree=/tmp/worktree/42" in result
+        assert "project_dir=/tmp/project" in result
+        assert "started_at=" in result
+
+    async def test_bypass_message_omits_empty_diagnostics(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="833",
+                    role="researcher",
+                    status="done",
+                    current_step="agent",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "researcher"
+        agent.project_dir = None
+        agent.prompt = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "Pipeline bypassed" in result
+        assert "started_at=" in result
+        assert "worktree=" not in result
+
 
 class TestOrphanedStepFinalization:
     """_finalize_task_run must mark running steps as interrupted."""
@@ -11161,6 +11220,22 @@ class TestBuildBypassMessage:
         mock_log.warning.assert_called_once()
         call_kwargs = mock_log.warning.call_args
         assert len(call_kwargs[1]["prompt_sent"]) == 500
+
+    def test_includes_diagnostic_fields(self) -> None:
+        from sova.dashboard.services.agent_db import _build_bypass_message, _collect_bypass_diagnostics
+
+        diag = _collect_bypass_diagnostics("2026-08-13T10:00:00", "/tmp/worktrees/99", "/tmp/project")
+        msg = _build_bypass_message("researcher", None, None, 42, diagnostics=diag)
+        assert "started_at=2026-08-13T10:00:00" in msg
+        assert "worktree=/tmp/worktrees/99" in msg
+        assert "project_dir=/tmp/project" in msg
+
+    def test_omits_diagnostics_when_none(self) -> None:
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        msg = _build_bypass_message("researcher", None, None, 42)
+        assert "Pipeline bypassed" in msg
+        assert "[" not in msg
 
 
 @pytest.mark.asyncio

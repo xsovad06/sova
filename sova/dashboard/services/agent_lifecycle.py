@@ -641,6 +641,7 @@ async def start_agent(
                     "agent.spawn_direct",
                     run_id=run_id,
                     role=effective_role,
+                    cwd=str(cwd),
                     cmd=cmd_parts[:4],
                 )
                 process = await spawn_direct(
@@ -651,6 +652,12 @@ async def start_agent(
                     run_label=str(run_id),
                 )
             else:
+                log.info(
+                    "agent.spawn_claude",
+                    run_id=run_id,
+                    role=effective_role,
+                    cwd=str(cwd),
+                )
                 cmd = " ".join(cmd_parts)
                 prompt = (
                     "Run the following command in your bash shell. This is a CLI "

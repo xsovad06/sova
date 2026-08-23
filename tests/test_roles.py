@@ -16,7 +16,8 @@ from sova.core.context import ExecutionContext
 from sova.core.dag import DAGExecutor
 from sova.core.state import TaskStatus
 from sova.core.workflow import WorkflowEngine
-from sova.db.session import close_db, init_db
+from sova.db.models import TaskRun
+from sova.db.session import close_db, get_session, init_db
 from sova.roles.base import TaskAssessment
 
 
@@ -191,6 +192,11 @@ class TestResearcherRole:
         assert TaskState.TRIAGED in role.allowed_input_states
         assert role.output_state == TaskState.RESEARCHED
 
+    def test_researcher_in_pipeline_roles(self) -> None:
+        from sova.ipc.runtime import _PIPELINE_ROLES
+
+        assert "researcher" in _PIPELINE_ROLES
+
     async def test_execute_moves_to_researched(self) -> None:
         from unittest.mock import patch
 
@@ -284,6 +290,22 @@ class TestResearcherRole:
         names = [s.name for s in steps]
         assert names == ["fetch_task", "research", "spec", "extract_memory"]
 
+    async def test_execute_sets_allowed_input_states_on_context(self) -> None:
+        from unittest.mock import patch
+
+        from sova.core.workflow import WorkflowResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
+        with patch.object(WorkflowEngine, "run", new=AsyncMock(return_value=mock_result)):
+            await role.execute(ctx)
+
+        assert ctx.allowed_input_states == frozenset({TaskState.TRIAGED})
+
 
 # ---------------------------------------------------------------------------
 # Researcher pipeline steps
@@ -323,6 +345,56 @@ class TestFetchTaskStep:
 
         gate = await step.validate_output(ctx)
         assert not gate.passed
+
+    async def test_rejects_wrong_state_when_allowed_states_set(self) -> None:
+        from sova.core.steps.fetch_task import FetchTaskStep
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="researcher", state=TaskState.BACKLOG, adapter=adapter)
+        ctx.allowed_input_states = frozenset({TaskState.TRIAGED})
+        step = FetchTaskStep()
+
+        result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Precondition failed" in result.error
+        assert "BACKLOG" in result.error or "backlog" in result.error
+
+    async def test_accepts_correct_state_when_allowed_states_set(self) -> None:
+        from sova.core.steps.fetch_task import FetchTaskStep
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx.allowed_input_states = frozenset({TaskState.TRIAGED})
+        step = FetchTaskStep()
+
+        result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.task is not None
+
+    async def test_force_bypasses_state_check_in_step(self) -> None:
+        from sova.core.steps.fetch_task import FetchTaskStep
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="researcher", state=TaskState.BACKLOG, adapter=adapter, force=True)
+        ctx.allowed_input_states = frozenset({TaskState.TRIAGED})
+        step = FetchTaskStep()
+
+        result = await step.execute(ctx)
+
+        assert result.success
+
+    async def test_no_state_check_without_allowed_states(self) -> None:
+        from sova.core.steps.fetch_task import FetchTaskStep
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="developer", state=TaskState.BACKLOG, adapter=adapter)
+        step = FetchTaskStep()
+
+        result = await step.execute(ctx)
+
+        assert result.success
 
 
 class TestResearchStep:
@@ -368,6 +440,61 @@ class TestResearchStep:
         assert not result.success
         assert "CLI failed" in result.error
 
+    async def test_execute_timeout_error(self) -> None:
+        from unittest.mock import patch
+
+        from sova.core.steps.research import ResearchStep
+
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        step = ResearchStep()
+
+        with patch(
+            "sova.core.steps.research.invoke_command",
+            new_callable=AsyncMock,
+            side_effect=TimeoutError("timed out"),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Timeout" in result.error
+
+    async def test_execute_file_not_found_error(self) -> None:
+        from unittest.mock import patch
+
+        from sova.core.steps.research import ResearchStep
+
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        step = ResearchStep()
+
+        with patch(
+            "sova.core.steps.research.invoke_command",
+            new_callable=AsyncMock,
+            side_effect=FileNotFoundError("/research command not found"),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Missing command" in result.error
+
+    async def test_execute_generic_exception(self) -> None:
+        from unittest.mock import patch
+
+        from sova.core.steps.research import ResearchStep
+
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        step = ResearchStep()
+
+        with patch(
+            "sova.core.steps.research.invoke_command",
+            new_callable=AsyncMock,
+            side_effect=ValueError("unexpected value"),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "ValueError" in result.error
+        assert "unexpected value" in result.error
+
     async def test_validate_output_passes_with_research_section(self) -> None:
         from sova.core.steps.research import ResearchStep
 
@@ -405,6 +532,53 @@ class TestResearchStep:
         gate = await step.validate_output(ctx)
         assert not gate.passed
         assert "comments" in gate.reason
+
+
+# ---------------------------------------------------------------------------
+# WorkflowEngine: _adopt_task_run hardening
+# ---------------------------------------------------------------------------
+
+
+class TestAdoptTaskRun:
+    async def test_raises_on_missing_task_run(self) -> None:
+        from sova.core.workflow import WorkflowEngine
+
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx.task_run_id = 99999
+        steps = []
+        engine = WorkflowEngine(steps=steps, ctx=ctx)
+        engine._task_run_id = 99999
+
+        with pytest.raises(RuntimeError, match="TaskRun 99999 not found"):
+            await engine._adopt_task_run()
+
+    async def test_adopts_existing_task_run(self) -> None:
+        from sova.core.workflow import WorkflowEngine
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="500",
+                    role="researcher",
+                    status="pending",
+                    current_step="agent",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx.task_run_id = run_id
+        steps = []
+        engine = WorkflowEngine(steps=steps, ctx=ctx)
+        engine._task_run_id = run_id
+
+        await engine._adopt_task_run()
+
+        async with await get_session() as session:
+            adopted = await session.get(TaskRun, run_id)
+            assert adopted.status == "running"
+            assert adopted.current_step is None
 
 
 # ---------------------------------------------------------------------------
