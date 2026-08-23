@@ -1,7 +1,9 @@
 """Step: Fetch Task -- populate execution context with task data.
 
 Simple step that fetches the task from the adapter and stores it
-in the execution context for downstream steps.
+in the execution context for downstream steps. When the context
+carries allowed_input_states, validates the issue state as a
+precondition (replaces pre-engine checks that bypassed step tracking).
 """
 
 from __future__ import annotations
@@ -24,6 +26,21 @@ class FetchTaskStep(BaseStep):
 
         task = await ctx.adapter.get_task(ctx.issue_number)
         ctx.task = task
+
+        if ctx.allowed_input_states and not ctx.force:
+            if task.state not in ctx.allowed_input_states:
+                allowed = ", ".join(sorted(ctx.allowed_input_states))
+                log.warning(
+                    "step.fetch_task.state_rejected",
+                    issue=ctx.issue_number,
+                    current_state=task.state,
+                    allowed=allowed,
+                )
+                return StepResult(
+                    success=False,
+                    summary=f"Issue #{ctx.issue_number} in {task.state}, expected one of: {allowed}",
+                    error=f"Precondition failed: issue state {task.state} not in allowed states ({allowed})",
+                )
 
         return StepResult(
             success=True,
