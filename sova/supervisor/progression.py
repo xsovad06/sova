@@ -944,9 +944,9 @@ class TaskProgressionEngine:
     async def _refine_in_review_action(self, issue: int) -> tuple[ProgressionAction, PRInfo | None]:
         """Refine the IN_REVIEW placeholder into a specific action based on SOVA verdict.
 
-        Returns (action, pr_info). Checks the SOVA review verdict to decide
-        between SPAWN_ADDRESS_REVIEW (verdict is revise/block) and SPAWN_INTEGRATE
-        (verdict is approve or no review exists).
+        Returns (action, pr_info). Only integrates when a SOVA review explicitly
+        approved. Revise/block triggers address-review. All other cases (no review,
+        post_failed, exception) return CHECKPOINT_NEEDED.
         """
         pr_info = await self._find_pr_for_issue(issue)
         if pr_info is None:
@@ -958,8 +958,6 @@ class TaskProgressionEngine:
             )
         except Exception:
             log.debug("refine_in_review.verdict_failed", issue=issue, exc_info=True)
-            if self._config.auto_integrate:
-                return ProgressionAction.SPAWN_INTEGRATE, pr_info
             return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
         verdict = verdict_data.get("verdict")
@@ -970,6 +968,6 @@ class TaskProgressionEngine:
                 return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_info
             return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
-        if self._config.auto_integrate:
+        if has_review and verdict == "approve" and self._config.auto_integrate:
             return ProgressionAction.SPAWN_INTEGRATE, pr_info
         return ProgressionAction.CHECKPOINT_NEEDED, pr_info

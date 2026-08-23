@@ -2910,7 +2910,7 @@ class TestRefineInReviewAction:
         assert pr.number == 55
 
     @pytest.mark.asyncio
-    async def test_no_sova_review_with_auto_integrate_spawns_integrate(self) -> None:
+    async def test_no_sova_review_with_auto_integrate_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
@@ -2919,7 +2919,7 @@ class TestRefineInReviewAction:
             return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
         ):
             action, pr = await engine._refine_in_review_action(42)
-        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
         assert pr is not None
         assert pr.number == 55
 
@@ -2946,7 +2946,7 @@ class TestRefineInReviewAction:
         assert pr is None
 
     @pytest.mark.asyncio
-    async def test_verdict_post_failed_with_auto_integrate_spawns_integrate(self) -> None:
+    async def test_verdict_post_failed_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
@@ -2960,12 +2960,26 @@ class TestRefineInReviewAction:
             },
         ):
             action, pr = await engine._refine_in_review_action(42)
-        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
         assert pr is not None
         assert pr.number == 55
 
     @pytest.mark.asyncio
-    async def test_verdict_check_failure_falls_back_to_integrate(self) -> None:
+    async def test_verdict_none_with_review_returns_checkpoint(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={"has_sova_review": True, "verdict": None, "finding_count": 0, "reviewed_at": "2026-01-01"},
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
+        assert pr is not None
+        assert pr.number == 55
+
+    @pytest.mark.asyncio
+    async def test_verdict_check_failure_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_address_review=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
@@ -2974,7 +2988,7 @@ class TestRefineInReviewAction:
             side_effect=Exception("DB error"),
         ):
             action, pr = await engine._refine_in_review_action(42)
-        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
         assert pr is not None
         assert pr.number == 55
 
