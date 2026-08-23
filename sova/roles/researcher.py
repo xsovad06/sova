@@ -75,17 +75,9 @@ class ResearcherRole(AgentRole):
         return get_researcher_steps()
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
-        task = await ctx.adapter.get_task(ctx.issue_number)
-
-        if not self.validate_preconditions(task, force=ctx.force):
-            return RoleResult(
-                success=False,
-                summary=f"Issue #{ctx.issue_number} not in valid state for research",
-                error=f"Precondition failed: issue is in {task.state}, "
-                f"expected one of {', '.join(self.allowed_input_states)}",
-            )
-
         log.info("researcher.start", issue=ctx.issue_number)
+
+        ctx.allowed_input_states = self.allowed_input_states
 
         steps = self.get_steps()
         engine = WorkflowEngine(steps=steps, ctx=ctx)

@@ -6,6 +6,8 @@ and writes a structured research assessment back to the issue tracker.
 
 from __future__ import annotations
 
+import asyncio
+
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke_command
@@ -37,7 +39,10 @@ class ResearchStep(BaseStep):
                 summary=f"Research completed ({result.total_tokens} tokens)",
                 cost_usd=result.cost_usd,
             )
-        except RuntimeError as exc:
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error("step.research.failed", issue=ctx.issue_number, error=str(exc), exc_info=True)
             return StepResult(success=False, summary="Research failed", error=str(exc))
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:

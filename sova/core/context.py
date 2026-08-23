@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sova.adapters.base import Task, TaskAdapter
+from sova.adapters.base import Task, TaskAdapter, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.planning import PlanResult
 from sova.llm.complexity import ComplexityTier
@@ -31,6 +31,9 @@ class ExecutionContext:
     issue_number: str = ""
     role: str = "developer"
     run_label: str = ""
+
+    # Precondition validation (set by role before engine creation)
+    allowed_input_states: frozenset[TaskState] | None = None
 
     # Populated during execution
     task: Task | None = None

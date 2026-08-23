@@ -22,7 +22,7 @@ from decimal import Decimal
 
 from sova.core.context import ExecutionContext
 from sova.core.output import OutputWriter
-from sova.core.state import TaskStatus
+from sova.core.state import TASK_RUN_TERMINAL, TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import get_session
@@ -573,13 +573,29 @@ class WorkflowEngine:
         Clears the "agent" sentinel and preserves "running" status so the
         dashboard correctly reflects that steps are executing. Preserves the
         PID field (the dashboard uses the subprocess PID for process management).
+
+        Raises RuntimeError if the TaskRun is missing (DB path mismatch) or already terminal.
         """
         async with await get_session() as session, session.begin():
             task_run = await session.get(TaskRun, self._task_run_id)
-            if task_run:
-                task_run.status = TaskStatus.RUNNING.value
-                task_run.current_step = None
-                task_run.resumed_from_id = self._ctx.resume_run_id
+            if not task_run:
+                msg = (
+                    f"TaskRun {self._task_run_id} not found in database. "
+                    f"DB path mismatch: expected TaskRun created by dashboard but none exists. "
+                    f"Verify project_dir resolution matches dashboard."
+                )
+                raise RuntimeError(msg)
+
+            if task_run.status in TASK_RUN_TERMINAL:
+                msg = (
+                    f"TaskRun {self._task_run_id} is already terminal (status={task_run.status}). "
+                    f"Cannot adopt a run that has already finished."
+                )
+                raise RuntimeError(msg)
+
+            task_run.status = TaskStatus.RUNNING.value
+            task_run.current_step = None
+            task_run.resumed_from_id = self._ctx.resume_run_id
 
     async def _set_current_step(self, step_name: str) -> None:
         """Update the current_step field on the TaskRun."""
