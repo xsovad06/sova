@@ -289,6 +289,14 @@ async function loadConfig() {
   }
 }
 
+function _handleSaveResponse(data) {
+  if (data.error) {
+    showToast(data.error, 'error');
+  } else if (data.restart_required) {
+    showToast('Restart required for this setting to take effect', 'warning');
+  }
+}
+
 async function toggleBool(key, checked) {
   try {
     var res = await fetch(apiUrl('/settings/config'), {
@@ -297,9 +305,7 @@ async function toggleBool(key, checked) {
       body: JSON.stringify({key: key, value: String(checked)}),
     });
     var data = await res.json();
-    if (data.error) {
-      showToast(data.error, 'error');
-    }
+    _handleSaveResponse(data);
     loadConfig();
   } catch (e) {
     showToast('Failed to save: ' + e.message, 'error');
@@ -396,8 +402,8 @@ async function saveConfig(key, value, span, input) {
       showToast(data.error, 'error');
       cancelEdit(span, input);
     } else {
+      _handleSaveResponse(data);
       input.onblur = null;
-      // Reload to get proper formatting
       loadConfig();
     }
   } catch (e) {

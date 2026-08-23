@@ -919,7 +919,8 @@ class TestConfigReload:
         assert result is cfg
         assert result.wake_interval_minutes == 60
 
-    def test_reload_starts_agent_when_enabled_from_disabled(self) -> None:
+    @pytest.mark.asyncio
+    async def test_reload_starts_agent_when_enabled_from_disabled(self) -> None:
         from sova.config.models import OversightConfig
         from sova.dashboard.routers.settings import _reload_oversight_config
 
@@ -933,12 +934,13 @@ class TestConfigReload:
             "sova.dashboard.routers.oversight.get_oversight_agent",
             return_value=agent,
         ):
-            _reload_oversight_config()
+            await _reload_oversight_config()
 
         agent.reload_config.assert_called_once()
         agent.start.assert_called_once()
 
-    def test_reload_does_not_restart_already_running_agent(self) -> None:
+    @pytest.mark.asyncio
+    async def test_reload_does_not_restart_already_running_agent(self) -> None:
         from sova.config.models import OversightConfig
         from sova.dashboard.routers.settings import _reload_oversight_config
 
@@ -951,7 +953,7 @@ class TestConfigReload:
             "sova.dashboard.routers.oversight.get_oversight_agent",
             return_value=agent,
         ):
-            _reload_oversight_config()
+            await _reload_oversight_config()
 
         agent.reload_config.assert_called_once()
         agent.start.assert_not_called()

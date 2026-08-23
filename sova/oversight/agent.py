@@ -170,8 +170,17 @@ class OversightAgent:
                 await self._record_error_safe(run_id, cycle, duration_ms, started_at, str(exc))
 
     async def _run_loop(self) -> None:
-        """Main loop: execute a wake cycle, then sleep for the configured interval."""
+        """Main loop: execute a wake cycle, then sleep for the configured interval.
+
+        Exits when ``enabled`` becomes False so ``running`` returns False and
+        the settings router can re-start the agent if re-enabled.
+        """
         while True:
+            self._reload_config()
+            if not self._config.enabled:
+                log.info("oversight.loop_exit_disabled")
+                self._task = None
+                return
             await self.run_cycle_once()
             interval_seconds = self._config.wake_interval_minutes * 60
             await asyncio.sleep(interval_seconds)
