@@ -76,6 +76,26 @@ class PRMonitor:
 
     _last_state: dict[int, PRSnapshot] = field(default_factory=dict)
     _initialized: bool = False
+    _wake_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def reload_config(
+        self,
+        monitor_config: PRMonitorConfig,
+        notification_config: "NotificationConfig",
+    ) -> None:
+        """Hot-reload config (called by settings router after TOML update)."""
+        self.monitor_config = monitor_config
+        self.notification_config = notification_config
+        self._wake_event.set()
+
+    async def _interruptible_sleep(self, delay: float) -> None:
+        """Sleep for *delay* seconds, but wake early if config is reloaded."""
+        try:
+            await asyncio.wait_for(self._wake_event.wait(), timeout=delay)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        finally:
+            self._wake_event.clear()
 
     async def run_loop(self) -> None:
         """Main polling loop. Runs until cancelled."""
@@ -87,7 +107,7 @@ class PRMonitor:
                 raise
             except Exception:
                 log.warning("pr_monitor.cycle_error", exc_info=True)
-            await asyncio.sleep(self.monitor_config.poll_interval)
+            await self._interruptible_sleep(self.monitor_config.poll_interval)
 
     async def _poll_cycle(self) -> None:
         """Single poll cycle: fetch PRs, detect transitions, act."""

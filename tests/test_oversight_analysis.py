@@ -417,7 +417,7 @@ class TestAgentAnalyzeWiring:
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch.object(agent, "_reload_config", return_value=cfg),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):
@@ -458,7 +458,7 @@ class TestAgentAnalyzeWiring:
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch.object(agent, "_reload_config", return_value=cfg),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):
@@ -497,7 +497,7 @@ class TestAgentAnalyzeWiring:
             patch.object(agent, "_analyze", side_effect=RuntimeError("LLM exploded")),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch.object(agent, "_reload_config", return_value=cfg),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):
