@@ -278,6 +278,124 @@ class TestRestartRequiredFlag:
         assert any(key == p or key.startswith(p) for p in _RESTART_REQUIRED_PREFIXES)
 
 
+class TestLifecycleErrorPropagation:
+    """Lifecycle failures propagate to the caller instead of being swallowed."""
+
+    @pytest.mark.asyncio
+    async def test_daemon_stop_failure_raises(self) -> None:
+        from sova.dashboard.routers import supervisor as sup_mod
+        from sova.dashboard.routers.settings import _reload_daemon_config
+
+        daemon = MagicMock()
+        daemon.running = True
+        daemon.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+
+        cfg = MagicMock()
+        cfg.supervisor.enabled = False
+
+        project_dir = Path("/tmp/test")
+        resolved_key = str(project_dir.resolve())
+
+        orig_registry = sup_mod._daemon_registry
+        sup_mod._daemon_registry = {resolved_key: daemon}
+        try:
+            with (
+                patch("sova.config.loader.load_config", return_value=cfg),
+                patch.object(sup_mod, "_get_daemon", return_value=daemon),
+            ):
+                with pytest.raises(RuntimeError, match="stop failed"):
+                    await _reload_daemon_config(project_dir)
+        finally:
+            sup_mod._daemon_registry = orig_registry
+
+    @pytest.mark.asyncio
+    async def test_daemon_start_failure_raises(self) -> None:
+        from sova.dashboard.routers import supervisor as sup_mod
+        from sova.dashboard.routers.settings import _reload_daemon_config
+
+        cfg = MagicMock()
+        cfg.supervisor.enabled = True
+
+        orig_registry = sup_mod._daemon_registry
+        sup_mod._daemon_registry = {}
+        try:
+            with (
+                patch("sova.config.loader.load_config", return_value=cfg),
+                patch.object(sup_mod, "_get_daemon", return_value=None),
+                patch(
+                    "sova.db.session.get_session_factory",
+                    new_callable=AsyncMock,
+                    side_effect=RuntimeError("db unavailable"),
+                ),
+            ):
+                with pytest.raises(RuntimeError, match="db unavailable"):
+                    await _reload_daemon_config(Path("/tmp/test"))
+        finally:
+            sup_mod._daemon_registry = orig_registry
+
+
+class TestLifecycleSerialization:
+    """Concurrent lifecycle transitions are serialized per project."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_toggles_serialized(self) -> None:
+        from sova.dashboard.routers import supervisor as sup_mod
+        from sova.dashboard.routers.settings import _reload_daemon_config
+
+        call_order: list[str] = []
+
+        daemon = MagicMock()
+        daemon.running = True
+
+        async def slow_stop():
+            call_order.append("stop_start")
+            await asyncio.sleep(0.05)
+            call_order.append("stop_end")
+
+        daemon.stop = slow_stop
+
+        cfg_disable = MagicMock()
+        cfg_disable.supervisor.enabled = False
+
+        cfg_enable = MagicMock()
+        cfg_enable.supervisor.enabled = True
+
+        mock_session_factory = AsyncMock()
+        mock_daemon_instance = MagicMock()
+        mock_daemon_instance.start = MagicMock(return_value=MagicMock())
+
+        project_dir = Path("/tmp/test")
+        resolved_key = str(project_dir.resolve())
+
+        configs = iter([cfg_disable, cfg_enable])
+
+        orig_registry = sup_mod._daemon_registry
+        sup_mod._daemon_registry = {resolved_key: daemon}
+        try:
+            with (
+                patch("sova.config.loader.load_config", side_effect=lambda _: next(configs)),
+                patch.object(sup_mod, "_get_daemon", side_effect=lambda _: sup_mod._daemon_registry.get(resolved_key)),
+                patch(
+                    "sova.db.session.get_session_factory",
+                    new_callable=AsyncMock,
+                    return_value=mock_session_factory,
+                ),
+                patch(
+                    "sova.supervisor.daemon.SupervisorDaemon",
+                    return_value=mock_daemon_instance,
+                ),
+            ):
+                await asyncio.gather(
+                    _reload_daemon_config(project_dir),
+                    _reload_daemon_config(project_dir),
+                )
+
+            assert call_order[0] == "stop_start"
+            assert call_order[1] == "stop_end"
+        finally:
+            sup_mod._daemon_registry = orig_registry
+
+
 class TestTaskQueuePropagation:
     """task_queue changes propagate to daemon via reload_config."""
 

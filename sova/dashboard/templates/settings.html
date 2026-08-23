@@ -292,6 +292,8 @@ async function loadConfig() {
 function _handleSaveResponse(data) {
   if (data.error) {
     showToast(data.error, 'error');
+  } else if (data.lifecycle_error) {
+    showToast(data.lifecycle_error, 'warning');
   } else if (data.restart_required) {
     showToast('Restart required for this setting to take effect', 'warning');
   }

@@ -18,17 +18,31 @@ from sova.utils.logging import get_logger
 router = APIRouter(tags=["settings"])
 log = get_logger(component="dashboard.settings.router")
 
+_daemon_lifecycle_locks: dict[str | None, asyncio.Lock] = {}
+_oversight_lifecycle_lock = asyncio.Lock()
+
+
+def _get_lifecycle_lock(project_dir: Path | None) -> asyncio.Lock:
+    """Return a per-project async lock for serializing daemon lifecycle transitions."""
+    key = str(project_dir.resolve()) if project_dir else None
+    if key not in _daemon_lifecycle_locks:
+        _daemon_lifecycle_locks[key] = asyncio.Lock()
+    return _daemon_lifecycle_locks[key]
+
 
 async def _reload_daemon_config(project_dir: Path | None) -> None:
     """Hot-reload supervisor daemon config after settings update.
 
     Lifecycle-aware: stops the daemon when ``supervisor.enabled`` becomes
-    False, starts a new one when it becomes True.
-    """
-    try:
-        from sova.config.loader import load_config
-        from sova.dashboard.routers.supervisor import _daemon_registry, _get_daemon
+    False, starts a new one when it becomes True. Serialized per project
+    to prevent concurrent enable/disable races.
 
+    Raises on lifecycle failure so the caller can report it to the UI.
+    """
+    from sova.config.loader import load_config
+    from sova.dashboard.routers.supervisor import _daemon_registry, _get_daemon
+
+    async with _get_lifecycle_lock(project_dir):
         cfg = load_config(project_dir)
         daemon = _get_daemon(project_dir)
 
@@ -55,8 +69,6 @@ async def _reload_daemon_config(project_dir: Path | None) -> None:
             new_daemon.start()
             _daemon_registry[str(resolved.resolve())] = new_daemon
             log.info("settings.daemon_started_on_enable")
-    except Exception:
-        log.warning("settings.daemon_reload_failed", exc_info=True)
 
 
 # Maximum number of errors to include in label creation response
@@ -142,18 +154,21 @@ async def _reload_oversight_config() -> None:
     """Trigger a config reload on the oversight agent, managing its lifecycle.
 
     Stops the agent when ``oversight.enabled`` becomes False, starts it
-    when it becomes True.
+    when it becomes True. Serialized to prevent concurrent toggle races.
+
+    Raises on lifecycle failure so the caller can report it to the UI.
     """
     from sova.dashboard.routers.oversight import get_oversight_agent
 
-    agent = get_oversight_agent()
-    if agent is not None:
-        agent.reload_config()
-        if not agent._config.enabled and agent.running:
-            await agent.stop()
-            log.info("settings.oversight_stopped_on_disable")
-        elif agent._config.enabled and not agent.running:
-            agent.start()
+    async with _oversight_lifecycle_lock:
+        agent = get_oversight_agent()
+        if agent is not None:
+            agent.reload_config()
+            if not agent._config.enabled and agent.running:
+                await agent.stop()
+                log.info("settings.oversight_stopped_on_disable")
+            elif agent._config.enabled and not agent.running:
+                agent.start()
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -209,10 +224,21 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
                 from sova.dashboard.services.agent_pool import sync_max_concurrent
 
                 sync_max_concurrent(project_dir)
+            lifecycle_error = None
             if req.key.startswith("supervisor."):
-                await _reload_daemon_config(project_dir)
+                try:
+                    await _reload_daemon_config(project_dir)
+                except Exception:
+                    log.warning("settings.daemon_reload_failed", exc_info=True)
+                    lifecycle_error = "Config saved but supervisor lifecycle transition failed"
             if req.key.startswith("oversight."):
-                await _reload_oversight_config()
+                try:
+                    await _reload_oversight_config()
+                except Exception:
+                    log.warning("settings.oversight_reload_failed", exc_info=True)
+                    lifecycle_error = "Config saved but oversight lifecycle transition failed"
+            if lifecycle_error:
+                result["lifecycle_error"] = lifecycle_error
             if any(req.key == prefix or req.key.startswith(prefix) for prefix in _RESTART_REQUIRED_PREFIXES):
                 result["restart_required"] = True
         return result
