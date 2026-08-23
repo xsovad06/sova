@@ -14,10 +14,14 @@ import shutil
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.models import LLMResult, StreamEvent
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="ipc.runtime")
 
@@ -539,3 +543,12 @@ def set_runtime(runtime: AgentRuntime) -> None:
     """Set the module-level agent runtime."""
     global _runtime  # noqa: PLW0603
     _runtime = runtime
+
+
+def reload_runtime(cfg: "ProjectConfig") -> None:
+    """Recreate the global agent runtime from fresh config.
+
+    Python's GIL ensures the reference swap is atomic. In-flight spawns
+    hold their own reference to the old runtime via the returned process.
+    """
+    set_runtime(create_runtime(cfg.agent.runtime))

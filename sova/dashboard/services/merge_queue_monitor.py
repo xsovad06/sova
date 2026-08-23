@@ -37,6 +37,40 @@ class MergeQueueMonitor:
     notification_config: Any = None
 
     _stop_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _reload_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def reload_config(
+        self,
+        integration_config: IntegrationConfig,
+        notification_config: Any = None,
+    ) -> None:
+        """Hot-reload config (called by settings router after TOML update)."""
+        self.integration_config = integration_config
+        if notification_config is not None:
+            self.notification_config = notification_config
+        self._reload_event.set()
+
+    async def _interruptible_sleep(self, delay: float) -> bool:
+        """Sleep for *delay* seconds, waking early on config reload or stop.
+
+        Returns True if the loop should exit (stop event set), False otherwise.
+        """
+        stop_fut = asyncio.ensure_future(self._stop_event.wait())
+        reload_fut = asyncio.ensure_future(self._reload_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {stop_fut, reload_fut},
+                timeout=delay,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_fut in done:
+                return True
+            if reload_fut in done:
+                self._reload_event.clear()
+            return False
+        finally:
+            stop_fut.cancel()
+            reload_fut.cancel()
 
     async def run_loop(self) -> None:
         """Main polling loop. Runs until cancelled or stopped."""
@@ -49,11 +83,10 @@ class MergeQueueMonitor:
                 raise
             except Exception:
                 log.warning("merge_queue_monitor.cycle_error", exc_info=True)
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
+            interval = self.integration_config.merge_queue_poll_interval
+            should_stop = await self._interruptible_sleep(interval)
+            if should_stop:
                 break
-            except TimeoutError:
-                pass
 
     def stop(self) -> None:
         self._stop_event.set()

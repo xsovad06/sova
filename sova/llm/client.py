@@ -49,6 +49,24 @@ def reset_provider() -> None:
     _provider = None
 
 
+def reload_provider(cfg: ProjectConfig) -> None:
+    """Recreate the global LLM provider from fresh config.
+
+    Python's GIL ensures the reference swap is atomic. In-flight calls hold
+    their own reference to the old provider, which stays alive via refcount.
+    """
+    from sova.llm.provider import create_provider
+
+    set_provider(
+        create_provider(
+            cfg.llm.provider,
+            model=cfg.llm.model,
+            fallback_model=cfg.llm.fallback_model,
+            api_base=cfg.llm.api_base,
+        )
+    )
+
+
 async def invoke(
     prompt: str,
     *,

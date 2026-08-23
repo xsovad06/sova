@@ -442,7 +442,7 @@ class TestRunLoop:
 
         with (
             patch.object(monitor, "_poll_cycle", side_effect=_poll_then_cancel),
-            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch.object(monitor, "_interruptible_sleep", new_callable=AsyncMock),
         ):
             with pytest.raises(asyncio.CancelledError):
                 await monitor.run_loop()
@@ -463,7 +463,7 @@ class TestRunLoop:
 
         with (
             patch.object(monitor, "_poll_cycle", side_effect=_error_then_cancel),
-            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch.object(monitor, "_interruptible_sleep", new_callable=AsyncMock),
             patch("sova.supervisor.pr_monitor.log") as mock_log,
         ):
             with pytest.raises(asyncio.CancelledError):

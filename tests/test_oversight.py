@@ -100,7 +100,7 @@ class TestOversightAgent:
             async def _fake_sleep(seconds):
                 raise asyncio.CancelledError
 
-            with patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep):
+            with patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep):
                 task = agent.start()
                 with pytest.raises(asyncio.CancelledError):
                     await task
@@ -134,7 +134,7 @@ class TestOversightAgent:
             patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_failing_record),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):
@@ -170,7 +170,7 @@ class TestOversightAgent:
             patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_analyze", side_effect=_noop_analyze),
             patch.object(agent, "_record_run", side_effect=_mock_record),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):
@@ -262,7 +262,7 @@ class TestOversightAgent:
             patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_cancel_then_record),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):
@@ -297,7 +297,7 @@ class TestOversightAgent:
             patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_failing_record),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):
@@ -329,7 +329,7 @@ class TestOversightAgent:
             async def _fake_sleep(seconds):
                 raise asyncio.CancelledError
 
-            with patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep):
+            with patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep):
                 task = agent.start()
                 with pytest.raises(asyncio.CancelledError):
                     await task
@@ -400,7 +400,7 @@ class TestOversightActionWiring:
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_propose_issues", side_effect=_mock_propose),
             patch.object(agent, "_record_run", side_effect=_mock_record),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):
@@ -441,7 +441,7 @@ class TestOversightActionWiring:
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_propose_issues", side_effect=_mock_propose),
             patch.object(agent, "_record_run", side_effect=_mock_record),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):
@@ -479,7 +479,7 @@ class TestOversightActionWiring:
             patch.object(agent, "_analyze", side_effect=_mock_analyze),
             patch.object(agent, "_propose_issues", side_effect=_mock_propose),
             patch.object(agent, "_record_run", side_effect=_mock_record),
-            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+            patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
             with pytest.raises(asyncio.CancelledError):

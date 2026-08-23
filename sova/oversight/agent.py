@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from sova.config.models import OversightConfig
+from sova.config.models import OversightConfig, ProjectConfig
 from sova.db.models import OversightFinding, OversightRun, OversightRunStatus
 from sova.oversight.persona import load_persona
 from sova.utils.logging import get_logger
@@ -34,6 +34,7 @@ class OversightAgent:
         self._cycle_number: int = 0
         self._persona: str = ""
         self._cycle_lock = asyncio.Lock()
+        self._wake_event = asyncio.Event()
 
     def _reload_config(self) -> OversightConfig:
         """Re-read config from disk so runtime sova.toml changes take effect."""
@@ -49,9 +50,28 @@ class OversightAgent:
             log.warning("oversight.config_reload_failed", exc_info=True)
         return self._config
 
-    def reload_config(self) -> OversightConfig:
-        """Public API for settings router to trigger a config reload."""
-        return self._reload_config()
+    def reload_config(self, cfg: ProjectConfig | None = None) -> OversightConfig:
+        """Hot-reload config (called by settings router after TOML update).
+
+        When *cfg* is provided, uses it directly instead of re-reading from
+        disk. Falls back to disk re-read when called without arguments
+        (backward compatibility).
+        """
+        if cfg is not None:
+            self._config = cfg.oversight
+        else:
+            self._reload_config()
+        self._wake_event.set()
+        return self._config
+
+    async def _interruptible_sleep(self, delay: float) -> None:
+        """Sleep for *delay* seconds, but wake early if config is reloaded."""
+        try:
+            await asyncio.wait_for(self._wake_event.wait(), timeout=delay)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        finally:
+            self._wake_event.clear()
 
     def start(self) -> asyncio.Task:
         """Start the oversight background loop. Returns the task for cancellation."""
@@ -183,7 +203,7 @@ class OversightAgent:
                 return
             await self.run_cycle_once()
             interval_seconds = self._config.wake_interval_minutes * 60
-            await asyncio.sleep(interval_seconds)
+            await self._interruptible_sleep(interval_seconds)
 
     async def _analyze(self, snapshot: dict, run_id: str) -> tuple[list[OversightFinding], str | None]:
         """Run the analysis phase: send snapshot to LLM, persist findings.

@@ -77,6 +77,21 @@ class AgentWatchdog:
         # (run_id, step_name) -> monotonic time when that step was first seen
         self._step_started_at: dict[tuple[int, str], float] = {}
         self._task: asyncio.Task | None = None
+        self._wake_event = asyncio.Event()
+
+    def reload_config(self, config: WatchdogConfig) -> None:
+        """Hot-reload config (called by settings router after TOML update)."""
+        self._config = config
+        self._wake_event.set()
+
+    async def _interruptible_sleep(self, delay: float) -> None:
+        """Sleep for *delay* seconds, but wake early if config is reloaded."""
+        try:
+            await asyncio.wait_for(self._wake_event.wait(), timeout=delay)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        finally:
+            self._wake_event.clear()
 
     def start(self) -> asyncio.Task:
         """Start the watchdog background loop. Returns the task for cancellation."""
@@ -103,7 +118,7 @@ class AgentWatchdog:
             log.warning("watchdog.scan_error", exc_info=True)
 
         while True:
-            await asyncio.sleep(self._config.check_interval_seconds)
+            await self._interruptible_sleep(self._config.check_interval_seconds)
             try:
                 await self._scan_once()
             except asyncio.CancelledError:
