@@ -29,6 +29,7 @@ class StepResult:
     cost_usd: Decimal = Decimal("0")
     awaiting_approval: bool = False
     handoff_actions: list[HandoffAction] | None = None
+    partial_work: bool = False
 
 
 @dataclass

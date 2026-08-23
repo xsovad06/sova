@@ -413,6 +413,7 @@ class MonitorCIStep(BaseStep):
                 model=ctx.resolved_model or ctx.config.agent.model,
                 cwd=ctx.working_dir,
                 max_budget_usd=budget,
+                timeout=ctx.config.validation.fix_timeout,
             )
             ctx.add_cost(llm_result.cost_usd)
             return llm_result.cost_usd, None

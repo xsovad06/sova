@@ -418,20 +418,74 @@ class WorkflowEngine:
             return None
 
     async def _run_step_with_timeout(self, step: BaseStep) -> StepResult:
-        """Execute step with timeout and exception handling."""
+        """Execute step with timeout and exception handling.
+
+        On timeout: if the worktree has staged changes, commits them with a
+        WIP message so partial work is not lost. Sets partial_work=True in the
+        returned StepResult so the dashboard can surface it.
+        """
         timeout_seconds = self._step_timeout(step.name)
         try:
             async with asyncio.timeout(timeout_seconds):
                 return await step.execute(self._ctx)
         except TimeoutError:
+            partial_work = await self._preserve_partial_work_on_timeout(step.name)
             return StepResult(
                 success=False,
                 summary=f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)",
                 error="step_hard_timeout",
+                partial_work=partial_work,
             )
         except Exception as exc:
             log.exception("workflow.step.unhandled_exception", step=step.name, error=str(exc))
             return StepResult(success=False, summary=f"Exception in {step.name}", error=str(exc))
+
+    async def _preserve_partial_work_on_timeout(self, step_name: str) -> bool:
+        """Commit staged changes on timeout to preserve partial work.
+
+        Returns True if partial work was committed, False otherwise.
+        """
+        from pathlib import Path
+
+        from sova.utils.shell import run
+
+        # Guard: ensure we're in a valid git repo
+        work_dir = self._ctx.worktree_dir or self._ctx.working_dir
+        if not work_dir:
+            log.debug("workflow.timeout.no_working_dir")
+            return False
+
+        work_path = Path(work_dir)
+        if not (work_path / ".git").exists():
+            log.debug("workflow.timeout.not_a_git_repo")
+            return False
+
+        # Check for staged changes (git add -u only stages tracked files)
+        try:
+            add_result = await run("git", "add", "-u", cwd=work_dir)
+            if not add_result.success:
+                log.debug("workflow.timeout.add_failed", error=add_result.stderr)
+                return False
+
+            # Check if there's anything to commit
+            diff_result = await run("git", "diff", "--cached", "--quiet", cwd=work_dir)
+            if diff_result.returncode == 0:
+                # Exit code 0 means no staged changes
+                log.debug("workflow.timeout.no_staged_changes")
+                return False
+
+            # Commit partial work
+            commit_msg = f"wip: partial work from {step_name} (timeout)"
+            commit_result = await run("git", "commit", "-m", commit_msg, cwd=work_dir)
+            if commit_result.success:
+                log.info("workflow.timeout.partial_work_committed", step=step_name)
+                return True
+            else:
+                log.warning("workflow.timeout.commit_failed", error=commit_result.stderr)
+                return False
+        except Exception:
+            log.warning("workflow.timeout.partial_work_failed", step=step_name, exc_info=True)
+            return False
 
     async def _persist_step_result(
         self, step_exec_id: int, result: StepResult, elapsed_ms: int, step_name: str
@@ -485,12 +539,30 @@ class WorkflowEngine:
         monitor_ci gets ci.max_wait + a 120s grace period;
         develop uses develop.step_timeout;
         all other steps use agent.step_timeout.
+
+        Complexity multiplier: COMPLEX issues get 1.5x timeout, EPIC get 2.0x,
+        capped at 3.0x (max multiplier). Applied to the final computed value
+        so all paths benefit.
         """
+        from sova.llm.complexity import ComplexityTier
+
         if step_name == "monitor_ci":
-            return self._ctx.config.ci.max_wait + 120
-        if step_name == "develop":
-            return min(self._ctx.config.develop.step_timeout, self._ctx.config.agent.step_timeout)
-        return self._ctx.config.agent.step_timeout
+            base = self._ctx.config.ci.max_wait + 120
+        elif step_name == "develop":
+            base = min(self._ctx.config.develop.step_timeout, self._ctx.config.agent.step_timeout)
+        else:
+            base = self._ctx.config.agent.step_timeout
+
+        # Apply complexity multiplier (default 1.0 when complexity is None)
+        multiplier = 1.0
+        if self._ctx.complexity == ComplexityTier.COMPLEX:
+            multiplier = 1.5
+        elif self._ctx.complexity == ComplexityTier.EPIC:
+            multiplier = 2.0
+
+        # Cap at 3.0x to prevent unbounded timeouts
+        multiplier = min(multiplier, 3.0)
+        return int(base * multiplier)
 
     # -- Output helpers --
 

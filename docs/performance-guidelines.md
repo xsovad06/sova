@@ -11,7 +11,10 @@ All configurable timeouts cascade from `sova.toml` or env vars (`SOVA_` prefix).
 | Shell commands | 300s | hardcoded | `sova/utils/shell.py` |
 | LLM invoke | 600s | hardcoded | `sova/llm/client.py` |
 | Pipeline steps (LLM) | 1800s | `agent.step_timeout` | `sova/config/models.py` |
-| Pipeline steps (git/API) | 15-120s | hardcoded per step | `create_pr.py`, `validate.py` |
+| Pipeline steps (git/API) | 15-120s | hardcoded per step | `create_pr.py` |
+| Develop step | 1200s | `develop.step_timeout` | `sova/config/models.py` |
+| Validate hook execution | 120s | `validation.hook_timeout` | `sova/config/models.py` |
+| Validate LLM fix | 180s | `validation.fix_timeout` | `sova/config/models.py` |
 | CI polling max wait | 900s | `ci.max_wait` | `sova/config/models.py` |
 | CI poll interval | 60s | `ci.poll_interval` | `sova/config/models.py` |
 | CI no-checks grace | 120s | `ci.no_checks_grace_period` | `sova/config/models.py` |
@@ -20,13 +23,31 @@ All configurable timeouts cascade from `sova.toml` or env vars (`SOVA_` prefix).
 | Agent graceful stop | 10s | hardcoded | `sova/ipc/control.py` |
 | Watch veto window | 30s | `watch.veto_seconds` | `sova/config/models.py` |
 
+### Complexity multiplier
+
+All pipeline step timeouts are multiplied by a complexity factor based on the issue's complexity tier:
+
+| Complexity Tier | Multiplier | Applied To |
+|----------------|------------|------------|
+| TRIVIAL | 1.0x | Base timeout unchanged |
+| SIMPLE | 1.0x | Base timeout unchanged |
+| COMPLEX | 1.5x | All step timeouts |
+| EPIC | 2.0x | All step timeouts |
+
+The multiplier is capped at 3.0x for future extensibility. Applied in `WorkflowEngine._step_timeout()` to all steps (develop, monitor_ci, validate, etc.).
+
+### Partial work preservation
+
+When a step times out, `WorkflowEngine._preserve_partial_work_on_timeout()` commits any staged changes with message `"wip: partial work from {step_name} (timeout)"`. Only tracked files modified during the step are preserved (via `git add -u`); new untracked files are not committed. The `StepResult.partial_work` flag is set to `True` so the dashboard can surface this to the user.
+
 ### Timeout conventions
 
 - Use `asyncio.timeout()` (Python 3.11+) for new code, not `asyncio.wait_for()`
-- Always kill the subprocess on timeout -- call `proc.kill()` then `await proc.wait()`
+- Always kill the subprocess on timeout: call `proc.kill()` then `await proc.wait()`
 - Agent stop escalates SIGTERM to SIGKILL after timeout (`sova/ipc/control.py`)
-- Steps that invoke Claude CLI pass `timeout=ctx.config.agent.step_timeout`
-- Steps with their own focused timeouts (CreatePRStep at 120s, ValidateStep at 120s) are not affected
+- Steps that invoke Claude CLI pass `timeout=ctx.config.agent.step_timeout` (before multiplier)
+- Steps with their own config keys (develop, validation, CI) use those specific timeouts
+- All timeouts are subject to the complexity multiplier when `ctx.complexity` is set
 
 ## Database Session Management
 

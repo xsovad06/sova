@@ -60,6 +60,7 @@ _NESTED_SECTIONS = (
     "agent",
     "review",
     "develop",
+    "validation",
     "ci",
     "watch",
     "worktree",
