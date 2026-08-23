@@ -1423,7 +1423,7 @@ class TestListOpenPrsWithState:
         )
 
         # Mock _record_state_transitions to avoid side effects
-        async def mock_record(prs, *, repo):
+        async def mock_record(prs, *, repo, project_dir) -> None:
             pass
 
         monkeypatch.setattr("sova.dashboard.services.pr_service._record_state_transitions", mock_record)
