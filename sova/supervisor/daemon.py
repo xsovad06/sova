@@ -130,6 +130,10 @@ class SupervisorDaemon:
 
         cfg = self._config
 
+        if not cfg.supervisor.enabled:
+            log.info("daemon.poll_skip_disabled")
+            return {"skipped": "supervisor disabled"}
+
         try:
             adapter = create_adapter(cfg)
         except Exception as exc:
