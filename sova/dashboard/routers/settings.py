@@ -204,7 +204,102 @@ async def get_config_grouped() -> dict:
         raise HTTPException(status_code=500, detail=detail) from None
 
 
-_RESTART_REQUIRED_PREFIXES = frozenset({"server.", "watch.", "llm.provider", "database_url"})
+_RESTART_REQUIRED_PREFIXES = frozenset({"server.", "watch.", "database_url"})
+
+_RELOAD_PREFIX_MAP: dict[str, str] = {
+    "supervisor.": "supervisor",
+    "oversight.": "oversight",
+    "watchdog.": "watchdog",
+    "pr_monitor.": "pr_monitor",
+    "coderabbit_quota.": "coderabbit_quota",
+    "integration.": "integration",
+    "llm.": "llm",
+    "agent.runtime": "runtime",
+}
+
+
+def _match_reload_target(key: str) -> str | None:
+    """Match a config key to a reload target via prefix lookup."""
+    for prefix, target in _RELOAD_PREFIX_MAP.items():
+        if key == prefix.rstrip(".") or key.startswith(prefix):
+            return target
+    return None
+
+
+async def _dispatch_config_reload(
+    target: str,
+    cfg: ProjectConfig,
+    components: dict,
+    project_dir: Path | None,
+) -> None:
+    """Execute the reload for a single target. Raises on failure."""
+    if target == "supervisor":
+        await _reload_daemon_config(project_dir)
+    elif target == "oversight":
+        await _reload_oversight_config_with_cfg(cfg)
+    elif target == "watchdog":
+        wd = components.get("watchdog")
+        if wd is not None:
+            wd.reload_config(cfg.watchdog)
+    elif target == "pr_monitor":
+        for mon in components.get("pr_monitors", []):
+            mon.reload_config(cfg.pr_monitor, cfg.notification)
+    elif target == "coderabbit_quota":
+        for throttle in components.get("pr_throttles", []):
+            throttle.reload_config(cfg.coderabbit_quota)
+    elif target == "integration":
+        for mqm in components.get("merge_queue_monitors", []):
+            mqm.reload_config(cfg.integration, cfg.notification)
+    elif target == "llm":
+        from sova.llm.client import reload_provider
+
+        reload_provider(cfg)
+    elif target == "runtime":
+        from sova.ipc.runtime import reload_runtime
+
+        reload_runtime(cfg)
+
+
+async def _reload_all_configs(project_dir: Path | None, key: str) -> str | None:
+    """Dispatch config reload to the appropriate daemons based on key prefix.
+
+    Returns a lifecycle error message string, or None on success.
+    """
+    from sova.config.loader import load_config
+    from sova.dashboard.app import get_daemon_components
+
+    matched = _match_reload_target(key)
+    if matched is None:
+        return None
+
+    try:
+        cfg = load_config(project_dir)
+        resolved_key = str(project_dir.resolve()) if project_dir else str(Path.cwd().resolve())
+        components = get_daemon_components().get(resolved_key, {})
+        await _dispatch_config_reload(matched, cfg, components, project_dir)
+    except Exception:
+        log.warning("settings.reload_failed", target=matched, exc_info=True)
+        return f"Config saved but {matched} reload failed"
+
+    return None
+
+
+async def _reload_oversight_config_with_cfg(cfg: ProjectConfig) -> None:
+    """Trigger a config reload on the oversight agent using a pre-loaded config.
+
+    Manages lifecycle: stops when disabled, starts when enabled.
+    """
+    from sova.dashboard.routers.oversight import get_oversight_agent
+
+    async with _oversight_lifecycle_lock:
+        agent = get_oversight_agent()
+        if agent is not None:
+            agent.reload_config(cfg)
+            if not agent._config.enabled and agent.running:
+                await agent.stop()
+                log.info("settings.oversight_stopped_on_disable")
+            elif agent._config.enabled and not agent.running:
+                agent.start()
 
 
 @router.post("/settings/config", responses={500: {"description": "Failed to update configuration"}})
@@ -224,19 +319,7 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
                 from sova.dashboard.services.agent_pool import sync_max_concurrent
 
                 sync_max_concurrent(project_dir)
-            lifecycle_error = None
-            if req.key.startswith("supervisor."):
-                try:
-                    await _reload_daemon_config(project_dir)
-                except Exception:
-                    log.warning("settings.daemon_reload_failed", exc_info=True)
-                    lifecycle_error = "Config saved but supervisor lifecycle transition failed"
-            if req.key.startswith("oversight."):
-                try:
-                    await _reload_oversight_config()
-                except Exception:
-                    log.warning("settings.oversight_reload_failed", exc_info=True)
-                    lifecycle_error = "Config saved but oversight lifecycle transition failed"
+            lifecycle_error = await _reload_all_configs(project_dir, req.key)
             if lifecycle_error:
                 result["lifecycle_error"] = lifecycle_error
             if any(req.key == prefix or req.key.startswith(prefix) for prefix in _RESTART_REQUIRED_PREFIXES):

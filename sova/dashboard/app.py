@@ -19,9 +19,12 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from sova.config.loader import ProjectConfig
+    from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor
     from sova.monitoring.cross_project import MetricsSnapshotWriter
     from sova.oversight.agent import OversightAgent
     from sova.supervisor.daemon import SupervisorDaemon
+    from sova.supervisor.pr_monitor import PRMonitor
+    from sova.supervisor.pr_throttle import PRThrottleLoop
     from sova.supervisor.watchdog import AgentWatchdog
 
 from fastapi import FastAPI, HTTPException, Request
@@ -92,6 +95,29 @@ _SWEEP_INTERVAL = 5  # seconds
 _RECOVERY_INTERVAL = 300  # 5 minutes
 _SWEEP_WRITE_RETRY_ATTEMPTS = 3
 _SWEEP_WRITE_RETRY_DELAY = 1.0
+
+
+class _DaemonComponents(TypedDict, total=False):
+    """Per-project registry of background daemon instances for config reload."""
+
+    watchdog: AgentWatchdog
+    pr_monitors: list[PRMonitor]
+    pr_throttles: list[PRThrottleLoop]
+    merge_queue_monitors: list[MergeQueueMonitor]
+
+
+_daemon_components: dict[str, _DaemonComponents] = {}
+
+
+def get_daemon_components() -> dict[str, _DaemonComponents]:
+    """Return the daemon component registry (keyed by resolved project path)."""
+    return _daemon_components
+
+
+def set_daemon_components(registry: dict[str, _DaemonComponents]) -> None:
+    """Replace the daemon component registry."""
+    global _daemon_components  # noqa: PLW0603
+    _daemon_components = registry
 
 
 def _try_load_config(project_path: Path) -> ProjectConfig | None:
@@ -435,9 +461,11 @@ def create_app(
 
         # Recover stale PR queue entries and start background processor
         pr_throttle_tasks: list[asyncio.Task] = []
+        pr_throttle_instances: list[PRThrottleLoop] = []
         if cfg.coderabbit_quota.enabled:
             from sova.db.session import get_session
-            from sova.supervisor.pr_throttle import process_queue_loop, recover_creating_entries
+            from sova.supervisor.pr_throttle import PRThrottleLoop as _PRThrottleLoop
+            from sova.supervisor.pr_throttle import recover_creating_entries
 
             if is_multi:
                 from sova.config.loader import load_config as _load_cfg
@@ -460,16 +488,18 @@ def create_app(
 
                         return _factory
 
-                    pr_throttle_tasks.append(
-                        asyncio.create_task(
-                            process_queue_loop(
-                                _make_factory(p),
-                                pcfg.coderabbit_quota,
-                                project_slug=pcfg.github_repo,
-                                project_dir=p,
-                            )
-                        )
+                    throttle = _PRThrottleLoop(
+                        _make_factory(p),
+                        pcfg.coderabbit_quota,
+                        project_slug=pcfg.github_repo,
+                        project_dir=p,
                     )
+                    pr_throttle_instances.append(throttle)
+                    pr_throttle_tasks.append(asyncio.create_task(throttle.run()))
+
+                    _key = str(p.resolve())
+                    _daemon_components.setdefault(_key, {})
+                    _daemon_components[_key].setdefault("pr_throttles", []).append(throttle)
             else:
                 async with await get_session(project_dir=resolved) as session:
                     async with session.begin():
@@ -478,57 +508,74 @@ def create_app(
                 async def _pr_session_factory() -> AsyncSession:
                     return await get_session(project_dir=resolved)
 
-                pr_throttle_tasks.append(
-                    asyncio.create_task(
-                        process_queue_loop(
-                            _pr_session_factory,
-                            cfg.coderabbit_quota,
-                            project_slug=cfg.github_repo,
-                            project_dir=resolved,
-                        )
-                    )
+                throttle = _PRThrottleLoop(
+                    _pr_session_factory,
+                    cfg.coderabbit_quota,
+                    project_slug=cfg.github_repo,
+                    project_dir=resolved,
                 )
+                pr_throttle_instances.append(throttle)
+                pr_throttle_tasks.append(asyncio.create_task(throttle.run()))
+
+                _daemon_components.setdefault(str(resolved), {})
+                _daemon_components[str(resolved)].setdefault("pr_throttles", []).append(throttle)
 
         sweep_task = asyncio.create_task(_liveness_sweep_loop(project_dir, is_multi))
         recovery_task = asyncio.create_task(_periodic_recovery_loop(project_dir, is_multi))
 
         # PR monitor background loop
         pr_monitor_tasks: list[asyncio.Task] = []
+        pr_monitor_instances: list[PRMonitor] = []
         if is_multi:
             from sova.supervisor.pr_monitor import create_monitors_for_projects
 
             for monitor in create_monitors_for_projects():
+                pr_monitor_instances.append(monitor)
                 pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
+                _key = str(monitor.project_dir.resolve())
+                _daemon_components.setdefault(_key, {})
+                _daemon_components[_key].setdefault("pr_monitors", []).append(monitor)
         elif cfg.pr_monitor.enabled and cfg.github_repo:
-            from sova.supervisor.pr_monitor import PRMonitor
+            from sova.supervisor.pr_monitor import PRMonitor as _PRMonitor
 
-            monitor = PRMonitor(
+            monitor = _PRMonitor(
                 project_dir=resolved,
                 monitor_config=cfg.pr_monitor,
                 notification_config=cfg.notification,
                 repo=cfg.github_repo,
                 github_user=cfg.github_user,
             )
+            pr_monitor_instances.append(monitor)
             pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
+            _daemon_components.setdefault(str(resolved), {})
+            _daemon_components[str(resolved)].setdefault("pr_monitors", []).append(monitor)
 
         # Merge queue monitor background loop
         merge_queue_tasks: list[asyncio.Task] = []
+        merge_queue_instances: list[MergeQueueMonitor] = []
         if is_multi:
             from sova.dashboard.services.merge_queue_monitor import create_monitors_for_merge_queue
 
             for mq_monitor in create_monitors_for_merge_queue():
+                merge_queue_instances.append(mq_monitor)
                 merge_queue_tasks.append(asyncio.create_task(mq_monitor.run_loop()))
+                _key = str(mq_monitor.project_dir.resolve())
+                _daemon_components.setdefault(_key, {})
+                _daemon_components[_key].setdefault("merge_queue_monitors", []).append(mq_monitor)
         elif cfg.integration.merge_queue_enabled != "false" and cfg.github_repo:
-            from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor
+            from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor as _MergeQueueMonitor
 
-            mq_monitor = MergeQueueMonitor(
+            mq_monitor = _MergeQueueMonitor(
                 project_dir=resolved,
                 repo=cfg.github_repo,
                 github_user=cfg.github_user,
                 integration_config=cfg.integration,
                 notification_config=cfg.notification,
             )
+            merge_queue_instances.append(mq_monitor)
             merge_queue_tasks.append(asyncio.create_task(mq_monitor.run_loop()))
+            _daemon_components.setdefault(str(resolved), {})
+            _daemon_components[str(resolved)].setdefault("merge_queue_monitors", []).append(mq_monitor)
 
         # Start agent watchdog
         from sova.supervisor.watchdog import AgentWatchdog as _AgentWatchdog
@@ -537,6 +584,8 @@ def create_app(
         if cfg.watchdog.enabled and not is_multi:
             watchdog = _AgentWatchdog(config=cfg.watchdog, project_dir=resolved)
             watchdog.start()
+            _daemon_components.setdefault(str(resolved), {})
+            _daemon_components[str(resolved)]["watchdog"] = watchdog
 
         # Start cross-project metrics snapshot writer
         from sova.monitoring.cross_project import MetricsSnapshotWriter
@@ -610,6 +659,7 @@ def create_app(
                 )
             except TimeoutError:
                 log.warning("lifespan.shutdown_timeout", exc_info=True)
+            _daemon_components.clear()
             await close_db()
 
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)
