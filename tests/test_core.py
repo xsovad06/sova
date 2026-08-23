@@ -3270,11 +3270,13 @@ class TestCheckpointResume:
 class TestContextPersistence:
     """Verify worktree_path/branch_name are saved to TaskRun on every exit path."""
 
-    async def test_context_persisted_after_successful_step(self) -> None:
+    async def test_context_persisted_after_successful_step(self, tmp_path: Path) -> None:
         """worktree_path and branch_name are saved after each successful step."""
+        worktree = tmp_path / "wt" / "42"
+        worktree.mkdir(parents=True)
         ctx = _make_ctx(
             branch_name="feat/issue-42",
-            worktree_dir=Path("/tmp/wt/42"),
+            worktree_dir=worktree,
         )
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -3286,13 +3288,15 @@ class TestContextPersistence:
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.branch_name == "feat/issue-42"
-            assert task_run.worktree_path == "/tmp/wt/42"
+            assert task_run.worktree_path == str(worktree)
 
-    async def test_context_persisted_on_gate_failure(self) -> None:
+    async def test_context_persisted_on_gate_failure(self, tmp_path: Path) -> None:
         """worktree_path and branch_name survive a gate_failed pause."""
+        worktree = tmp_path / "wt" / "73"
+        worktree.mkdir(parents=True)
         ctx = _make_ctx(
             branch_name="feat/issue-73",
-            worktree_dir=Path("/tmp/wt/73"),
+            worktree_dir=worktree,
         )
         step = DummyStep(should_pass=True, gate_pass=False)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -3304,13 +3308,15 @@ class TestContextPersistence:
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.branch_name == "feat/issue-73"
-            assert task_run.worktree_path == "/tmp/wt/73"
+            assert task_run.worktree_path == str(worktree)
 
-    async def test_context_persisted_on_step_failure(self) -> None:
+    async def test_context_persisted_on_step_failure(self, tmp_path: Path) -> None:
         """worktree_path and branch_name survive a step execution failure."""
+        worktree = tmp_path / "wt" / "99"
+        worktree.mkdir(parents=True)
         ctx = _make_ctx(
             branch_name="fix/broken",
-            worktree_dir=Path("/tmp/wt/99"),
+            worktree_dir=worktree,
         )
         step = DummyStep(should_pass=False)
         step.max_retries = 0
@@ -3323,15 +3329,17 @@ class TestContextPersistence:
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.branch_name == "fix/broken"
-            assert task_run.worktree_path == "/tmp/wt/99"
+            assert task_run.worktree_path == str(worktree)
 
-    async def test_context_persisted_on_budget_exceeded(self) -> None:
+    async def test_context_persisted_on_budget_exceeded(self, tmp_path: Path) -> None:
         """worktree_path and branch_name survive a budget pause."""
+        worktree = tmp_path / "wt" / "88"
+        worktree.mkdir(parents=True)
         config = ProjectConfig(agent={"max_budget": Decimal("0.01")})
         ctx = _make_ctx(
             config=config,
             branch_name="feat/expensive",
-            worktree_dir=Path("/tmp/wt/88"),
+            worktree_dir=worktree,
         )
         ctx.add_cost(Decimal("0.02"))
 
@@ -3345,18 +3353,20 @@ class TestContextPersistence:
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.branch_name == "feat/expensive"
-            assert task_run.worktree_path == "/tmp/wt/88"
+            assert task_run.worktree_path == str(worktree)
 
-    async def test_context_updated_mid_pipeline(self) -> None:
+    async def test_context_updated_mid_pipeline(self, tmp_path: Path) -> None:
         """Context fields set by a middle step are persisted even if a later step fails."""
         ctx = _make_ctx()
+        worktree = tmp_path / "wt" / "dynamic"
+        worktree.mkdir(parents=True)
 
         class WorktreeSettingStep(BaseStep):
             name = "set_worktree"
 
             async def execute(self, ctx_inner: ExecutionContext) -> StepResult:
                 ctx_inner.branch_name = "feat/dynamic"
-                ctx_inner.worktree_dir = Path("/tmp/wt/dynamic")
+                ctx_inner.worktree_dir = worktree
                 return StepResult(success=True, summary="Set worktree")
 
             async def validate_output(self, ctx_inner: ExecutionContext) -> GateCheckResult:
@@ -3373,7 +3383,7 @@ class TestContextPersistence:
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.branch_name == "feat/dynamic"
-            assert task_run.worktree_path == "/tmp/wt/dynamic"
+            assert task_run.worktree_path == str(worktree)
 
     async def test_pr_number_persisted_on_failure(self) -> None:
         """pr_number set during execution is saved even if a later step fails."""
@@ -3392,11 +3402,13 @@ class TestContextPersistence:
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.pr_number == 42
 
-    async def test_awaiting_approval_sets_task_run_status(self) -> None:
+    async def test_awaiting_approval_sets_task_run_status(self, tmp_path: Path) -> None:
         """TaskRun status is set to awaiting_approval when a step pauses."""
+        worktree = tmp_path / "wt" / "approval"
+        worktree.mkdir(parents=True)
         ctx = _make_ctx(
             branch_name="feat/spec-approval",
-            worktree_dir=Path("/tmp/wt/approval"),
+            worktree_dir=worktree,
         )
 
         class ApprovalStep(BaseStep):
@@ -3421,7 +3433,7 @@ class TestContextPersistence:
             assert task_run.current_step == "spec"
             assert task_run.ended_at is not None
             assert task_run.branch_name == "feat/spec-approval"
-            assert task_run.worktree_path == "/tmp/wt/approval"
+            assert task_run.worktree_path == str(worktree)
 
     async def test_awaiting_approval_step_execution_status(self) -> None:
         """StepExecution is marked 'awaiting_approval' (not 'done') so resume re-executes it."""
