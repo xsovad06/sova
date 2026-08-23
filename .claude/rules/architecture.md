@@ -93,6 +93,8 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 - **Python for SOVA**: unified stack for CLI, agent, dashboard. Zero-config SQLite for single dev.
 - **Role-based agents**: triage, researcher, developer, reviewer with dispatcher routing
 - **Gate checks between steps**: every step validates output before the next starts
+- **Complexity-based timeout multipliers**: all pipeline step timeouts are multiplied by complexity tier (1.5x for COMPLEX, 2.0x for EPIC, capped at 3.0x). Applied uniformly across develop, validate, monitor_ci, and all other steps via `WorkflowEngine._step_timeout()`. See `docs/performance-guidelines.md` for details and config keys (`validation.fix_timeout`, `validation.hook_timeout`, `develop.step_timeout`).
+- **Partial work preservation on timeout**: when a step exceeds its timeout, `WorkflowEngine._preserve_partial_work_on_timeout()` commits staged changes (via `git add -u`) with message `"wip: partial work from {step_name} (timeout)"`. Only tracked files are preserved; new untracked files are not committed. Sets `StepResult.partial_work=True` so the dashboard can surface this to the user. Prevents data loss when complex issues hit time limits.
 - **Ephemeral agents**: spawn, work, write handoff, die. No persistent sessions.
 - **Worktree isolation**: each task gets its own git worktree (parallel-safe)
 - **Adapter pattern for task sources**: swap GitHub/JIRA/Linear without touching core
