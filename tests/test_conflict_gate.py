@@ -225,7 +225,7 @@ class TestConflictGateIntegration:
         tasks = [_task(1, state=TaskState.IN_REVIEW)]
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
-        engine = _make_engine(config=SupervisorConfig(auto_integrate=True), adapter=adapter)
+        engine = _make_engine(config=SupervisorConfig(auto_integrate=True, task_queue=[1]), adapter=adapter)
         with (
             patch.object(
                 engine,
@@ -263,7 +263,7 @@ class TestConflictGateIntegration:
         tasks = [_task(1, state=TaskState.IN_REVIEW)]
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
-        engine = _make_engine(config=SupervisorConfig(auto_integrate=True), adapter=adapter)
+        engine = _make_engine(config=SupervisorConfig(auto_integrate=True, task_queue=[1]), adapter=adapter)
         with (
             patch.object(
                 engine,

@@ -145,10 +145,13 @@ class TaskProgressionEngine:
             return None
 
     def _resolve_task_ids(self, graph: DependencyGraph) -> list[int]:
-        """Resolve which task IDs to evaluate, respecting task_queue order."""
+        """Resolve which task IDs to evaluate, respecting task_queue order.
+
+        Empty queue returns nothing: the queue is an exclusive filter.
+        """
         task_queue = self._config.task_queue
         if not task_queue:
-            return list(graph.nodes)
+            return []
 
         node_set = set(graph.nodes)
         task_ids: list[int] = []
