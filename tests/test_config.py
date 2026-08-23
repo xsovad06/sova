@@ -18,6 +18,7 @@ from sova.config.models import (
     ReviewConfig,
     TaskSourceConfig,
     TriageConfig,
+    ValidateConfig,
     WatchConfig,
     WorktreeConfig,
 )
@@ -1157,3 +1158,40 @@ class TestVerifyInstall:
         (tmp_path / ".claude" / "agent-memory").mkdir(parents=True, exist_ok=True)
         problems, warnings = _verify_install(tmp_path)
         assert any("legacy sova.toml" in w for w in warnings)
+
+
+def test_validate_config_defaults() -> None:
+    """ValidateConfig has correct default values."""
+    cfg = ValidateConfig()
+    assert cfg.fix_timeout == 180
+    assert cfg.max_fix_attempts == 2
+    assert cfg.hook_timeout == 120
+
+
+def test_validate_config_from_toml(tmp_path: Path) -> None:
+    """Load ValidateConfig from TOML with custom values."""
+    toml_content = """
+[validation]
+fix_timeout = 240
+max_fix_attempts = 3
+hook_timeout = 150
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.validation.fix_timeout == 240
+    assert cfg.validation.max_fix_attempts == 3
+    assert cfg.validation.hook_timeout == 150
+
+
+def test_validate_config_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ValidateConfig can be overridden with env vars."""
+    monkeypatch.setenv("SOVA_VALIDATE_FIX_TIMEOUT", "300")
+    monkeypatch.setenv("SOVA_VALIDATE_MAX_FIX_ATTEMPTS", "5")
+    monkeypatch.setenv("SOVA_VALIDATE_HOOK_TIMEOUT", "180")
+
+    cfg = ValidateConfig()
+    assert cfg.fix_timeout == 300
+    assert cfg.max_fix_attempts == 5
+    assert cfg.hook_timeout == 180

@@ -21,7 +21,6 @@ from sova.utils.shell import run
 
 log = get_logger(component="step.validate")
 
-_MAX_FIX_ATTEMPTS = 2
 _HOOK_OUTPUT_LIMIT = 8000
 
 
@@ -80,14 +79,24 @@ class ValidateStep(BaseStep):
 
         log.info("step.validate.running_hook", hook=hook)
 
-        result = await run(hook, "origin", "unused", cwd=cwd, timeout=120)
+        hook_timeout = ctx.config.validation.hook_timeout
+        result = await run(hook, "origin", "unused", cwd=cwd, timeout=hook_timeout)
         if result.success:
             return StepResult(success=True, summary="Pre-push hook passed")
 
         hook_output = (result.stdout + "\n" + result.stderr).strip()
         log.warning("step.validate.hook_failed", output=hook_output[:500])
 
-        for attempt in range(1, _MAX_FIX_ATTEMPTS + 1):
+        max_fix_attempts = ctx.config.validation.max_fix_attempts
+        for attempt in range(1, max_fix_attempts + 1):
+            # Check budget before attempting fix
+            if ctx.is_budget_exceeded:
+                return StepResult(
+                    success=False,
+                    summary=f"Pre-push hook failed; budget exceeded after {attempt - 1} fix attempt(s)",
+                    error="budget_exceeded",
+                )
+
             log.info("step.validate.fix_attempt", attempt=attempt)
 
             prompt = (
@@ -104,6 +113,7 @@ class ValidateStep(BaseStep):
                     model=ctx.resolved_model or ctx.config.agent.model,
                     cwd=ctx.working_dir,
                     max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
+                    timeout=ctx.config.validation.fix_timeout,
                 )
                 ctx.add_cost(llm_result.cost_usd)
             except RuntimeError as exc:
@@ -114,7 +124,7 @@ class ValidateStep(BaseStep):
                     error=str(exc),
                 )
 
-            retry = await run(hook, "origin", "unused", cwd=cwd, timeout=120)
+            retry = await run(hook, "origin", "unused", cwd=cwd, timeout=hook_timeout)
             if retry.success:
                 return StepResult(
                     success=True,
@@ -127,7 +137,7 @@ class ValidateStep(BaseStep):
 
         return StepResult(
             success=False,
-            summary=f"Pre-push hook still failing after {_MAX_FIX_ATTEMPTS} fix attempts",
+            summary=f"Pre-push hook still failing after {max_fix_attempts} fix attempts",
             error=hook_output[:1000],
         )
 

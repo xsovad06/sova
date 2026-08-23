@@ -172,6 +172,16 @@ class DevelopConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DEVELOP_")
 
 
+class ValidateConfig(BaseSettings):
+    """Pre-push hook validation and fix loop configuration."""
+
+    fix_timeout: int = Field(180, gt=0)
+    max_fix_attempts: int = Field(2, ge=0)
+    hook_timeout: int = Field(120, gt=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_VALIDATE_")
+
+
 class CIConfig(BaseSettings):
     """CI monitoring configuration."""
 
@@ -697,6 +707,7 @@ class ProjectConfig(BaseSettings):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     develop: DevelopConfig = Field(default_factory=DevelopConfig)
+    validation: ValidateConfig = Field(default_factory=ValidateConfig)
     ci: CIConfig = Field(default_factory=CIConfig)
     watch: WatchConfig = Field(default_factory=WatchConfig)
     worktree: WorktreeConfig = Field(default_factory=WorktreeConfig)
