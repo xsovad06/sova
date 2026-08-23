@@ -548,7 +548,30 @@ async def _validate_command_outcome(run_id: int, agent: AgentState) -> str | Non
         return None
 
 
-def _build_bypass_message(role: str, pr_number: int | None, prompt: str | None, run_id: int) -> str:
+def _collect_bypass_diagnostics(
+    started_at: object | None,
+    worktree_path: str | None,
+    project_dir: object | None,
+) -> list[str]:
+    """Collect non-empty diagnostic fields for bypass messages."""
+    parts: list[str] = []
+    if started_at:
+        parts.append(f"started_at={started_at}")
+    if worktree_path:
+        parts.append(f"worktree={worktree_path}")
+    if project_dir:
+        parts.append(f"project_dir={project_dir}")
+    return parts
+
+
+def _build_bypass_message(
+    role: str,
+    pr_number: int | None,
+    prompt: str | None,
+    run_id: int,
+    *,
+    diagnostics: list[str] | None = None,
+) -> str:
     """Build the error message for a pipeline bypass detection."""
     msg = (
         f"Pipeline bypassed: {role} agent completed without "
@@ -557,6 +580,8 @@ def _build_bypass_message(role: str, pr_number: int | None, prompt: str | None, 
     )
     if role == "developer" and pr_number is None:
         msg += " and no PR was created"
+    if diagnostics:
+        msg += f" [{', '.join(diagnostics)}]"
     if prompt:
         log.warning(
             "validate_pipeline.bypass_diagnostic",
@@ -618,6 +643,40 @@ async def _check_interrupted_step(run_id: int, session: object) -> str | None:
     return None
 
 
+async def _check_pipeline_steps(
+    run_id: int,
+    role: str,
+    prompt: str | None,
+    project_dir: str | None,
+    session: object,
+) -> str | None:
+    """Check pipeline execution within an active DB session."""
+    from sqlalchemy import func, select
+
+    from sova.db.models import StepExecution, TaskRun
+
+    task_run = await session.get(TaskRun, run_id)
+    if task_run is None:
+        return None
+
+    sentinel_active = task_run.current_step == "agent"
+
+    stmt = select(func.count()).where(StepExecution.task_run_id == run_id)
+    result = await session.execute(stmt)
+    step_count = result.scalar() or 0
+
+    if sentinel_active and step_count == 0:
+        diag = _collect_bypass_diagnostics(task_run.started_at, task_run.worktree_path, project_dir)
+        return _build_bypass_message(role, task_run.pr_number, prompt, run_id, diagnostics=diag)
+
+    if role == "developer" and step_count > 0 and task_run.pr_number is None:
+        incomplete = await _check_incomplete_pr(run_id, session)
+        if incomplete:
+            return incomplete
+
+    return await _check_interrupted_step(run_id, session)
+
+
 async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | None:
     """Validate that a pipeline-based role actually executed its workflow steps.
 
@@ -628,36 +687,17 @@ async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | No
         return None
 
     try:
-        from sqlalchemy import func, select
-
-        from sova.db.models import StepExecution, TaskRun
         from sova.db.session import get_session
 
         async with await get_session(project_dir=agent.project_dir) as session:
             async with session.begin():
-                task_run = await session.get(TaskRun, run_id)
-                if task_run is None:
-                    return None
-
-                sentinel_active = task_run.current_step == "agent"
-
-                stmt = select(func.count()).where(StepExecution.task_run_id == run_id)
-                result = await session.execute(stmt)
-                step_count = result.scalar() or 0
-
-                if sentinel_active and step_count == 0:
-                    return _build_bypass_message(agent.role, task_run.pr_number, agent.prompt, run_id)
-
-                if agent.role == "developer" and step_count > 0 and task_run.pr_number is None:
-                    incomplete = await _check_incomplete_pr(run_id, session)
-                    if incomplete:
-                        return incomplete
-
-                interrupted = await _check_interrupted_step(run_id, session)
-                if interrupted:
-                    return interrupted
-
-        return None
+                return await _check_pipeline_steps(
+                    run_id,
+                    agent.role,
+                    agent.prompt,
+                    agent.project_dir,
+                    session,
+                )
     except Exception:
         log.debug("validate_pipeline.failed", run_id=run_id, exc_info=True)
         return None
