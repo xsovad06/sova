@@ -850,6 +850,128 @@ class TestRebaseWithConsensusIntegration:
         mock_consensus.assert_awaited_once()
         mock_llm.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    @patch("sova.git.rebase._resolve_conflicts_with_llm", new_callable=AsyncMock)
+    @patch("sova.git.rebase._load_consensus_config")
+    @patch("sova.git.rebase.run", new_callable=AsyncMock)
+    async def test_error_tracking_uses_initial_error_when_continue_says_no_rebase(
+        self,
+        mock_run: AsyncMock,
+        mock_config: MagicMock,
+        mock_llm: AsyncMock,
+    ) -> None:
+        """When all --continue calls return 'no rebase in progress', use initial error."""
+        mock_config.return_value = ([], 0.67, {}, None)
+        mock_llm.return_value = LLMResult(text="fixed", model="test", cost_usd=Decimal("0.01"))
+
+        diff_call = 0
+
+        async def side_effect(*args: str, **kwargs: object) -> MagicMock:
+            nonlocal diff_call
+            cmd = " ".join(args)
+            if "fetch" in cmd:
+                return MagicMock(success=True, stdout="", stderr="")
+            if "stash" in cmd:
+                return MagicMock(success=True, stdout="No local changes to save")
+            if "rebase" in cmd and "origin/" in cmd and "--continue" not in cmd and "--abort" not in cmd:
+                return MagicMock(success=False, stdout="", stderr="CONFLICT (content): Merge conflict in file.py")
+            if "diff" in cmd and "--diff-filter=U" in cmd:
+                diff_call += 1
+                if diff_call <= 1:
+                    return MagicMock(success=True, stdout="file.py\n")
+                return MagicMock(success=True, stdout="")
+            if "rebase" in cmd and "--continue" in cmd:
+                return MagicMock(success=False, stdout="", stderr="fatal: No rebase in progress?")
+            if "rebase" in cmd and "--abort" in cmd:
+                return MagicMock(success=True, stdout="", stderr="")
+            return MagicMock(success=True, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        result, _cost = await rebase_with_conflict_resolution("main", cwd=Path("/fake"), max_attempts=1)
+        assert result.success is False
+        assert "CONFLICT (content): Merge conflict in file.py" in result.error
+        assert "No rebase in progress" not in result.error
+
+    @pytest.mark.asyncio
+    @patch("sova.git.rebase._resolve_conflicts_with_llm", new_callable=AsyncMock)
+    @patch("sova.git.rebase._load_consensus_config")
+    @patch("sova.git.rebase.run", new_callable=AsyncMock)
+    async def test_error_tracking_updates_with_later_meaningful_error(
+        self,
+        mock_run: AsyncMock,
+        mock_config: MagicMock,
+        mock_llm: AsyncMock,
+    ) -> None:
+        """When a later --continue has a meaningful error, use that instead of initial."""
+        mock_config.return_value = ([], 0.67, {}, None)
+        mock_llm.return_value = LLMResult(text="fixed", model="test", cost_usd=Decimal("0.01"))
+
+        diff_call = 0
+
+        async def side_effect(*args: str, **kwargs: object) -> MagicMock:
+            nonlocal diff_call
+            cmd = " ".join(args)
+            if "fetch" in cmd:
+                return MagicMock(success=True, stdout="", stderr="")
+            if "stash" in cmd:
+                return MagicMock(success=True, stdout="No local changes to save")
+            if "rebase" in cmd and "origin/" in cmd and "--continue" not in cmd and "--abort" not in cmd:
+                return MagicMock(success=False, stdout="", stderr="initial conflict in file1.py")
+            if "diff" in cmd and "--diff-filter=U" in cmd:
+                diff_call += 1
+                if diff_call == 1:
+                    return MagicMock(success=True, stdout="file.py\n")
+                return MagicMock(success=True, stdout="")
+            if "rebase" in cmd and "--continue" in cmd:
+                return MagicMock(success=False, stdout="", stderr="error: commit failed with exit code 1")
+            if "rebase" in cmd and "--abort" in cmd:
+                return MagicMock(success=True, stdout="", stderr="")
+            return MagicMock(success=True, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        result, _cost = await rebase_with_conflict_resolution("main", cwd=Path("/fake"), max_attempts=1)
+        assert result.success is False
+        assert "error: commit failed with exit code 1" in result.error
+        assert "No rebase in progress" not in result.error
+
+    @pytest.mark.asyncio
+    @patch("sova.git.rebase._resolve_conflicts_with_llm", new_callable=AsyncMock)
+    @patch("sova.git.rebase._load_consensus_config")
+    @patch("sova.git.rebase.run", new_callable=AsyncMock)
+    async def test_error_tracking_preserves_previous_on_empty_stderr(
+        self,
+        mock_run: AsyncMock,
+        mock_config: MagicMock,
+        mock_llm: AsyncMock,
+    ) -> None:
+        """When cont.stderr is empty, previous meaningful error is preserved."""
+        mock_config.return_value = ([], 0.67, {}, None)
+        mock_llm.return_value = LLMResult(text="fixed", model="test", cost_usd=Decimal("0.01"))
+
+        async def side_effect(*args: str, **kwargs: object) -> MagicMock:
+            cmd = " ".join(args)
+            if "fetch" in cmd:
+                return MagicMock(success=True, stdout="", stderr="")
+            if "stash" in cmd:
+                return MagicMock(success=True, stdout="No local changes to save")
+            if "rebase" in cmd and "origin/" in cmd and "--continue" not in cmd and "--abort" not in cmd:
+                return MagicMock(success=False, stdout="", stderr="CONFLICT: initial meaningful error")
+            if "diff" in cmd and "--diff-filter=U" in cmd:
+                return MagicMock(success=True, stdout="")
+            if "rebase" in cmd and "--continue" in cmd:
+                return MagicMock(success=False, stdout="", stderr="")
+            if "rebase" in cmd and "--abort" in cmd:
+                return MagicMock(success=True, stdout="", stderr="")
+            return MagicMock(success=True, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        result, _cost = await rebase_with_conflict_resolution("main", cwd=Path("/fake"), max_attempts=1)
+        assert result.success is False
+        assert "CONFLICT: initial meaningful error" in result.error
+
 
 class TestTryConsensusResolutionMultiFile:
     @pytest.mark.asyncio

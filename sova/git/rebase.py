@@ -86,15 +86,21 @@ def _select_consensus(resolutions: list[str], *, threshold: float) -> str | None
     return None
 
 
+def _update_error_tracking(stderr: str | None, current_error: str) -> str:
+    """Update error tracking, filtering out 'no rebase in progress' noise."""
+    if stderr and "no rebase in progress" not in stderr.lower():
+        return stderr[:300]
+    return current_error
+
+
 def _build_file_resolution_prompt(
     filename: str,
     content: str,
     *,
     template: str | None,
 ) -> str:
-    if template:
-        return template.format(filename=filename, content=content)
-    return _DEFAULT_RESOLUTION_PROMPT.format(filename=filename, content=content)
+    template = template or _DEFAULT_RESOLUTION_PROMPT
+    return template.format(filename=filename, content=content)
 
 
 def _find_prompt_template(model: str, templates: dict[str, str]) -> str | None:
@@ -349,6 +355,7 @@ async def rebase_with_conflict_resolution(
         return RebaseResult(success=True), cost
 
     initial_error = (result.stderr or result.stdout or "")[:300]
+    last_meaningful_error = initial_error
     conflicted = await _get_conflicted_files(cwd=cwd)
     if not conflicted:
         await run("git", "rebase", "--abort", cwd=cwd)
@@ -365,6 +372,7 @@ async def rebase_with_conflict_resolution(
                 if not await _pop_stash():
                     return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
                 return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
+            last_meaningful_error = _update_error_tracking(cont.stderr, last_meaningful_error)
             log.warning(
                 "git.rebase.continue_failed",
                 commit=commit_idx + 1,
@@ -402,6 +410,7 @@ async def rebase_with_conflict_resolution(
                         if not await _pop_stash():
                             return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
                         return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
+                    last_meaningful_error = _update_error_tracking(cont.stderr, last_meaningful_error)
                     conflicted = await _get_conflicted_files(cwd=cwd)
                     continue
                 consensus_resolved = False
@@ -450,6 +459,7 @@ async def rebase_with_conflict_resolution(
             if not await _pop_stash():
                 return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
             return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
+        last_meaningful_error = _update_error_tracking(cont.stderr, last_meaningful_error)
         conflicted = await _get_conflicted_files(cwd=cwd)
     else:
         hit_commit_cap = True
@@ -459,5 +469,5 @@ async def rebase_with_conflict_resolution(
     if hit_commit_cap:
         error = f"Exceeded max commits cap ({max_commits}, processed {commit_idx + 1} commits) during rebase"
     else:
-        error = f"Rebase could not be completed: {(cont.stderr or '')[:200]}".rstrip(": ")
+        error = f"Rebase could not be completed: {last_meaningful_error[:200]}".rstrip(": ")
     return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=error), cost
