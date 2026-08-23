@@ -15,6 +15,10 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="shell")
 
+# Max seconds to wait for a killed process to exit. SIGKILL is unblockable;
+# delays beyond ~1s indicate uninterruptible kernel I/O (e.g., deleted mount).
+_KILL_TIMEOUT_SECONDS = 5
+
 
 @dataclass
 class ShellResult:
@@ -76,7 +80,11 @@ async def run(
             stdout_bytes, stderr_bytes = await proc.communicate(input=stdin_bytes)
     except TimeoutError:
         proc.kill()
-        await proc.wait()
+        try:
+            async with asyncio.timeout(_KILL_TIMEOUT_SECONDS):
+                await proc.wait()
+        except TimeoutError:
+            log.warning("shell.kill_timeout", cmd=args[0], pid=proc.pid)
         return ShellResult(returncode=-1, stdout="", stderr=f"Command timed out after {timeout}s")
 
     stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
