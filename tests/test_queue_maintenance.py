@@ -158,6 +158,29 @@ class TestDiscoverReady:
         result = _discover_ready([], task_map, max_queue_size=10, task_objects=task_objects)
         assert result == (10, 20, 30)
 
+    def test_skips_human_only_issues(self) -> None:
+        task_map = {10: TaskState.RESEARCHED, 20: TaskState.RESEARCHED}
+        task_objects = _make_task_objects(
+            task_map,
+            labels_map={10: ["agent:human-only"], 20: []},
+        )
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects=task_objects)
+        assert result == (20,)
+
+    def test_skips_human_only_case_insensitive(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        task_objects = _make_task_objects(
+            task_map,
+            labels_map={10: ["Agent:Human-Only"]},
+        )
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects=task_objects)
+        assert result == ()
+
+    def test_human_only_without_task_objects_still_included(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects=None)
+        assert result == (10,)
+
 
 class TestMaintainQueue:
     async def test_prunes_done_and_discovers_ready(self, adapter: AsyncMock, config: SupervisorConfig) -> None:
