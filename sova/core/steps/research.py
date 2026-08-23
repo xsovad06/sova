@@ -37,8 +37,16 @@ class ResearchStep(BaseStep):
                 summary=f"Research completed ({result.total_tokens} tokens)",
                 cost_usd=result.cost_usd,
             )
-        except RuntimeError as exc:
-            return StepResult(success=False, summary="Research failed", error=str(exc))
+        except TimeoutError as exc:
+            timeout = ctx.config.agent.step_timeout
+            log.error("step.research.timeout", issue=ctx.issue_number, timeout=timeout, exc_info=True)
+            return StepResult(success=False, summary="Research timed out", error=f"Timeout after {timeout}s: {exc}")
+        except FileNotFoundError as exc:
+            log.error("step.research.command_missing", issue=ctx.issue_number, exc_info=True)
+            return StepResult(success=False, summary="Research command not found", error=f"Missing command file: {exc}")
+        except Exception as exc:
+            log.error("step.research.failed", issue=ctx.issue_number, error_type=type(exc).__name__, exc_info=True)
+            return StepResult(success=False, summary="Research failed", error=f"{type(exc).__name__}: {exc}")
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: research section must exist in issue body or comments."""
