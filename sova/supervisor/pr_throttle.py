@@ -367,6 +367,59 @@ async def recover_creating_entries(session: AsyncSession) -> int:
     return count
 
 
+class PRThrottleLoop:
+    """Background loop that periodically processes the PR creation queue."""
+
+    def __init__(
+        self,
+        session_factory: Callable[[], Awaitable[AsyncSession]],
+        config: CodeRabbitQuotaConfig,
+        *,
+        project_slug: str = "",
+        project_dir: Path | None = None,
+        stop_event: asyncio.Event | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._config = config
+        self._project_slug = project_slug
+        self._project_dir = project_dir
+        self._stop_event = stop_event
+        self._wake_event = asyncio.Event()
+
+    def reload_config(self, config: CodeRabbitQuotaConfig) -> None:
+        """Hot-reload config (called by settings router after TOML update)."""
+        self._config = config
+        self._wake_event.set()
+
+    async def _interruptible_sleep(self, delay: float) -> None:
+        """Sleep for *delay* seconds, but wake early if config is reloaded."""
+        try:
+            await asyncio.wait_for(self._wake_event.wait(), timeout=delay)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        finally:
+            self._wake_event.clear()
+
+    async def run(self) -> None:
+        """Main loop: process queue entries, then sleep between iterations."""
+        while True:
+            if self._stop_event and self._stop_event.is_set():
+                break
+            try:
+                async with await self._session_factory() as session:
+                    await process_queue(
+                        session,
+                        self._config,
+                        project_slug=self._project_slug,
+                        project_dir=self._project_dir,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("pr_throttle.loop_error", exc_info=True)
+            await self._interruptible_sleep(_PROCESS_INTERVAL_SECONDS)
+
+
 async def process_queue_loop(
     session_factory: Callable[[], Awaitable[AsyncSession]],
     config: CodeRabbitQuotaConfig,
@@ -375,18 +428,12 @@ async def process_queue_loop(
     project_dir: Path | None = None,
     stop_event: asyncio.Event | None = None,
 ) -> None:
-    """Background loop that periodically processes the PR creation queue.
-
-    Runs until stop_event is set or the task is cancelled.
-    """
-    while True:
-        if stop_event and stop_event.is_set():
-            break
-        try:
-            async with await session_factory() as session:
-                await process_queue(session, config, project_slug=project_slug, project_dir=project_dir)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.warning("pr_throttle.loop_error", exc_info=True)
-        await asyncio.sleep(_PROCESS_INTERVAL_SECONDS)
+    """Backward-compatible wrapper around PRThrottleLoop.run()."""
+    loop = PRThrottleLoop(
+        session_factory,
+        config,
+        project_slug=project_slug,
+        project_dir=project_dir,
+        stop_event=stop_event,
+    )
+    await loop.run()
