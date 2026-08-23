@@ -904,7 +904,7 @@ class TestEvaluateAll:
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_research=True),
+            config=SupervisorConfig(auto_research=True, task_queue=[1, 2, 3]),
             adapter=adapter,
         )
         with (
@@ -944,7 +944,7 @@ class TestEvaluateAll:
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_research=True),
+            config=SupervisorConfig(auto_research=True, task_queue=[10, 11, 12]),
             adapter=adapter,
         )
         with (
@@ -991,7 +991,7 @@ class TestEvaluateAll:
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_research=True),
+            config=SupervisorConfig(auto_research=True, task_queue=[1, 2]),
             adapter=adapter,
         )
         with (
@@ -1028,7 +1028,7 @@ class TestEvaluateAll:
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_research=True),
+            config=SupervisorConfig(auto_research=True, task_queue=[1]),
             adapter=adapter,
         )
         quota_block = BlockReason(gate="quota", detail="CodeRabbit quota exhausted")
@@ -1452,7 +1452,7 @@ class TestMemoryPressureGate:
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_research=True),
+            config=SupervisorConfig(auto_research=True, task_queue=[1, 2, 3]),
             adapter=adapter,
         )
         memory_block = BlockReason(
@@ -1634,7 +1634,7 @@ class TestEvaluateAllCheckpoint:
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_develop=False),
+            config=SupervisorConfig(auto_develop=False, task_queue=[1]),
             adapter=adapter,
         )
         with (
@@ -1658,7 +1658,7 @@ class TestEvaluateAllEdgeCases:
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_research=True),
+            config=SupervisorConfig(auto_research=True, task_queue=[1]),
             adapter=adapter,
         )
         with (
@@ -1688,7 +1688,7 @@ class TestEvaluateAllEdgeCases:
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_research=True),
+            config=SupervisorConfig(auto_research=True, task_queue=[1]),
             adapter=adapter,
         )
         with (
@@ -1722,7 +1722,7 @@ class TestEvaluateAllEdgeCases:
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_develop=True),
+            config=SupervisorConfig(auto_develop=True, task_queue=[1, 2]),
             adapter=adapter,
         )
         with (
@@ -1847,8 +1847,8 @@ class TestEvaluateAllTaskQueue:
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.progression.load_config")
-    async def test_empty_queue_evaluates_all(self, mock_cfg: MagicMock) -> None:
-        """Empty queue means evaluate all issues (default behavior)."""
+    async def test_empty_queue_evaluates_nothing(self, mock_cfg: MagicMock) -> None:
+        """Empty queue means evaluate nothing (exclusive filter)."""
         mock_cfg.return_value.max_parallel_agents = 5
         mock_cfg.return_value.supervisor.task_queue = []
         tasks = [
@@ -1864,7 +1864,7 @@ class TestEvaluateAllTaskQueue:
         with _bypass_all_gates():
             decisions = await engine.evaluate_all()
 
-        assert len(decisions) == 2
+        assert len(decisions) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2325,7 +2325,7 @@ class TestEvaluateAllRebase:
         ]
         mock_graph.return_value = DependencyGraph(tasks)
 
-        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True, task_queue=[1, 2]))
 
         with (
             patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
@@ -3654,7 +3654,7 @@ class TestStaleInProgressReset:
         """
         from sova.supervisor.dependency_graph import DependencyGraph
 
-        engine = _make_engine(SupervisorConfig(auto_research=True))
+        engine = _make_engine(SupervisorConfig(auto_research=True, task_queue=[1, 2]))
         tasks = [
             _task(1, state=TaskState.IN_PROGRESS),
             _task(2, state=TaskState.TRIAGED),
@@ -3787,12 +3787,12 @@ class TestFetchFileOverlapSets:
 
 
 class TestResolveTaskIds:
-    def test_no_queue_returns_all_nodes(self) -> None:
+    def test_empty_queue_returns_nothing(self) -> None:
         engine = _make_engine(config=SupervisorConfig(task_queue=[]))
         graph = MagicMock()
         graph.nodes = {1: None, 2: None, 3: None}
         result = engine._resolve_task_ids(graph)
-        assert set(result) == {1, 2, 3}
+        assert result == []
 
     def test_queue_filters_to_graph_nodes(self) -> None:
         engine = _make_engine(config=SupervisorConfig(task_queue=[10, 20, 30]))

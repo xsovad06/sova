@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task, TaskState
+from sova.supervisor.dependency_graph import is_human_only
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -168,6 +169,8 @@ def _discover_ready(
     candidates: list[int] = []
     for issue_id, state in task_map.items():
         if state in _READY_STATES and issue_id not in existing:
+            if task_objects and issue_id in task_objects and is_human_only(task_objects[issue_id].labels):
+                continue
             candidates.append(issue_id)
 
     def _sort_key(issue_id: int) -> tuple[int, int]:

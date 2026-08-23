@@ -34,7 +34,6 @@ log = get_logger(component="supervisor.planner")
 
 _MODEL = "claude-sonnet-4-20250514"
 _MAX_TOKENS = 1024
-_TIMEOUT_SECONDS = 30.0
 
 _VALID_ACTIONS = frozenset(
     {
@@ -403,7 +402,7 @@ class SupervisorPlanner:
                 task_type="planner",
                 system_prompt=system_prompt,
                 max_tokens=_MAX_TOKENS,
-                timeout=_TIMEOUT_SECONDS,
+                timeout=self._config.supervisor.planner_timeout_seconds,
                 cwd=self._project_dir,
             )
             return json.loads(result.text)

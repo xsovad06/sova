@@ -180,6 +180,27 @@ class TestCallLLM:
             result = await planner._call_llm("system", "user")
         assert result is None
 
+    async def test_uses_config_timeout(self) -> None:
+        from sova.llm.models import LLMResult
+
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, llm_planning=True, planner_timeout_seconds=90),
+            github_repo="test/repo",
+        )
+        p = SupervisorPlanner(config=cfg, project_dir=Path("/tmp/test"), session_factory=MagicMock())
+        mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model=_MODEL)
+        with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result) as mock_invoke:
+            await p._call_llm("system", "user")
+        assert mock_invoke.call_args[1]["timeout"] == 90
+
+    async def test_default_timeout_is_60(self, planner: SupervisorPlanner) -> None:
+        from sova.llm.models import LLMResult
+
+        mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model=_MODEL)
+        with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result) as mock_invoke:
+            await planner._call_llm("system", "user")
+        assert mock_invoke.call_args[1]["timeout"] == 60
+
 
 class TestParseResponse:
     def test_valid_response(self, planner: SupervisorPlanner, valid_llm_response: dict) -> None:

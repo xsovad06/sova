@@ -77,7 +77,15 @@ class TestPlanFiltering:
         plan: PlanResult | None,
     ) -> list[ProgressionDecision]:
         """Run evaluate_all with mocked internals, returning filtered decisions."""
-        engine = _make_engine()
+        issue_ids_list = sorted(d.issue_number for d in decisions)
+        engine = _make_engine(
+            SupervisorConfig(
+                auto_develop=True,
+                auto_research=True,
+                auto_integrate=True,
+                task_queue=issue_ids_list,
+            )
+        )
 
         # Mock all the internals so evaluate_all just returns our decisions
         with (
