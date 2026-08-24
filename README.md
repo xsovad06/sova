@@ -84,6 +84,12 @@ export PATH="$HOME/Library/Python/3.12/bin:$PATH"
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+For Vertex AI support (Google Cloud ADC for LLM suggestions and batch processing):
+
+```bash
+pip install --user -e ".[vertex]"
+```
+
 For development (tests, linting):
 
 ```bash

@@ -857,45 +857,45 @@ function _renderLlmSuggestionWidget(item, issueKey) {
   if (!item.pr_number || !item.primary_action) return '';
   var safeKey = _sanitizeIssueKey(issueKey);
   var flagged = _flaggedWrong.get(issueKey) === item.state;
-  var parts = [];
-
   var sugg = _llmSuggestions[issueKey];
-  if (sugg && !sugg.done && sugg.disagrees && sugg.for_state === item.state) {
+  var hasDisagreement = sugg && !sugg.done && sugg.disagrees && sugg.for_state === item.state;
+
+  if (!hasDisagreement && flagged) return '';
+
+  var html = '<div class="flex items-center gap-2 pt-1.5 border-t border-gray-700/20 flex-wrap">';
+
+  if (hasDisagreement) {
     var detLabel = (item.primary_action && item.primary_action.label) || 'current';
-    parts.push(
-      '<div class="flex items-start gap-2 pt-1.5 border-t border-gray-700/20">' +
-        '<span class="text-xs text-accent-yellow font-medium whitespace-nowrap mt-0.5">LLM:</span>' +
-        '<div class="flex-1 min-w-0">' +
-          '<span class="text-xs text-gray-300 font-medium">' + escapeHtml(sugg.action_label) + '</span>' +
-          (sugg.reasoning
-            ? '<p class="text-xs text-gray-500 italic mt-0.5 line-clamp-2">' + escapeHtml(sugg.reasoning) + '</p>'
-            : '') +
-          '<div class="flex gap-2 mt-1.5" id="llm-feedback-' + safeKey + '">' +
-            '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'deterministic\')" ' +
-              'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
-              'Keep: ' + escapeHtml(detLabel) + '</button>' +
-            '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'llm\')" ' +
-              'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
-              'LLM is right</button>' +
-          '</div>' +
-        '</div>' +
-      '</div>'
-    );
-  }
-
-  if (!flagged) {
-    var borderCls = parts.length ? '' : 'pt-1.5 border-t border-gray-700/20';
-    parts.push(
-      '<div class="flex items-center gap-2 ' + borderCls + '" id="flag-wrong-' + safeKey + '">' +
-        '<button onclick="submitFlagWrong(event,\'' + escapeJsStr(issueKey) + '\')" ' +
+    html +=
+      '<span class="text-xs text-accent-yellow font-medium whitespace-nowrap">LLM:</span>' +
+      '<span class="text-xs text-gray-300 font-medium whitespace-nowrap">' + escapeHtml(sugg.action_label) + '</span>' +
+      (sugg.reasoning
+        ? '<span class="text-xs text-gray-500 italic truncate min-w-0">' + escapeHtml(sugg.reasoning) + '</span>'
+        : '') +
+      '<div class="flex gap-1.5 shrink-0 ml-auto" id="llm-feedback-' + safeKey + '">' +
+        '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'deterministic\')" ' +
+          'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
+          'Keep: ' + escapeHtml(detLabel) + '</button>' +
+        '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'llm\')" ' +
+          'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
+          'Use: ' + escapeHtml(sugg.action_label) + '</button>';
+    if (!flagged) {
+      html +=
+        '<span class="text-gray-600 text-xs">|</span>' +
+        '<button onclick="submitFlagWrong(event,\'' + escapeJsStr(issueKey) + '\')" id="flag-wrong-' + safeKey + '" ' +
           'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-500 hover:text-accent-yellow transition-colors">' +
-          'State is wrong</button>' +
-      '</div>'
-    );
+          'State is wrong</button>';
+    }
+    html += '</div>';
+  } else if (!flagged) {
+    html +=
+      '<button onclick="submitFlagWrong(event,\'' + escapeJsStr(issueKey) + '\')" id="flag-wrong-' + safeKey + '" ' +
+        'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-500 hover:text-accent-yellow transition-colors">' +
+        'State is wrong</button>';
   }
 
-  if (!parts.length) return '';
-  return '<div class="px-4 pb-2.5 pl-12">' + parts.join('') + '</div>';
+  html += '</div>';
+  return '<div class="px-4 pb-2.5 pl-12">' + html + '</div>';
 }
 
 async function fetchLlmSuggestions() {

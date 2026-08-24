@@ -822,6 +822,13 @@ _REGISTRY: list[SettingMeta] = [
         "dashboard",
         "number",
     ),
+    SettingMeta(
+        "dashboard.llm_suggestions",
+        "LLM action suggestions",
+        "Enable LLM-based PR action suggestions on the agents page (requires Vertex AI or ANTHROPIC_API_KEY)",
+        "dashboard",
+        "boolean",
+    ),
     # -- MCP --
     SettingMeta(
         "mcp.enabled",
