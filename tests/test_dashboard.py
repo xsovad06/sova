@@ -10461,6 +10461,78 @@ class TestAgentContextHelpers:
         result = await _resolve_issue_from_pr("abc", tmp_path)
         assert result == ""
 
+    def test_merge_mcp_env_no_mcp_returns_gh_env(self, tmp_path: Path) -> None:
+        """merge_mcp_env returns gh_env unchanged when MCP is disabled."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_context import merge_mcp_env
+
+        gh_env = {"GH_TOKEN": "tok", "PATH": "/usr/bin"}
+        with patch(
+            "sova.dashboard.services.agent_context._resolve_mcp_env",
+            return_value={},
+        ):
+            result = merge_mcp_env(gh_env, 1, tmp_path)
+        assert result == {"GH_TOKEN": "tok", "PATH": "/usr/bin"}
+
+    def test_merge_mcp_env_no_mcp_none_gh_env_stays_none(self, tmp_path: Path) -> None:
+        """merge_mcp_env passes through None when MCP is disabled (subprocess inherits parent env)."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_context import merge_mcp_env
+
+        with patch(
+            "sova.dashboard.services.agent_context._resolve_mcp_env",
+            return_value={},
+        ):
+            result = merge_mcp_env(None, 1, tmp_path)
+        assert result is None
+
+    def test_merge_mcp_env_merges_into_gh_env(self, tmp_path: Path) -> None:
+        """merge_mcp_env adds MCP vars on top of the resolved gh_env."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_context import merge_mcp_env
+
+        gh_env = {"GH_TOKEN": "tok", "PATH": "/usr/bin"}
+        with patch(
+            "sova.dashboard.services.agent_context._resolve_mcp_env",
+            return_value={"SOVA_MCP_TOKEN": "mtok", "SOVA_MCP_URL": "http://x/mcp"},
+        ):
+            result = merge_mcp_env(gh_env, 1, tmp_path)
+        assert result["GH_TOKEN"] == "tok"
+        assert result["PATH"] == "/usr/bin"
+        assert result["SOVA_MCP_TOKEN"] == "mtok"
+        assert result["SOVA_MCP_URL"] == "http://x/mcp"
+
+    def test_merge_mcp_env_none_gh_env_falls_back_to_os_environ(self, tmp_path: Path) -> None:
+        """Regression: when gh_env is None but MCP is enabled, the result must inherit os.environ.
+
+        Previously the function returned only the two MCP keys, dropping PATH, which
+        made the agent subprocess spawn fail with FileNotFoundError ('sova' not on PATH).
+        """
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_context import merge_mcp_env
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_context._resolve_mcp_env",
+                return_value={"SOVA_MCP_TOKEN": "mtok", "SOVA_MCP_URL": "http://x/mcp"},
+            ),
+            patch.dict(
+                "sova.dashboard.services.agent_context.os.environ",
+                {"PATH": "/custom/bin", "HOME": "/home/x"},
+                clear=True,
+            ),
+        ):
+            result = merge_mcp_env(None, 1, tmp_path)
+        assert result is not None
+        assert result["PATH"] == "/custom/bin"
+        assert result["HOME"] == "/home/x"
+        assert result["SOVA_MCP_TOKEN"] == "mtok"
+        assert result["SOVA_MCP_URL"] == "http://x/mcp"
+
     async def test_resolve_issue_from_pr_success(self, tmp_path: Path) -> None:
         """_resolve_issue_from_pr extracts issue from PR body."""
         from unittest.mock import AsyncMock, MagicMock, patch
