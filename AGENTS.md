@@ -31,7 +31,7 @@ sova/
   sova/                            # Python package (SOVA)
     cli/                           # Typer CLI (sova run, sova triage, etc.)
       app.py                       # Main app, subcommand registration
-      commands/                    # Command modules (run, triage, harden, project, pr, admin, memory, migrate, commands, server, mcp, supervisor)
+      commands/                    # Command modules (run, triage, harden, project, pr, admin, briefing, memory, migrate, commands, server, mcp, supervisor)
     core/                          # Workflow engine, steps, state machine, context, output writer, DAG executor
     roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, planner, dispatcher)
     adapters/                      # Task source plugins (github; jira, linear, manual planned)

@@ -260,7 +260,7 @@ log_backup_count = 5
 | **Server** | `sova server start\|stop\|restart\|status\|digest\|install-service` |
 | **Setup** | `sova install <path>`, `sova setup <path>`, `sova uninstall <path>`, `sova init-db`, `sova doctor` |
 | **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova learn-from-pr <pr>` |
-| **Monitor** | `sova status`, `sova costs`, `sova config`, `sova dashboard` |
+| **Monitor** | `sova status`, `sova costs`, `sova briefing`, `sova config`, `sova dashboard` |
 | **Knowledge** | `sova memory search\|prune\|dump\|export\|import` |
 | **Commands** | `sova commands list\|diff\|update\|sync` |
 | **MCP** | `sova mcp serve` |

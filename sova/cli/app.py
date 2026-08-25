@@ -11,6 +11,7 @@ from rich.table import Table
 
 import sova
 from sova.cli.commands.admin import cleanup, costs, status
+from sova.cli.commands.briefing import briefing
 from sova.cli.commands.commands import app as commands_app
 from sova.cli.commands.doctor import doctor
 from sova.cli.commands.harden import harden
@@ -60,6 +61,7 @@ app.command(name="status")(status)
 app.command(name="costs")(costs)
 app.command(name="cleanup")(cleanup)
 app.command(name="doctor")(doctor)
+app.command(name="briefing")(briefing)
 
 # MCP (subcommand group)
 app.add_typer(mcp_app)
