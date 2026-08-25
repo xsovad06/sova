@@ -5,6 +5,7 @@ Separated from agent_lifecycle to isolate context/environment resolution logic.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -313,15 +314,22 @@ def _resolve_mcp_env(run_id: int, project_dir: Path) -> dict[str, str]:
 
 
 def merge_mcp_env(gh_env: dict[str, str] | None, run_id: int, project_dir: Path) -> dict[str, str] | None:
-    """Merge MCP env vars into GH env."""
+    """Merge MCP env vars into the subprocess environment.
+
+    ``gh_env`` is ``None`` when ``resolve_gh_env`` could not mint a token (e.g.
+    the configured ``github_user`` does not match the active ``gh`` login). In
+    that case the subprocess must still inherit the parent process environment,
+    most importantly ``PATH``; otherwise the ``sova`` executable is not found
+    and the spawn fails with a bare FileNotFoundError. Never return a partial
+    env dict that lacks the base environment.
+    """
     mcp_env = _resolve_mcp_env(run_id, project_dir)
     if not mcp_env:
         return gh_env
 
-    if gh_env:
-        gh_env.update(mcp_env)
-        return gh_env
-    return mcp_env
+    base = gh_env if gh_env is not None else dict(os.environ)
+    base.update(mcp_env)
+    return base
 
 
 async def _resolve_project_gh_env(project_dir: Path) -> dict[str, str] | None:
