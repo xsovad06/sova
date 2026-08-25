@@ -50,7 +50,7 @@ sova/
     mcp/                           # MCP stdio server (provider-agnostic agent tools via Model Context Protocol)
     dashboard/routers/mcp.py       # MCP HTTP endpoint for agent self-inspection (read-only runtime queries)
     dashboard/services/mcp_service.py  # MCP token generation/validation and tool handlers
-    awareness/                     # Awareness subsystem (AwarenessProvider ABC, AwarenessItem, ItemCategory, provider registry, BriefingService aggregation engine, rendering models)
+    awareness/                     # Awareness subsystem (AwarenessProvider ABC, AwarenessItem, ItemCategory, provider registry, BriefingService aggregation engine, rendering models, rendering/cli_renderer.py Rich terminal output)
     oversight/                     # Oversight agent: background daemon, operations persona (user-maintained LLM guidance)
     supervisor/                    # Supervisor-level services (TaskProgressionEngine, CodeRabbit quota, task dependency graph)
       gates/                       # Gate check functions (one per module): rate_limit, memory_pressure, dependency, human_involvement, quota, ci_budget, slots, budget, already_running, repeated_failure, ownership, merge_conflict, file_conflict, circuit_breaker
@@ -69,7 +69,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 6929 at last count)
+  tests/                           # pytest suite (3200+ tests, 6884 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
