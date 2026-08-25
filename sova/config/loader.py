@@ -41,9 +41,18 @@ def load_config(project_dir: Path | None = None) -> ProjectConfig:
         toml_flat = _flatten_toml(data)
         _migrate_deprecated_keys(toml_flat)
 
-    from sova.config.db_loader import _try_load_from_db
+    from sova.config.db_loader import _is_db_confirmed_empty, _try_load_from_db
 
     db_overrides = _try_load_from_db(project_dir)
+
+    # Outer check for fast path (avoid transaction overhead when DB is non-empty or unreachable).
+    # Inner check inside transaction (via only_if_empty=True) provides atomicity.
+    if toml_flat and db_overrides is None and _is_db_confirmed_empty(project_dir):
+        _auto_migrate_toml_to_db(project_dir, toml_flat)
+        db_overrides = _try_load_from_db(project_dir)
+        if db_overrides is not None:
+            logger.debug("Auto-migrated config from sova.toml to database")
+
     if db_overrides:
         merged = _deep_merge(toml_flat, db_overrides)
     else:
@@ -210,3 +219,18 @@ def _migrate_deprecated_keys(flat: dict[str, Any]) -> None:
         old_val = spec.pop("auto_approve_threshold")
         if "auto_approve_simple" not in spec:
             spec["auto_approve_simple"] = old_val not in ("never", "none")
+
+
+def _auto_migrate_toml_to_db(project_dir: Path, toml_flat: dict[str, Any]) -> None:
+    """Auto-migrate TOML config to DB on first load (one-time, silent).
+
+    The emptiness check is performed atomically inside the write transaction
+    by _save_config_to_db_sync(only_if_empty=True), preventing race conditions
+    where another process inserts a row between the check and write.
+    """
+    from sova.config.db_loader import _save_config_to_db_sync
+
+    try:
+        _save_config_to_db_sync(project_dir, toml_flat, only_if_empty=True)
+    except Exception:
+        logger.warning("Auto-migration of sova.toml to database failed", exc_info=True)
