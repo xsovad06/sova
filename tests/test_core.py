@@ -1812,7 +1812,11 @@ class TestValidateStep:
         step = ValidateStep()
 
         with patch("sova.core.steps.validate.run") as mock_run:
-            mock_run.return_value = MagicMock(success=True, stdout="abc123 feat: something\n")
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat: something\n"),  # git log
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD (unstaged)
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat (staged)
+            ]
             gate = await step.validate_output(ctx)
 
         assert gate.passed

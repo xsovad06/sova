@@ -403,16 +403,13 @@ class TestValidateStepRegressions:
 
         ctx = _make_ctx(worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
 
-        with patch("sova.core.steps.validate.run") as mock_run:
-            mock_run.return_value = MagicMock(success=True, stdout="abc123 commit\n")
-
-            with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
-                mock_test.return_value = BaselineSnapshot(
-                    mode="per_test",
-                    exit_code=1,
-                    tests=[SingleTestOutcome(nodeid="test_a", outcome="failed")],
-                )
-                gate = await ValidateStep().validate_output(ctx)
+        with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
+            mock_test.return_value = BaselineSnapshot(
+                mode="per_test",
+                exit_code=1,
+                tests=[SingleTestOutcome(nodeid="test_a", outcome="failed")],
+            )
+            gate = await ValidateStep().verify_output(ctx)
 
         assert not gate.passed
         assert "regression" in gate.reason.lower()
@@ -431,16 +428,13 @@ class TestValidateStepRegressions:
 
         ctx = _make_ctx(worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
 
-        with patch("sova.core.steps.validate.run") as mock_run:
-            mock_run.return_value = MagicMock(success=True, stdout="abc123 commit\n")
-
-            with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
-                mock_test.return_value = BaselineSnapshot(
-                    mode="per_test",
-                    exit_code=0,
-                    tests=[SingleTestOutcome(nodeid="test_a", outcome="passed")],
-                )
-                gate = await ValidateStep().validate_output(ctx)
+        with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
+            mock_test.return_value = BaselineSnapshot(
+                mode="per_test",
+                exit_code=0,
+                tests=[SingleTestOutcome(nodeid="test_a", outcome="passed")],
+            )
+            gate = await ValidateStep().verify_output(ctx)
 
         assert gate.passed
 
@@ -448,10 +442,7 @@ class TestValidateStepRegressions:
         from sova.core.steps.validate import ValidateStep
 
         ctx = _make_ctx(worktree_dir=Path("/tmp/wt"), test_baseline_path=None)
-
-        with patch("sova.core.steps.validate.run") as mock_run:
-            mock_run.return_value = MagicMock(success=True, stdout="abc123 commit\n")
-            gate = await ValidateStep().validate_output(ctx)
+        gate = await ValidateStep().verify_output(ctx)
 
         assert gate.passed
 
@@ -480,16 +471,13 @@ class TestValidateStepRegressions:
             test_baseline_path=baseline_path(worktree),
         )
 
-        with patch("sova.core.steps.validate.run") as mock_run:
-            mock_run.return_value = MagicMock(success=True, stdout="abc123 commit\n")
-
-            with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
-                mock_test.return_value = BaselineSnapshot(
-                    mode="per_test",
-                    exit_code=1,
-                    tests=[SingleTestOutcome(nodeid="test_a", outcome="failed")],
-                )
-                gate = await ValidateStep().validate_output(ctx)
+        with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
+            mock_test.return_value = BaselineSnapshot(
+                mode="per_test",
+                exit_code=1,
+                tests=[SingleTestOutcome(nodeid="test_a", outcome="failed")],
+            )
+            gate = await ValidateStep().verify_output(ctx)
 
         # Should detect regression (baseline was found via worktree_dir)
         assert not gate.passed
@@ -508,12 +496,9 @@ class TestValidateStepRegressions:
 
         ctx = _make_ctx(worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
 
-        with patch("sova.core.steps.validate.run") as mock_run:
-            mock_run.return_value = MagicMock(success=True, stdout="abc123 commit\n")
-
-            with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
-                mock_test.side_effect = RuntimeError("boom")
-                gate = await ValidateStep().validate_output(ctx)
+        with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
+            mock_test.side_effect = RuntimeError("boom")
+            gate = await ValidateStep().verify_output(ctx)
 
         # Non-fatal: passes despite exception
         assert gate.passed

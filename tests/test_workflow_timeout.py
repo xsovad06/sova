@@ -547,7 +547,7 @@ class TestGateCheckTimeout:
         # Mock a very short timeout and DB update
         engine = WorkflowEngine(steps=[SlowGateStep()], ctx=ctx)
         with patch.object(engine, "_step_timeout", return_value=1):
-            with patch.object(engine, "_update_step_execution", new_callable=AsyncMock):
+            with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
                 status = await engine._validate_step_gate(SlowGateStep(), step_exec_id, record)
 
         assert status == "failed"
@@ -575,7 +575,7 @@ class TestGateCheckTimeout:
         record = StepRecord(step_name="broken_gate", status="running")
 
         engine = WorkflowEngine(steps=[BrokenGateStep()], ctx=ctx)
-        with patch.object(engine, "_update_step_execution", new_callable=AsyncMock):
+        with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
             status = await engine._validate_step_gate(BrokenGateStep(), step_exec_id, record)
 
         assert status == "failed"
@@ -583,3 +583,555 @@ class TestGateCheckTimeout:
         assert record.gate.passed is False
         assert "ValueError" in record.gate.reason
         assert "Simulated gate error" in record.gate.reason
+
+
+class TestVerifyOutput:
+    """Test the verify_output heavyweight verification pass."""
+
+    @pytest.fixture
+    def mock_adapter(self) -> MagicMock:
+        adapter = MagicMock()
+        adapter.repo = "test/repo"
+        return adapter
+
+    @pytest.fixture
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
+        from sova.config.loader import load_config
+
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
+        cfg = load_config(tmp_path)
+        return ExecutionContext(
+            project_dir=tmp_path,
+            config=cfg,
+            adapter=mock_adapter,
+            issue_number="123",
+            role="developer",
+        )
+
+    async def test_base_step_verify_output_noop(self, ctx: ExecutionContext) -> None:
+        """BaseStep.verify_output() returns passed=True by default."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+
+        class SimpleStep(BaseStep):
+            name = "simple"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        step = SimpleStep()
+        result = await step.verify_output(ctx)
+        assert result.passed is True
+        assert result.reason is None
+
+    async def test_base_step_can_skip_with_completed_step(self, ctx: ExecutionContext) -> None:
+        """can_skip returns True when step name is in completed_steps."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+
+        class SkippableStep(BaseStep):
+            name = "already_done"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        step = SkippableStep()
+        ctx.completed_steps = {"already_done"}
+        assert await step.can_skip(ctx) is True
+
+    async def test_base_step_can_skip_without_completed_step(self, ctx: ExecutionContext) -> None:
+        """can_skip returns False when step name is not in completed_steps."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+
+        class FreshStep(BaseStep):
+            name = "not_done"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        step = FreshStep()
+        ctx.completed_steps = {"other_step"}
+        assert await step.can_skip(ctx) is False
+
+    async def test_verify_called_after_validate_passes(self, ctx: ExecutionContext) -> None:
+        """verify_output() is called when validate_output() passes."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        call_order: list[str] = []
+
+        class TrackingStep(BaseStep):
+            name = "tracking"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                call_order.append("validate")
+                return GateCheckResult(passed=True)
+
+            async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                call_order.append("verify")
+                return GateCheckResult(passed=True)
+
+        step = TrackingStep()
+        record = StepRecord(step_name="tracking", status="running")
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
+            status = await engine._validate_step_gate(step, 1, record)
+
+        assert status == "done"
+        assert call_order == ["validate", "verify"]
+        assert record.gate is not None
+        assert record.gate.passed is True
+
+    async def test_verify_not_called_when_validate_fails(self, ctx: ExecutionContext) -> None:
+        """verify_output() is NOT called when validate_output() fails."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        verify_called = False
+
+        class FailGateStep(BaseStep):
+            name = "fail_gate"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=False, reason="structural failure")
+
+            async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                nonlocal verify_called
+                verify_called = True
+                return GateCheckResult(passed=True)
+
+        step = FailGateStep()
+        record = StepRecord(step_name="fail_gate", status="running")
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
+            status = await engine._validate_step_gate(step, 1, record)
+
+        assert status == "failed"
+        assert verify_called is False
+
+    async def test_verify_failure_returns_failed(self, ctx: ExecutionContext) -> None:
+        """When verify_output() fails, the overall gate returns 'failed'."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        class VerifyFailStep(BaseStep):
+            name = "verify_fail"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+            async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=False, reason="regression detected")
+
+        step = VerifyFailStep()
+        record = StepRecord(step_name="verify_fail", status="running")
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
+            status = await engine._validate_step_gate(step, 1, record)
+
+        assert status == "failed"
+        assert record.gate is not None
+        assert record.gate.passed is False
+        assert "regression detected" in record.gate.reason
+
+    async def test_verify_timeout_returns_failed(self, ctx: ExecutionContext) -> None:
+        """When verify_output() exceeds its timeout, returns 'failed'."""
+        import asyncio as aio
+
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        class SlowVerifyStep(BaseStep):
+            name = "slow_verify"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+            async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                await aio.sleep(100)
+                return GateCheckResult(passed=True)
+
+        step = SlowVerifyStep()
+        record = StepRecord(step_name="slow_verify", status="running")
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        with patch.object(engine, "_step_timeout", return_value=1):
+            with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
+                status = await engine._validate_step_gate(step, 1, record)
+
+        assert status == "failed"
+        assert record.gate is not None
+        assert record.gate.passed is False
+        assert "timed out" in record.gate.reason.lower()
+
+    async def test_verify_exception_returns_failed(self, ctx: ExecutionContext) -> None:
+        """When verify_output() raises, returns 'failed' with exception info."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        class CrashVerifyStep(BaseStep):
+            name = "crash_verify"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+            async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                raise RuntimeError("test suite crashed")
+
+        step = CrashVerifyStep()
+        record = StepRecord(step_name="crash_verify", status="running")
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
+            status = await engine._validate_step_gate(step, 1, record)
+
+        assert status == "failed"
+        assert record.gate.passed is False
+        assert "RuntimeError" in record.gate.reason
+        assert "test suite crashed" in record.gate.reason
+
+
+class TestGateTimeoutConfig:
+    """Test that gate_timeout and verify_timeout config knobs work."""
+
+    @pytest.fixture
+    def mock_adapter(self) -> MagicMock:
+        adapter = MagicMock()
+        adapter.repo = "test/repo"
+        return adapter
+
+    def _make_ctx(self, tmp_path: Path, mock_adapter: MagicMock, toml_extra: str = "") -> ExecutionContext:
+        from sova.config.loader import load_config
+
+        (tmp_path / "sova.toml").write_text(f"github_repo = 'test/repo'\n{toml_extra}")
+        cfg = load_config(tmp_path)
+        return ExecutionContext(
+            project_dir=tmp_path,
+            config=cfg,
+            adapter=mock_adapter,
+            issue_number="123",
+            role="developer",
+        )
+
+    def test_gate_timeout_default(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """Default gate_timeout is 60."""
+        ctx = self._make_ctx(tmp_path, mock_adapter)
+        assert ctx.config.validation.gate_timeout == 60
+
+    def test_gate_timeout_custom(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """gate_timeout can be set via TOML."""
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\ngate_timeout = 30\n")
+        assert ctx.config.validation.gate_timeout == 30
+
+    def test_verify_timeout_default(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """Default verify_timeout is 0 (use full step timeout)."""
+        ctx = self._make_ctx(tmp_path, mock_adapter)
+        assert ctx.config.validation.verify_timeout == 0
+
+    def test_verify_timeout_custom(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """verify_timeout can be set via TOML."""
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\nverify_timeout = 600\n")
+        assert ctx.config.validation.verify_timeout == 600
+
+    async def test_gate_timeout_used_in_validate_step_gate(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """_validate_step_gate uses config gate_timeout instead of hardcoded 60."""
+        import asyncio as aio
+
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        class SlowGateStep(BaseStep):
+            name = "slow_gate"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                await aio.sleep(100)
+                return GateCheckResult(passed=True)
+
+            async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\ngate_timeout = 1\n")
+        step = SlowGateStep()
+        record = StepRecord(step_name="slow_gate", status="running")
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
+            status = await engine._validate_step_gate(step, 1, record)
+
+        assert status == "failed"
+        assert "timed out" in record.gate.reason.lower()
+
+    async def test_gate_timeout_clamped_by_step_timeout(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """When gate_timeout > step_timeout, the smaller step_timeout is used."""
+        import asyncio as aio_mod
+
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        captured_timeout: int | None = None
+        real_timeout = aio_mod.timeout
+
+        class InspectStep(BaseStep):
+            name = "inspect"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+            async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\ngate_timeout = 120\n")
+        step = InspectStep()
+        record = StepRecord(step_name="inspect", status="running")
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        def capture_timeout(seconds):
+            nonlocal captured_timeout
+            captured_timeout = seconds
+            return real_timeout(seconds)
+
+        with patch.object(engine, "_step_timeout", return_value=30):
+            with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
+                with patch("sova.core.workflow.asyncio.timeout", side_effect=capture_timeout):
+                    await engine._validate_step_gate(step, 1, record)
+
+        assert captured_timeout == 30
+
+    async def test_verify_timeout_zero_uses_step_timeout(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """When verify_timeout=0, verification uses the full step timeout."""
+        import asyncio as aio_mod
+
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        captured_timeout: int | None = None
+        real_timeout = aio_mod.timeout
+
+        class InspectStep(BaseStep):
+            name = "inspect"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+            async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\nverify_timeout = 0\n")
+        step = InspectStep()
+        record = StepRecord(step_name="inspect", status="running")
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        step_timeout = engine._step_timeout(step.name)
+
+        def capture_timeout(seconds):
+            nonlocal captured_timeout
+            captured_timeout = seconds
+            return real_timeout(seconds)
+
+        with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
+            with patch("sova.core.workflow.asyncio.timeout", side_effect=capture_timeout):
+                await engine._verify_step_output(step, 1, record)
+
+        assert captured_timeout == step_timeout
+
+    async def test_verify_timeout_nonzero_clamps_to_min(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """When verify_timeout > 0, uses min(step_timeout, verify_timeout)."""
+        import asyncio as aio_mod
+
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+        from sova.core.workflow import StepRecord
+
+        captured_timeout: int | None = None
+        real_timeout = aio_mod.timeout
+
+        class InspectStep(BaseStep):
+            name = "inspect"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+            async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\nverify_timeout = 300\n")
+        step = InspectStep()
+        record = StepRecord(step_name="inspect", status="running")
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        def capture_timeout(seconds):
+            nonlocal captured_timeout
+            captured_timeout = seconds
+            return real_timeout(seconds)
+
+        with patch.object(engine, "_update_step_execution_gate", new_callable=AsyncMock):
+            with patch("sova.core.workflow.asyncio.timeout", side_effect=capture_timeout):
+                await engine._verify_step_output(step, 1, record)
+
+        assert captured_timeout == 300
+
+
+class TestValidateStepVerifyOutput:
+    """Test that ValidateStep.verify_output() runs regression checks."""
+
+    @pytest.fixture
+    def mock_adapter(self) -> MagicMock:
+        adapter = MagicMock()
+        adapter.repo = "test/repo"
+        return adapter
+
+    @pytest.fixture
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
+        from sova.config.loader import load_config
+
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
+        cfg = load_config(tmp_path)
+        return ExecutionContext(
+            project_dir=tmp_path,
+            config=cfg,
+            adapter=mock_adapter,
+            issue_number="123",
+            role="developer",
+        )
+
+    async def test_verify_output_passes_when_no_baseline(self, ctx: ExecutionContext) -> None:
+        """When there's no baseline, verify_output passes."""
+        from sova.core.steps.validate import ValidateStep
+
+        step = ValidateStep()
+        ctx.test_baseline_path = None
+
+        result = await step.verify_output(ctx)
+        assert result.passed is True
+
+    async def test_verify_output_calls_check_regressions(self, ctx: ExecutionContext) -> None:
+        """verify_output delegates to _check_regressions."""
+        from sova.core.steps.base import GateCheckResult
+        from sova.core.steps.validate import ValidateStep
+
+        step = ValidateStep()
+
+        with patch.object(
+            step,
+            "_check_regressions",
+            new_callable=AsyncMock,
+            return_value=GateCheckResult(passed=False, reason="regressions found"),
+        ):
+            result = await step.verify_output(ctx)
+
+        assert result.passed is False
+        assert "regressions found" in result.reason
+
+    async def test_validate_output_no_longer_checks_regressions(self, ctx: ExecutionContext) -> None:
+        """validate_output no longer calls _check_regressions (moved to verify_output)."""
+        from sova.core.steps.validate import ValidateStep
+
+        step = ValidateStep()
+
+        with patch("sova.core.steps.validate.run", new_callable=AsyncMock) as mock_run:
+            from sova.utils.shell import ShellResult
+
+            clean_result = ShellResult(returncode=0, stdout="", stderr="")
+            mock_run.side_effect = [
+                ShellResult(returncode=0, stdout="abc123 some commit", stderr=""),  # git log
+                clean_result,  # git diff --stat HEAD (unstaged)
+                clean_result,  # git diff --cached --stat (staged)
+            ]
+
+            with patch.object(step, "_check_regressions", new_callable=AsyncMock) as mock_regression:
+                result = await step.validate_output(ctx)
+
+            mock_regression.assert_not_called()
+
+        assert result.passed is True
+
+    async def test_validate_output_fails_on_unstaged_changes(self, ctx: ExecutionContext) -> None:
+        """validate_output fails when unstaged changes exist after validation."""
+        from sova.core.steps.validate import ValidateStep
+
+        step = ValidateStep()
+
+        with patch("sova.core.steps.validate.run", new_callable=AsyncMock) as mock_run:
+            from sova.utils.shell import ShellResult
+
+            mock_run.side_effect = [
+                ShellResult(returncode=0, stdout="abc123 some commit", stderr=""),  # git log
+                ShellResult(returncode=0, stdout=" src/foo.py | 2 +-\n", stderr=""),  # unstaged diff
+            ]
+
+            result = await step.validate_output(ctx)
+
+        assert result.passed is False
+        assert "Unstaged changes" in result.reason
+
+    async def test_validate_output_fails_on_staged_changes(self, ctx: ExecutionContext) -> None:
+        """validate_output fails when staged but uncommitted changes exist."""
+        from sova.core.steps.validate import ValidateStep
+
+        step = ValidateStep()
+
+        with patch("sova.core.steps.validate.run", new_callable=AsyncMock) as mock_run:
+            from sova.utils.shell import ShellResult
+
+            clean_result = ShellResult(returncode=0, stdout="", stderr="")
+            mock_run.side_effect = [
+                ShellResult(returncode=0, stdout="abc123 some commit", stderr=""),  # git log
+                clean_result,  # git diff --stat HEAD (unstaged, clean)
+                ShellResult(returncode=0, stdout=" src/bar.py | 1 +\n", stderr=""),  # staged diff
+            ]
+
+            result = await step.validate_output(ctx)
+
+        assert result.passed is False
+        assert "Staged but uncommitted" in result.reason
+
+    async def test_verify_output_returns_none_regression_as_pass(self, ctx: ExecutionContext) -> None:
+        """When _check_regressions returns None, verify_output passes."""
+        from sova.core.steps.validate import ValidateStep
+
+        step = ValidateStep()
+
+        with patch.object(
+            step,
+            "_check_regressions",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            result = await step.verify_output(ctx)
+
+        assert result.passed is True

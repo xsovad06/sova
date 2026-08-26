@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestShellKillTimeout:
@@ -77,3 +80,20 @@ class TestShellKillTimeout:
         assert result.returncode == 0
         assert result.stdout == "output"
         assert result.stderr == ""
+
+    async def test_run_kills_process_on_cancelled_error(self) -> None:
+        """When an outer scope cancels the task, shell.run kills the child process."""
+        from sova.utils.shell import run
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 12345
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock()
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            with pytest.raises(asyncio.CancelledError):
+                await run("long_running_test", timeout=300)
+
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_called_once()
