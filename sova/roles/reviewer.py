@@ -32,9 +32,6 @@ from sova.ipc.handoff import (
 from sova.llm.client import invoke
 from sova.roles._review_comments import (
     _MAX_COMPACT_SPEC_CHARS,
-    _SEVERITY_CRITICAL,
-    _SEVERITY_HIGH,
-    _SEVERITY_MEDIUM,
     _SPEC_SECTIONS,
     _VERDICT_TO_LABEL,
     DIFF_CHUNK_SIZE,
@@ -58,6 +55,7 @@ from sova.roles._review_comments import (
     _sova_verdict_label_name,
     _verdict_label,
 )
+from sova.roles._review_format import _SEVERITY_HIGH
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
@@ -83,9 +81,6 @@ __all__ = [
     "_MAX_COMPACT_SPEC_CHARS",
     "_parse_findings",
     "_safe_severity",
-    "_SEVERITY_CRITICAL",
-    "_SEVERITY_HIGH",
-    "_SEVERITY_MEDIUM",
     "_severity_label",
     "_sova_verdict_label_name",
     "_SPEC_SECTIONS",
