@@ -142,11 +142,31 @@ class ValidateStep(BaseStep):
         )
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: commits must still exist and no test regressions introduced."""
+        """Structural gate: commits must still exist after validation.
+
+        Checks commits ahead of base, plus unstaged and staged diffs to
+        catch uncommitted changes left by the hook fix loop. Regression
+        checking is performed separately in verify_output() to allow
+        longer timeouts for test suite execution.
+        """
         log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         if not (log_result.success and log_result.stdout.strip()):
             return GateCheckResult(passed=False, reason="No commits ahead of base after validation")
 
+        unstaged = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
+        if unstaged.success and unstaged.stdout.strip():
+            detail = unstaged.stdout.strip()[:200]
+            return GateCheckResult(passed=False, reason=f"Unstaged changes after validation: {detail}")
+
+        staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
+        if staged.success and staged.stdout.strip():
+            detail = staged.stdout.strip()[:200]
+            return GateCheckResult(passed=False, reason=f"Staged but uncommitted changes after validation: {detail}")
+
+        return GateCheckResult(passed=True)
+
+    async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+        """Heavyweight verification: run test suite and check for regressions."""
         regression_check = await self._check_regressions(ctx)
         if regression_check is not None:
             return regression_check
@@ -189,7 +209,7 @@ class ValidateStep(BaseStep):
             )
             return GateCheckResult(
                 passed=False,
-                reason=f"Test regressions detected: {report.summary()} -- first: {', '.join(names[:3])}",
+                reason=f"Test regressions detected: {report.summary()}. First: {', '.join(names[:3])}",
             )
 
         if report.fixed:

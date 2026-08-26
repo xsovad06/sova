@@ -430,6 +430,23 @@ _REGISTRY: list[SettingMeta] = [
         "validation",
         "number",
     ),
+    SettingMeta(
+        "validation.gate_timeout",
+        "Gate timeout (s)",
+        "Maximum cap in seconds for structural gate checks; actual timeout is min(step_timeout, gate_timeout)",
+        "validation",
+        "number",
+    ),
+    SettingMeta(
+        "validation.verify_timeout",
+        "Verify timeout (s)",
+        (
+            "Maximum cap in seconds for heavyweight verification;"
+            " 0 uses full step_timeout, non-zero clamps via min(step_timeout, verify_timeout)"
+        ),
+        "validation",
+        "number",
+    ),
     # -- CI --
     SettingMeta("ci.poll_interval", _LABEL_POLL_INTERVAL, "Seconds between CI status checks", "ci", "number"),
     SettingMeta("ci.max_wait", "Max wait (s)", "Maximum seconds to wait for CI to complete", "ci", "number"),

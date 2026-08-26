@@ -86,6 +86,16 @@ async def run(
         except TimeoutError:
             log.warning("shell.kill_timeout", cmd=args[0], pid=proc.pid)
         return ShellResult(returncode=-1, stdout="", stderr=f"Command timed out after {timeout}s")
+    except asyncio.CancelledError:
+        # Outer scope cancelled us (e.g., workflow verification timeout).
+        # Kill the child process before propagating cancellation.
+        proc.kill()
+        try:
+            async with asyncio.timeout(_KILL_TIMEOUT_SECONDS):
+                await proc.wait()
+        except TimeoutError:
+            log.warning("shell.kill_timeout_on_cancel", cmd=args[0], pid=proc.pid)
+        raise
 
     stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
     stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")

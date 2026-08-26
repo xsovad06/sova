@@ -2,7 +2,8 @@
 
 Every workflow step inherits from BaseStep and implements:
 - execute(): do the work
-- validate_output(): gate check -- did the step produce valid output?
+- validate_output(): structural gate check (fast, required)
+- verify_output(): heavyweight verification (optional, e.g. test suite)
 - can_skip(): should this step be skipped for this context?
 """
 
@@ -53,6 +54,14 @@ class BaseStep(ABC):
     @abstractmethod
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Validate that the step produced acceptable output."""
+
+    async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+        """Heavyweight verification pass after the structural gate passes.
+
+        Override in subclasses that need expensive verification (e.g., running
+        the full test suite). The default is a passing no-op.
+        """
+        return GateCheckResult(passed=True)
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
         """Whether this step can be skipped for the given context.
