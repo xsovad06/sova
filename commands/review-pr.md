@@ -121,72 +121,45 @@ Review across these dimensions, in priority order. Reference `AGENTS.md` and `do
 - Is the PR too large? Suggest splitting if >500 lines of non-spec/non-test changes.
 - Are all changes covered by the ticket scope?
 
-## 6. Present Findings
+## 6. Format Findings via Shared Formatter
 
-Always include this as the **first line** of the review body, before any section headers:
+Collect your findings into a JSON object. Save it to a temporary file:
 
-```
-<!-- sova-review: {verdict} -->
-```
-
-Where `{verdict}` is `approve`, `revise`, or `block` (lowercase), matching your final verdict. This marker lets the SOVA dashboard detect cross-instance reviews when another SOVA user (on a different machine) posts the review.
-
-**Severity gate**: the marker is determined by your highest-scored finding, not your holistic verdict. Check before writing:
-
-- Highest finding **7+** (CRITICAL): marker is `block`
-- Highest finding **3-6** (MEDIUM or HIGH): marker is `revise`
-- All findings scored **1-2** (pure nitpicks), or no findings: Approve -> `approve`, Request changes -> `revise`, Comment only -> `approve`
-
-A MEDIUM or higher finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely. The severity gate is not overridable by "minor impact" reasoning.
-
-### PR Summary
-One paragraph: what the PR does, who authored it, how many commits/files.
-
-### Ghost Commits (if any)
-Table of claimed-but-missing fixes.
-
-### Findings
-
-Rank by impact (highest first):
-
-```
-[SEVERITY] Category -- Short title
-Location: file_path:line_number
-Problem: What is wrong and why it matters.
-Suggestion: How to fix it, with code if helpful.
+```bash
+cat > /tmp/sova-review-findings.json <<'REVIEW_JSON'
+{
+  "findings": [
+    {
+      "file": "path/to/file.py",
+      "line": 42,
+      "severity": 7,
+      "category": "bug",
+      "description": "Concise description of the issue",
+      "suggestion": "Specific fix recommendation"
+    }
+  ],
+  "summary": "### PR Summary\nOne paragraph: what the PR does, who authored it, how many commits/files.\n\n### Ghost Commits\n(table if any, omit section if none)\n\n### Confirmed Bot Findings\n(if Step 1.5 was performed, omit if none)",
+  "positives": ["Good thing 1", "Good thing 2"]
+}
+REVIEW_JSON
 ```
 
-Severity: **CRITICAL** / **HIGH** / **MEDIUM** / **LOW**
+**JSON field requirements:**
+- `findings`: array of objects with `file`, `line` (nullable), `severity` (1-10 integer), `category`, `description`, `suggestion` (empty string if none)
+- `summary`: the PR Summary paragraph, optionally followed by Ghost Commits and Confirmed Bot Findings sections (use `\n` for newlines)
+- `positives`: 2-3 things the code does well (omit key or pass empty array to skip the section)
 
-Scoring guidance -- bump to 3+ (not 1-2) if the finding:
-- Removes code or reduces duplication (less code = fewer bugs)
-- Improves error handling (catches specific exceptions, removes silent failures)
-- Fixes a doc inconsistency that misleads contributors or agents
-- Eliminates dead code or unused imports
+**Scoring guidance**: bump to 3+ (not 1-2) if the finding removes code/duplication, improves error handling, fixes misleading docs, or eliminates dead code. Reserve 1-2 only for purely subjective preferences (naming, comment wording, formatting not caught by linter).
 
-Reserve 1-2 only for purely subjective preferences: naming style, comment wording, formatting not caught by linter.
+Format the review body through the shared SOVA formatter:
 
-### Confirmed Bot Findings (if Step 1.5 was performed)
-
-If any bot findings from Step 1.5 are valid, list them here as one-liners instead of restating them as full findings:
-
-```
-Agree with {bot} on {file}:{line} -- {short description}. See their inline comment.
+```bash
+REVIEW_BODY=$(python3 -c "import sys; from sova.roles._review_format import format_from_json; print(format_from_json(sys.stdin.read()))" < /tmp/sova-review-findings.json) || REVIEW_BODY=""
 ```
 
-These do NOT get scored and do NOT count toward the verdict. Omit if no bot findings exist.
+The formatter produces: `<!-- sova-review: {verdict} -->` marker, `## Review:` heading, severity-sorted findings with `[LABEL N/10]` scores, `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity (7+ = block, 3-6 = revise, below 3 or none = approve).
 
-### Verdict
-
-The marker was already determined by the severity gate above. The Verdict section describes your holistic assessment for the human reader:
-
-- **Approve** -- only pure nitpicks (score 1-2) or no findings
-- **Request changes** -- one or more findings are MEDIUM (3-4), HIGH (5-6), or CRITICAL (7+); list what must be addressed
-- **Block** -- critical bug, security vulnerability, or data loss risk (score 7+)
-- **Comment only** -- observations only, no findings that must be addressed
-
-### What's Done Well
-Call out 2-3 things the code does well. Reinforce good patterns.
+**Fallback**: if `python3` fails (SOVA not installed, import error, malformed JSON), `REVIEW_BODY` will be empty. In that case, write the review body manually: first line `<!-- sova-review: {verdict} -->`, then `### Findings` heading, then findings as `- **[LABEL N/10]** [category] \`file:line\`: description. Fix: suggestion`. Determine the verdict from the highest severity in your JSON: 7+ = block, any findings (severity 1-6) = revise, no findings = approve. A finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely.
 
 ## 7. Post Review on GitHub
 
