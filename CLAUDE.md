@@ -47,6 +47,60 @@ gh auth status
 
 Ticket workflow (branch naming, PR linking, etc.) is in AGENTS.md under "Development Workflow".
 
+## RTK Token Compression (Optional)
+
+SOVA supports RTK (Rust Token Killer) for reducing token consumption by 60-90% on bash command outputs. When RTK is installed, `sova install` automatically configures it.
+
+### Installation
+
+```bash
+# Install RTK via Homebrew (macOS/Linux)
+brew install rtk
+
+# Verify installation
+rtk --version
+```
+
+### Manual Setup
+
+If you installed RTK after running `sova install`, add the hook manually to `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "rtk hook claude"
+      }
+    ]
+  }
+}
+```
+
+**Important**: The command must be `"rtk hook claude"`, not just `"rtk"`. The bare `rtk` command prints help and blocks tool calls.
+
+### Configuration
+
+RTK is enabled by default in `sova.toml`:
+
+```toml
+[rtk]
+enabled = true
+```
+
+Set `enabled = false` to disable RTK hook injection during `sova install`.
+
+### Verification
+
+```bash
+# Check if RTK is available
+sova doctor
+
+# View RTK savings after a few sessions
+rtk gain
+```
+
 ## Knowledge System (4-Tier)
 
 ### Tier 1: Project Rules (always loaded, no truncation)
