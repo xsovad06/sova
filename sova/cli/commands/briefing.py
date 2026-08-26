@@ -60,7 +60,7 @@ async def _briefing(
     briefing = await service.generate_briefing(since=since_dt)
 
     if output_json:
-        data = _serialize_briefing_to_json(briefing)
+        data = _serialize_briefing_to_json(briefing, quiet=quiet)
         typer.echo(json.dumps(data, indent=2))
     else:
         render_briefing_cli(briefing, console, quiet=quiet)
@@ -80,8 +80,11 @@ def _parse_and_validate_since(since_str: str | None) -> datetime | None:
     return since_dt
 
 
-def _serialize_briefing_to_json(briefing: Briefing) -> dict[str, Any]:
-    """Convert briefing to JSON-serializable dict with datetime formatting."""
+def _serialize_briefing_to_json(briefing: Briefing, *, quiet: bool = False) -> dict[str, Any]:
+    """Convert briefing to JSON-serializable dict with datetime formatting.
+
+    When quiet=True, only attention_items and provider_statuses are included.
+    """
     data = asdict(briefing)
     data["generated_at"] = briefing.generated_at.isoformat()
 
@@ -89,6 +92,11 @@ def _serialize_briefing_to_json(briefing: Briefing) -> dict[str, Any]:
         data["since"] = briefing.since.isoformat()
 
     _serialize_datetime_fields(data)
+
+    if quiet:
+        for key in ("informational_items", "schedule", "project_pulses"):
+            data.pop(key, None)
+
     return data
 
 
