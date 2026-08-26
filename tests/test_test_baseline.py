@@ -502,3 +502,27 @@ class TestValidateStepRegressions:
 
         # Non-fatal: passes despite exception
         assert gate.passed
+
+    async def test_no_commits_ahead_fails_gate(self) -> None:
+        from sova.core.steps.validate import ValidateStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/wt"), test_baseline_path=None)
+
+        with patch("sova.core.steps.validate.run") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="")
+            gate = await ValidateStep().validate_output(ctx)
+
+        assert not gate.passed
+        assert "No commits ahead of base" in gate.reason
+
+    async def test_git_log_failure_fails_gate(self) -> None:
+        from sova.core.steps.validate import ValidateStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/wt"), test_baseline_path=None)
+
+        with patch("sova.core.steps.validate.run") as mock_run:
+            mock_run.return_value = MagicMock(success=False, stdout="")
+            gate = await ValidateStep().validate_output(ctx)
+
+        assert not gate.passed
+        assert "No commits ahead of base" in gate.reason

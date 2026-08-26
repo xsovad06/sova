@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from io import StringIO
 
@@ -504,6 +505,84 @@ def test_briefing_with_providers_str() -> None:
 
     assert mock_config.awareness.providers == ["gmail", "gcal"]
     mock_create_providers.assert_called_once()
+
+
+def test_json_output_quiet_filters_sections() -> None:
+    """JSON output with --quiet only includes attention items."""
+    from unittest.mock import AsyncMock, patch
+
+    from sova.cli.commands.briefing import _briefing
+
+    now = datetime.now()
+    test_console = Console(file=StringIO(), width=80, legacy_windows=False)
+    mock_service = AsyncMock()
+    mock_service.generate_briefing.return_value = Briefing(
+        generated_at=now,
+        attention_items=[
+            AwarenessItem(
+                id="test:1",
+                provider="test",
+                category=ItemCategory.NEEDS_ATTENTION,
+                title="Important",
+                urgency=2,
+                timestamp=now,
+            ),
+        ],
+        informational_items=[
+            AwarenessItem(
+                id="test:2",
+                provider="test",
+                category=ItemCategory.INFORMATIONAL,
+                title="Newsletter",
+                timestamp=now,
+            ),
+        ],
+        schedule=[
+            AwarenessItem(
+                id="cal:1",
+                provider="gcal",
+                category=ItemCategory.SCHEDULE,
+                title="Standup",
+                timestamp=now + timedelta(hours=1),
+            ),
+        ],
+        project_pulses=[
+            ProjectPulse(project_slug="my-app", open_prs=1, agent_status="idle", last_ci="passing"),
+        ],
+        provider_statuses=[
+            ProviderStatus(name="test", ok=True, message="ok", items_fetched=2, fetch_time_ms=100),
+        ],
+    )
+
+    with (
+        patch("sova.awareness.briefing.BriefingService", return_value=mock_service),
+        patch("sova.awareness.create_providers", return_value=[]),
+        patch("sova.config.loader.load_config"),
+        patch("sova.cli.commands.briefing.console", test_console),
+        patch("typer.echo") as mock_echo,
+    ):
+        import asyncio
+
+        asyncio.run(
+            _briefing(
+                project_dir=None,
+                since_str=None,
+                providers_str=None,
+                output_json=True,
+                quiet=True,
+            )
+        )
+
+    mock_echo.assert_called_once()
+    output = mock_echo.call_args[0][0]
+    parsed = json.loads(output)
+
+    assert len(parsed["attention_items"]) == 1
+    assert parsed["attention_items"][0]["title"] == "Important"
+    assert "informational_items" not in parsed
+    assert "schedule" not in parsed
+    assert "project_pulses" not in parsed
+    assert "provider_statuses" in parsed
 
 
 def test_briefing_cli_output() -> None:
