@@ -87,6 +87,7 @@ _NESTED_SECTIONS = (
     "mcp",
     "testing",
     "output",
+    "feed",
     "monitoring",
     "knowledge",
     "integration_gates",
@@ -181,6 +182,16 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
             ("hub_url", "SOVA_TELEMETRY_HUB_URL"),
             ("hub_token", "SOVA_TELEMETRY_HUB_TOKEN"),
             ("machine_id", "SOVA_TELEMETRY_MACHINE_ID"),
+        ],
+    )
+
+    _apply_nested_env_overrides(
+        merged,
+        "feed",
+        "SOVA_FEED_",
+        [
+            ("retention_days", "SOVA_FEED_RETENTION_DAYS"),
+            ("page_size", "SOVA_FEED_PAGE_SIZE"),
         ],
     )
 

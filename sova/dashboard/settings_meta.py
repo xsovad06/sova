@@ -891,6 +891,21 @@ _REGISTRY: list[SettingMeta] = [
         "dashboard",
         "number",
     ),
+    # Activity Feed
+    SettingMeta(
+        "feed.retention_days",
+        "Feed retention (days)",
+        "Days to keep persisted activity feed events before pruning",
+        "dashboard",
+        "number",
+    ),
+    SettingMeta(
+        "feed.page_size",
+        "Feed page size",
+        "Number of events loaded per history page when scrolling back through the feed",
+        "dashboard",
+        "number",
+    ),
     # -- Resource Monitoring (in Agent Health group) --
     SettingMeta(
         "monitoring.enabled",
