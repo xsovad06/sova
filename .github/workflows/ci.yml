@@ -11,6 +11,71 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
+  # Detect whether any non-documentation code changed. Expensive jobs
+  # (Python Tests, Integration Test) gate their real work on this so a
+  # docs-only push does not burn CI minutes re-running the full suite.
+  #
+  # These jobs are REQUIRED status checks in the main-protection ruleset,
+  # so they must always run and report success. On a docs-only change the
+  # job still runs, skips its expensive steps, and exits 0 so the required
+  # check is satisfied without doing redundant work. A blanket
+  # paths-ignore would instead skip the job entirely, leaving the required
+  # check pending forever and blocking the merge.
+  changes:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      # "true" when the change includes any non-documentation file, or when
+      # the event is a push to main (no PR diff base). Docs-only PRs yield
+      # "false" so downstream jobs can skip their expensive work.
+      code: ${{ steps.decide.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Filter changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        # v4 is required: the `some-with-excludes` predicate-quantifier below
+        # only exists in v4 (v3 supports only 'some' and 'every').
+        uses: dorny/paths-filter@v4
+        with:
+          # paths-filter answers "did ANY changed file match this filter".
+          # There is no native "every changed file is a doc" quantifier, so
+          # detect the inverse directly: the `code` filter matches any file
+          # that is NOT documentation. `some-with-excludes` includes a file
+          # when it matches a positive pattern (`**`, i.e. anything) AND no
+          # negated pattern (the doc globs). So `code` is 'true' iff at least
+          # one non-doc file changed, and 'false' on a docs-only PR.
+          #
+          # Only markdown is treated as documentation. `docs/` and `.claude/`
+          # contain non-md code (docs/pipeline-determinism.html, the
+          # .claude/benchmark/*.sh hooks, .claude/commands/.sova-manifest.json),
+          # so excluding those trees wholesale would let a broken script or
+          # manifest merge with the test suite skipped. Excluding only *.md
+          # keeps those code paths classified as code.
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+
+      - name: Decide whether code changed
+        id: decide
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            # push to main (or any non-PR event): no PR diff base, always
+            # run the full suite.
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.filter.outputs.code }}" = "false" ]; then
+            # Only an explicit 'false' from the filter (a genuine docs-only PR)
+            # skips the expensive jobs. Anything else (empty output from a
+            # partial action failure, output-name drift, an unexpected event)
+            # fails safe to running the full suite.
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
   lint-static:
     name: Static Checks
     runs-on: ubuntu-latest
@@ -86,42 +151,67 @@ jobs:
       - name: Ruff format check
         run: ruff format --check sova/ tests/
 
+  # Real work is skipped ONLY on an explicit docs-only signal
+  # (needs.changes.outputs.code == 'false'). If the `changes` gate is skipped
+  # or fails, its output is empty (not 'false'), so the suite runs -- fail-open.
+  # The job-level `if` uses always() so a failed `needs: changes` does not skip
+  # the whole job (a skipped required check would strand the PR forever).
   python-test:
     name: Python Tests
-    if: github.event_name != 'push'
+    needs: changes
+    if: always() && github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
+      - name: Docs-only change (skipping tests)
+        if: needs.changes.outputs.code == 'false'
+        run: echo "Docs-only change detected. No code touched, reporting success without re-running tests."
+
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.code != 'false'
 
       - uses: actions/setup-python@v5
+        if: needs.changes.outputs.code != 'false'
         with:
           python-version: "3.12"
           cache: 'pip'
 
       - name: Install package
+        if: needs.changes.outputs.code != 'false'
         run: pip install -e ".[dev]"
 
       - name: Run tests
+        if: needs.changes.outputs.code != 'false'
         run: pytest tests/ -v
 
   integration:
     name: Integration Test
+    needs: changes
+    if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Docs-only change (skipping integration test)
+        if: needs.changes.outputs.code == 'false'
+        run: echo "Docs-only change detected. No code touched, reporting success without re-running integration."
+
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.code != 'false'
 
       - uses: actions/setup-python@v5
+        if: needs.changes.outputs.code != 'false'
         with:
           python-version: "3.12"
           cache: 'pip'
 
       - name: Install package
+        if: needs.changes.outputs.code != 'false'
         run: pip install .
 
       - name: Verify CLI entrypoint
+        if: needs.changes.outputs.code != 'false'
         run: sova --help
 
       - name: Install into a test repo
+        if: needs.changes.outputs.code != 'false'
         run: |
           tmp=$(mktemp -d)
           git init "$tmp/test-project"

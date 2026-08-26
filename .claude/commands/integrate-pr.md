@@ -68,10 +68,14 @@ If checkout fails with "already checked out", `sync_branch()` auto-resolves the 
 
 **Stop on merge conflicts** -- report which files conflict and stop. Do not attempt auto-resolution.
 
-If the rebase changed nothing (already up to date), skip the push. Otherwise:
+If the rebase changed nothing (already up to date), skip the push. Track whether a push happened so Phase 4 can decide whether CI must re-run. The flag is written to a state file (not a shell variable) so it survives across the separate command invocations of Phases 2 through 4:
 
 ```bash
-git push --force-with-lease
+# Reset the push-tracking state file at the start of the run.
+mkdir -p .claude/agent-control
+echo 0 > .claude/agent-control/integrate-pushed
+# ... only if the rebase rewrote history:
+git push --force-with-lease && echo 1 > .claude/agent-control/integrate-pushed
 ```
 
 **Stop if push fails** (branch protection, permissions) -- report the error.
@@ -89,13 +93,57 @@ Only run if `.claude/agent-memory/` exists in the project.
 3. **Amend into the last commit and push** if any files changed (never create a standalone docs commit):
    ```bash
    git add -A .claude/agent-memory/ AGENTS.md README.md docs/VISION.md .claude/rules/
-   git commit --amend --no-edit
-   git push --force-with-lease
+   # Only amend and push when something actually changed. An amend rewrites
+   # the head SHA and re-triggers CI, so a no-op amend wastes a full CI cycle.
+   if ! git diff --cached --quiet; then
+     git commit --amend --no-edit
+     git push --force-with-lease && echo 1 > .claude/agent-control/integrate-pushed
+   fi
    ```
+
+   **CI-cost note**: the files staged here are Markdown only (`AGENTS.md`,
+   `README.md`, `docs/**/*.md`, `.claude/rules/*.md`, `.claude/agent-memory/*.md`).
+   CI classifies a change as docs-only iff every changed path matches `*.md`, so a
+   markdown-only push does NOT re-run the expensive test/scan jobs (they report
+   success immediately), and this amend no longer blocks the merge on a
+   15-minute re-run. Note that `docs/` and `.claude/` also hold non-md code
+   (scripts, manifests, HTML), so staging a non-md file here would re-run the full
+   suite. The push-tracking state file still lets Phase 4 skip polling entirely
+   when nothing was re-pushed at all.
 
 ### Phase 4: Wait for CI
 
-If the repository has CI checks configured, poll in a loop using the following bash command. This includes external review bots (e.g., CodeRabbit) that appear as pending StatusContext checks.
+**Fast path (skip the wait entirely).** If neither Phase 2 (rebase) nor Phase 3
+(docs amend) pushed anything (the push-tracking state file still reads `0`), the
+PR head SHA is unchanged, so any CI that already ran is still valid. Confirm the
+existing checks are green and, if so, proceed straight to Phase 5 without polling:
+
+```bash
+# Default to 0 if the state file is missing (defensive: never assume a push).
+PUSHED=$(cat .claude/agent-control/integrate-pushed 2>/dev/null || echo 0)
+if [ "$PUSHED" -eq 0 ]; then
+  # Capture the JSON and exit status separately. `gh pr checks` returns a
+  # non-zero status (exit 8) when checks are pending while still writing valid
+  # JSON, so a `|| echo "[]"` fallback would append a second JSON document and
+  # break the numeric jq counts. Keep the real output; treat empty/invalid JSON
+  # as non-green and fall through to the poll.
+  CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null)
+  TOTAL=$(echo "$CHECKS_JSON" | jq 'length' 2>/dev/null || echo 0)
+  PENDING=$(echo "$CHECKS_JSON" | jq '[.[] | select(.bucket == "pending")] | length' 2>/dev/null || echo 1)
+  FAILED=$(echo "$CHECKS_JSON" | jq '[.[] | select(.bucket == "fail" or .bucket == "cancel")] | length' 2>/dev/null || echo 1)
+  # Require at least one check: zero checks is not a green fast path, poll instead.
+  if [ "$TOTAL" -gt 0 ] && [ "$PENDING" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
+    echo "No re-push: existing CI is complete and green. Skipping the poll."
+    # proceed to Phase 5
+  fi
+  # If checks are still pending/failed (or absent) despite no push, fall through
+  # to the poll below.
+fi
+```
+
+If a push DID happen (or the fast-path checks were not all green), poll in a
+loop using the following bash command. This includes external review bots
+(e.g., CodeRabbit) that appear as pending StatusContext checks.
 
 Requires gh CLI v2.32+ (for the `bucket` field).
 

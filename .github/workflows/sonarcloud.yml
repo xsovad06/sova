@@ -32,25 +32,71 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || '' }}
           persist-credentials: false
 
-      # Coverage for push and pull_request_target events.
+      # Detect whether any non-documentation file changed. Computed via the
+      # GitHub API (base-repo context, pull_request_target-safe -- same
+      # pattern as fork-pr-gate.yml) rather than a working-tree diff. On a
+      # docs-only PR the coverage run and Sonar scan are skipped, but the
+      # job still completes and reports success so the required
+      # "SonarCloud Analysis" check is satisfied without a redundant 15-min run.
+      - name: Detect code changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request_target" ]; then
+            # push to main: always run the full analysis
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(gh api --paginate \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+            --jq '.[].filename') || files=""
+          # Fail safe: if the file list is empty (API hiccup, pagination
+          # failure, or a genuinely empty diff) treat it as code so the full
+          # analysis runs. Only an explicit, non-empty, all-docs list skips.
+          if [ -z "$files" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Only markdown is documentation. docs/ and .claude/ contain non-md
+          # code (docs/pipeline-determinism.html, .claude/benchmark/*.sh hooks,
+          # .claude/commands/.sova-manifest.json), so a non-md file under those
+          # trees must classify as code -- otherwise a broken script could merge
+          # with the scan skipped.
+          code="false"
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              *.md) ;;                                    # documentation, ignore
+              *) code="true" ;;                          # anything else is code
+            esac
+          done <<< "$files"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Docs-only change (skipping SonarCloud)
+        if: steps.changes.outputs.code != 'true'
+        run: echo "Docs-only change detected. No code touched, reporting success without re-running coverage or scan."
+
+      # Coverage for push and pull_request_target events, only when code changed.
       # pull_request_target uses the workflow from main (tamper-proof)
       # and SONAR_TOKEN is scoped to its own step.
       - uses: actions/setup-python@v5
-        if: github.event_name == 'push' || github.event_name == 'pull_request_target'
+        if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
         with:
           python-version: "3.12"
           cache: 'pip'
 
       - name: Install package with test dependencies
-        if: github.event_name == 'push' || github.event_name == 'pull_request_target'
+        if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
         run: pip install -e ".[dev]" pytest-cov pytest-timeout
 
       - name: Run tests with coverage
-        if: github.event_name == 'push' || github.event_name == 'pull_request_target'
+        if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
         run: pytest tests/ --cov=sova --cov-report=xml -q --timeout=60
 
       - name: Find associated PR
         id: find-pr
+        if: steps.changes.outputs.code == 'true'
         run: |
           if [ "${{ github.event_name }}" = "pull_request_target" ]; then
             echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
@@ -67,6 +113,7 @@ jobs:
 
       - name: Check SONAR_TOKEN is available
         id: check-token
+        if: steps.changes.outputs.code == 'true'
         run: |
           if [ -n "$SONAR_TOKEN" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
@@ -78,7 +125,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       - name: SonarCloud Scan
-        if: steps.check-token.outputs.available == 'true'
+        if: steps.changes.outputs.code == 'true' && steps.check-token.outputs.available == 'true'
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
