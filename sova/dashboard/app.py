@@ -438,6 +438,7 @@ def create_app(
 
         from sova.core.output import cleanup_old_output
         from sova.dashboard.services.agent_recovery import _kill_terminal_zombies
+        from sova.dashboard.services.feed_service import get_feed_service
 
         gc_task: asyncio.Task | None = None
         if is_multi:
@@ -446,15 +447,20 @@ def create_app(
             for path_str in list_projects().values():
                 p = Path(path_str)
                 if p.is_dir():
+                    pcfg = load_config(p)
                     await init_db_for_project(p)
                     await recover_stale_runs(p)
                     await _kill_terminal_zombies(p)
-                    await cleanup_old_output(p, cfg.output.retention_days)
+                    await cleanup_old_output(p, pcfg.output.retention_days)
+                    await get_feed_service().prune_old_events(retention_days=pcfg.feed.retention_days, project_dir=p)
+                    await get_feed_service().init_counter(p)
         else:
             await init_db(resolved)
             await recover_stale_runs(resolved)
             await _kill_terminal_zombies(resolved)
             await cleanup_old_output(resolved, cfg.output.retention_days)
+            await get_feed_service().prune_old_events(retention_days=cfg.feed.retention_days, project_dir=resolved)
+            await get_feed_service().init_counter(resolved)
 
             if cfg.dashboard.gc_on_startup:
                 gc_task = asyncio.create_task(_startup_gc(resolved))
@@ -660,6 +666,10 @@ def create_app(
             except TimeoutError:
                 log.warning("lifespan.shutdown_timeout", exc_info=True)
             _daemon_components.clear()
+            try:
+                await asyncio.wait_for(get_feed_service().drain_persist(), timeout=3.0)
+            except TimeoutError:
+                log.warning("lifespan.feed_drain_timeout")
             await close_db()
 
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)

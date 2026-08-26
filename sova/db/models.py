@@ -664,3 +664,25 @@ class MergeQueueEntry(Base):
         Index("ix_merge_queue_status", "status"),
         Index("ix_merge_queue_pr_repo", "pr_number", "repo"),
     )
+
+
+class FeedEventRecord(Base):
+    """Persisted activity feed event for the chat-style cockpit timeline.
+
+    The in-memory ring buffer in ``FeedService`` still drives SSE fan-out;
+    these records give the feed durable history that survives page reloads
+    and server restarts, and back the backward-pagination (infinite scroll)
+    of the chat timeline.
+    """
+
+    __tablename__ = "feed_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str] = mapped_column(String(64), nullable=False, default="system")
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (Index("ix_feed_events_created", "created_at"),)

@@ -407,6 +407,15 @@ class OutputConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_OUTPUT_")
 
 
+class FeedConfig(BaseSettings):
+    """Activity feed (chat-style cockpit) configuration."""
+
+    retention_days: int = Field(30, ge=1)
+    page_size: int = Field(50, ge=1, le=200)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_FEED_")
+
+
 class TestingConfig(BaseSettings):
     """Test baseline and regression detection configuration."""
 
@@ -728,6 +737,7 @@ class ProjectConfig(BaseSettings):
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    feed: FeedConfig = Field(default_factory=FeedConfig)
     testing: TestingConfig = Field(default_factory=TestingConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
