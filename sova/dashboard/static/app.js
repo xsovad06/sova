@@ -476,14 +476,22 @@ async function _pollHandoff() {
    7b. ACTIVITY FEED (SSE)
    ============================================================ */
 
-var _feedEvents = [];
+var _feedEvents = [];          // ascending by id (oldest first), as rendered
 var _feedUnread = 0;
-var _feedLastId = 0;
+var _feedLastId = 0;           // highest id seen (newest)
+var _feedOldestId = 0;         // lowest id currently loaded (pagination cursor)
 var _feedSeenIds = {};
 var _feedEventSource = null;
 var _feedPanelOpen = false;
 var _feedRenderPending = false;
+var _feedHasMoreHistory = true;
+var _feedHistoryLoading = false;
+var _feedHistoryLoaded = false;
+var _feedBriefingLoaded = false;
+var _feedBriefingHtml = '';
+var _feedScrollBound = false;
 var _FEED_MAX_EVENTS = 500;
+var _FEED_PAGE_SIZE = 50;
 
 function _initFeedSSE() {
   var url = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/api/feed/stream';
@@ -522,15 +530,20 @@ function _feedGapFill() {
   }).catch(function() { /* ignore */ });
 }
 
+// Insert a live event (from SSE). Appends to the tail (newest).
 function _feedAddEvent(event) {
   // Dedup by ID (set handles out-of-order gap-fill events)
   if (_feedSeenIds[event.id]) return;
   _feedSeenIds[event.id] = true;
   if (event.id > _feedLastId) _feedLastId = event.id;
+  if (_feedOldestId === 0 || event.id < _feedOldestId) _feedOldestId = event.id;
   _feedEvents.push(event);
   if (_feedEvents.length > _FEED_MAX_EVENTS) {
     var removed = _feedEvents.shift();
-    if (removed) delete _feedSeenIds[removed.id];
+    if (removed) {
+      delete _feedSeenIds[removed.id];
+      if (_feedEvents.length > 0) _feedOldestId = _feedEvents[0].id;
+    }
   }
 
   if (!_feedPanelOpen) {
@@ -558,83 +571,271 @@ function _feedAddEvent(event) {
 
 function _updateFeedBadge() {
   var badge = document.getElementById('feed-badge');
-  var toggle = document.getElementById('feed-toggle');
+  var fab = document.getElementById('feed-fab');
   if (!badge) return;
   if (_feedUnread > 0) {
     badge.textContent = _feedUnread > 9 ? '9+' : String(_feedUnread);
     badge.classList.remove('hidden');
-    badge.classList.add('flex');
-    if (toggle) toggle.setAttribute('aria-label', 'Activity Feed, ' + _feedUnread + ' unread');
+    if (fab) fab.setAttribute('aria-label', 'Activity Feed, ' + _feedUnread + ' unread');
   } else {
     badge.classList.add('hidden');
-    badge.classList.remove('flex');
-    if (toggle) toggle.setAttribute('aria-label', 'Activity Feed');
+    if (fab) fab.setAttribute('aria-label', 'Activity Feed');
   }
+}
+
+// -- chat rendering helpers --
+
+function _feedDayKey(ts) {
+  var d = new Date(ts * 1000);
+  return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+}
+
+function _feedDayLabel(ts) {
+  var d = new Date(ts * 1000);
+  var now = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  var diffDays = Math.round((today - that) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function _feedBubbleHtml(e) {
+  var sev = (e.severity === 'error' || e.severity === 'warning' || e.severity === 'success') ? e.severity : 'info';
+  var timeStr = (typeof e.timestamp === 'number')
+    ? new Date(e.timestamp * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    : '';
+  var costHtml = '';
+  if (e.metadata && e.metadata.cost_usd != null) {
+    costHtml = '<span class="feed-bubble-cost">$' + parseFloat(e.metadata.cost_usd || 0).toFixed(2) + '</span>';
+  }
+  var detailHtml = '';
+  if (e.detail) {
+    detailHtml = '<details class="feed-bubble-detail"><summary>Details</summary>' +
+      '<div class="feed-bubble-detail-body">' + escapeHtml(e.detail) + '</div></details>';
+  }
+  return '<div class="feed-msg">' +
+    '<span class="feed-avatar feed-avatar-owl feed-msg-avatar"><img src="/static/owl-avatar.png" alt="SOVA"></span>' +
+    '<div class="feed-msg-stack">' +
+      '<div class="feed-bubble feed-bubble-' + sev + '">' +
+        '<div class="feed-bubble-title">' + escapeHtml(e.title) + '</div>' +
+        detailHtml +
+        '<div class="feed-bubble-meta">' +
+          (timeStr ? '<span class="feed-bubble-time">' + escapeHtml(timeStr) + '</span>' : '') +
+          '<span class="feed-bubble-cat">' + escapeHtml(e.category || 'system') + '</span>' +
+          costHtml +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
 }
 
 function _renderFeedList() {
   var list = document.getElementById('feed-list');
   if (!list) return;
+
+  var atBottom = (list.scrollHeight - list.scrollTop - list.clientHeight) < 80;
+  var parts = [];
+
+  // Load-older control (only when more history exists)
+  if (_feedHasMoreHistory && _feedEvents.length > 0) {
+    parts.push('<button type="button" class="feed-load-older" onclick="loadOlderFeed()"' +
+      (_feedHistoryLoading ? ' disabled' : '') + '>' +
+      (_feedHistoryLoading ? 'Loading...' : 'Load earlier activity') + '</button>');
+  } else if (!_feedHasMoreHistory && _feedBriefingHtml) {
+    // At the very top of the timeline: show the morning briefing card.
+    parts.push(_feedBriefingHtml);
+  }
+
   if (_feedEvents.length === 0) {
-    list.innerHTML = '<p class="text-xs text-gray-500 text-center py-6">No activity yet</p>';
+    if (_feedBriefingHtml && parts.indexOf(_feedBriefingHtml) === -1) parts.push(_feedBriefingHtml);
+    list.innerHTML = parts.join('') +
+      '<p id="feed-empty" class="text-xs text-gray-500 text-center py-8">No activity yet</p>';
     return;
   }
-  list.innerHTML = _feedEvents.map(function(e) {
-    var borderColor = e.severity === 'error'   ? 'border-l-accent-red' :
-                      e.severity === 'warning' ? 'border-l-accent-yellow' :
-                      e.severity === 'success' ? 'border-l-accent-green' :
-                                                  'border-l-accent';
-    var timeStr = (typeof e.timestamp === 'number') ? new Date(e.timestamp * 1000).toLocaleTimeString() : 'Unknown time';
-    var categoryBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-hover text-gray-500">' + escapeHtml(e.category) + '</span>';
-    var detailHtml = '';
-    if (e.detail) {
-      detailHtml = '<details class="mt-1"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-400">Details</summary>' +
-        '<p class="text-xs text-gray-400 mt-1 whitespace-pre-wrap">' + escapeHtml(e.detail) + '</p></details>';
-    }
-    var metaHtml = '';
-    if (e.metadata && e.metadata.cost_usd != null) {
-      metaHtml = '<span class="text-xs text-accent-green ml-2">$' + parseFloat(e.metadata.cost_usd || 0).toFixed(2) + '</span>';
-    }
-    return '<div class="px-4 py-3 border-b border-gray-700/30 last:border-0 border-l-2 ' + borderColor + ' hover:bg-surface-hover/50 transition-colors">' +
-      '<div class="flex items-center justify-between gap-2">' +
-        '<p class="text-sm text-gray-200 flex-1 min-w-0">' + escapeHtml(e.title) + metaHtml + '</p>' +
-        categoryBadge +
-      '</div>' +
-      detailHtml +
-      '<p class="text-xs text-gray-500 mt-1">' + timeStr + '</p>' +
-    '</div>';
-  }).join('');
 
-  // Auto-scroll to bottom only if user is already near the bottom
-  var atBottom = (list.scrollHeight - list.scrollTop - list.clientHeight) < 60;
+  var lastDay = null;
+  for (var i = 0; i < _feedEvents.length; i++) {
+    var e = _feedEvents[i];
+    if (typeof e.timestamp === 'number') {
+      var dk = _feedDayKey(e.timestamp);
+      if (dk !== lastDay) {
+        lastDay = dk;
+        parts.push('<div class="feed-date-sep">' + escapeHtml(_feedDayLabel(e.timestamp)) + '</div>');
+      }
+    }
+    parts.push(_feedBubbleHtml(e));
+  }
+
+  list.innerHTML = parts.join('');
+
   if (atBottom) list.scrollTop = list.scrollHeight;
+}
+
+function feedScrollToBottom() {
+  var list = document.getElementById('feed-list');
+  if (list) list.scrollTop = list.scrollHeight;
+  var pill = document.getElementById('feed-jump-latest');
+  if (pill) pill.classList.add('hidden');
+}
+
+// -- history pagination (infinite scroll upward) --
+
+function loadOlderFeed() {
+  if (_feedHistoryLoading || !_feedHasMoreHistory) return;
+  _feedHistoryLoading = true;
+  _renderFeedList();
+  var cursor = _feedOldestId || 0;
+  var url = apiUrl('/feed/history?before_id=' + cursor + '&limit=' + _FEED_PAGE_SIZE);
+  var list = document.getElementById('feed-list');
+  var prevHeight = list ? list.scrollHeight : 0;
+  fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+    var events = data.events || [];
+    _feedHasMoreHistory = !!data.has_more;
+    // Prepend oldest-first, skipping dupes.
+    var prepend = [];
+    events.forEach(function(ev) {
+      if (!_feedSeenIds[ev.id]) {
+        _feedSeenIds[ev.id] = true;
+        prepend.push(ev);
+        if (_feedOldestId === 0 || ev.id < _feedOldestId) _feedOldestId = ev.id;
+        if (ev.id > _feedLastId) _feedLastId = ev.id;
+      }
+    });
+    _feedEvents = prepend.concat(_feedEvents);
+    _feedHistoryLoading = false;
+    _renderFeedList();
+    // Preserve scroll position after prepending older content.
+    if (list) {
+      var newHeight = list.scrollHeight;
+      list.scrollTop = newHeight - prevHeight;
+    }
+  }).catch(function() {
+    _feedHistoryLoading = false;
+    _renderFeedList();
+  });
+}
+
+// First-open history + briefing bootstrap.
+function _feedBootstrapHistory() {
+  if (_feedHistoryLoaded) return;
+  _feedHistoryLoaded = true;
+  var url = apiUrl('/feed/history?before_id=999999999&limit=' + _FEED_PAGE_SIZE);
+  fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+    var events = data.events || [];
+    _feedHasMoreHistory = !!data.has_more;
+    events.forEach(function(ev) {
+      if (!_feedSeenIds[ev.id]) {
+        _feedSeenIds[ev.id] = true;
+        _feedEvents.push(ev);
+        if (_feedOldestId === 0 || ev.id < _feedOldestId) _feedOldestId = ev.id;
+        if (ev.id > _feedLastId) _feedLastId = ev.id;
+      }
+    });
+    // Keep ascending order in case live events arrived before history.
+    _feedEvents.sort(function(a, b) { return a.id - b.id; });
+    _renderFeedList();
+    feedScrollToBottom();
+  }).catch(function() { _renderFeedList(); });
+
+  _feedLoadBriefing();
+}
+
+function _feedLoadBriefing() {
+  if (_feedBriefingLoaded) return;
+  _feedBriefingLoaded = true;
+  fetch(apiUrl('/feed/briefing')).then(function(r) { return r.json(); }).then(function(b) {
+    _feedBriefingHtml = _feedBuildBriefing(b);
+    if (_feedBriefingHtml) _renderFeedList();
+  }).catch(function() { /* ignore */ });
+}
+
+function _feedBuildBriefing(b) {
+  if (!b) return '';
+  var attention = b.attention_items || [];
+  var info = b.informational_items || [];
+  var schedule = b.schedule || [];
+  if (attention.length === 0 && info.length === 0 && schedule.length === 0) return '';
+
+  function itemRow(it, dotColor) {
+    var safeLink = escapeHtml(it.title);
+    if (it.source_url) {
+      try {
+        var proto = new URL(it.source_url).protocol;
+        if (proto === 'http:' || proto === 'https:') {
+          safeLink = '<a href="' + escapeHtml(it.source_url) + '" target="_blank" rel="noopener">' + escapeHtml(it.title) + '</a>';
+        }
+      } catch(e) { /* invalid URL, render as plain text */ }
+    }
+    return '<div class="feed-briefing-item"><span class="feed-briefing-dot" style="background:' + dotColor + '"></span><span>' + safeLink + '</span></div>';
+  }
+
+  var sections = '';
+  if (attention.length) {
+    sections += '<div class="feed-briefing-section-label">Needs attention</div>' +
+      attention.map(function(it) { return itemRow(it, 'var(--color-accent-red)'); }).join('');
+  }
+  if (info.length) {
+    sections += '<div class="feed-briefing-section-label">Updates</div>' +
+      info.map(function(it) { return itemRow(it, 'var(--color-accent)'); }).join('');
+  }
+  if (schedule.length) {
+    sections += '<div class="feed-briefing-section-label">Schedule</div>' +
+      schedule.map(function(it) { return itemRow(it, 'var(--color-accent-yellow)'); }).join('');
+  }
+
+  return '<div id="feed-briefing-card" class="feed-briefing">' +
+    '<div class="feed-briefing-head">' +
+      '<span class="feed-avatar feed-avatar-owl feed-avatar-sm"><img src="/static/owl-avatar.png" alt="SOVA"></span>' +
+      '<span class="feed-briefing-title">Morning briefing</span>' +
+    '</div>' + sections + '</div>';
 }
 
 function toggleFeedPanel() {
   var panel = document.getElementById('feed-panel');
   var main = document.getElementById('main-content');
-  var toggle = document.getElementById('feed-toggle');
+  var fab = document.getElementById('feed-fab');
   if (!panel) return;
 
   _feedPanelOpen = !_feedPanelOpen;
 
   if (_feedPanelOpen) {
     panel.classList.remove('hidden');
+    document.body.classList.add('feed-open');
     if (main) main.classList.add('feed-panel-push');
-    if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    if (fab) fab.setAttribute('aria-expanded', 'true');
     _feedUnread = 0;
     _updateFeedBadge();
+    _feedBootstrapHistory();
     _renderFeedList();
+    feedScrollToBottom();
+    _feedBindScroll();
   } else {
     panel.classList.add('hidden');
+    document.body.classList.remove('feed-open');
     if (main) main.classList.remove('feed-panel-push');
-    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    if (fab) fab.setAttribute('aria-expanded', 'false');
   }
 }
 
-function clearFeedBadge() {
-  _feedUnread = 0;
-  _updateFeedBadge();
+function _feedBindScroll() {
+  if (_feedScrollBound) return;
+  var list = document.getElementById('feed-list');
+  if (!list) return;
+  _feedScrollBound = true;
+  list.addEventListener('scroll', function() {
+    // Auto-load older when near the top.
+    if (list.scrollTop < 40 && _feedHasMoreHistory && !_feedHistoryLoading) {
+      loadOlderFeed();
+    }
+    // Toggle the jump-to-latest pill.
+    var pill = document.getElementById('feed-jump-latest');
+    if (pill) {
+      var farFromBottom = (list.scrollHeight - list.scrollTop - list.clientHeight) > 200;
+      pill.classList.toggle('hidden', !farFromBottom);
+    }
+  });
 }
 
 /* ============================================================

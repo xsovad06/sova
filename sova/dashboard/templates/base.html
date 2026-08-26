@@ -36,11 +36,6 @@
           {% endif %}
         </div>
       </a>
-      <!-- Activity feed toggle -->
-      <button type="button" id="feed-toggle" onclick="toggleFeedPanel()" class="notif-bell absolute top-4 right-3" aria-label="Activity Feed" aria-expanded="false" aria-controls="feed-panel" data-tooltip="Activity Feed">
-        {{ icon("bell", "w-5 h-5 text-gray-500 hover:text-gray-300 transition-colors") }}
-        <span id="feed-badge" class="hidden absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-accent-red text-xs text-white flex items-center justify-center font-bold leading-none">0</span>
-      </button>
       {% if project_slug is defined and project_slug %}
       <a href="/" class="sidebar-hide text-xs text-gray-500 hover:text-gray-300 transition-colors mt-1 inline-block">&larr; Switch project</a>
       {% endif %}
@@ -109,16 +104,45 @@
     </div>
   </nav>
 
-  <!-- Activity feed panel (outside sidebar to avoid overflow clipping) -->
-  <aside id="feed-panel" class="feed-panel hidden" role="region" aria-live="polite" aria-label="Activity Feed">
+  <!-- Activity feed panel: chat-style cockpit (outside sidebar to avoid overflow clipping) -->
+  <aside id="feed-panel" class="feed-panel feed-panel-chat hidden" role="region" aria-live="polite" aria-label="SOVA activity feed">
     <div class="feed-panel-header">
-      <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">Activity Feed</span>
-      <button type="button" onclick="clearFeedBadge()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" aria-label="Mark read">Mark read</button>
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="feed-avatar feed-avatar-owl feed-avatar-sm shrink-0">
+          <img src="/static/owl-avatar.png" alt="SOVA">
+        </span>
+        <div class="min-w-0">
+          <span class="text-sm font-semibold text-gray-200 block leading-tight">SOVA</span>
+          <span class="text-[11px] text-gray-500 leading-tight">Activity timeline</span>
+        </div>
+      </div>
+      <button type="button" onclick="toggleFeedPanel()" class="feed-close-btn" aria-label="Close feed">
+        {{ icon("close", "w-4 h-4") }}
+      </button>
     </div>
-    <div id="feed-list" class="feed-panel-body">
-      <p class="text-xs text-gray-500 text-center py-6">No activity yet</p>
+    <div id="feed-list" class="feed-panel-body feed-chat-body">
+      <p id="feed-empty" class="text-xs text-gray-500 text-center py-8">No activity yet</p>
+    </div>
+    <button type="button" id="feed-jump-latest" class="feed-jump-latest hidden" onclick="feedScrollToBottom()">
+      {{ icon("chat-bubble", "w-3.5 h-3.5") }}
+      <span>New messages</span>
+    </button>
+    <!-- Disabled conversational input (vision teaser) -->
+    <div class="feed-input-bar" data-tooltip="Conversational interaction coming soon" data-tooltip-pos="top">
+      {{ icon("lock", "w-3.5 h-3.5 text-gray-600 shrink-0") }}
+      <input type="text" class="feed-input" placeholder="Ask SOVA..." disabled aria-label="Ask SOVA (coming soon)">
+      <span class="feed-input-mic shrink-0">{{ icon("microphone", "w-4 h-4") }}</span>
     </div>
   </aside>
+
+  <!-- Floating owl trigger (bottom-right, replaces sidebar bell) -->
+  <button type="button" id="feed-fab" onclick="toggleFeedPanel()" class="feed-fab"
+          aria-label="Activity Feed" aria-expanded="false" aria-controls="feed-panel" data-tooltip="Activity Feed">
+    <span class="feed-fab-owl">
+      <img src="/static/owl-avatar.png" alt="SOVA">
+    </span>
+    <span id="feed-badge" class="hidden feed-fab-badge">0</span>
+  </button>
 
   <!-- Main content -->
   <main id="main-content" class="sidebar-main flex-1 p-8 min-h-screen">
