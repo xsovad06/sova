@@ -6,4 +6,4 @@ after confirmation.
 
 ## Files
 
-- **cookbook.md** -- Topical knowledge by domain. Primary reference for development sessions.
+- **cookbook.md**: Topical knowledge by domain. Primary reference for development sessions.
