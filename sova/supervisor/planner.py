@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 log = get_logger(component="supervisor.planner")
 
-_MODEL = "claude-sonnet-4-20250514"
+_MODEL = "sonnet"  # Auto-resolves to latest Sonnet (currently claude-sonnet-4-5)
 _MAX_TOKENS = 1024
 
 _VALID_ACTIONS = frozenset(
