@@ -140,8 +140,10 @@ async def _build_request(backend: str, prompt: str) -> tuple[str, dict[str, str]
         project_id = os.environ["ANTHROPIC_VERTEX_PROJECT_ID"]
         region = os.environ.get("CLOUD_ML_REGION", "us-east5")
         token = await _get_vertex_token()
+        # Global region uses base domain without region prefix
+        domain = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
         url = (
-            f"https://{region}-aiplatform.googleapis.com/v1/"
+            f"https://{domain}/v1/"
             f"projects/{project_id}/locations/{region}/"
             f"publishers/anthropic/models/{_VERTEX_MODEL}:rawPredict"
         )

@@ -51,11 +51,34 @@ class ClaudeCodeProvider(LLMProvider):
         log.info("llm.invoke", model=model, prompt_len=len(prompt))
 
         result = await run(*args, cwd=cwd, timeout=timeout)
+
+        # Try to parse output first - Claude CLI may exit 1 for fallback warnings
+        # but still produce valid JSON output. Only attempt this when stderr is empty
+        # (if stderr has content, it's a real error and we should raise).
+        if result.stdout.strip() and not result.success and not result.stderr.strip():
+            try:
+                data = json.loads(result.stdout)
+                if not data.get("is_error") and not data.get("terminal_reason"):
+                    parsed = _parse_result(data)
+                    log.warning(
+                        "llm.invoke.exit_code_nonzero_but_output_valid",
+                        exit_code=result.returncode,
+                    )
+                    return parsed
+            except (json.JSONDecodeError, RuntimeError, KeyError):
+                pass
+
+        # Handle normal success case
+        if result.success and result.stdout.strip():
+            return _parse_json_output(result.stdout)
+
+        # No valid output - raise error
         if not result.success:
             detail = _extract_failure_detail(result)
             raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {detail}")
 
-        return _parse_json_output(result.stdout)
+        # Success but empty output - shouldn't happen
+        raise RuntimeError("Claude CLI succeeded but produced no output")
 
     async def invoke_streaming(
         self,
