@@ -1195,3 +1195,15 @@ def test_validate_config_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.fix_timeout == 300
     assert cfg.max_fix_attempts == 5
     assert cfg.hook_timeout == 180
+
+
+def test_feed_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SOVA_FEED_* env vars override TOML feed settings."""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text("[feed]\nretention_days = 30\npage_size = 50\n")
+    monkeypatch.setenv("SOVA_FEED_RETENTION_DAYS", "7")
+    monkeypatch.setenv("SOVA_FEED_PAGE_SIZE", "25")
+
+    cfg = load_config(tmp_path)
+    assert cfg.feed.retention_days == 7
+    assert cfg.feed.page_size == 25
