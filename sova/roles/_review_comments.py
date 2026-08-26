@@ -12,6 +12,11 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from sova.adapters.base import Task
+from sova.roles._review_format import (
+    format_review_body,
+    severity_label,
+    verdict_from_severities,
+)
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section as _extract_section
 
@@ -305,10 +310,6 @@ def _chunk_diff(diff: str, chunk_size: int = DIFF_CHUNK_SIZE) -> list[str]:
     return chunks if chunks else [diff]
 
 
-_SEVERITY_CRITICAL = 7
-_SEVERITY_HIGH = 5
-_SEVERITY_MEDIUM = 3
-
 _VERDICT_TO_LABEL: dict[str, str] = {
     "APPROVE": "sova:approved",
     "REVISE": "sova:revise",
@@ -323,23 +324,12 @@ def _sova_verdict_label_name(findings: list[ReviewFinding]) -> str:
 
 def _severity_label(severity: int) -> str:
     """Map a numeric severity (1-10) to a categorical label."""
-    if severity >= _SEVERITY_CRITICAL:
-        return "CRITICAL"
-    if severity >= _SEVERITY_HIGH:
-        return "HIGH"
-    if severity >= _SEVERITY_MEDIUM:
-        return "MEDIUM"
-    return "LOW"
+    return severity_label(severity)
 
 
 def _verdict_label(findings: list[ReviewFinding]) -> str:
     """Determine the review verdict from findings."""
-    if not findings:
-        return "APPROVE"
-    max_sev = max(f.severity for f in findings)
-    if max_sev >= _SEVERITY_CRITICAL:
-        return "BLOCK"
-    return "REVISE"
+    return verdict_from_severities([f.severity for f in findings])
 
 
 def _make_protected_path_finding(matched_files: list[str]) -> ReviewFinding:
@@ -361,30 +351,18 @@ def _make_protected_path_finding(matched_files: list[str]) -> ReviewFinding:
 
 def _format_findings_body(findings: list[ReviewFinding], summary: str) -> str:
     """Build the shared review body used by both review API and comment fallback."""
-    verdict = _verdict_label(findings)
-    lines = [f"<!-- sova-review: {verdict.lower()} -->", "", f"## Review: {verdict}", ""]
-
-    if not findings:
-        if summary:
-            lines.extend([summary, ""])
-        lines.append("No issues found after thorough review.")
-        return "\n".join(lines)
-
-    if summary:
-        lines.extend([summary, ""])
-
-    lines.append(f"**{len(findings)} findings** (all to be addressed)")
-    lines.append("")
-
-    for f in sorted(findings, key=lambda x: x.severity, reverse=True):
-        label = _severity_label(f.severity)
-        loc = f"`{f.file}:{f.line}`" if f.line else f"`{f.file}`"
-        entry = f"- **[{label}]** [{f.category}] {loc}: {f.description}"
-        if f.suggestion:
-            entry += f" Fix: {f.suggestion}"
-        lines.append(entry)
-
-    return "\n".join(lines)
+    finding_dicts = [
+        {
+            "file": f.file,
+            "line": f.line,
+            "severity": f.severity,
+            "category": f.category,
+            "description": f.description,
+            "suggestion": f.suggestion,
+        }
+        for f in findings
+    ]
+    return format_review_body(finding_dicts, summary)
 
 
 def _format_findings_comment(findings: list[ReviewFinding], summary: str) -> str:

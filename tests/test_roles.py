@@ -4770,8 +4770,8 @@ class TestReviewerParsing:
         assert "all to be addressed" in comment
         assert "Null ref" in comment
         assert "## Review: BLOCK" in comment
-        assert "**[CRITICAL]**" in comment
-        assert "**[LOW]**" in comment
+        assert "**[CRITICAL 7/10]**" in comment
+        assert "**[LOW 1/10]**" in comment
 
     def test_format_findings_revise_verdict(self) -> None:
         """Findings with severity < 7 produce REVISE verdict."""
@@ -4782,7 +4782,7 @@ class TestReviewerParsing:
         ]
         comment = _format_findings_comment(findings, "Needs work")
         assert "## Review: REVISE" in comment
-        assert "**[HIGH]**" in comment
+        assert "**[HIGH 5/10]**" in comment
 
     def test_format_review_body_matches_comment(self) -> None:
         """review_body and findings_comment produce identical output."""
