@@ -174,6 +174,73 @@ machine_id = ""                            # Auto-derived from hostname+username
 
 For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py). Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA_BASE_BRANCH=develop`).
 
+## Claude Code Setup
+
+SOVA uses the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) as its default LLM provider. For production deployments with cost tracking and quota management, configure Claude Code to use Google Vertex AI:
+
+### 1. Install Vertex AI Dependencies
+
+```bash
+pip install --user -e ".[vertex]"
+```
+
+This installs `google-auth` and related packages needed for Google Cloud authentication.
+
+### 2. Authenticate with Google Cloud
+
+```bash
+gcloud auth application-default login
+```
+
+This sets up Application Default Credentials (ADC) that Claude Code and SOVA will use to authenticate with Vertex AI.
+
+### 3. Configure Claude Code for Vertex AI
+
+Run the Claude Code login wizard:
+
+```bash
+claude
+```
+
+Then run `/login` and select:
+- **Login method**: 3rd-party platform
+- **Provider**: Google Vertex AI
+- **Authentication method**: Application Default Credentials (gcloud auth)
+- **Project**: Your GCP project ID (e.g., `my-gcp-project-123`)
+- **Region**: `global` (recommended for latest models)
+- **Models**: Pin the working models (Sonnet, Opus, Haiku)
+
+### 4. Set Environment Variables
+
+Add to your shell configuration (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+export ANTHROPIC_VERTEX_PROJECT_ID="your-gcp-project-id"
+export CLOUD_ML_REGION="global"
+```
+
+After updating, reload your shell:
+
+```bash
+source ~/.zshrc  # or source ~/.bashrc
+```
+
+### 5. Verify Configuration
+
+Test that Claude Code can access Vertex AI:
+
+```bash
+claude -p "Say hello" --model sonnet
+```
+
+If configured correctly, you should see a response from Claude via Vertex AI.
+
+### Notes
+
+- The `global` region provides access to the latest Claude models and uses the base Vertex AI endpoint (`aiplatform.googleapis.com`).
+- Regional endpoints (e.g., `us-east5`) use region-prefixed domains (`{region}-aiplatform.googleapis.com`).
+- SOVA's LLM suggestion feature and batch processing both use these same credentials when `ANTHROPIC_VERTEX_PROJECT_ID` is set.
+
 ## Notifications
 
 SOVA supports multiple notification backends for agent handoffs and system events:
