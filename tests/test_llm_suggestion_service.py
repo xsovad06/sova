@@ -458,6 +458,16 @@ class TestVertexAiBackend:
         url = mock_client.post.call_args[0][0]
         assert "us-east5-aiplatform.googleapis.com" in url
 
+    async def test_vertex_global_region_url(self) -> None:
+        mock_resp = _make_httpx_response("integrate")
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        with _mock_vertex_api(mock_client, region="global"):
+            await get_llm_suggestion(**_kwargs())
+        url = mock_client.post.call_args[0][0]
+        assert url.startswith("https://aiplatform.googleapis.com/v1/")
+        assert "global-aiplatform" not in url
+
 
 class TestGetVertexToken:
     async def test_returns_token_from_cached_credentials(self) -> None:
