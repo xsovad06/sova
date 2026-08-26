@@ -513,15 +513,14 @@ class WorkflowEngine:
             return "billing_exhausted"
         return "failed"
 
-    _GATE_TIMEOUT_CAP = 60
-
     async def _validate_step_gate(self, step: BaseStep, step_exec_id: int, record: StepRecord) -> str:
-        """Run gate check on successful step. Returns "done" or "failed".
+        """Run structural gate check, then heavyweight verification if it passes.
 
-        Wraps validate_output in timeout and exception handling to prevent
-        gate checks from hanging or crashing the pipeline.
+        Wraps validate_output in a configurable timeout (gate_timeout) and
+        verify_output in a separate timeout (verify_timeout or step timeout).
         """
-        timeout_seconds = min(self._step_timeout(step.name), self._GATE_TIMEOUT_CAP)
+        gate_cap = self._ctx.config.validation.gate_timeout
+        timeout_seconds = min(self._step_timeout(step.name), gate_cap)
         try:
             async with asyncio.timeout(timeout_seconds):
                 gate = await step.validate_output(self._ctx)
@@ -541,6 +540,41 @@ class WorkflowEngine:
             await self._update_step_execution_gate(step_exec_id, gate)
             return "failed"
 
+        return await self._verify_step_output(step, step_exec_id, record)
+
+    async def _verify_step_output(self, step: BaseStep, step_exec_id: int, record: StepRecord) -> str:
+        """Run heavyweight verification after the structural gate passes.
+
+        Uses verify_timeout (0 means full step timeout) clamped to the step
+        timeout. Failure is persisted through the same gate path.
+        """
+        step_timeout = self._step_timeout(step.name)
+        verify_timeout = self._ctx.config.validation.verify_timeout
+        if verify_timeout > 0:
+            timeout_seconds = min(step_timeout, verify_timeout)
+        else:
+            timeout_seconds = step_timeout
+
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                gate = await step.verify_output(self._ctx)
+        except TimeoutError:
+            log.warning("workflow.verify.timeout", step=step.name, timeout_seconds=timeout_seconds)
+            gate = GateCheckResult(passed=False, reason=f"Verification timed out after {timeout_seconds}s")
+        except Exception as exc:
+            log.warning("workflow.verify.exception", step=step.name, error=str(exc), exc_info=True)
+            gate = GateCheckResult(
+                passed=False, reason=f"Verification failed with exception: {type(exc).__name__}: {exc}"
+            )
+
+        if not gate.passed:
+            record.gate = gate
+            log.warning("workflow.verify.failed", step=step.name, reason=gate.reason)
+            await self._update_step_execution_gate(step_exec_id, gate)
+            return "failed"
+
+        # Record that verification ran and passed (audit trail).
+        record.gate = gate
         return "done"
 
     def _has_fallback_models(self) -> bool:

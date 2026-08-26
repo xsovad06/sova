@@ -178,6 +178,8 @@ class ValidateConfig(BaseSettings):
     fix_timeout: int = Field(180, gt=0)
     max_fix_attempts: int = Field(2, ge=0)
     hook_timeout: int = Field(120, gt=0)
+    gate_timeout: int = Field(60, gt=0)
+    verify_timeout: int = Field(0, ge=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_VALIDATE_")
 
