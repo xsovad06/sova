@@ -274,6 +274,46 @@ class TestInvoke:
             await invoke("Hello")
         assert "is_error=true" in str(exc_info.value)
 
+    async def test_invoke_cli_exit_1_with_valid_output(self, mock_run: AsyncMock) -> None:
+        """Exit code 1 with valid JSON and empty stderr should return result."""
+        from sova.llm.client import invoke
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=1,
+            stdout=_make_cli_json(),
+            stderr="",
+        )
+        result = await invoke("Hello")
+        assert result.text == "Hello"
+        assert not result.is_error
+
+    async def test_invoke_cli_exit_1_with_invalid_json_falls_through(self, mock_run: AsyncMock) -> None:
+        """Exit code 1 with unparseable stdout and empty stderr falls through to error."""
+        from sova.llm.client import invoke
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=1,
+            stdout="not valid json {{{",
+            stderr="",
+        )
+        with pytest.raises(RuntimeError, match="Claude CLI failed"):
+            await invoke("Hello")
+
+    async def test_invoke_success_empty_output_raises(self, mock_run: AsyncMock) -> None:
+        """Successful exit with empty stdout raises RuntimeError."""
+        from sova.llm.client import invoke
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with pytest.raises(RuntimeError, match="produced no output"):
+            await invoke("Hello")
+
     async def test_invoke_cli_failure_prefers_stderr(self, mock_run: AsyncMock) -> None:
         """When stderr has content, it should be used over stdout."""
         from sova.llm.client import invoke
