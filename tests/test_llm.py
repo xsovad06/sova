@@ -2284,3 +2284,620 @@ class TestComplexityScorer:
 
     def test_none_file_count_accepted(self) -> None:
         assess_complexity("title", "desc", file_count_estimate=None)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic rate card (compute_anthropic_cost)
+# ---------------------------------------------------------------------------
+
+
+class TestAnthropicRateCard:
+    def test_known_model_cost(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("claude-sonnet-5", input_tokens=1000, output_tokens=500)
+        expected = Decimal("2") * 1000 / Decimal("1000000") + Decimal("10") * 500 / Decimal("1000000")
+        assert cost == expected.quantize(Decimal("0.000001"))
+
+    def test_unknown_model_returns_zero(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("gpt-4o", input_tokens=1000, output_tokens=500)
+        assert cost == Decimal("0")
+
+    def test_prefix_matching(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("claude-sonnet-5-20260101", input_tokens=1000, output_tokens=500)
+        assert cost > Decimal("0")
+
+    def test_cache_tokens(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost_no_cache = compute_anthropic_cost("claude-sonnet-5", input_tokens=1000, output_tokens=100)
+        cost_with_cache = compute_anthropic_cost(
+            "claude-sonnet-5",
+            input_tokens=1000,
+            output_tokens=100,
+            cache_read_tokens=500,
+            cache_creation_tokens=0,
+        )
+        assert cost_with_cache < cost_no_cache
+
+    def test_cache_creation_tokens_increase_cost(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost_no_cache = compute_anthropic_cost("claude-sonnet-5", input_tokens=1000, output_tokens=100)
+        cost_with_creation = compute_anthropic_cost(
+            "claude-sonnet-5",
+            input_tokens=1000,
+            output_tokens=100,
+            cache_creation_tokens=500,
+        )
+        assert cost_with_creation > cost_no_cache
+
+    def test_zero_tokens(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("claude-sonnet-5", input_tokens=0, output_tokens=0)
+        assert cost == Decimal("0")
+
+    def test_opus_rates(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("claude-opus-5", input_tokens=1_000_000, output_tokens=0)
+        assert cost == Decimal("5.000000")
+
+    def test_haiku_rates(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("claude-haiku-4-5-20251001", input_tokens=1_000_000, output_tokens=1_000_000)
+        expected = Decimal("1") + Decimal("5")
+        assert cost == expected.quantize(Decimal("0.000001"))
+
+    def test_fable_rates(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("claude-fable-5", input_tokens=1_000_000, output_tokens=0)
+        assert cost == Decimal("10.000000")
+
+    def test_batch_result_succeeded_with_error(self) -> None:
+        from sova.llm.models import BatchRequest, BatchResult
+
+        req = BatchRequest(custom_id="test", prompt="hello")
+        result = BatchResult(request=req, error="something went wrong")
+        assert result.succeeded is False
+
+
+# ---------------------------------------------------------------------------
+# AnthropicAPIProvider
+# ---------------------------------------------------------------------------
+
+
+class _MockAnthropicUsage:
+    def __init__(
+        self,
+        input_tokens: int = 100,
+        output_tokens: int = 50,
+        cache_read_input_tokens: int = 0,
+        cache_creation_input_tokens: int = 0,
+    ) -> None:
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cache_read_input_tokens = cache_read_input_tokens
+        self.cache_creation_input_tokens = cache_creation_input_tokens
+
+
+class _MockTextBlock:
+    def __init__(self, text: str = "Hello") -> None:
+        self.type = "text"
+        self.text = text
+
+
+class _MockAnthropicResponse:
+    def __init__(
+        self,
+        text: str = "Hello from Anthropic",
+        model: str = "claude-sonnet-5",
+        input_tokens: int = 100,
+        output_tokens: int = 50,
+    ) -> None:
+        self.content = [_MockTextBlock(text)]
+        self.model = model
+        self.usage = _MockAnthropicUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+        self.stop_reason = "end_turn"
+
+
+class TestAnthropicAPIProvider:
+    @pytest.fixture
+    def mock_anthropic(self):
+        """Mock anthropic at module level so the import check passes."""
+        import importlib
+        import sys
+
+        mock_module = MagicMock()
+        mock_module.__version__ = "0.39.0"
+        mock_client = AsyncMock()
+        mock_module.AsyncAnthropic.return_value = mock_client
+
+        old = sys.modules.get("anthropic")
+        sys.modules["anthropic"] = mock_module
+
+        import sova.llm.providers.anthropic_api as api_mod
+
+        api_mod.anthropic = mock_module
+        api_mod._HAS_ANTHROPIC = True
+
+        yield mock_module
+
+        if old is not None:
+            sys.modules["anthropic"] = old
+        else:
+            sys.modules.pop("anthropic", None)
+        importlib.reload(api_mod)
+
+    async def test_invoke_basic(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(
+            return_value=_MockAnthropicResponse(text="API response", model="claude-sonnet-5"),
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            result = await provider.invoke("Hello")
+
+        assert result.text == "API response"
+        assert result.model == "claude-sonnet-5"
+        assert result.input_tokens == 100
+        assert result.output_tokens == 50
+        assert result.cost_usd > Decimal("0")
+        assert result.stop_reason == "end_turn"
+        assert result.duration_ms >= 0
+
+        client.messages.create.assert_called_once()
+        call_kwargs = client.messages.create.call_args[1]
+        assert call_kwargs["model"] == "claude-sonnet-5"
+        assert call_kwargs["messages"] == [{"role": "user", "content": "Hello"}]
+
+    async def test_invoke_with_system_prompt(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(return_value=_MockAnthropicResponse())
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            await provider.invoke("Hello", system_prompt="Be helpful")
+
+        call_kwargs = client.messages.create.call_args[1]
+        assert call_kwargs["system"] == "Be helpful"
+
+    async def test_invoke_with_model_override(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(
+            return_value=_MockAnthropicResponse(model="claude-opus-5"),
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            await provider.invoke("Hello", model="claude-opus-5")
+
+        call_kwargs = client.messages.create.call_args[1]
+        assert call_kwargs["model"] == "claude-opus-5"
+
+    async def test_invoke_resolves_aliases(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(return_value=_MockAnthropicResponse())
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            await provider.invoke("Hello", model="sonnet")
+
+        call_kwargs = client.messages.create.call_args[1]
+        assert call_kwargs["model"] == "claude-sonnet-5"
+
+    async def test_invoke_missing_api_key(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            provider = AnthropicAPIProvider()
+            with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY.*not set"):
+                await provider.invoke("Hello")
+
+    async def test_invoke_api_error_sanitized(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(
+            side_effect=Exception("auth failed for key sk-secret-123"),
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-secret-123"}):
+            provider = AnthropicAPIProvider()
+            with pytest.raises(RuntimeError, match="Anthropic API error") as exc_info:
+                await provider.invoke("Hello")
+            assert "sk-secret-123" not in str(exc_info.value)
+
+    async def test_check_available_no_sdk(self) -> None:
+        import sova.llm.providers.anthropic_api as api_mod
+
+        original = api_mod._HAS_ANTHROPIC
+        api_mod._HAS_ANTHROPIC = False
+        try:
+            from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+            with pytest.raises(ImportError, match="anthropic is not installed"):
+                AnthropicAPIProvider()
+        finally:
+            api_mod._HAS_ANTHROPIC = original
+
+    async def test_check_available_no_key(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            provider = AnthropicAPIProvider()
+            ok, msg = await provider.check_available()
+            assert ok is False
+            assert "ANTHROPIC_API_KEY" in msg
+
+    async def test_check_available_success(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.models.list = AsyncMock(return_value=[])
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            ok, msg = await provider.check_available()
+            assert ok is True
+            assert "anthropic SDK" in msg
+
+    async def test_check_available_auth_error(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        mock_anthropic.AsyncAnthropic.return_value.models.list = AsyncMock(
+            side_effect=Exception("invalid api key"),
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            ok, msg = await provider.check_available()
+            assert ok is False
+            assert "unavailable" in msg.lower()
+
+    async def test_check_available_no_models_attr(self, mock_anthropic: MagicMock) -> None:
+        """Older SDK without models resource still reports available."""
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        del client.models
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            ok, msg = await provider.check_available()
+            assert ok is True
+            assert "anthropic SDK" in msg
+
+    def test_normalize_model_name(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+        assert provider.normalize_model_name("sonnet") == "claude-sonnet-5"
+        assert provider.normalize_model_name("opus") == "claude-opus-5"
+        assert provider.normalize_model_name("haiku") == "claude-haiku-4-5-20251001"
+        assert provider.normalize_model_name("fast") == "claude-sonnet-5"
+        assert provider.normalize_model_name("smart") == "claude-opus-5"
+        assert provider.normalize_model_name("cheap") == "claude-haiku-4-5-20251001"
+        assert provider.normalize_model_name("claude-opus-5") == "claude-opus-5"
+
+    async def test_invoke_with_max_tokens(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(return_value=_MockAnthropicResponse())
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            await provider.invoke("Hello", max_tokens=8192)
+
+        call_kwargs = client.messages.create.call_args[1]
+        assert call_kwargs["max_tokens"] == 8192
+
+    async def test_invoke_with_timeout(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(return_value=_MockAnthropicResponse())
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            await provider.invoke("Hello", timeout=30.0)
+
+        call_kwargs = client.messages.create.call_args[1]
+        assert call_kwargs["timeout"] == 30.0
+
+    async def test_invoke_streaming_basic(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        msg_usage = MagicMock(input_tokens=100, cache_read_input_tokens=0, cache_creation_input_tokens=0)
+        message_start_event = MagicMock(type="message_start")
+        message_start_event.message = MagicMock(model="claude-sonnet-5", usage=msg_usage)
+
+        delta1 = MagicMock(type="content_block_delta")
+        delta1.delta = MagicMock(text="Hello ")
+
+        delta2 = MagicMock(type="content_block_delta")
+        delta2.delta = MagicMock(text="world")
+
+        delta_usage = MagicMock(output_tokens=50)
+        message_delta = MagicMock(type="message_delta")
+        message_delta.delta = MagicMock(stop_reason="end_turn")
+        message_delta.usage = delta_usage
+
+        async def mock_events():
+            for e in [message_start_event, delta1, delta2, message_delta]:
+                yield e
+
+        stream_ctx = AsyncMock()
+        stream_ctx.__aenter__ = AsyncMock(return_value=stream_ctx)
+        stream_ctx.__aexit__ = AsyncMock(return_value=False)
+        stream_ctx.__aiter__ = lambda self: mock_events()
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.stream = MagicMock(return_value=stream_ctx)
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            events = []
+            async for event in provider.invoke_streaming("Hello"):
+                events.append(event)
+
+        content_events = [e for e in events if e.type == "content"]
+        result_events = [e for e in events if e.type == "result"]
+        assert len(content_events) == 2
+        assert content_events[0].text == "Hello "
+        assert content_events[1].text == "world"
+        assert len(result_events) == 1
+        assert result_events[0].result is not None
+        assert result_events[0].result.text == "Hello world"
+        assert result_events[0].result.input_tokens == 100
+        assert result_events[0].result.output_tokens == 50
+        assert result_events[0].result.stop_reason == "end_turn"
+
+    async def test_invoke_streaming_error(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        async def mock_events():
+            yield MagicMock(type="content_block_delta", delta=MagicMock(text="partial"))
+            raise Exception("stream broke")
+
+        stream_ctx = AsyncMock()
+        stream_ctx.__aenter__ = AsyncMock(return_value=stream_ctx)
+        stream_ctx.__aexit__ = AsyncMock(return_value=False)
+        stream_ctx.__aiter__ = lambda self: mock_events()
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.stream = MagicMock(return_value=stream_ctx)
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            with pytest.raises(RuntimeError, match="Anthropic streaming error"):
+                events = []
+                async for event in provider.invoke_streaming("Hello"):
+                    events.append(event)
+
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].result.stop_reason == "error"
+        assert result_events[0].result.text == "partial"
+
+    async def test_check_available_sdk_false_on_instance(self, mock_anthropic: MagicMock) -> None:
+        """check_available returns False when _HAS_ANTHROPIC is set to False after construction."""
+        import sova.llm.providers.anthropic_api as api_mod
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            api_mod._HAS_ANTHROPIC = False
+            try:
+                ok, msg = await provider.check_available()
+                assert ok is False
+                assert "not installed" in msg
+            finally:
+                api_mod._HAS_ANTHROPIC = True
+
+    async def test_invoke_streaming_no_usage(self, mock_anthropic: MagicMock) -> None:
+        """Stream events without usage info still produce a valid result."""
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        delta = MagicMock(type="content_block_delta")
+        delta.delta = MagicMock(text="hello")
+
+        unknown_event = MagicMock(type="unknown_event")
+
+        async def mock_events():
+            for e in [delta, unknown_event]:
+                yield e
+
+        stream_ctx = AsyncMock()
+        stream_ctx.__aenter__ = AsyncMock(return_value=stream_ctx)
+        stream_ctx.__aexit__ = AsyncMock(return_value=False)
+        stream_ctx.__aiter__ = lambda self: mock_events()
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.stream = MagicMock(return_value=stream_ctx)
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            events = []
+            async for event in provider.invoke_streaming("test"):
+                events.append(event)
+
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].result.text == "hello"
+        assert result_events[0].result.input_tokens == 0
+        assert result_events[0].result.output_tokens == 0
+
+    async def test_invoke_streaming_with_system_prompt(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        async def mock_events():
+            delta = MagicMock(type="content_block_delta")
+            delta.delta = MagicMock(text="ok")
+            yield delta
+
+        stream_ctx = AsyncMock()
+        stream_ctx.__aenter__ = AsyncMock(return_value=stream_ctx)
+        stream_ctx.__aexit__ = AsyncMock(return_value=False)
+        stream_ctx.__aiter__ = lambda self: mock_events()
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.stream = MagicMock(return_value=stream_ctx)
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            events = []
+            async for event in provider.invoke_streaming("Hello", system_prompt="Be helpful"):
+                events.append(event)
+
+        call_kwargs = client.messages.stream.call_args[1]
+        assert call_kwargs["system"] == "Be helpful"
+
+    async def test_invoke_streaming_with_max_tokens(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        async def mock_events():
+            delta = MagicMock(type="content_block_delta")
+            delta.delta = MagicMock(text="ok")
+            yield delta
+
+        stream_ctx = AsyncMock()
+        stream_ctx.__aenter__ = AsyncMock(return_value=stream_ctx)
+        stream_ctx.__aexit__ = AsyncMock(return_value=False)
+        stream_ctx.__aiter__ = lambda self: mock_events()
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.stream = MagicMock(return_value=stream_ctx)
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            events = []
+            async for event in provider.invoke_streaming("Hello", max_tokens=8192):
+                events.append(event)
+
+        call_kwargs = client.messages.stream.call_args[1]
+        assert call_kwargs["max_tokens"] == 8192
+
+    async def test_invoke_streaming_with_timeout(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        async def mock_events():
+            delta = MagicMock(type="content_block_delta")
+            delta.delta = MagicMock(text="ok")
+            yield delta
+
+        stream_ctx = AsyncMock()
+        stream_ctx.__aenter__ = AsyncMock(return_value=stream_ctx)
+        stream_ctx.__aexit__ = AsyncMock(return_value=False)
+        stream_ctx.__aiter__ = lambda self: mock_events()
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.stream = MagicMock(return_value=stream_ctx)
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            events = []
+            async for event in provider.invoke_streaming("Hello", timeout=30.0):
+                events.append(event)
+
+        call_kwargs = client.messages.stream.call_args[1]
+        assert call_kwargs["timeout"] == 30.0
+
+    async def test_invoke_streaming_error_sanitized(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.stream = MagicMock(
+            side_effect=Exception("auth failed for key sk-secret-456"),
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-secret-456"}):
+            provider = AnthropicAPIProvider()
+            with pytest.raises(RuntimeError, match="Anthropic streaming error") as exc_info:
+                async for _ in provider.invoke_streaming("Hello"):
+                    pass
+            assert "sk-secret-456" not in str(exc_info.value)
+
+    async def test_invoke_non_text_content_blocks(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        class _MockToolUseBlock:
+            type = "tool_use"
+            id = "call_123"
+            name = "my_tool"
+            input = {}
+
+        response = _MockAnthropicResponse(text="Hello")
+        response.content = [_MockToolUseBlock()]
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(return_value=response)
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            result = await provider.invoke("Hello")
+
+        assert result.text == ""
+        assert result.input_tokens == 100
+        assert result.output_tokens == 50
+        assert result.cost_usd > Decimal("0")
+
+
+class TestCreateProviderAnthropic:
+    def test_create_provider_anthropic(self) -> None:
+        from sova.llm.provider import create_provider
+
+        with (
+            patch.dict("sys.modules", {"anthropic": MagicMock(__version__="0.39.0")}),
+            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}),
+        ):
+            import sova.llm.providers.anthropic_api as api_mod
+
+            api_mod._HAS_ANTHROPIC = True
+            api_mod.anthropic = MagicMock()
+
+            from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+            provider = create_provider("anthropic")
+            assert isinstance(provider, AnthropicAPIProvider)
+
+    def test_create_provider_anthropic_in_available_list(self) -> None:
+        from sova.llm.provider import create_provider
+
+        with pytest.raises(ValueError, match="anthropic") as exc_info:
+            create_provider("nonexistent")
+        assert "anthropic" in str(exc_info.value)
+
+
+class TestLLMConfigAnthropic:
+    def test_anthropic_provider_accepted(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig(provider="anthropic")
+        assert cfg.provider == "anthropic"
+
+    def test_default_still_claude_code(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig()
+        assert cfg.provider == "claude-code"

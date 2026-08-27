@@ -78,7 +78,7 @@ class TaskSourceConfig(BaseSettings):
 class LLMConfig(BaseSettings):
     """LLM provider configuration."""
 
-    provider: Literal["claude-code", "litellm", "hybrid"] = "claude-code"
+    provider: Literal["claude-code", "litellm", "hybrid", "anthropic"] = "claude-code"
     model: str = ""
     fallback_model: str = ""
     api_base: str = ""

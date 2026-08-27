@@ -118,13 +118,13 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "llm.provider",
         "Provider",
-        "LLM provider backend (claude-code, litellm, or hybrid for automatic local/cloud routing)",
+        "LLM provider backend (claude-code, litellm, hybrid, or anthropic for direct API access)",
         "llm",
     ),
     SettingMeta(
         "llm.model",
         "Model",
-        "Default model for LiteLLM provider (e.g. claude-sonnet-4-6, gpt-4o, ollama/qwen3-coder)",
+        "Default model for LiteLLM and Anthropic providers (e.g. claude-sonnet-5, gpt-4o, ollama/qwen3-coder)",
         "llm",
     ),
     SettingMeta(
