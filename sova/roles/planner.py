@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field, ValidationError
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
-from sova.core.steps.generate_tasks import extract_json
 from sova.ipc.handoff import (
     AgentHandoff,
     DashboardHandoff,
@@ -23,6 +22,7 @@ from sova.ipc.handoff import (
     write_handoff_file,
 )
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
+from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
 
 log = get_logger(component="role.planner")
