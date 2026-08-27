@@ -46,6 +46,7 @@ Issues = "https://github.com/xsovad06/sova/issues"
 Documentation = "https://github.com/xsovad06/sova/blob/main/README.md"
 
 [project.optional-dependencies]
+anthropic = ["anthropic>=0.39"]
 litellm = ["litellm>=1.40"]
 vertex = ["google-auth>=2.0", "requests>=2.20"]
 batch = ["google-auth>=2.0", "requests>=2.20"]
