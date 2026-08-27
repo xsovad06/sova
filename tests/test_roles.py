@@ -5347,7 +5347,7 @@ class TestPlannerRole:
         assert not result.success
         assert "LLM" in result.error
 
-    async def test_execute_parse_failure(self) -> None:
+    async def test_execute_prose_response_returns_empty(self) -> None:
         from unittest.mock import patch
 
         from sova.llm.models import LLMResult
@@ -5362,8 +5362,8 @@ class TestPlannerRole:
             role = PlannerRole()
             result = await role.execute(ctx)
 
-        assert not result.success
-        assert "parse" in result.summary.lower()
+        assert result.success
+        assert "no tasks" in result.summary.lower()
 
     def test_dispatcher_get_role_planner(self) -> None:
         from sova.roles.dispatcher import get_role

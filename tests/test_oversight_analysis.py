@@ -136,7 +136,7 @@ class TestParseFindings:
         assert result[0]["title"] == "Fenced"
 
     def test_invalid_json_raises(self) -> None:
-        with pytest.raises(json.JSONDecodeError):
+        with pytest.raises(ValueError, match="No JSON found"):
             _parse_findings("not json at all")
 
     def test_non_array_raises(self) -> None:

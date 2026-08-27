@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from sova.dashboard.services.pr_service import list_open_prs_with_state
 from sova.llm.client import invoke
+from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -405,7 +406,11 @@ class SupervisorPlanner:
                 timeout=self._config.supervisor.planner_timeout_seconds,
                 cwd=self._project_dir,
             )
-            return json.loads(result.text)
+            json_str = extract_json(result.text)
+            if not json_str:
+                log.warning("planner.no_json_found", response_preview=result.text[:200])
+                return None
+            return json.loads(json_str)
         except json.JSONDecodeError as exc:
             log.warning("planner.parse_error", raw_response=str(exc)[:200])
             return None

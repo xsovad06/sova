@@ -24,8 +24,8 @@ from sqlalchemy import select
 
 from sova.db.models import OversightFinding
 from sova.llm.provider import LLMProvider
+from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
-from sova.utils.markdown import strip_code_fences
 
 log = get_logger(component="oversight.analysis")
 
@@ -140,10 +140,12 @@ def _build_prompt(persona: str, snapshot_text: str) -> str:
 def _parse_findings(raw_text: str) -> list[dict]:
     """Parse the LLM response into a list of finding dicts.
 
-    Handles JSON wrapped in markdown code fences.
+    Handles JSON wrapped in markdown code fences, prose, and trailing text.
     """
-    text = strip_code_fences(raw_text)
-    parsed = json.loads(text)
+    json_str = extract_json(raw_text)
+    if not json_str:
+        raise ValueError("No JSON found in LLM response")
+    parsed = json.loads(json_str)
     if not isinstance(parsed, list):
         raise TypeError(f"Expected JSON array, got {type(parsed).__name__}")
     return parsed
@@ -269,7 +271,7 @@ async def analyze_snapshot(
 
         try:
             parsed = _parse_findings(raw_text)
-        except (json.JSONDecodeError, TypeError) as exc:
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
             log.error("oversight.analysis.parse_failed", run_id=run_id, error=str(exc))
             return ([], "partial: parse failed")
 

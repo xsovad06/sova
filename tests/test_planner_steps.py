@@ -257,8 +257,8 @@ class TestGenerateTasksStep:
         assert len(ctx.plan_result.proposed_tasks) == 1
 
     @pytest.mark.asyncio
-    async def test_generate_fails_on_invalid_json(self) -> None:
-        """GenerateTasksStep returns failure when LLM returns non-JSON."""
+    async def test_generate_returns_empty_on_prose_response(self) -> None:
+        """GenerateTasksStep returns success with 0 tasks when LLM returns prose."""
         llm_result = MagicMock(text="I cannot generate tasks.", cost_usd=Decimal("0.01"), total_tokens=50)
         ctx = _make_ctx()
         ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test"))
@@ -267,8 +267,8 @@ class TestGenerateTasksStep:
         with patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=llm_result):
             result = await step.execute(ctx)
 
-        assert not result.success
-        assert "parse" in result.summary.lower()
+        assert result.success
+        assert len(ctx.plan_result.proposed_tasks) == 0
 
     @pytest.mark.asyncio
     async def test_generate_fails_without_scan(self) -> None:
@@ -413,8 +413,8 @@ class TestParseTasks:
     def test_not_a_list(self) -> None:
         assert _parse_tasks('{"key": "value"}') is None
 
-    def test_invalid_json(self) -> None:
-        assert _parse_tasks("not json at all") is None
+    def test_prose_only_returns_empty(self) -> None:
+        assert _parse_tasks("not json at all") == []
 
     def test_empty_array(self) -> None:
         result = _parse_tasks("[]")

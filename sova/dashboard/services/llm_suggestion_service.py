@@ -24,6 +24,7 @@ import httpx
 from cachetools import TTLCache
 
 from sova.config.loader import load_config
+from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.llm_suggestion")
@@ -234,9 +235,11 @@ async def get_llm_suggestion(
             resp.raise_for_status()
             resp_body = resp.json()
         text = resp_body["content"][0]["text"].strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        parsed = json.loads(text)
+        json_str = extract_json(text)
+        if not json_str:
+            log.warning("llm_suggestion.no_json_found", pr=pr_number, response_preview=text[:200])
+            return None
+        parsed = json.loads(json_str)
     except Exception:
         log.warning("llm_suggestion.call_failed", pr=pr_number, exc_info=True)
         return None
