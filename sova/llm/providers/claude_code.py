@@ -87,6 +87,9 @@ class ClaudeCodeProvider(LLMProvider):
         model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         proc = await _start_streaming_process(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd)
 

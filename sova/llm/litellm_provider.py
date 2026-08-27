@@ -126,6 +126,9 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         target_model = model or self.model
         start = time.monotonic()

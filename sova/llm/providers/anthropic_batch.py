@@ -80,6 +80,9 @@ class BatchProvider(LLMProvider):
         model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         raise NotImplementedError("BatchProvider is batch-only; use invoke_batch()")
 
