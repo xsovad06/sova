@@ -80,7 +80,7 @@ class TestSupervisorDaemon:
             await asyncio.sleep(0.05)
             return {}
 
-        with patch.object(daemon, "_poll_once", side_effect=slow_poll):
+        with patch.object(daemon, "_poll_once", new_callable=AsyncMock, side_effect=slow_poll):
             t1 = asyncio.create_task(daemon.poll_once())
             t2 = asyncio.create_task(daemon.poll_once())
             await asyncio.gather(t1, t2)
