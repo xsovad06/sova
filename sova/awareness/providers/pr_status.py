@@ -296,7 +296,12 @@ def _classify_pr(
         return None
 
     classification = _determine_pr_classification(
-        is_own, number in review_requested_numbers, ci_status, review_decision, number, author,
+        is_own,
+        number in review_requested_numbers,
+        ci_status,
+        review_decision,
+        number,
+        author,
     )
     if classification is None:
         return None
