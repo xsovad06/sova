@@ -102,6 +102,9 @@ class LLMProvider(ABC):
         model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Run a prompt with streaming output, yielding events."""
         ...
@@ -191,8 +194,8 @@ def create_provider(
     """Create an LLM provider instance by type name.
 
     Args:
-        provider_type: Provider identifier (e.g., "claude-code", "litellm").
-        model: Model name to use (LiteLLM only; ignored for claude-code).
+        provider_type: Provider identifier (e.g., "claude-code", "litellm", "anthropic").
+        model: Model name (used by LiteLLM and Anthropic providers; ignored for claude-code).
         fallback_model: Fallback model on primary failure (LiteLLM only).
         api_base: Custom API base URL (LiteLLM only).
 
@@ -201,7 +204,7 @@ def create_provider(
 
     Raises:
         ValueError: If the provider type is unknown.
-        ImportError: If litellm is not installed.
+        ImportError: If litellm or anthropic SDK is not installed.
     """
     if provider_type == "claude-code":
         from sova.llm.providers.claude_code import ClaudeCodeProvider
@@ -217,7 +220,12 @@ def create_provider(
             api_base=api_base or None,
         )
 
-    available = ["claude-code", "litellm", "hybrid"]
+    if provider_type == "anthropic":
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        return AnthropicAPIProvider(model=model or "")
+
+    available = ["claude-code", "litellm", "hybrid", "anthropic"]
     raise ValueError(f"Unknown LLM provider: {provider_type!r}. Available: {', '.join(available)}")
 
 
