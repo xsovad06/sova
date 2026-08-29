@@ -50,6 +50,12 @@ anthropic = ["anthropic>=0.39"]
 litellm = ["litellm>=1.40"]
 vertex = ["google-auth>=2.0", "requests>=2.20"]
 batch = ["google-auth>=2.0", "requests>=2.20"]
+awareness = [
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.20.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth-httplib2>=0.2.0",
+]
 embeddings = ["sentence-transformers>=2.2"]
 postgres = ["asyncpg>=0.30"]
 dev = [
