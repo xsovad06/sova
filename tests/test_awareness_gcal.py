@@ -268,9 +268,9 @@ async def test_fetch_all_day_event(mock_build, mock_auth, awareness_config: Awar
 @patch("sova.awareness.providers.gcal.build")
 async def test_fetch_timezone_conversion(mock_build, mock_auth, awareness_config: AwarenessConfig) -> None:
     """Timezone-aware event times are correctly converted to local time for categorization."""
-    from sova.awareness.providers.gcal import CalendarProvider
-
     from datetime import timezone as tz
+
+    from sova.awareness.providers.gcal import CalendarProvider
 
     mock_creds = MagicMock()
     mock_auth.return_value = mock_creds
@@ -288,9 +288,7 @@ async def test_fetch_timezone_conversion(mock_build, mock_auth, awareness_config
         "id": "tz-event",
         "summary": "Timezone test meeting",
         "htmlLink": "https://calendar.google.com/event?eid=tz-event",
-        "start": {
-            "dateTime": event_pst.isoformat()
-        },
+        "start": {"dateTime": event_pst.isoformat()},
         "end": {"dateTime": (event_pst + timedelta(hours=1)).isoformat()},
         "description": "Test agenda",
         "attendees": [{"email": "user@example.com", "self": True, "responseStatus": "accepted"}],
@@ -541,7 +539,9 @@ async def test_fetch_past_event_filtered_out(mock_build, mock_auth, awareness_co
 @pytest.mark.asyncio
 @patch("sova.awareness.providers.gcal.authenticate_google")
 @patch("sova.awareness.providers.gcal.build")
-async def test_fetch_timezone_conversion_explicit_offset(mock_build, mock_auth, awareness_config: AwarenessConfig) -> None:
+async def test_fetch_timezone_conversion_explicit_offset(
+    mock_build, mock_auth, awareness_config: AwarenessConfig
+) -> None:
     """Event with an explicit non-local timezone offset is correctly converted for categorization."""
     from datetime import timezone as tz
 
