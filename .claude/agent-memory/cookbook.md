@@ -393,6 +393,10 @@ Fully documented in `.claude/rules/` or `.claude/skills/`. One-line refs only.
 - **ABC `__init__` must declare constructor contract when factory calls `cls(config)`** -- without it, concrete providers accept any args until invoked via registry. PR #392. [confirmed: 1]
 - **Named subsections must exclude items from general lists** -- use ID set to prevent duplicates between `schedule` and `informational`. PR #392. [confirmed: 1]
 
+- **Optional import fallback symbols must be defined before `try` block**: when importing optional dependencies (`google-api-python-client`), initialize all imported names to `None` at module scope before the `try`/`except ImportError`. Without this, `unittest.mock.patch("module.symbol")` raises `AttributeError` when the optional dep is not installed, causing all related tests to fail. PR #878. [confirmed: 1]
+- **HTML stripping must remove script/style block content, not just tags**: `re.compile(r"<[^>]+>")` strips tags but leaves inner text of `<script>` and `<style>` elements. Add a pre-pass: `re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)`. PR #878. [confirmed: 1]
+- **Domain allowlist checks should match subdomains**: `domain in frozenset` is exact match only. `notifications@sub.github.com` misses. Use `domain in set or any(domain.endswith("." + d) for d in set)`. PR #878. [confirmed: 1]
+
 ## Fleet / Self-Improvement Loop (Chain M)
 
 - **Chain L vs Chain M scope boundary** -- Chain L (#291-298, supervisor daemon + fleet manager) covers live orchestration: agent slot allocation, resource distribution, dependency-aware progression, CodeRabbit quota across projects. Chain M (#430-435) covers retrospective analytics: step failure rates, error message clustering, cost trends from historical DB records, and the "Propose SOVA issue" self-improvement action. They are complementary; the fleet page in Chain M is NOT the same as the fleet manager in #298. Do not conflate when planning or speccing either chain.
