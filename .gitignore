@@ -32,6 +32,7 @@ dashboard/.venv/
 
 # Coverage reports
 coverage.xml
+coverage-check.xml
 htmlcov/
 .coverage
 
