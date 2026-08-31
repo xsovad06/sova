@@ -16983,24 +16983,25 @@ class TestRateLimiting:
 
     async def test_stream_endpoints_exempt_from_rate_limit(self, tmp_path: Path) -> None:
         """Test that streaming endpoints are exempt from rate limiting."""
-        import httpx
-
         os.environ["SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE"] = "3"
         try:
             app = create_app(project_dir=tmp_path)
             transport = ASGITransport(app=app)
-            # Use a very short timeout since SSE endpoints stream indefinitely
-            async with AsyncClient(transport=transport, base_url="http://test", timeout=0.1) as client:
-                # Make requests to a streaming endpoint
-                # SSE endpoints will timeout, but should not be rate limited
-                for _ in range(10):
-                    try:
-                        response = await client.get("/api/feed/stream")
-                        # If we get a response, it should not be 429
-                        assert response.status_code != 429
-                    except (httpx.ReadTimeout, httpx.TimeoutException):
-                        # Timeout is expected for SSE endpoints
-                        pass
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                # Exhaust the rate limit on a normal endpoint first
+                for _ in range(3):
+                    await client.get("/healthz")
+                # Verify a normal endpoint IS rate limited now
+                response = await client.get("/healthz")
+                assert response.status_code == 429
+
+                # Paths ending with "/stream" are exempt (key_func returns None).
+                # Use a path that ends with /stream but doesn't match a real
+                # route to avoid SSE hang; the middleware decides exemption
+                # before the route handler runs.
+                for _ in range(5):
+                    response = await client.get("/api/exempt/stream")
+                    assert response.status_code != 429
         finally:
             os.environ.pop("SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE", None)
 
