@@ -1155,7 +1155,7 @@ body.feed-open .feed-fab { display: none; }
   bottom: 1rem;
   /* Offset well left of the feed FAB (right: 1.5rem + 52px wide) so the two
      bottom-right floating elements have clear separation. */
-  right: 8rem;
+  right: 6rem;
   z-index: 45;
 }
 

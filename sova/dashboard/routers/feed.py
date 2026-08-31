@@ -134,7 +134,7 @@ async def feed_briefing() -> dict[str, Any]:
 
 
 def _serialize_item(item: Any) -> dict[str, Any]:
-    return {
+    result = {
         "id": item.id,
         "provider": item.provider,
         "category": item.category.value if hasattr(item.category, "value") else str(item.category),
@@ -145,6 +145,15 @@ def _serialize_item(item: Any) -> dict[str, Any]:
         "urgency": item.urgency,
         "action_hint": item.action_hint,
     }
+    occurrence_count = getattr(item, "occurrence_count", 0)
+    if occurrence_count:
+        result["occurrence_count"] = occurrence_count
+    metadata = getattr(item, "metadata", {})
+    if metadata.get("is_recurring_exception"):
+        result["is_recurring_exception"] = True
+    if metadata.get("recurring_event_id"):
+        result["recurring_event_id"] = metadata["recurring_event_id"]
+    return result
 
 
 def _serialize_briefing(briefing: Any) -> dict[str, Any]:
