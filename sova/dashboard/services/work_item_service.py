@@ -5,361 +5,105 @@ into a single computed state per issue/PR. The task browser renders from this st
 instead of computing actions independently.
 
 Priority cascade: running agent > PR state (SOVA-verdict adjusted) > GitHub label.
+
+Split into focused modules:
+- work_state.py:  state enum, constants, compute_work_item_state, actions, sort
+- work_verdict.py: verdict cache, verdict fetching, GitHub review parsing
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
-import time
-from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from sova.core.state import TaskStatus
+from sova.dashboard.services.work_state import (
+    _AWAITING_APPROVAL as _AWAITING_APPROVAL,
+)
+from sova.dashboard.services.work_state import (
+    _LABEL_STATE_MAP as _LABEL_STATE_MAP,
+)
+from sova.dashboard.services.work_state import (
+    _PR_STATE_MAP as _PR_STATE_MAP,
+)
+from sova.dashboard.services.work_state import (
+    _ROLE_LABELS as _ROLE_LABELS,
+)
+from sova.dashboard.services.work_state import (
+    _SPEC_ACTION_IDS as _SPEC_ACTION_IDS,
+)
+from sova.dashboard.services.work_state import (
+    _STATE_COLORS as _STATE_COLORS,
+)
+from sova.dashboard.services.work_state import (
+    _STATE_LABELS as _STATE_LABELS,
+)
+from sova.dashboard.services.work_state import (
+    _STATE_SORT_ORDER as _STATE_SORT_ORDER,
+)
+from sova.dashboard.services.work_state import (  # re-export facade
+    WorkItemState as WorkItemState,
+)
+from sova.dashboard.services.work_state import (
+    _apply_sova_verdict as _apply_sova_verdict,
+)
+from sova.dashboard.services.work_state import (
+    _build_action as _build_action,
+)
+from sova.dashboard.services.work_state import (
+    _get_actions as _get_actions,
+)
+from sova.dashboard.services.work_state import (
+    _is_verdict_stale as _is_verdict_stale,
+)
+from sova.dashboard.services.work_state import (
+    _normalize_iso as _normalize_iso,
+)
+from sova.dashboard.services.work_state import (
+    _sort_items as _sort_items,
+)
+from sova.dashboard.services.work_state import (
+    compute_work_item_state as compute_work_item_state,
+)
+from sova.dashboard.services.work_verdict import (  # re-export facade
+    _SOVA_MARKER_RE as _SOVA_MARKER_RE,
+)
+from sova.dashboard.services.work_verdict import (
+    _SOVA_VERDICT_LABEL_MAP as _SOVA_VERDICT_LABEL_MAP,
+)
+from sova.dashboard.services.work_verdict import (
+    _SOVA_VERDICT_LINE_RE as _SOVA_VERDICT_LINE_RE,
+)
+from sova.dashboard.services.work_verdict import (
+    _VERDICT_NORMALIZE as _VERDICT_NORMALIZE,
+)
+from sova.dashboard.services.work_verdict import (
+    _extract_sova_verdict_from_labels as _extract_sova_verdict_from_labels,
+)
+from sova.dashboard.services.work_verdict import (
+    _fetch_github_review_fallback as _fetch_github_review_fallback,
+)
+from sova.dashboard.services.work_verdict import (
+    _fetch_sova_verdicts as _fetch_sova_verdicts,
+)
+from sova.dashboard.services.work_verdict import (
+    _parse_sova_review_from_github as _parse_sova_review_from_github,
+)
+from sova.dashboard.services.work_verdict import (
+    _sova_verdict_cache as _sova_verdict_cache,
+)
+from sova.dashboard.services.work_verdict import (
+    clear_verdict_cache as clear_verdict_cache,
+)
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from sova.adapters.base import PRReview
     from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.work_item")
 
 
-class WorkItemState(StrEnum):
-    """Unified dashboard state for a work item (issue or standalone PR)."""
-
-    # Pre-development
-    BACKLOG = "backlog"
-    NEEDS_SPEC = "needs_spec"
-    TRIAGED = "triaged"
-    RESEARCHED = "researched"
-
-    # Active development
-    IN_PROGRESS = "in_progress"
-    AGENT_RUNNING = "agent_running"
-
-    # PR lifecycle
-    PR_DRAFT = "pr_draft"
-    PR_CI_RUNNING = "pr_ci_running"
-    PR_CI_FAILED = "pr_ci_failed"
-    PR_AWAITING_REVIEW = "pr_awaiting_review"
-    # kept for backward compat; new code should use PR_SOVA_CHANGES or PR_EXTERNAL_CHANGES
-    PR_CHANGES_REQUESTED = "pr_changes_requested"
-    # SOVA reviewer said revise/block; developer agent addresses via handoff
-    PR_SOVA_CHANGES = "pr_sova_changes"
-    # external reviewer (CodeRabbit/human) requested changes; /address-pr command handles thread management
-    PR_EXTERNAL_CHANGES = "pr_external_changes"
-    PR_REVIEW_ADDRESSED = "pr_review_addressed"
-    PR_APPROVED = "pr_approved"
-    PR_READY_TO_MERGE = "pr_ready_to_merge"
-    PR_SOVA_PENDING = "pr_sova_pending"
-
-    # Handoff states
-    SPEC_REVIEW = "spec_review"
-
-    # Terminal
-    MERGED = "merged"
-    DONE = "done"
-    HUMAN_ONLY = "human_only"
-
-
-_STATE_LABELS: dict[WorkItemState, str] = {
-    WorkItemState.BACKLOG: "Backlog",
-    WorkItemState.NEEDS_SPEC: "Needs Spec",
-    WorkItemState.TRIAGED: "Triaged",
-    WorkItemState.RESEARCHED: "Researched",
-    WorkItemState.IN_PROGRESS: "In Progress",
-    WorkItemState.AGENT_RUNNING: "Agent Running",
-    WorkItemState.PR_DRAFT: "Draft PR",
-    WorkItemState.PR_CI_RUNNING: "CI Running",
-    WorkItemState.PR_CI_FAILED: "CI Failed",
-    WorkItemState.PR_AWAITING_REVIEW: "Awaiting Review",
-    WorkItemState.PR_CHANGES_REQUESTED: "Changes Requested",
-    WorkItemState.PR_SOVA_CHANGES: "SOVA Changes Requested",
-    WorkItemState.PR_EXTERNAL_CHANGES: "Changes Requested",
-    WorkItemState.PR_REVIEW_ADDRESSED: "Review Addressed",
-    WorkItemState.PR_APPROVED: "Approved",
-    WorkItemState.PR_READY_TO_MERGE: "Ready to Merge",
-    WorkItemState.PR_SOVA_PENDING: "Sova Review Pending",
-    WorkItemState.SPEC_REVIEW: "Spec Review",
-    WorkItemState.MERGED: "Merged",
-    WorkItemState.DONE: "Done",
-    WorkItemState.HUMAN_ONLY: "Human Only",
-}
-
-_CLR_GRAY = "bg-gray-600/30 text-gray-400"
-_CLR_YELLOW = "bg-accent-yellow/20 text-accent-yellow"
-_CLR_PEACH = "bg-accent-peach/20 text-accent-peach"
-_CLR_GREEN = "bg-accent-green/20 text-accent-green"
-_CLR_GREEN_STRONG = "bg-accent-green/30 text-accent-green"
-
-_STATE_COLORS: dict[WorkItemState, str] = {
-    WorkItemState.BACKLOG: _CLR_GRAY,
-    WorkItemState.NEEDS_SPEC: _CLR_YELLOW,
-    WorkItemState.TRIAGED: _CLR_YELLOW,
-    WorkItemState.RESEARCHED: "bg-accent-purple/20 text-accent-purple",
-    WorkItemState.IN_PROGRESS: "bg-accent/20 text-accent",
-    WorkItemState.AGENT_RUNNING: _CLR_YELLOW,
-    WorkItemState.PR_DRAFT: _CLR_GRAY,
-    WorkItemState.PR_CI_RUNNING: _CLR_YELLOW,
-    WorkItemState.PR_CI_FAILED: "bg-accent-red/20 text-accent-red",
-    WorkItemState.PR_AWAITING_REVIEW: "bg-accent/20 text-accent",
-    WorkItemState.PR_CHANGES_REQUESTED: _CLR_PEACH,
-    WorkItemState.PR_SOVA_CHANGES: _CLR_PEACH,
-    WorkItemState.PR_EXTERNAL_CHANGES: _CLR_PEACH,
-    WorkItemState.PR_REVIEW_ADDRESSED: "bg-accent-lavender/20 text-accent-lavender",
-    WorkItemState.PR_APPROVED: _CLR_GREEN,
-    WorkItemState.PR_READY_TO_MERGE: _CLR_GREEN,
-    WorkItemState.PR_SOVA_PENDING: _CLR_PEACH,
-    WorkItemState.SPEC_REVIEW: _CLR_PEACH,
-    WorkItemState.MERGED: _CLR_GREEN_STRONG,
-    WorkItemState.DONE: _CLR_GREEN_STRONG,
-    WorkItemState.HUMAN_ONLY: "bg-gray-600/30 text-gray-500",
-}
-
-_SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
-_AWAITING_APPROVAL = TaskStatus.AWAITING_APPROVAL
-
-_ROLE_LABELS: dict[str, str] = {
-    "developer": "Developing",
-    "reviewer": "Reviewing",
-    "researcher": "Researching",
-    "triage": "Triaging",
-    "command:address-pr": "Addressing",
-    "command:integrate-pr": "Integrating",
-    "command:review-pr": "Reviewing",
-    "command:after-merge": "Cleaning up",
-    "command:spec": "Writing Spec",
-}
-
-_PR_STATE_MAP: dict[str, WorkItemState] = {
-    "draft": WorkItemState.PR_DRAFT,
-    "ci_running": WorkItemState.PR_CI_RUNNING,
-    "ci_failed": WorkItemState.PR_CI_FAILED,
-    "awaiting_review": WorkItemState.PR_AWAITING_REVIEW,
-    "changes_requested": WorkItemState.PR_EXTERNAL_CHANGES,
-    "review_addressed": WorkItemState.PR_REVIEW_ADDRESSED,
-    "approved": WorkItemState.PR_APPROVED,
-    "approved_ci_green": WorkItemState.PR_READY_TO_MERGE,
-}
-
-_LABEL_STATE_MAP: dict[str, WorkItemState] = {
-    "backlog": WorkItemState.BACKLOG,
-    "triaged": WorkItemState.TRIAGED,
-    "researched": WorkItemState.RESEARCHED,
-    "in_progress": WorkItemState.IN_PROGRESS,
-    "in_review": WorkItemState.PR_AWAITING_REVIEW,
-    "needs_spec": WorkItemState.NEEDS_SPEC,
-    "human_only": WorkItemState.HUMAN_ONLY,
-    "done": WorkItemState.DONE,
-}
-
-
-def _build_action(
-    action_id: str,
-    label: str,
-    style: str,
-    handler: str,
-    handler_args: dict,
-) -> dict:
-    return {
-        "id": action_id,
-        "label": label,
-        "style": style,
-        "handler": handler,
-        "handler_args": handler_args,
-    }
-
-
-def _get_actions(
-    state: WorkItemState,
-    *,
-    issue_number: str | None,
-    pr_number: int | None,
-) -> tuple[dict | None, list[dict]]:
-    """Return (primary_action, secondary_actions) for the given state."""
-    i = issue_number or ""
-    p = pr_number or 0
-
-    def agent(aid: str, label: str, style: str, role: str) -> dict:
-        args: dict = {"role": role}
-        if i:
-            args["issue"] = i
-        if p:
-            args["pr"] = p
-        return _build_action(aid, label, style, "start_agent", args)
-
-    def cmd(aid: str, label: str, style: str, command: str, *, pr_only: bool = False) -> dict:
-        args: dict = {"command": command}
-        if not pr_only and i:
-            args["issue"] = i
-        if p:
-            args["pr"] = p
-        return _build_action(aid, label, style, "run_command", args)
-
-    S = WorkItemState
-    review = cmd("review_pr", "Review PR", "neutral", "review-pr")
-    address = cmd("address_pr", "Address PR", "neutral", "address-pr")
-    integrate = cmd("integrate", "Integrate PR", "neutral", "integrate-pr")
-
-    actions: dict[WorkItemState, tuple[dict | None, list[dict]]] = {
-        S.BACKLOG: (agent("triage", "Triage", "warning", "triage"), []),
-        S.NEEDS_SPEC: (agent("research", "Research", "purple", "researcher"), []),
-        S.TRIAGED: (agent("research", "Research", "purple", "researcher"), []),
-        S.RESEARCHED: (agent("develop", "Develop", "primary", "developer"), []),
-        S.IN_PROGRESS: (agent("resume", "Resume", "primary", "developer"), []),
-        S.PR_DRAFT: (cmd("review_pr", "Review", "neutral", "review-pr"), [address]),
-        S.PR_CI_RUNNING: (cmd("review_pr", "Review", "neutral", "review-pr"), [address]),
-        S.PR_CI_FAILED: (cmd("address_pr", "Address PR", "danger", "address-pr"), [review]),
-        S.PR_AWAITING_REVIEW: (cmd("review_pr", "Review", "success", "review-pr"), [address, integrate]),
-        S.PR_SOVA_PENDING: (cmd("review_pr", "Review PR", "warning", "review-pr"), [address, integrate]),
-        S.PR_CHANGES_REQUESTED: (agent("address_review", "Address", "warning", "developer"), [review, integrate]),
-        S.PR_SOVA_CHANGES: (agent("address_review", "Address", "warning", "developer"), [review, integrate]),
-        S.PR_EXTERNAL_CHANGES: (cmd("address_pr", "Address PR", "warning", "address-pr"), [review, integrate]),
-        S.PR_REVIEW_ADDRESSED: (cmd("review_pr", "Review", "purple", "review-pr"), [address, integrate]),
-        S.PR_APPROVED: (cmd("integrate", "Integrate", "success", "integrate-pr"), [review, address]),
-        S.PR_READY_TO_MERGE: (
-            cmd("integrate", "Integrate", "success", "integrate-pr"),
-            [review, address],
-        ),
-        S.MERGED: (cmd("after_merge", "Post-Merge", "purple", "after-merge"), []),
-    }
-    return actions.get(state, (None, []))
-
-
-def compute_work_item_state(
-    *,
-    task_state: str | None,
-    pr_data: dict | None,
-    running_agent: dict | None,
-    sova_verdict: dict | None = None,
-    external_reviews_enabled: bool = True,
-) -> WorkItemState:
-    """Compute the unified dashboard state for a work item.
-
-    Priority: running agent > PR state (adjusted by SOVA verdict) > GitHub label.
-
-    State depends only on durable, cross-machine sources: running agent status,
-    PR GitHub state + sova:{verdict} label, and issue labels. Handoff data is
-    used separately for rendering action buttons and auto-handoff spawning.
-
-    sova_verdict is the result of get_sova_review_verdict() scoped to the current PR.
-    When present it overrides the raw GitHub state:
-      - Verdict "revise"/"block": override overrideable states to PR_SOVA_CHANGES (developer agent),
-        unless a human approved on GitHub after the SOVA review (stale verdict).
-      - Verdict from GitHub (CHANGES_REQUESTED with no SOVA override): PR_EXTERNAL_CHANGES (command).
-      - No SOVA review + externally approved PR + external_reviews_enabled: override to PR_SOVA_PENDING.
-      - No SOVA review + externally approved PR + not external_reviews_enabled: stay PR_AWAITING_REVIEW
-        so "Review" is shown directly (no inline comments to address on bot-free projects).
-      - SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT):
-        upgrade PR_AWAITING_REVIEW to PR_APPROVED so "Integrate PR" is shown instead of "Review".
-    """
-    if running_agent is not None:
-        return WorkItemState.AGENT_RUNNING
-
-    if pr_data is not None:
-        pr_state_raw = pr_data.get("state", "OPEN")
-        if pr_state_raw == "MERGED":
-            return WorkItemState.MERGED
-        computed = pr_data.get("computed_state", "")
-        mapped = _PR_STATE_MAP.get(computed)
-        if mapped is not None:
-            return _apply_sova_verdict(
-                mapped,
-                sova_verdict,
-                latest_approval_at=pr_data.get("latest_approval_at"),
-                external_reviews_enabled=external_reviews_enabled,
-            )
-
-    if task_state is not None:
-        return _LABEL_STATE_MAP.get(task_state, WorkItemState.BACKLOG)
-
-    return WorkItemState.BACKLOG
-
-
-# States where an Integrate button would be the primary action without SOVA override.
-_INTEGRATE_STATES = frozenset({WorkItemState.PR_APPROVED, WorkItemState.PR_READY_TO_MERGE})
-
-# States that SOVA verdict "revise"/"block" should downgrade to PR_SOVA_CHANGES.
-# Excludes PR_DRAFT/PR_CI_*/PR_SOVA_CHANGES (already showing correct action).
-# Includes PR_EXTERNAL_CHANGES: SOVA revise overrides an external reviewer's changes-requested.
-_VERDICT_OVERRIDEABLE = frozenset(
-    {
-        WorkItemState.PR_AWAITING_REVIEW,
-        WorkItemState.PR_APPROVED,
-        WorkItemState.PR_READY_TO_MERGE,
-        WorkItemState.PR_EXTERNAL_CHANGES,
-    }
-)
-
-
-def _normalize_iso(ts: str) -> str:
-    """Normalize ISO 8601 timestamps so string comparison works across formats.
-
-    GitHub uses 'Z' suffix, Python's isoformat() uses '+00:00'. Replace 'Z' with
-    '+00:00' so both formats sort identically via string comparison.
-    """
-    return ts.replace("Z", "+00:00")
-
-
-def _is_verdict_stale(sova_verdict: dict, latest_approval_at: str | None) -> bool:
-    """Return True if a GitHub approval was submitted after the SOVA review."""
-    if not latest_approval_at:
-        return False
-    reviewed_at = sova_verdict.get("reviewed_at") or ""
-    if not reviewed_at:
-        return False
-    return _normalize_iso(latest_approval_at) > _normalize_iso(reviewed_at)
-
-
-def _apply_sova_verdict(
-    mapped: WorkItemState,
-    sova_verdict: dict | None,
-    *,
-    latest_approval_at: str | None = None,
-    external_reviews_enabled: bool = True,
-) -> WorkItemState:
-    """Adjust a GitHub-derived PR state using the SOVA reviewer verdict.
-
-    Five adjustments:
-      1. No SOVA review + integrate-bound state + external_reviews_enabled: PR_SOVA_PENDING so users
-         trigger SOVA review before integrating.
-      2. No SOVA review + integrate-bound state + not external_reviews_enabled: return PR_AWAITING_REVIEW
-         so "Review" is shown directly (no bot inline comments to address on reviewer-free projects).
-      3. SOVA review post_failed + integrate-bound state: return PR_AWAITING_REVIEW so the card shows
-         "Review" rather than "Integrate PR" for a review that never posted successfully.
-      4. SOVA verdict is revise/block: downgrade overrideable states to PR_SOVA_CHANGES (developer agent),
-         unless a human approved on GitHub after the SOVA review (stale verdict -- return mapped).
-      5. SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT,
-         not APPROVED; GitHub forbids self-approval): upgrade PR_AWAITING_REVIEW to
-         PR_APPROVED so "Integrate PR" is shown instead of "Review".
-    """
-    if sova_verdict is None:
-        return mapped
-
-    has_review = sova_verdict.get("has_sova_review", False)
-    verdict = sova_verdict.get("verdict")
-
-    if not has_review and mapped in _INTEGRATE_STATES:
-        return WorkItemState.PR_SOVA_PENDING if external_reviews_enabled else WorkItemState.PR_AWAITING_REVIEW
-
-    if has_review and verdict == "post_failed" and mapped in _INTEGRATE_STATES:
-        # The reviewer ran but could not post findings to GitHub. Treat integrate-bound
-        # states the same as "no completed review" so the card shows "Review" instead
-        # of "Integrate PR" until the user re-runs the reviewer.
-        return WorkItemState.PR_AWAITING_REVIEW
-
-    if has_review and verdict in ("revise", "block") and mapped in _VERDICT_OVERRIDEABLE:
-        if _is_verdict_stale(sova_verdict, latest_approval_at):
-            return mapped
-        return WorkItemState.PR_SOVA_CHANGES
-
-    if has_review and verdict == "approve" and mapped == WorkItemState.PR_AWAITING_REVIEW:
-        return WorkItemState.PR_APPROVED
-
-    return mapped
-
+# Handoff helpers -------------------------------------------------------------
 
 _HANDOFF_STATES = frozenset({WorkItemState.SPEC_REVIEW})
 
@@ -377,12 +121,7 @@ def _extract_handoff_summary(handoff: dict | None, state: WorkItemState) -> str:
 
 
 def _synthesize_spec_actions(issue_number: str) -> list[dict]:
-    """Reconstruct spec handoff actions when the handoff file is missing.
-
-    The handoff file may be cleared by unrelated agent runs. Synthesize
-    the standard approve/reject actions so the dashboard still shows
-    actionable buttons for awaiting_approval specs.
-    """
+    """Reconstruct spec handoff actions when the handoff file is missing."""
     return [
         {
             "id": "approve-spec",
@@ -401,6 +140,9 @@ def _synthesize_spec_actions(issue_number: str) -> list[dict]:
             "args": {"issue": issue_number},
         },
     ]
+
+
+# Item builders ---------------------------------------------------------------
 
 
 def _build_task_item(
@@ -428,8 +170,6 @@ def _build_task_item(
         external_reviews_enabled=external_reviews_enabled,
     )
 
-    # Override state to SPEC_REVIEW for awaiting_approval runs (spec approval pending).
-    # When handoff exists, its spec actions are used; otherwise, synthesize them.
     last_run = task.get("last_run")
     last_run_status = last_run.get("status") if last_run else None
     spec_handoff_actions: list[dict] = []
@@ -529,6 +269,9 @@ def _build_pr_item(
     )
 
 
+# Standalone PR items ---------------------------------------------------------
+
+
 def _append_standalone_pr_items(
     items: list[dict],
     prs: list[dict],
@@ -561,6 +304,9 @@ def _append_standalone_pr_items(
                 pr, running, handoff, issue_num, sova_verdict=verdict, external_reviews_enabled=external_reviews_enabled
             )
         )
+
+
+# Integration gates ----------------------------------------------------------
 
 
 def _find_integrate_action(item: dict) -> dict | None:
@@ -616,6 +362,9 @@ async def _attach_integration_gates(
         await asyncio.gather(*tasks)
 
 
+# Main entry point ------------------------------------------------------------
+
+
 async def get_work_items(project_dir: Path | None = None) -> dict:
     """Assemble unified work items from all state sources.
 
@@ -628,7 +377,6 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     if project_dir:
         slug = project_dir.name
 
-    # Load config early so external_reviews_enabled is available when building items.
     try:
         from sova.config.loader import load_config
 
@@ -637,7 +385,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     except Exception:
         log.warning("work_items.config_load_failed", project_dir=str(project_dir), exc_info=True)
         cfg = None
-        external_reviews_enabled = True  # Safe default: assume external reviewers exist
+        external_reviews_enabled = True
 
     queue, prs, handoffs, agents_data = await _fetch_all_sources(
         project_dir=project_dir,
@@ -648,7 +396,6 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     handoffs_by_issue = _index_handoffs(handoffs)
     prs_by_issue = _index_prs_by_issue(prs)
 
-    # Index issue labels for zero-cost verdict extraction from sova:* labels.
     labels_by_issue: dict[str, list[str]] = {}
     for task in queue:
         issue_num = str(task["issue"])
@@ -656,8 +403,6 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         if task_labels:
             labels_by_issue[issue_num] = task_labels
 
-    # Pre-fetch SOVA verdicts for all issues with open PRs and unlinked standalone PRs.
-    # Scoped to current PR number so stale verdicts from prior PR revisions are excluded.
     unlinked_prs = [pr for pr in prs if not pr.get("linked_issue")]
     verdicts_by_issue = await _fetch_sova_verdicts(
         prs_by_issue, unlinked_prs=unlinked_prs, project_dir=project_dir, labels_by_issue=labels_by_issue
@@ -730,191 +475,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     }
 
 
-# Verdict cache: {pr_number: (monotonic_timestamp, verdict_dict)}
-# Positive results (has_sova_review=True) are stable -- a review verdict doesn't change.
-# Negative results expire quickly so newly posted reviews are detected within 30s.
-_sova_verdict_cache: dict[int, tuple[float, dict]] = {}
-_VERDICT_CACHE_POSITIVE_TTL = 300.0  # 5 minutes
-_VERDICT_CACHE_NEGATIVE_TTL = 30.0  # 30 seconds
-
-
-def clear_verdict_cache() -> None:
-    """Clear the SOVA verdict cache. Intended for testing and cache invalidation."""
-    _sova_verdict_cache.clear()
-
-
-_SOVA_VERDICT_LABEL_MAP: dict[str, str] = {
-    "sova:approved": "approve",
-    "sova:revise": "revise",
-    "sova:block": "block",
-}
-
-
-def _extract_sova_verdict_from_labels(labels: list[str]) -> dict | None:
-    """Extract a SOVA review verdict from issue labels.
-
-    Returns a verdict dict matching get_sova_review_verdict()'s shape, or None
-    if no sova:* label is present. If multiple sova:* labels exist (should not
-    happen), takes the first match.
-    """
-    for label in labels:
-        verdict = _SOVA_VERDICT_LABEL_MAP.get(label)
-        if verdict is not None:
-            # Epoch sentinel: _is_verdict_stale() treats any real human approval as newer.
-            return {
-                "has_sova_review": True,
-                "verdict": verdict,
-                "finding_count": 0,
-                "reviewed_at": "1970-01-01T00:00:00Z",
-            }
-    return None
-
-
-_SOVA_MARKER_RE = re.compile(r"<!--\s*sova-review:\s*(approve|revise|block)\s*-->", re.IGNORECASE)
-# Matches the natural-language verdict line from /review-pr command output and older pipeline output.
-_SOVA_VERDICT_LINE_RE = re.compile(
-    r"^\*\*(Approve|Request changes|Block|Comment only)\b",
-    re.IGNORECASE | re.MULTILINE,
-)
-_VERDICT_NORMALIZE = {
-    "approve": "approve",
-    "request changes": "revise",
-    "block": "block",
-    "comment only": "approve",
-}
-
-
-def _parse_sova_review_from_github(reviews: list[PRReview]) -> dict | None:
-    """Scan GitHub PR reviews for a cross-instance SOVA review.
-
-    Processes reviews newest-first. Skips DISMISSED reviews (superseded).
-    Tries the machine-readable marker first, then falls back to detecting
-    SOVA's characteristic body structure for reviews posted before the
-    marker was introduced.
-
-    Returns a verdict dict matching get_sova_review_verdict()'s shape, or None.
-    """
-
-    def _verdict_dict(verdict: str, submitted_at: str) -> dict:
-        return {"has_sova_review": True, "verdict": verdict, "finding_count": 0, "reviewed_at": submitted_at}
-
-    for review in sorted(reviews, key=lambda r: r.submitted_at, reverse=True):
-        if review.state == "DISMISSED":
-            continue
-        body = review.body or ""
-
-        # Marker path: explicit machine-readable tag emitted by _format_findings_body.
-        m = _SOVA_MARKER_RE.search(body)
-        if m:
-            return _verdict_dict(m.group(1).lower(), review.submitted_at)
-
-        # Heuristic fallback: detect SOVA's characteristic review body structure.
-        # Matches reviews from the /review-pr command before the marker was added.
-        if "## PR Summary" in body and "## Verdict" in body:
-            # Scope to the ## Verdict section to avoid matching bold lines in ## Findings.
-            verdict_section = body.split("## Verdict", 1)[-1]
-            verdict_match = _SOVA_VERDICT_LINE_RE.search(verdict_section)
-            if verdict_match:
-                verdict = _VERDICT_NORMALIZE.get(verdict_match.group(1).lower(), "revise")
-                return _verdict_dict(verdict, review.submitted_at)
-
-    return None
-
-
-async def _fetch_github_review_fallback(pr_number: int, adapter: Any) -> dict | None:
-    """Fetch GitHub reviews and scan for a cross-instance SOVA review marker.
-
-    Called only when the local DB has no SOVA review record for this PR.
-    This handles the case where a second SOVA instance (different machine/user)
-    ran the review and its TaskRun lives in a different database.
-
-    The adapter is built once by _fetch_sova_verdicts and shared across all PR lookups
-    so that blocking config/adapter construction does not run per-PR inside asyncio.gather.
-    """
-    try:
-        reviews = await adapter.get_pr_reviews(pr_number)
-        return _parse_sova_review_from_github(reviews)
-    except Exception:
-        log.debug("work_items.github_review_fallback_failed", pr=pr_number, exc_info=True)
-        return None
-
-
-async def _fetch_sova_verdicts(
-    prs_by_issue: dict[str, dict],
-    unlinked_prs: list[dict] | None = None,
-    project_dir: Path | None = None,
-    labels_by_issue: dict[str, list[str]] | None = None,
-) -> dict[str, dict]:
-    """Batch-fetch SOVA reviewer verdicts for all issues and unlinked PRs.
-
-    Checks issue labels first (sova:approved/revise/block) as the primary source,
-    then falls back to DB lookup and GitHub review marker scan.
-
-    Scoped to the current PR number so verdicts from prior PR revisions are excluded.
-    Returns a dict of {issue_number: verdict_dict} for linked PRs and
-    {"pr:{number}": verdict_dict} for unlinked standalone PRs.
-    """
-    from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-    # Build the adapter once before the gather so blocking config/adapter construction
-    # does not run per-PR inside asyncio.gather. Non-fatal: if this fails the fallback
-    # is simply skipped for all PRs in this batch.
-    _fallback_adapter: Any = None
-    try:
-        from sova.adapters import create_adapter
-        from sova.config.loader import load_config
-
-        cfg = load_config(project_dir)
-        _fallback_adapter = create_adapter(cfg)
-    except Exception:
-        log.debug("work_items.github_fallback_adapter_build_failed", exc_info=True)
-
-    async def fetch_one(key: str, issue_num: str | None, pr_number: int | None) -> tuple[str, dict]:
-        try:
-            # Primary source: sova:* label on the issue (zero-cost, already fetched).
-            if issue_num and labels_by_issue:
-                issue_labels = labels_by_issue.get(issue_num, [])
-                label_verdict = _extract_sova_verdict_from_labels(issue_labels)
-                if label_verdict is not None:
-                    if pr_number is not None:
-                        if len(_sova_verdict_cache) > 1000:
-                            _sova_verdict_cache.clear()
-                        _sova_verdict_cache[pr_number] = (time.monotonic(), label_verdict)
-                    return key, label_verdict
-
-            if pr_number is not None:
-                cached_entry = _sova_verdict_cache.get(pr_number)
-                if cached_entry is not None:
-                    ts, cached = cached_entry
-                    ttl = _VERDICT_CACHE_POSITIVE_TTL if cached.get("has_sova_review") else _VERDICT_CACHE_NEGATIVE_TTL
-                    if time.monotonic() - ts < ttl:
-                        return key, dict(cached)
-
-            # Fallback: DB lookup + GitHub review marker scan.
-            verdict = await get_sova_review_verdict(issue_num, pr_number=pr_number, project_dir=project_dir)
-            if not verdict.get("has_sova_review") and pr_number is not None and _fallback_adapter is not None:
-                gh_verdict = await _fetch_github_review_fallback(pr_number, _fallback_adapter)
-                if gh_verdict is not None:
-                    verdict = gh_verdict
-
-            if pr_number is not None:
-                if len(_sova_verdict_cache) > 1000:
-                    _sova_verdict_cache.clear()
-                _sova_verdict_cache[pr_number] = (time.monotonic(), verdict)
-
-            return key, verdict
-        except Exception:
-            log.debug("work_items.verdict_fetch_failed", issue=issue_num, pr=pr_number, exc_info=True)
-            return key, {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-
-    tasks = [fetch_one(issue, issue, pr.get("number")) for issue, pr in prs_by_issue.items()]
-    for pr in unlinked_prs or []:
-        pr_num = pr.get("number")
-        if pr_num:
-            tasks.append(fetch_one(f"pr:{pr_num}", None, pr_num))
-
-    results = await asyncio.gather(*tasks)
-    return dict(results)
+# Fetch helpers ---------------------------------------------------------------
 
 
 async def _fetch_all_sources(
@@ -923,8 +484,6 @@ async def _fetch_all_sources(
     slug: str | None,
 ) -> tuple[list[dict], list[dict], list[dict], dict]:
     """Fetch queue, PRs, handoffs, and running agents concurrently."""
-    import asyncio
-
     from sova.dashboard.services.agent_lifecycle import get_unified_agents
     from sova.dashboard.services.handoff_service import get_all_handoffs
     from sova.dashboard.services.pr_service import list_open_prs_with_state
@@ -933,28 +492,28 @@ async def _fetch_all_sources(
     async def safe_queue() -> list[dict]:
         try:
             return await get_priority_queue(project_dir)
-        except Exception:  # noqa: BLE001 -- aggregate endpoint must not fail if one source is down
+        except Exception:
             log.warning("work_items.queue_failed", exc_info=True)
             return []
 
     async def safe_prs() -> list[dict]:
         try:
             return await list_open_prs_with_state()
-        except Exception:  # noqa: BLE001 -- aggregate endpoint must not fail if one source is down
+        except Exception:
             log.warning("work_items.prs_failed", exc_info=True)
             return []
 
     async def safe_agents() -> dict:
         try:
             return await get_unified_agents(slug)
-        except Exception:  # noqa: BLE001 -- aggregate endpoint must not fail if one source is down
+        except Exception:
             log.warning("work_items.agents_failed", exc_info=True)
             return {"agents": [], "completed": []}
 
     def safe_handoffs() -> list[dict]:
         try:
             return get_all_handoffs(project_dir)
-        except Exception:  # noqa: BLE001 -- aggregate endpoint must not fail if one source is down
+        except Exception:
             log.warning("work_items.handoffs_failed", exc_info=True)
             return []
 
@@ -1006,6 +565,9 @@ def _index_prs_by_issue(prs: list[dict]) -> dict[str, dict]:
         if linked is not None:
             result[str(linked)] = pr
     return result
+
+
+# Formatters ------------------------------------------------------------------
 
 
 def _format_running_agent(agent: dict) -> dict:
@@ -1061,7 +623,7 @@ def _build_item(**kwargs: object) -> dict:
         "url": kwargs["url"],
         "state": state.value,
         "state_label": _STATE_LABELS.get(state, state.value),
-        "state_color": _STATE_COLORS.get(state, _CLR_GRAY),
+        "state_color": _STATE_COLORS.get(state, _STATE_COLORS[WorkItemState.BACKLOG]),
         "primary_action": kwargs["primary_action"],
         "secondary_actions": kwargs["secondary_actions"],
         "handoff_actions": kwargs["handoff_actions"],
@@ -1085,26 +647,3 @@ def _build_item(**kwargs: object) -> dict:
         "jira_priority": kwargs.get("jira_priority", ""),
         "updated_at": kwargs.get("updated_at", ""),
     }
-
-
-_STATE_SORT_ORDER: dict[str, int] = {
-    WorkItemState.AGENT_RUNNING: 0,
-    WorkItemState.SPEC_REVIEW: 1,
-    WorkItemState.PR_READY_TO_MERGE: 2,
-    WorkItemState.PR_APPROVED: 2,
-    WorkItemState.PR_CI_FAILED: 3,
-    WorkItemState.PR_CHANGES_REQUESTED: 3,
-    WorkItemState.PR_SOVA_CHANGES: 3,
-    WorkItemState.PR_EXTERNAL_CHANGES: 3,
-    WorkItemState.PR_SOVA_PENDING: 3,
-}
-
-
-def _sort_items(items: list[dict]) -> None:
-    """Sort: running first, then handoff pending, then by priority."""
-    items.sort(
-        key=lambda i: (
-            _STATE_SORT_ORDER.get(i["state"], 10),
-            i["priority"],
-        )
-    )

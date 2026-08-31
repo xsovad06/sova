@@ -6857,7 +6857,7 @@ class TestMergeAwareFinalization:
         from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
-        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
         from sova.dashboard.services.agent_pool import AgentState, CompletedAgent, ProjectAgents
 
         mock_process = AsyncMock()
@@ -6876,9 +6876,9 @@ class TestMergeAwareFinalization:
         pa.agents[42] = agent
 
         with (
-            patch.object(agent_lifecycle, "_check_pr_merged_on_failure", new_callable=AsyncMock, return_value=True),
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock) as mock_finalize,
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(agent_finalize, "_check_pr_merged_on_failure", new_callable=AsyncMock, return_value=True),
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock) as mock_finalize,
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
             patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
         ):
@@ -7004,7 +7004,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
         from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
 
         mock_process = AsyncMock()
@@ -7025,8 +7025,8 @@ class TestWaitAndFinalizeGraphBroadcast:
         mock_ws_manager.broadcast_event = AsyncMock()
 
         with (
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
             patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
@@ -7039,7 +7039,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
         from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
 
         mock_process = AsyncMock()
@@ -7060,8 +7060,8 @@ class TestWaitAndFinalizeGraphBroadcast:
         mock_ws_manager.broadcast_event = AsyncMock()
 
         with (
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock, return_value=False),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=False),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
             patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
@@ -7074,7 +7074,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
         from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
 
         mock_process = AsyncMock()
@@ -7097,8 +7097,8 @@ class TestWaitAndFinalizeGraphBroadcast:
         import pytest
 
         with (
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch(
                 "sova.dashboard.services.agent_handoff._process_auto_handoff",
                 new_callable=AsyncMock,
@@ -8526,7 +8526,7 @@ class TestWaitWithTerminalCheck:
         process = MockAgentProcess(should_hang=True, exit_code=0, pid=88888)
         agent = SimpleNamespace(run_id=run_id, process=process, project_dir=None)
 
-        with patch("sova.dashboard.services.agent_lifecycle._DB_TERMINAL_POLL_INTERVAL", 0.1):
+        with patch("sova.dashboard.services.agent_finalize._DB_TERMINAL_POLL_INTERVAL", 0.1):
             rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
 
         assert rc == 0
@@ -8550,7 +8550,7 @@ class TestWaitWithTerminalCheck:
         process = MockAgentProcess(should_hang=False, exit_code=0, pid=88889)
         agent = SimpleNamespace(run_id=run_id, process=process, project_dir=None)
 
-        with patch("sova.dashboard.services.agent_lifecycle._DB_TERMINAL_POLL_INTERVAL", 0.1):
+        with patch("sova.dashboard.services.agent_finalize._DB_TERMINAL_POLL_INTERVAL", 0.1):
             rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
 
         assert rc == 0
@@ -8574,7 +8574,7 @@ class TestWaitWithTerminalCheck:
         process = MockAgentProcess(should_hang=True, exit_code=1, pid=88890)
         agent = SimpleNamespace(run_id=run_id, process=process, project_dir=None)
 
-        with patch("sova.dashboard.services.agent_lifecycle._DB_TERMINAL_POLL_INTERVAL", 0.1):
+        with patch("sova.dashboard.services.agent_finalize._DB_TERMINAL_POLL_INTERVAL", 0.1):
             rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
 
         assert rc == 1
@@ -8605,7 +8605,7 @@ class TestWaitWithTerminalCheck:
 
         agent = SimpleNamespace(run_id=run_id, process=mock_process, project_dir=None)
 
-        with patch("sova.dashboard.services.agent_lifecycle._DB_TERMINAL_POLL_INTERVAL", 0.1):
+        with patch("sova.dashboard.services.agent_finalize._DB_TERMINAL_POLL_INTERVAL", 0.1):
             rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
 
         mock_proc.kill.assert_called_once()
@@ -8639,7 +8639,7 @@ class TestWaitWithTerminalCheck:
 
         from sova.dashboard.services.agent_lifecycle import _wait_and_finalize
 
-        patch_target = "sova.dashboard.services.agent_lifecycle._wait_with_terminal_check"
+        patch_target = "sova.dashboard.services.agent_finalize._wait_with_terminal_check"
         with patch(patch_target, side_effect=asyncio.CancelledError):
             with pytest.raises(asyncio.CancelledError):
                 await _wait_and_finalize(pa, agent)
@@ -8673,7 +8673,7 @@ class TestWaitWithTerminalCheck:
 
         from sova.dashboard.services.agent_lifecycle import _wait_and_finalize
 
-        patch_target = "sova.dashboard.services.agent_lifecycle._wait_with_terminal_check"
+        patch_target = "sova.dashboard.services.agent_finalize._wait_with_terminal_check"
         with patch(patch_target, side_effect=asyncio.CancelledError):
             with pytest.raises(asyncio.CancelledError):
                 await _wait_and_finalize(pa, agent)
@@ -8707,7 +8707,7 @@ class TestWaitWithTerminalCheck:
 
         from sova.dashboard.services.agent_lifecycle import _wait_and_finalize
 
-        patch_target = "sova.dashboard.services.agent_lifecycle._wait_with_terminal_check"
+        patch_target = "sova.dashboard.services.agent_finalize._wait_with_terminal_check"
         with patch(patch_target, side_effect=asyncio.CancelledError):
             with pytest.raises(asyncio.CancelledError):
                 await _wait_and_finalize(pa, agent)
@@ -8741,7 +8741,7 @@ class TestWaitWithTerminalCheck:
 
         from sova.dashboard.services.agent_lifecycle import _wait_and_finalize
 
-        patch_target = "sova.dashboard.services.agent_lifecycle._wait_with_terminal_check"
+        patch_target = "sova.dashboard.services.agent_finalize._wait_with_terminal_check"
         with patch(patch_target, side_effect=asyncio.CancelledError):
             with pytest.raises(asyncio.CancelledError):
                 await _wait_and_finalize(pa, agent)
@@ -14253,7 +14253,7 @@ class TestWaitAndFinalizeOrdering:
         from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
-        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
         from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
 
         mock_process = AsyncMock()
@@ -14276,8 +14276,8 @@ class TestWaitAndFinalizeOrdering:
             was_in_agents_during_finalize.append(run_id in pa.agents)
 
         with (
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock, side_effect=tracking_finalize),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=tracking_finalize),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
             patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
         ):
@@ -14293,7 +14293,7 @@ class TestWaitAndFinalizeOrdering:
         from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
-        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
         from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
 
         mock_process = AsyncMock()
@@ -14318,18 +14318,18 @@ class TestWaitAndFinalizeOrdering:
 
         with (
             patch.object(
-                agent_lifecycle,
+                agent_finalize,
                 "_check_pr_merged_on_failure",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
             patch.object(
-                agent_lifecycle,
+                agent_finalize,
                 "_finalize_task_run",
                 new_callable=AsyncMock,
                 side_effect=recording_finalize,
             ),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
             patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
         ):
@@ -14529,7 +14529,7 @@ class TestWaitAndFinalizeOutputWriter:
         from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
         from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
 
         mock_process = AsyncMock()
@@ -14550,8 +14550,8 @@ class TestWaitAndFinalizeOutputWriter:
         pa.agents[60] = agent
 
         with (
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
             patch("sova.config.loader.load_config", side_effect=Exception("skip")),
         ):
@@ -14564,7 +14564,7 @@ class TestWaitAndFinalizeOutputWriter:
         from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
         from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
 
         mock_process = AsyncMock()
@@ -14590,8 +14590,8 @@ class TestWaitAndFinalizeOutputWriter:
             finalize_called.append(run_id)
 
         with (
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock, side_effect=track_finalize),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=track_finalize),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
             patch("sova.config.loader.load_config", side_effect=Exception("skip")),
         ):
@@ -16494,21 +16494,21 @@ class TestCrashRecoveryCleanup:
             patch("sova.config.loader.load_config") as mock_load_config,
             patch("sova.adapters.create_adapter"),
             patch(
-                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                "sova.dashboard.services.agent_finalize.get_pr_branch",
                 new_callable=AsyncMock,
                 return_value="feat/issue-42",
             ) as mock_get_branch,
             patch(
-                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                "sova.dashboard.services.agent_finalize.delete_remote_branch",
                 new_callable=AsyncMock,
                 return_value=True,
             ) as mock_delete_branch,
             patch(
-                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                "sova.dashboard.services.agent_finalize.handle_post_merge_state",
                 new_callable=AsyncMock,
             ) as mock_post_merge,
             patch(
-                "sova.dashboard.services.agent_lifecycle._resolve_issue_from_pr",
+                "sova.dashboard.services.agent_finalize._resolve_issue_from_pr",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -16542,21 +16542,21 @@ class TestCrashRecoveryCleanup:
             patch("sova.config.loader.load_config") as mock_load_config,
             patch("sova.adapters.create_adapter"),
             patch(
-                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                "sova.dashboard.services.agent_finalize.get_pr_branch",
                 new_callable=AsyncMock,
                 return_value="feat/issue-42",
             ),
             patch(
-                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                "sova.dashboard.services.agent_finalize.delete_remote_branch",
                 new_callable=AsyncMock,
                 return_value=False,
             ) as mock_delete_branch,
             patch(
-                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                "sova.dashboard.services.agent_finalize.handle_post_merge_state",
                 new_callable=AsyncMock,
             ) as mock_post_merge,
             patch(
-                "sova.dashboard.services.agent_lifecycle._resolve_issue_from_pr",
+                "sova.dashboard.services.agent_finalize._resolve_issue_from_pr",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -16584,20 +16584,20 @@ class TestCrashRecoveryCleanup:
             patch("sova.config.loader.load_config") as mock_load_config,
             patch("sova.adapters.create_adapter"),
             patch(
-                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                "sova.dashboard.services.agent_finalize.get_pr_branch",
                 new_callable=AsyncMock,
                 return_value="",
             ),
             patch(
-                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                "sova.dashboard.services.agent_finalize.delete_remote_branch",
                 new_callable=AsyncMock,
             ) as mock_delete_branch,
             patch(
-                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                "sova.dashboard.services.agent_finalize.handle_post_merge_state",
                 new_callable=AsyncMock,
             ) as mock_post_merge,
             patch(
-                "sova.dashboard.services.agent_lifecycle._resolve_issue_from_pr",
+                "sova.dashboard.services.agent_finalize._resolve_issue_from_pr",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -16658,27 +16658,27 @@ class TestCrashRecoveryCleanup:
 
         with (
             patch(
-                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
+                "sova.dashboard.services.agent_finalize._check_pr_merged_on_failure",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
             patch(
-                "sova.dashboard.services.agent_lifecycle._crash_recovery_cleanup",
+                "sova.dashboard.services.agent_finalize._crash_recovery_cleanup",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("GitHub API timeout"),
             ) as mock_cleanup,
-            patch("sova.dashboard.services.agent_lifecycle._finalize_resource_monitoring", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_resource._finalize_resource_monitoring", new_callable=AsyncMock),
             patch(
-                "sova.dashboard.services.agent_lifecycle._validate_command_outcome",
+                "sova.dashboard.services.agent_finalize._validate_command_outcome",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                "sova.dashboard.services.agent_lifecycle._validate_pipeline_outcome",
+                "sova.dashboard.services.agent_finalize._validate_pipeline_outcome",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
-            patch("sova.dashboard.services.agent_lifecycle._check_merge_queue_marker_file", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_finalize._check_merge_queue_marker_file", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
             patch("sova.dashboard.routers.agents._ws_manager", MagicMock()),
         ):
@@ -16703,15 +16703,15 @@ class TestCrashRecoveryCleanup:
         with (
             patch("sova.config.loader.load_config") as mock_load_config,
             patch(
-                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                "sova.dashboard.services.agent_finalize.get_pr_branch",
                 new_callable=AsyncMock,
             ) as mock_get_branch,
             patch(
-                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                "sova.dashboard.services.agent_finalize.delete_remote_branch",
                 new_callable=AsyncMock,
             ) as mock_delete_branch,
             patch(
-                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                "sova.dashboard.services.agent_finalize.handle_post_merge_state",
                 new_callable=AsyncMock,
             ) as mock_post_merge,
         ):
@@ -16733,15 +16733,15 @@ class TestCrashRecoveryCleanup:
         with (
             patch("sova.config.loader.load_config") as mock_load_config,
             patch(
-                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                "sova.dashboard.services.agent_finalize.get_pr_branch",
                 new_callable=AsyncMock,
             ) as mock_get_branch,
             patch(
-                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                "sova.dashboard.services.agent_finalize.delete_remote_branch",
                 new_callable=AsyncMock,
             ) as mock_delete_branch,
             patch(
-                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                "sova.dashboard.services.agent_finalize.handle_post_merge_state",
                 new_callable=AsyncMock,
             ) as mock_post_merge,
         ):
