@@ -9,11 +9,16 @@ User=%i
 # Set the home directory for ~/.claude resolution
 Environment=HOME=%h
 # Set the project directory as an environment variable
+# NOTE: This is a reference template. The 'sova server install-service' command
+# generates the actual service file with proper paths substituted.
 Environment=SOVA_PROJECT_DIR=/path/to/your/project
 # Uncomment for PostgreSQL team deployments:
 # Environment=SOVA_DATABASE_URL=postgresql://user:pass@localhost:5432/sova
 
-ExecStart=sova server start --host 0.0.0.0 --port 8111 --project ${SOVA_PROJECT_DIR}
+# Validate project directory exists before starting
+ExecStartPre=/bin/test -d ${SOVA_PROJECT_DIR}
+# Bind to localhost only for security (use reverse proxy for external access)
+ExecStart=sova server start --host 127.0.0.1 --port 8111 --project ${SOVA_PROJECT_DIR}
 ExecStop=sova server stop --project ${SOVA_PROJECT_DIR}
 
 # Use journald for log rotation

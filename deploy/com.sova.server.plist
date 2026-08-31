@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    This is a reference template for the SOVA server launchd plist.
+    The 'sova server install-service' command generates the actual plist file
+    with proper paths substituted (replacing placeholders with absolute paths).
+-->
 <plist version="1.0">
 <dict>
     <key>Label</key>
@@ -39,6 +44,7 @@
     </dict>
 
     <!-- Use persistent log directory instead of /tmp -->
+    <!-- Note: ~ expansion works in launchd, but absolute paths are more explicit -->
     <key>StandardOutPath</key>
     <string>~/Library/Logs/sova/sova-server.log</string>
 

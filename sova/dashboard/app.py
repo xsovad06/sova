@@ -32,6 +32,10 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from sova.config.registry import has_projects, list_projects
 from sova.dashboard.routers import (
@@ -408,12 +412,12 @@ def create_app(
             multi_project = has_projects()
 
     is_multi = multi_project
+    resolved = (project_dir or Path.cwd()).resolve()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from sova.utils.logging import setup_logging
 
-        resolved = (project_dir or Path.cwd()).resolve()
         log_file = resolved / ".claude" / "sova.log"
         setup_logging(log_file=log_file)
 
@@ -673,6 +677,32 @@ def create_app(
             await close_db()
 
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)
+
+    # Rate limiting middleware
+    from sova.config.loader import load_config
+
+    cfg = load_config(resolved)
+    rate_limit = cfg.dashboard.rate_limit_per_minute
+
+    if rate_limit > 0:
+
+        def rate_limit_key(request: Request) -> str | None:
+            """Get rate limit key for a request. Return None for exempt endpoints."""
+            path = request.url.path
+            # Exempt WebSocket, SSE, and static endpoints
+            if path.startswith("/ws/") or path.endswith("/stream") or path.startswith("/static/"):
+                return None
+            return get_remote_address(request)
+
+        limiter = Limiter(
+            key_func=rate_limit_key,
+            default_limits=[f"{rate_limit}/minute"],
+            headers_enabled=True,
+            swallow_errors=True,
+        )
+        app.state.limiter = limiter
+        app.add_middleware(SlowAPIMiddleware)
+        app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

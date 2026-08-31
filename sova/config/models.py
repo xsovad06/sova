@@ -385,6 +385,7 @@ class DashboardConfig(BaseSettings):
     gc_on_startup: bool = False
     port: int = 8111
     llm_suggestions: bool = True
+    rate_limit_per_minute: int = 60
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
 

@@ -1,4 +1,4 @@
-"""Work item service -- unified state model for the agents dashboard.
+"""Work item service: unified state model for the agents dashboard.
 
 Merges four state sources (GitHub labels, PR status, handoff files, running agents)
 into a single computed state per issue/PR. The task browser renders from this state
