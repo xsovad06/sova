@@ -846,6 +846,13 @@ _REGISTRY: list[SettingMeta] = [
         "dashboard",
         "boolean",
     ),
+    SettingMeta(
+        "dashboard.rate_limit_per_minute",
+        "Rate limit per minute",
+        "Maximum API requests per minute per IP address (default 60, set 0 to disable)",
+        "dashboard",
+        "number",
+    ),
     # -- MCP --
     SettingMeta(
         "mcp.enabled",

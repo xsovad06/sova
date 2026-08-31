@@ -16928,3 +16928,92 @@ class TestCrashRecoveryCleanup:
         mock_get_branch.assert_not_awaited()
         mock_delete_branch.assert_not_awaited()
         mock_post_merge.assert_not_awaited()
+
+
+class TestRateLimiting:
+    """Test rate limiting middleware."""
+
+    async def test_requests_within_limit_pass(self, tmp_path: Path) -> None:
+        """Test that requests within the rate limit are allowed."""
+        os.environ["SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE"] = "3"
+        try:
+            app = create_app(project_dir=tmp_path)
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                # Make 3 requests (at the limit)
+                for i in range(3):
+                    response = await client.get("/healthz")
+                    assert response.status_code == 200, f"Request {i + 1} failed"
+        finally:
+            os.environ.pop("SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE", None)
+
+    async def test_requests_over_limit_get_429(self, tmp_path: Path) -> None:
+        """Test that requests exceeding the rate limit get 429."""
+        os.environ["SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE"] = "3"
+        try:
+            app = create_app(project_dir=tmp_path)
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                # Make 3 requests (at the limit)
+                for _ in range(3):
+                    response = await client.get("/healthz")
+                    assert response.status_code == 200
+
+                # The 4th request should be rate limited
+                response = await client.get("/healthz")
+                assert response.status_code == 429
+                assert "X-RateLimit-Limit" in response.headers
+        finally:
+            os.environ.pop("SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE", None)
+
+    async def test_static_files_exempt_from_rate_limit(self, tmp_path: Path) -> None:
+        """Test that static file requests are exempt from rate limiting."""
+        os.environ["SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE"] = "3"
+        try:
+            app = create_app(project_dir=tmp_path)
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                # Make many requests to static files (should all pass)
+                for _ in range(10):
+                    response = await client.get("/static/style.css")
+                    # 404 is fine, we're just testing that rate limiting doesn't apply
+                    assert response.status_code in {200, 404}
+        finally:
+            os.environ.pop("SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE", None)
+
+    async def test_stream_endpoints_exempt_from_rate_limit(self, tmp_path: Path) -> None:
+        """Test that streaming endpoints are exempt from rate limiting."""
+        import httpx
+
+        os.environ["SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE"] = "3"
+        try:
+            app = create_app(project_dir=tmp_path)
+            transport = ASGITransport(app=app)
+            # Use a very short timeout since SSE endpoints stream indefinitely
+            async with AsyncClient(transport=transport, base_url="http://test", timeout=0.1) as client:
+                # Make requests to a streaming endpoint
+                # SSE endpoints will timeout, but should not be rate limited
+                for _ in range(10):
+                    try:
+                        response = await client.get("/api/feed/stream")
+                        # If we get a response, it should not be 429
+                        assert response.status_code != 429
+                    except (httpx.ReadTimeout, httpx.TimeoutException):
+                        # Timeout is expected for SSE endpoints
+                        pass
+        finally:
+            os.environ.pop("SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE", None)
+
+    async def test_rate_limit_disabled_when_zero(self, tmp_path: Path) -> None:
+        """Test that rate limiting can be disabled by setting it to 0."""
+        os.environ["SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE"] = "0"
+        try:
+            app = create_app(project_dir=tmp_path)
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                # Make many requests (should all pass when disabled)
+                for _ in range(20):
+                    response = await client.get("/healthz")
+                    assert response.status_code == 200
+        finally:
+            os.environ.pop("SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE", None)
