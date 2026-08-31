@@ -12,10 +12,15 @@ class.
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import TYPE_CHECKING
+
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
+from sova.core.schema_validation import ValidationError, validate_step_output
+from sova.core.schemas import get_review_schema
 from sova.core.spec_utils import find_spec_file
 from sova.db.models import TaskRun
 from sova.db.session import get_session
@@ -30,6 +35,10 @@ from sova.ipc.handoff import (
     write_handoff_file,
 )
 from sova.llm.client import invoke
+
+if TYPE_CHECKING:
+    from sova.llm.models import LLMResult
+
 from sova.roles._review_comments import (
     _MAX_COMPACT_SPEC_CHARS,
     _SPEC_SECTIONS,
@@ -441,15 +450,67 @@ class ReviewerRole(AgentRole):
                     spec_sections=chunk_spec,
                     addressed_findings=chunk_addressed,
                 )
+                chunk_budget = ctx.config.agent.max_budget / len(chunks)
+
                 llm_result = await invoke(
                     prompt,
                     model="sonnet",
                     cwd=ctx.working_dir,
+                    max_budget_usd=chunk_budget,
                 )
                 ctx.add_cost(llm_result.cost_usd)
                 result.total_cost += llm_result.cost_usd
 
-                findings, summary = _parse_findings(llm_result.text)
+                chunk_spent = llm_result.cost_usd
+                last_retry_text = llm_result.text
+
+                async def retry_review(retry_prompt: str) -> LLMResult:
+                    nonlocal chunk_spent, last_retry_text
+                    remaining = chunk_budget - chunk_spent
+                    if remaining <= Decimal("0"):
+                        raise RuntimeError("Chunk review budget exhausted, cannot retry")
+                    max_retry_budget = max(Decimal("0"), remaining)
+                    retry_result = await invoke(
+                        retry_prompt,
+                        model="sonnet",
+                        cwd=ctx.working_dir,
+                        max_budget_usd=max_retry_budget,
+                    )
+                    chunk_spent += retry_result.cost_usd
+                    last_retry_text = retry_result.text
+                    return retry_result
+
+                # Validate output with retry on failure
+                try:
+                    data, retry_cost = await validate_step_output(
+                        raw_text=llm_result.text,
+                        schema=get_review_schema(),
+                        llm_invoke=retry_review,
+                        original_prompt=prompt,
+                        max_retries=2,
+                    )
+                    ctx.add_cost(retry_cost)
+                    result.total_cost += retry_cost
+
+                    # Convert validated dict to ReviewFinding objects
+                    findings = [
+                        ReviewFinding(
+                            file=item.get("file", "unknown"),
+                            severity=_safe_severity(item.get("severity", 5)),
+                            category=item.get("category", "other"),
+                            description=item.get("description", ""),
+                            suggestion=item.get("suggestion", ""),
+                            line=item.get("line"),
+                        )
+                        for item in data.get("findings", [])
+                    ]
+                    summary = data.get("summary", "")
+                except ValidationError as ve:
+                    log.warning("reviewer.validation_failed", chunk=i + 1, error=str(ve), exc_info=True)
+                    ctx.add_cost(ve.retry_cost)
+                    result.total_cost += ve.retry_cost
+                    findings, summary = _parse_findings(last_retry_text)
+
                 result.findings.extend(findings)
                 if i == 0 or not result.summary:
                     result.summary = summary

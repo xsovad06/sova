@@ -12,12 +12,19 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import TriageConfig
 from sova.core.context import ExecutionContext
+from sova.core.schema_validation import ValidationError, validate_step_output
+from sova.core.schemas import get_triage_schema
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.llm.models import LLMResult
 
 log = get_logger(component="role.triage")
 
@@ -361,9 +368,54 @@ class TriageRole(AgentRole):
                 task_run_id=ctx.task_run_id,
                 model_selection_reason=model_reason,
             )
-            assessment = self._parse_llm_assessment(result.text)
-            if assessment:
-                return assessment
+
+            # Validate output with retry on failure
+            try:
+                triage_budget = ctx.config.agent.max_budget / 10
+                triage_spent = result.cost_usd
+                last_retry_text = result.text
+
+                async def retry_triage(retry_prompt: str) -> LLMResult:
+                    """Retry function for schema validation."""
+                    nonlocal triage_spent, last_retry_text
+                    remaining = triage_budget - triage_spent
+                    if remaining <= Decimal("0"):
+                        raise RuntimeError("Triage budget exhausted, cannot retry")
+                    max_retry_budget = max(Decimal("0"), remaining)
+                    retry_result = await invoke(
+                        retry_prompt,
+                        model=model,
+                        cwd=ctx.project_dir,
+                        max_budget_usd=max_retry_budget,
+                        timeout=120,
+                    )
+                    triage_spent += retry_result.cost_usd
+                    last_retry_text = retry_result.text
+                    await record_cost(
+                        retry_result,
+                        phase="triage_retry",
+                        issue=str(task.id),
+                        task_run_id=ctx.task_run_id,
+                        model_selection_reason=f"{model_reason}:retry" if model_reason else "retry",
+                    )
+                    return retry_result
+
+                data, retry_cost = await validate_step_output(
+                    raw_text=result.text,
+                    schema=get_triage_schema(),
+                    llm_invoke=retry_triage,
+                    original_prompt=prompt,
+                    max_retries=2,
+                )
+                ctx.add_cost(retry_cost)
+
+                return self._assessment_from_dict(data)
+            except ValidationError as ve:
+                log.warning("triage.validation_failed", issue=task.id, error=str(ve), exc_info=True)
+                ctx.add_cost(ve.retry_cost)
+                assessment = self._parse_llm_assessment_strict(last_retry_text)
+                if assessment:
+                    return assessment
 
         except Exception as exc:
             log.warning("triage.llm_fallback", error=str(exc))
@@ -583,6 +635,40 @@ class TriageRole(AgentRole):
         )
 
     @staticmethod
+    def _assessment_from_dict(data: dict, *, strict: bool = True) -> TaskAssessment:
+        """Build a TaskAssessment from a parsed LLM response dict.
+
+        Args:
+            data: Parsed LLM response.
+            strict: When True, missing core fields (suitability, confidence,
+                reasoning) raise KeyError. When False, defaults are used
+                with lowered confidence.
+        """
+        _CORE_REQUIRED = ("suitability", "confidence", "reasoning")
+
+        if strict:
+            for key in _CORE_REQUIRED:
+                if key not in data:
+                    raise KeyError(f"Missing required field: {key}")
+
+        core_defaults_used = any(key not in data for key in _CORE_REQUIRED)
+        if core_defaults_used and not strict:
+            missing = [k for k in _CORE_REQUIRED if k not in data]
+            log.warning("triage.assessment_defaults_applied", missing_fields=missing)
+        raw_confidence = float(data.get("confidence", 0.7))
+        confidence = min(raw_confidence, 0.5) if core_defaults_used else raw_confidence
+
+        return TaskAssessment(
+            suitability=data.get("suitability", "needs_spec"),
+            confidence=confidence,
+            reasoning=data.get("reasoning", ""),
+            missing_context=data.get("missing_context", []),
+            estimated_complexity=data.get("estimated_complexity", "moderate"),
+            suggested_role=data.get("suggested_role", "researcher"),
+            sub_tasks=data.get("sub_tasks", []),
+        )
+
+    @staticmethod
     def _has_criteria_markers(body_lower: str) -> bool:
         """Check if body contains acceptance criteria markers."""
         return any(
@@ -621,23 +707,29 @@ class TriageRole(AgentRole):
         return "moderate"
 
     def _parse_llm_assessment(self, text: str) -> TaskAssessment | None:
-        """Parse Claude's JSON response into a TaskAssessment."""
+        """Parse Claude's JSON response into a TaskAssessment (lenient fallback)."""
         try:
             cleaned = _strip_markdown_fencing(text.strip())
 
             data = json.loads(cleaned)
 
-            return TaskAssessment(
-                suitability=data["suitability"],
-                confidence=float(data.get("confidence", 0.7)),
-                reasoning=data.get("reasoning", ""),
-                missing_context=data.get("missing_context", []),
-                estimated_complexity=data.get("estimated_complexity", "moderate"),
-                suggested_role=data.get("suggested_role", "researcher"),
-                sub_tasks=data.get("sub_tasks", []),
-            )
+            return self._assessment_from_dict(data, strict=False)
         except (KeyError, ValueError) as exc:
             log.warning("triage.parse_failed", error=str(exc), exc_info=True)
+            return None
+
+    def _parse_llm_assessment_strict(self, text: str) -> TaskAssessment | None:
+        """Parse Claude's JSON response strictly (no defaults for required fields).
+
+        Used after validation exhaustion to detect broken LLM output that should
+        fall back to heuristic assessment.
+        """
+        try:
+            cleaned = _strip_markdown_fencing(text.strip())
+            data = json.loads(cleaned)
+            return self._assessment_from_dict(data, strict=True)
+        except (KeyError, ValueError) as exc:
+            log.warning("triage.parse_strict_failed", error=str(exc), exc_info=True)
             return None
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
@@ -822,15 +914,7 @@ class TriageRole(AgentRole):
             data = json.loads(cleaned)
 
             assessment_data = data.get("assessment", {})
-            assessment = TaskAssessment(
-                suitability=assessment_data.get("suitability", "needs_spec"),
-                confidence=float(assessment_data.get("confidence", 0.7)),
-                reasoning=assessment_data.get("reasoning", ""),
-                missing_context=assessment_data.get("missing_context", []),
-                estimated_complexity=assessment_data.get("estimated_complexity", "moderate"),
-                suggested_role=assessment_data.get("suggested_role", "researcher"),
-                sub_tasks=assessment_data.get("sub_tasks", []),
-            )
+            assessment = self._assessment_from_dict(assessment_data, strict=False)
 
             enriched_body: str | None = None
             raw_body = data.get("enriched_body", "")
