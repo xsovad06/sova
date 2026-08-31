@@ -1,4 +1,4 @@
-"""Agent process lifecycle -- start/stop/wait, status queries.
+"""Agent process lifecycle: start/stop/wait, status queries.
 
 Manages concurrent agent processes per project.
 Uses sova.ipc.runtime.AgentRuntime under the hood.
@@ -177,7 +177,7 @@ from sova.utils.logging import get_logger
 log = get_logger(component="dashboard.control")
 
 
-# -- Status queries -----------------------------------------------------------
+# Status queries
 
 
 def get_status(slug: str | None = None) -> dict:
@@ -321,7 +321,7 @@ async def get_unified_agents(slug: str | None = None) -> dict:
     return base
 
 
-# -- Agent lifecycle ----------------------------------------------------------
+# Agent lifecycle
 
 
 async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None:

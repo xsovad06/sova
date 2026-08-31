@@ -1,15 +1,15 @@
-"""Agent control -- backward-compatible re-exports.
+"""Agent control: backward-compatible re-exports.
 
 Split into focused modules:
-- agent_pool.py -- data models, slot management, project-scoped collections
-- agent_db.py -- TaskRun/CostRecord CRUD for dashboard-spawned agents
+- agent_pool.py: data models, slot management, project-scoped collections
+- agent_db.py: TaskRun/CostRecord CRUD for dashboard-spawned agents
 - agent_lifecycle.py: process start/stop/wait, status queries
 - agent_resource.py: resource monitoring, background task tracking
 - agent_finalize.py: wait-and-finalize, crash recovery, merge queue checks
 - agent_approval.py: spec approval/rejection, lifecycle integration
-- agent_output.py -- output streaming and stream-json parsing
-- agent_recovery.py -- stale run detection and PID checks
-- agent_handoff.py -- auto-handoff orchestration
+- agent_output.py: output streaming and stream-json parsing
+- agent_recovery.py: stale run detection and PID checks
+- agent_handoff.py: auto-handoff orchestration
 """
 
 from sova.dashboard.services.agent_db import (
