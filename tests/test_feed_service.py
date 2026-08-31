@@ -581,6 +581,84 @@ def test_serialize_item_and_briefing() -> None:
     assert r2["generated_at"] is None
 
 
+def test_serialize_item_with_occurrence_count() -> None:
+    """_serialize_item includes occurrence_count when non-zero."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from sova.dashboard.routers.feed import _serialize_item
+
+    item = SimpleNamespace(
+        id="gcal:standup",
+        provider="gcal",
+        category=SimpleNamespace(value="informational"),
+        title="Daily Standup",
+        body="",
+        source_url="",
+        timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        urgency=0,
+        action_hint="Upcoming meeting",
+        occurrence_count=3,
+        metadata={"recurring_event_id": "base123"},
+    )
+    result = _serialize_item(item)
+    assert result["occurrence_count"] == 3
+    assert result["recurring_event_id"] == "base123"
+    assert "is_recurring_exception" not in result
+
+
+def test_serialize_item_with_recurring_exception() -> None:
+    """_serialize_item includes is_recurring_exception when set in metadata."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from sova.dashboard.routers.feed import _serialize_item
+
+    item = SimpleNamespace(
+        id="gcal:standup-exc",
+        provider="gcal",
+        category=SimpleNamespace(value="needs_attention"),
+        title="Daily Standup",
+        body="",
+        source_url="",
+        timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        urgency=2,
+        action_hint="Attendees changed",
+        occurrence_count=0,
+        metadata={"is_recurring_exception": True, "recurring_event_id": "base123"},
+    )
+    result = _serialize_item(item)
+    assert result["is_recurring_exception"] is True
+    assert result["recurring_event_id"] == "base123"
+    assert "occurrence_count" not in result
+
+
+def test_serialize_item_without_recurring_fields() -> None:
+    """_serialize_item omits recurring fields when not present."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from sova.dashboard.routers.feed import _serialize_item
+
+    item = SimpleNamespace(
+        id="gcal:one-off",
+        provider="gcal",
+        category=SimpleNamespace(value="informational"),
+        title="Lunch",
+        body="",
+        source_url="",
+        timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        urgency=0,
+        action_hint="Upcoming",
+        occurrence_count=0,
+        metadata={},
+    )
+    result = _serialize_item(item)
+    assert "occurrence_count" not in result
+    assert "is_recurring_exception" not in result
+    assert "recurring_event_id" not in result
+
+
 class TestEmitFinalizeEvent:
     def test_emit_finalize_event_success(self) -> None:
         import sova.dashboard.services.feed_service as mod
