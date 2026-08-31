@@ -7,14 +7,10 @@ by time-to-start and agenda presence. Requires OAuth2 credentials.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
 
 from sova.awareness import register_provider
 from sova.awareness.base import AwarenessItem, AwarenessProvider, ItemCategory
 from sova.utils.logging import get_logger
-
-if TYPE_CHECKING:
-    pass
 
 try:
     from googleapiclient.discovery import build
@@ -71,7 +67,7 @@ class CalendarProvider(AwarenessProvider):
             since: If provided, used as timeMin (event start time filter).
                    Calendar API doesn't support filtering by modification time.
         """
-        if not await self.is_configured():
+        if build is None or authenticate_google is None:
             return []
 
         try:
@@ -86,15 +82,9 @@ class CalendarProvider(AwarenessProvider):
             _log.warning("gcal.service_build_failed", exc_info=True)
             return []
 
-        now = datetime.now()
         now_utc = datetime.now(timezone.utc)
-        if since is not None:
-            if since.tzinfo is None:
-                since_utc = since.astimezone().astimezone(timezone.utc)
-            else:
-                since_utc = since.astimezone(timezone.utc)
-        else:
-            since_utc = now_utc
+        now = now_utc.astimezone().replace(tzinfo=None)
+        since_utc = since.astimezone(timezone.utc) if since is not None else now_utc
         time_min = since_utc.isoformat()
         time_max = (now_utc + timedelta(hours=self.config.gcal_lookahead_hours)).isoformat()
 
@@ -131,12 +121,8 @@ class CalendarProvider(AwarenessProvider):
                 _log.warning("gcal.calendar_fetch_failed", calendar=calendar_id, exc_info=True)
                 continue
 
-        items: list[AwarenessItem] = []
-        for event in all_events.values():
-            item = _build_item(event, now)
-            if item:
-                items.append(item)
-
+        items = _process_recurring_events(all_events, now)
+        _log.info("gcal.fetch_complete", total=len(items))
         return items
 
 
@@ -249,12 +235,7 @@ def _get_response_status(attendees: list[dict]) -> str:
 
 def _extract_attendees(attendees: list[dict]) -> list[str]:
     """Extract attendee names or emails."""
-    names = []
-    for attendee in attendees:
-        name = attendee.get("displayName") or attendee.get("email", "")
-        if name:
-            names.append(name)
-    return names
+    return [name for a in attendees if (name := a.get("displayName") or a.get("email", ""))]
 
 
 def _categorize(
@@ -285,6 +266,192 @@ def _categorize(
 
     # Meetings later today or tomorrow
     return ItemCategory.INFORMATIONAL, 0, "Upcoming meeting"
+
+
+def _process_recurring_events(
+    all_events: dict[str, dict],
+    now: datetime,
+) -> list[AwarenessItem]:
+    """Post-process fetched events: collapse recurring, surface exceptions.
+
+    Groups instances by recurringEventId. Unchanged instances collapse into
+    a single representative with occurrence_count. Changed or cancelled
+    instances are surfaced as exceptions with urgency=2.
+    """
+    recurring_groups: dict[str, list[dict]] = {}
+    one_off: list[dict] = []
+
+    for event in all_events.values():
+        recurring_id = event.get("recurringEventId")
+        if recurring_id:
+            recurring_groups.setdefault(recurring_id, []).append(event)
+        else:
+            one_off.append(event)
+
+    items: list[AwarenessItem] = []
+
+    for event in one_off:
+        item = _build_item(event, now)
+        if item:
+            items.append(item)
+
+    for recurring_id, instances in recurring_groups.items():
+        items.extend(_collapse_recurring_group(recurring_id, instances, now))
+
+    return items
+
+
+def _collapse_recurring_group(
+    recurring_id: str,
+    instances: list[dict],
+    now: datetime,
+) -> list[AwarenessItem]:
+    """Collapse a single recurring event group into representative + exceptions."""
+    result: list[AwarenessItem] = []
+
+    built: list[tuple[dict, AwarenessItem]] = []
+    unbuilt_cancelled: list[dict] = []
+
+    for ev in instances:
+        item = _build_item(ev, now)
+        if item is not None:
+            built.append((ev, item))
+        elif ev.get("status") == "cancelled":
+            unbuilt_cancelled.append(ev)
+
+    for ev in unbuilt_cancelled:
+        exc = _build_cancelled_item(ev, instances)
+        if exc:
+            result.append(exc)
+
+    if not built:
+        return result
+
+    baseline_ev = _find_baseline_event([ev for ev, _ in built])
+    if baseline_ev is None:
+        for _, item in built:
+            item.urgency = 2
+            item.category = ItemCategory.NEEDS_ATTENTION
+            item.action_hint = "Recurring event cancelled"
+            item.metadata["is_recurring_exception"] = True
+            item.metadata["recurring_event_id"] = recurring_id
+            result.append(item)
+        return result
+
+    exceptions: list[AwarenessItem] = []
+    unchanged: list[AwarenessItem] = []
+
+    for ev, item in built:
+        reason = _detect_instance_change(ev, baseline_ev)
+        if reason:
+            item.urgency = 2
+            item.category = ItemCategory.NEEDS_ATTENTION
+            item.action_hint = reason
+            item.metadata["is_recurring_exception"] = True
+            item.metadata["recurring_event_id"] = recurring_id
+            exceptions.append(item)
+        else:
+            unchanged.append(item)
+
+    result.extend(exceptions)
+
+    if unchanged:
+        representative = unchanged[0]
+        representative.occurrence_count = len(unchanged)
+        representative.metadata["recurring_event_id"] = recurring_id
+        result.append(representative)
+
+    return result
+
+
+def _find_baseline_event(events: list[dict]) -> dict | None:
+    """Find the first non-cancelled event to use as baseline for comparison."""
+    return next((ev for ev in events if ev.get("status") != "cancelled"), None)
+
+
+def _detect_instance_change(instance: dict, baseline: dict) -> str:
+    """Detect if a recurring instance differs from the baseline.
+
+    Returns a combined reason string if changed, empty string if unchanged.
+    Checks: cancellation, title, time, attendees, description, location.
+    """
+    if instance.get("status") == "cancelled":
+        return "Recurring event cancelled"
+
+    changes: list[str] = []
+
+    inst_summary = instance.get("summary", "").strip()
+    base_summary = baseline.get("summary", "").strip()
+    if inst_summary and base_summary and inst_summary != base_summary:
+        changes.append("title")
+
+    original_start = instance.get("originalStartTime", {})
+    current_start = instance.get("start", {})
+    orig_time = original_start.get("dateTime") or original_start.get("date")
+    curr_time = current_start.get("dateTime") or current_start.get("date")
+    if orig_time and curr_time and orig_time != curr_time:
+        changes.append("time")
+
+    inst_emails = {a.get("email", "").lower() for a in instance.get("attendees", []) if a.get("email")}
+    base_emails = {a.get("email", "").lower() for a in baseline.get("attendees", []) if a.get("email")}
+    if inst_emails != base_emails:
+        changes.append("attendees")
+
+    inst_desc = instance.get("description", "").strip()
+    base_desc = baseline.get("description", "").strip()
+    if inst_desc != base_desc:
+        changes.append("description")
+
+    inst_loc = instance.get("location", "").strip()
+    base_loc = baseline.get("location", "").strip()
+    if inst_loc != base_loc:
+        changes.append("location")
+
+    if not changes:
+        return ""
+    return " and ".join(changes).capitalize() + " changed"
+
+
+def _build_cancelled_item(
+    event: dict,
+    all_instances: list[dict],
+) -> AwarenessItem | None:
+    """Build an AwarenessItem for a cancelled recurring instance that _build_item filtered."""
+    event_id = event.get("id")
+    if not event_id:
+        return None
+
+    summary = event.get("summary")
+    if not summary:
+        summary = next((s.get("summary") for s in all_instances if s.get("summary")), None)
+    if not summary:
+        return None
+
+    start = event.get("start") or event.get("originalStartTime")
+    if not start or not (start.get("dateTime") or start.get("date")):
+        return None
+    start_dt = _parse_start_time(start)
+
+    return AwarenessItem(
+        id=f"gcal:{event_id}",
+        provider="gcal",
+        category=ItemCategory.NEEDS_ATTENTION,
+        title=f"{summary} (cancelled)",
+        body="",
+        source_url=event.get("htmlLink", ""),
+        timestamp=start_dt,
+        urgency=2,
+        action_hint="Recurring event cancelled",
+        metadata={
+            "attendees": [],
+            "location": event.get("location", ""),
+            "calendar_link": event.get("htmlLink", ""),
+            "is_organizer": False,
+            "response_status": "needsAction",
+            "is_recurring_exception": True,
+            "recurring_event_id": event.get("recurringEventId", ""),
+        },
+    )
 
 
 if build is not None:

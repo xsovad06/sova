@@ -39,6 +39,7 @@ class AwarenessItem:
     metadata: dict = field(default_factory=dict)
     urgency: int = 0
     action_hint: str = ""
+    occurrence_count: int = 0
 
 
 class AwarenessProvider(ABC):
