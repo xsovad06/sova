@@ -869,6 +869,11 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_role_detail(request: Request, slug: str, name: str) -> Response:
         return _project_page(request, templates, slug, "role_editor.html", "roles", role_name=name)
 
+    @app.get("/p/{slug}/commands")
+    async def project_commands(request: Request, slug: str) -> Response:
+        """Render the command content browser page for a specific project."""
+        return _project_page(request, templates, slug, "commands.html", "commands")
+
     @app.get("/p/{slug}/spec/{issue_number}")
     async def project_spec(request: Request, slug: str, issue_number: str) -> Response:
         return _project_page(request, templates, slug, "spec.html", "agents", issue_number=issue_number)
@@ -1013,6 +1018,11 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/roles/{name}")
     async def role_detail_page(request: Request, name: str) -> Response:
         return templates.TemplateResponse(request, "role_editor.html", {"page": "roles", "role_name": name})
+
+    @app.get("/commands")
+    async def commands_page(request: Request) -> Response:
+        """Render the command content browser page."""
+        return templates.TemplateResponse(request, "commands.html", {"page": "commands"})
 
     @app.get("/spec/{issue_number}")
     async def spec_page(request: Request, issue_number: str) -> Response:

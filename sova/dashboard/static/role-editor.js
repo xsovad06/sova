@@ -257,7 +257,7 @@
         </div>
         <div>
           <label class="text-[10px] text-gray-500 block mb-1">Command</label>
-          <p class="text-xs text-gray-300">${esc(data.command || '(none)')}</p>
+          ${cmd ? `<a href="${prefix}/commands#${encodeURIComponent(data.command)}" class="text-xs text-accent hover:underline">${esc(data.command)}</a>` : `<p class="text-xs text-gray-300">${esc(data.command || '(none)')}</p>`}
         </div>
         <div>
           <label class="text-[10px] text-gray-500 block mb-1">Label</label>

@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}Commands - SOVA{% endblock %}
+{% block content %}
+<div class="flex-1 p-6 min-w-0">
+  <div class="flex items-center justify-between mb-6">
+    <h2 class="text-xl font-semibold text-gray-100">Commands</h2>
+    <div class="flex items-center gap-3">
+      <input id="cmd-search" type="text" placeholder="Filter commands..."
+             class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5 w-56 focus:outline-none focus:border-accent/50">
+      <select id="cmd-category" class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5 focus:outline-none focus:border-accent/50">
+        <option value="">All categories</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="flex gap-6 min-h-0" style="height: calc(100vh - 140px)">
+    <!-- Command list (left panel) -->
+    <div id="cmd-list" class="w-72 shrink-0 overflow-y-auto space-y-1 pr-2">
+      <p class="text-sm text-gray-500 py-8 text-center">Loading commands...</p>
+    </div>
+
+    <!-- Command detail (right panel) -->
+    <div id="cmd-detail" class="flex-1 min-w-0 overflow-y-auto">
+      <div class="bg-surface-card rounded-lg border border-gray-700/50 p-6">
+        <p class="text-sm text-gray-500">Select a command to view its documentation.</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const prefix = '{{ prefix|default("") }}';
+  const apiBase = prefix ? `${prefix}/api` : '/api';
+  const esc = window.escapeHtml || function(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
+
+  let allCommands = [];
+  let activeCommand = null;
+
+  async function loadCommands() {
+    try {
+      const resp = await fetch(`${apiBase}/roles/commands`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      allCommands = data.commands || [];
+      populateCategories();
+      renderList();
+      selectFromHash();
+    } catch (e) {
+      console.error('Failed to load commands', e);
+    }
+  }
+
+  function populateCategories() {
+    const cats = [...new Set(allCommands.map(c => c.category))].sort();
+    const sel = document.getElementById('cmd-category');
+    cats.forEach(cat => {
+      const opt = document.createElement('option');
+      opt.value = cat;
+      opt.textContent = cat;
+      sel.appendChild(opt);
+    });
+  }
+
+  function filteredCommands() {
+    const q = document.getElementById('cmd-search').value.toLowerCase();
+    const cat = document.getElementById('cmd-category').value;
+    return allCommands.filter(c => {
+      if (cat && c.category !== cat) return false;
+      if (q && !c.name.toLowerCase().includes(q) && !c.description.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }
+
+  function renderList() {
+    const cmds = filteredCommands();
+    const container = document.getElementById('cmd-list');
+    if (!cmds.length) {
+      container.innerHTML = '<p class="text-sm text-gray-500 py-8 text-center">No commands match the filter.</p>';
+      return;
+    }
+
+    container.innerHTML = cmds.map(c => {
+      const isActive = activeCommand && activeCommand.name === c.name;
+      const driftBadge = c.has_local_drift
+        ? '<span class="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-accent-yellow/20 text-accent-yellow shrink-0">drift</span>'
+        : '';
+      const installedDot = c.installed_path
+        ? '<span class="w-1.5 h-1.5 rounded-full bg-accent-green shrink-0" title="Installed"></span>'
+        : '';
+      return `<button data-cmd="${esc(c.name)}"
+        class="cmd-item w-full text-left px-3 py-2 rounded text-sm transition-colors flex items-center gap-2
+               ${isActive ? 'bg-accent/20 text-accent' : 'text-gray-300 hover:bg-surface-card hover:text-gray-100'}">
+        ${installedDot}
+        <span class="truncate">${esc(c.name)}</span>
+        ${driftBadge}
+      </button>`;
+    }).join('');
+
+    container.querySelectorAll('.cmd-item').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const name = btn.dataset.cmd;
+        const cmd = allCommands.find(c => c.name === name);
+        if (cmd) selectCommand(cmd);
+      });
+    });
+  }
+
+  function selectCommand(cmd) {
+    activeCommand = cmd;
+    window.location.hash = cmd.name;
+    renderList();
+    renderDetail(cmd);
+  }
+
+  function renderDetail(cmd) {
+    const container = document.getElementById('cmd-detail');
+    const statusBadges = [];
+    if (cmd.installed_path) {
+      statusBadges.push(`<span class="text-[10px] px-2 py-0.5 rounded-full bg-accent-green/20 text-accent-green">Installed</span>`);
+    } else {
+      statusBadges.push(`<span class="text-[10px] px-2 py-0.5 rounded-full bg-gray-700/50 text-gray-400">Not installed</span>`);
+    }
+    if (cmd.has_local_drift) {
+      statusBadges.push(`<span class="text-[10px] px-2 py-0.5 rounded-full bg-accent-yellow/20 text-accent-yellow">Local drift</span>`);
+    }
+    if (cmd.user_invocable) {
+      statusBadges.push(`<span class="text-[10px] px-2 py-0.5 rounded-full bg-accent-purple/20 text-accent-purple">User-invocable</span>`);
+    }
+
+    const contractHtml = [];
+    if (cmd.inputs && cmd.inputs.length) {
+      contractHtml.push(`<div>
+        <span class="text-[10px] text-gray-500 uppercase tracking-wide">Inputs</span>
+        <div class="flex flex-wrap gap-1 mt-1">${cmd.inputs.map(i => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-purple/20 text-accent-purple">${esc(i)}</span>`).join('')}</div>
+      </div>`);
+    }
+    if (cmd.outputs && cmd.outputs.length) {
+      contractHtml.push(`<div>
+        <span class="text-[10px] text-gray-500 uppercase tracking-wide">Outputs</span>
+        <div class="flex flex-wrap gap-1 mt-1">${cmd.outputs.map(o => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-green/20 text-accent-green">${esc(o)}</span>`).join('')}</div>
+      </div>`);
+    }
+
+    let contentHtml = '';
+    if (cmd.content) {
+      contentHtml = typeof renderMarkdown === 'function' ? renderMarkdown(cmd.content) : `<pre class="text-xs text-gray-300 whitespace-pre-wrap">${esc(cmd.content)}</pre>`;
+    }
+
+    container.innerHTML = `
+      <div class="bg-surface-card rounded-lg border border-gray-700/50">
+        <div class="p-6 border-b border-gray-700/30">
+          <div class="flex items-center gap-3 mb-2">
+            <h3 class="text-lg font-semibold text-gray-100">${esc(cmd.name)}</h3>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-accent/20 text-accent">${esc(cmd.category)}</span>
+            ${statusBadges.join('')}
+          </div>
+          <p class="text-sm text-gray-400">${esc(cmd.description)}</p>
+          ${cmd.installed_path ? `<p class="text-[11px] text-gray-500 mt-2">Path: ${esc(cmd.installed_path)}</p>` : ''}
+          ${contractHtml.length ? `<div class="flex gap-4 mt-3">${contractHtml.join('')}</div>` : ''}
+        </div>
+        <div class="p-6 prose prose-invert max-w-none text-sm">
+          ${contentHtml || '<p class="text-gray-500">No content available.</p>'}
+        </div>
+      </div>`;
+  }
+
+  function selectFromHash() {
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+      const cmd = allCommands.find(c => c.name === hash);
+      if (cmd) {
+        selectCommand(cmd);
+        return;
+      }
+    }
+  }
+
+  document.getElementById('cmd-search').addEventListener('input', renderList);
+  document.getElementById('cmd-category').addEventListener('change', renderList);
+  window.addEventListener('hashchange', selectFromHash);
+
+  loadCommands();
+})();
+</script>
+{% endblock %}

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from functools import lru_cache
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -275,15 +277,75 @@ def _builtin_researcher() -> dict:
 # -- Command contracts ---------------------------------------------------------
 
 
-@lru_cache(maxsize=1)
-def get_available_commands() -> list[dict]:
-    """Return all discovered commands with their contracts (cached)."""
+_CMD_CACHE_TTL = 30  # seconds
+_cmd_cache: dict[str | None, tuple[float, list[dict]]] = {}
+
+
+def get_available_commands(project_dir: str | None = None) -> list[dict]:
+    """Return all discovered commands with content, install path, and drift metadata.
+
+    Results are cached per ``project_dir`` with a 30-second TTL so edits to
+    command files on disk are reflected without a server restart.
+    """
+    now = time.monotonic()
+    cached = _cmd_cache.get(project_dir)
+    if cached and (now - cached[0]) < _CMD_CACHE_TTL:
+        return cached[1]
+
     commands_dir = get_canonical_dir()
     entries = discover(commands_dir)
-    return [_command_entry_to_dict(e) for e in entries]
+
+    installed_content: dict[str, str] = {}
+    if project_dir:
+        installed_dir = Path(project_dir) / ".claude" / "commands"
+        if installed_dir.is_dir():
+            resolved_root = installed_dir.resolve()
+            for md in installed_dir.glob("*.md"):
+                if md.is_symlink() or not md.resolve().is_relative_to(resolved_root):
+                    continue
+                try:
+                    installed_content[md.stem] = md.read_text(encoding="utf-8")
+                except OSError:
+                    pass
+
+    result = [_command_entry_to_dict(e, installed_content) for e in entries]
+    _cmd_cache[project_dir] = (now, result)
+    return result
 
 
-def _command_entry_to_dict(entry: CommandEntry) -> dict:
+def get_command_detail(name: str, project_dir: str | None = None) -> dict | None:
+    """Return a single command by *name*, or ``None`` if not found.
+
+    Rejects names containing path separators or traversal sequences.
+    """
+    if "/" in name or "\\" in name or ".." in name:
+        return None
+    commands = get_available_commands(project_dir)
+    for cmd in commands:
+        if cmd["name"] == name:
+            return cmd
+    return None
+
+
+def _command_entry_to_dict(entry: CommandEntry, installed_content: dict[str, str] | None = None) -> dict:
+    """Convert a ``CommandEntry`` to an API-friendly dict with content and drift metadata."""
+    installed_content = installed_content or {}
+
+    try:
+        canonical_body = entry.path.read_text(encoding="utf-8")
+    except OSError:
+        canonical_body = ""
+
+    local_body = installed_content.get(entry.name)
+    if local_body is not None:
+        content = local_body
+        has_local_drift = local_body != canonical_body
+        installed_path = f".claude/commands/{entry.name}.md"
+    else:
+        content = canonical_body
+        has_local_drift = False
+        installed_path = None
+
     return {
         "name": entry.name,
         "description": entry.description,
@@ -291,6 +353,9 @@ def _command_entry_to_dict(entry: CommandEntry) -> dict:
         "user_invocable": entry.user_invocable,
         "inputs": entry.inputs,
         "outputs": entry.outputs,
+        "content": content,
+        "installed_path": installed_path,
+        "has_local_drift": has_local_drift,
     }
 
 

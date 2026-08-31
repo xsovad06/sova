@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from sova.config.context import get_project_dir
 from sova.core.dag import validate_dag
 from sova.dashboard.services import role_service
 from sova.db.session import get_session
@@ -54,9 +55,20 @@ async def list_roles() -> dict[str, list[dict[str, Any]]]:
 
 @router.get("/commands")
 async def list_commands() -> dict[str, list[dict[str, Any]]]:
-    """List available commands with their input/output contracts."""
-    commands = role_service.get_available_commands()
+    """List available commands with content, install path, and drift metadata."""
+    pdir = _resolve_project_dir()
+    commands = role_service.get_available_commands(pdir)
     return {"commands": commands}
+
+
+@router.get("/commands/{name}")
+async def get_command(name: str) -> dict[str, Any]:
+    """Get a single command by name."""
+    pdir = _resolve_project_dir()
+    cmd = role_service.get_command_detail(name, pdir)
+    if cmd is None:
+        raise HTTPException(status_code=404, detail=f"Command not found: {name}")
+    return cmd
 
 
 @router.get("/{name}")
@@ -140,3 +152,9 @@ async def validate_role(name: str, req: ValidateRequest) -> dict[str, Any]:
     """Validate DAG structure."""
     errors, _ = validate_dag(req.graph_json)
     return {"valid": len(errors) == 0, "errors": errors}
+
+
+def _resolve_project_dir() -> str | None:
+    """Return the active project directory as a string, or ``None``."""
+    pdir = get_project_dir()
+    return str(pdir) if pdir else None

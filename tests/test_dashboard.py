@@ -12177,15 +12177,186 @@ class TestRolesAPI:
         assert "triage" in names
 
     async def test_list_commands(self, client):
-        """GET /api/roles/commands returns discovered commands."""
+        """GET /api/roles/commands returns discovered commands with content and metadata."""
         resp = await client.get("/api/roles/commands")
         assert resp.status_code == 200
         data = resp.json()
         assert "commands" in data
         assert len(data["commands"]) > 0
-        # At least one command should have inputs/outputs
         names = {c["name"] for c in data["commands"]}
         assert "develop" in names
+        cmd = next(c for c in data["commands"] if c["name"] == "develop")
+        assert "content" in cmd
+        assert len(cmd["content"]) > 0
+        assert "installed_path" in cmd
+        assert "has_local_drift" in cmd
+        assert isinstance(cmd["has_local_drift"], bool)
+
+    async def test_get_command_by_name(self, client):
+        """GET /api/roles/commands/{name} returns a single command."""
+        resp = await client.get("/api/roles/commands/develop")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "develop"
+        assert "content" in data
+        assert len(data["content"]) > 0
+        assert "category" in data
+
+    async def test_get_command_not_found(self, client):
+        """GET /api/roles/commands/{name} returns 404 for unknown command."""
+        resp = await client.get("/api/roles/commands/nonexistent-command-xyz")
+        assert resp.status_code == 404
+
+    async def test_get_command_path_traversal(self, client):
+        """GET /api/roles/commands/{name} rejects path-traversal names."""
+        for name in ["../etc/passwd", "foo/bar", "..\\windows", "name..ext"]:
+            resp = await client.get(f"/api/roles/commands/{name}")
+            assert resp.status_code in (404, 422), f"Expected 404/422 for {name!r}, got {resp.status_code}"
+
+    async def test_commands_page(self, client):
+        """GET /commands returns the commands browser page."""
+        resp = await client.get("/commands")
+        assert resp.status_code == 200
+        assert "Commands" in resp.text
+
+    async def test_list_commands_with_project_dir(self, client, tmp_path, monkeypatch):
+        """GET /api/roles/commands with project_dir loads installed commands and detects drift."""
+        installed_dir = tmp_path / ".claude" / "commands"
+        installed_dir.mkdir(parents=True)
+        (installed_dir / "develop.md").write_text("---\nname: develop\n---\nlocal copy", encoding="utf-8")
+        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: tmp_path)
+        from sova.dashboard.services import role_service
+
+        role_service._cmd_cache.clear()
+        resp = await client.get("/api/roles/commands")
+        assert resp.status_code == 200
+        data = resp.json()
+        cmd = next((c for c in data["commands"] if c["name"] == "develop"), None)
+        assert cmd is not None
+        assert cmd["installed_path"] == ".claude/commands/develop.md"
+        assert cmd["has_local_drift"] is True
+        role_service._cmd_cache.clear()
+
+    async def test_list_commands_symlink_rejected(self, client, tmp_path, monkeypatch):
+        """Symlinked command files in the installed directory are skipped."""
+        installed_dir = tmp_path / ".claude" / "commands"
+        installed_dir.mkdir(parents=True)
+        target = tmp_path / "secret.txt"
+        target.write_text("secret data", encoding="utf-8")
+        symlink = installed_dir / "evil.md"
+        symlink.symlink_to(target)
+        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: tmp_path)
+        from sova.dashboard.services import role_service
+
+        role_service._cmd_cache.clear()
+        resp = await client.get("/api/roles/commands")
+        assert resp.status_code == 200
+        data = resp.json()
+        names = {c["name"] for c in data["commands"]}
+        assert "evil" not in names
+        role_service._cmd_cache.clear()
+
+    async def test_list_commands_ttl_cache(self, client, monkeypatch):
+        """Second call within TTL returns cached result without re-discovering."""
+        from sova.dashboard.services import role_service
+
+        role_service._cmd_cache.clear()
+        resp1 = await client.get("/api/roles/commands")
+        assert resp1.status_code == 200
+        count1 = len(resp1.json()["commands"])
+        resp2 = await client.get("/api/roles/commands")
+        assert resp2.status_code == 200
+        assert len(resp2.json()["commands"]) == count1
+        role_service._cmd_cache.clear()
+
+    async def test_command_entry_to_dict_without_installed(self):
+        """_command_entry_to_dict with no installed content returns canonical body."""
+        from sova.commands.catalog import CommandEntry
+        from sova.dashboard.services.role_service import _command_entry_to_dict
+
+        entry = CommandEntry(
+            name="test-cmd",
+            description="A test",
+            category="test",
+            user_invocable=True,
+            path=Path("/nonexistent/test-cmd.md"),
+        )
+        result = _command_entry_to_dict(entry)
+        assert result["name"] == "test-cmd"
+        assert result["content"] == ""
+        assert result["installed_path"] is None
+        assert result["has_local_drift"] is False
+
+    async def test_command_entry_to_dict_with_installed_no_drift(self, tmp_path):
+        """_command_entry_to_dict detects no drift when installed matches canonical."""
+        from sova.commands.catalog import CommandEntry
+        from sova.dashboard.services.role_service import _command_entry_to_dict
+
+        cmd_file = tmp_path / "my-cmd.md"
+        cmd_file.write_text("---\nname: my-cmd\n---\nbody", encoding="utf-8")
+        entry = CommandEntry(
+            name="my-cmd",
+            description="desc",
+            category="dev",
+            user_invocable=True,
+            path=cmd_file,
+        )
+        result = _command_entry_to_dict(entry, {"my-cmd": "---\nname: my-cmd\n---\nbody"})
+        assert result["has_local_drift"] is False
+        assert result["installed_path"] == ".claude/commands/my-cmd.md"
+        assert result["content"] == "---\nname: my-cmd\n---\nbody"
+
+    async def test_command_entry_to_dict_with_drift(self, tmp_path):
+        """_command_entry_to_dict detects drift when installed differs from canonical."""
+        from sova.commands.catalog import CommandEntry
+        from sova.dashboard.services.role_service import _command_entry_to_dict
+
+        cmd_file = tmp_path / "my-cmd.md"
+        cmd_file.write_text("canonical body", encoding="utf-8")
+        entry = CommandEntry(
+            name="my-cmd",
+            description="desc",
+            category="dev",
+            user_invocable=True,
+            path=cmd_file,
+        )
+        result = _command_entry_to_dict(entry, {"my-cmd": "different local body"})
+        assert result["has_local_drift"] is True
+        assert result["content"] == "different local body"
+
+    async def test_get_command_detail_traversal_direct(self):
+        """get_command_detail rejects path-traversal names at the service level."""
+        from sova.dashboard.services.role_service import get_command_detail
+
+        assert get_command_detail("../etc/passwd") is None
+        assert get_command_detail("foo/bar") is None
+        assert get_command_detail("..\\windows") is None
+
+    async def test_get_command_detail_valid_name(self):
+        """get_command_detail returns a command dict for a valid name."""
+        from sova.dashboard.services.role_service import _cmd_cache, get_command_detail
+
+        _cmd_cache.clear()
+        result = get_command_detail("develop")
+        assert result is not None
+        assert result["name"] == "develop"
+        _cmd_cache.clear()
+
+    async def test_resolve_project_dir_returns_none(self, monkeypatch):
+        """_resolve_project_dir returns None when no project context is set."""
+        from sova.dashboard.routers.roles import _resolve_project_dir
+
+        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: None)
+        assert _resolve_project_dir() is None
+
+    async def test_resolve_project_dir_returns_string(self, monkeypatch):
+        """_resolve_project_dir converts Path to string."""
+        from sova.dashboard.routers.roles import _resolve_project_dir
+
+        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: Path("/some/path"))
+        result = _resolve_project_dir()
+        assert result == "/some/path"
+        assert isinstance(result, str)
 
     async def test_get_builtin_role(self, client):
         """GET /api/roles/developer returns the built-in developer role."""
