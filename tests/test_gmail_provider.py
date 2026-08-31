@@ -11,11 +11,13 @@ import pytest
 from sova.awareness.base import ItemCategory
 from sova.awareness.providers.gmail import (
     GmailProvider,
+    _build_item,
     _categorize,
     _decode_base64,
     _extract_body,
     _extract_headers,
     _is_automated_sender,
+    _is_ci_related,
     _parse_date,
     _strip_html,
 )
@@ -186,7 +188,7 @@ async def test_fetch_automated_email_is_informational(
     service = MagicMock()
     mock_build.return_value = service
 
-    msg = _make_message(sender="GitHub <noreply@github.com>", subject="PR #42 merged")
+    msg = _make_message(sender="Slack <notifications@slack.com>", subject="New messages in #general")
     service.users().messages().list().execute.return_value = {"messages": [{"id": "msg1", "threadId": "thread1"}]}
     service.users().messages().get().execute.return_value = msg
 
@@ -196,6 +198,26 @@ async def test_fetch_automated_email_is_informational(
     assert items[0].category == ItemCategory.INFORMATIONAL
     assert items[0].urgency == 0
     assert items[0].metadata["is_automated"] is True
+
+
+@pytest.mark.asyncio
+@patch("sova.awareness.providers.gmail._HAS_GOOGLE", True)
+@patch("sova.awareness.providers.gmail.build_service")
+@patch("sova.awareness.providers.gmail.authenticate_google")
+async def test_fetch_ci_email_is_filtered_out(
+    mock_auth: MagicMock, mock_build: MagicMock, gmail_provider: GmailProvider
+) -> None:
+    mock_auth.return_value = MagicMock()
+    service = MagicMock()
+    mock_build.return_value = service
+
+    msg = _make_message(sender="GitHub <noreply@github.com>", subject="[org/repo] CI passed")
+    service.users().messages().list().execute.return_value = {"messages": [{"id": "msg1", "threadId": "thread1"}]}
+    service.users().messages().get().execute.return_value = msg
+
+    items = await gmail_provider.fetch_items()
+
+    assert items == []
 
 
 @pytest.mark.asyncio
@@ -561,19 +583,226 @@ def test_automated_subdomain_match() -> None:
 
 
 def test_categorize_unread_human() -> None:
-    cat, urgency, hint = _categorize(is_unread=True, is_automated=False)
+    result = _categorize(is_unread=True, is_automated=False)
+    assert result is not None
+    cat, urgency, hint = result
     assert cat == ItemCategory.NEEDS_ATTENTION
     assert urgency == 1
     assert hint != ""
 
 
 def test_categorize_automated() -> None:
-    cat, urgency, hint = _categorize(is_unread=True, is_automated=True)
+    result = _categorize(is_unread=True, is_automated=True)
+    assert result is not None
+    cat, urgency, hint = result
     assert cat == ItemCategory.INFORMATIONAL
     assert urgency == 0
 
 
 def test_categorize_read_human() -> None:
-    cat, urgency, hint = _categorize(is_unread=False, is_automated=False)
+    result = _categorize(is_unread=False, is_automated=False)
+    assert result is not None
+    cat, urgency, hint = result
     assert cat == ItemCategory.INFORMATIONAL
     assert urgency == 0
+
+
+def test_categorize_ci_email_returns_none() -> None:
+    result = _categorize(
+        is_unread=True,
+        is_automated=False,
+        sender="GitHub <noreply@github.com>",
+        subject="[org/repo] Build passed",
+    )
+    assert result is None
+
+
+def test_categorize_ci_email_unread_still_filtered() -> None:
+    result = _categorize(
+        is_unread=True,
+        is_automated=False,
+        sender="dependabot[bot] <noreply@github.com>",
+        subject="Bump lodash from 4.17.20 to 4.17.21",
+    )
+    assert result is None
+
+
+def test_categorize_ci_wins_over_automated() -> None:
+    result = _categorize(
+        is_unread=True,
+        is_automated=True,
+        sender="noreply@github.com",
+        subject="Build passed",
+    )
+    assert result is None
+
+
+def test_categorize_non_ci_automated_still_informational() -> None:
+    result = _categorize(
+        is_unread=True,
+        is_automated=True,
+        sender="Slack <feedback@slack.com>",
+        subject="You have new messages",
+    )
+    assert result is not None
+    cat, urgency, _ = result
+    assert cat == ItemCategory.INFORMATIONAL
+    assert urgency == 0
+
+
+# ---------------------------------------------------------------------------
+# CI-related detection
+# ---------------------------------------------------------------------------
+
+
+def test_ci_related_github_noreply() -> None:
+    assert _is_ci_related("GitHub <noreply@github.com>", "PR #42 merged") is True
+
+
+def test_ci_related_github_notifications() -> None:
+    assert _is_ci_related("GitHub <notifications@github.com>", "Review requested") is True
+
+
+def test_ci_related_dependabot_in_sender() -> None:
+    assert _is_ci_related("dependabot[bot]", "Bump pytest from 7.0 to 8.0") is True
+
+
+def test_ci_related_coderabbit_in_subject() -> None:
+    assert _is_ci_related("someone@example.com", "CodeRabbit Review: repo/pr#1") is True
+
+
+def test_ci_related_sonarcloud_in_subject() -> None:
+    assert _is_ci_related("noreply@sonarcloud.io", "Quality Gate passed") is True
+
+
+def test_ci_related_jenkins_in_sender() -> None:
+    assert _is_ci_related("Jenkins <ci@mycompany.com>", "Build #100 Success") is True
+
+
+def test_ci_related_github_actions_in_subject() -> None:
+    assert _is_ci_related("someone@example.com", "GitHub Actions: workflow run completed") is True
+
+
+def test_ci_related_bot_suffix() -> None:
+    assert _is_ci_related("renovate[bot] <noreply@renovatebot.com>", "Update deps") is True
+
+
+def test_ci_related_case_insensitive() -> None:
+    assert _is_ci_related("JENKINS <CI@COMPANY.COM>", "BUILD PASSED") is True
+    assert _is_ci_related("", "SONARCLOUD Analysis") is True
+
+
+def test_ci_related_human_email() -> None:
+    assert _is_ci_related("Alice <alice@example.com>", "Meeting tomorrow") is False
+
+
+def test_ci_related_empty_strings() -> None:
+    assert _is_ci_related("", "") is False
+
+
+def test_ci_related_empty_sender() -> None:
+    assert _is_ci_related("", "Regular subject line") is False
+
+
+def test_ci_related_empty_subject() -> None:
+    assert _is_ci_related("alice@example.com", "") is False
+
+
+def test_ci_related_circleci() -> None:
+    assert _is_ci_related("builds@circleci.com", "Build succeeded") is True
+
+
+def test_ci_related_snyk() -> None:
+    assert _is_ci_related("noreply@snyk.io", "New vulnerability found") is True
+
+
+def test_ci_related_mergify() -> None:
+    assert _is_ci_related("Mergify <noreply@mergify.com>", "PR auto-merged") is True
+
+
+def test_ci_related_human_mentioning_jenkins() -> None:
+    """Broad vendor names in subject only do not trigger CI filtering."""
+    assert _is_ci_related("Alice <alice@example.com>", "Jenkins maintenance window") is False
+
+
+def test_ci_related_human_mentioning_renovate() -> None:
+    """Common English words in subject only do not trigger CI filtering."""
+    assert _is_ci_related("Bob <bob@example.com>", "Time to renovate the build system") is False
+
+
+def test_ci_related_human_mentioning_coveralls() -> None:
+    assert _is_ci_related("Carol <carol@example.com>", "Order coveralls for the team") is False
+
+
+# ---------------------------------------------------------------------------
+# _build_item() direct tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_item_empty_id() -> None:
+    assert _build_item({}) is None
+    assert _build_item({"id": ""}) is None
+
+
+def test_build_item_ci_email_filtered() -> None:
+    msg = _make_message(
+        sender="GitHub <noreply@github.com>",
+        subject="[org/repo] CI passed",
+    )
+    assert _build_item(msg) is None
+
+
+def test_build_item_human_unread() -> None:
+    msg = _make_message(
+        msg_id="abc123",
+        sender="Alice Smith <alice@example.com>",
+        subject="Meeting notes",
+        label_ids=["INBOX", "UNREAD"],
+    )
+    item = _build_item(msg)
+    assert item is not None
+    assert item.id == "gmail:abc123"
+    assert item.provider == "gmail"
+    assert item.category == ItemCategory.NEEDS_ATTENTION
+    assert item.urgency == 1
+    assert "Alice Smith" in item.title
+    assert "Meeting notes" in item.title
+    assert item.metadata["is_unread"] is True
+    assert item.metadata["is_automated"] is False
+
+
+def test_build_item_automated_sender() -> None:
+    msg = _make_message(
+        sender="Slack <notifications@slack.com>",
+        subject="New messages",
+        label_ids=["INBOX", "UNREAD"],
+    )
+    item = _build_item(msg)
+    assert item is not None
+    assert item.category == ItemCategory.INFORMATIONAL
+    assert item.metadata["is_automated"] is True
+
+
+def test_build_item_read_email() -> None:
+    msg = _make_message(label_ids=["INBOX"])
+    item = _build_item(msg)
+    assert item is not None
+    assert item.category == ItemCategory.INFORMATIONAL
+    assert item.metadata["is_unread"] is False
+
+
+def test_build_item_preserves_metadata() -> None:
+    msg = _make_message(
+        msg_id="meta1",
+        sender="Bob <bob@example.com>",
+        to="me@example.com",
+        cc="team@example.com",
+        subject="Review request",
+    )
+    item = _build_item(msg)
+    assert item is not None
+    assert item.metadata["from"] == "Bob <bob@example.com>"
+    assert item.metadata["to"] == "me@example.com"
+    assert item.metadata["cc"] == "team@example.com"
+    assert item.metadata["subject"] == "Review request"
+    assert item.source_url == "https://mail.google.com/mail/u/0/#inbox/meta1"

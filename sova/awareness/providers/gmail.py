@@ -84,6 +84,35 @@ _AUTOMATED_PREFIXES = (
     "automated",
 )
 
+# All keywords must be lowercase (matching is done against lowercased fields).
+# Sender-only: broad vendor names or common English words/surnames, matched
+# against the sender field only to avoid filtering human emails that mention
+# CI tools in the subject (e.g. "Jenkins maintenance window").
+_CI_SENDER_KEYWORDS = (
+    "noreply@github.com",
+    "notifications@github.com",
+    "builds@travis-ci",
+    "jenkins",
+    "renovate",
+    "coveralls",
+    "[bot]",
+)
+
+# Either-field: tool-specific names unlikely in human conversation, matched
+# against sender and subject independently.
+_CI_EITHER_KEYWORDS = (
+    "github actions",
+    "circleci",
+    "travis-ci",
+    "dependabot",
+    "codecov",
+    "sonarcloud",
+    "sonarqube",
+    "coderabbit",
+    "snyk",
+    "mergify",
+)
+
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -198,10 +227,17 @@ def _build_item(msg: dict[str, Any]) -> AwarenessItem | None:
 
     is_automated = _is_automated_sender(sender)
 
-    category, urgency, action_hint = _categorize(
+    result = _categorize(
         is_unread=is_unread,
         is_automated=is_automated,
+        sender=sender,
+        subject=subject,
     )
+
+    if result is None:
+        return None
+
+    category, urgency, action_hint = result
 
     source_url = f"https://mail.google.com/mail/u/0/#inbox/{msg_id}"
 
@@ -326,11 +362,32 @@ def _is_automated_sender(sender: str) -> bool:
     return any(local_part.startswith(prefix) for prefix in _AUTOMATED_PREFIXES)
 
 
+def _is_ci_related(sender: str, subject: str) -> bool:
+    """Detect CI/code-review bot emails by sender+subject keywords.
+
+    Matches fields independently to avoid filtering human emails that
+    mention CI tools in their subject line.
+    """
+    if not _CI_SENDER_KEYWORDS and not _CI_EITHER_KEYWORDS:
+        return False
+    sender_lower = sender.lower()
+    if any(kw in sender_lower for kw in _CI_SENDER_KEYWORDS):
+        return True
+    subject_lower = subject.lower()
+    return any(kw in sender_lower or kw in subject_lower for kw in _CI_EITHER_KEYWORDS)
+
+
 def _categorize(
     *,
     is_unread: bool,
     is_automated: bool,
-) -> tuple[ItemCategory, int, str]:
+    sender: str = "",
+    subject: str = "",
+) -> tuple[ItemCategory, int, str] | None:
+    # CI check must run first: CI mail is dropped regardless of read/automated state
+    if _is_ci_related(sender, subject):
+        return None
+
     if is_automated or not is_unread:
         return ItemCategory.INFORMATIONAL, 0, ""
 
