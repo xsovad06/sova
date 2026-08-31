@@ -1376,7 +1376,7 @@ class TestFetchSovaVerdicts:
                 return_value=mock_verdict,
             ) as mock_call,
             patch(
-                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1458,7 +1458,7 @@ class TestFetchSovaVerdicts:
                 return_value=mock_db_verdict,
             ) as mock_call,
             patch(
-                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1698,7 +1698,7 @@ class TestFetchSovaVerdictsGithubFallback:
             patch("sova.config.loader.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch(
-                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
                 new_callable=AsyncMock,
                 return_value=gh_verdict,
             ) as mock_fallback,
@@ -1722,7 +1722,7 @@ class TestFetchSovaVerdictsGithubFallback:
                 return_value=db_verdict,
             ),
             patch(
-                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
                 new_callable=AsyncMock,
             ) as mock_fallback,
         ):
@@ -1745,7 +1745,7 @@ class TestFetchSovaVerdictsGithubFallback:
                 return_value=no_review,
             ),
             patch(
-                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
                 new_callable=AsyncMock,
             ) as mock_fallback,
         ):
@@ -1769,7 +1769,7 @@ class TestFetchSovaVerdictsGithubFallback:
             patch("sova.config.loader.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch(
-                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1796,7 +1796,7 @@ class TestFetchSovaVerdictsGithubFallback:
             patch("sova.config.loader.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch(
-                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
                 new_callable=AsyncMock,
                 return_value=gh_verdict,
             ) as mock_fallback,
@@ -1866,7 +1866,7 @@ class TestFetchGithubReviewFallback:
             ),
             patch("sova.config.loader.load_config", side_effect=RuntimeError("config broken")),
             patch(
-                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
                 new_callable=AsyncMock,
             ) as mock_fallback,
         ):
