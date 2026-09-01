@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["findings", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "severity", "category", "description"],
+        "properties": {
+          "file": {"type": "string"},
+          "line": {"type": ["integer", "null"]},
+          "severity": {"type": "integer", "minimum": 1, "maximum": 10},
+          "category": {"type": "string"},
+          "description": {"type": "string"},
+          "suggestion": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}
