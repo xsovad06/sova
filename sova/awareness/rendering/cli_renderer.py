@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.markup import escape
@@ -166,10 +166,15 @@ def _urgency_marker(urgency: int) -> str:
 
 def _format_time_ago(timestamp: datetime) -> str:
     """Format timestamp as relative time (e.g., '2h ago', '30m ago')."""
-    if timestamp > datetime.now():
+    now = datetime.now()
+    # If timestamp is timezone-aware, make now aware too
+    if timestamp.tzinfo is not None:
+        now = datetime.now(timezone.utc).astimezone(timestamp.tzinfo)
+
+    if timestamp > now:
         return timestamp.strftime("%Y-%m-%d %H:%M")
 
-    delta = datetime.now() - timestamp
+    delta = now - timestamp
     seconds = delta.total_seconds()
 
     if seconds < 60:

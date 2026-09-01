@@ -327,7 +327,7 @@ log_backup_count = 5
 | **Server** | `sova server start\|stop\|restart\|status\|digest\|install-service` |
 | **Setup** | `sova install <path>`, `sova setup <path>`, `sova uninstall <path>`, `sova init-db`, `sova doctor` |
 | **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova learn-from-pr <pr>` |
-| **Monitor** | `sova status`, `sova costs`, `sova briefing`, `sova config`, `sova dashboard` |
+| **Monitor** | `sova status`, `sova costs`, `sova briefing` ([setup](docs/awareness-setup.md)), `sova config`, `sova dashboard` |
 | **Knowledge** | `sova memory search\|prune\|dump\|export\|import` |
 | **Commands** | `sova commands list\|diff\|update\|sync` |
 | **MCP** | `sova mcp serve` |
@@ -353,6 +353,19 @@ Agents are **ephemeral**: each one spawns, does its job, writes a handoff file, 
 | GitHub Issues | Supported |
 | Jira Cloud | Supported ([configuration guide](docs/jira-configuration-guide.md)) |
 | Linear | Planned |
+
+## Awareness Briefing
+
+SOVA's awareness subsystem aggregates information from Gmail, Google Calendar, GitHub PRs, Apple Reminders, and agent runs into a unified morning briefing. Run `sova briefing` to see everything that needs your attention in one place.
+
+**What it surfaces:**
+- Unread emails and threads needing replies
+- Today's calendar schedule and upcoming meetings
+- Open PRs (yours and awaiting your review)
+- Failed or interrupted agent runs
+- Apple Reminders tasks (macOS only)
+
+**Setup:** See [Awareness Setup Guide](docs/awareness-setup.md) for Google OAuth2 configuration and provider details.
 
 ## Contributing
 
