@@ -201,6 +201,7 @@ class TestConflictGateIntegration:
             patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_P}.check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_review_completed_gate", new_callable=AsyncMock, return_value=None),
             patch(
                 f"{_P}.check_ownership_gate",
                 new_callable=AsyncMock,
@@ -275,6 +276,7 @@ class TestConflictGateIntegration:
             patch(f"{_P}.check_dependency_gate", return_value=None),
             patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_review_completed_gate", new_callable=AsyncMock, return_value=None),
             patch(
                 f"{_P}.check_ownership_gate",
                 new_callable=AsyncMock,
@@ -344,6 +346,7 @@ class TestConflictGateIntegration:
             patch(f"{_P}.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_P}.check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_P}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_P}.check_review_completed_gate", new_callable=AsyncMock, return_value=None),
             patch(
                 f"{_P}.check_ownership_gate",
                 new_callable=AsyncMock,

@@ -44,7 +44,7 @@ def _state(**kwargs: object) -> WorkItemState:
 class TestComputeWorkItemState:
     """Priority cascade: running > PR (SOVA-adjusted) > label."""
 
-    # -- Priority 1: Running agent --
+    # Priority 1: Running agent
 
     def test_running_agent_overrides_everything(self) -> None:
         assert (
@@ -59,7 +59,7 @@ class TestComputeWorkItemState:
     def test_running_agent_alone(self) -> None:
         assert _state(running_agent={"run_id": 1, "role": "triage"}) == WorkItemState.AGENT_RUNNING
 
-    # -- Priority 2: PR state (SOVA-adjusted) --
+    # Priority 2: PR state (SOVA-adjusted)
 
     def test_sova_block_verdict_with_pr(self) -> None:
         """A blocking SOVA verdict overrides PR state to PR_SOVA_CHANGES."""
@@ -95,7 +95,7 @@ class TestComputeWorkItemState:
             == WorkItemState.PR_READY_TO_MERGE
         )
 
-    # -- Priority 3: PR state --
+    # Priority 3: PR state
 
     def test_pr_ready_to_merge(self) -> None:
         assert (
@@ -225,7 +225,7 @@ class TestComputeWorkItemState:
             == WorkItemState.PR_READY_TO_MERGE
         )
 
-    # -- Priority 4: GitHub label state --
+    # Priority 4: GitHub label state
 
     def test_label_backlog(self) -> None:
         assert _state(task_state="backlog") == WorkItemState.BACKLOG
@@ -254,7 +254,7 @@ class TestComputeWorkItemState:
     def test_unknown_label_defaults_backlog(self) -> None:
         assert _state(task_state="unknown_state") == WorkItemState.BACKLOG
 
-    # -- SOVA verdict integration --
+    # SOVA verdict integration
 
     def test_pr_approved_no_sova_review_yields_sova_pending(self) -> None:
         verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
@@ -286,7 +286,7 @@ class TestComputeWorkItemState:
             == WorkItemState.PR_SOVA_CHANGES
         )
 
-    # -- Edge cases --
+    # Edge cases
 
     def test_no_inputs_defaults_backlog(self) -> None:
         assert _state() == WorkItemState.BACKLOG
@@ -541,7 +541,7 @@ class TestApplySovaVerdict:
     def _review(self, verdict: str, reviewed_at: str | None = None) -> dict:
         return {"has_sova_review": True, "verdict": verdict, "finding_count": 1, "reviewed_at": reviewed_at}
 
-    # -- sova_verdict=None: pass-through --
+    # sova_verdict=None: pass-through
 
     def test_none_verdict_leaves_state_unchanged(self) -> None:
         assert _apply_sova_verdict(WorkItemState.PR_APPROVED, None) == WorkItemState.PR_APPROVED
@@ -549,7 +549,7 @@ class TestApplySovaVerdict:
     def test_none_verdict_leaves_awaiting_unchanged(self) -> None:
         assert _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, None) == WorkItemState.PR_AWAITING_REVIEW
 
-    # -- No SOVA review, integrate-bound states → PR_SOVA_PENDING --
+    # No SOVA review, integrate-bound states → PR_SOVA_PENDING
 
     def test_no_review_approved_yields_sova_pending(self) -> None:
         assert _apply_sova_verdict(WorkItemState.PR_APPROVED, self._no_review()) == WorkItemState.PR_SOVA_PENDING
@@ -570,7 +570,7 @@ class TestApplySovaVerdict:
             == WorkItemState.PR_EXTERNAL_CHANGES
         )
 
-    # -- SOVA reviewed with approve: pass-through --
+    # SOVA reviewed with approve: pass-through
 
     def test_approved_verdict_leaves_approved_unchanged(self) -> None:
         assert _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("approve")) == WorkItemState.PR_APPROVED
@@ -581,7 +581,7 @@ class TestApplySovaVerdict:
             == WorkItemState.PR_READY_TO_MERGE
         )
 
-    # -- SOVA reviewed with revise/block: downgrade overrideable states --
+    # SOVA reviewed with revise/block: downgrade overrideable states
 
     def test_revise_verdict_on_approved_yields_sova_changes(self) -> None:
         assert _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("revise")) == WorkItemState.PR_SOVA_CHANGES
@@ -608,7 +608,7 @@ class TestApplySovaVerdict:
         """CI_FAILED is not in _VERDICT_OVERRIDEABLE; existing fix action should not be clobbered."""
         assert _apply_sova_verdict(WorkItemState.PR_CI_FAILED, self._review("revise")) == WorkItemState.PR_CI_FAILED
 
-    # -- SOVA approved but GitHub has no formal approval (self-review posted as COMMENT) --
+    # SOVA approved but GitHub has no formal approval (self-review posted as COMMENT)
 
     def test_approved_verdict_on_awaiting_review_upgrades_to_approved(self) -> None:
         """SOVA approves but GitHub reviewDecision is empty (owner self-review posts as COMMENT).
@@ -628,7 +628,7 @@ class TestApplySovaVerdict:
         """CI failure takes priority; SOVA approve should not change the state."""
         assert _apply_sova_verdict(WorkItemState.PR_CI_FAILED, self._review("approve")) == WorkItemState.PR_CI_FAILED
 
-    # -- Staleness: human approval after SOVA review invalidates revise/block --
+    # Staleness: human approval after SOVA review invalidates revise/block
 
     def test_stale_revise_verdict_skips_downgrade(self) -> None:
         """If a human approved on GitHub after the SOVA review, the revise verdict is stale."""
@@ -666,7 +666,7 @@ class TestApplySovaVerdict:
         )
         assert result == WorkItemState.PR_SOVA_CHANGES
 
-    # -- external_reviews_enabled=False: skip PR_SOVA_PENDING for projects without bot review --
+    # external_reviews_enabled=False: skip PR_SOVA_PENDING for projects without bot review
 
     def test_external_reviews_disabled_approved_yields_awaiting_review(self) -> None:
         """No external reviewers: integrate-bound + no SOVA review → PR_AWAITING_REVIEW (not PR_SOVA_PENDING)."""
@@ -694,6 +694,33 @@ class TestApplySovaVerdict:
             _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("revise"), external_reviews_enabled=False)
             == WorkItemState.PR_SOVA_CHANGES
         )
+
+    # SOVA approved but unresolved review threads remain: PR_EXTERNAL_CHANGES
+
+    def test_approved_with_unresolved_threads_on_awaiting_review(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
+        result = _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict, unresolved_thread_count=2)
+        assert result == WorkItemState.PR_EXTERNAL_CHANGES
+
+    def test_approved_with_unresolved_threads_on_approved_state(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
+        result = _apply_sova_verdict(WorkItemState.PR_APPROVED, verdict, unresolved_thread_count=1)
+        assert result == WorkItemState.PR_EXTERNAL_CHANGES
+
+    def test_approved_with_unresolved_threads_on_ready_to_merge(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
+        result = _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, verdict, unresolved_thread_count=3)
+        assert result == WorkItemState.PR_EXTERNAL_CHANGES
+
+    def test_approved_zero_unresolved_threads_stays_approved(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
+        result = _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict, unresolved_thread_count=0)
+        assert result == WorkItemState.PR_APPROVED
+
+    def test_approved_default_unresolved_threads_stays_approved(self) -> None:
+        """unresolved_thread_count defaults to 0 when the caller omits it."""
+        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
+        assert _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict) == WorkItemState.PR_APPROVED
 
 
 class TestIsVerdictStale:
@@ -1104,7 +1131,7 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_pr_with_issue_not_in_queue(self, _mock_sources) -> None:
-        """PR linked to issue that's NOT in queue -- appears as PR item with issue context."""
+        """PR linked to issue that's NOT in queue: appears as PR item with issue context."""
         mock_fetch, _, mock_verdicts = _mock_sources
         prs = [
             {"number": 300, "linked_issue": 99, "computed_state": "approved_ci_green", "state": "OPEN", "title": "Fix"},
@@ -1638,7 +1665,7 @@ class TestParseSovaReviewFromGithub:
     def test_heuristic_requires_both_sections(self) -> None:
         from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
 
-        # Only ## Verdict, no ## PR Summary -- not a SOVA review
+        # Only ## Verdict, no ## PR Summary (not a SOVA review)
         body = "## Verdict\n\n**Approve.** LGTM."
         review = self._review(body)
         result = _parse_sova_review_from_github([review])
@@ -1647,7 +1674,7 @@ class TestParseSovaReviewFromGithub:
     def test_heuristic_requires_pr_summary_section(self) -> None:
         from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
 
-        # Only ## PR Summary, no ## Verdict -- not a SOVA review
+        # Only ## PR Summary, no ## Verdict (not a SOVA review)
         body = "## PR Summary\nThis PR does X."
         review = self._review(body)
         result = _parse_sova_review_from_github([review])
@@ -1657,7 +1684,7 @@ class TestParseSovaReviewFromGithub:
         from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
 
         # The dismissed review has the marker; the non-dismissed one is a plain human review.
-        # Expected: None -- the dismissed review is skipped and the human review is not SOVA.
+        # Expected: None. The dismissed review is skipped and the human review is not SOVA.
         dismissed = self._review(
             "<!-- sova-review: approve -->", state="DISMISSED", submitted_at="2026-07-21T12:00:00Z"
         )

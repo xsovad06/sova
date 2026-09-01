@@ -100,6 +100,20 @@ __all__ = [
 log = get_logger(component="role.reviewer")
 
 
+def _build_finding_summary(review: ReviewResult) -> dict:
+    """Build a severity-bucketed summary of review findings for handoff metadata."""
+    all_findings = review.findings
+    actionable = review.actionable
+    by_severity: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for f in actionable:
+        by_severity[_severity_label(f.severity).lower()] += 1
+    return {
+        "total": len(all_findings),
+        "actionable": len(actionable),
+        "by_severity": by_severity,
+    }
+
+
 def _check_protected_paths(files: list[str], protected_paths: list[str]) -> list[str]:
     """Return *files* whose path starts with any entry in *protected_paths*.
 
@@ -610,6 +624,8 @@ class ReviewerRole(AgentRole):
             for f in actionable
         ]
 
+        finding_summary = _build_finding_summary(review)
+
         if review.post_failed:
             next_action = "review_post_failed"
             post_failed_summary = (
@@ -622,6 +638,7 @@ class ReviewerRole(AgentRole):
                 key_decisions=[],
                 next_action=next_action,
                 pending_findings=findings_data,
+                metadata={"finding_summary": finding_summary},
                 pr_number=ctx.pr_number,
                 branch_name=ctx.branch_name,
             )
@@ -671,6 +688,7 @@ class ReviewerRole(AgentRole):
                 key_decisions=[],
                 next_action=next_action,
                 pending_findings=findings_data,
+                metadata={"finding_summary": finding_summary},
                 pr_number=ctx.pr_number,
                 branch_name=ctx.branch_name,
             )

@@ -332,6 +332,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "thread_total": thread_total,
         "thread_resolved": thread_resolved,
         "review_logins": _extract_review_logins(latest_reviews),
+        "latest_reviews": latest_reviews or [],
         "latest_approval_at": _extract_latest_approval_at(latest_reviews),
         "additions": raw.get("additions") or 0,
         "deletions": raw.get("deletions") or 0,
@@ -360,17 +361,28 @@ def _check_coderabbit_from_pr_data(pr_data: dict) -> bool:
     return bool(review_logins & DEFAULT_CODERABBIT_AUTHORS)
 
 
-def _check_threads_from_pr_data(pr_data: dict) -> dict:
-    """Check thread resolution using pre-fetched thread counts from enriched PR data."""
+def get_unresolved_thread_count(pr_data: dict) -> int:
+    """Return the number of unresolved review threads from enriched PR data.
+
+    Extracts from the cached PR data (thread_total, thread_resolved) without
+    making additional API calls. Returns 0 when no threads exist.
+    """
     total = pr_data.get("thread_total", 0)
     resolved = pr_data.get("thread_resolved", 0)
-    if total == 0 or resolved >= total:
+    return max(0, total - resolved)
+
+
+def _check_threads_from_pr_data(pr_data: dict) -> dict:
+    """Check thread resolution using pre-fetched thread counts from enriched PR data."""
+    unresolved = get_unresolved_thread_count(pr_data)
+    total = pr_data.get("thread_total", 0)
+    if unresolved == 0:
         return _gate("threads_resolved", enabled=True, passed=True)
     return _gate(
         "threads_resolved",
         enabled=True,
         passed=False,
-        reason=f"{total - resolved} of {total} threads unresolved",
+        reason=f"{unresolved} of {total} threads unresolved",
     )
 
 

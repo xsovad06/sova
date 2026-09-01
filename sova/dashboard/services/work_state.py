@@ -240,6 +240,7 @@ def compute_work_item_state(
                 sova_verdict,
                 latest_approval_at=pr_data.get("latest_approval_at"),
                 external_reviews_enabled=external_reviews_enabled,
+                unresolved_thread_count=_unresolved_thread_count(pr_data),
             )
 
     if task_state is not None:
@@ -248,8 +249,24 @@ def compute_work_item_state(
     return WorkItemState.BACKLOG
 
 
+def _unresolved_thread_count(pr_data: dict) -> int:
+    """Return the unresolved review thread count from enriched PR data.
+
+    Lazy import avoids pulling pr_service's git/asyncio dependencies into this
+    pure-logic module at import time.
+    """
+    from sova.dashboard.services.pr_service import get_unresolved_thread_count
+
+    return get_unresolved_thread_count(pr_data)
+
+
 # States where an Integrate button would be the primary action without SOVA override.
-_INTEGRATE_STATES = frozenset({WorkItemState.PR_APPROVED, WorkItemState.PR_READY_TO_MERGE})
+_INTEGRATE_STATES = frozenset(
+    {
+        WorkItemState.PR_APPROVED,
+        WorkItemState.PR_READY_TO_MERGE,
+    }
+)
 
 # States that SOVA verdict "revise"/"block" should downgrade to PR_SOVA_CHANGES.
 _VERDICT_OVERRIDEABLE = frozenset(
@@ -283,6 +300,7 @@ def _apply_sova_verdict(
     *,
     latest_approval_at: str | None = None,
     external_reviews_enabled: bool = True,
+    unresolved_thread_count: int = 0,
 ) -> WorkItemState:
     """Adjust a GitHub-derived PR state using the SOVA reviewer verdict."""
     if sova_verdict is None:
@@ -302,8 +320,14 @@ def _apply_sova_verdict(
             return mapped
         return WorkItemState.PR_SOVA_CHANGES
 
-    if has_review and verdict == "approve" and mapped == WorkItemState.PR_AWAITING_REVIEW:
-        return WorkItemState.PR_APPROVED
+    if has_review and verdict == "approve":
+        integrate_bound = mapped in _INTEGRATE_STATES or mapped == WorkItemState.PR_AWAITING_REVIEW
+        if integrate_bound and unresolved_thread_count > 0:
+            # SOVA approved, but unresolved review threads (from any reviewer) remain:
+            # do not surface Integrate until they're resolved via /address-pr.
+            return WorkItemState.PR_EXTERNAL_CHANGES
+        if mapped == WorkItemState.PR_AWAITING_REVIEW:
+            return WorkItemState.PR_APPROVED
 
     return mapped
 

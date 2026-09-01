@@ -584,10 +584,14 @@ def _format_sova_context(sova_verdict: dict | None) -> dict:
     """Extract the SOVA review context needed by the LLM suggestion service."""
     if not sova_verdict:
         return {"has_sova_review": False, "verdict": None}
-    return {
+    ctx: dict = {
         "has_sova_review": bool(sova_verdict.get("has_sova_review", False)),
         "verdict": sova_verdict.get("verdict"),
     }
+    finding_summary = sova_verdict.get("finding_summary")
+    if finding_summary is not None:
+        ctx["finding_summary"] = finding_summary
+    return ctx
 
 
 def _format_pr_details(pr: dict) -> dict:
