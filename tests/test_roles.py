@@ -3473,12 +3473,22 @@ class TestStripMarkdownFencing:
 class TestParseLLMAssessmentErrors:
     """Tests for _parse_llm_assessment error branches."""
 
-    def test_missing_suitability_key(self) -> None:
+    def test_missing_suitability_uses_default_with_lowered_confidence(self) -> None:
+        """Lenient fallback fills defaults and caps confidence at 0.5."""
         from sova.roles.triage import TriageRole
 
         role = TriageRole()
         result = role._parse_llm_assessment('{"confidence": 0.9}')
-        assert result is None
+        assert result is not None
+        assert result.suitability == "needs_spec"
+        assert result.confidence == 0.5
+
+    def test_strict_assessment_from_dict_rejects_missing_core_fields(self) -> None:
+        """Strict mode (used by validated path) raises on missing core fields."""
+        from sova.roles.triage import TriageRole
+
+        with pytest.raises(KeyError, match="suitability"):
+            TriageRole._assessment_from_dict({"confidence": 0.9})
 
     def test_invalid_confidence_value(self) -> None:
         from sova.roles.triage import TriageRole
