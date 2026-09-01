@@ -815,7 +815,7 @@ class TaskProgressionEngine:
             enriched_pr = await self._fetch_enriched_pr(gate_pr_number) if gate_pr_number else None
             review_block = await check_review_completed_gate(
                 issue_number,
-                labels=task_labels or [],
+                labels=effective_labels or [],
                 pr_number=gate_pr_number,
                 project_dir=self._project_dir,
                 pr_data=enriched_pr,
