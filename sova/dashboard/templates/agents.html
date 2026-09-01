@@ -1095,9 +1095,9 @@ async function quickStartRole(issue, role, prNumber) {
   showLaunchModal(issue, role, false, prNumber);
 }
 
-async function _doStartAgent(issue, role, force, prNumber, model) {
+async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride) {
   try {
-    var payload = { issue: String(issue), role: role, force: force };
+    var payload = { issue: String(issue), role: role, force: force, budget_override: budgetOverride || false };
     if (prNumber) payload.pr_number = prNumber;
     if (model) payload.model = model;
     var res = await fetch(apiUrl('/agents/start'), {
@@ -1106,7 +1106,23 @@ async function _doStartAgent(issue, role, force, prNumber, model) {
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      showToast(await getErrorDetail(res, 'Failed to start agent'), 'error');
+      var body = null;
+      try { body = await res.json(); } catch (_e) { /* ignore */ }
+      var detail = body && body.detail;
+      if (res.status === 409 && detail && detail.code === 'budget_exceeded') {
+        var spend = Number(detail.total_cost_usd || 0).toFixed(2);
+        var limit = Number(detail.max_issue_budget || 0).toFixed(2);
+        var confirmed = await sovaConfirm(
+          'Issue #' + issue + ' has exceeded its per-issue budget ($' + spend + ' / $' + limit + '). Override and start anyway?',
+          { title: 'Budget Exceeded', confirmText: 'Override', confirmClass: 'danger' }
+        );
+        if (confirmed) {
+          await _doStartAgent(issue, role, force, prNumber, model, true);
+        }
+        return;
+      }
+      var msg = (detail && (typeof detail === 'string' ? detail : detail.message)) || 'Failed to start agent';
+      showToast(msg, 'error');
     } else {
       var result = await res.json();
       if (result.error) { showToast(result.error, 'error'); return; }

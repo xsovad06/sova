@@ -686,3 +686,26 @@ class FeedEventRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (Index("ix_feed_events_created", "created_at"),)
+
+
+class BudgetOverride(Base):
+    """Audit record for per-issue budget override confirmations.
+
+    Created when a user clicks "Override" in the budget confirmation modal,
+    re-invoking start_agent with force=True. Stores spend vs. limit at the
+    time of override for auditability.
+    """
+
+    __tablename__ = "budget_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    issue_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    task_run_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID), nullable=False)
+    spend_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False)
+    limit_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_budget_overrides_issue", "issue_number"),
+        Index("ix_budget_overrides_created", "created_at"),
+    )

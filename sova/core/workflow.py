@@ -647,7 +647,16 @@ class WorkflowEngine:
         Queries all TaskRuns for this issue and sums their cost. If the total
         exceeds max_issue_budget, sets result.error and result.final_status to
         abort the pipeline before any steps execute.
+
+        Skipped when ``self._ctx.budget_override`` is True (budget override
+        explicitly confirmed via the dashboard modal or ``--budget-override``
+        CLI flag). The generic ``force`` flag does NOT skip this check on its
+        own, so callers that pass ``force=True`` for unrelated reasons (e.g.
+        ``resume_from_approval``) still get the hard stop when over budget.
         """
+        if self._ctx.budget_override:
+            return
+
         if not self._ctx.issue_number:
             return
 

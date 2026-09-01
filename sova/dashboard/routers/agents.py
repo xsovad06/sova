@@ -124,6 +124,7 @@ class StartAgentRequest(BaseModel):
     issue: str = ""
     role: str | None = None
     force: bool = False
+    budget_override: bool = False
     resume_run_id: int | None = None
     pr_number: int | None = None
     model: str | None = None
@@ -393,7 +394,10 @@ async def _check_run_terminal(run_id: int) -> bool:
         return False
 
 
-@router.post("/agents/start")
+@router.post(
+    "/agents/start",
+    responses={409: {"description": "Agent already running for this issue, or budget exceeded"}},
+)
 async def start_agent(req: StartAgentRequest) -> dict:
     """Start a new agent process."""
     if not req.issue and not req.role:
@@ -402,12 +406,21 @@ async def start_agent(req: StartAgentRequest) -> dict:
         req.issue,
         role=req.role,
         force=req.force,
+        budget_override=req.budget_override,
         resume_run_id=req.resume_run_id,
         pr_number=req.pr_number,
         model=req.model,
     )
     if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
-        raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Command failed")
+        detail: dict | str = result.get("detail") or result.get("error") or "Command failed"
+        if result.get("code") == "budget_exceeded":
+            detail = {
+                "code": "budget_exceeded",
+                "message": result["error"],
+                "total_cost_usd": result.get("total_cost_usd"),
+                "max_issue_budget": result.get("max_issue_budget"),
+            }
+        raise HTTPException(status_code=409, detail=detail)
     return result
 
 
