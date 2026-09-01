@@ -189,6 +189,9 @@ class AgentHandoff(BaseModel):
     needs_human: bool = False
     human_message: str | None = None
 
+    # Structured metadata (finding summaries, severity breakdowns, etc.)
+    metadata: dict = Field(default_factory=dict)
+
     # References
     pr_number: int | None = None
     branch_name: str

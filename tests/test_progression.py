@@ -3868,3 +3868,153 @@ class TestUpdateRemainingCapacity:
         slots, quota = TaskProgressionEngine._update_remaining_capacity(decision, 3, True)
         assert slots == 3
         assert quota is True
+
+
+class TestFetchEnrichedPr:
+    @pytest.mark.asyncio
+    async def test_returns_matching_pr(self) -> None:
+        engine = _make_engine(SupervisorConfig())
+        prs = [
+            {"number": 100, "review_decision": "APPROVED"},
+            {"number": 200, "state": "OPEN"},
+        ]
+        with patch(
+            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            new_callable=AsyncMock,
+            return_value=prs,
+        ):
+            result = await engine._fetch_enriched_pr(100)
+        assert result == {"number": 100, "review_decision": "APPROVED"}
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_not_found(self) -> None:
+        engine = _make_engine(SupervisorConfig())
+        prs = [{"number": 200, "state": "OPEN"}]
+        with patch(
+            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            new_callable=AsyncMock,
+            return_value=prs,
+        ):
+            result = await engine._fetch_enriched_pr(999)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_error(self) -> None:
+        engine = _make_engine(SupervisorConfig())
+        with patch(
+            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            new_callable=AsyncMock,
+            side_effect=Exception("network error"),
+        ):
+            result = await engine._fetch_enriched_pr(100)
+        assert result is None
+
+
+class TestReviewGatePassesPrData:
+    @pytest.mark.asyncio
+    async def test_gate_receives_enriched_pr_data(self) -> None:
+        """SPAWN_INTEGRATE gate should pass enriched PR data for human approval check."""
+        engine = _make_engine(SupervisorConfig(auto_integrate=True))
+        graph = MagicMock()
+        graph.get_dependencies = MagicMock(return_value=[])
+        pr_info = PRInfo(
+            number=100,
+            url="https://example.com/pr/100",
+            branch="feat/test",
+        )
+
+        enriched = {
+            "number": 100,
+            "review_decision": "APPROVED",
+            "latest_reviews": [{"state": "APPROVED", "author": {"type": "User"}}],
+        }
+
+        _p = "sova.supervisor.progression"
+        with (
+            patch.object(
+                engine,
+                "_fetch_enriched_pr",
+                new_callable=AsyncMock,
+                return_value=enriched,
+            ),
+            patch(
+                f"{_p}.check_review_completed_gate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_gate,
+            patch(f"{_p}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_p}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_p}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch(f"{_p}.check_dependency_gate", return_value=None),
+            patch(f"{_p}.check_human_involvement_gate", return_value=None),
+            patch(f"{_p}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_p}.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_p}.check_memory_pressure_gate", return_value=None),
+        ):
+            await engine._collect_gate_blockers(
+                42,
+                ProgressionAction.SPAWN_INTEGRATE,
+                graph,
+                precomputed_rate_limit=None,
+                task_labels=["agent:in-review"],
+                refined_pr_info=pr_info,
+            )
+
+        mock_gate.assert_called_once()
+        call_kwargs = mock_gate.call_args
+        assert call_kwargs.kwargs.get("pr_data") == enriched
+
+    @pytest.mark.asyncio
+    async def test_gate_receives_none_pr_data_when_fetch_fails(self) -> None:
+        """Gate should receive pr_data=None when enriched PR fetch fails."""
+        engine = _make_engine(SupervisorConfig(auto_integrate=True))
+        graph = MagicMock()
+        graph.get_dependencies = MagicMock(return_value=[])
+        pr_info = PRInfo(
+            number=100,
+            url="https://example.com/pr/100",
+            branch="feat/test",
+        )
+
+        _p = "sova.supervisor.progression"
+        with (
+            patch.object(
+                engine,
+                "_fetch_enriched_pr",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                f"{_p}.check_review_completed_gate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_gate,
+            patch(f"{_p}.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(f"{_p}.check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{_p}.check_ownership_gate",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch(f"{_p}.check_dependency_gate", return_value=None),
+            patch(f"{_p}.check_human_involvement_gate", return_value=None),
+            patch(f"{_p}.check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_p}.check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch(f"{_p}.check_memory_pressure_gate", return_value=None),
+        ):
+            await engine._collect_gate_blockers(
+                42,
+                ProgressionAction.SPAWN_INTEGRATE,
+                graph,
+                precomputed_rate_limit=None,
+                task_labels=["agent:in-review"],
+                refined_pr_info=pr_info,
+            )
+
+        mock_gate.assert_called_once()
+        call_kwargs = mock_gate.call_args
+        assert call_kwargs.kwargs.get("pr_data") is None

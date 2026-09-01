@@ -700,6 +700,7 @@ async def get_sova_review_verdict(
         "verdict": None,
         "finding_count": 0,
         "reviewed_at": None,
+        "run_status": None,
     }
 
     if issue_number is None and pr_number is None:
@@ -777,6 +778,7 @@ async def get_sova_review_verdict(
                     "verdict": "approve",
                     "finding_count": 0,
                     "reviewed_at": run_ts.isoformat() if run_ts else None,
+                    "run_status": "done",
                 }
 
             handoff = run.handoff_json
@@ -801,11 +803,14 @@ async def get_sova_review_verdict(
                 else:
                     verdict = "approve"
 
+                metadata = handoff.get("metadata", {}) or {}
                 return {
                     "has_sova_review": True,
                     "verdict": verdict,
                     "finding_count": len(findings),
+                    "finding_summary": metadata.get("finding_summary"),
                     "reviewed_at": ts.isoformat() if (ts := run.ended_at or run.started_at) else None,
+                    "run_status": run.status,
                 }
 
             # No handoff_json -- parse verdict from the agent's output lines.
@@ -825,6 +830,7 @@ async def get_sova_review_verdict(
                 "verdict": verdict,
                 "finding_count": 0,
                 "reviewed_at": ts.isoformat() if (ts := run.ended_at or run.started_at) else None,
+                "run_status": run.status,
             }
     except Exception:
         log.debug("sova_review_verdict.query_failed", issue=issue_number, exc_info=True)

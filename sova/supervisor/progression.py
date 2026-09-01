@@ -44,6 +44,7 @@ from sova.supervisor.gates.ownership import check_ownership_gate
 from sova.supervisor.gates.quota import check_quota_gate
 from sova.supervisor.gates.rate_limit import check_github_rate_limit_gate
 from sova.supervisor.gates.repeated_failure import check_repeated_failures_gate
+from sova.supervisor.gates.review_completed import check_review_completed_gate
 from sova.supervisor.gates.slots import check_slot_gate, get_alive_count
 from sova.supervisor.planner import PlanResult
 from sova.utils.logging import get_logger
@@ -804,10 +805,23 @@ class TaskProgressionEngine:
             simple_results.append(cb_block)
         blockers.extend(r for r in simple_results if r is not None)
 
-        if precomputed_conflicts is not None and candidate == ProgressionAction.SPAWN_INTEGRATE:
-            conflict_block = check_merge_conflict_gate(issue_number, precomputed_conflicts)
-            if conflict_block:
-                blockers.append(conflict_block)
+        if candidate == ProgressionAction.SPAWN_INTEGRATE:
+            if precomputed_conflicts is not None:
+                conflict_block = check_merge_conflict_gate(issue_number, precomputed_conflicts)
+                if conflict_block:
+                    blockers.append(conflict_block)
+
+            gate_pr_number = (refined_pr_info.number if refined_pr_info else None) or discovered_pr
+            enriched_pr = await self._fetch_enriched_pr(gate_pr_number) if gate_pr_number else None
+            review_block = await check_review_completed_gate(
+                issue_number,
+                labels=task_labels or [],
+                pr_number=gate_pr_number,
+                project_dir=self._project_dir,
+                pr_data=enriched_pr,
+            )
+            if review_block:
+                blockers.append(review_block)
 
         if self._config.file_overlap_gate and precomputed_file_sets is not None:
             overlap_block = check_file_overlap_gate(
@@ -927,6 +941,19 @@ class TaskProgressionEngine:
             return ProgressionAction.SPAWN_TRIAGE if self._config.auto_triage else ProgressionAction.CHECKPOINT_NEEDED
         if state == TaskState.IN_PROGRESS:
             return ProgressionAction.RESET_STALE_STATE
+        return None
+
+    async def _fetch_enriched_pr(self, pr_number: int) -> dict | None:
+        """Fetch enriched PR data from the PR service cache for gate checks."""
+        try:
+            from sova.dashboard.services.pr_service import list_open_prs_with_state
+
+            prs = await list_open_prs_with_state(self._project_dir)
+            for pr in prs:
+                if pr.get("number") == pr_number:
+                    return pr
+        except Exception:
+            log.debug("fetch_enriched_pr.failed", pr=pr_number, exc_info=True)
         return None
 
     async def _find_pr_for_issue(self, issue: int) -> PRInfo | None:

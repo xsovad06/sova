@@ -26,6 +26,7 @@ from sova.dashboard.services.pr_service import (
     check_integration_gates,
     compute_pr_state,
     get_pr_mergeability_map,
+    get_unresolved_thread_count,
     list_open_prs_with_state,
     parse_linked_issue,
 )
@@ -1083,6 +1084,23 @@ class TestCheckThreadsFromPrData:
     def test_no_threads(self) -> None:
         gate = _check_threads_from_pr_data({"thread_total": 0, "thread_resolved": 0})
         assert gate["passed"] is True
+
+
+class TestGetUnresolvedThreadCount:
+    def test_some_unresolved(self) -> None:
+        assert get_unresolved_thread_count({"thread_total": 5, "thread_resolved": 3}) == 2
+
+    def test_all_resolved(self) -> None:
+        assert get_unresolved_thread_count({"thread_total": 5, "thread_resolved": 5}) == 0
+
+    def test_no_threads(self) -> None:
+        assert get_unresolved_thread_count({"thread_total": 0, "thread_resolved": 0}) == 0
+
+    def test_missing_keys(self) -> None:
+        assert get_unresolved_thread_count({}) == 0
+
+    def test_resolved_exceeds_total(self) -> None:
+        assert get_unresolved_thread_count({"thread_total": 3, "thread_resolved": 5}) == 0
 
 
 # ---------------------------------------------------------------------------
