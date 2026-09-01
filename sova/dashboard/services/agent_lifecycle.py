@@ -378,11 +378,44 @@ def _resolve_config_fallback_model(project_dir: Path) -> str | None:
         return None
 
 
+async def _record_budget_override(issue: str, run_id: int, budget_error: dict, project_dir: Path) -> None:
+    """Persist a BudgetOverride record and emit a feed event."""
+    from decimal import Decimal
+
+    from sova.db.models import BudgetOverride
+    from sova.db.session import get_session
+
+    spend = budget_error.get("total_cost_usd", "0")
+    limit = budget_error.get("max_issue_budget", "0")
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                override = BudgetOverride(
+                    issue_number=issue,
+                    task_run_id=run_id,
+                    spend_usd=Decimal(str(spend)),
+                    limit_usd=Decimal(str(limit)),
+                )
+                session.add(override)
+        from sova.dashboard.services.feed_service import FeedEventSeverity
+
+        emit_safe(
+            f"Budget override: issue #{issue} (${spend} / ${limit})",
+            severity=FeedEventSeverity.warning,
+            category="budget",
+            metadata={"issue": issue, "run_id": run_id, "spend_usd": spend, "limit_usd": limit},
+        )
+        log.info("agent.budget_override_recorded", issue=issue, run_id=run_id, spend=spend, limit=limit)
+    except Exception:
+        log.warning("agent.budget_override_record_failed", issue=issue, run_id=run_id, exc_info=True)
+
+
 async def start_agent(
     issue: str,
     *,
     role: str | None = None,
     force: bool = False,
+    budget_override: bool = False,
     slug: str | None = None,
     resume_run_id: int | None = None,
     pr_number: int | None = None,
@@ -434,11 +467,14 @@ async def start_agent(
             log.error("agent.worktree_isolation_failed", pr=pr_number, issue=issue)
             return {"error": f"Cannot start PR-based run: worktree isolation failed for PR {pr_number}"}
 
-        if not force and issue:
+        _budget_override_pending: dict | None = None
+        if issue:
             budget_error = await _check_issue_budget(issue, project_dir)
             if budget_error:
-                return budget_error
-        elif not issue:
+                if not budget_override:
+                    return budget_error
+                _budget_override_pending = budget_error
+        else:
             log.info(
                 "agent.issueless_budget_skip",
                 role=role,
@@ -448,6 +484,9 @@ async def start_agent(
         run_id = await _create_task_run(issue or None, role or "developer", project_dir, pr_number=pr_number)
         if run_id is None:
             return {"error": "Failed to create task run record"}
+
+        if _budget_override_pending:
+            await _record_budget_override(issue, run_id, _budget_override_pending, project_dir)
 
         if not _skip_handoff_clear:
             try:
@@ -470,6 +509,8 @@ async def start_agent(
             cmd_parts.extend(["--role", shlex.quote(role)])
         if force:
             cmd_parts.append("--force")
+        if budget_override:
+            cmd_parts.append("--budget-override")
         if pr_number:
             cmd_parts.extend(["--pr", str(pr_number)])
 

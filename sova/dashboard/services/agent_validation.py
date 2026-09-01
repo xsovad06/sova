@@ -119,6 +119,7 @@ async def _check_issue_budget(issue: str, project_dir: Path) -> dict | None:
             current = lifecycle.total_cost_usd
             if current >= max_budget:
                 return {
+                    "code": "budget_exceeded",
                     "error": (
                         f"Issue #{issue} has exceeded the per-issue budget "
                         f"(${lifecycle.total_cost_usd:.2f} / ${max_budget:.2f}). "

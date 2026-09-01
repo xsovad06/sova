@@ -19,6 +19,9 @@ def run_issue(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     role: Annotated[Optional[str], typer.Option("--role", "-r", help="Force a specific role.")] = None,
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip pipeline gate checks.")] = False,
+    budget_override: Annotated[
+        bool, typer.Option("--budget-override", help="Explicitly confirm bypassing the per-issue budget check.")
+    ] = False,
     resume: Annotated[Optional[int], typer.Option("--resume", help="Resume from a previous run ID.")] = None,
     pr: Annotated[Optional[int], typer.Option("--pr", help="PR number (skips PR discovery).")] = None,
     run_id: Annotated[Optional[int], typer.Option("--run-id", help="Reuse an existing TaskRun.")] = None,
@@ -33,6 +36,7 @@ def run_issue(
             project_dir=project,
             role_name=role,
             force=force,
+            budget_override=budget_override,
             resume_run_id=resume,
             pr_number=pr,
             task_run_id=run_id,
@@ -46,6 +50,7 @@ async def _run_workflow(
     project_dir: Path | None,
     role_name: str | None,
     force: bool,
+    budget_override: bool = False,
     resume_run_id: int | None = None,
     pr_number: int | None = None,
     task_run_id: int | None = None,
@@ -96,6 +101,7 @@ async def _run_workflow(
         role=actual_role,
         run_label=run_label,
         force=force or bool(resume_run_id),
+        budget_override=budget_override,
         resume_run_id=resume_run_id,
         completed_steps=frozenset(checkpoint.get("completed_steps", set())),
         branch_name=checkpoint.get("branch_name", ""),

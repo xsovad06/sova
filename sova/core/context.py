@@ -42,6 +42,7 @@ class ExecutionContext:
     session_id: str | None = None
     cost_usd: Decimal = Decimal("0")
     force: bool = False
+    budget_override: bool = False
     task_run_id: int | None = None
     plan_result: PlanResult | None = None
 
