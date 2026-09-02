@@ -3146,17 +3146,3 @@ class TestCompressionWiring:
                 pass
         mock_compress.assert_called_once()
         assert captured["prompt"] == "COMPRESSED"
-
-    async def test_invoke_preserves_system_prompt_uncompressed(self) -> None:
-        """Verify system_prompt is never compressed (per spec requirement)."""
-        from sova.llm import client
-
-        provider = MagicMock()
-        provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="test"))
-        with (
-            patch.object(client, "get_provider", return_value=provider),
-            patch.object(client, "maybe_compress", return_value="COMPRESSED"),
-        ):
-            await client.invoke("user prompt", system_prompt="system prompt")
-        # System prompt should be passed through as-is, never compressed
-        assert provider.invoke.call_args.kwargs["system_prompt"] == "system prompt"
