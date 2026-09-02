@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from sova.core.context import ExecutionContext
+from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke, invoke_command
 from sova.utils.logging import get_logger
@@ -244,6 +244,17 @@ class DevelopStep(BaseStep):
             budget_check = self._check_loop_budget(ctx, loop_start_time, develop_cfg.max_fix_time, cycle)
             if budget_check is not None:
                 return False, budget_check
+
+            if ctx.budget_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
+                log.warning(
+                    "step.develop.budget_fraction_stop_retry",
+                    cycle=cycle,
+                    fraction=ctx.budget_remaining_fraction,
+                )
+                return True, (
+                    f"checks still failing after {cycle - 1} fix cycle(s); stopping retries at "
+                    f"{ctx.budget_remaining_fraction:.0%} budget remaining"
+                )
 
             log.info("step.develop.fix_cycle", cycle=cycle, max=max_cycles)
 

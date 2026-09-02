@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from sova.core.context import ExecutionContext
+from sova.core.context import BUDGET_SKIP_HOOKS_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import operations as git_ops
 from sova.utils.logging import get_logger
@@ -68,8 +68,12 @@ class CommitStep(BaseStep):
 
         message = self._build_commit_message(ctx)
 
+        no_verify = ctx.budget_remaining_fraction < BUDGET_SKIP_HOOKS_THRESHOLD
+        if no_verify:
+            log.warning("step.commit.budget_skip_hooks", fraction=ctx.budget_remaining_fraction)
+
         try:
-            await git_ops.commit(message, cwd=ctx.working_dir)
+            await git_ops.commit(message, cwd=ctx.working_dir, no_verify=no_verify)
             return StepResult(success=True, summary=f"Committed: {message}")
         except RuntimeError as exc:
             return StepResult(success=False, summary="Commit failed", error=str(exc))

@@ -112,7 +112,12 @@ _SUSPICIOUS_PATHS = frozenset(
 )
 
 
-async def commit(message: str, files: list[str] | None = None, cwd: Path | None = None) -> None:
+async def commit(
+    message: str,
+    files: list[str] | None = None,
+    cwd: Path | None = None,
+    no_verify: bool = False,
+) -> None:
     """Stage files and create a commit."""
     log.info("git.commit", message=message[:80])
 
@@ -133,7 +138,10 @@ async def commit(message: str, files: list[str] | None = None, cwd: Path | None 
                 await run("git", "reset", "HEAD", "--", f, cwd=cwd)
             raise RuntimeError(f"Refusing to commit suspicious files: {', '.join(bad)}")
 
-    await run_checked("git", "commit", "-m", message, cwd=cwd)
+    args = ["git", "commit", "-m", message]
+    if no_verify:
+        args.append("--no-verify")
+    await run_checked(*args, cwd=cwd)
 
 
 async def push(
@@ -142,6 +150,7 @@ async def push(
     force: bool = False,
     set_upstream: bool = False,
     cwd: Path | None = None,
+    no_verify: bool = False,
 ) -> None:
     """Push a branch to origin."""
     log.info("git.push", branch=branch, force=force)
@@ -151,5 +160,7 @@ async def push(
         args.append("--force-with-lease")
     if set_upstream:
         args.insert(2, "-u")
+    if no_verify:
+        args.append("--no-verify")
 
     await run_checked(*args, cwd=cwd)

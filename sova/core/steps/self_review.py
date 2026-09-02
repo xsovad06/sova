@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sova.core.context import ExecutionContext
+from sova.core.context import BUDGET_SKIP_OPTIONAL_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
@@ -51,4 +51,9 @@ class SelfReviewStep(BaseStep):
         return GateCheckResult(passed=False, reason="All commits and changes lost during review")
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
-        return self.name in ctx.completed_steps or not ctx.config.review.enabled
+        if self.name in ctx.completed_steps or not ctx.config.review.enabled:
+            return True
+        if ctx.budget_remaining_fraction < BUDGET_SKIP_OPTIONAL_THRESHOLD:
+            log.warning("step.self_review.budget_skip", fraction=ctx.budget_remaining_fraction)
+            return True
+        return False

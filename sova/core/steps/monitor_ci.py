@@ -13,7 +13,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from sova.core.context import ExecutionContext
+from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.operations import CICheck, get_ci_checks, get_ci_failure_logs
 from sova.llm.egress import scan_and_redact
@@ -317,6 +317,22 @@ class MonitorCIStep(BaseStep):
                     success=False,
                     summary=f"CI fix aborted: budget exceeded after {attempt - 1} attempt(s)",
                     error=f"Budget exceeded. Remaining failures: {names}",
+                )
+
+            if ctx.budget_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
+                log.warning(
+                    "step.monitor_ci.budget_fraction_stop_retry",
+                    attempt=attempt,
+                    fraction=ctx.budget_remaining_fraction,
+                )
+                names = ", ".join(c.name for c in failed_checks)
+                return StepResult(
+                    success=True,
+                    summary=(
+                        f"CI still failing after {attempt - 1} fix attempt(s); stopping retries at "
+                        f"{ctx.budget_remaining_fraction:.0%} budget remaining. Remaining failures: {names}"
+                    ),
+                    cost_usd=total_fix_cost,
                 )
 
             log.info("step.monitor_ci.fix_attempt", attempt=attempt, max=max_attempts)
