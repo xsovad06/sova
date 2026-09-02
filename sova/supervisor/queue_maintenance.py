@@ -3,7 +3,7 @@
 Runs once per poll cycle (after quota sync, before progression) to:
 1. Remove done/deleted issues from the queue
 2. Discover ready issues (RESEARCHED state) and append them
-3. Persist the updated queue to sova.toml
+3. Persist the updated queue to SOVA project settings (stored in the project database)
 
 The LLM planner may further prune or reorder after this step.
 """

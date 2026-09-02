@@ -172,7 +172,7 @@ class CoverageReport:
     Attributes:
         coverage_pct: Actual coverage percentage on new code.
         required_pct: Quality gate threshold percentage (configurable via
-            ``sonarcloud.coverage_threshold`` in sova.toml, default 80.0).
+            ``sonarcloud.coverage_threshold`` in SOVA config, default 80.0).
         findings: File/line-level uncovered-code issues from SonarCloud API.
     """
 

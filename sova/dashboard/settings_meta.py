@@ -12,7 +12,6 @@ class SettingMeta:
     description: str
     group: str
     value_type: str = "string"
-    requires_restart: bool = False
 
 
 _LABEL_POLL_INTERVAL = "Poll interval (s)"
@@ -191,7 +190,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "agent.runtime",
         "Agent runtime",
-        "Coding agent backend to use (see sova.toml [agent] for available runtimes)",
+        "Coding agent backend to use (see the [agent] config section for available runtimes)",
         "agent",
     ),
     SettingMeta("agent.model", "Model", "Claude model to use for agent work (opus, sonnet, haiku)", "agent"),
@@ -486,7 +485,6 @@ _REGISTRY: list[SettingMeta] = [
         "Seconds between polls when agents are running",
         "watch",
         "number",
-        requires_restart=True,
     ),
     SettingMeta(
         "watch.interval_idle",
@@ -494,7 +492,6 @@ _REGISTRY: list[SettingMeta] = [
         "Seconds between polls when no agents are running",
         "watch",
         "number",
-        requires_restart=True,
     ),
     SettingMeta(
         "watch.auto_select_issues",
@@ -712,37 +709,15 @@ _REGISTRY: list[SettingMeta] = [
         "secret",
     ),
     # -- Server --
-    SettingMeta(
-        "server.host",
-        "Host",
-        "IP address or hostname to bind the dashboard server to",
-        "server",
-        "string",
-        requires_restart=True,
-    ),
-    SettingMeta(
-        "server.port",
-        "Port",
-        "TCP port for the dashboard server",
-        "server",
-        "number",
-        requires_restart=True,
-    ),
-    SettingMeta(
-        "server.pid_file",
-        "PID file",
-        "Path to the server PID file (empty = default location)",
-        "server",
-        "string",
-        requires_restart=True,
-    ),
+    SettingMeta("server.host", "Host", "IP address or hostname to bind the dashboard server to", "server"),
+    SettingMeta("server.port", "Port", "TCP port for the dashboard server", "server", "number"),
+    SettingMeta("server.pid_file", "PID file", "Path to the server PID file (empty = default location)", "server"),
     SettingMeta(
         "server.scheduler_enabled",
         "Scheduler enabled",
         "Run the watch-loop scheduler alongside the dashboard",
         "server",
         "boolean",
-        requires_restart=True,
     ),
     SettingMeta(
         "server.log_max_bytes",
@@ -1093,7 +1068,6 @@ _REGISTRY: list[SettingMeta] = [
         "Enable background PR monitoring with state-change notifications and CodeRabbit auto-retry",
         "external_reviews",
         "boolean",
-        requires_restart=True,
     ),
     SettingMeta(
         "pr_monitor.poll_interval",
@@ -1101,7 +1075,6 @@ _REGISTRY: list[SettingMeta] = [
         "Seconds between PR state polling cycles",
         "external_reviews",
         "number",
-        requires_restart=True,
     ),
     SettingMeta(
         "pr_monitor.notify_on_approval",
@@ -1145,7 +1118,6 @@ _REGISTRY: list[SettingMeta] = [
         "Enable the dependency-aware task progression engine",
         "supervisor",
         "boolean",
-        requires_restart=True,
     ),
     SettingMeta(
         "supervisor.auto_triage",
@@ -1643,7 +1615,6 @@ def get_grouped_config(flat_config: dict) -> list[dict]:
                 "description": meta.description,
                 "value": value,
                 "value_type": meta.value_type,
-                "requires_restart": meta.requires_restart,
             }
         else:
             group_id = _infer_group(key)

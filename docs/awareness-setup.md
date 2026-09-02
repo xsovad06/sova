@@ -4,7 +4,7 @@ The awareness subsystem aggregates information from Gmail, Google Calendar, GitH
 
 ## Quick Start
 
-Add to your project's `sova.toml`:
+Set the following via `sova config set` or the dashboard settings page (shown here in TOML form):
 
 ```toml
 [awareness]
@@ -171,7 +171,7 @@ sova cron add "morning-briefing" --schedule "0 8 * * *" --command "briefing"
 
 ### "No awareness providers configured"
 
-Add the `[awareness]` section to `sova.toml` and set `enabled = true`.
+Run `sova config set awareness.enabled true` or use the dashboard settings page.
 
 ### "gmail.auth_failed"
 

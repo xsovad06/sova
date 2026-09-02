@@ -1,7 +1,7 @@
 """Template rendering for command files.
 
 Replaces ``{{ var }}`` placeholders in command content with project-specific
-values from sova.toml / ProjectConfig using regex substitution.
+values from SOVA config / ProjectConfig using regex substitution.
 """
 
 from __future__ import annotations

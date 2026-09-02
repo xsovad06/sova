@@ -685,7 +685,8 @@ class AwarenessConfig(BaseSettings):
 class ProjectConfig(BaseSettings):
     """Root configuration model for a SOVA project.
 
-    Loaded from sova.toml, with env var overrides (SOVA_ prefix).
+    Loaded from SOVA project settings (stored in the project database),
+    with env var overrides (SOVA_ prefix).
     """
 
     # Project settings

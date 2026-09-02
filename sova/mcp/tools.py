@@ -149,7 +149,7 @@ def register_tools(server: FastMCP, *, project_dir: Path | None = None) -> None:
     @server.tool(
         name="sova_read_project",
         description=(
-            "Read project context: AGENTS.md conventions, sova.toml config, "
+            "Read project context: AGENTS.md conventions, CLAUDE.md instructions, "
             "and architecture rules. Use this to understand a SOVA-managed "
             "project before starting work."
         ),
@@ -199,7 +199,6 @@ def _read_project_context(project_dir: str, *, allowed_root: Path | None = None)
     context_files = [
         ("AGENTS.md", "Agent Conventions"),
         ("CLAUDE.md", "Claude Code Instructions"),
-        ("sova.toml", "SOVA Configuration"),
         (".claude/rules/architecture.md", "Architecture"),
     ]
 

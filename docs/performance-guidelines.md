@@ -4,7 +4,7 @@ Timeout values, cache patterns, concurrency limits, and async conventions in the
 
 ## Timeout Hierarchy
 
-All configurable timeouts cascade from `sova.toml` or env vars (`SOVA_` prefix).
+All configurable timeouts cascade from SOVA config or env vars (`SOVA_` prefix).
 
 | Layer | Default | Config Key | File |
 |-------|---------|------------|------|

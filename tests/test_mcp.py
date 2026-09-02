@@ -118,6 +118,9 @@ class TestValidateProjectDir:
 class TestReadProjectTool:
     def test_reads_existing_files(self, tmp_path: Path) -> None:
         (tmp_path / "AGENTS.md").write_text("# Agent Rules\nBe thorough.")
+        (tmp_path / "CLAUDE.md").write_text("# Claude Instructions\nStay focused.")
+        # sova.toml is intentionally not read as project context (config lives
+        # in SOVA project settings, not a file to surface to agents).
         (tmp_path / "sova.toml").write_text('[project]\nname = "test"')
 
         from sova.mcp.tools import _read_project_context
@@ -125,7 +128,8 @@ class TestReadProjectTool:
         result = _read_project_context(str(tmp_path))
         assert "Agent Rules" in result
         assert "Be thorough" in result
-        assert "test" in result
+        assert "Claude Instructions" in result
+        assert "test" not in result
 
     def test_returns_message_when_no_context(self, tmp_path: Path) -> None:
         from sova.mcp.tools import _read_project_context

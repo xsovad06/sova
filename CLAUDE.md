@@ -41,11 +41,39 @@ git config core.hooksPath .githooks
 ## Starting a Session
 
 ```bash
-# Verify you are authenticated as the correct GitHub user (must match github_user in sova.toml)
+# Verify you are authenticated as the correct GitHub user
 gh auth status
 ```
 
 Ticket workflow (branch naming, PR linking, etc.) is in AGENTS.md under "Development Workflow".
+
+## Configuration
+
+SOVA uses **database-backed configuration** (`.claude/sova.db`) instead of `sova.toml`. The migration is automatic:
+
+- **First run**: `sova install /path/to/project` creates the database
+- **Manual edits**: use `sqlite3 .claude/sova.db` (all values stored as JSON; see troubleshooting below)
+- **Environment overrides**: `SOVA_GITHUB_REPO=owner/repo` (prefix with `SOVA_`, replace dots with underscores: `SOVA_AGENT_MODEL`)
+
+### Troubleshooting Config Load Errors
+
+If you see "Skipping setting 'X': invalid JSON value" when running commands:
+
+1. **Check the value**: `sqlite3 .claude/sova.db "SELECT key, value FROM project_settings WHERE key='X';"`
+2. **All values must be valid JSON**:
+   - Strings: `"value"` (with quotes)
+   - Numbers: `123` or `1.5` (no quotes)
+   - Arrays: `["item1","item2"]`
+   - Booleans: `true` or `false` (no quotes)
+3. **Fix non-JSON values**: 
+   ```bash
+   sqlite3 .claude/sova.db "UPDATE project_settings SET value = '\"your-string-value\"' WHERE key = 'agent.model';"
+   ```
+
+When Python upgrades (e.g., 3.13 → 3.14), reinstall SOVA:
+```bash
+python3 -m pip install --user --break-system-packages -e .
+```
 
 ## RTK Token Compression (Optional)
 

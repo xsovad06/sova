@@ -28,6 +28,10 @@ def test_render_empty_briefing(console: Console) -> None:
 
     output = console.file.getvalue()
     assert "No awareness providers configured" in output
+    # Guidance points to the supported env var / dashboard workflow, not editing a TOML file.
+    assert "SOVA_AWARENESS_ENABLED=true" in output
+    assert "settings page" in output
+    assert "sova.toml" not in output
 
 
 def test_render_briefing_with_attention_items(console: Console) -> None:

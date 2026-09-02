@@ -323,7 +323,7 @@ async def get_pipeline() -> dict:
 async def get_kanban(per_column: Annotated[int, Query(ge=1, le=100)] = 10) -> dict[str, Any]:
     """Get non-terminal TaskRuns grouped into Kanban columns."""
     # Config is loaded per-request intentionally: load_config() caches internally,
-    # and per-request loading supports hot-reload of sova.toml without restart.
+    # and per-request loading supports hot-reload of SOVA config without restart.
     from sova.config.loader import load_config
     from sova.dashboard.project_context import get_project_dir
 

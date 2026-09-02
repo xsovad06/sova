@@ -249,7 +249,7 @@ class JiraAdapter(TaskAdapter):
                     "status.unmapped",
                     status=status_name,
                     issue=issue_key,
-                    hint="Add to [task_source] jira_status_mapping in sova.toml",
+                    hint="Add task_source.jira_status_mapping via the dashboard settings page or SOVA_ env vars",
                 )
 
         return state

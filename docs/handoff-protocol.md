@@ -186,7 +186,7 @@ Both are rendered in the dashboard's control page. Checkpoints appear as modal d
 
 ## A2A Protocol Interop
 
-SOVA implements Phase 1 of the [A2A (Agent-to-Agent) protocol](https://github.com/google/A2A) as a read-only interoperability layer on top of the internal handoff system. When enabled (`[a2a] enabled = true` in `sova.toml`), external agents can discover SOVA's capabilities, query task status, and cancel running tasks. Task submission (`POST /a2a/tasks/send`) and handoff migration to A2A transport are planned for future phases.
+SOVA implements Phase 1 of the [A2A (Agent-to-Agent) protocol](https://github.com/google/A2A) as a read-only interoperability layer on top of the internal handoff system. When enabled (`a2a.enabled = true` in SOVA config), external agents can discover SOVA's capabilities, query task status, and cancel running tasks. Task submission (`POST /a2a/tasks/send`) and handoff migration to A2A transport are planned for future phases.
 
 ### Relationship to Internal Handoff
 
