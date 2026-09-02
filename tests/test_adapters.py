@@ -985,6 +985,48 @@ class TestAdapterFactory:
         with pytest.raises(ValueError, match="jira_base_url"):
             create_adapter(config)
 
+    def test_create_jira_adapter_missing_email_raises(self) -> None:
+        from sova.adapters import create_adapter
+        from sova.config.models import ProjectConfig, TaskSourceConfig
+
+        config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_base_url="https://test.atlassian.net",
+            ),
+        )
+        with pytest.raises(ValueError, match="jira_email"):
+            create_adapter(config)
+
+    def test_create_jira_adapter_missing_api_token_raises(self) -> None:
+        from sova.adapters import create_adapter
+        from sova.config.models import ProjectConfig, TaskSourceConfig
+
+        config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_base_url="https://test.atlassian.net",
+                jira_email="test@example.com",
+            ),
+        )
+        with pytest.raises(ValueError, match="jira_api_token"):
+            create_adapter(config)
+
+    def test_create_jira_adapter_missing_project_key_raises(self) -> None:
+        from sova.adapters import create_adapter
+        from sova.config.models import ProjectConfig, TaskSourceConfig
+
+        config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_base_url="https://test.atlassian.net",
+                jira_email="test@example.com",
+                jira_api_token="token",
+            ),
+        )
+        with pytest.raises(ValueError, match="jira_project_key"):
+            create_adapter(config)
+
     def test_create_unknown_adapter_raises(self) -> None:
         from sova.adapters import create_adapter
         from sova.config.models import ProjectConfig, TaskSourceConfig
