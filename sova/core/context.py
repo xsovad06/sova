@@ -101,8 +101,8 @@ class ExecutionContext:
         max_budget = self.config.agent.max_budget
         if not max_budget:
             return 1.0
-        fraction = 1.0 - float(self.cost_usd / max_budget)
-        return max(0.0, min(1.0, fraction))
+        fraction = Decimal("1") - (self.cost_usd / max_budget)
+        return float(max(Decimal("0"), min(Decimal("1"), fraction)))
 
     @property
     def working_dir(self) -> Path:
