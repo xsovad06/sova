@@ -19,6 +19,13 @@ from sova.llm.complexity import ComplexityTier
 if TYPE_CHECKING:
     from sova.core.output import OutputWriter
 
+# Budget degradation thresholds (fraction of max_budget remaining).
+# Below each threshold, the developer pipeline degrades gracefully rather
+# than risking being killed mid-critical-step.
+BUDGET_SKIP_OPTIONAL_THRESHOLD = 0.40
+BUDGET_STOP_RETRY_THRESHOLD = 0.20
+BUDGET_SKIP_HOOKS_THRESHOLD = 0.08
+
 
 @dataclass
 class ExecutionContext:
@@ -81,6 +88,21 @@ class ExecutionContext:
     def is_budget_exceeded(self) -> bool:
         """Check if the accumulated cost exceeds the configured budget."""
         return self.cost_usd > self.config.agent.max_budget
+
+    @property
+    def budget_remaining_fraction(self) -> float:
+        """Remaining budget as a fraction of max_budget, clamped to [0.0, 1.0].
+
+        Used for graceful degradation (skip optional steps, stop retrying,
+        skip hooks) as the budget runs low, rather than the binary
+        is_budget_exceeded cutoff. Falls back to 1.0 (no degradation) if
+        max_budget is not meaningfully set.
+        """
+        max_budget = self.config.agent.max_budget
+        if not max_budget:
+            return 1.0
+        fraction = 1.0 - float(self.cost_usd / max_budget)
+        return max(0.0, min(1.0, fraction))
 
     @property
     def working_dir(self) -> Path:

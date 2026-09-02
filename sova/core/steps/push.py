@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sova.core.context import ExecutionContext
+from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import operations as git_ops
 from sova.utils.logging import get_logger
@@ -19,12 +19,21 @@ class PushStep(BaseStep):
         log.info("step.push", branch=ctx.branch_name, cwd=str(ctx.working_dir))
 
         force = ctx.pr_number is not None
+        # ValidateStep may give up fixing pre-push hook failures once budget
+        # is nearly exhausted (see BUDGET_STOP_RETRY_THRESHOLD) without ever
+        # disabling the hook. Without matching that threshold here, this
+        # push would hit the same still-failing local hook and abort,
+        # silently defeating ValidateStep's graceful degradation.
+        no_verify = ctx.budget_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD
+        if no_verify:
+            log.warning("step.push.budget_skip_hooks", fraction=ctx.budget_remaining_fraction)
         try:
             await git_ops.push(
                 ctx.branch_name,
                 force=force,
                 set_upstream=True,
                 cwd=ctx.working_dir,
+                no_verify=no_verify,
             )
             return StepResult(success=True, summary=f"Pushed {ctx.branch_name}")
         except RuntimeError as exc:

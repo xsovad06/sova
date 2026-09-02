@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sova.core.context import ExecutionContext
+from sova.core.context import BUDGET_SKIP_OPTIONAL_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
@@ -13,6 +13,14 @@ log = get_logger(component="step.simplify")
 
 class SimplifyStep(BaseStep):
     name = "simplify"
+
+    async def can_skip(self, ctx: ExecutionContext) -> bool:
+        if self.name in ctx.completed_steps:
+            return True
+        if ctx.budget_remaining_fraction < BUDGET_SKIP_OPTIONAL_THRESHOLD:
+            log.warning("step.simplify.budget_skip", fraction=ctx.budget_remaining_fraction)
+            return True
+        return False
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.simplify", cwd=str(ctx.working_dir))

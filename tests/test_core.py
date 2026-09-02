@@ -216,6 +216,29 @@ class TestExecutionContext:
         ctx.add_cost(Decimal("4.99"))
         assert not ctx.is_budget_exceeded
 
+    def test_budget_remaining_fraction_full_at_zero_cost(self) -> None:
+        config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
+        ctx = _make_ctx(config=config)
+        assert ctx.budget_remaining_fraction == 1.0
+
+    def test_budget_remaining_fraction_half(self) -> None:
+        config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
+        ctx = _make_ctx(config=config)
+        ctx.add_cost(Decimal("5.00"))
+        assert ctx.budget_remaining_fraction == 0.5
+
+    def test_budget_remaining_fraction_clamped_when_over_budget(self) -> None:
+        config = ProjectConfig(agent={"max_budget": Decimal("5.00")})
+        ctx = _make_ctx(config=config)
+        ctx.add_cost(Decimal("7.00"))
+        assert ctx.budget_remaining_fraction == 0.0
+
+    def test_budget_remaining_fraction_zero_at_exact_max_budget(self) -> None:
+        config = ProjectConfig(agent={"max_budget": Decimal("5.00")})
+        ctx = _make_ctx(config=config)
+        ctx.add_cost(Decimal("5.00"))
+        assert ctx.budget_remaining_fraction == 0.0
+
     def test_working_dir_defaults_to_project(self) -> None:
         ctx = _make_ctx()
         assert ctx.working_dir == Path("/tmp/test")
@@ -1534,6 +1557,33 @@ class TestCommitStep:
         msg = mock_commit.call_args[0][0]
         assert "LLM provider abstraction" in msg
         assert "Closes #42" in msg
+        assert mock_commit.call_args.kwargs["no_verify"] is False
+
+    async def test_skips_hooks_when_budget_critically_low(self) -> None:
+        """Below the 8% threshold, commit passes no_verify=True to preserve work."""
+        from sova.config.models import AgentConfig
+        from sova.core.steps.commit import CommitStep
+
+        config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"), config=config)
+        ctx.cost_usd = Decimal("9.50")  # 5% remaining, below 8% threshold
+        ctx.task = Task(id="73", title="LLM provider abstraction")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" config/base.py | 5 +++++\n"),  # diff --stat
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # untracked
+                MagicMock(success=True, stdout=""),  # log (no commits yet)
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert mock_commit.call_args.kwargs["no_verify"] is True
 
     async def test_normalizes_double_prefixed_task_title(self) -> None:
         """Generated commit messages should not contain duplicate conventional prefixes."""
@@ -1792,6 +1842,31 @@ class TestValidateStep:
         assert not result.success
         assert "still failing" in result.summary.lower()
         assert mock_invoke.await_count == 2
+
+    async def test_low_budget_fraction_stops_retry_without_failing(self) -> None:
+        """Below the 20% threshold, the fix loop stops retrying but reports success."""
+        from sova.config.models import AgentConfig
+        from sova.core.steps.validate import ValidateStep
+
+        config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"), config=config)
+        ctx.cost_usd = Decimal("8.50")  # 15% remaining, below 20% threshold
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
+                MagicMock(success=True, stdout=""),  # test -x
+                MagicMock(success=False, stdout="FAIL: error\n", stderr=""),  # hook fails
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "stopping fix retries" in result.summary
+        mock_invoke.assert_not_awaited()
 
     async def test_gate_requires_commits(self) -> None:
         from sova.core.steps.validate import ValidateStep
@@ -4580,6 +4655,42 @@ class TestMonitorCIFixLoop:
         assert "Tests" in result.summary
         assert mock_invoke.await_count == 2
 
+    async def test_low_budget_fraction_stops_retry_without_failing(self) -> None:
+        """Below the 20% threshold, CI fix retries stop but the step reports success."""
+        from sova.config.models import AgentConfig
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        ctx.cost_usd = Decimal("8.50")  # 15% remaining, below 20% threshold
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check(
+            "Tests", passed=False, details_url="https://github.com/o/r/actions/runs/123/job/456"
+        )
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.return_value = [failed_check]
+            mock_logs.return_value = "ERROR: persistent failure"
+
+            with (
+                patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.operations.push", new_callable=AsyncMock),
+                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
+            ):
+                mock_run.side_effect = _shell_side_effect
+                result = await step.execute(ctx)
+
+        assert result.success
+        assert "stopping retries" in result.summary
+        mock_invoke.assert_not_awaited()
+
     async def test_ci_fix_disabled_when_zero(self) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
@@ -5961,6 +6072,31 @@ class TestSimplifyStep:
 
         assert gate.passed
 
+    async def test_can_skip_when_completed(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+
+        ctx = _make_ctx(completed_steps=frozenset({"simplify"}))
+        step = SimplifyStep()
+        assert await step.can_skip(ctx)
+
+    async def test_can_skip_when_budget_low(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+
+        config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
+        ctx = _make_ctx(config=config)
+        ctx.add_cost(Decimal("7.00"))  # 30% remaining, below 40% threshold
+        step = SimplifyStep()
+        assert await step.can_skip(ctx)
+
+    async def test_does_not_skip_when_budget_sufficient(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+
+        config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
+        ctx = _make_ctx(config=config)
+        ctx.add_cost(Decimal("5.00"))  # 50% remaining, above 40% threshold
+        step = SimplifyStep()
+        assert not await step.can_skip(ctx)
+
 
 # ---------------------------------------------------------------------------
 # SelfReviewStep -- execute and validate_output
@@ -6052,6 +6188,24 @@ class TestSelfReviewStep:
         ctx = _make_ctx(completed_steps=frozenset({"self_review"}))
         step = SelfReviewStep()
         assert await step.can_skip(ctx)
+
+    async def test_can_skip_when_budget_low(self) -> None:
+        from sova.core.steps.self_review import SelfReviewStep
+
+        config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
+        ctx = _make_ctx(config=config)
+        ctx.add_cost(Decimal("7.00"))  # 30% remaining, below 40% threshold
+        step = SelfReviewStep()
+        assert await step.can_skip(ctx)
+
+    async def test_does_not_skip_when_budget_sufficient(self) -> None:
+        from sova.core.steps.self_review import SelfReviewStep
+
+        config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
+        ctx = _make_ctx(config=config)
+        ctx.add_cost(Decimal("5.00"))  # 50% remaining, above 40% threshold
+        step = SelfReviewStep()
+        assert not await step.can_skip(ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -6289,6 +6443,7 @@ class TestPushStepExecute:
             force=False,
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
+            no_verify=False,
         )
 
     async def test_execute_force_with_lease_when_pr_exists(self) -> None:
@@ -6306,6 +6461,31 @@ class TestPushStepExecute:
             force=True,
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
+            no_verify=False,
+        )
+
+    async def test_execute_skips_hooks_when_budget_critically_low(self) -> None:
+        """When ValidateStep gave up fixing a failing pre-push hook due to low
+        budget, Push must skip the same hook or the push aborts for the same
+        unfixed reason, silently undoing the graceful-degradation attempt."""
+        from sova.config.models import AgentConfig
+        from sova.core.steps.push import PushStep
+
+        config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"), config=config)
+        ctx.cost_usd = Decimal("8.50")  # 15% remaining, below the 20% stop-retry threshold
+        step = PushStep()
+
+        with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_push.assert_awaited_once_with(
+            "feat/test",
+            force=False,
+            set_upstream=True,
+            cwd=Path("/tmp/worktree"),
+            no_verify=True,
         )
 
     async def test_execute_handles_push_failure(self) -> None:
@@ -7505,6 +7685,30 @@ class TestDevelopStepInnerCheckLoop:
 
         assert passed is False
         assert "budget exceeded" in summary
+
+    async def test_low_budget_fraction_stops_retry_without_failing(self) -> None:
+        """Below the 20% threshold, the loop stops retrying but reports success (preserve work)."""
+        from sova.config.models import AgentConfig, DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            agent=AgentConfig(max_budget=Decimal("10.00")),
+            develop=DevelopConfig(max_fix_cycles=3),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx.cost_usd = Decimal("8.50")  # 15% remaining, below 20% threshold
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True),  # command -v probe
+                MagicMock(success=False, stdout="FAIL", stderr=""),  # initial check
+            ]
+            passed, summary = await step._run_inner_check_loop(ctx)
+
+        assert passed is True
+        assert "stopping retries" in summary
 
     async def test_llm_failure_returns_error_summary(self) -> None:
         from sova.core.steps.develop import DevelopStep

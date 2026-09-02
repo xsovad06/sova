@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sova.core.context import ExecutionContext
+from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.test_baseline import diff_results, load_baseline, run_test_suite
 from sova.llm.client import invoke
@@ -95,6 +95,20 @@ class ValidateStep(BaseStep):
                     success=False,
                     summary=f"Pre-push hook failed; budget exceeded after {attempt - 1} fix attempt(s)",
                     error="budget_exceeded",
+                )
+
+            if ctx.budget_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
+                log.warning(
+                    "step.validate.budget_fraction_stop_retry",
+                    attempt=attempt,
+                    fraction=ctx.budget_remaining_fraction,
+                )
+                return StepResult(
+                    success=True,
+                    summary=(
+                        f"Pre-push hook failed; stopping fix retries at "
+                        f"{ctx.budget_remaining_fraction:.0%} budget remaining ({attempt - 1} attempt(s) made)"
+                    ),
                 )
 
             log.info("step.validate.fix_attempt", attempt=attempt)

@@ -68,6 +68,7 @@ def mock_ctx(tmp_path, mock_config):
     ctx.config = mock_config
     ctx.cost_usd = Decimal("0.00")
     ctx.is_budget_exceeded = False
+    ctx.budget_remaining_fraction = 1.0
     ctx.resolved_model = "opus"
     ctx.base_branch = "main"
     ctx.display_label = "test-label"

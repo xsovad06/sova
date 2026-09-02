@@ -444,6 +444,32 @@ class TestCommit:
             # Should use -A when no specific files
             assert "-A" in add_call[0]
 
+    async def test_commits_with_no_verify(self) -> None:
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout="")
+
+                await commit("chore: update", cwd=Path("/repo"), no_verify=True)
+
+            calls = [c[0] for c in mock_run.call_args_list]
+            commit_call = [args for args in calls if "commit" in args]
+            assert len(commit_call) >= 1
+            assert "--no-verify" in commit_call[0]
+
+    async def test_commits_without_no_verify_by_default(self) -> None:
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout="")
+
+                await commit("chore: update", cwd=Path("/repo"))
+
+            calls = [c[0] for c in mock_run.call_args_list]
+            commit_call = [args for args in calls if "commit" in args]
+            assert len(commit_call) >= 1
+            assert "--no-verify" not in commit_call[0]
+
     async def test_warns_on_suspicious_staged_files(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
@@ -503,6 +529,24 @@ class TestPush:
 
             call_args = mock_run.call_args[0]
             assert "-u" in call_args
+
+    async def test_pushes_with_no_verify(self) -> None:
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", no_verify=True, cwd=Path("/repo"))
+
+            call_args = mock_run.call_args[0]
+            assert "--no-verify" in call_args
+
+    async def test_pushes_without_no_verify_by_default(self) -> None:
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", cwd=Path("/repo"))
+
+            call_args = mock_run.call_args[0]
+            assert "--no-verify" not in call_args
 
 
 # ---------------------------------------------------------------------------
