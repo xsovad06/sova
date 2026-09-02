@@ -93,6 +93,7 @@ _NESTED_SECTIONS = (
     "integration_gates",
     "integration",
     "rtk",
+    "compression",
     "coderabbit_quota",
     "pr_monitor",
     "supervisor",
@@ -192,6 +193,16 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
         [
             ("retention_days", "SOVA_FEED_RETENTION_DAYS"),
             ("page_size", "SOVA_FEED_PAGE_SIZE"),
+        ],
+    )
+
+    _apply_nested_env_overrides(
+        merged,
+        "compression",
+        "SOVA_COMPRESSION_",
+        [
+            ("enabled", "SOVA_COMPRESSION_ENABLED"),
+            ("min_chars", "SOVA_COMPRESSION_MIN_CHARS"),
         ],
     )
 
