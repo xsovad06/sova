@@ -2,7 +2,7 @@
 
 When CI fails, optionally invokes Claude to fix the issue and re-pushes,
 looping up to ``ci.max_fix_attempts`` times before giving up. Set
-``max_fix_attempts = 0`` in sova.toml to disable auto-recovery (the
+``ci.max_fix_attempts = 0`` in SOVA config to disable auto-recovery (the
 pre-existing behaviour).
 """
 

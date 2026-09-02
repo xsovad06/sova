@@ -35,16 +35,25 @@ def create_adapter(config: ProjectConfig) -> TaskAdapter:
 
         ts = config.task_source
         if not ts.jira_base_url:
-            raise ValueError("Jira adapter requires task_source.jira_base_url in sova.toml")
+            raise ValueError(
+                "Jira adapter requires jira_base_url. "
+                "Set the SOVA_TASK_JIRA_BASE_URL env var or configure it via the dashboard settings page."
+            )
         if not ts.jira_email:
-            raise ValueError("Jira adapter requires task_source.jira_email in sova.toml")
+            raise ValueError(
+                "Jira adapter requires jira_email. "
+                "Set the SOVA_TASK_JIRA_EMAIL env var or configure it via the dashboard settings page."
+            )
         if not ts.jira_api_token:
             raise ValueError(
                 "Jira adapter requires jira_api_token. "
-                "Set SOVA_TASK_JIRA_API_TOKEN env var or task_source.jira_api_token in sova.toml"
+                "Set the SOVA_TASK_JIRA_API_TOKEN env var or configure it via the dashboard settings page."
             )
         if not ts.jira_project_key:
-            raise ValueError("Jira adapter requires task_source.jira_project_key in sova.toml")
+            raise ValueError(
+                "Jira adapter requires jira_project_key. "
+                "Set the SOVA_TASK_JIRA_PROJECT_KEY env var or configure it via the dashboard settings page."
+            )
         return JiraAdapter(
             base_url=ts.jira_base_url,
             email=ts.jira_email,

@@ -47,7 +47,9 @@ def status(
 
     if not cfg.supervisor.enabled:
         console.print("[dim]Supervisor is disabled.[/dim]")
-        console.print("[dim]Enable with: supervisor.enabled = true in sova.toml[/dim]")
+        console.print(
+            "[dim]Set the SOVA_SUPERVISOR_ENABLED=true env var or enable it via the dashboard settings page.[/dim]"
+        )
         return
 
     console.print("[green]Supervisor is enabled[/green]")

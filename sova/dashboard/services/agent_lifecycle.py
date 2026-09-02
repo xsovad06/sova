@@ -355,7 +355,7 @@ async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None
 
 
 def _resolve_config_model(project_dir: Path) -> str | None:
-    """Return the agent model alias from sova.toml, or None if unset."""
+    """Return the agent model alias from SOVA config, or None if unset."""
     try:
         from sova.config.loader import load_config
 
@@ -367,7 +367,7 @@ def _resolve_config_model(project_dir: Path) -> str | None:
 
 
 def _resolve_config_fallback_model(project_dir: Path) -> str | None:
-    """Return the first fallback model from sova.toml, or None if empty."""
+    """Return the first fallback model from SOVA config, or None if empty."""
     try:
         from sova.config.loader import load_config
 

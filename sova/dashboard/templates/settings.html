@@ -3,28 +3,6 @@
 {% block content %}
 <h2 class="text-2xl font-semibold mb-6">Settings</h2>
 
-<!-- Restart required banner (persistent, sessionStorage-backed) -->
-<div id="restart-banner" class="hidden mb-6 bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg p-4">
-  <div class="flex items-center justify-between">
-    <div class="flex items-center gap-3">
-      <svg class="w-5 h-5 text-accent-yellow" fill="currentColor" viewBox="0 0 20 20">
-        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
-      </svg>
-      <span class="text-sm font-medium text-accent-yellow">Server restart required</span>
-    </div>
-    <div class="flex items-center gap-2">
-      <button onclick="showRestartDialog()" class="sova-btn-sm bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30">
-        Restart Now
-      </button>
-      <button onclick="dismissRestartBanner()" class="text-gray-500 hover:text-gray-300">
-        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-          <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
-        </svg>
-      </button>
-    </div>
-  </div>
-</div>
-
 <!-- Capacity recommendation (loaded async) -->
 <div id="capacity-callout" class="hidden mb-6 bg-surface-card rounded-lg border border-gray-700/50 p-4">
   <div class="flex items-start gap-3">
@@ -302,7 +280,7 @@ async function loadConfig() {
         '<div class="lg:col-span-2 p-4 rounded-lg" style="background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3)">' +
         '<p class="text-red-400 text-sm font-medium mb-1">Configuration Error</p>' +
         '<p class="text-red-300 text-xs font-mono">' + escapeHtml(detail) + '</p>' +
-        '<p class="text-gray-500 text-xs mt-2">Fix the value in sova.toml and reload.</p>' +
+        '<p class="text-gray-500 text-xs mt-2">Fix the value in the settings above (or set the matching SOVA_ env var), then reload.</p>' +
         '</div>';
     } else {
       document.getElementById('config-groups').innerHTML =
@@ -317,113 +295,8 @@ function _handleSaveResponse(data) {
   } else if (data.lifecycle_error) {
     showToast(data.lifecycle_error, 'warning');
   } else if (data.restart_required) {
-    // Show persistent banner instead of toast
-    sessionStorage.setItem('sova_restart_required', '1');
-    showRestartBanner();
+    showToast('Restart required for this setting to take effect', 'warning');
   }
-}
-
-function showRestartBanner() {
-  var banner = document.getElementById('restart-banner');
-  if (banner) {
-    banner.classList.remove('hidden');
-  }
-}
-
-function dismissRestartBanner() {
-  sessionStorage.removeItem('sova_restart_required');
-  var banner = document.getElementById('restart-banner');
-  if (banner) {
-    banner.classList.add('hidden');
-  }
-}
-
-async function showRestartDialog() {
-  try {
-    // Fetch preflight information
-    var preflight = await fetchAPI(apiUrl('/server/restart/preflight'));
-    if (!preflight || typeof preflight.active_agents !== 'number') {
-      throw new Error('Invalid preflight response');
-    }
-    var activeAgents = preflight.active_agents;
-    var supervisorRunning = preflight.supervisor_running || false;
-
-    // Build dialog message
-    var message = 'Restart the SOVA dashboard server?';
-    if (activeAgents > 0 || supervisorRunning) {
-      message += '\n\nCurrent state:';
-      if (activeAgents > 0) {
-        message += '\n• ' + activeAgents + ' agent' + (activeAgents !== 1 ? 's' : '') + ' running';
-      }
-      if (supervisorRunning) {
-        message += '\n• Supervisor daemon active';
-      }
-      message += '\n\nRecommendation: Wait for agents to finish (use "Drain and Restart") or force restart to kill running agents.';
-    }
-
-    var choice = confirm(message);
-    if (!choice) return;
-
-    // Determine whether to drain
-    var shouldDrain = activeAgents > 0 && confirm('Wait for ' + activeAgents + ' agent' + (activeAgents !== 1 ? 's' : '') + ' to finish before restarting?');
-
-    await performRestart(shouldDrain);
-  } catch (e) {
-    showToast('Failed to restart: ' + e.message, 'error');
-  }
-}
-
-async function performRestart(drain, force) {
-  try {
-    var payload = { drain: drain || false, force: force || false };
-    var res = await fetch(apiUrl('/server/restart'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) {
-      throw new Error('Server returned ' + res.status + ': ' + res.statusText);
-    }
-
-    var data = await res.json();
-
-    if (data.action === 'restarted') {
-      showToast('Server is restarting...', 'success');
-      // Poll for server to come back up
-      await pollForServerRestart();
-      sessionStorage.removeItem('sova_restart_required');
-      window.location.reload();
-    } else if (data.action === 'drain_timeout') {
-      var remaining = data.remaining_agents || 0;
-      var warning = data.warning || '';
-      var msg = 'Drain timeout: ' + remaining + ' agent' + (remaining !== 1 ? 's' : '') + ' still running.';
-      if (warning) msg += '\n' + warning;
-      msg += '\n\nForce restart anyway?';
-      if (confirm(msg)) {
-        // Retry with force=true
-        await performRestart(false, true);
-      }
-    } else if (data.action === 'restart_required') {
-      // Manual instruction fallback
-      alert(data.instruction || 'Please restart manually');
-    }
-  } catch (e) {
-    showToast('Restart failed: ' + e.message, 'error');
-  }
-}
-
-async function pollForServerRestart() {
-  for (var i = 0; i < 20; i++) {
-    await new Promise(function(r) { setTimeout(r, 1000); });
-    try {
-      await fetch(apiUrl('/server/restart/preflight'));
-      return; // Server is back
-    } catch (e) {
-      // Still down, keep polling
-    }
-  }
-  throw new Error('Server did not restart within 20 seconds');
 }
 
 async function toggleBool(key, checked) {
@@ -745,11 +618,6 @@ async function openPersonaEditor() {
   } catch (e) {
     alert('Failed to open editor: ' + e.message);
   }
-}
-
-// Check for restart banner on page load
-if (sessionStorage.getItem('sova_restart_required') === '1') {
-  showRestartBanner();
 }
 
 loadConfig();

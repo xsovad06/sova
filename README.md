@@ -99,7 +99,7 @@ pip install --user -e ".[dev]"
 ## Quick Start
 
 ```bash
-# Install SOVA into your project (creates sova.toml, deploys commands)
+# Install SOVA into your project (creates database config, deploys commands)
 sova install /path/to/project
 
 # Optional: run the interactive setup wizard for custom configuration
@@ -141,7 +141,9 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 
 ## Configuration
 
-SOVA uses a `sova.toml` file in each project root. Minimal example (required fields only):
+**Note**: SOVA now uses database-backed configuration (`.claude/sova.db`). While `sova.toml` is still supported for backward compatibility during migration, new installations should use the dashboard Settings page or `SOVA_*` environment variables. See [Configuration Troubleshooting](CLAUDE.md#configuration) for details on the database format and migration.
+
+The legacy `sova.toml` format is shown below for reference. Minimal example (required fields only):
 
 ```toml
 github_repo = "owner/repo"
@@ -382,6 +384,7 @@ make format   # Auto-format Python
 
 - Run `sova doctor` to check your environment setup
 - Run `sova --help` or `sova <command> --help` for CLI usage
+- **Config issues?** See [Troubleshooting Configuration](docs/troubleshooting-config.md) for common errors and fixes
 - File an [issue](https://github.com/xsovad06/sova/issues) for bugs or questions
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup
 

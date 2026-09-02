@@ -114,7 +114,7 @@ def _extract_phase_order(milestone: str | None) -> int:
 async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     """Fetch open issues and return a priority-sorted queue.
 
-    Uses the GitHub adapter via the project's sova.toml config.
+    Uses the GitHub adapter via the project's SOVA config.
     Returns a list of dicts with: priority, issue, title, state, action, labels, url, last_run.
     Results are cached for 120 seconds per project to reduce API calls.
     """

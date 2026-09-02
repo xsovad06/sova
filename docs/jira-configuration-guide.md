@@ -64,7 +64,7 @@ Organize your statuses into a table like this:
 
 ### Minimal configuration
 
-Add the `[task_source]` section to your project's `sova.toml`:
+Set the `[task_source]` keys via `sova config set` or the dashboard settings page (shown here in TOML form):
 
 ```toml
 [task_source]
@@ -76,7 +76,7 @@ jira_project_key = "MYPROJ"
 
 ### API token
 
-Store the API token as an environment variable (never in `sova.toml`):
+Store the API token as an environment variable (never in SOVA config):
 
 ```bash
 export SOVA_TASK_JIRA_API_TOKEN="your-api-token-here"
@@ -91,7 +91,7 @@ echo $SOVA_TASK_JIRA_API_TOKEN
 
 Or add it to `.env` in your project root (already in `.gitignore`).
 
-The field `jira_api_token` in `sova.toml` uses `repr=False` to prevent accidental logging, but environment variables are the recommended approach.
+The `jira_api_token` field in SOVA config uses `repr=False` to prevent accidental logging, but environment variables are the recommended approach.
 
 ### Required fields
 
@@ -306,7 +306,7 @@ jira_status_mapping = {"Ready for Dev" = "backlog", "In Code Review" = "in_revie
 When SOVA encounters a Jira status that is not in the default or custom mapping (and is not in the `Done` category), it logs a warning:
 
 ```
-status.unmapped  status="Awaiting QA"  issue=PROJ-42  hint="Add to [task_source] jira_status_mapping in sova.toml"
+status.unmapped  status="Awaiting QA"  issue=PROJ-42  hint="Add task_source.jira_status_mapping via `sova config set` or the dashboard settings page"
 ```
 
 This warning helps you discover statuses you need to map. The issue defaults to `backlog` when unmapped.
@@ -430,7 +430,7 @@ If you see 401 Unauthorized errors, verify:
 
 ### "status.unmapped" warnings
 
-Add the reported status name to `jira_status_mapping` in `sova.toml`. See the warning log for the exact status name and issue key.
+Add the reported status name to `jira_status_mapping` via `sova config set` or the dashboard settings page. See the warning log for the exact status name and issue key.
 
 ### Issues stuck in backlog despite being "In Progress" in Jira
 

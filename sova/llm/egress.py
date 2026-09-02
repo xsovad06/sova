@@ -2,7 +2,7 @@
 
 Validates all text destined for external systems (GitHub, Jira) to prevent
 accidental credential leakage in LLM-generated content. Pure regex scanning,
-no LLM calls. Configurable via ``[egress]`` in sova.toml.
+no LLM calls. Configurable via the ``[egress]`` section of SOVA config.
 """
 
 from __future__ import annotations

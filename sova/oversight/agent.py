@@ -37,7 +37,7 @@ class OversightAgent:
         self._wake_event = asyncio.Event()
 
     def _reload_config(self) -> OversightConfig:
-        """Re-read config from disk so runtime sova.toml changes take effect."""
+        """Re-read config so runtime SOVA config changes take effect."""
         from pathlib import Path
 
         from sova.config.loader import load_config

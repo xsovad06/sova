@@ -16,7 +16,9 @@ def render_briefing_cli(briefing: Briefing, console: Console, quiet: bool = Fals
     """Render a Briefing to the terminal using Rich."""
     if not briefing.provider_statuses:
         console.print("[dim]No awareness providers configured.[/dim]")
-        console.print("[dim]Enable in sova.toml under [awareness].[/dim]")
+        console.print(
+            "[dim]Set the SOVA_AWARENESS_ENABLED=true env var or enable it via the dashboard settings page.[/dim]"
+        )
         return
 
     if not quiet:

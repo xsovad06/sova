@@ -308,7 +308,7 @@ async def rebase_with_conflict_resolution(
     rebase from exhausting all retry attempts on the first commit.
 
     When multiple models are configured via ``[conflict_resolution]`` in
-    sova.toml, files are resolved using multi-model consensus before falling
+    SOVA config, files are resolved using multi-model consensus before falling
     back to the single-model interactive path.
 
     Stashes any uncommitted changes before rebasing and restores them after,
