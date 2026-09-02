@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 
+from sova.llm.egress import scan_and_redact
 from sova.llm.models import LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider
 from sova.utils.logging import get_logger
@@ -64,20 +65,44 @@ class ClaudeCodeProvider(LLMProvider):
                         "llm.invoke.exit_code_nonzero_but_output_valid",
                         exit_code=result.returncode,
                     )
+                    log.info(
+                        "llm.invoke.completed",
+                        model=parsed.model or model,
+                        cost_usd=str(parsed.cost_usd),
+                        input_tokens=parsed.input_tokens,
+                        output_tokens=parsed.output_tokens,
+                        duration_ms=parsed.duration_ms,
+                    )
                     return parsed
             except (json.JSONDecodeError, RuntimeError, KeyError):
                 pass
 
         # Handle normal success case
         if result.success and result.stdout.strip():
-            return _parse_json_output(result.stdout)
+            try:
+                parsed = _parse_json_output(result.stdout)
+            except RuntimeError as exc:
+                log.error("llm.invoke.failed", exit_code=result.returncode, detail=str(exc)[:200])
+                raise
+            log.info(
+                "llm.invoke.completed",
+                model=parsed.model or model,
+                cost_usd=str(parsed.cost_usd),
+                input_tokens=parsed.input_tokens,
+                output_tokens=parsed.output_tokens,
+                duration_ms=parsed.duration_ms,
+            )
+            return parsed
 
         # No valid output - raise error
         if not result.success:
             detail = _extract_failure_detail(result)
-            raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {detail}")
+            redacted_detail = scan_and_redact(detail).redacted_text
+            log.error("llm.invoke.failed", exit_code=result.returncode, detail=redacted_detail[:200])
+            raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {redacted_detail[:200]}")
 
         # Success but empty output - shouldn't happen
+        log.error("llm.invoke.failed", exit_code=result.returncode, detail="succeeded with no output")
         raise RuntimeError("Claude CLI succeeded but produced no output")
 
     async def invoke_streaming(
@@ -132,7 +157,8 @@ class ClaudeCodeProvider(LLMProvider):
             await proc.wait()
             if not got_result and proc.returncode and proc.returncode != 0:
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-                raise RuntimeError(f"Claude CLI streaming failed (exit {proc.returncode}): {stderr_text[:500]}")
+                redacted_stderr = scan_and_redact(stderr_text).redacted_text
+                raise RuntimeError(f"Claude CLI streaming failed (exit {proc.returncode}): {redacted_stderr[:500]}")
 
     def normalize_model_name(self, model: str) -> str:
         return _MODEL_ALIASES.get(model, model)

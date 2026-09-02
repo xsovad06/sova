@@ -167,7 +167,122 @@ class TestDashboardHealth:
     async def test_healthz_returns_ok(self, client: AsyncClient) -> None:
         resp = await client.get("/healthz")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["checks"]["db"] == "ok"
+        assert body["checks"]["disk"] == "ok"
+
+    async def test_healthz_db_failure_returns_503(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="fail")):
+            resp = await client.get("/healthz")
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["status"] == "unhealthy"
+        assert body["checks"]["db"] == "fail"
+
+    async def test_healthz_disk_failure_returns_503(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.dashboard.app._check_disk_health", return_value="fail"):
+            resp = await client.get("/healthz")
+        assert resp.status_code == 503
+        assert resp.json()["checks"]["disk"] == "fail"
+
+    async def test_healthz_skips_scheduler_when_no_pid_file(self, client: AsyncClient) -> None:
+        resp = await client.get("/healthz")
+        assert resp.status_code == 200
+        assert "scheduler" not in resp.json()["checks"]
+
+    async def test_healthz_includes_scheduler_when_pid_file_present(self, tmp_path: Path) -> None:
+        from sova.dashboard.app import _check_scheduler_health
+
+        pid_file = tmp_path / ".claude" / "sova-server.pid"
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(os.getpid()))
+        assert _check_scheduler_health(tmp_path) == "ok"
+
+    async def test_healthz_scheduler_dead_pid_reports_fail(self, tmp_path: Path) -> None:
+        from sova.dashboard.app import _check_scheduler_health
+
+        pid_file = tmp_path / ".claude" / "sova-server.pid"
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text("999999")
+        assert _check_scheduler_health(tmp_path) == "fail"
+
+    async def test_healthz_scheduler_check_is_idempotent(self, tmp_path: Path) -> None:
+        # A dead scheduler must keep reporting "fail" across repeated probes and
+        # must not delete the PID file (which would make the check flip to skip).
+        from sova.dashboard.app import _check_scheduler_health
+
+        pid_file = tmp_path / ".claude" / "sova-server.pid"
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text("999999")
+        assert _check_scheduler_health(tmp_path) == "fail"
+        assert pid_file.exists()
+        assert _check_scheduler_health(tmp_path) == "fail"
+        assert pid_file.exists()
+
+    async def test_check_db_health_returns_fail_on_error(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.app import _check_db_health
+
+        with patch("sova.db.session.get_session", side_effect=RuntimeError("boom")):
+            assert await _check_db_health() == "fail"
+
+    async def test_check_disk_health_returns_fail_when_low(self, tmp_path: Path) -> None:
+        from sova.dashboard.app import _check_disk_health
+
+        # An unreachably high floor forces the low-space branch.
+        assert _check_disk_health(tmp_path, min_free_mb=10**12) == "fail"
+
+    async def test_check_disk_health_returns_fail_on_oserror(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.app import _check_disk_health
+
+        with patch("shutil.disk_usage", side_effect=OSError("no such device")):
+            assert _check_disk_health(tmp_path) == "fail"
+
+    async def test_check_scheduler_health_invalid_pid_content(self, tmp_path: Path) -> None:
+        from sova.dashboard.app import _check_scheduler_health
+
+        pid_file = tmp_path / ".claude" / "sova-server.pid"
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text("not-a-pid")
+        assert _check_scheduler_health(tmp_path) == "fail"
+
+    async def test_check_scheduler_health_rejects_non_positive_pid(self, tmp_path: Path) -> None:
+        # int("0") parses fine, but os.kill(0, 0) probes the caller's own
+        # process group, not a real scheduler process: reject it explicitly.
+        from sova.dashboard.app import _check_scheduler_health
+
+        pid_file = tmp_path / ".claude" / "sova-server.pid"
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text("0")
+        assert _check_scheduler_health(tmp_path) == "fail"
+
+    async def test_check_scheduler_health_permission_error_reports_ok(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.app import _check_scheduler_health
+
+        pid_file = tmp_path / ".claude" / "sova-server.pid"
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text("12345")
+        # A PermissionError from os.kill means the process exists (owned by another user).
+        with patch("os.kill", side_effect=PermissionError):
+            assert _check_scheduler_health(tmp_path) == "ok"
+
+    async def test_healthz_includes_scheduler_status_in_endpoint(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.dashboard.app._check_scheduler_health", return_value="ok"):
+            resp = await client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.json()["checks"]["scheduler"] == "ok"
 
     async def test_root_redirects_to_dashboard(self, client: AsyncClient) -> None:
         resp = await client.get("/", follow_redirects=False)
@@ -3764,6 +3879,26 @@ class TestMultiProject:
         assert resp.status_code == 200
         data = resp.json()
         assert "runs" in data
+
+    async def test_healthz_checks_all_registered_project_dbs(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/healthz")
+        assert resp.status_code == 200
+        checks = resp.json()["checks"]
+        assert checks["db_alpha"] == "ok"
+        assert checks["db_beta"] == "ok"
+
+    async def test_healthz_fails_when_one_project_db_is_down(self, multi_client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        async def fake_check_db_health(project_dir=None, timeout=2.0):
+            return "fail" if project_dir is not None and project_dir.name == "project-beta" else "ok"
+
+        with patch("sova.dashboard.app._check_db_health", new=AsyncMock(side_effect=fake_check_db_health)):
+            resp = await multi_client.get("/healthz")
+        assert resp.status_code == 503
+        checks = resp.json()["checks"]
+        assert checks["db_alpha"] == "ok"
+        assert checks["db_beta"] == "fail"
 
     async def test_projects_api_list(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/api/projects")
