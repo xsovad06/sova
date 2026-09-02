@@ -25,6 +25,10 @@ Fully documented in `.claude/rules/` or `.claude/skills/`. One-line refs only.
 | CI | SonarCloud 500/504 is transient; re-run up to 2x; `pull_request_target` security model | cookbook inline |
 | Other | Provider selection wired at startup; dual-install commands; JSON column NULL gotcha; config nesting max 2 levels | `architecture.md` |
 
+## Git Worktree Lifecycle
+
+- **Git worktree stale registration recovery: prune + retry**. When a worktree directory is deleted externally (manual cleanup, process crash) but git's registration persists in `.git/worktrees/<id>/`, the next `git worktree add` fails with "missing but already registered" error. Defense-in-depth: (1) Always run `git worktree prune` before creating a new worktree (cheap ~5ms, negligible vs 200-500ms create time). (2) Detect the specific "missing but already registered" error after a failed create attempt, prune again, and retry once to handle race conditions. Mirrors pattern in `resolve_worktree_conflict()` and `cleanup_worktree()`. Implemented via `_prune_worktrees()` and `_add_worktree()` helpers in `sova/git/worktree.py:create_worktree()`, with a `worktree.stale_registration_recovered` log on successful retry. Issue #903 (hardening), run #2242 root cause. [confirmed: 1]
+
 ## DB / Models
 
 - **`TaskRun` uses `started_at`, not `created_at`** -- most ORM models (FailureRecord, CostRecord, Memory, etc.) use `created_at`, but `TaskRun` uses `started_at` and `ended_at`. Referencing `TaskRun.created_at` raises `AttributeError` which broad `except Exception` blocks silently swallow, producing "data unavailable" instead of real results. Always verify column names against the model definition when writing queries. PR #625, #629. [confirmed: 2]
