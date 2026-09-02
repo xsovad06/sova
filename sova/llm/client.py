@@ -63,6 +63,7 @@ def reload_provider(cfg: ProjectConfig) -> None:
             model=cfg.llm.model,
             fallback_model=cfg.llm.fallback_model,
             api_base=cfg.llm.api_base,
+            api_key=cfg.llm.api_key,
         )
     )
 

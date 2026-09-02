@@ -2508,8 +2508,46 @@ class TestAnthropicAPIProvider:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("ANTHROPIC_API_KEY", None)
             provider = AnthropicAPIProvider()
-            with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY.*not set"):
+            with pytest.raises(RuntimeError, match="API key is not configured"):
                 await provider.invoke("Hello")
+
+    async def test_invoke_uses_explicit_api_key(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(return_value=_MockAnthropicResponse())
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            provider = AnthropicAPIProvider(api_key="sk-explicit-key")
+            await provider.invoke("Hello")
+
+        mock_anthropic.AsyncAnthropic.assert_called_once_with(api_key="sk-explicit-key")
+
+    async def test_explicit_key_overrides_env(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(return_value=_MockAnthropicResponse())
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-env-key"}):
+            provider = AnthropicAPIProvider(api_key="sk-explicit-key")
+            await provider.invoke("Hello")
+
+        mock_anthropic.AsyncAnthropic.assert_called_once_with(api_key="sk-explicit-key")
+
+    async def test_check_available_explicit_key(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.models.list = AsyncMock(return_value=[])
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            provider = AnthropicAPIProvider(api_key="sk-explicit-key")
+            ok, msg = await provider.check_available()
+            assert ok is True
+            assert "anthropic SDK" in msg
 
     async def test_invoke_api_error_sanitized(self, mock_anthropic: MagicMock) -> None:
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
@@ -2563,7 +2601,7 @@ class TestAnthropicAPIProvider:
     async def test_check_available_auth_error(self, mock_anthropic: MagicMock) -> None:
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
-        mock_anthropic.AsyncAnthropic.return_value.models.list = AsyncMock(
+        mock_anthropic.AsyncAnthropic.return_value.messages.create = AsyncMock(
             side_effect=Exception("invalid api key"),
         )
 
@@ -2574,17 +2612,29 @@ class TestAnthropicAPIProvider:
             assert "unavailable" in msg.lower()
 
     async def test_check_available_no_models_attr(self, mock_anthropic: MagicMock) -> None:
-        """Older SDK without models resource still reports available."""
+        """Check available makes a real API call to validate credentials."""
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
-        client = mock_anthropic.AsyncAnthropic.return_value
-        del client.models
+        # Mock the messages.create call to return successfully
+        mock_anthropic.AsyncAnthropic.return_value.messages.create = AsyncMock(
+            return_value=MagicMock(content=[MagicMock(type="text", text="test")])
+        )
 
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
             provider = AnthropicAPIProvider()
             ok, msg = await provider.check_available()
             assert ok is True
             assert "anthropic SDK" in msg
+
+    def test_create_provider_forwards_api_key(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.provider import create_provider
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            provider = create_provider("anthropic", model="claude-opus-5", api_key="sk-from-config")
+
+        assert provider._api_key == "sk-from-config"
+        assert provider._default_model == "claude-opus-5"
 
     def test_normalize_model_name(self, mock_anthropic: MagicMock) -> None:
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider

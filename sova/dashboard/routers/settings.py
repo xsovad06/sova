@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sova.config.models import ProjectConfig
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services import settings_service
-from sova.dashboard.settings_meta import get_grouped_config
+from sova.dashboard.settings_meta import get_grouped_config, get_meta
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["settings"])
@@ -204,6 +204,84 @@ async def get_config_grouped() -> dict:
         raise HTTPException(status_code=500, detail=detail) from None
 
 
+@router.post("/settings/llm/test-connection")
+async def test_llm_connection() -> dict:
+    """Validate the configured LLM provider credentials.
+
+    Routes through the provider abstraction (``create_provider`` +
+    ``check_available``) so it stays provider-agnostic. Any construction or
+    validation error is returned as ``{ok: false, detail}`` rather than a 500.
+    """
+    from sova.config.loader import load_config
+    from sova.llm.provider import create_provider
+
+    try:
+        project_dir = get_project_dir()
+        cfg = load_config(project_dir)
+    except Exception as exc:  # noqa: BLE001 - report config errors inline, not as 500
+        log.warning("settings.llm.test.config_error", exc_info=True)
+        return {"ok": False, "provider": None, "detail": f"Failed to load configuration: {exc}"}
+
+    try:
+        provider = create_provider(
+            cfg.llm.provider,
+            model=cfg.llm.model,
+            fallback_model=cfg.llm.fallback_model,
+            api_base=cfg.llm.api_base,
+            api_key=cfg.llm.api_key,
+        )
+    except Exception as exc:  # noqa: BLE001 - misconfiguration must not 500
+        log.info("settings.llm.test.create_failed", provider=cfg.llm.provider, exc_info=True)
+        return {"ok": False, "provider": cfg.llm.provider, "detail": str(exc)}
+
+    try:
+        available, detail = await provider.check_available()
+    except Exception as exc:  # noqa: BLE001 - provider errors must not 500
+        log.info("settings.llm.test.check_failed", provider=cfg.llm.provider, exc_info=True)
+        return {"ok": False, "provider": cfg.llm.provider, "detail": str(exc)}
+
+    return {"ok": bool(available), "provider": cfg.llm.provider, "detail": detail}
+
+
+def _decimal_to_float(obj: object) -> object:
+    """Convert Decimal values to float for JSON serialization."""
+    from decimal import Decimal
+
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, dict):
+        return {k: _decimal_to_float(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_decimal_to_float(item) for item in obj]
+    return obj
+
+
+@router.get("/settings/llm/cost-projection")
+async def llm_cost_projection() -> dict:
+    """Return a lightweight monthly cost projection from recent usage."""
+    from sova.dashboard.services import cost_service
+    from sova.db.session import get_session
+
+    try:
+        project_dir = get_project_dir()
+        async with await get_session(project_dir=project_dir) as session:
+            projection = await cost_service.get_monthly_projection(session)
+    except Exception as exc:  # noqa: BLE001 - never 500 a widget
+        log.warning("settings.llm.cost_projection.error", exc_info=True)
+        return {"insufficient_data": True, "detail": str(exc)}
+
+    return _decimal_to_float(
+        {
+            "insufficient_data": projection["insufficient_data"],
+            "window_days": projection["window_days"],
+            "observed_days": projection["observed_days"],
+            "window_total_usd": projection["window_total_usd"],
+            "daily_avg_usd": projection["daily_avg_usd"],
+            "projected_monthly_usd": projection["projected_monthly_usd"],
+        }
+    )
+
+
 _RESTART_REQUIRED_PREFIXES = frozenset({"server.", "watch.", "database_url"})
 
 _RELOAD_PREFIX_MAP: dict[str, str] = {
@@ -322,7 +400,10 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
             lifecycle_error = await _reload_all_configs(project_dir, req.key)
             if lifecycle_error:
                 result["lifecycle_error"] = lifecycle_error
-            if any(req.key == prefix or req.key.startswith(prefix) for prefix in _RESTART_REQUIRED_PREFIXES):
+            meta = get_meta(req.key)
+            if (meta is not None and meta.requires_restart) or any(
+                req.key == prefix or req.key.startswith(prefix) for prefix in _RESTART_REQUIRED_PREFIXES
+            ):
                 result["restart_required"] = True
         return result
     except Exception as exc:

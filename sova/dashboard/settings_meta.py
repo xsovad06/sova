@@ -13,6 +13,7 @@ class SettingMeta:
     group: str
     value_type: str = "string"
     requires_restart: bool = False
+    options: tuple[str, ...] = ()
 
 
 _LABEL_POLL_INTERVAL = "Poll interval (s)"
@@ -121,6 +122,8 @@ _REGISTRY: list[SettingMeta] = [
         "Provider",
         "LLM provider backend (claude-code, litellm, hybrid, or anthropic for direct API access)",
         "llm",
+        "select",
+        options=("claude-code", "litellm", "hybrid", "anthropic"),
     ),
     SettingMeta(
         "llm.model",
@@ -139,6 +142,14 @@ _REGISTRY: list[SettingMeta] = [
         "API base URL",
         "Base URL for LiteLLM proxy mode (leave empty for direct API calls)",
         "llm",
+    ),
+    SettingMeta(
+        "llm.api_key",
+        "API key",
+        "API key for the anthropic provider. Stored in the database, never in sova.toml. "
+        "Leave blank to use the ANTHROPIC_API_KEY environment variable",
+        "llm",
+        "secret",
     ),
     SettingMeta(
         "llm.routing",
@@ -1651,6 +1662,7 @@ def get_grouped_config(flat_config: dict) -> list[dict]:
                 "value": value,
                 "value_type": meta.value_type,
                 "requires_restart": meta.requires_restart,
+                "options": list(meta.options),
             }
         else:
             group_id = _infer_group(key)

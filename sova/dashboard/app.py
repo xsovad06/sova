@@ -426,18 +426,10 @@ def create_app(
         # Per-project provider selection requires threading through ExecutionContext.
         from sova.config.loader import load_config
         from sova.ipc.runtime import create_runtime, set_runtime
-        from sova.llm.client import set_provider
-        from sova.llm.provider import create_provider
+        from sova.llm.client import reload_provider
 
         cfg = load_config(resolved)
-        set_provider(
-            create_provider(
-                cfg.llm.provider,
-                model=cfg.llm.model,
-                fallback_model=cfg.llm.fallback_model,
-                api_base=cfg.llm.api_base,
-            )
-        )
+        reload_provider(cfg)
         set_runtime(create_runtime(cfg.agent.runtime))
 
         from sova.core.output import cleanup_old_output

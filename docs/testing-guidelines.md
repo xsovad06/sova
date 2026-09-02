@@ -60,23 +60,6 @@ async def setup_db():
 - `close_db()` disposes the engine so each test gets a fresh DB
 - Env var scoping prevents cross-test pollution
 
-## Seeding Project Config
-
-Production SOVA stores configuration in `.claude/sova.db` (the `project_settings` table), not in `sova.toml`. Tests that need configured values should use the shared `seed_config` fixture (`tests/conftest.py`) rather than writing a `sova.toml` file. Writing `sova.toml` only works because `load_config()` still has an auto-migration fallback that epic #550 intends to remove (issue #557).
-
-```python
-def test_something(tmp_path, seed_config):
-    seed_config(tmp_path, github_repo="user/repo", validation={"fix_timeout": 240})
-    cfg = load_config(tmp_path)
-    assert cfg.github_repo == "user/repo"
-```
-
-- Nested dicts flatten to dot-notation (`{"pipeline": {"auto_handoff": False}}` -> `pipeline.auto_handoff`); flat dotted keys pass through unchanged
-- Values are passed as native Python types (str, int, float, bool, list) and JSON-encoded to match production storage
-- The fixture is synchronous, so it works in both sync and async tests
-- Priority still holds: `SOVA_*` env vars > DB > TOML > defaults
-- Only tests exercising the TOML parse-error/fallback path should still write `sova.toml` (annotate with a comment)
-
 ## Mock Patterns
 
 ### Patch at the import site, not the definition site

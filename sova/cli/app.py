@@ -84,18 +84,10 @@ console = Console(stderr=True)
 def _init_llm_provider() -> None:
     """Initialize the global LLM provider and agent runtime from project config."""
     from sova.ipc.runtime import create_runtime, set_runtime
-    from sova.llm.client import set_provider
-    from sova.llm.provider import create_provider
+    from sova.llm.client import reload_provider
 
     cfg = load_config()
-    set_provider(
-        create_provider(
-            cfg.llm.provider,
-            model=cfg.llm.model,
-            fallback_model=cfg.llm.fallback_model,
-            api_base=cfg.llm.api_base,
-        )
-    )
+    reload_provider(cfg)
     set_runtime(create_runtime(cfg.agent.runtime))
 
 
