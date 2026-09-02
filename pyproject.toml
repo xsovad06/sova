@@ -52,6 +52,7 @@ anthropic = ["anthropic>=0.39"]
 litellm = ["litellm>=1.40"]
 vertex = ["google-auth>=2.0", "requests>=2.20"]
 batch = ["google-auth>=2.0", "requests>=2.20"]
+compression = ["headroom-ai>=0.3.0"]
 awareness = [
     "google-api-python-client>=2.100.0",
     "google-auth>=2.20.0",

@@ -508,6 +508,15 @@ class RTKConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_RTK_")
 
 
+class HeadroomConfig(BaseSettings):
+    """Headroom prompt compression configuration (optional ``compression`` extra)."""
+
+    enabled: bool = False
+    min_chars: int = Field(500, ge=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_COMPRESSION_")
+
+
 class MemoryGuardConfig(BaseSettings):
     """Pre-spawn memory availability gate (dashboard + supervisor)."""
 
@@ -746,6 +755,7 @@ class ProjectConfig(BaseSettings):
     integration_gates: IntegrationGatesConfig = Field(default_factory=IntegrationGatesConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     rtk: RTKConfig = Field(default_factory=RTKConfig)
+    compression: HeadroomConfig = Field(default_factory=HeadroomConfig)
     coderabbit_quota: CodeRabbitQuotaConfig = Field(default_factory=CodeRabbitQuotaConfig)
     pr_monitor: PRMonitorConfig = Field(default_factory=PRMonitorConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
