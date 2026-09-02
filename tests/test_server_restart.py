@@ -320,3 +320,97 @@ class TestRestartMarker:
 
         result = _send_sighup()
         assert result is False
+
+
+class TestRestartEdgeCases:
+    """Tests for edge cases and error conditions."""
+
+    @pytest.mark.asyncio
+    async def test_restart_without_drain_no_agents(self, client: AsyncClient):
+        """Restart without drain should proceed immediately."""
+        from sova.dashboard.services.agent_pool import _get_project_agents
+
+        # Clear any agents
+        pa = _get_project_agents()
+        pa.agents.clear()
+
+        with patch("sova.dashboard.routers.server._send_sighup", return_value=True):
+            response = await client.post("/api/server/restart", json={"drain": False})
+            assert response.status_code == 200
+            assert response.json()["action"] == "restarted"
+
+    @pytest.mark.asyncio
+    async def test_restart_drain_false_force_true_ignored(self, client: AsyncClient):
+        """Force flag should be ignored when drain=False."""
+        from sova.dashboard.services.agent_pool import _get_project_agents
+
+        pa = _get_project_agents()
+        pa.agents = {1: Mock(run_id=1, issue="42", role="developer")}
+
+        with patch("sova.dashboard.routers.server._send_sighup", return_value=True):
+            response = await client.post("/api/server/restart", json={"drain": False, "force": True})
+            assert response.status_code == 200
+            # Should restart without waiting (force ignored)
+            assert response.json()["action"] == "restarted"
+
+    def test_count_agents_exception_returns_zero(self):
+        """count_active_agents should return 0 on exception."""
+        from sova.dashboard.routers.server import count_active_agents
+
+        with patch("sova.dashboard.routers.server.list_all_pools", side_effect=RuntimeError("pool error")):
+            result = count_active_agents()
+            assert result == 0
+
+    def test_is_supervisor_running_when_none(self):
+        """_is_supervisor_running should return False when daemon is None."""
+        from sova.dashboard.routers.server import _is_supervisor_running
+
+        with patch("sova.dashboard.routers.supervisor._get_daemon", return_value=None):
+            result = _is_supervisor_running(None)
+            assert result is False
+
+    def test_is_supervisor_running_when_not_running(self):
+        """_is_supervisor_running should return False when daemon.running is False."""
+        from sova.dashboard.routers.server import _is_supervisor_running
+
+        mock_daemon = Mock(running=False)
+        with patch("sova.dashboard.routers.supervisor._get_daemon", return_value=mock_daemon):
+            result = _is_supervisor_running(None)
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_disable_supervisor_when_none(self):
+        """_disable_supervisor should handle None daemon gracefully."""
+        from sova.dashboard.routers.server import _disable_supervisor
+
+        with patch("sova.dashboard.routers.supervisor._get_daemon", return_value=None):
+            # Should not raise
+            await _disable_supervisor(None)
+
+    @pytest.mark.asyncio
+    async def test_disable_supervisor_when_not_running(self):
+        """_disable_supervisor should skip if daemon not running."""
+        from sova.dashboard.routers.server import _disable_supervisor
+
+        mock_daemon = Mock(running=False)
+        with patch("sova.dashboard.routers.supervisor._get_daemon", return_value=mock_daemon):
+            # Should not call stop
+            await _disable_supervisor(None)
+            mock_daemon.stop.assert_not_called()
+
+    def test_send_sighup_success(self):
+        """_send_sighup should return True when signal sent."""
+        from sova.dashboard.routers.server import _send_sighup
+
+        with patch("sova.dashboard.routers.server.os.kill") as mock_kill:
+            result = _send_sighup()
+            assert result is True
+            mock_kill.assert_called_once()
+
+    def test_send_sighup_os_error(self):
+        """_send_sighup should return False on OSError."""
+        from sova.dashboard.routers.server import _send_sighup
+
+        with patch("sova.dashboard.routers.server.os.kill", side_effect=OSError("permission denied")):
+            result = _send_sighup()
+            assert result is False
