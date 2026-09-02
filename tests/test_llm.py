@@ -2901,3 +2901,248 @@ class TestLLMConfigAnthropic:
 
         cfg = LLMConfig()
         assert cfg.provider == "claude-code"
+
+
+# ---------------------------------------------------------------------------
+# Client: classify_content_type()
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyContentType:
+    def test_diff(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type("diff --git a/f b/f\n@@ -1 +1 @@") == "diff"
+
+    def test_diff_hunk_header(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type("@@ -1,2 +1,2 @@ context") == "diff"
+
+    def test_json_object(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type('{"key": "value"}') == "json"
+
+    def test_json_array(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type("[1, 2, 3]") == "json"
+
+    def test_code(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type("def foo():\n    return 1") == "code"
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "def foo():",
+            "class Bar:",
+            "import sys",
+            "from typing import List",
+            "function doSomething() {",
+            "const x = 1;",
+            "public class Main {",
+            "package main",
+            "#include <stdio.h>",
+        ],
+    )
+    def test_code_all_prefixes(self, prefix: str) -> None:
+        """Verify all code prefixes in _CODE_PREFIXES are detected."""
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type(prefix) == "code"
+
+    def test_text_default(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type("Just some prose describing a task.") == "text"
+
+    def test_short_payload_safe(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type("hi") == "text"
+
+    def test_empty_payload_safe(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type("") == "text"
+
+    def test_leading_whitespace_stripped(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        assert classify_content_type('   {"a": 1}') == "json"
+
+    def test_only_prefix_inspected(self) -> None:
+        from sova.llm.client import classify_content_type
+
+        # A JSON marker beyond the first 100 chars must not flip the result.
+        assert classify_content_type("x" * 200 + "{") == "text"
+
+
+# ---------------------------------------------------------------------------
+# Client: maybe_compress()
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeCompress:
+    def _cfg(self, *, enabled: bool):
+        from sova.config.models import HeadroomConfig, ProjectConfig
+
+        return ProjectConfig(compression=HeadroomConfig(enabled=enabled))
+
+    def test_config_none_returns_prompt(self) -> None:
+        from sova.llm import client
+
+        with patch.object(client, "_try_load_config", return_value=None):
+            assert client.maybe_compress("hello") == "hello"
+
+    def test_disabled_returns_prompt(self) -> None:
+        from sova.llm import client
+
+        with patch.object(client, "_try_load_config", return_value=self._cfg(enabled=False)):
+            assert client.maybe_compress("x" * 100) == "x" * 100
+
+    def test_disabled_does_not_import_compression(self) -> None:
+        from sova.llm import client
+
+        with (
+            patch.object(client, "_try_load_config", return_value=self._cfg(enabled=False)),
+            patch("sova.llm.compression.compress") as mock_compress,
+        ):
+            client.maybe_compress("x" * 100)
+        mock_compress.assert_not_called()
+
+    def test_enabled_calls_compress_with_content_type(self) -> None:
+        from sova.llm import client
+
+        payload = '{"key": ' + '"' + "v" * 100 + '"}'
+        with (
+            patch.object(client, "_try_load_config", return_value=self._cfg(enabled=True)),
+            patch("sova.llm.compression.compress", return_value="COMPRESSED") as mock_compress,
+        ):
+            assert client.maybe_compress(payload) == "COMPRESSED"
+        mock_compress.assert_called_once_with(payload, content_type="json", cwd=None)
+
+    def test_error_returns_prompt(self) -> None:
+        from sova.llm import client
+
+        with (
+            patch.object(client, "_try_load_config", return_value=self._cfg(enabled=True)),
+            patch("sova.llm.compression.compress", side_effect=RuntimeError("boom")),
+        ):
+            assert client.maybe_compress("hello world") == "hello world"
+
+
+# ---------------------------------------------------------------------------
+# Client: compression wiring into entry points
+# ---------------------------------------------------------------------------
+
+
+class TestCompressionWiring:
+    async def test_invoke_compresses_prompt(self) -> None:
+        from sova.llm import client
+
+        provider = MagicMock()
+        provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="test"))
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "maybe_compress", return_value="COMPRESSED") as mock_compress,
+            patch.object(client, "_try_load_config", return_value=None),
+        ):
+            await client.invoke("original prompt")
+        mock_compress.assert_called_once()
+        assert provider.invoke.call_args[0][0] == "COMPRESSED"
+
+    async def test_invoke_preserves_system_prompt_uncompressed(self) -> None:
+        from sova.llm import client
+
+        provider = MagicMock()
+        provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="test"))
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "maybe_compress", return_value="COMPRESSED") as mock_compress,
+            patch.object(client, "_try_load_config", return_value=None),
+        ):
+            await client.invoke("user prompt", system_prompt="system prompt")
+        mock_compress.assert_called_once_with("user prompt", None)
+        assert provider.invoke.call_args.kwargs["system_prompt"] == "system prompt"
+
+    async def test_invoke_command_compresses_args_only(self) -> None:
+        from sova.llm import client
+
+        provider = MagicMock()
+        provider.invoke_command = AsyncMock(return_value=LLMResult(text="ok", model="test"))
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "maybe_compress", return_value="COMPRESSED_ARGS") as mock_compress,
+        ):
+            await client.invoke_command("/develop", args="42")
+        mock_compress.assert_called_once_with("42", None)
+        assert provider.invoke_command.call_args[0][0] == "/develop"
+        assert provider.invoke_command.call_args[0][1] == "COMPRESSED_ARGS"
+
+    async def test_invoke_command_no_args_skips_compression(self) -> None:
+        from sova.llm import client
+
+        provider = MagicMock()
+        provider.invoke_command = AsyncMock(return_value=LLMResult(text="ok", model="test"))
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "maybe_compress") as mock_compress,
+        ):
+            await client.invoke_command("/review")
+        mock_compress.assert_not_called()
+
+    async def test_invoke_batch_compresses_each_without_mutating(self) -> None:
+        from sova.llm import client
+        from sova.llm.models import BatchRequest
+
+        provider = MagicMock()
+        provider.invoke_batch = AsyncMock(return_value=[])
+        reqs = [
+            BatchRequest(custom_id="a", prompt="p1"),
+            BatchRequest(custom_id="b", prompt="p2"),
+        ]
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "maybe_compress", side_effect=lambda p, cwd=None: p.upper()) as mock_compress,
+            patch("sova.llm.providers.anthropic_batch.create_batch_provider", return_value=None),
+        ):
+            await client.invoke_batch(reqs)
+        assert mock_compress.call_count == 2
+        sent = provider.invoke_batch.call_args[0][0]
+        assert [r.prompt for r in sent] == ["P1", "P2"]
+        # Caller-supplied requests must not be mutated in place.
+        assert [r.prompt for r in reqs] == ["p1", "p2"]
+
+    async def test_invoke_batch_empty_list_skips_compression(self) -> None:
+        """Verify empty batch returns early without compression or config loading."""
+        from sova.llm import client
+
+        with patch.object(client, "maybe_compress") as mock_compress:
+            result = await client.invoke_batch([])
+        assert result == []
+        mock_compress.assert_not_called()
+
+    async def test_invoke_streaming_compresses_prompt(self) -> None:
+        from sova.llm import client
+
+        provider = MagicMock()
+        captured: dict[str, str] = {}
+
+        async def fake_stream(prompt: str, **_kwargs: object):
+            captured["prompt"] = prompt
+            if False:
+                yield  # pragma: no cover - makes this an async generator
+
+        provider.invoke_streaming = fake_stream
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "maybe_compress", return_value="COMPRESSED") as mock_compress,
+        ):
+            async for _event in client.invoke_streaming("original prompt"):
+                pass
+        mock_compress.assert_called_once()
+        assert captured["prompt"] == "COMPRESSED"

@@ -3,7 +3,8 @@
 Wraps the optional ``headroom-ai`` package behind an import guard. When the
 package is not installed or ``[compression] enabled = false``, ``compress()`` is
 an exact identity passthrough. This mirrors the RTK optional-dependency pattern
-in ``sova/utils/rtk.py``. Nothing here is wired into the live LLM path yet.
+in ``sova/utils/rtk.py``. ``compress()`` is wired into the live LLM path via
+``sova.llm.client.maybe_compress()`` (gated on ``compression.enabled``, default off).
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def is_compression_available() -> bool:
     return _HEADROOM_AVAILABLE
 
 
-def compress(text: str, content_type: str = "text") -> str:
+def compress(text: str, content_type: str = "text", cwd: str | None = None) -> str:
     """Compress ``text`` via Headroom when enabled, available, and large enough.
 
     Returns the input unchanged when the package is missing, compression is
@@ -43,6 +44,7 @@ def compress(text: str, content_type: str = "text") -> str:
         text: Input text to compress.
         content_type: Strategy hint, one of "text", "json", "code", "log", "diff".
                       Unknown types fall back to the "text" strategy.
+        cwd: Optional working directory to resolve config from. Uses process cwd if None.
 
     Returns:
         The compressed text on the happy path, otherwise ``text`` unchanged.
@@ -50,7 +52,7 @@ def compress(text: str, content_type: str = "text") -> str:
     if not _HEADROOM_AVAILABLE:
         return text
 
-    cfg = load_config()
+    cfg = load_config(project_dir=cwd)
     if not cfg.compression.enabled:
         return text
 
