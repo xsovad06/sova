@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sova.utils.logging import get_logger
-from sova.utils.shell import run, run_checked, subprocess_error
+from sova.utils.shell import ShellResult, run, run_checked, subprocess_error
 
 log = get_logger(component="git.worktree")
 
@@ -25,6 +25,27 @@ class WorktreeInfo:
     branch: str
     issue_id: str
     created_at: float = field(default_factory=time.time)
+
+
+async def _prune_worktrees(project_dir: Path) -> None:
+    """Run ``git worktree prune``, logging (but not raising) on failure."""
+    result = await run("git", "worktree", "prune", cwd=project_dir)
+    if not result.success:
+        log.warning("worktree.prune_before_create_failed", stderr=result.stderr[:200])
+
+
+async def _add_worktree(worktree_path: Path, branch: str, base_branch: str, project_dir: Path) -> ShellResult:
+    """Run ``git worktree add <path> -b <branch> <base_branch>``."""
+    return await run(
+        "git",
+        "worktree",
+        "add",
+        str(worktree_path),
+        "-b",
+        branch,
+        base_branch,
+        cwd=project_dir,
+    )
 
 
 async def create_worktree(
@@ -83,17 +104,17 @@ async def create_worktree(
         log.info("worktree.stale_remove", path=str(worktree_path))
         await cleanup_worktree(worktree_path, cwd=project_dir)
 
-    # Try creating a new branch in a worktree
-    result = await run(
-        "git",
-        "worktree",
-        "add",
-        str(worktree_path),
-        "-b",
-        branch,
-        base_branch,
-        cwd=project_dir,
-    )
+    # Layer 1: proactively clear stale worktree registrations before creating
+    await _prune_worktrees(project_dir)
+    result = await _add_worktree(worktree_path, branch, base_branch, project_dir)
+
+    if not result.success and "missing but already registered" in result.stderr:
+        # Layer 2: a directory was cleaned up between prune and add -- prune
+        # again to clear the newly-stale registration and retry once.
+        await _prune_worktrees(project_dir)
+        result = await _add_worktree(worktree_path, branch, base_branch, project_dir)
+        if result.success:
+            log.info("worktree.stale_registration_recovered", path=str(worktree_path), branch=branch)
 
     if not result.success:
         stderr = result.stderr

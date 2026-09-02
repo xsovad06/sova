@@ -42,6 +42,7 @@ class TestCreateWorktreeStaleRemoval:
                 _shell_ok(stdout="wrong-branch\n"),
                 _shell_ok(),
                 _shell_ok(),
+                _shell_ok(),
             ]
             info = await create_worktree(
                 issue_id="42",
@@ -316,6 +317,84 @@ class TestCreateWorktreeCheckedOutElsewhere:
                     base_branch="main",
                     project_dir=Path("/repo"),
                 )
+
+
+class TestCreateWorktreeStaleRegistrationRecovery:
+    async def test_prune_before_create_failure_is_logged_and_nonfatal(self) -> None:
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.worktree.Path.exists", return_value=False),
+            patch("sova.git.worktree.Path.mkdir"),
+            patch("sova.git.worktree._copy_claude_artifacts"),
+            patch("sova.git.worktree._ensure_compose_project_name"),
+            patch("sova.git.worktree.log") as mock_log,
+        ):
+            mock_run.side_effect = [
+                _shell_fail(stderr="fatal: transient prune error"),
+                _shell_ok(),
+            ]
+            info = await create_worktree(
+                issue_id="42",
+                branch="feat/login",
+                base_branch="main",
+                project_dir=Path("/repo"),
+            )
+            assert info.branch == "feat/login"
+            mock_log.warning.assert_any_call(
+                "worktree.prune_before_create_failed", stderr="fatal: transient prune error"
+            )
+
+    async def test_retries_and_recovers_on_stale_registration(self) -> None:
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.worktree.Path.exists", return_value=False),
+            patch("sova.git.worktree.Path.mkdir"),
+            patch("sova.git.worktree._copy_claude_artifacts"),
+            patch("sova.git.worktree._ensure_compose_project_name"),
+            patch("sova.git.worktree.log") as mock_log,
+        ):
+            mock_run.side_effect = [
+                _shell_ok(),  # Layer 1 prune
+                _shell_fail(
+                    stderr="fatal: '/repo/.claude/worktrees/42' is missing but already registered"
+                ),  # first add fails
+                _shell_ok(),  # Layer 2 retry prune
+                _shell_ok(),  # retried add succeeds
+            ]
+            info = await create_worktree(
+                issue_id="42",
+                branch="feat/login",
+                base_branch="main",
+                project_dir=Path("/repo"),
+            )
+            assert info.branch == "feat/login"
+            assert mock_run.call_count == 4
+            mock_log.info.assert_any_call(
+                "worktree.stale_registration_recovered",
+                path=str(Path("/repo") / WORKTREE_DIR / "42"),
+                branch="feat/login",
+            )
+
+    async def test_retry_failure_falls_through_to_existing_error_handling(self) -> None:
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.worktree.Path.exists", return_value=False),
+            patch("sova.git.worktree.Path.mkdir"),
+        ):
+            mock_run.side_effect = [
+                _shell_ok(),  # Layer 1 prune
+                _shell_fail(stderr="fatal: is missing but already registered"),  # first add fails
+                _shell_ok(),  # Layer 2 retry prune
+                _shell_fail(stderr="fatal: is already checked out at '/other/wt'"),  # retry also fails
+            ]
+            with pytest.raises(RuntimeError):
+                await create_worktree(
+                    issue_id="42",
+                    branch="feat/login",
+                    base_branch="main",
+                    project_dir=Path("/repo"),
+                )
+            assert mock_run.call_count == 4
 
 
 class TestCreateWorktreeCopyFiles:
