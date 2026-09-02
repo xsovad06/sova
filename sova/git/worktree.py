@@ -109,7 +109,7 @@ async def create_worktree(
     result = await _add_worktree(worktree_path, branch, base_branch, project_dir)
 
     if not result.success and "missing but already registered" in result.stderr:
-        # Layer 2: a directory was cleaned up between prune and add -- prune
+        # Layer 2: a directory was cleaned up between prune and add. Prune
         # again to clear the newly-stale registration and retry once.
         await _prune_worktrees(project_dir)
         result = await _add_worktree(worktree_path, branch, base_branch, project_dir)
