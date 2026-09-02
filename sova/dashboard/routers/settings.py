@@ -204,7 +204,24 @@ async def get_config_grouped() -> dict:
         raise HTTPException(status_code=500, detail=detail) from None
 
 
-_RESTART_REQUIRED_PREFIXES = frozenset({"server.", "watch.", "database_url"})
+# Keys that require server restart (prefix matching)
+_RESTART_REQUIRED_PREFIXES = ("server.", "watch.", "database_url")
+
+
+def _requires_restart(key: str) -> bool:
+    """Check if a config key requires server restart.
+
+    Uses metadata if available, otherwise falls back to prefix matching.
+    """
+    from sova.dashboard.settings_meta import get_meta
+
+    meta = get_meta(key)
+    if meta is not None:
+        return meta.requires_restart
+
+    # Fallback for unmapped keys
+    return key.startswith(_RESTART_REQUIRED_PREFIXES[:2]) or key == _RESTART_REQUIRED_PREFIXES[2]
+
 
 _RELOAD_PREFIX_MAP: dict[str, str] = {
     "supervisor.": "supervisor",
@@ -322,7 +339,7 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
             lifecycle_error = await _reload_all_configs(project_dir, req.key)
             if lifecycle_error:
                 result["lifecycle_error"] = lifecycle_error
-            if any(req.key == prefix or req.key.startswith(prefix) for prefix in _RESTART_REQUIRED_PREFIXES):
+            if _requires_restart(req.key):
                 result["restart_required"] = True
         return result
     except Exception as exc:
