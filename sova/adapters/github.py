@@ -132,6 +132,7 @@ class GitHubAdapter(TaskAdapter):
         return _parse_issue(issue)
 
     async def transition_state(self, task_id: str, new_state: TaskState) -> None:
+        log.info("transition_state", issue=task_id, new_state=str(new_state), repo=self.repo)
         if new_state == TaskState.DONE:
             result = await self._gh("issue", "close", task_id, "--repo", self.repo)
             if not result.success:
@@ -170,12 +171,14 @@ class GitHubAdapter(TaskAdapter):
             )
             return False
         await self._add_label(task_id, f"role:{agent_role}")
+        log.info("assign.completed", issue=task_id, user=self.github_user, role=agent_role, repo=self.repo)
         return True
 
     async def add_label(self, task_id: str, label: str) -> None:
         await self._add_label(task_id, label)
 
     async def remove_label(self, task_id: str, label: str) -> None:
+        log.info("remove_label", issue=task_id, label=label, repo=self.repo)
         await self._gh(
             "issue",
             "edit",
@@ -187,6 +190,7 @@ class GitHubAdapter(TaskAdapter):
         )
 
     async def _do_post_comment(self, task_id: str, body: str) -> None:
+        log.info("post_comment", issue=task_id, body_len=len(body), repo=self.repo)
         await self._gh(
             "issue",
             "comment",
@@ -198,6 +202,7 @@ class GitHubAdapter(TaskAdapter):
         )
 
     async def _do_post_pr_comment(self, pr_number: int, body: str) -> None:
+        log.info("post_pr_comment", pr=pr_number, body_len=len(body), repo=self.repo)
         await self._gh(
             "pr",
             "comment",
@@ -225,6 +230,7 @@ class GitHubAdapter(TaskAdapter):
             "-",
             stdin=payload,
         )
+        posted_comment_count = len(comments)
         if not result.success and comments:
             log.warning(
                 "post_pr_review.inline_failed_retrying_body_only",
@@ -242,8 +248,17 @@ class GitHubAdapter(TaskAdapter):
                 "-",
                 stdin=body_payload,
             )
+            posted_comment_count = 0
         if not result.success:
             raise RuntimeError(f"Failed to post PR review on #{pr_number}: {result.stderr[:300]}")
+        log.info(
+            "post_pr_review",
+            pr=pr_number,
+            review_event=event,
+            body_len=len(body),
+            comment_count=posted_comment_count,
+            repo=self.repo,
+        )
 
     async def _do_edit_body(self, task_id: str, body: str) -> None:
         result = await self._gh(
@@ -257,6 +272,7 @@ class GitHubAdapter(TaskAdapter):
         )
         if not result.success:
             raise RuntimeError(f"Failed to edit body of issue #{task_id}: {result.stderr[:200]}")
+        log.info("edit_body", issue=task_id, body_len=len(body), repo=self.repo)
 
     async def get_state(self, task_id: str) -> TaskState:
         result = await self._gh(
@@ -294,6 +310,7 @@ class GitHubAdapter(TaskAdapter):
     async def link_pr(self, task_id: str, pr_url: str) -> None:
         # GitHub auto-links via "Closes #N" in PR body. Post a comment
         # as a secondary reference for visibility.
+        log.info("link_pr", issue=task_id, pr_url=pr_url, repo=self.repo)
         await self._gh(
             "issue",
             "comment",

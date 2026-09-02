@@ -69,10 +69,14 @@ sova/
   personas/                        # Tech-stack-specific guidance (markdown)
   knowledge/
     KNOWLEDGE.md                   # 4-tier knowledge management system
+  knowledge/
+    KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 7579 at last count)
+  tests/                           # pytest suite (3200+ tests, 7643 at last count)
   docs/
+    VISION.md                      # Product vision and roadmap
+    ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
     *-guidelines.md                # Domain-specific guidelines (7 files)

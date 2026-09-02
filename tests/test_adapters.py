@@ -554,6 +554,26 @@ class TestGitHubAdapter:
         assert retry_payload["body"] == "Summary"
         assert retry_payload["event"] == "COMMENT"
 
+    async def test_post_pr_review_logs_zero_comments_after_fallback(self, mock_run: AsyncMock) -> None:
+        """After a body-only retry succeeds, the completion log must report 0 comments, not the original count."""
+        comments = [{"path": "foo.py", "line": 999, "side": "RIGHT", "body": "Bad line ref"}]
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="Validation Failed: line 999 not in diff"),
+            _shell_result(stdout='{"id": 456}'),
+        ]
+
+        with patch("sova.adapters.github.log") as mock_log:
+            await self.adapter.post_pr_review(82, "Summary", "COMMENT", comments)
+
+        mock_log.info.assert_any_call(
+            "post_pr_review",
+            pr=82,
+            review_event="COMMENT",
+            body_len=len("Summary"),
+            comment_count=0,
+            repo="user/repo",
+        )
+
     async def test_post_pr_review_raises_when_retry_also_fails(self, mock_run: AsyncMock) -> None:
         """When both inline and body-only attempts fail, raise RuntimeError."""
         comments = [{"path": "foo.py", "line": 10, "side": "RIGHT", "body": "Issue"}]

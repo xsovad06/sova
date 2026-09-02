@@ -132,6 +132,7 @@ jobs:
         with:
           args: >
             -Dsonar.qualitygate.wait=true
+            -Dsonar.python.coverage.reportPaths=coverage.xml
             ${{ steps.find-pr.outputs.number != '' && format(
               '-Dsonar.pullrequest.key={0} -Dsonar.pullrequest.branch={1} -Dsonar.pullrequest.base={2}',
               steps.find-pr.outputs.number,

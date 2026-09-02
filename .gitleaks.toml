@@ -1,0 +1,15 @@
+# gitleaks configuration for SOVA.
+#
+# Extends the built-in ruleset and allowlists known-safe fixtures that
+# intentionally embed token-shaped strings (egress-filter tests). Real
+# credentials live only in gitignored files (.env, .claude/settings.local.json),
+# so the scan runs against git history (`gitleaks git`), which never sees them.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Egress filter tests use fake token-shaped strings as fixtures"
+paths = [
+    '''tests/test_egress\.py''',
+]

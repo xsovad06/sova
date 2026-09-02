@@ -649,12 +649,24 @@ class TaskProgressionEngine:
             else:
                 rate_limit_block = precomputed_rate_limit
             if rate_limit_block:
+                log.info(
+                    "evaluate_single.blocked",
+                    issue=issue_number,
+                    candidate=candidate.value,
+                    gates=["rate_limit"],
+                )
                 return ProgressionDecision(
                     issue_number=issue_number,
                     action=ProgressionAction.BLOCKED,
                     reason=f"Rate limited: {rate_limit_block.detail}",
                     blocked_by=(rate_limit_block,),
                 )
+            log.info(
+                "evaluate_single.ready",
+                issue=issue_number,
+                action=ProgressionAction.RESET_STALE_STATE.value,
+                pr_number=None,
+            )
             return ProgressionDecision(
                 issue_number=issue_number,
                 action=ProgressionAction.RESET_STALE_STATE,
@@ -697,6 +709,12 @@ class TaskProgressionEngine:
         if blockers:
             all_conflict = all(b.gate == "conflict" for b in blockers)
             if all_conflict and self._config.auto_rebase:
+                log.info(
+                    "evaluate_single.ready",
+                    issue=issue_number,
+                    action=ProgressionAction.SPAWN_REBASE.value,
+                    pr_number=None,
+                )
                 return ProgressionDecision(
                     issue_number=issue_number,
                     action=ProgressionAction.SPAWN_REBASE,
@@ -704,6 +722,12 @@ class TaskProgressionEngine:
                 )
 
             reasons = "; ".join(b.detail for b in blockers)
+            log.info(
+                "evaluate_single.blocked",
+                issue=issue_number,
+                candidate=candidate.value,
+                gates=[b.gate for b in blockers],
+            )
             return ProgressionDecision(
                 issue_number=issue_number,
                 action=ProgressionAction.BLOCKED,
@@ -714,6 +738,12 @@ class TaskProgressionEngine:
 
         refined_pr_num = refined_pr_info.number if refined_pr_info else None
         final_pr = refined_pr_num or discovered_pr
+        log.info(
+            "evaluate_single.ready",
+            issue=issue_number,
+            action=candidate.value,
+            pr_number=final_pr,
+        )
         return ProgressionDecision(
             issue_number=issue_number,
             action=candidate,

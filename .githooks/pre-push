@@ -39,7 +39,7 @@ echo "=== Pre-push CI checks ==="
 
 # 1. ShellCheck
 echo ""
-echo "[1/6] ShellCheck..."
+echo "[1/7] ShellCheck..."
 if command -v shellcheck &>/dev/null; then
   if shellcheck --severity=warning \
     invariants/*.sh 2>&1; then
@@ -54,17 +54,17 @@ fi
 
 # 2. Ruff lint
 echo ""
-echo "[2/6] Ruff check..."
+echo "[2/7] Ruff check..."
 run_ruff check sova/ tests/
 
 # 3. Ruff format
 echo ""
-echo "[3/6] Ruff format..."
+echo "[3/7] Ruff format..."
 run_ruff format --check sova/ tests/
 
 # 4. Validate command frontmatter
 echo ""
-echo "[4/6] Command frontmatter..."
+echo "[4/7] Command frontmatter..."
 fm_errors=0
 for f in commands/*.md; do
   name=$(basename "$f")
@@ -101,7 +101,7 @@ fi
 
 # 5. File permissions
 echo ""
-echo "[5/6] File permissions..."
+echo "[5/7] File permissions..."
 perm_errors=0
 for f in invariants/*.sh; do
   if [ ! -x "$f" ]; then
@@ -118,7 +118,7 @@ fi
 
 # 6. Invariant checks (mirrors CI invariants job)
 echo ""
-echo "[6/6] Invariants..."
+echo "[6/7] Invariants..."
 inv_errors=0
 for script in invariants/*.sh; do
   name=$(basename "$script" .sh)
@@ -134,6 +134,24 @@ if [ "$inv_errors" -gt 0 ]; then
   errors=$((errors + 1))
 else
   echo "  PASS"
+fi
+
+# 7. Secrets scan (gitleaks). SKIP when not installed so contributors without
+# the binary can still push; CI enforces it as a required check.
+echo ""
+echo "[7/7] Secrets scan (gitleaks)..."
+if command -v gitleaks &>/dev/null; then
+  # Scan git history (not the working tree) so gitignored real secrets
+  # (.env, .claude/settings.local.json) are never read; the allowlist in
+  # .gitleaks.toml suppresses known-safe test fixtures.
+  if gitleaks git "$REPO_ROOT" --no-banner --redact --config "$REPO_ROOT/.gitleaks.toml"; then
+    echo "  PASS"
+  else
+    echo "  FAIL (secrets detected -- review the findings above)"
+    errors=$((errors + 1))
+  fi
+else
+  echo "  SKIP (gitleaks not installed)"
 fi
 
 echo ""

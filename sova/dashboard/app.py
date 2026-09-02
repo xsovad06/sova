@@ -388,6 +388,76 @@ async def _shutdown_tasks(
     await asyncio.gather(*cancel_tasks, return_exceptions=True)
 
 
+# Readiness probe tuning. A locked/slow DB must fail fast rather than hang the
+# probe, and the disk check needs a floor below which the app cannot function.
+_HEALTHZ_DB_TIMEOUT = 2.0  # seconds; a timeout counts as a failed DB check
+_HEALTHZ_MIN_FREE_MB = 100  # minimum free disk space (MB) to be considered healthy
+
+
+async def _check_db_health(project_dir: Path | None = None, timeout: float = _HEALTHZ_DB_TIMEOUT) -> str:
+    """Run a bounded ``SELECT 1`` so a locked/slow DB fails fast instead of hanging."""
+    from sqlalchemy import text
+
+    from sova.db.session import get_session
+
+    async def _probe() -> None:
+        async with await get_session(project_dir=project_dir) as session:
+            await session.execute(text("SELECT 1"))
+
+    try:
+        await asyncio.wait_for(_probe(), timeout=timeout)
+        return "ok"
+    except Exception:
+        log.warning("healthz.db_check_failed", project_dir=str(project_dir) if project_dir else None, exc_info=True)
+        return "fail"
+
+
+def _check_disk_health(project_dir: Path, min_free_mb: int = _HEALTHZ_MIN_FREE_MB) -> str:
+    """Report free space via a portable query, tolerating permission errors as failures."""
+    import shutil
+
+    try:
+        target = project_dir if project_dir.exists() else Path.cwd()
+        usage = shutil.disk_usage(target)
+        if usage.free < min_free_mb * 1024 * 1024:
+            log.warning("healthz.disk_low", free_bytes=usage.free, path=str(target))
+            return "fail"
+        return "ok"
+    except OSError:
+        log.warning("healthz.disk_check_failed", path=str(project_dir), exc_info=True)
+        return "fail"
+
+
+def _check_scheduler_health(project_dir: Path) -> str | None:
+    """Check the scheduler only when a project-scoped PID file is present.
+
+    Returns None (skip) when no PID file exists so single-dashboard deployments
+    are not marked unhealthy for lacking a scheduler.
+    """
+    pid_path = project_dir / ".claude" / "sova-server.pid"
+    if not pid_path.exists():
+        return None
+    # Read and check liveness inline rather than via read_pid_file(): that helper
+    # unlinks the PID file when the process is dead, which would make this probe
+    # non-idempotent (a persistently-dead scheduler would report "fail" once and
+    # then flip to 200, check skipped, forever after the file is gone).
+    try:
+        pid = int(pid_path.read_text().strip())
+        if pid <= 0:
+            raise ValueError("PID must be positive")
+    except (ValueError, OSError):
+        log.warning("healthz.scheduler_check_failed", path=str(pid_path), exc_info=True)
+        return "fail"
+    try:
+        os.kill(pid, 0)
+        return "ok"
+    except PermissionError:
+        # Process exists but is owned by another user (still alive).
+        return "ok"
+    except OSError:
+        return "fail"
+
+
 def create_app(
     *,
     project_dir: Path | None = None,
@@ -697,9 +767,33 @@ def create_app(
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        """Liveness probe. Returns 200 OK if the app is running."""
-        return {"status": "ok"}
+    async def healthz() -> Response:
+        """Readiness probe: checks DB connectivity, disk space, and (optionally) the scheduler.
+
+        Returns 200 when all checks pass and 503 otherwise. The body always
+        carries per-check results (e.g. ``{"db": "ok", "disk": "fail"}``) so a
+        non-2xx status is machine-readable while the body stays human-diagnosable.
+        """
+        checks: dict[str, str] = {}
+        if is_multi:
+            projects = list_projects()
+            if not projects:
+                checks["db"] = await _check_db_health()
+            else:
+                for slug, path_str in projects.items():
+                    checks[f"db_{slug}"] = await _check_db_health(project_dir=Path(path_str))
+        else:
+            checks["db"] = await _check_db_health()
+        checks["disk"] = _check_disk_health(resolved)
+        scheduler_status = _check_scheduler_health(resolved)
+        if scheduler_status is not None:
+            checks["scheduler"] = scheduler_status
+
+        healthy = all(status == "ok" for status in checks.values())
+        return JSONResponse(
+            {"status": "ok" if healthy else "unhealthy", "checks": checks},
+            status_code=200 if healthy else 503,
+        )
 
     app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 
