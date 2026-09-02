@@ -92,6 +92,7 @@ async def invoke(
     from sova.llm.guard import guard_prompt
 
     guard_prompt(prompt)
+    prompt = maybe_compress(prompt, cwd)
     cfg = _try_load_config(cwd) if model is None or timeout is None else None
     resolved = _resolve_task_type_model(model, task_type, cfg=cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
@@ -161,6 +162,54 @@ def _resolve_timeout(
     return float(resolved_cfg.llm.cli_timeout)
 
 
+_DIFF_PREFIXES = ("diff --git", "--- ", "+++ ", "@@ ")
+_CODE_PREFIXES = ("def ", "class ", "import ", "from ", "function ", "const ", "public ", "package ", "#include")
+
+
+def classify_content_type(text: str) -> str:
+    """Return a fast compression strategy hint from the payload prefix.
+
+    Only the first 100 characters are inspected so classification stays cheap on
+    large payloads. Unrecognized content falls back to "text".
+
+    Design tradeoffs:
+    - Code prefixes like 'from ' may match natural language ('from the perspective
+      of...'), optimizing for precision over recall. Ambiguous cases fall back to
+      'text', which is acceptable for a fast heuristic.
+    - Prompts with >100 leading spaces may be misclassified as 'text' after
+      slice+strip produces empty string. This pathological edge case is acceptable
+      given the function's goal of fast classification.
+    """
+    head = text[:100].lstrip()
+    if head.startswith(_DIFF_PREFIXES):
+        return "diff"
+    if head.startswith(("{", "[")):
+        return "json"
+    if head.startswith(_CODE_PREFIXES):
+        return "code"
+    return "text"
+
+
+def maybe_compress(prompt: str, cwd: Path | str | None = None) -> str:
+    """Compress *prompt* via Headroom when compression is enabled.
+
+    Gated on ``compression.enabled`` so the optional ``headroom-ai`` import path
+    is never touched when disabled. Returns the prompt unchanged on any failure,
+    so compression can never break the LLM call path.
+    """
+    cfg = _try_load_config(cwd)
+    if cfg is None or not cfg.compression.enabled:
+        return prompt
+
+    try:
+        from sova.llm.compression import compress
+
+        return compress(prompt, content_type=classify_content_type(prompt), cwd=cwd)
+    except Exception:
+        log.warning("llm.compression_failed", exc_info=True)
+        return prompt
+
+
 async def invoke_command(
     command: str,
     args: str = "",
@@ -177,6 +226,7 @@ async def invoke_command(
 
         assembled = f"{command} {args}".strip()
         guard_prompt(assembled)
+        args = maybe_compress(args, cwd)
     resolved_timeout = _resolve_timeout(timeout, cwd=cwd)
     async with asyncio.timeout(resolved_timeout):
         return await get_provider().invoke_command(
@@ -197,16 +247,22 @@ async def invoke_batch(
     timeout: int = 86400,
     gcs_bucket: str = "",
     gcs_prefix: str = "sova-batch",
+    cwd: Path | str | None = None,
 ) -> list[BatchResult]:
     """Submit a batch of prompts. Uses a dedicated batch provider if available,
     otherwise falls back to the global provider's sequential default."""
     if not requests:
         return []
 
+    import dataclasses
+
     from sova.llm.guard import guard_prompt
 
+    compressed_requests: list[BatchRequest] = []
     for req in requests:
         guard_prompt(req.prompt)
+        compressed_requests.append(dataclasses.replace(req, prompt=maybe_compress(req.prompt, cwd)))
+    requests = compressed_requests
 
     from sova.llm.providers.anthropic_batch import create_batch_provider
 
@@ -229,6 +285,7 @@ async def invoke_streaming(
     from sova.llm.guard import guard_prompt
 
     guard_prompt(prompt)
+    prompt = maybe_compress(prompt, cwd)
     resolved = _resolve_task_type_model(model, task_type, cwd=cwd)
     async for event in get_provider().invoke_streaming(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd):
         yield event
