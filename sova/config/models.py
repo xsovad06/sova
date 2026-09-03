@@ -82,6 +82,7 @@ class LLMConfig(BaseSettings):
     model: str = ""
     fallback_model: str = ""
     api_base: str = ""
+    api_key: str = Field("", repr=False)
     routing: dict[str, str] = Field(default_factory=dict)
     batch_eligible_tasks: list[str] = Field(default_factory=lambda: ["triage", "triage_enrich"])
     batch_gcs_bucket: str = ""

@@ -190,6 +190,7 @@ def create_provider(
     model: str = "",
     fallback_model: str = "",
     api_base: str = "",
+    api_key: str = "",
 ) -> LLMProvider:
     """Create an LLM provider instance by type name.
 
@@ -198,6 +199,8 @@ def create_provider(
         model: Model name (used by LiteLLM and Anthropic providers; ignored for claude-code).
         fallback_model: Fallback model on primary failure (LiteLLM only).
         api_base: Custom API base URL (LiteLLM only).
+        api_key: Direct API key (Anthropic provider only; falls back to the
+            ``ANTHROPIC_API_KEY`` env var when empty).
 
     Returns:
         An LLMProvider instance.
@@ -223,7 +226,7 @@ def create_provider(
     if provider_type == "anthropic":
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
-        return AnthropicAPIProvider(model=model or "")
+        return AnthropicAPIProvider(model=model or "", api_key=api_key)
 
     available = ["claude-code", "litellm", "hybrid", "anthropic"]
     raise ValueError(f"Unknown LLM provider: {provider_type!r}. Available: {', '.join(available)}")

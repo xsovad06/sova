@@ -6,7 +6,24 @@ from unittest.mock import patch
 
 import pytest
 
-from sova.dashboard.services.settings_service import _cast_value, _validate_value_type
+from sova.dashboard.services.settings_service import _cast_value, _is_masked_secret, _validate_value_type
+
+
+class TestIsMaskedSecret:
+    def test_bullets_only_is_masked(self) -> None:
+        assert _is_masked_secret("•" * 12) is True
+
+    def test_asterisks_only_is_masked(self) -> None:
+        assert _is_masked_secret("****") is True
+
+    def test_real_value_not_masked(self) -> None:
+        assert _is_masked_secret("sk-ant-abc123") is False
+
+    def test_empty_not_masked(self) -> None:
+        assert _is_masked_secret("") is False
+
+    def test_whitespace_only_not_masked(self) -> None:
+        assert _is_masked_secret("   ") is False
 
 
 class TestCastValue:
@@ -158,6 +175,52 @@ class TestUpdateConfigIntegration:
         assert "error" in result
         assert "Unknown setting" in result["error"]
         assert toml_file.read_text() == original
+
+
+class TestSecretMaskRoundTrip:
+    async def test_masked_secret_is_noop(self, tmp_path) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+
+        # Store a real key first.
+        result = await update_config(tmp_path, key="llm.api_key", value="sk-ant-real-key")
+        assert result.get("status") == "ok"
+
+        # Submitting the masked placeholder must not overwrite the stored key.
+        masked = await update_config(tmp_path, key="llm.api_key", value="•" * 15)
+        assert masked.get("status") == "ok"
+        assert masked.get("unchanged") is True
+
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "llm.api_key")
+        assert db_value == "sk-ant-real-key"
+
+    async def test_real_secret_overwrites(self, tmp_path) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+
+        await update_config(tmp_path, key="llm.api_key", value="sk-ant-old")
+        result = await update_config(tmp_path, key="llm.api_key", value="sk-ant-new")
+        assert result.get("status") == "ok"
+        assert result.get("unchanged") is not True
+
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "llm.api_key")
+        assert db_value == "sk-ant-new"
+
+    async def test_secret_never_written_to_toml(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import update_config
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\n')
+
+        result = await update_config(tmp_path, key="llm.api_key", value="sk-ant-secret")
+        assert result.get("status") == "ok"
+        toml_content = toml_file.read_text()
+        assert "sk-ant-secret" not in toml_content
+        assert "api_key" not in toml_content
 
 
 class TestSaveSettingToToml:

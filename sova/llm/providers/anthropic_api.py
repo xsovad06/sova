@@ -45,17 +45,10 @@ def _check_anthropic() -> None:
         raise ImportError("anthropic is not installed. Install it with: pip install sova[anthropic]")
 
 
-def _get_api_key() -> str:
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set")
-    return key
-
-
-def _sanitize_error(exc: Exception) -> str:
+def _sanitize_error(exc: Exception, api_key: str = "") -> str:
     """Return an error message that never leaks the API key."""
     msg = str(exc)
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if key and key in msg:
         msg = msg.replace(key, "***")
     return msg
@@ -64,18 +57,66 @@ def _sanitize_error(exc: Exception) -> str:
 class AnthropicAPIProvider(LLMProvider):
     """LLM provider using the Anthropic Messages API directly."""
 
-    def __init__(self, *, model: str = "", max_tokens: int | None = None) -> None:
+    def __init__(self, *, model: str = "", max_tokens: int | None = None, api_key: str = "") -> None:
         _check_anthropic()
         self._default_model = model or _DEFAULT_MODEL
         self._default_max_tokens = max_tokens or _DEFAULT_MAX_TOKENS
+        self._api_key = (api_key or "").strip()
         self._client: anthropic.AsyncAnthropic | None = None
         self._init_lock = asyncio.Lock()
+
+    def _resolve_api_key(self) -> str:
+        """Return the configured key, falling back to the env var."""
+        return self._api_key or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    def _validate_base_url(self, base_url: str | None) -> None:
+        """Validate ANTHROPIC_BASE_URL is HTTPS and from an approved origin."""
+        if not base_url:
+            return  # Default Anthropic API endpoint is used
+
+        # Parse the URL to check scheme and host
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base_url)
+
+        # Require HTTPS to prevent cleartext transmission of API key
+        if parsed.scheme != "https":
+            raise RuntimeError(
+                f"ANTHROPIC_BASE_URL must use HTTPS (got {parsed.scheme}://). "
+                "API keys cannot be sent over insecure connections."
+            )
+
+        # Validate against approved origins (official Anthropic endpoints)
+        approved_hosts = {
+            "api.anthropic.com",  # Direct API
+            "api.claude.ai",  # Claude.ai backend
+        }
+        # Allow Vertex AI endpoints
+        if parsed.hostname and (
+            parsed.hostname in approved_hosts
+            or parsed.hostname.endswith(".googleapis.com")
+            or parsed.hostname.endswith(".anthropic.com")
+        ):
+            return
+
+        raise RuntimeError(
+            f"ANTHROPIC_BASE_URL '{base_url}' is not an approved endpoint. "
+            f"Approved: {', '.join(sorted(approved_hosts))} or *.googleapis.com"
+        )
 
     async def _get_client(self) -> anthropic.AsyncAnthropic:
         if self._client is None:
             async with self._init_lock:
                 if self._client is None:
-                    self._client = anthropic.AsyncAnthropic(api_key=_get_api_key())
+                    key = self._resolve_api_key()
+                    if not key:
+                        raise RuntimeError("Anthropic API key is not configured (set llm.api_key or ANTHROPIC_API_KEY)")
+
+                    # Validate base URL before creating client
+                    base_url = os.environ.get("ANTHROPIC_BASE_URL")
+                    self._validate_base_url(base_url)
+
+                    self._client = anthropic.AsyncAnthropic(api_key=key)
         return self._client
 
     def normalize_model_name(self, model: str) -> str:
@@ -113,7 +154,7 @@ class AnthropicAPIProvider(LLMProvider):
             client = await self._get_client()
             response = await client.messages.create(**kwargs)
         except Exception as exc:
-            raise RuntimeError(f"Anthropic API error: {_sanitize_error(exc)}") from exc
+            raise RuntimeError(f"Anthropic API error: {_sanitize_error(exc, self._resolve_api_key())}") from exc
 
         text = ""
         for block in response.content:
@@ -227,18 +268,25 @@ class AnthropicAPIProvider(LLMProvider):
         yield StreamEvent(type="result", text=accumulated, result=result)
 
         if error is not None:
-            raise RuntimeError(f"Anthropic streaming error: {_sanitize_error(error)}") from error
+            raise RuntimeError(
+                f"Anthropic streaming error: {_sanitize_error(error, self._resolve_api_key())}"
+            ) from error
 
     async def check_available(self) -> tuple[bool, str]:
         if not _HAS_ANTHROPIC:
             return False, "anthropic SDK is not installed (pip install sova[anthropic])"
-        key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        key = self._resolve_api_key()
         if not key:
-            return False, "ANTHROPIC_API_KEY environment variable is not set"
+            return False, "Anthropic API key is not configured (set llm.api_key or ANTHROPIC_API_KEY)"
         try:
             client = await self._get_client()
-            if hasattr(client, "models"):
-                await client.models.list(limit=1)
+            # Issue a minimal authenticated API request to validate credentials
+            # Use a very small max_tokens to minimize cost (~$0.0001)
+            await client.messages.create(
+                model=self._default_model,
+                max_tokens=1,
+                messages=[{"role": "user", "content": "test"}],
+            )
             return True, f"anthropic SDK {anthropic.__version__}"
         except Exception as exc:
-            return False, f"Anthropic API unavailable: {_sanitize_error(exc)}"
+            return False, f"Anthropic API unavailable: {_sanitize_error(exc, key)}"

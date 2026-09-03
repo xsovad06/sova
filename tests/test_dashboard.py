@@ -6120,6 +6120,93 @@ class TestSettingsAPI:
         assert has_description, "At least some settings should have descriptions"
 
 
+class TestLLMSettingsAPI:
+    """Tests for the LLM provider test-connection and cost-projection endpoints."""
+
+    async def test_test_connection_config_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
+        def boom(*_a, **_kw):
+            raise RuntimeError("bad config")
+
+        monkeypatch.setattr("sova.config.loader.load_config", boom)
+        resp = await client.post("/api/settings/llm/test-connection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert "Failed to load configuration" in data["detail"]
+
+    async def test_test_connection_provider_create_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+
+        def boom(*_a, **_kw):
+            raise RuntimeError("provider misconfigured")
+
+        monkeypatch.setattr("sova.llm.provider.create_provider", boom)
+        resp = await client.post("/api/settings/llm/test-connection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert "provider misconfigured" in data["detail"]
+
+    async def test_test_connection_success(self, client: AsyncClient, monkeypatch) -> None:
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+
+        class _FakeProvider:
+            async def check_available(self):
+                return True, "provider ready"
+
+        monkeypatch.setattr("sova.llm.provider.create_provider", lambda *_a, **_kw: _FakeProvider())
+        resp = await client.post("/api/settings/llm/test-connection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["detail"] == "provider ready"
+
+    async def test_test_connection_check_available_raises_not_500(self, client: AsyncClient, monkeypatch) -> None:
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+
+        class _FakeProvider:
+            async def check_available(self):
+                raise RuntimeError("network down")
+
+        monkeypatch.setattr("sova.llm.provider.create_provider", lambda *_a, **_kw: _FakeProvider())
+        resp = await client.post("/api/settings/llm/test-connection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert "network down" in data["detail"]
+
+    async def test_cost_projection_insufficient_data(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/settings/llm/cost-projection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["insufficient_data"] is True
+
+    async def test_cost_projection_with_data(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="1",
+                role="developer",
+                status="done",
+                total_cost_usd=Decimal("30.00"),
+                started_at=now - timedelta(days=10),
+            )
+        )
+        await session.commit()
+
+        resp = await client.get("/api/settings/llm/cost-projection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["insufficient_data"] is False
+        assert Decimal(str(data["projected_monthly_usd"])) > 0
+
+
 class TestSetupAPI:
     async def test_browse_home(self, client: AsyncClient) -> None:
         resp = await client.post("/api/setup/browse", json={"path": ""})

@@ -135,10 +135,10 @@ async def test_fetch_items_empty_when_no_projects(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_fetch_items_skips_non_github_projects(monkeypatch: pytest.MonkeyPatch, tmp_path, seed_config) -> None:
+async def test_fetch_items_skips_non_github_projects(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
-    seed_config(project_dir)
+    (project_dir / "sova.toml").write_text("[project]\n")
 
     monkeypatch.setattr(
         "sova.awareness.providers.pr_status.list_projects",
@@ -451,11 +451,11 @@ class TestParseGhTimestamp:
 
 
 @pytest.mark.asyncio
-async def test_fetch_items_integration(monkeypatch: pytest.MonkeyPatch, tmp_path, seed_config) -> None:
+async def test_fetch_items_integration(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """End-to-end test with mocked shell and config."""
     project_dir = tmp_path / "myproject"
     project_dir.mkdir()
-    seed_config(project_dir, github_repo="org/repo", github_user="botuser")
+    (project_dir / "sova.toml").write_text('[project]\ngithub_repo = "org/repo"\ngithub_user = "botuser"\n')
 
     monkeypatch.setattr(
         "sova.awareness.providers.pr_status.list_projects",
@@ -513,11 +513,11 @@ async def test_fetch_items_integration(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_fetch_items_tolerates_gh_failure(monkeypatch: pytest.MonkeyPatch, tmp_path, seed_config) -> None:
+async def test_fetch_items_tolerates_gh_failure(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """Provider returns [] when gh CLI calls fail."""
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
-    seed_config(project_dir, github_repo="org/repo", github_user="bot")
+    (project_dir / "sova.toml").write_text('[project]\ngithub_repo = "org/repo"\ngithub_user = "bot"\n')
 
     monkeypatch.setattr(
         "sova.awareness.providers.pr_status.list_projects",
@@ -537,12 +537,12 @@ async def test_fetch_items_tolerates_gh_failure(monkeypatch: pytest.MonkeyPatch,
 
 
 @pytest.mark.asyncio
-async def test_fetch_items_multiple_projects(monkeypatch: pytest.MonkeyPatch, tmp_path, seed_config) -> None:
+async def test_fetch_items_multiple_projects(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """Items from multiple projects are aggregated."""
     for name in ("alpha", "beta"):
         d = tmp_path / name
         d.mkdir()
-        seed_config(d, github_repo=f"org/{name}", github_user="bot")
+        (d / "sova.toml").write_text(f'[project]\ngithub_repo = "org/{name}"\ngithub_user = "bot"\n')
 
     monkeypatch.setattr(
         "sova.awareness.providers.pr_status.list_projects",
@@ -576,7 +576,6 @@ async def test_fetch_items_config_load_failure(monkeypatch: pytest.MonkeyPatch, 
     """Projects with broken config are skipped gracefully."""
     project_dir = tmp_path / "broken"
     project_dir.mkdir()
-    # Intentionally exercises the TOML fallback parse-error path (issue #557).
     (project_dir / "sova.toml").write_text("invalid toml {{{{")
 
     monkeypatch.setattr(
@@ -748,10 +747,10 @@ class TestGetAuthor:
 
 
 class TestResolveTargets:
-    def test_valid_project(self, tmp_path, seed_config) -> None:
+    def test_valid_project(self, tmp_path) -> None:
         d = tmp_path / "proj"
         d.mkdir()
-        seed_config(d, github_repo="org/repo", github_user="bot")
+        (d / "sova.toml").write_text('[project]\ngithub_repo = "org/repo"\ngithub_user = "bot"\n')
         targets = _resolve_targets({"proj": str(d)})
         assert len(targets) == 1
         assert targets[0] == ("proj", "org/repo", "bot")
@@ -760,15 +759,14 @@ class TestResolveTargets:
         targets = _resolve_targets({"proj": str(tmp_path / "missing")})
         assert targets == []
 
-    def test_no_github_repo(self, tmp_path, seed_config) -> None:
+    def test_no_github_repo(self, tmp_path) -> None:
         d = tmp_path / "proj"
         d.mkdir()
-        seed_config(d)
+        (d / "sova.toml").write_text("[project]\n")
         targets = _resolve_targets({"proj": str(d)})
         assert targets == []
 
     def test_broken_config(self, tmp_path) -> None:
-        # Intentionally exercises the TOML fallback parse-error path (issue #557).
         d = tmp_path / "proj"
         d.mkdir()
         (d / "sova.toml").write_text("{{invalid")

@@ -112,7 +112,7 @@ function renderSettingRow(s) {
     '</td>' +
     '<td class="px-4 py-3 align-top text-right">' +
       '<div class="flex items-center gap-2 justify-end"' + clickAttr + '>' +
-        '<span class="config-val" data-key="' + escapeHtml(s.key) + '" data-type="' + escapeHtml(s.value_type) + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
+        '<span class="config-val" data-key="' + escapeHtml(s.key) + '" data-type="' + escapeHtml(s.value_type) + '" data-options="' + escapeHtml(JSON.stringify(s.options || [])) + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
         editBtn +
       '</div>' +
     '</td>' +
@@ -239,6 +239,10 @@ async function loadConfig() {
 
     container.innerHTML = html;
 
+    // Inject LLM-specific tools and toggle the API key row before measuring
+    // group heights so the restored maxHeight reflects the final DOM.
+    enhanceLLMGroup();
+
     // Restore previously expanded groups without animation, or auto-expand first on initial load
     var toExpand = expanded.length > 0 ? expanded : (groups.length > 0 ? [groups[0].id] : []);
     toExpand.forEach(function(id) {
@@ -328,8 +332,14 @@ function editConfig(key) {
   }
   if (currentVal === 'null' || currentVal === 'not set') currentVal = '';
 
-  var input = document.createElement('input');
   var fieldType = span.dataset.type || 'string';
+
+  if (fieldType === 'select') {
+    editSelectConfig(key, span, currentVal);
+    return;
+  }
+
+  var input = document.createElement('input');
   if (fieldType === 'secret') {
     input.type = 'password';
   } else if (fieldType === 'number') {
@@ -384,12 +394,117 @@ function editConfig(key) {
   input.select();
 }
 
+function editSelectConfig(key, span, currentVal) {
+  var options = [];
+  try { options = JSON.parse(span.dataset.options || '[]'); } catch (e) { options = []; }
+  if (!options.length) return;
+
+  var select = document.createElement('select');
+  select.className = 'sova-input text-xs py-1';
+  options.forEach(function(opt) {
+    var o = document.createElement('option');
+    o.value = opt;
+    o.textContent = opt;
+    if (opt === currentVal) o.selected = true;
+    select.appendChild(o);
+  });
+
+  var done = false;
+  select.onchange = function() {
+    done = true;
+    saveConfig(key, select.value, span, select);
+  };
+  select.onblur = function() {
+    if (done) return;
+    cancelEdit(span, select);
+  };
+  select.onkeydown = function(e) {
+    if (e.key === 'Escape') cancelEdit(span, select);
+  };
+
+  span.dataset.origHtml = span.innerHTML;
+  span.innerHTML = '';
+  span.appendChild(select);
+  var btn = span.closest('td').querySelector('button');
+  if (btn) btn.style.display = 'none';
+  select.focus();
+}
+
 function cancelEdit(span, input) {
   if (!input.parentNode) return;
   input.onblur = null;
   span.innerHTML = span.dataset.origHtml;
   var btn = span.closest('td').querySelector('button');
   if (btn) btn.style.display = '';
+}
+
+function enhanceLLMGroup() {
+  var providerSpan = document.querySelector('.config-val[data-key="llm.provider"]');
+  var provider = 'claude-code';
+  if (providerSpan && providerSpan.dataset.raw) {
+    try { provider = JSON.parse(providerSpan.dataset.raw); } catch (e) { provider = 'claude-code'; }
+  }
+
+  // Only the anthropic provider uses a stored API key; hide the row otherwise
+  // (the stored value is retained server-side, not deleted).
+  var keySpan = document.querySelector('.config-val[data-key="llm.api_key"]');
+  if (keySpan) {
+    var keyRow = keySpan.closest('tr');
+    if (keyRow) keyRow.style.display = (provider === 'anthropic') ? '' : 'none';
+  }
+
+  var body = document.getElementById('group-body-llm');
+  if (!body || document.getElementById('llm-tools')) return;
+  var panel = document.createElement('div');
+  panel.id = 'llm-tools';
+  panel.className = 'px-4 py-3 border-t border-gray-700/20 space-y-2';
+  panel.innerHTML =
+    '<div class="flex items-center gap-3">' +
+      '<button type="button" onclick="testLLMConnection()" class="sova-btn sova-btn-primary text-xs">Test Connection</button>' +
+      '<span id="llm-test-result" class="text-xs text-gray-500"></span>' +
+    '</div>' +
+    '<div class="text-xs text-gray-500">Projected monthly cost: ' +
+      '<span id="llm-cost-projection" class="text-gray-300 font-mono">loading...</span></div>';
+  body.appendChild(panel);
+  loadCostProjection();
+}
+
+async function testLLMConnection() {
+  var el = document.getElementById('llm-test-result');
+  if (el) { el.textContent = 'Testing...'; el.className = 'text-xs text-gray-500'; }
+  try {
+    var res = await fetch(apiUrl('/settings/llm/test-connection'), { method: 'POST' });
+    var data = await res.json();
+    if (!el) return;
+    if (data.ok) {
+      el.textContent = 'Connected' + (data.detail ? ' (' + data.detail + ')' : '');
+      el.className = 'text-xs text-green-400';
+    } else {
+      el.textContent = 'Failed: ' + (data.detail || 'provider unavailable');
+      el.className = 'text-xs text-red-400';
+    }
+  } catch (e) {
+    if (el) { el.textContent = 'Failed: ' + e.message; el.className = 'text-xs text-red-400'; }
+  }
+}
+
+async function loadCostProjection() {
+  var el = document.getElementById('llm-cost-projection');
+  if (!el) return;
+  try {
+    var data = await fetchAPI(apiUrl('/settings/llm/cost-projection'));
+    if (data.insufficient_data) {
+      el.textContent = 'insufficient data';
+      el.className = 'text-gray-600 italic';
+    } else {
+      el.textContent = '$' + parseFloat(data.projected_monthly_usd || 0).toFixed(2) + '/mo' +
+        ' (based on $' + parseFloat(data.window_total_usd || 0).toFixed(2) + ' over ' + data.observed_days + ' active day(s))';
+      el.className = 'text-gray-300 font-mono';
+    }
+  } catch (e) {
+    el.textContent = 'unavailable';
+    el.className = 'text-gray-600 italic';
+  }
 }
 
 async function saveConfig(key, value, span, input) {

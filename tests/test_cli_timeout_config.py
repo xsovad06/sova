@@ -41,7 +41,6 @@ class TestCLITimeoutConfig:
             LLMConfig(cli_timeout=-1)
 
     def test_cli_timeout_loaded_from_toml(self, tmp_path: Path) -> None:
-        # Intentionally exercises the TOML fallback loading path (issue #557).
         from sova.config.loader import load_config
 
         toml_file = tmp_path / "sova.toml"
@@ -54,7 +53,7 @@ class TestCLITimeoutConfig:
         with patch("sova.llm.providers.claude_code.run", new_callable=AsyncMock) as mock:
             yield mock
 
-    async def test_invoke_uses_config_timeout_when_none(self, mock_run: AsyncMock, tmp_path: Path, seed_config) -> None:
+    async def test_invoke_uses_config_timeout_when_none(self, mock_run: AsyncMock, tmp_path: Path) -> None:
         """When timeout=None, client.invoke() should resolve to config.cli_timeout."""
         import json
 
@@ -62,7 +61,8 @@ class TestCLITimeoutConfig:
         from sova.utils.shell import ShellResult
 
         # Setup config with custom timeout
-        seed_config(tmp_path, llm={"cli_timeout": 1200})
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[llm]\ncli_timeout = 1200\n")
 
         # Mock successful LLM response
         mock_run.return_value = ShellResult(
@@ -85,14 +85,15 @@ class TestCLITimeoutConfig:
         # Verify the timeout passed to the provider
         assert mock_run.call_args[1]["timeout"] == 1200
 
-    async def test_invoke_preserves_explicit_timeout(self, mock_run: AsyncMock, tmp_path: Path, seed_config) -> None:
+    async def test_invoke_preserves_explicit_timeout(self, mock_run: AsyncMock, tmp_path: Path) -> None:
         """When timeout is explicitly set, it should be passed through unchanged."""
         import json
 
         from sova.llm.client import invoke
         from sova.utils.shell import ShellResult
 
-        seed_config(tmp_path, llm={"cli_timeout": 1200})
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[llm]\ncli_timeout = 1200\n")
 
         mock_run.return_value = ShellResult(
             returncode=0,
@@ -114,14 +115,15 @@ class TestCLITimeoutConfig:
         # Verify explicit timeout is preserved
         assert mock_run.call_args[1]["timeout"] == 120
 
-    async def test_invoke_command_uses_config_timeout(self, mock_run: AsyncMock, tmp_path: Path, seed_config) -> None:
+    async def test_invoke_command_uses_config_timeout(self, mock_run: AsyncMock, tmp_path: Path) -> None:
         """invoke_command should also resolve timeout=None to config value."""
         import json
 
         from sova.llm.client import invoke_command
         from sova.utils.shell import ShellResult
 
-        seed_config(tmp_path, llm={"cli_timeout": 1500})
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[llm]\ncli_timeout = 1500\n")
 
         # Create the command file
         cmd_dir = tmp_path / ".claude" / "commands"
@@ -174,7 +176,7 @@ class TestCLITimeoutConfig:
         # Should fallback to 900s
         assert mock_run.call_args[1]["timeout"] == 900
 
-    async def test_litellm_provider_receives_resolved_timeout(self, tmp_path: Path, seed_config) -> None:
+    async def test_litellm_provider_receives_resolved_timeout(self, tmp_path: Path) -> None:
         """LiteLLM provider should receive the resolved timeout value."""
         from unittest.mock import MagicMock
 
@@ -193,7 +195,8 @@ class TestCLITimeoutConfig:
                 from sova.llm.client import invoke
                 from sova.llm.litellm_provider import LiteLLMProvider
 
-                seed_config(tmp_path, llm={"cli_timeout": 1000})
+                toml_file = tmp_path / "sova.toml"
+                toml_file.write_text("[llm]\ncli_timeout = 1000\n")
 
                 # Mock response (async)
                 from tests.test_llm import _MockResponse

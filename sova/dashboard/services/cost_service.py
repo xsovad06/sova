@@ -57,6 +57,53 @@ async def get_daily(session: AsyncSession, days: int = 14) -> list[dict]:
     return [{"date": str(row.day), "cost_usd": round(Decimal(row.cost or 0), 4)} for row in result.all()]
 
 
+async def get_monthly_projection(session: AsyncSession, days: int = 30) -> dict:
+    """Project monthly LLM cost from the trailing window of usage.
+
+    Sums ``TaskRun.total_cost_usd`` over the last ``days`` days, derives a daily
+    average from the observed activity span, and scales it to a 30-day month.
+    Returns ``insufficient_data=True`` (rather than zero/NaN) when there is no
+    cost recorded in the window.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=days)
+
+    stmt = select(
+        func.sum(TaskRun.total_cost_usd).label("total"),
+        func.min(TaskRun.started_at).label("first_at"),
+    ).where(TaskRun.started_at >= cutoff, TaskRun.total_cost_usd > 0)
+    row = (await session.execute(stmt)).one()
+
+    total = Decimal(row.total or 0)
+    if total <= 0 or row.first_at is None:
+        return {
+            "insufficient_data": True,
+            "window_days": days,
+            "window_total_usd": Decimal("0"),
+            "daily_avg_usd": Decimal("0"),
+            "projected_monthly_usd": Decimal("0"),
+            "observed_days": 0,
+        }
+
+    first_at = row.first_at
+    if first_at.tzinfo is None:
+        first_at = first_at.replace(tzinfo=timezone.utc)
+
+    elapsed_days = (now - first_at).total_seconds() / 86400.0
+    observed_days = min(days, max(1, round(elapsed_days)))
+    daily_avg = total / Decimal(observed_days)
+    projected = daily_avg * Decimal(30)
+
+    return {
+        "insufficient_data": False,
+        "window_days": days,
+        "window_total_usd": round(total, 4),
+        "daily_avg_usd": round(daily_avg, 4),
+        "projected_monthly_usd": round(projected, 2),
+        "observed_days": observed_days,
+    }
+
+
 async def get_by_issue(session: AsyncSession) -> list[dict]:
     """Cost breakdown by issue, highest cost first."""
     stmt = (

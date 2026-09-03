@@ -23,10 +23,10 @@ class TestComplexityTimeoutMultiplier:
         return adapter
 
     @pytest.fixture
-    def ctx(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> ExecutionContext:
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
         from sova.config.loader import load_config
 
-        seed_config(tmp_path, github_repo="test/repo")
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
         cfg = load_config(tmp_path)
         return ExecutionContext(
             project_dir=tmp_path,
@@ -104,7 +104,7 @@ class TestPartialWorkPreservation:
         return adapter
 
     @pytest.fixture
-    def ctx(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> ExecutionContext:
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
         import asyncio
 
         from sova.config.loader import load_config
@@ -115,7 +115,7 @@ class TestPartialWorkPreservation:
         asyncio.run(run("git", "config", "user.email", "test@example.com", cwd=tmp_path))
         asyncio.run(run("git", "config", "user.name", "Test User", cwd=tmp_path))
 
-        seed_config(tmp_path, github_repo="test/repo")
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
         cfg = load_config(tmp_path)
         ctx = ExecutionContext(
             project_dir=tmp_path,
@@ -168,13 +168,13 @@ class TestPartialWorkPreservation:
         log_result = await run("git", "log", "--oneline", cwd=tmp_path)
         assert "wip:" not in log_result.stdout
 
-    async def test_preserve_partial_work_not_a_git_repo(self, tmp_path: Path, seed_config) -> None:
+    async def test_preserve_partial_work_not_a_git_repo(self, tmp_path: Path) -> None:
         """When working_dir is not a git repo, returns False."""
         from sova.config.loader import load_config
 
         non_git_dir = tmp_path / "not_git"
         non_git_dir.mkdir()
-        seed_config(non_git_dir, github_repo="test/repo")
+        (non_git_dir / "sova.toml").write_text("github_repo = 'test/repo'\n")
 
         cfg = load_config(non_git_dir)
         adapter = MagicMock()
@@ -241,7 +241,7 @@ class TestValidateStepConfig:
         return adapter
 
     @pytest.fixture
-    def ctx(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> ExecutionContext:
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
         import asyncio
 
         from sova.config.loader import load_config
@@ -252,12 +252,15 @@ class TestValidateStepConfig:
         asyncio.run(run("git", "config", "user.email", "test@example.com", cwd=tmp_path))
         asyncio.run(run("git", "config", "user.name", "Test User", cwd=tmp_path))
 
-        # Seed custom validate config
-        seed_config(
-            tmp_path,
-            github_repo="test/repo",
-            validation={"fix_timeout": 240, "max_fix_attempts": 3, "hook_timeout": 150},
-        )
+        # Create sova.toml with custom validate config
+        (tmp_path / "sova.toml").write_text("""
+github_repo = 'test/repo'
+
+[validation]
+fix_timeout = 240
+max_fix_attempts = 3
+hook_timeout = 150
+""")
         cfg = load_config(tmp_path)
         return ExecutionContext(
             project_dir=tmp_path,
@@ -365,10 +368,15 @@ class TestMonitorCIStepConfig:
         return adapter
 
     @pytest.fixture
-    def ctx(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> ExecutionContext:
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
         from sova.config.loader import load_config
 
-        seed_config(tmp_path, github_repo="test/repo", validation={"fix_timeout": 300})
+        (tmp_path / "sova.toml").write_text("""
+github_repo = 'test/repo'
+
+[validation]
+fix_timeout = 300
+""")
         cfg = load_config(tmp_path)
         ctx = ExecutionContext(
             project_dir=tmp_path,
@@ -439,10 +447,10 @@ class TestWorktreeDeletion:
         return adapter
 
     @pytest.fixture
-    def ctx(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> ExecutionContext:
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
         from sova.config.loader import load_config
 
-        seed_config(tmp_path, github_repo="test/repo")
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
         cfg = load_config(tmp_path)
         return ExecutionContext(
             project_dir=tmp_path,
@@ -501,10 +509,10 @@ class TestGateCheckTimeout:
         return adapter
 
     @pytest.fixture
-    def ctx(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> ExecutionContext:
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
         from sova.config.loader import load_config
 
-        seed_config(tmp_path, github_repo="test/repo")
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
         cfg = load_config(tmp_path)
         return ExecutionContext(
             project_dir=tmp_path,
@@ -587,10 +595,10 @@ class TestVerifyOutput:
         return adapter
 
     @pytest.fixture
-    def ctx(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> ExecutionContext:
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
         from sova.config.loader import load_config
 
-        seed_config(tmp_path, github_repo="test/repo")
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
         cfg = load_config(tmp_path)
         return ExecutionContext(
             project_dir=tmp_path,
@@ -817,16 +825,10 @@ class TestGateTimeoutConfig:
         adapter.repo = "test/repo"
         return adapter
 
-    def _make_ctx(
-        self,
-        tmp_path: Path,
-        mock_adapter: MagicMock,
-        seed_config,
-        extra: dict | None = None,
-    ) -> ExecutionContext:
+    def _make_ctx(self, tmp_path: Path, mock_adapter: MagicMock, toml_extra: str = "") -> ExecutionContext:
         from sova.config.loader import load_config
 
-        seed_config(tmp_path, {"github_repo": "test/repo", **(extra or {})})
+        (tmp_path / "sova.toml").write_text(f"github_repo = 'test/repo'\n{toml_extra}")
         cfg = load_config(tmp_path)
         return ExecutionContext(
             project_dir=tmp_path,
@@ -836,29 +838,27 @@ class TestGateTimeoutConfig:
             role="developer",
         )
 
-    def test_gate_timeout_default(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> None:
+    def test_gate_timeout_default(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         """Default gate_timeout is 60."""
-        ctx = self._make_ctx(tmp_path, mock_adapter, seed_config)
+        ctx = self._make_ctx(tmp_path, mock_adapter)
         assert ctx.config.validation.gate_timeout == 60
 
-    def test_gate_timeout_custom(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> None:
-        """gate_timeout can be set via config."""
-        ctx = self._make_ctx(tmp_path, mock_adapter, seed_config, {"validation": {"gate_timeout": 30}})
+    def test_gate_timeout_custom(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """gate_timeout can be set via TOML."""
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\ngate_timeout = 30\n")
         assert ctx.config.validation.gate_timeout == 30
 
-    def test_verify_timeout_default(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> None:
+    def test_verify_timeout_default(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         """Default verify_timeout is 0 (use full step timeout)."""
-        ctx = self._make_ctx(tmp_path, mock_adapter, seed_config)
+        ctx = self._make_ctx(tmp_path, mock_adapter)
         assert ctx.config.validation.verify_timeout == 0
 
-    def test_verify_timeout_custom(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> None:
-        """verify_timeout can be set via config."""
-        ctx = self._make_ctx(tmp_path, mock_adapter, seed_config, {"validation": {"verify_timeout": 600}})
+    def test_verify_timeout_custom(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        """verify_timeout can be set via TOML."""
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\nverify_timeout = 600\n")
         assert ctx.config.validation.verify_timeout == 600
 
-    async def test_gate_timeout_used_in_validate_step_gate(
-        self, tmp_path: Path, mock_adapter: MagicMock, seed_config
-    ) -> None:
+    async def test_gate_timeout_used_in_validate_step_gate(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         """_validate_step_gate uses config gate_timeout instead of hardcoded 60."""
         import asyncio as aio
 
@@ -878,7 +878,7 @@ class TestGateTimeoutConfig:
             async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
                 return GateCheckResult(passed=True)
 
-        ctx = self._make_ctx(tmp_path, mock_adapter, seed_config, {"validation": {"gate_timeout": 1}})
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\ngate_timeout = 1\n")
         step = SlowGateStep()
         record = StepRecord(step_name="slow_gate", status="running")
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -889,9 +889,7 @@ class TestGateTimeoutConfig:
         assert status == "failed"
         assert "timed out" in record.gate.reason.lower()
 
-    async def test_gate_timeout_clamped_by_step_timeout(
-        self, tmp_path: Path, mock_adapter: MagicMock, seed_config
-    ) -> None:
+    async def test_gate_timeout_clamped_by_step_timeout(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         """When gate_timeout > step_timeout, the smaller step_timeout is used."""
         import asyncio as aio_mod
 
@@ -913,7 +911,7 @@ class TestGateTimeoutConfig:
             async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
                 return GateCheckResult(passed=True)
 
-        ctx = self._make_ctx(tmp_path, mock_adapter, seed_config, {"validation": {"gate_timeout": 120}})
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\ngate_timeout = 120\n")
         step = InspectStep()
         record = StepRecord(step_name="inspect", status="running")
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -930,9 +928,7 @@ class TestGateTimeoutConfig:
 
         assert captured_timeout == 30
 
-    async def test_verify_timeout_zero_uses_step_timeout(
-        self, tmp_path: Path, mock_adapter: MagicMock, seed_config
-    ) -> None:
+    async def test_verify_timeout_zero_uses_step_timeout(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         """When verify_timeout=0, verification uses the full step timeout."""
         import asyncio as aio_mod
 
@@ -954,7 +950,7 @@ class TestGateTimeoutConfig:
             async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
                 return GateCheckResult(passed=True)
 
-        ctx = self._make_ctx(tmp_path, mock_adapter, seed_config, {"validation": {"verify_timeout": 0}})
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\nverify_timeout = 0\n")
         step = InspectStep()
         record = StepRecord(step_name="inspect", status="running")
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -971,9 +967,7 @@ class TestGateTimeoutConfig:
 
         assert captured_timeout == step_timeout
 
-    async def test_verify_timeout_nonzero_clamps_to_min(
-        self, tmp_path: Path, mock_adapter: MagicMock, seed_config
-    ) -> None:
+    async def test_verify_timeout_nonzero_clamps_to_min(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         """When verify_timeout > 0, uses min(step_timeout, verify_timeout)."""
         import asyncio as aio_mod
 
@@ -995,7 +989,7 @@ class TestGateTimeoutConfig:
             async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
                 return GateCheckResult(passed=True)
 
-        ctx = self._make_ctx(tmp_path, mock_adapter, seed_config, {"validation": {"verify_timeout": 300}})
+        ctx = self._make_ctx(tmp_path, mock_adapter, "\n[validation]\nverify_timeout = 300\n")
         step = InspectStep()
         record = StepRecord(step_name="inspect", status="running")
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -1022,10 +1016,10 @@ class TestValidateStepVerifyOutput:
         return adapter
 
     @pytest.fixture
-    def ctx(self, tmp_path: Path, mock_adapter: MagicMock, seed_config) -> ExecutionContext:
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
         from sova.config.loader import load_config
 
-        seed_config(tmp_path, github_repo="test/repo")
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
         cfg = load_config(tmp_path)
         return ExecutionContext(
             project_dir=tmp_path,

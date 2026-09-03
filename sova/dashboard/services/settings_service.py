@@ -61,8 +61,14 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
     """
     from sova.dashboard.settings_meta import _META_BY_KEY
 
-    if key not in _META_BY_KEY:
+    meta = _META_BY_KEY.get(key)
+    if meta is None:
         return {"error": f"Unknown setting: '{key}'"}
+
+    if meta.value_type == "secret" and _is_masked_secret(value):
+        # The UI submitted the masked placeholder unchanged; do not overwrite
+        # the stored key with the mask string.
+        return {"status": "ok", "key": key, "value": value, "unchanged": True}
 
     validation_error = _validate_value_type(key, value)
     if validation_error:
@@ -74,12 +80,16 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
     if not db_ok:
         log.warning("settings.db_write_failed", key=key)
 
-    toml_ok = _save_setting_to_toml(project_dir, key, cast)
-    if not toml_ok:
-        log.debug("settings.toml_write_skipped", key=key)
-
-    if not db_ok and not toml_ok:
-        return {"error": "Failed to persist setting (neither DB nor TOML available)"}
+    # Secrets are DB-only: never written to sova.toml in plaintext.
+    if meta.value_type == "secret":
+        if not db_ok:
+            return {"error": "Failed to persist setting (DB unavailable)"}
+    else:
+        toml_ok = _save_setting_to_toml(project_dir, key, cast)
+        if not toml_ok:
+            log.debug("settings.toml_write_skipped", key=key)
+        if not db_ok and not toml_ok:
+            return {"error": "Failed to persist setting (neither DB nor TOML available)"}
 
     return {"status": "ok", "key": key, "value": value}
 
@@ -128,6 +138,19 @@ def _save_setting_to_toml(project_dir: Path | None, key: str, value: object) -> 
         return False
 
 
+_SECRET_MASK_CHARS = frozenset("*•·")
+
+
+def _is_masked_secret(value: str) -> bool:
+    """Return True when a secret value is only mask characters (bullets/asterisks).
+
+    Such a value means the UI round-tripped the masked placeholder without the
+    user typing a new secret, so it must not overwrite the stored value.
+    """
+    stripped = value.strip()
+    return bool(stripped) and all(ch in _SECRET_MASK_CHARS for ch in stripped)
+
+
 def _validate_value_type(key: str, value: str) -> str | None:
     """Validate the value against the expected type from settings metadata.
 
@@ -138,6 +161,10 @@ def _validate_value_type(key: str, value: str) -> str | None:
     meta = _META_BY_KEY.get(key)
     if meta is None:
         return None
+
+    # Validate against allowed options if present
+    if meta.options and value not in meta.options:
+        return f"'{key}' must be one of {meta.options}, got '{value}'"
 
     if meta.value_type == "number":
         stripped = value.strip()
