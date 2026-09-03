@@ -23,26 +23,29 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 ```
 
-`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically -- no `@pytest.mark.asyncio` needed. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `httpx` (ASGI testing), `aiosqlite`.
+`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically: no `@pytest.mark.asyncio` needed. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `httpx` (ASGI testing), `aiosqlite`.
 
 ## Test File Layout
 
-All tests live in `tests/` as flat modules (no subdirectories, no `conftest.py`):
+All tests live in `tests/` as flat modules (no subdirectories). The single exception is `tests/conftest.py`, which holds only the autouse `SOVA_*` env-isolation fixture (see below): it does not host per-file fixtures or helpers, those stay in their own test modules.
 
 | Test file | Source package | Approx tests |
 |-----------|---------------|--------------|
-| `test_dashboard.py` | `sova/dashboard/` | ~325 |
-| `test_core.py` | `sova/core/` | ~205 |
-| `test_roles.py` | `sova/roles/` | ~128 |
-| `test_git.py` | `sova/git/` | ~89 |
-| `test_ipc.py` | `sova/ipc/` | ~82 |
-| `test_cli.py` | `sova/cli/` | ~57 |
-| `test_adapters.py` | `sova/adapters/` | ~54 |
-| `test_config.py` | `sova/config/` | ~40 |
+| `test_dashboard.py` | `sova/dashboard/` | ~775 |
+| `test_core.py` | `sova/core/` | ~444 |
+| `test_roles.py` | `sova/roles/` | ~322 |
+| `test_agent_recovery.py` | `sova/dashboard/services/agent_recovery.py` | ~131 |
+| `test_git.py` | `sova/git/` | ~150 |
+| `test_cli.py` | `sova/cli/` | ~127 |
+| `test_ipc.py` | `sova/ipc/` | ~119 |
+| `test_adapters.py` | `sova/adapters/` | ~90 |
+| `test_config.py` | `sova/config/` | ~109 |
+| `test_agent_handoff.py` | `sova/dashboard/services/agent_handoff.py` | ~23 |
+| `test_agent_pool.py` | `sova/dashboard/services/agent_pool.py` | ~17 |
 
 Plus: `test_batch_service.py`, `test_commands.py`, `test_dag.py`, `test_db.py`, `test_external_reviews.py`, `test_extraction.py`, `test_harden.py`, `test_jira_adapter.py`, `test_knowledge.py`, `test_knowledge_sharing.py`, `test_lifecycle.py`, `test_llm.py`, `test_mcp.py`, `test_scheduler.py`, `test_settings_meta.py`, `test_spec.py`, `test_utils.py`.
 
-Tests use classes to group related assertions. Fixtures are defined per-file, not in conftest.
+Tests use classes to group related assertions. Fixtures are defined per-file, not in conftest, except for the env-isolation fixture noted above.
 
 ## In-Memory Database Fixture
 
@@ -113,7 +116,7 @@ When a module was split with a re-export facade, patch the actual submodule:
 # Correct
 patch.object(agent_lifecycle, "_get_project_agents", return_value=pa)
 
-# Wrong -- only patches the facade's attribute
+# Wrong: only patches the facade's attribute
 patch.object(control_service, "_get_project_agents", return_value=pa)
 ```
 
@@ -173,4 +176,5 @@ def test_rejects_invalid_values(model_cls, field, invalid_value):
 1. **Missing cache clears**: file-backed services cache by mtime. Clear `_handoff_caches` in tests.
 2. **Async context managers**: always `async with await get_session() as session:`.
 3. **autouse DB fixture scope**: per-test (default). Never use `scope="module"` for DB fixtures.
-4. **No conftest.py**: helpers (`_make_ctx`, `_shell_result`) are defined per-file. Copy the pattern.
+4. **No per-file helpers in conftest.py**: helpers (`_make_ctx`, `_shell_result`) are defined per-file. Copy the pattern. `tests/conftest.py` is reserved for the autouse `SOVA_*` env-stripping fixture only.
+5. **Ambient `SOVA_*` env vars**: a dev shell running SOVA agents may export `SOVA_MCP_TOKEN`, `SOVA_AGENT_RUN`, etc. `tests/conftest.py`'s autouse fixture strips all `SOVA_*` vars except `SOVA_DATABASE_URL` before each test so Pydantic Settings config construction is deterministic. If a test needs a specific `SOVA_*` var, set it explicitly via `monkeypatch.setenv` inside the test.
