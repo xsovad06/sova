@@ -98,13 +98,13 @@ Only run if `.claude/agent-memory/` exists in the project.
 
    **CI-cost note**: the files staged here are Markdown only (`AGENTS.md`,
    `README.md`, `docs/**/*.md`, `.claude/rules/*.md`, `.claude/agent-memory/*.md`).
-   When the project's CI classifies a change as docs-only iff every changed path
-   matches `*.md`, such a push does NOT re-run the expensive test/scan jobs (they
-   report success immediately), so this amend no longer blocks the merge on a long
-   re-run. Note that `docs/` and `.claude/` also hold non-md code (scripts,
-   manifests, HTML), so staging a non-md file here would re-run the full suite.
-   The push-tracking state file still lets Phase 4 skip polling entirely when
-   nothing was re-pushed at all.
+   CI classifies a change as docs-only iff every changed path matches `*.md`, so a
+   markdown-only push does NOT re-run the expensive test/scan jobs (they report
+   success immediately), and this amend no longer blocks the merge on a
+   15-minute re-run. Note that `docs/` and `.claude/` also hold non-md code
+   (scripts, manifests, HTML), so staging a non-md file here would re-run the full
+   suite. The push-tracking state file still lets Phase 4 skip polling entirely
+   when nothing was re-pushed at all.
 
 ### Phase 4: Wait for CI
 

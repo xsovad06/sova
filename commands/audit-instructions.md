@@ -116,4 +116,4 @@ Present the improvements and ask the user if they want them applied.
 - Preserve the existing voice and style of instructions
 - Where unsure about a convention, ask the user rather than guessing
 - Focus on what an autonomous agent needs to succeed without human guidance
-- Use `{{ test_cmd }}` and `{{ lint_cmd }}` for project-specific commands in any templates
+- Use `make test` and `make lint` for project-specific commands in any templates
