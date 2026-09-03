@@ -287,6 +287,10 @@ Target: October 2026.
 | #22 | Make repository public | Done |
 | #21 | Write launch blog post | Open |
 
+## Model Selection & Provider Abstraction (Q4 2026)
+
+Fix model selection crash (unavailable version warning), consolidate fallback logic, and enable multi-provider support (OpenAI, Ollama, Vertex AI). 15 PRs in 5 phases. Minimum viable fix (PR1-PR4): typed errors + client-owned fallback with shared deadline + task-type routing with pinning. See [docs/model-selection-architecture.md](docs/model-selection-architecture.md) and [docs/model-selection-risk-assessment.md](docs/model-selection-risk-assessment.md) for the complete analysis and migration path.
+
 ## Future Roadmap (P4+)
 
 | # | Feature | Description |
