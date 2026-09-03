@@ -15,6 +15,8 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `.claude/rules/architecture.md` | Project structure, key paths, design decisions |
 | `.claude/rules/bash-patterns.md` | Shell scripting conventions and gotchas |
 | `.claude/rules/workflow.md` | Development workflow and task finding |
+| `docs/model-selection-architecture.md` | LLM model routing, provider abstraction, design details |
+| `docs/model-selection-risk-assessment.md` | Model selection risks, migration path, rollback strategy |
 | `docs/security-guidelines.md` | Credential handling, input sanitization, subprocess safety |
 | `docs/performance-guidelines.md` | Timeouts, caching, concurrency, async patterns |
 | `docs/error-handling-guidelines.md` | Exceptions, logging, retries, fallbacks, circuit breakers |

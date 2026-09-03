@@ -53,6 +53,10 @@ SOVA has four main components:
 - Deploy: `deploy/sova-server.service` (systemd) + `deploy/com.sova.server.plist` (launchd)
 - CLI: `sova server start/stop/status/restart/digest/install-service`
 
+## Model Selection System
+
+Model routing is config-driven via three mechanisms: task-type-specific overrides (`llm.routing.{task_type}`), complexity-tier defaults (`llm.routing.{tier}`), and per-role fallbacks (`roles.{role}_model`). The system unifies LLM provider selection (Claude Code CLI, Anthropic API, LiteLLM multi-provider) behind an abstract `LLMProvider` ABC with pluggable error classification, availability checking, and fallback chaining. See [docs/model-selection-architecture.md](../../docs/model-selection-architecture.md) for the complete design, verified root causes, and migration roadmap.
+
 ## Supporting Modules
 
 - **`sova/adapters/`** -- TaskAdapter ABC + GitHub and Jira Cloud implementations (state via `agent:` labels), factory, per-project auth via `sova/utils/gh.py` (GitHub) and httpx (Jira)
