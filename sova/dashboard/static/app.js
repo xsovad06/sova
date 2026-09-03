@@ -1404,6 +1404,16 @@ function formatBytes(bytes, compact) {
   return (bytes / 1073741824).toFixed(compact ? 1 : 2) + (compact ? 'G' : ' GB');
 }
 
+function formatTokenCount(tokens) {
+  if (tokens == null) return '--';
+  var n = Number(tokens);
+  var abs = Math.abs(n);
+  if (abs >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (abs >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (abs >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
+}
+
 function renderRunsTable(runs, targetId) {
   var el = document.getElementById(targetId);
   if (runs.length === 0) {

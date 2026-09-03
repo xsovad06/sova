@@ -1048,6 +1048,35 @@ class TestRecordCost:
             rows = (await session.execute(stmt)).scalars().all()
             assert any(r.cost_usd == Decimal("0.10") for r in rows)
 
+    async def test_record_cost_persists_compression_savings(self) -> None:
+        from sova.llm.cost import record_cost
+        from sova.llm.models import LLMResult
+
+        result = LLMResult(
+            text="output",
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+            input_tokens=1000,
+            pre_compression_input_tokens=1075,
+            tokens_saved=75,
+        )
+
+        record = await record_cost(result=result, phase="develop", issue="60")
+
+        assert record.pre_compression_input_tokens == 1075
+        assert record.tokens_saved == 75
+
+    async def test_record_cost_compression_columns_default_null(self) -> None:
+        from sova.llm.cost import record_cost
+        from sova.llm.models import LLMResult
+
+        result = LLMResult(text="output", model="sonnet", cost_usd=Decimal("0.01"))
+
+        record = await record_cost(result=result, phase="develop", issue="61")
+
+        assert record.pre_compression_input_tokens is None
+        assert record.tokens_saved is None
+
 
 # ---------------------------------------------------------------------------
 # Streaming: invoke_streaming()
@@ -2311,6 +2340,25 @@ class TestAnthropicRateCard:
         cost = compute_anthropic_cost("claude-sonnet-5-20260101", input_tokens=1000, output_tokens=500)
         assert cost > Decimal("0")
 
+    def test_input_rate_per_mtok_known_model(self) -> None:
+        from sova.llm.models import input_rate_per_mtok
+
+        assert input_rate_per_mtok("claude-sonnet-5") == Decimal("2")
+
+    def test_input_rate_per_mtok_unknown_model(self) -> None:
+        from sova.llm.models import input_rate_per_mtok
+
+        assert input_rate_per_mtok("gpt-4o") == Decimal("0")
+
+    def test_input_rate_per_mtok_bare_alias_resolves(self) -> None:
+        """Bare family aliases (the config default, e.g. "opus") must resolve to
+        a nonzero rate; otherwise the compression-savings estimate is always $0."""
+        from sova.llm.models import input_rate_per_mtok
+
+        assert input_rate_per_mtok("opus") == Decimal("5")
+        assert input_rate_per_mtok("sonnet") == Decimal("2")
+        assert input_rate_per_mtok("haiku") == Decimal("1")
+
     def test_cache_tokens(self) -> None:
         from sova.llm.models import compute_anthropic_cost
 
@@ -3196,3 +3244,48 @@ class TestCompressionWiring:
                 pass
         mock_compress.assert_called_once()
         assert captured["prompt"] == "COMPRESSED"
+
+
+# ---------------------------------------------------------------------------
+# Client: compression savings recording on invoke()
+# ---------------------------------------------------------------------------
+
+
+class TestCompressionSavingsRecording:
+    async def _invoke_with_compression(self, original: str, compressed: str, input_tokens: int = 0) -> LLMResult:
+        from sova.llm import client
+
+        provider = MagicMock()
+        provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="test", input_tokens=input_tokens))
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "maybe_compress", return_value=compressed),
+            patch.object(client, "_try_load_config", return_value=None),
+        ):
+            return await client.invoke(original)
+
+    async def test_records_savings_when_compressed(self) -> None:
+        result = await self._invoke_with_compression("x" * 400, "y" * 100, input_tokens=1000)
+        assert result.tokens_saved == 75  # (400 - 100) // 4
+        assert result.pre_compression_input_tokens == 1075
+
+    async def test_identity_passthrough_leaves_columns_null(self) -> None:
+        from sova.llm import client
+
+        provider = MagicMock()
+        provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="test", input_tokens=500))
+        prompt = "x" * 400
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            # maybe_compress returns the exact same object -> compression not applied.
+            patch.object(client, "maybe_compress", side_effect=lambda p, cwd=None: p),
+            patch.object(client, "_try_load_config", return_value=None),
+        ):
+            result = await client.invoke(prompt)
+        assert result.tokens_saved is None
+        assert result.pre_compression_input_tokens is None
+
+    async def test_expanded_payload_clamps_to_zero(self) -> None:
+        result = await self._invoke_with_compression("short", "longer output", input_tokens=200)
+        assert result.tokens_saved == 0
+        assert result.pre_compression_input_tokens == 200

@@ -31,12 +31,39 @@ async def get_summary(session: AsyncSession) -> dict:
         await session.scalar(select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= week_ago)) or 0
     )
 
+    tokens_saved = int(await session.scalar(select(func.sum(CostRecord.tokens_saved))) or 0)
+
     return {
         "total_cost_usd": round(Decimal(total or 0), 4),
         "total_invocations": count,
         "today_cost_usd": round(Decimal(today_total or 0), 4),
         "rolling_7d_usd": round(Decimal(rolling_7d or 0), 4),
+        "tokens_saved": tokens_saved,
+        "compression_savings_usd": _compression_savings_usd(tokens_saved),
     }
+
+
+def _compression_savings_usd(tokens_saved: int) -> Decimal:
+    """Estimate USD saved by compression using the configured model's input rate.
+
+    Uses a single representative input rate (the configured default model's) from
+    the Anthropic rate card. Unknown or unconfigured models fall back to 0.
+    """
+    if tokens_saved <= 0:
+        return Decimal("0")
+
+    from sova.llm.models import input_rate_per_mtok
+
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config()
+        model = cfg.llm.model or cfg.agent.model
+    except Exception:
+        return Decimal("0")
+
+    rate = input_rate_per_mtok(model)
+    return round(Decimal(tokens_saved) * rate / Decimal("1_000_000"), 4)
 
 
 async def get_daily(session: AsyncSession, days: int = 14) -> list[dict]:

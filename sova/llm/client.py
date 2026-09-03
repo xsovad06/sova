@@ -93,11 +93,12 @@ async def invoke(
     from sova.llm.guard import guard_prompt
 
     guard_prompt(prompt)
+    original_prompt = prompt
     prompt = maybe_compress(prompt, cwd)
     cfg = _try_load_config(cwd) if model is None or timeout is None else None
     resolved = _resolve_task_type_model(model, task_type, cfg=cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
-    return await get_provider().invoke(
+    result = await get_provider().invoke(
         prompt,
         model=resolved,
         fallback_model=fallback_model,
@@ -107,6 +108,24 @@ async def invoke(
         system_prompt=system_prompt,
         max_tokens=max_tokens,
     )
+    _record_compression_savings(result, original_prompt, prompt)
+    return result
+
+
+def _record_compression_savings(result: LLMResult, original: str, compressed: str) -> None:
+    """Estimate and record compression savings on *result*.
+
+    ``maybe_compress`` returns the exact same string object on every passthrough
+    path (compression disabled, unavailable, below ``min_chars``, or Headroom
+    error), so an identity check reliably detects "compression did not run" and
+    leaves both columns NULL. When compression ran, ``tokens_saved`` is estimated
+    from the character delta (~4 chars/token) and clamped at 0 for net-zero or
+    expanded payloads.
+    """
+    if compressed is original:
+        return
+    result.tokens_saved = max(0, (len(original) - len(compressed)) // 4)
+    result.pre_compression_input_tokens = result.input_tokens + result.tokens_saved
 
 
 def _try_load_config(cwd: Path | str | None = None) -> ProjectConfig | None:
