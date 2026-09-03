@@ -42,6 +42,8 @@ async def record_cost(
         cost_usd=result.cost_usd,
         duration_ms=result.duration_ms,
         model_selection_reason=model_selection_reason,
+        pre_compression_input_tokens=result.pre_compression_input_tokens,
+        tokens_saved=result.tokens_saved,
     )
 
     async with await get_session() as session:

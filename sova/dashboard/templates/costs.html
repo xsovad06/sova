@@ -22,6 +22,11 @@
     <p class="text-2xl font-bold" id="cost-invocations">--</p>
   </div>
   <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Compression Savings</p>
+    <p class="text-2xl font-bold text-accent-green" id="cost-tokens-saved">--</p>
+    <p class="text-xs text-gray-600 mt-0.5" id="cost-savings-detail"></p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
     <p class="text-xs text-gray-500 uppercase">Total Energy</p>
     <p class="text-2xl font-bold text-accent-purple" id="cost-energy">--</p>
     <p class="text-xs text-gray-600 mt-0.5" id="cost-energy-detail"></p>
@@ -109,6 +114,10 @@ async function loadSummary() {
     document.getElementById('cost-today').textContent = '$' + parseFloat(summary.today_cost_usd || 0).toFixed(2);
     document.getElementById('cost-7d').textContent = '$' + parseFloat(summary.rolling_7d_usd || 0).toFixed(2);
     document.getElementById('cost-invocations').textContent = summary.total_invocations;
+    var tokensSaved = parseInt(summary.tokens_saved || 0, 10);
+    document.getElementById('cost-tokens-saved').textContent = formatTokenCount(tokensSaved) + ' tok';
+    var savingsUsd = parseFloat(summary.compression_savings_usd || 0);
+    document.getElementById('cost-savings-detail').textContent = savingsUsd > 0 ? '~$' + savingsUsd.toFixed(2) + ' saved' : '';
   } catch (err) {
     setElementError('cost-total', 'Error', ['text-accent-green']);
     console.error('Failed to load cost summary:', err);

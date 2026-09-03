@@ -401,6 +401,66 @@ async def test_migration_028_column_exists_helper() -> None:
         assert mod._column_exists("cost_records", "cache_write_tokens") is False
 
 
+async def test_migration_034_upgrade_adds_columns() -> None:
+    """Migration 034 upgrade adds pre_compression_input_tokens and tokens_saved."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("034")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [{"name": "id"}, {"name": "model"}]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+        assert mock_op.add_column.call_count == 2
+
+
+async def test_migration_034_upgrade_skip_when_exists() -> None:
+    """Migration 034 upgrade is idempotent."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("034")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [
+        {"name": "id"},
+        {"name": "pre_compression_input_tokens"},
+        {"name": "tokens_saved"},
+    ]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+        mock_op.add_column.assert_not_called()
+
+
+async def test_migration_034_downgrade_drops_columns() -> None:
+    """Migration 034 downgrade drops both compression savings columns."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("034")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [
+        {"name": "id"},
+        {"name": "pre_compression_input_tokens"},
+        {"name": "tokens_saved"},
+    ]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.downgrade()
+        mock_op.drop_column.assert_any_call("cost_records", "tokens_saved")
+        mock_op.drop_column.assert_any_call("cost_records", "pre_compression_input_tokens")
+        assert mock_op.drop_column.call_count == 2
+
+
+async def test_migration_034_revision_chain() -> None:
+    """Migration 034 follows 033."""
+    mod = _import_migration("034")
+
+    assert mod.revision == "034"
+    assert mod.down_revision == "033"
+
+
 async def test_create_memory() -> None:
     """Create a memory entry."""
     async with await get_session() as session:
@@ -1062,7 +1122,7 @@ class TestRunMigrationsAtHead:
 
 
 async def test_get_alembic_head_returns_current_head() -> None:
-    """_get_alembic_head must return the actual head revision ('033')."""
+    """_get_alembic_head must return the actual head revision ('034')."""
     import pathlib
 
     from alembic.config import Config
@@ -1074,7 +1134,7 @@ async def test_get_alembic_head_returns_current_head() -> None:
 
     alembic_cfg = Config(str(pathlib.Path(session_mod.__file__).parent / "alembic.ini"))
     head = _get_alembic_head(alembic_cfg)
-    assert head == "033"
+    assert head == "034"
 
 
 async def test_get_alembic_head_caches_result() -> None:

@@ -24,6 +24,10 @@ class LLMResult:
     duration_ms: int = 0
     session_id: str = ""
     stop_reason: str = ""
+    # Compression accounting: None when compression did not run (disabled, below
+    # min_chars, package missing, or error); an int (>= 0) when it did.
+    pre_compression_input_tokens: int | None = None
+    tokens_saved: int | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -86,6 +90,19 @@ _ANTHROPIC_RATE_CARD: dict[str, tuple[Decimal, Decimal]] = {
 
 _MTOK = Decimal("1_000_000")
 
+# Bare family aliases carry no version, but the rate card is keyed by full model
+# IDs. Map each alias to the current release in its family so rate lookups (used
+# for cost/savings estimates) resolve instead of falling back to 0. Keep in sync
+# with _ANTHROPIC_RATE_CARD as new releases ship.
+_ALIAS_TO_CURRENT_MODEL: dict[str, str] = {
+    "opus": "claude-opus-5",
+    "sonnet": "claude-sonnet-5",
+    "haiku": "claude-haiku-4-5",
+    "smart": "claude-opus-5",
+    "fast": "claude-sonnet-5",
+    "cheap": "claude-haiku-4-5",
+}
+
 
 def compute_anthropic_cost(
     model: str,
@@ -110,6 +127,18 @@ def compute_anthropic_cost(
         + input_rate * Decimal("1.25") * cache_creation_tokens / _MTOK
     )
     return cost.quantize(Decimal("0.000001"))
+
+
+def input_rate_per_mtok(model: str) -> Decimal:
+    """Return the per-million-token input rate for a model, or 0 if unknown.
+
+    Bare family aliases ("opus", "sonnet", "haiku") are resolved to the current
+    release in their family before lookup, since the rate card is keyed by full
+    model IDs and config commonly stores bare aliases.
+    """
+    resolved = _ALIAS_TO_CURRENT_MODEL.get(model, model)
+    rates = _lookup_rates(resolved)
+    return rates[0] if rates else Decimal("0")
 
 
 def _lookup_rates(model: str) -> tuple[Decimal, Decimal] | None:

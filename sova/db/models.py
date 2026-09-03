@@ -164,6 +164,10 @@ class CostRecord(Base):
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     model_selection_reason: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
+    # Compression accounting. NULL when compression did not run (disabled, below
+    # min_chars, or non-compressed/historical rows); 0 when it ran but saved nothing.
+    pre_compression_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    tokens_saved: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     task_run: Mapped["TaskRun | None"] = relationship(back_populates="cost_records")
