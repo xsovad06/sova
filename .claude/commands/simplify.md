@@ -2,6 +2,7 @@
 name: simplify
 description: Review changed code for reuse, quality, and efficiency, then fix any issues found.
 user-invocable: true
+category: core
 ---
 
 # Simplify

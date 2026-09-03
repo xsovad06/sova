@@ -41,6 +41,13 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
    - If found with `Status: draft`: warn the user: "Draft spec exists at {filename} but is not approved. Run `/spec {issue}` to review and approve it, or proceed without spec guidance." Wait for user confirmation before continuing.
    - If not found: continue silently. Specs are optional -- not every task needs one.
 7. Identify which module(s) this work touches and read relevant source code.
+8. **Check current branch**: if on main/master, create a feature branch before developing:
+   ```bash
+   BRANCH=$(git branch --show-current)
+   if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+     echo "On main branch. Create a feature branch before developing."
+   fi
+   ```
 
 ### Phase 1: Develop (TDD)
 

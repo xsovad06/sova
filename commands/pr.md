@@ -20,6 +20,7 @@ Create a pull request for the current branch using the project's standard PR tem
    - **Stash any uncommitted changes first** (if any): `git stash push -m "Pre-rebase stash"`
    - **Fetch latest**: `git fetch origin`
    - **Update local main**: `git checkout main && git pull origin main` (adjust branch name if project uses `master`)
+   - **Check for local-only main commits**: `git rev-list --count origin/main..main`. If non-zero, warn the user: "local main is N commits ahead of origin/main; these will leak into PR scope. Run `git reset --hard origin/main` to fix."
    - **Switch back to feature branch**: `git checkout -`
    - **Rebase onto updated main**: `git rebase main`
    - **Handle rebase conflicts** (if any): Inform the user and help resolve them
@@ -140,4 +141,9 @@ Create a pull request for the current branch using the project's standard PR tem
 
 - If the branch has no commits ahead of main and no uncommitted changes, inform the user
 - All commits on the branch will be analyzed to generate the PR description
+- NEVER merge the PR: that happens via `/integrate-pr` or `/approve-merge`
+- Use `--force-with-lease` for force pushes, never `--force`
+- NEVER skip CI checks or use `--no-verify`
+- Do NOT ask for or request reviewers: the user handles reviews themselves
+- NEVER include AI references in commits or PRs
 - NEVER use emojis in any output

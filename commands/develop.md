@@ -79,6 +79,10 @@ Run the full CI-equivalent checks:
 
 If any check fails, fix and re-run (up to 3 attempts).
 
+If you added or changed i18n strings (`{% trans %}`, `{% blocktrans %}`, `gettext`, etc.),
+run the project's `makemessages` and `compilemessages` commands (see CLAUDE.md).
+Check for `#, fuzzy` entries in `.po` files: they are silently skipped by `compilemessages`.
+
 ### Step 5: Self-Check
 
 Before declaring done:
