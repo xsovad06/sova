@@ -111,3 +111,202 @@ class TestGetProjectAgents:
             pa2 = _get_project_agents("gwym")
 
         assert pa1 is pa2
+
+
+class TestPruneCompleted:
+    def test_prune_completed_default_now(self) -> None:
+        """_prune_completed uses time.monotonic() when now=None."""
+        import time
+
+        from sova.dashboard.services.agent_pool import (
+            CompletedAgent,
+            ProjectAgents,
+            _prune_completed,
+        )
+
+        pa = ProjectAgents()
+        pa.recently_completed.append(
+            CompletedAgent(
+                run_id=1, issue="1", role="dev", status="done", cost=0.5, completed_at=time.monotonic() - 9999
+            ),
+        )
+        _prune_completed(pa)
+        assert len(pa.recently_completed) == 0
+
+    def test_prune_completed_removes_expired(self) -> None:
+        """_prune_completed poplefts expired entries."""
+        from sova.dashboard.services.agent_pool import (
+            RECENTLY_COMPLETED_TTL,
+            CompletedAgent,
+            ProjectAgents,
+            _prune_completed,
+        )
+
+        now = 10000.0
+        pa = ProjectAgents()
+        pa.recently_completed.append(
+            CompletedAgent(
+                run_id=1, issue="1", role="dev", status="done", cost=0.5, completed_at=now - RECENTLY_COMPLETED_TTL - 1
+            ),
+        )
+        pa.recently_completed.append(
+            CompletedAgent(run_id=2, issue="2", role="dev", status="done", cost=0.5, completed_at=now - 1),
+        )
+        _prune_completed(pa, now=now)
+        assert len(pa.recently_completed) == 1
+        assert pa.recently_completed[0].run_id == 2
+
+
+class TestAgentPoolConfig:
+    def test_read_max_parallel_returns_config_value(self, tmp_path):
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[project]\nmax_parallel_agents = 5\n")
+        from sova.dashboard.services.agent_pool import read_max_parallel
+
+        result = read_max_parallel(tmp_path)
+        assert result == 5
+
+    def test_read_max_parallel_fallback_on_missing_config(self, tmp_path):
+        from sova.dashboard.services.agent_pool import ProjectAgents, read_max_parallel
+
+        result = read_max_parallel(tmp_path / "nonexistent")
+        assert result == ProjectAgents.max_concurrent
+
+    def test_sync_max_concurrent_updates_pool(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services import agent_pool
+
+        mock_cfg = MagicMock()
+        mock_cfg.max_parallel_agents = 7
+        mock_load_config = MagicMock(return_value=mock_cfg)
+        monkeypatch.setattr("sova.config.loader.load_config", mock_load_config)
+        old_projects = agent_pool._projects.copy()
+        agent_pool._projects.clear()
+        try:
+            pa = agent_pool._get_project_agents("test-sync")
+            pa.max_concurrent = 2
+            agent_pool.sync_max_concurrent(project_dir=tmp_path, slug="test-sync")
+            assert mock_load_config.called
+            assert pa.max_concurrent == 7
+        finally:
+            agent_pool._projects.clear()
+            agent_pool._projects.update(old_projects)
+
+    def test_sync_max_concurrent_no_change_when_equal(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services import agent_pool
+
+        mock_cfg = MagicMock()
+        mock_cfg.max_parallel_agents = 2
+        mock_load_config = MagicMock(return_value=mock_cfg)
+        monkeypatch.setattr("sova.config.loader.load_config", mock_load_config)
+        old_projects = agent_pool._projects.copy()
+        agent_pool._projects.clear()
+        try:
+            pa = agent_pool._get_project_agents("test-noop")
+            pa.max_concurrent = 2
+            agent_pool.sync_max_concurrent(project_dir=tmp_path, slug="test-noop")
+            assert mock_load_config.called
+            assert pa.max_concurrent == 2
+        finally:
+            agent_pool._projects.clear()
+            agent_pool._projects.update(old_projects)
+
+    def test_sync_max_concurrent_swallows_config_errors(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services import agent_pool
+
+        mock_load_config = MagicMock(side_effect=RuntimeError("no config"))
+        monkeypatch.setattr("sova.config.loader.load_config", mock_load_config)
+        old_projects = agent_pool._projects.copy()
+        agent_pool._projects.clear()
+        try:
+            pa = agent_pool._get_project_agents("test-err")
+            pa.max_concurrent = 3
+            agent_pool.sync_max_concurrent(project_dir=Path("/nonexistent"), slug="test-err")
+            assert mock_load_config.called
+            assert pa.max_concurrent == 3
+        finally:
+            agent_pool._projects.clear()
+            agent_pool._projects.update(old_projects)
+
+    def test_get_project_agents_reads_config_on_create(self, tmp_path, monkeypatch):
+        from sova.dashboard.services import agent_pool
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[project]\nmax_parallel_agents = 4\n")
+        monkeypatch.setattr("sova.dashboard.services.agent_pool.get_project_dir", lambda: tmp_path)
+        old_projects = agent_pool._projects.copy()
+        agent_pool._projects.clear()
+        try:
+            pa = agent_pool._get_project_agents("test-init")
+            assert pa.max_concurrent == 4
+        finally:
+            agent_pool._projects.clear()
+            agent_pool._projects.update(old_projects)
+
+
+class TestGetProjectPool:
+    def test_returns_and_caches_pool_for_slug(self, tmp_path: Path) -> None:
+        project_path = tmp_path / "proj"
+        project_path.mkdir()
+
+        with (
+            patch.object(pool_mod, "get_project_dir", return_value=None),
+            patch.object(pool_mod, "get_project_slug", return_value=None),
+            patch("sova.config.registry.get_project_path", return_value=project_path),
+            patch.object(pool_mod, "read_max_parallel", return_value=2),
+        ):
+            pa = pool_mod.get_project_pool("proj")
+            pa_again = pool_mod.get_project_pool("proj")
+
+        assert pa.project_dir == project_path.resolve()
+        assert pa is pa_again
+
+
+class TestListAllPools:
+    def test_returns_independent_snapshot(self, tmp_path: Path) -> None:
+        project_path = tmp_path / "proj"
+        project_path.mkdir()
+
+        with (
+            patch.object(pool_mod, "get_project_dir", return_value=None),
+            patch.object(pool_mod, "get_project_slug", return_value=None),
+            patch("sova.config.registry.get_project_path", return_value=project_path),
+            patch.object(pool_mod, "read_max_parallel", return_value=2),
+        ):
+            pool_mod._get_project_agents("proj")
+
+        pools = pool_mod.list_all_pools()
+        assert set(pools) == {"proj"}
+
+        pools["extra"] = pool_mod.ProjectAgents()
+        assert "extra" not in pool_mod._projects
+
+
+class TestEvictCompletedForIssue:
+    def test_removes_only_matching_issue(self) -> None:
+        from sova.dashboard.services.agent_pool import CompletedAgent, ProjectAgents, _evict_completed_for_issue
+
+        pa = ProjectAgents()
+        pa.recently_completed.append(CompletedAgent(run_id=1, issue="1", role="dev", status="done", cost=0.1))
+        pa.recently_completed.append(CompletedAgent(run_id=2, issue="2", role="dev", status="done", cost=0.2))
+        pa.recently_completed.append(CompletedAgent(run_id=3, issue="1", role="dev", status="failed", cost=0.3))
+
+        _evict_completed_for_issue(pa, "1")
+
+        assert len(pa.recently_completed) == 1
+        assert pa.recently_completed[0].issue == "2"
+
+    def test_noop_when_no_match(self) -> None:
+        from sova.dashboard.services.agent_pool import CompletedAgent, ProjectAgents, _evict_completed_for_issue
+
+        pa = ProjectAgents()
+        pa.recently_completed.append(CompletedAgent(run_id=1, issue="5", role="dev", status="done", cost=0.1))
+
+        _evict_completed_for_issue(pa, "99")
+
+        assert len(pa.recently_completed) == 1

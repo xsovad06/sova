@@ -6,7 +6,7 @@ import asyncio
 import os
 import signal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -510,16 +510,34 @@ class TestServerCLI:
         assert result.exit_code == 0
         assert "host" in result.output.lower() or "port" in result.output.lower()
 
-    def test_server_status_shows_not_running(self) -> None:
+    def test_server_status_shows_not_running(self, tmp_path: Path) -> None:
         from typer.testing import CliRunner
 
         from sova.cli.app import app
 
         runner = CliRunner()
-        with patch("sova.scheduler.server.read_pid_file", return_value=None):
-            result = runner.invoke(app, ["server", "status"])
-        assert result.exit_code == 0
+        # status() must be patched at its function-local import site (sova.scheduler.server),
+        # not sova.cli.commands.server, because it re-imports read_pid_file on every call.
+        with patch("sova.scheduler.server.read_pid_file", return_value=None) as mock_read_pid:
+            result = runner.invoke(app, ["server", "status", "--project", str(tmp_path)])
+        mock_read_pid.assert_called_once_with(ANY, project_dir=tmp_path)
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
         assert "not running" in result.output.lower() or "stopped" in result.output.lower()
+
+    def test_server_status_shows_running(self, tmp_path: Path) -> None:
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+
+        runner = CliRunner()
+        with patch("sova.scheduler.server.read_pid_file", return_value=12345) as mock_read_pid:
+            result = runner.invoke(app, ["server", "status", "--project", str(tmp_path)])
+        mock_read_pid.assert_called_once_with(ANY, project_dir=tmp_path)
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        assert "running" in result.output.lower()
+        assert "12345" in result.output
 
 
 # ---------------------------------------------------------------------------
