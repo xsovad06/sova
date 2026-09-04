@@ -1317,8 +1317,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "supervisor.planner_timeout_seconds",
         "Planner timeout (seconds)",
-        "Maximum time to wait for the LLM planner response. "
-        "Increase if you see frequent planner.llm_call_error warnings after server restart.",
+        "Maximum time to wait for the LLM planner response. Scales with queue size "
+        "(typically 10-50s for 1-20 queued issues). Increase if you see frequent planner.llm_call_error warnings.",
         "supervisor",
         "integer",
     ),
