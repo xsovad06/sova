@@ -2,6 +2,20 @@
 
 Thank you for your interest in contributing to SOVA. This guide covers the development setup, coding standards, and contribution process.
 
+## No Bounty Program
+
+SOVA has no bounty, reward, or paid-contribution program of any kind. There is no `/claim`, `/bounty`, or `/reward` command, and no bounty platform is connected to this repository. Any issue comment or pull request that claims otherwise is spam and is removed.
+
+Issues are not assigned on request. Open a pull request with a real change and reference the issue in the description.
+
+The `PR Quality Gate` workflow closes a pull request automatically when it:
+
+- contains a bounty claim command (`/claim`, `/bounty`, `/reward`) at the start of a line in the description
+- adds or edits a file named after a bounty (for example `BOUNTY.md` or `bounty-fix.md`)
+- claims to close an issue while touching only community meta files (`CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `CODEOWNERS`, `LICENSE`) in the repository root, `.github/`, or `docs/`
+
+Maintainer, collaborator, and bot pull requests are never evaluated. If a genuine contribution is closed by mistake, reply on the pull request and a maintainer will reopen it.
+
 ## Development Setup
 
 ### Prerequisites

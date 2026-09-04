@@ -1,0 +1,149 @@
+name: PR Quality Gate
+
+# Auto-closes drive-by bounty spam (issue #818).
+#
+# Runs in the base-repo context (pull_request_target), so:
+#   - Always executes without manual approval (even for fork PRs)
+#   - Workflow YAML comes from the main branch (a fork cannot tamper with it)
+#   - GITHUB_TOKEN can comment on, label, and close a fork PR
+#
+# No pull request head code is checked out or executed here: that is the
+# standard privilege-escalation vector for pull_request_target. The PR body
+# reaches the detector through the environment, never through string
+# interpolation into a shell script.
+#
+# `edited` is required because bounty syntax is often added after opening.
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# cancel-in-progress is deliberately false, not true. GitHub Actions only
+# ever cancels a *queued* (not yet started) run in the same group when a
+# newer one arrives; a run that has already started is never touched by a
+# later trigger. With cancel-in-progress: true, a bounty bot could push a new
+# commit (or re-edit the body) faster than the job reaches the "Close spam
+# pull request" step and repeatedly cancel the in-flight run before it ever
+# executes `gh pr close`, evading the gate indefinitely. With it false, the
+# currently running evaluation always finishes; only a *second* pending
+# trigger that arrives while one is already queued gets collapsed into the
+# latest queued run, so redundant duplicate runs still don't pile up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  # No job-level `if:` here. This job is intended to be a required status
+  # check, and a job skipped at the job level never reports its check, which
+  # would leave every maintainer PR pending forever. The trusted-author filter
+  # is a step-level early exit so the job still runs and exits 0.
+  quality-gate:
+    name: PR Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Decide whether to evaluate this pull request
+        id: scope
+        env:
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_STATE: ${{ github.event.pull_request.state }}
+        run: |
+          # Maintainers and the autonomous SOVA pipeline (which opens PRs as
+          # OWNER) are never evaluated, so /integrate-pr is never blocked.
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR)
+              echo "Author association is ${AUTHOR_ASSOCIATION}: trusted contributor, no evaluation needed."
+              echo "evaluate=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          case "$AUTHOR_LOGIN" in
+            *"[bot]")
+              echo "Author ${AUTHOR_LOGIN} is a bot: no evaluation needed."
+              echo "evaluate=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          # A `synchronize` or `edited` event can arrive for an already closed
+          # PR. Re-closing it would spam the timeline.
+          if [ "$PR_STATE" != "open" ]; then
+            echo "Pull request state is ${PR_STATE}: skipping enforcement."
+            echo "evaluate=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "evaluate=true" >> "$GITHUB_OUTPUT"
+
+      - name: Detect spam signals
+        id: detect
+        if: steps.scope.outputs.evaluate == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # --paginate: the community-files-only rule must see the whole diff,
+          # not just the first page. On any API failure the list is empty and
+          # the detector fails open with spam=false.
+          files=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" --jq '.[].filename') || files=""
+
+          verdict=$(printf '%s\n' "$files" | .github/scripts/detect-pr-spam.sh)
+          echo "$verdict"
+          echo "$verdict" >> "$GITHUB_OUTPUT"
+
+      - name: Close spam pull request
+        if: steps.detect.outputs.spam == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REASON: ${{ steps.detect.outputs.reason }}
+        run: |
+          echo "Spam signal: ${REASON}"
+
+          # Skip if a gate comment is already on this PR (the `edited` trigger
+          # can fire repeatedly on the same body). --paginate is required: the
+          # default single page holds 30 comments, and a busy thread would get a
+          # duplicate notice. With --paginate the jq filter runs once per page,
+          # so it emits one id per match and the lines are counted here. An API
+          # failure leaves the count at 0 and the comment is posted.
+          existing=0
+          if ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+                --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("PR Quality Gate"))) | .id'); then
+            existing=$(printf '%s' "$ids" | grep -c . || true)
+          fi
+
+          if [ "${existing:-0}" -eq 0 ]; then
+            body="## PR Quality Gate"
+            body="${body}"$'\n\n'"This pull request was closed automatically because it matched an automated spam signal."
+            body="${body}"$'\n\n'"**SOVA has no bounty, reward, or paid-contribution program.** There is no \`/claim\`, \`/bounty\`, or \`/reward\` command, and no bounty platform is connected to this repository. Comments or pull requests claiming otherwise are removed."
+            body="${body}"$'\n\n'"Genuine contributions are welcome: see [CONTRIBUTING.md](https://github.com/${REPO}/blob/main/CONTRIBUTING.md)."
+            body="${body}"$'\n\n'"If this pull request was closed by mistake, reply here and a maintainer will reopen it."
+
+            # Best effort, same as the label call below: a transient comment
+            # failure (rate limit, network blip, concurrent edit) must not
+            # abort the script under `set -e` and skip the close.
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" \
+              || echo "Could not post gate comment (continuing)."
+          else
+            echo "Gate comment already posted: not repeating it."
+          fi
+
+          # Best effort: the `spam` label is created once by a maintainer, and
+          # a missing label must not fail the job or prevent the close.
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label spam \
+            || echo "Could not apply the spam label (continuing)."
+
+          gh pr close "$PR_NUMBER" --repo "$REPO"

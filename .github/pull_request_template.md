@@ -15,3 +15,4 @@
 - [ ] `make check` passes
 - [ ] New/updated tests cover the change
 - [ ] Manual verification (describe below)
+- [ ] This is a genuine contribution (SOVA has no bounty, reward, or paid-contribution program)

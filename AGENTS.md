@@ -63,6 +63,7 @@ sova/
     utils/                         # Logging, shell, formatting
   commands/                        # 28 standardized commands (markdown with category frontmatter)
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
+  .github/scripts/                 # CI gate scripts (bash, unit-tested from tests/)
   invariants/                      # Pre-push constraint check scripts (bash)
   guidelines/                      # Distributable guideline templates (installed to .claude/rules/)
   skills/                          # Distributable skill templates (installed to .claude/skills/)
@@ -71,7 +72,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 7828 at last count)
+  tests/                           # pytest suite (3200+ tests, 7922 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
@@ -124,9 +125,9 @@ This project uses **GitHub Issues** with a project board.
 
 ### Testing
 - **All checks**: `make check` (lint + test, CI-equivalent)
-- **Bash scripts**: `make lint-bash` (shellcheck on invariants) + `make test-bash` (invariant `--help`)
+- **Bash scripts**: `make lint-bash` (shellcheck on `invariants/` + `.github/scripts/`) + `make test-bash` (`--help` smoke test on both)
 - **Python**: `make test-py` (pytest suite in `tests/` covering all `sova/` modules)
-- **Invariants**: each invariant script should handle `--help` gracefully
+- **Bash script contract**: every script under `invariants/` and `.github/scripts/` must handle `--help` gracefully and stay executable (CI enforces both)
 - **Commands**: validate markdown structure (frontmatter, sections)
 
 ### Documentation

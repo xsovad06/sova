@@ -19,6 +19,7 @@ reviews:
     - "tests/**"
     - "invariants/**"
     - "commands/**"
+    - ".github/**"
     - "!.claude/**"
     - "!docs/**"
     - "!assets/**"
@@ -48,6 +49,18 @@ reviews:
         Pytest suite with pytest-asyncio (asyncio_mode=auto). Verify mocks target the
         correct module path (patch at import site, not definition site). Check for proper
         async test patterns.
+    - path: ".github/scripts/*.sh"
+      instructions: |
+        CI gate scripts. Must pass shellcheck at default severity, use set -euo pipefail,
+        double-quoted variables, and local declarations in functions. These run against
+        untrusted pull request input: never interpolate a PR body or file name into a
+        command, and never echo untrusted text into GITHUB_OUTPUT.
+    - path: ".github/workflows/*.yml"
+      instructions: |
+        GitHub Actions workflows. pull_request_target workflows must never check out or
+        execute PR head code, and untrusted event data must reach a run script through
+        env vars, not ${{ }} interpolation. Jobs that are required status checks must
+        never carry a job-level if (a skipped job never reports its check).
     - path: "invariants/*.sh"
       instructions: |
         Bash scripts must have set -euo pipefail, double-quoted variables, local declarations

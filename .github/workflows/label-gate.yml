@@ -1,0 +1,49 @@
+name: Label Gate
+
+# Posts a contribution policy notice when an issue is marked as a good first
+# issue. The label is the main entry point for bounty aggregators, so it stays
+# (removing it would also remove the on-ramp for genuine newcomers) and is
+# paired with an explicit deterrent instead.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+
+jobs:
+  # A job-level `if:` is safe here: this is not a required status check, so a
+  # skipped job strands nothing.
+  good-first-issue-notice:
+    name: Good First Issue Notice
+    if: github.event.label.name == 'good first issue'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post contribution policy notice
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # --paginate: the default single page holds 30 comments, so a busy
+          # issue would get a duplicate notice if the label is re-applied. The
+          # jq filter runs once per page, so it emits one id per match and the
+          # lines are counted here.
+          existing=0
+          if ids=$(gh api --paginate "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
+                --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Contribution policy notice"))) | .id'); then
+            existing=$(printf '%s' "$ids" | grep -c . || true)
+          fi
+
+          if [ "${existing:-0}" -gt 0 ]; then
+            echo "Notice already posted: nothing to do."
+            exit 0
+          fi
+
+          body="## Contribution policy notice"
+          body="${body}"$'\n\n'"**SOVA has no bounty, reward, or paid-contribution program.** There is no \`/claim\`, \`/bounty\`, or \`/reward\` command, and no bounty platform is connected to this repository."
+          body="${body}"$'\n\n'"Issues are not assigned on request. Open a pull request with a real change and reference the issue in the description."
+          body="${body}"$'\n\n'"Pull requests that carry bounty claim syntax, or that claim to close an issue while only rewriting community meta files, are closed automatically. See [CONTRIBUTING.md](https://github.com/${REPO}/blob/main/CONTRIBUTING.md#no-bounty-program)."
+
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$body"

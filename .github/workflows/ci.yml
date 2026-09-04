@@ -85,15 +85,16 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
 
-      - name: Run ShellCheck on invariant scripts
+      - name: Run ShellCheck on bash scripts
         run: |
           shellcheck --severity=warning \
-            invariants/*.sh
+            invariants/*.sh \
+            .github/scripts/*.sh
 
       - name: Check executable permissions
         run: |
           errors=0
-          for f in invariants/*.sh; do
+          for f in invariants/*.sh .github/scripts/*.sh; do
             if [ ! -x "$f" ]; then
               echo "ERROR: $f is not executable"
               errors=$((errors + 1))
