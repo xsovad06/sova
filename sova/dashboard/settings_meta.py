@@ -244,6 +244,14 @@ _REGISTRY: list[SettingMeta] = [
         "agent",
         "boolean",
     ),
+    SettingMeta(
+        "agent.env_passthrough",
+        "Environment passthrough",
+        "Provider-routing variables preserved when spawning agents (e.g. CLAUDE_CODE_USE_VERTEX). "
+        "Empty means SOVA scrubs all of them so the configured provider always wins",
+        "agent",
+        "list",
+    ),
     # -- Pipeline --
     SettingMeta(
         "pipeline.auto_handoff",

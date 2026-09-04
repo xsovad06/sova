@@ -113,6 +113,7 @@ class AgentConfig(BaseSettings):
     step_timeout: int = Field(1800, gt=0)
     skip_manual_test: bool = True
     auto_approve_fixes: bool = False
+    env_passthrough: list[str] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_AGENT_")
 
