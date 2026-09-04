@@ -251,6 +251,8 @@ class TestValidateStepConfig:
         asyncio.run(run("git", "init", cwd=tmp_path))
         asyncio.run(run("git", "config", "user.email", "test@example.com", cwd=tmp_path))
         asyncio.run(run("git", "config", "user.name", "Test User", cwd=tmp_path))
+        # ValidateStep resolves HEAD to build the hook's stdin, so the repo needs a commit.
+        asyncio.run(run("git", "commit", "--allow-empty", "-m", "init", cwd=tmp_path))
 
         # Create sova.toml with custom validate config
         (tmp_path / "sova.toml").write_text("""

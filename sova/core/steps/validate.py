@@ -15,13 +15,39 @@ from pathlib import Path
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.test_baseline import diff_results, load_baseline, run_test_suite
+from sova.git.branch import get_current_branch
 from sova.llm.client import invoke
 from sova.utils.logging import get_logger
-from sova.utils.shell import run
+from sova.utils.shell import run, run_checked
 
 log = get_logger(component="step.validate")
 
 _HOOK_OUTPUT_LIMIT = 8000
+
+_ZERO_SHA = "0" * 40
+
+
+async def build_pre_push_stdin(cwd: Path | None, branch: str) -> str:
+    """Build the ref line git feeds a pre-push hook on stdin.
+
+    Git's contract is argv=(remote_name, remote_url) plus one
+    '<local_ref> <local_sha> <remote_ref> <remote_sha>' line per pushed ref.
+    Hooks routinely loop over these lines, so a hook run without them blocks
+    on read until the step timeout kills it, with no output to diagnose.
+    """
+    if not branch:
+        branch = await get_current_branch(cwd)
+    ref = f"refs/heads/{branch}"
+
+    # Not tolerated: a zero local_sha reads as a branch deletion, which makes
+    # hooks skip every check and report success.
+    head = await run_checked("git", "rev-parse", "HEAD", cwd=cwd)
+
+    # A branch with no remote counterpart is normal; git sends zeros there.
+    upstream = await run("git", "rev-parse", "--verify", "--quiet", f"origin/{branch}", cwd=cwd)
+    remote_sha = upstream.stdout.strip() if upstream.success else _ZERO_SHA
+
+    return f"{ref} {head.stdout.strip()} {ref} {remote_sha}\n"
 
 
 def _truncate_hook_output(output: str) -> str:
@@ -80,9 +106,18 @@ class ValidateStep(BaseStep):
         log.info("step.validate.running_hook", hook=hook)
 
         hook_timeout = ctx.config.validation.hook_timeout
-        result = await run(hook, "origin", "unused", cwd=cwd, timeout=hook_timeout)
+        hook_stdin = await build_pre_push_stdin(cwd, ctx.branch_name)
+        result = await run(hook, "origin", "unused", cwd=cwd, timeout=hook_timeout, stdin=hook_stdin)
         if result.success:
             return StepResult(success=True, summary="Pre-push hook passed")
+
+        if result.timed_out:
+            log.error("step.validate.hook_timeout", timeout=hook_timeout)
+            return StepResult(
+                success=False,
+                summary=f"Pre-push hook exceeded {hook_timeout}s and was killed",
+                error="hook_timeout",
+            )
 
         hook_output = (result.stdout + "\n" + result.stderr).strip()
         log.warning("step.validate.hook_failed", output=hook_output[:500])
@@ -138,11 +173,21 @@ class ValidateStep(BaseStep):
                     error=str(exc),
                 )
 
-            retry = await run(hook, "origin", "unused", cwd=cwd, timeout=hook_timeout)
+            retry_stdin = await build_pre_push_stdin(cwd, ctx.branch_name)
+            retry = await run(hook, "origin", "unused", cwd=cwd, timeout=hook_timeout, stdin=retry_stdin)
             if retry.success:
                 return StepResult(
                     success=True,
                     summary=f"Pre-push hook passed after {attempt} fix attempt(s)",
+                    cost_usd=llm_result.cost_usd,
+                )
+
+            if retry.timed_out:
+                log.error("step.validate.hook_timeout", timeout=hook_timeout, attempt=attempt)
+                return StepResult(
+                    success=False,
+                    summary=f"Pre-push hook exceeded {hook_timeout}s and was killed",
+                    error="hook_timeout",
                     cost_usd=llm_result.cost_usd,
                 )
 
