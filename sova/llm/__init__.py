@@ -14,6 +14,17 @@ from sova.llm.client import (
 )
 from sova.llm.complexity import ComplexityTier, assess_complexity
 from sova.llm.cost import record_cost
+from sova.llm.errors import (
+    BillingError,
+    LLMError,
+    LLMInvocationError,
+    LLMTimeoutError,
+    ModelUnavailableError,
+    ProviderUnavailableError,
+    RateLimitError,
+    classify_error,
+    is_fallback_eligible,
+)
 from sova.llm.guard import PromptInjectionError, ScanResult, scan_prompt
 from sova.llm.models import BatchRequest, BatchResult, BatchTimeoutError, LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider, create_provider
@@ -23,20 +34,29 @@ __all__ = [
     "BatchRequest",
     "BatchResult",
     "BatchTimeoutError",
+    "BillingError",
     "ComplexityTier",
+    "LLMError",
+    "LLMInvocationError",
     "LLMProvider",
     "LLMResult",
+    "LLMTimeoutError",
+    "ModelUnavailableError",
     "PromptInjectionError",
+    "ProviderUnavailableError",
+    "RateLimitError",
     "ScanResult",
     "StreamEvent",
     "TASK_TYPE_KEYS",
     "assess_complexity",
+    "classify_error",
     "create_provider",
     "get_provider",
     "invoke",
     "invoke_batch",
     "invoke_command",
     "invoke_streaming",
+    "is_fallback_eligible",
     "record_cost",
     "reset_provider",
     "resolve_model",
