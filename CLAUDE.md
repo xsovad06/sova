@@ -129,6 +129,46 @@ sova doctor
 rtk gain
 ```
 
+## Headroom Token Compression (Optional)
+
+Headroom is a broader context-compression tool (JSON, code, logs, prose) than RTK, and is separate from the in-process Headroom compression wired into `sova/llm/` for LLM invocations; see epic #894 for that integration. This section covers the standalone CLI for local use: SOVA's in-process path installs the `compression` extra declared in `pyproject.toml` (`headroom-ai>=0.3.0`), while local wrap/proxy usage below installs the full `headroom-ai[all]` bundle instead.
+
+### Headroom Installation
+
+```bash
+pip install "headroom-ai[all]"
+
+# Verify installation
+headroom --version
+```
+
+### Wrap Mode
+
+Run Claude Code through Headroom without a separate process to manage:
+
+```bash
+headroom wrap claude
+```
+
+### Proxy Mode
+
+Start a local compressing proxy:
+
+```bash
+headroom proxy --port 8787
+```
+
+Starting the proxy alone does not route traffic: point Claude Code at it by setting `ANTHROPIC_BASE_URL=http://localhost:8787` in the shell that runs `claude`.
+
+### Headroom Verification
+
+```bash
+# View durable compression savings (tokens, cost, per-model breakdown)
+headroom savings
+```
+
+Headroom is optional and licensed under Apache 2.0. `sova doctor` does not check for it, and installing it is not required for SOVA to function.
+
 ## Knowledge System (4-Tier)
 
 ### Tier 1: Project Rules (always loaded, no truncation)
