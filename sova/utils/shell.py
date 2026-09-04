@@ -27,6 +27,7 @@ class ShellResult:
     returncode: int
     stdout: str
     stderr: str
+    timed_out: bool = False
 
     @property
     def success(self) -> bool:
@@ -63,7 +64,9 @@ async def run(
 
     stdout_pipe = asyncio.subprocess.PIPE if capture else None
     stderr_pipe = asyncio.subprocess.PIPE if capture else None
-    stdin_pipe = asyncio.subprocess.PIPE if stdin is not None else None
+    # DEVNULL, not None: inheriting our stdin lets a child that reads stdin
+    # (e.g. a git pre-push hook) block until the step timeout kills it.
+    stdin_pipe = asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL
 
     proc = await asyncio.create_subprocess_exec(
         *args,
@@ -85,7 +88,7 @@ async def run(
                 await proc.wait()
         except TimeoutError:
             log.warning("shell.kill_timeout", cmd=args[0], pid=proc.pid)
-        return ShellResult(returncode=-1, stdout="", stderr=f"Command timed out after {timeout}s")
+        return ShellResult(returncode=-1, stdout="", stderr=f"Command timed out after {timeout}s", timed_out=True)
     except asyncio.CancelledError:
         # Outer scope cancelled us (e.g., workflow verification timeout).
         # Kill the child process before propagating cancellation.
