@@ -1773,6 +1773,16 @@ class TestCommitStep:
 
 
 class TestValidateStep:
+    @pytest.fixture(autouse=True)
+    def _stub_hook_stdin(self):
+        """Building the hook stdin issues its own run() calls, which would shift
+        the positional side_effect lists below. Covered by test_validate_hook_stdin."""
+        with patch(
+            "sova.core.steps.validate.build_pre_push_stdin",
+            AsyncMock(return_value=f"refs/heads/x {'a' * 40} refs/heads/x {'0' * 40}\n"),
+        ):
+            yield
+
     async def test_skips_when_no_hook(self) -> None:
         from sova.core.steps.validate import ValidateStep
 
@@ -1800,7 +1810,7 @@ class TestValidateStep:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
                 MagicMock(success=True, stdout=""),  # test -x (hook exists)
-                MagicMock(success=True, stdout="All checks passed\n", stderr=""),  # hook run
+                MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),  # hook run
             ]
             result = await step.execute(ctx)
 
@@ -1821,8 +1831,10 @@ class TestValidateStep:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
                 MagicMock(success=True, stdout=""),  # test -x
-                MagicMock(success=False, stdout="FAIL: missing type hints\n", stderr=""),  # hook fails
-                MagicMock(success=True, stdout="All checks passed\n", stderr=""),  # hook passes after fix
+                MagicMock(success=False, stdout="FAIL: missing type hints\n", stderr="", timed_out=False),  # hook fails
+                MagicMock(
+                    success=True, stdout="All checks passed\n", stderr="", timed_out=False
+                ),  # hook passes after fix
             ]
             mock_invoke.return_value = LLMResult(
                 text="Fixed type hints",
@@ -1850,9 +1862,9 @@ class TestValidateStep:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
                 MagicMock(success=True, stdout=""),  # test -x
-                MagicMock(success=False, stdout="FAIL: error\n", stderr=""),  # hook fails
-                MagicMock(success=False, stdout="FAIL: error\n", stderr=""),  # still fails after fix 1
-                MagicMock(success=False, stdout="FAIL: error\n", stderr=""),  # still fails after fix 2
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # hook fails
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # still fails after fix 1
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # still fails after fix 2
             ]
             mock_invoke.return_value = LLMResult(
                 text="Attempted fix",
@@ -1882,7 +1894,7 @@ class TestValidateStep:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
                 MagicMock(success=True, stdout=""),  # test -x
-                MagicMock(success=False, stdout="FAIL: error\n", stderr=""),  # hook fails
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # hook fails
             ]
             result = await step.execute(ctx)
 
@@ -1976,8 +1988,8 @@ class TestValidateStep:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),
                 MagicMock(success=True, stdout=""),
-                MagicMock(success=False, stdout=large_output, stderr=""),
-                MagicMock(success=True, stdout="ok\n", stderr=""),
+                MagicMock(success=False, stdout=large_output, stderr="", timed_out=False),
+                MagicMock(success=True, stdout="ok\n", stderr="", timed_out=False),
             ]
             mock_invoke.return_value = LLMResult(
                 text="Fixed",
@@ -2007,9 +2019,9 @@ class TestValidateStep:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),
                 MagicMock(success=True, stdout=""),
-                MagicMock(success=False, stdout="short error", stderr=""),
-                MagicMock(success=False, stdout=large_retry_output, stderr=""),
-                MagicMock(success=False, stdout=large_retry_output, stderr=""),
+                MagicMock(success=False, stdout="short error", stderr="", timed_out=False),
+                MagicMock(success=False, stdout=large_retry_output, stderr="", timed_out=False),
+                MagicMock(success=False, stdout=large_retry_output, stderr="", timed_out=False),
             ]
             mock_invoke.return_value = LLMResult(
                 text="Attempted",
