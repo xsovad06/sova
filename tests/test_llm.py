@@ -3289,3 +3289,212 @@ class TestCompressionSavingsRecording:
         result = await self._invoke_with_compression("short", "longer output", input_tokens=200)
         assert result.tokens_saved == 0
         assert result.pre_compression_input_tokens == 200
+
+
+class TestClaudeCodeAuthAwareness:
+    """check_available() must report authentication, not just installation.
+
+    An installed but logged-out CLI passes --version and then fails every
+    agent run at invocation time.
+    """
+
+    @staticmethod
+    def _results(version_out: str, auth_out: str, auth_rc: int = 0):
+        from sova.utils.shell import ShellResult
+
+        return [
+            ShellResult(returncode=0, stdout=version_out, stderr=""),
+            ShellResult(returncode=auth_rc, stdout=auth_out, stderr=""),
+        ]
+
+    async def test_logged_in_reports_account_and_subscription(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        auth = '{"loggedIn": true, "email": "dev@example.com", "subscriptionType": "max"}'
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                side_effect=self._results("2.1.259 (Claude Code)\n", auth),
+            ),
+        ):
+            available, detail = await ClaudeCodeProvider().check_available()
+
+        assert available is True
+        assert "2.1.259" in detail
+        assert "dev@example.com" in detail
+        assert "max" in detail
+
+    async def test_logged_out_is_unavailable(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                side_effect=self._results("2.1.259\n", '{"loggedIn": false}'),
+            ),
+        ):
+            available, detail = await ClaudeCodeProvider().check_available()
+
+        assert available is False
+        assert "claude auth login" in detail
+
+    async def test_missing_auth_subcommand_fails_open(self) -> None:
+        """Older CLI builds have no `auth` subcommand; do not block them."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                side_effect=self._results("1.0.0\n", "", auth_rc=1),
+            ),
+        ):
+            available, detail = await ClaudeCodeProvider().check_available()
+
+        assert available is True
+        assert "auth state unknown" in detail
+
+    async def test_unparseable_auth_output_fails_open(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                side_effect=self._results("1.0.0\n", "not json at all"),
+            ),
+        ):
+            available, detail = await ClaudeCodeProvider().check_available()
+
+        assert available is True
+        assert "auth state unknown" in detail
+
+    async def test_non_dict_auth_payload_fails_open(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                side_effect=self._results("1.0.0\n", "[1, 2, 3]"),
+            ),
+        ):
+            available, detail = await ClaudeCodeProvider().check_available()
+
+        assert available is True
+        assert "auth state unknown" in detail
+
+    async def test_missing_logged_in_key_fails_open(self) -> None:
+        """A dict without ``loggedIn`` (e.g. unrecognized future CLI output) must not
+        be treated as logged out: only an explicit `false` means unavailable."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                side_effect=self._results("1.0.0\n", "{}"),
+            ),
+        ):
+            available, detail = await ClaudeCodeProvider().check_available()
+
+        assert available is True
+        assert "auth state unknown" in detail
+
+    async def test_non_boolean_logged_in_fails_open(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                side_effect=self._results("1.0.0\n", '{"loggedIn": "yes"}'),
+            ),
+        ):
+            available, detail = await ClaudeCodeProvider().check_available()
+
+        assert available is True
+        assert "auth state unknown" in detail
+
+    async def test_logged_in_without_account_details(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                side_effect=self._results("1.0.0\n", '{"loggedIn": true}'),
+            ),
+        ):
+            available, detail = await ClaudeCodeProvider().check_available()
+
+        assert available is True
+        assert "authenticated" in detail
+
+    async def test_version_failure_skips_auth_check(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run = AsyncMock(return_value=ShellResult(returncode=1, stdout="", stderr="boom"))
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("sova.llm.providers.claude_code.run", mock_run),
+        ):
+            available, _ = await ClaudeCodeProvider().check_available()
+
+        assert available is False
+        assert mock_run.await_count == 1
+
+    async def test_cli_invocations_receive_scrubbed_env(self) -> None:
+        """Both the version and auth probes must run with a sanitized environment."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        auth = '{"loggedIn": true, "email": "d@e.com", "subscriptionType": "pro"}'
+        mock_run = AsyncMock(side_effect=self._results("1.0.0\n", auth))
+        with (
+            patch.dict(os.environ, {"CLAUDE_CODE_USE_VERTEX": "1"}, clear=False),
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("sova.llm.providers.claude_code.run", mock_run),
+        ):
+            await ClaudeCodeProvider().check_available()
+
+        assert mock_run.await_count == 2
+        for call in mock_run.await_args_list:
+            assert "CLAUDE_CODE_USE_VERTEX" not in call.kwargs["env"]
+
+    async def test_cli_invocations_honor_configured_passthrough(self) -> None:
+        """A deployment that opts CLAUDE_CODE_USE_VERTEX back in must see it on every probe.
+
+        Regression guard: the provider's own scrub_agent_env() calls used to ignore
+        agent.env_passthrough entirely, so a Vertex/Bedrock deployment that opted the
+        variable back in for spawned agents (sova/ipc/runtime.py) still had it stripped
+        here, breaking check_available() and invoke() for that same deployment.
+        """
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        auth = '{"loggedIn": true, "email": "d@e.com", "subscriptionType": "pro"}'
+        mock_run = AsyncMock(side_effect=self._results("1.0.0\n", auth))
+        with (
+            patch.dict(os.environ, {"CLAUDE_CODE_USE_VERTEX": "1"}, clear=False),
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("sova.llm.providers.claude_code.run", mock_run),
+            patch(
+                "sova.llm.providers.claude_code.configured_passthrough",
+                return_value=("CLAUDE_CODE_USE_VERTEX",),
+            ),
+        ):
+            await ClaudeCodeProvider().check_available()
+
+        assert mock_run.await_count == 2
+        for call in mock_run.await_args_list:
+            assert call.kwargs["env"]["CLAUDE_CODE_USE_VERTEX"] == "1"
