@@ -27,36 +27,22 @@ from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import get_session
 from sova.ipc.notifications import notify
+from sova.llm.errors import is_billing_failure
 from sova.utils.logging import get_logger
 
 log = get_logger(component="workflow")
-
-_BILLING_FAILURE_PATTERNS: tuple[str, ...] = (
-    "budget_exhausted",
-    "billing",
-    "rate_limit",
-    "overloaded",
-    "insufficient_quota",
-    " 429",
-    "is not available",
-    "model_not_available",
-    "not_available",
-)
 
 
 def _is_billing_failure(error: str | None) -> bool:
     """Return True if the error indicates a billing, rate-limit, or model availability failure.
 
-    "is not available" covers Vertex AI rejections where the requested model
-    version is not enabled on the deployment (e.g. "claude-opus-5 is not
-    available on your vertex deployment"). Uses "is not available" rather
-    than "not available" to avoid false positives on generic unavailability
-    messages.
+    Delegation only: sova.llm.errors owns the pattern table, this wrapper keeps
+    the workflow-layer call site and its pinning tests stable while PR2 adds an
+    isinstance fast path here.
     """
     if not error:
         return False
-    lower = error.lower()
-    return any(p in lower for p in _BILLING_FAILURE_PATTERNS)
+    return is_billing_failure(error)
 
 
 # Maps step names to the TaskStatus they represent while executing
