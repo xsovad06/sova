@@ -113,6 +113,7 @@ class AgentConfig(BaseSettings):
     step_timeout: int = Field(1800, gt=0)
     skip_manual_test: bool = True
     auto_approve_fixes: bool = False
+    env_passthrough: list[str] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_AGENT_")
 
@@ -593,7 +594,7 @@ class SupervisorConfig(BaseSettings):
     ci_block_minutes: int = Field(50, ge=0)
     persona_path: str = ""
     llm_planning: bool = False
-    planner_timeout_seconds: int = Field(60, ge=10)
+    planner_timeout_seconds: int = Field(180, ge=10)
     auto_queue: bool = True
     max_queue_size: int = Field(10, ge=0)
     task_queue: list[int] = Field(default_factory=list, json_schema_extra={"items": {"exclusiveMinimum": 0}})

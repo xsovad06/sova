@@ -1729,3 +1729,56 @@ class TestMockRuntime:
         lines2 = [line async for line in p2.stdout_lines()]
         assert lines1 == ["a", "b"]
         assert lines2 == ["a", "b"]
+
+
+class TestAgentEnvScrubbing:
+    """Spawned agents must never inherit provider-routing or session vars.
+
+    Regression guard for the silent-failure class where an inherited
+    CLAUDE_CODE_USE_VERTEX redirected every agent away from llm.provider.
+    """
+
+    def test_marker_scrubs_hostile_env(self) -> None:
+        from sova.ipc.runtime import _inject_agent_marker
+
+        hostile = {
+            "PATH": "/usr/bin",
+            "CLAUDE_CODE_USE_VERTEX": "1",
+            "ANTHROPIC_VERTEX_PROJECT_ID": "leaked-project",
+            "CLAUDE_CODE_SESSION_ID": "parent-session",
+        }
+        with patch("sova.ipc.runtime.configured_passthrough", return_value=()):
+            result = _inject_agent_marker(hostile)
+
+        assert result["SOVA_AGENT_RUN"] == "1"
+        assert result["PATH"] == "/usr/bin"
+        for leaked in ("CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLAUDE_CODE_SESSION_ID"):
+            assert leaked not in result
+
+    def test_marker_scrubs_process_env_when_none(self) -> None:
+        from sova.ipc.runtime import _inject_agent_marker
+
+        with (
+            patch.dict(os.environ, {"CLAUDE_CODE_USE_VERTEX": "1"}, clear=False),
+            patch("sova.ipc.runtime.configured_passthrough", return_value=()),
+        ):
+            result = _inject_agent_marker(None)
+
+        assert "CLAUDE_CODE_USE_VERTEX" not in result
+        assert result["SOVA_AGENT_RUN"] == "1"
+
+    def test_marker_honors_configured_passthrough(self) -> None:
+        from sova.ipc.runtime import _inject_agent_marker
+
+        with patch("sova.ipc.runtime.configured_passthrough", return_value=("CLAUDE_CODE_USE_VERTEX",)):
+            result = _inject_agent_marker({"CLAUDE_CODE_USE_VERTEX": "1", "CLOUD_ML_REGION": "global"})
+
+        assert result["CLAUDE_CODE_USE_VERTEX"] == "1"
+        assert "CLOUD_ML_REGION" not in result
+
+    def test_passthrough_degrades_to_empty_when_config_unavailable(self) -> None:
+        """Spawning must survive a missing or broken project config."""
+        from sova.utils.env import configured_passthrough
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no project")):
+            assert configured_passthrough() == ()

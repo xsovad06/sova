@@ -12,10 +12,14 @@ from pathlib import Path
 from sova.llm.egress import scan_and_redact
 from sova.llm.models import LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider
+from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run
 
 log = get_logger(component="llm.provider.claude_code")
+
+# Auth status is a local keychain read; a slow one means something is wrong.
+_AUTH_CHECK_TIMEOUT = 15.0
 
 # Generic tier -> Claude model ID mapping
 _MODEL_ALIASES: dict[str, str] = {
@@ -51,7 +55,7 @@ class ClaudeCodeProvider(LLMProvider):
 
         log.info("llm.invoke", model=model, prompt_len=len(prompt))
 
-        result = await run(*args, cwd=cwd, timeout=timeout)
+        result = await run(*args, cwd=cwd, timeout=timeout, env=scrub_agent_env(passthrough=configured_passthrough()))
 
         # Try to parse output first - Claude CLI may exit 1 for fallback warnings
         # but still produce valid JSON output. Only attempt this when stderr is empty
@@ -167,16 +171,58 @@ class ClaudeCodeProvider(LLMProvider):
         claude_path = shutil.which("claude")
         if not claude_path:
             return False, "claude CLI not found -- install: https://docs.anthropic.com/en/docs/claude-code"
-        result = await run("claude", "--version")
-        if result.success:
-            version = result.stdout.strip().split("\n")[0]
-            return True, version
-        return False, "claude CLI found but --version failed"
+        result = await run("claude", "--version", env=scrub_agent_env(passthrough=configured_passthrough()))
+        if not result.success:
+            return False, "claude CLI found but --version failed"
+        version = result.stdout.strip().split("\n")[0]
+        authenticated, auth_detail = await _check_cli_auth()
+        if not authenticated:
+            return False, f"{version} but {auth_detail}"
+        return True, f"{version} ({auth_detail})"
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers (moved from client.py)
 # ---------------------------------------------------------------------------
+
+
+async def _check_cli_auth() -> tuple[bool, str]:
+    """Report Claude CLI authentication state via ``claude auth status --json``.
+
+    An installed but logged-out CLI passes ``--version`` and then fails every
+    agent run at invocation time, so installation alone is not readiness.
+
+    Fails open: CLI builds without the ``auth`` subcommand, or output this does
+    not understand, report as available with an unknown auth state rather than
+    blocking an otherwise working setup.
+    """
+    result = await run(
+        "claude",
+        "auth",
+        "status",
+        "--json",
+        env=scrub_agent_env(passthrough=configured_passthrough()),
+        timeout=_AUTH_CHECK_TIMEOUT,
+    )
+    if not result.success:
+        return True, "auth state unknown"
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return True, "auth state unknown"
+    if not isinstance(data, dict):
+        return True, "auth state unknown"
+    logged_in = data.get("loggedIn")
+    if logged_in is False:
+        return False, "not authenticated (run: claude auth login)"
+    if logged_in is not True:
+        return True, "auth state unknown"
+
+    email = str(data.get("email") or "").strip()
+    subscription = str(data.get("subscriptionType") or "").strip()
+    if email and subscription:
+        return True, f"{email}, {subscription}"
+    return True, email or subscription or "authenticated"
 
 
 def _extract_failure_detail(result: ShellResult) -> str:
@@ -285,4 +331,5 @@ async def _start_streaming_process(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=scrub_agent_env(passthrough=configured_passthrough()),
     )

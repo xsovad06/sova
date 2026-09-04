@@ -193,13 +193,13 @@ class TestCallLLM:
             await p._call_llm("system", "user")
         assert mock_invoke.call_args[1]["timeout"] == 90
 
-    async def test_default_timeout_is_60(self, planner: SupervisorPlanner) -> None:
+    async def test_default_timeout_is_180(self, planner: SupervisorPlanner) -> None:
         from sova.llm.models import LLMResult
 
         mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model=_MODEL)
         with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result) as mock_invoke:
             await planner._call_llm("system", "user")
-        assert mock_invoke.call_args[1]["timeout"] == 60
+        assert mock_invoke.call_args[1]["timeout"] == 180
 
 
 class TestParseResponse:

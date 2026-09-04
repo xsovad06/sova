@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.models import LLMResult, StreamEvent
+from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -62,10 +63,13 @@ _SOVA_AGENT_ENV_KEY = "SOVA_AGENT_RUN"
 
 
 def _inject_agent_marker(env: dict[str, str] | None) -> dict[str, str]:
-    """Ensure SOVA_AGENT_RUN=1 is set so benchmark hooks skip logging."""
-    import os
+    """Build the child environment for a spawned agent.
 
-    merged = dict(os.environ) if env is None else dict(env)
+    Scrubs inherited provider-routing and parent-session variables (see
+    ``sova.utils.env``) and sets SOVA_AGENT_RUN=1 so benchmark hooks skip
+    logging. Every spawn path in this module routes through here.
+    """
+    merged = scrub_agent_env(env, passthrough=configured_passthrough())
     merged[_SOVA_AGENT_ENV_KEY] = "1"
     return merged
 

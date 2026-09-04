@@ -244,6 +244,14 @@ _REGISTRY: list[SettingMeta] = [
         "agent",
         "boolean",
     ),
+    SettingMeta(
+        "agent.env_passthrough",
+        "Environment passthrough",
+        "Provider-routing variables preserved when spawning agents (e.g. CLAUDE_CODE_USE_VERTEX). "
+        "Empty means SOVA scrubs all of them so the configured provider always wins",
+        "agent",
+        "list",
+    ),
     # -- Pipeline --
     SettingMeta(
         "pipeline.auto_handoff",
@@ -1309,8 +1317,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "supervisor.planner_timeout_seconds",
         "Planner timeout (seconds)",
-        "Maximum time to wait for the LLM planner response. "
-        "Increase if you see frequent planner.llm_call_error warnings after server restart.",
+        "Maximum time to wait for the LLM planner response. Scales with queue size "
+        "(typically 10-50s for 1-20 queued issues). Increase if you see frequent planner.llm_call_error warnings.",
         "supervisor",
         "integer",
     ),
