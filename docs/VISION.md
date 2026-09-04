@@ -53,7 +53,7 @@ sova/
     design-system.md               # Dashboard design system reference
     handoff-protocol.md            # Agent handoff protocol
     naming-journey.md              # How SOVA got its name
-  tests/                           # pytest suite (1,982 test functions)
+  tests/                           # pytest suite (7,695 test functions)
   deploy/                          # systemd + launchd service files
 ```
 
