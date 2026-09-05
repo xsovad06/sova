@@ -314,6 +314,70 @@ class TestInvoke:
         with pytest.raises(RuntimeError, match="produced no output"):
             await invoke("Hello")
 
+    async def test_invoke_cli_failure_raises_typed_error(self, mock_run: AsyncMock) -> None:
+        """A model availability rejection classifies as ModelUnavailableError."""
+        from sova.llm.client import invoke
+        from sova.llm.errors import ModelUnavailableError
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=1,
+            stdout="",
+            stderr="claude-opus-5 is not available on your vertex deployment",
+        )
+
+        with pytest.raises(ModelUnavailableError, match="Claude CLI failed"):
+            await invoke("Hello")
+
+    async def test_invoke_cli_failure_unknown_detail_is_invocation_error(self, mock_run: AsyncMock) -> None:
+        """An unclassifiable failure falls back to LLMInvocationError, not a fallback-eligible type."""
+        from sova.llm.client import invoke
+        from sova.llm.errors import LLMInvocationError, is_fallback_eligible
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=1, stdout="not valid json {{{", stderr="")
+
+        with pytest.raises(LLMInvocationError) as exc_info:
+            await invoke("Hello")
+        assert not is_fallback_eligible(exc_info.value)
+
+    async def test_invoke_shell_timeout_is_timeout_error(self, mock_run: AsyncMock) -> None:
+        """run() returns a timeout ShellResult rather than raising; it must not read as billing."""
+        from sova.core.workflow import _is_billing_failure
+        from sova.llm.client import invoke
+        from sova.llm.errors import LLMTimeoutError
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=-1, stdout="", stderr="Command timed out after 30s")
+
+        with pytest.raises(LLMTimeoutError) as exc_info:
+            await invoke("Hello")
+        assert not _is_billing_failure(str(exc_info.value))
+
+    async def test_invoke_success_empty_output_is_invocation_error(self, mock_run: AsyncMock) -> None:
+        """A structural provider fault is typed directly, never fallback-eligible."""
+        from sova.llm.client import invoke
+        from sova.llm.errors import LLMInvocationError
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=0, stdout="", stderr="")
+
+        with pytest.raises(LLMInvocationError, match="produced no output"):
+            await invoke("Hello")
+
+    async def test_invoke_cli_exit_1_with_valid_output_never_classifies(self, mock_run: AsyncMock) -> None:
+        """R15: the CLI's own internal fallback exits nonzero but still produced a usable result."""
+        from sova.llm.client import invoke
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=1, stdout=_make_cli_json(), stderr="")
+
+        with patch("sova.llm.providers.claude_code.classify_error") as mock_classify:
+            result = await invoke("Hello")
+
+        assert result.text == "Hello"
+        mock_classify.assert_not_called()
+
     async def test_invoke_cli_failure_prefers_stderr(self, mock_run: AsyncMock) -> None:
         """When stderr has content, it should be used over stdout."""
         from sova.llm.client import invoke
@@ -1712,6 +1776,26 @@ class TestClaudeCodeProvider:
         assert any(e.type == "content" for e in events)
         assert any(e.type == "result" for e in events)
 
+    async def test_invoke_streaming_failure_raises_typed_error(self) -> None:
+        """The streaming raise site classifies from the same redacted stderr as invoke()."""
+        from sova.llm.errors import ModelUnavailableError
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        mock_proc = AsyncMock()
+        mock_proc.stdout.readline = AsyncMock(return_value=b"")
+        mock_proc.stderr.read = AsyncMock(return_value=b"claude-opus-5 is not available on your vertex deployment")
+        mock_proc.wait = AsyncMock()
+        mock_proc.returncode = 1
+
+        with patch(
+            "sova.llm.providers.claude_code._start_streaming_process",
+            return_value=mock_proc,
+        ):
+            provider = ClaudeCodeProvider()
+            with pytest.raises(ModelUnavailableError, match="Claude CLI streaming failed"):
+                async for _ in provider.invoke_streaming("Hello"):
+                    pass
+
     async def test_check_available(self) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
         from sova.utils.shell import ShellResult
@@ -1905,6 +1989,60 @@ class TestLiteLLMProvider:
         with pytest.raises(RuntimeError, match="Model unavailable"):
             await provider.invoke("Hello")
 
+    async def test_no_fallback_raises_typed_error(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.errors import RateLimitError
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = type("RateLimitError", (Exception,), {})("slow down")
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        with pytest.raises(RateLimitError, match="slow down"):
+            await provider.invoke("Hello")
+
+    async def test_connection_failure_is_provider_unavailable(self, mock_litellm: MagicMock) -> None:
+        """Ollama being down maps to ProviderUnavailableError, the fallback-eligible type."""
+        from sova.llm.errors import ProviderUnavailableError, is_fallback_eligible
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = ConnectionRefusedError("connection refused")
+
+        provider = LiteLLMProvider(model="ollama/qwen3-coder")
+        with pytest.raises(ProviderUnavailableError) as exc_info:
+            await provider.invoke("Hello")
+        assert is_fallback_eligible(exc_info.value)
+
+    async def test_wrapping_preserves_connection_error_detection(self, mock_litellm: MagicMock) -> None:
+        """The transport error stays one hop down, so the fallback log reason is unchanged.
+
+        The message deliberately omits the "connection refused" text so the
+        assertion pins _is_connection_error's cause-chain walk, not its
+        string check.
+        """
+        from sova.llm.litellm_provider import LiteLLMProvider, _is_connection_error
+
+        mock_litellm.acompletion.side_effect = ConnectionRefusedError("[Errno 61] socket unavailable")
+
+        provider = LiteLLMProvider(model="ollama/qwen3-coder")
+        with pytest.raises(RuntimeError) as exc_info:
+            await provider.invoke("Hello")
+
+        assert isinstance(exc_info.value.__cause__, ConnectionRefusedError)
+        assert _is_connection_error(exc_info.value)
+
+    async def test_fallback_failure_is_also_typed(self, mock_litellm: MagicMock) -> None:
+        """The second attempt must not leak a raw SDK exception past the provider boundary."""
+        from sova.llm.errors import LLMError
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = [
+            RuntimeError("Primary model unavailable"),
+            type("RateLimitError", (Exception,), {})("fallback throttled"),
+        ]
+
+        provider = LiteLLMProvider(model="gpt-4o", fallback_model="ollama/qwen3-coder")
+        with pytest.raises(LLMError, match="fallback throttled"):
+            await provider.invoke("Hello")
+
     async def test_invoke_streaming(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
 
@@ -1972,6 +2110,27 @@ class TestLiteLLMProvider:
         assert result_events[0].result is not None
         assert result_events[0].result.text == "Hello world"
         assert result_events[0].result.stop_reason == "error"
+
+    async def test_streaming_no_fallback_raises_typed_error(self, mock_litellm: MagicMock) -> None:
+        """The bare re-raise in invoke_streaming propagates the type set by _stream."""
+        from sova.llm.errors import RateLimitError
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        async def mock_stream():
+            yield _MockStreamChunk(content="Hello ", model="gpt-4o")
+            raise type("RateLimitError", (Exception,), {})("slow down")
+
+        mock_litellm.acompletion.return_value = mock_stream()
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        events = []
+        with pytest.raises(RateLimitError, match="slow down"):
+            async for event in provider.invoke_streaming("Hello"):
+                events.append(event)
+
+        assert [e.type for e in events] == ["content", "result"]
+        assert events[-1].result is not None
+        assert events[-1].result.stop_reason == "error"
 
     async def test_cost_tracking_fallback(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
@@ -2610,6 +2769,51 @@ class TestAnthropicAPIProvider:
             with pytest.raises(RuntimeError, match="Anthropic API error") as exc_info:
                 await provider.invoke("Hello")
             assert "sk-secret-123" not in str(exc_info.value)
+
+    async def test_invoke_sdk_error_maps_to_typed_error(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.errors import RateLimitError
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(
+            side_effect=type("RateLimitError", (Exception,), {})("slow down"),
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            with pytest.raises(RateLimitError, match="Anthropic API error"):
+                await provider.invoke("Hello")
+
+    async def test_streaming_sdk_error_yields_result_then_raises_typed(self, mock_anthropic: MagicMock) -> None:
+        """The partial result event is still emitted before the typed raise."""
+        from sova.llm.errors import ProviderUnavailableError
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.stream = MagicMock(side_effect=ConnectionRefusedError("daemon down"))
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            events = []
+            with pytest.raises(ProviderUnavailableError, match="Anthropic streaming error"):
+                async for event in provider.invoke_streaming("Hello"):
+                    events.append(event)
+
+        assert [e.type for e in events] == ["result"]
+        assert events[0].result is not None
+        assert events[0].result.stop_reason == "error"
+
+    async def test_invoke_sdk_error_stays_catchable_as_runtime_error(self, mock_anthropic: MagicMock) -> None:
+        """Existing `except RuntimeError` call sites keep catching provider failures."""
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(side_effect=Exception("upstream exploded"))
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            provider = AnthropicAPIProvider()
+            with pytest.raises(RuntimeError, match="upstream exploded"):
+                await provider.invoke("Hello")
 
     async def test_check_available_no_sdk(self) -> None:
         import sova.llm.providers.anthropic_api as api_mod

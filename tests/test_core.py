@@ -20,6 +20,12 @@ from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.workflow import WorkflowEngine, _is_billing_failure
 from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
+from sova.llm.errors import (
+    BillingError,
+    LLMInvocationError,
+    ModelUnavailableError,
+    RateLimitError,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -902,6 +908,22 @@ class TestBillingFailureDetection:
 
     def test_timeout_error(self) -> None:
         assert not _is_billing_failure("step_hard_timeout")
+
+    def test_typed_billing_exception(self) -> None:
+        assert _is_billing_failure(BillingError("budget_exhausted"))
+
+    def test_typed_rate_limit_exception(self) -> None:
+        assert _is_billing_failure(RateLimitError("slow down"))
+
+    def test_typed_model_unavailable_exception(self) -> None:
+        assert _is_billing_failure(ModelUnavailableError("model is not available"))
+
+    def test_typed_non_billing_exception(self) -> None:
+        assert not _is_billing_failure(LLMInvocationError("cannot parse output"))
+
+    def test_stringified_typed_error_still_detected(self) -> None:
+        """R4: steps stringify exceptions before the workflow layer sees them."""
+        assert _is_billing_failure(str(RateLimitError("rate_limit exceeded for model")))
 
 
 # ---------------------------------------------------------------------------

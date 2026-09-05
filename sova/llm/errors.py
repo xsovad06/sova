@@ -107,6 +107,33 @@ _BILLING_FAILURE_CATEGORIES: tuple[type[LLMError], ...] = (
     RateLimitError,
 )
 
+# SDK exception class names mapped onto the hierarchy. Matched by name rather
+# than isinstance because anthropic and litellm are optional extras: importing
+# their exception classes here would break partial installs, and LiteLLM
+# re-raises upstream provider exceptions that are not anthropic classes at all.
+_EXCEPTION_NAMES: dict[str, type[LLMError]] = {
+    "APIConnectionError": ProviderUnavailableError,
+    "APITimeoutError": LLMTimeoutError,
+    "BudgetExceededError": BillingError,
+    "ConnectError": ProviderUnavailableError,
+    "ConnectionError": ProviderUnavailableError,
+    "InternalServerError": ProviderUnavailableError,
+    "NotFoundError": ModelUnavailableError,
+    "RateLimitError": RateLimitError,
+    "ServiceUnavailableError": ProviderUnavailableError,
+    "Timeout": LLMTimeoutError,
+    "TimeoutError": LLMTimeoutError,
+}
+
+# HTTP status codes for SDK exceptions whose class name is not in the table
+# above (e.g. a bare anthropic APIStatusError).
+_STATUS_CODES: dict[int, type[LLMError]] = {
+    402: BillingError,
+    404: ModelUnavailableError,
+    408: LLMTimeoutError,
+    429: RateLimitError,
+}
+
 
 def classify_error(detail: str | None) -> type[LLMError]:
     """Return the error class matching a failure detail string.
@@ -126,11 +153,42 @@ def classify_error(detail: str | None) -> type[LLMError]:
     return LLMInvocationError
 
 
+def classify_exception(exc: BaseException) -> type[LLMError]:
+    """Return the error class matching a raised provider exception.
+
+    Resolution order: an already-typed LLMError keeps its own class, then the
+    exception's class name (walking the MRO so SDK subclasses resolve), then an
+    HTTP status_code attribute, then classify_error on the stringified message.
+    """
+    if isinstance(exc, LLMError):
+        return type(exc)
+
+    for cls in type(exc).__mro__:
+        mapped = _EXCEPTION_NAMES.get(cls.__name__)
+        if mapped is not None:
+            return mapped
+
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        if status in _STATUS_CODES:
+            return _STATUS_CODES[status]
+        if status >= 500:
+            return ProviderUnavailableError
+
+    return classify_error(str(exc))
+
+
 def is_fallback_eligible(exc: object) -> bool:
     """Return True if retrying the invocation on a fallback model may help."""
     return isinstance(exc, _FALLBACK_ELIGIBLE)
 
 
-def is_billing_failure(detail: str | None) -> bool:
-    """Return True if the detail indicates a billing, rate-limit, or availability failure."""
+def is_billing_failure(detail: str | BaseException | None) -> bool:
+    """Return True if the failure indicates a billing, rate-limit, or availability failure.
+
+    Accepts either a detail string or a raised exception so the workflow layer
+    can classify whichever form it holds without duplicating the category set.
+    """
+    if isinstance(detail, BaseException):
+        return classify_exception(detail) in _BILLING_FAILURE_CATEGORIES
     return classify_error(detail) in _BILLING_FAILURE_CATEGORIES

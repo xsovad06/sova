@@ -33,16 +33,11 @@ from sova.utils.logging import get_logger
 log = get_logger(component="workflow")
 
 
-def _is_billing_failure(error: str | None) -> bool:
-    """Return True if the error indicates a billing, rate-limit, or model availability failure.
-
-    Delegation only: sova.llm.errors owns the pattern table, this wrapper keeps
-    the workflow-layer call site and its pinning tests stable while PR2 adds an
-    isinstance fast path here.
-    """
-    if not error:
-        return False
-    return is_billing_failure(error)
+# Delegation alias: sova.llm.errors owns both the pattern table and the typed
+# isinstance dispatch. The exception form is forward-looking: steps stringify
+# exceptions into StepResult.error before this ever runs, so the pattern table
+# stays the classifier that actually fires today.
+_is_billing_failure = is_billing_failure
 
 
 # Maps step names to the TaskStatus they represent while executing

@@ -23,6 +23,7 @@ from sova.llm.errors import (
     ProviderUnavailableError,
     RateLimitError,
     classify_error,
+    classify_exception,
     is_fallback_eligible,
 )
 from sova.llm.guard import PromptInjectionError, ScanResult, scan_prompt
@@ -50,6 +51,7 @@ __all__ = [
     "TASK_TYPE_KEYS",
     "assess_complexity",
     "classify_error",
+    "classify_exception",
     "create_provider",
     "get_provider",
     "invoke",
