@@ -13,6 +13,7 @@ from sova.llm.errors import (
     ProviderUnavailableError,
     RateLimitError,
     classify_error,
+    classify_exception,
     is_billing_failure,
     is_fallback_eligible,
 )
@@ -168,3 +169,97 @@ class TestIsBillingFailure:
     )
     def test_non_billing_categories_excluded(self, detail: str | None) -> None:
         assert not is_billing_failure(detail)
+
+
+def _sdk_exc(name: str, message: str, **attrs: object) -> Exception:
+    """Build a stand-in for an optional-SDK exception with the given class name.
+
+    classify_exception matches on the class name rather than isinstance, so the
+    stubs only need the right name. That is the same reason the real anthropic
+    and litellm classes never have to be importable here.
+    """
+    exc = type(name, (Exception,), {})(message)
+    for key, value in attrs.items():
+        setattr(exc, key, value)
+    return exc
+
+
+class _VendorConnectionError(ConnectionError):
+    """Stand-in for a provider exception deriving from a known base class."""
+
+
+class TestClassifyException:
+    @pytest.mark.parametrize(
+        ("exc", "expected"),
+        [
+            (_sdk_exc("RateLimitError", "slow down"), RateLimitError),
+            (_sdk_exc("APITimeoutError", "request timed out"), LLMTimeoutError),
+            (_sdk_exc("BudgetExceededError", "over cap"), BillingError),
+            (_sdk_exc("NotFoundError", "unknown model"), ModelUnavailableError),
+            (_sdk_exc("APIConnectionError", "unreachable"), ProviderUnavailableError),
+            (TimeoutError("deadline"), LLMTimeoutError),
+            (ConnectionRefusedError("no listener"), ProviderUnavailableError),
+            (_VendorConnectionError("socket closed"), ProviderUnavailableError),
+        ],
+    )
+    def test_maps_by_exception_name(self, exc: BaseException, expected: type[LLMError]) -> None:
+        assert classify_exception(exc) is expected
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            (402, BillingError),
+            (404, ModelUnavailableError),
+            (408, LLMTimeoutError),
+            (429, RateLimitError),
+            (503, ProviderUnavailableError),
+        ],
+    )
+    def test_maps_by_status_code(self, status: int, expected: type[LLMError]) -> None:
+        exc = _sdk_exc("APIStatusError", "upstream said no", status_code=status)
+        assert classify_exception(exc) is expected
+
+    def test_unmapped_status_code_falls_through_to_message(self) -> None:
+        exc = _sdk_exc("APIStatusError", "billing account suspended", status_code=400)
+        assert classify_exception(exc) is BillingError
+
+    def test_falls_back_to_message_classification(self) -> None:
+        assert classify_exception(RuntimeError("claude-opus-5 is not available")) is ModelUnavailableError
+
+    def test_unknown_exception_is_invocation_error(self) -> None:
+        assert classify_exception(ValueError("cannot parse")) is LLMInvocationError
+
+    def test_already_typed_error_keeps_its_class(self) -> None:
+        assert classify_exception(BillingError("budget_exhausted")) is BillingError
+
+    def test_exception_name_wins_over_message(self) -> None:
+        """A typed rate limit stays a rate limit even when the text mentions billing."""
+        assert classify_exception(_sdk_exc("RateLimitError", "billing tier throttle")) is RateLimitError
+
+
+class TestIsBillingFailureExceptions:
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            BillingError("budget_exhausted"),
+            ModelUnavailableError("model is not available"),
+            RateLimitError("slow down"),
+            _sdk_exc("RateLimitError", "slow down"),
+            _sdk_exc("APIStatusError", "upstream said no", status_code=429),
+        ],
+    )
+    def test_billing_categories_detected(self, exc: BaseException) -> None:
+        assert is_billing_failure(exc)
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            LLMInvocationError("cannot parse"),
+            ProviderUnavailableError("connection refused"),
+            LLMTimeoutError("timed out"),
+            ConnectionRefusedError("no listener"),
+            RuntimeError("test assertion failed"),
+        ],
+    )
+    def test_non_billing_categories_excluded(self, exc: BaseException) -> None:
+        assert not is_billing_failure(exc)

@@ -4,14 +4,23 @@ Conventions for exceptions, logging, retries, fallbacks, and circuit breakers in
 
 ## Exception Hierarchy
 
-SOVA defines one custom exception. Prefer standard library exceptions elsewhere.
+SOVA defines two custom exception groups. Prefer standard library exceptions elsewhere.
 
 | Exception | Module | Purpose |
 |-----------|--------|---------|
 | `InvalidTransitionError` | `sova/core/state.py` | Invalid state machine transition (`current` and `target` fields) |
+| `LLMError` and subclasses | `sova/llm/errors.py` | Typed LLM invocation failures (see below) |
 | `RuntimeError` | stdlib | Step failures, subprocess errors, suspicious file detection |
 | `ValueError` | stdlib | Config/parsing errors; parent of `json.JSONDecodeError` |
 | `OSError` | stdlib | File I/O errors; parent of `ProcessLookupError` |
+
+### LLM Error Hierarchy
+
+`sova/llm/errors.py` is a leaf module (imports nothing from `sova`) defining `LLMError(RuntimeError)` and six subclasses, so existing `except RuntimeError` catches keep working: `BillingError`, `ModelUnavailableError`, `RateLimitError`, `ProviderUnavailableError`, `LLMTimeoutError`, `LLMInvocationError` (fallback for anything unmatched). All three provider implementations (`providers/claude_code.py`, `litellm_provider.py`, `providers/anthropic_api.py`) raise these directly instead of a bare `RuntimeError`, so the failure's category is decided at the provider boundary.
+
+- `classify_error(detail: str)` matches a failure detail string via case-insensitive substring patterns, scanned terminal-first (billing, then model availability, rate limit, provider availability, timeout) so a detail naming both an exhausted budget and a 429 classifies as billing.
+- `classify_exception(exc)` classifies a raised SDK exception: an already-typed `LLMError` keeps its class, then the exception's class name is matched by walking the MRO (so `anthropic`/`litellm` SDK subclasses resolve without importing those optional packages), then an HTTP `status_code` attribute, then falls back to `classify_error(str(exc))`.
+- `is_fallback_eligible()` and `is_billing_failure()` derive from the same category tables; `is_billing_failure()` accepts either a detail string or an exception instance. `sova/core/workflow.py`'s `_is_billing_failure` is a delegation alias to `is_billing_failure`.
 
 **SonarCloud S5713 rule**: never catch both parent and child in the same except tuple:
 

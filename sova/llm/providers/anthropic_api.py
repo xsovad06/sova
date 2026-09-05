@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 
+from sova.llm.errors import classify_exception
 from sova.llm.models import LLMResult, StreamEvent, compute_anthropic_cost
 from sova.llm.provider import LLMProvider, _measure_ms
 from sova.utils.logging import get_logger
@@ -154,7 +155,8 @@ class AnthropicAPIProvider(LLMProvider):
             client = await self._get_client()
             response = await client.messages.create(**kwargs)
         except Exception as exc:
-            raise RuntimeError(f"Anthropic API error: {_sanitize_error(exc, self._resolve_api_key())}") from exc
+            message = f"Anthropic API error: {_sanitize_error(exc, self._resolve_api_key())}"
+            raise classify_exception(exc)(message) from exc
 
         text = ""
         for block in response.content:
@@ -268,9 +270,8 @@ class AnthropicAPIProvider(LLMProvider):
         yield StreamEvent(type="result", text=accumulated, result=result)
 
         if error is not None:
-            raise RuntimeError(
-                f"Anthropic streaming error: {_sanitize_error(error, self._resolve_api_key())}"
-            ) from error
+            message = f"Anthropic streaming error: {_sanitize_error(error, self._resolve_api_key())}"
+            raise classify_exception(error)(message) from error
 
     async def check_available(self) -> tuple[bool, str]:
         if not _HAS_ANTHROPIC:

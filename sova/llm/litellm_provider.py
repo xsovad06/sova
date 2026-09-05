@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 
+from sova.llm.errors import LLMError, ProviderUnavailableError, classify_exception
 from sova.llm.models import LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider, _measure_ms
 from sova.utils.logging import get_logger
@@ -34,6 +35,20 @@ def _check_litellm() -> None:
         raise ImportError("litellm is not installed. Install it with: pip install sova[litellm]")
 
 
+def _extract_chunk_usage(chunk: object) -> tuple[int | None, int | None, str | None]:
+    """Extract token usage and model name from a LiteLLM stream chunk.
+
+    Returns ``(None, None, ...)`` for usage when the chunk carries none, so callers
+    can distinguish "no usage on this chunk" from "usage present but zero".
+    """
+    input_tokens = output_tokens = None
+    if hasattr(chunk, "usage") and chunk.usage:
+        input_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+        output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+    model = chunk.model if hasattr(chunk, "model") and chunk.model else None
+    return input_tokens, output_tokens, model
+
+
 def _is_connection_error(exc: BaseException) -> bool:
     """Check if an exception indicates a connection failure (e.g. Ollama down)."""
     error_types = ("ConnectionError", "ConnectError", "ConnectionRefusedError")
@@ -45,6 +60,17 @@ def _is_connection_error(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return "connection refused" in msg or "connect error" in msg
+
+
+def _as_llm_error(exc: BaseException) -> LLMError:
+    """Map an SDK exception onto the typed hierarchy, preserving its message.
+
+    Connection failures are resolved via _is_connection_error, which walks the
+    cause chain LiteLLM wraps its transport errors in; everything else goes
+    through the shared classifier.
+    """
+    error_cls = ProviderUnavailableError if _is_connection_error(exc) else classify_exception(exc)
+    return error_cls(str(exc))
 
 
 class LiteLLMProvider(LLMProvider):
@@ -161,11 +187,14 @@ class LiteLLMProvider(LLMProvider):
 
         log.info("llm.litellm.stream", model=model, prompt_len=len(prompt))
 
-        response = await litellm.acompletion(  # type: ignore[union-attr]
-            messages=messages,
-            stream=True,
-            **kwargs,
-        )
+        try:
+            response = await litellm.acompletion(  # type: ignore[union-attr]
+                messages=messages,
+                stream=True,
+                **kwargs,
+            )
+        except Exception as exc:
+            raise _as_llm_error(exc) from exc
 
         text_parts: list[str] = []
         input_tokens = 0
@@ -179,13 +208,12 @@ class LiteLLMProvider(LLMProvider):
                     text_parts.append(delta.content)
                     yield StreamEvent(type="content", text=delta.content)
 
-                if hasattr(chunk, "usage") and chunk.usage:
-                    input_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
-                    output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
-
-                if hasattr(chunk, "model") and chunk.model:
-                    response_model = chunk.model
-        except Exception:
+                chunk_input, chunk_output, chunk_model = _extract_chunk_usage(chunk)
+                if chunk_input is not None:
+                    input_tokens, output_tokens = chunk_input, chunk_output
+                if chunk_model:
+                    response_model = chunk_model
+        except Exception as exc:
             log.error("llm.litellm.stream_error", model=model, exc_info=True)
             accumulated_text = "".join(text_parts)
             cost = _get_cost(response_model, input_tokens, output_tokens)
@@ -202,7 +230,7 @@ class LiteLLMProvider(LLMProvider):
                     stop_reason="error",
                 ),
             )
-            raise
+            raise _as_llm_error(exc) from exc
 
         accumulated_text = "".join(text_parts)
         cost = _get_cost(response_model, input_tokens, output_tokens)
@@ -240,10 +268,13 @@ class LiteLLMProvider(LLMProvider):
 
         log.info("llm.litellm.invoke", model=model, prompt_len=len(prompt))
 
-        response = await litellm.acompletion(  # type: ignore[union-attr]
-            messages=messages,
-            **kwargs,
-        )
+        try:
+            response = await litellm.acompletion(  # type: ignore[union-attr]
+                messages=messages,
+                **kwargs,
+            )
+        except Exception as exc:
+            raise _as_llm_error(exc) from exc
 
         text = response.choices[0].message.content or ""
         usage = response.usage

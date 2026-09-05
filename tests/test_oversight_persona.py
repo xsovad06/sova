@@ -197,6 +197,9 @@ class TestOversightAgentPersona:
         async def _mock_observe():
             return {"test": "snapshot"}
 
+        async def _noop_analyze(snapshot, run_id):
+            return [], None
+
         async def _fake_sleep(seconds):
             raise asyncio.CancelledError
 
@@ -204,6 +207,7 @@ class TestOversightAgentPersona:
             patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch.object(agent, "_observe", side_effect=_mock_observe),
+            patch.object(agent, "_analyze", side_effect=_noop_analyze),
             patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
@@ -234,6 +238,9 @@ class TestOversightAgentPersona:
         async def _mock_observe():
             return {"test": "snapshot"}
 
+        async def _noop_analyze(snapshot, run_id):
+            return [], None
+
         async def _fake_sleep(seconds):
             nonlocal cycle_count
             cycle_count += 1
@@ -246,6 +253,7 @@ class TestOversightAgentPersona:
             patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch.object(agent, "_observe", side_effect=_mock_observe),
+            patch.object(agent, "_analyze", side_effect=_noop_analyze),
             patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
@@ -276,6 +284,9 @@ class TestOversightAgentPersona:
         async def _mock_observe():
             return {"test": "snapshot"}
 
+        async def _noop_analyze(snapshot, run_id):
+            return [], None
+
         async def _fake_sleep(seconds):
             raise asyncio.CancelledError
 
@@ -283,6 +294,7 @@ class TestOversightAgentPersona:
             patch.object(agent, "_reload_config", return_value=cfg),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch.object(agent, "_observe", side_effect=_mock_observe),
+            patch.object(agent, "_analyze", side_effect=_noop_analyze),
             patch.object(agent, "_interruptible_sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
