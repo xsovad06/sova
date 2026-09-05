@@ -26,9 +26,9 @@ check: lint test ## Run linter + tests (CI-equivalent)
 
 test-bash: lint-bash ## Validate bash scripts (shellcheck + --help)
 	@echo ""
-	@echo "-- invariant scripts --help --"
-	@for f in invariants/*.sh; do \
-		printf "  %-30s" "$$f"; \
+	@echo "-- bash scripts --help --"
+	@for f in invariants/*.sh .github/scripts/*.sh; do \
+		printf "  %-38s" "$$f"; \
 		bash "$$f" --help >/dev/null 2>&1 && echo "ok" || echo "FAIL"; \
 	done
 
@@ -45,8 +45,8 @@ test-all: ## Run ALL tests including runtime/stress/chaos
 
 lint: lint-bash lint-py ## Run all linters
 
-lint-bash: ## ShellCheck on invariant scripts
-	shellcheck invariants/*.sh
+lint-bash: ## ShellCheck on bash scripts (invariants + CI gate scripts)
+	shellcheck invariants/*.sh .github/scripts/*.sh
 
 lint-py: ## Ruff lint + format check
 	$(RUFF) check sova/ tests/

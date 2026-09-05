@@ -373,6 +373,8 @@ SOVA's awareness subsystem aggregates information from Gmail, Google Calendar, G
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code style, and PR guidelines.
 
+SOVA has no bounty, reward, or paid-contribution program. There is no `/claim`, `/bounty`, or `/reward` command, and no bounty platform is connected to this repository. Pull requests carrying bounty claim syntax are closed automatically (see [No Bounty Program](CONTRIBUTING.md#no-bounty-program)).
+
 ```bash
 make check    # Lint + test (CI-equivalent)
 make lint     # ShellCheck + Ruff

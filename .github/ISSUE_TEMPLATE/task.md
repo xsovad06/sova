@@ -29,3 +29,5 @@ labels: 'type: task'
 ## References
 <!-- Related issues, code paths, or documentation. -->
 - Related: #issue_number
+
+> SOVA has no bounty, reward, or paid-contribution program, and issues are not assigned on request. See [No Bounty Program](https://github.com/xsovad06/sova/blob/main/CONTRIBUTING.md#no-bounty-program).
