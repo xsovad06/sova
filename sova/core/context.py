@@ -74,6 +74,17 @@ class ExecutionContext:
 
     # Complexity-based routing (set by AssessStep, used by all LLM-invoking steps)
     complexity: ComplexityTier | None = None
+    # Only WorkflowEngine._advance_fallback (llm.engine_owned_fallback=True) ever
+    # writes a fallback winner back here. With the default client-owned fallback
+    # loop (sova/llm/client.py:_invoke_with_fallback), a step that recovers via a
+    # fallback candidate does NOT update this field: LLMResult.model echoes the
+    # provider's own response, which is alias-consistent for claude-code but a
+    # concrete API model ID for anthropic_api/litellm, so writing it back here
+    # unconditionally would silently break alias-based comparisons elsewhere
+    # (_advance_fallback, route_model, _ROLE_MODEL_FIELDS) for those providers.
+    # Consequence: later steps keep retrying the original (possibly still-dead)
+    # model until ModelAvailabilityCache's TTL skips it again, or forever if the
+    # step interval exceeds the TTL. See docs/model-selection-architecture.md Q5.
     resolved_model: str | None = None
     model_selection_reason: str | None = None
 

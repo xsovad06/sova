@@ -710,7 +710,10 @@ class TestWorkflowEngine:
 
     async def test_billing_failure_triggers_model_fallback(self) -> None:
         """A billing failure should switch to the next fallback model and retry."""
-        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet"]})
+        config = ProjectConfig(
+            agent={"model": "opus", "fallback_models": ["sonnet"]},
+            llm={"engine_owned_fallback": True},
+        )
         ctx = _make_ctx(config=config)
 
         call_models: list[str | None] = []
@@ -732,7 +735,10 @@ class TestWorkflowEngine:
 
     async def test_all_fallback_models_exhausted(self) -> None:
         """When all fallback models fail with billing errors, step fails."""
-        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet", "haiku"]})
+        config = ProjectConfig(
+            agent={"model": "opus", "fallback_models": ["sonnet", "haiku"]},
+            llm={"engine_owned_fallback": True},
+        )
         ctx = _make_ctx(config=config)
 
         step = DummyStep(should_pass=False, gate_pass=True)
@@ -748,7 +754,10 @@ class TestWorkflowEngine:
 
     async def test_non_billing_failure_does_not_trigger_fallback(self) -> None:
         """A regular code error should not trigger model fallback."""
-        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet"]})
+        config = ProjectConfig(
+            agent={"model": "opus", "fallback_models": ["sonnet"]},
+            llm={"engine_owned_fallback": True},
+        )
         ctx = _make_ctx(config=config)
 
         step = DummyStep(should_pass=False, gate_pass=True)
@@ -764,7 +773,10 @@ class TestWorkflowEngine:
 
     async def test_fallback_skips_duplicate_model(self) -> None:
         """If fallback_models contains the same model as primary, skip it."""
-        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["opus", "sonnet"]})
+        config = ProjectConfig(
+            agent={"model": "opus", "fallback_models": ["opus", "sonnet"]},
+            llm={"engine_owned_fallback": True},
+        )
         ctx = _make_ctx(config=config)
 
         models_tried: list[str | None] = []
@@ -785,6 +797,25 @@ class TestWorkflowEngine:
         assert "sonnet" in models_tried
         assert models_tried.count(None) <= 1  # opus might show as None (unresolved)
 
+    async def test_engine_fallback_off_by_default(self) -> None:
+        """Fallback is client-owned: the engine must not walk the chain too.
+
+        Without the gate the client loop and the engine loop would nest, giving
+        N*N attempts per step.
+        """
+        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet", "haiku"]})
+        assert config.llm.engine_owned_fallback is False
+        ctx = _make_ctx(config=config)
+
+        step = DummyStep(should_pass=False, gate_pass=True)
+        step.max_retries = 0
+        step.execute = AsyncMock(return_value=StepResult(success=False, summary="fail", error="budget_exhausted"))
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert step.execute.await_count == 1
+
     async def test_empty_fallback_models_no_change(self) -> None:
         """Empty fallback_models means billing failure just fails the step."""
         config = ProjectConfig(agent={"model": "opus", "fallback_models": []})
@@ -801,7 +832,10 @@ class TestWorkflowEngine:
 
     async def test_fallback_model_persists_for_subsequent_steps(self) -> None:
         """After a successful fallback, subsequent steps use the fallback model."""
-        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet"]})
+        config = ProjectConfig(
+            agent={"model": "opus", "fallback_models": ["sonnet"]},
+            llm={"engine_owned_fallback": True},
+        )
         ctx = _make_ctx(config=config)
 
         step2_model: list[str | None] = []

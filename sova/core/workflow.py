@@ -559,7 +559,21 @@ class WorkflowEngine:
         return "done"
 
     def _has_fallback_models(self) -> bool:
-        """Check if there are remaining fallback models to try."""
+        """Check if there are remaining fallback models to try.
+
+        Returns False unless ``llm.engine_owned_fallback`` is set: the fallback
+        chain is owned by sova/llm/client.py, and letting the engine advance too
+        would nest a second chain walk inside every client-owned one. Flipping
+        the flag on restores the legacy engine-driven advance as a rollback path.
+
+        Note: with the flag off (default), a client-owned fallback that recovers
+        mid-step never updates ``ctx.resolved_model`` (see the comment on that
+        field in sova/core/context.py and docs/model-selection-architecture.md
+        Q5). This method's False return is unrelated to and does not fix that
+        gap, it only concerns the engine's own retry-then-advance path.
+        """
+        if not self._ctx.config.llm.engine_owned_fallback:
+            return False
         chain = self._ctx.config.agent.fallback_models
         return self._ctx.fallback_model_index < len(chain)
 

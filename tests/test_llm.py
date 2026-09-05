@@ -3368,7 +3368,7 @@ class TestCompressionWiring:
             patch.object(client, "_try_load_config", return_value=None),
         ):
             await client.invoke("user prompt", system_prompt="system prompt")
-        mock_compress.assert_called_once_with("user prompt", None)
+        mock_compress.assert_called_once_with("user prompt", None, cfg=None)
         assert provider.invoke.call_args.kwargs["system_prompt"] == "system prompt"
 
     async def test_invoke_command_compresses_args_only(self) -> None:
@@ -3379,9 +3379,10 @@ class TestCompressionWiring:
         with (
             patch.object(client, "get_provider", return_value=provider),
             patch.object(client, "maybe_compress", return_value="COMPRESSED_ARGS") as mock_compress,
+            patch.object(client, "_try_load_config", return_value=None),
         ):
             await client.invoke_command("/develop", args="42")
-        mock_compress.assert_called_once_with("42", None)
+        mock_compress.assert_called_once_with("42", None, cfg=None)
         assert provider.invoke_command.call_args[0][0] == "/develop"
         assert provider.invoke_command.call_args[0][1] == "COMPRESSED_ARGS"
 
@@ -3482,7 +3483,7 @@ class TestCompressionSavingsRecording:
         with (
             patch.object(client, "get_provider", return_value=provider),
             # maybe_compress returns the exact same object -> compression not applied.
-            patch.object(client, "maybe_compress", side_effect=lambda p, cwd=None: p),
+            patch.object(client, "maybe_compress", side_effect=lambda p, cwd=None, cfg=None: p),
             patch.object(client, "_try_load_config", return_value=None),
         ):
             result = await client.invoke(prompt)
