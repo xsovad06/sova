@@ -56,7 +56,7 @@ TASK_TYPE_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _get_model_family(model_id: str) -> str | None:
+def get_model_family(model_id: str) -> str | None:
     """Extract the family name from a model ID or alias.
 
     Returns the family (``"opus"``, ``"sonnet"``, ``"haiku"``) if recognized,
@@ -78,8 +78,8 @@ def _pin_to_configured_model(alias: str, agent_model: str | None) -> str:
     """If agent_model is a pinned version in the same family as alias, use it."""
     if not agent_model or not _is_pinned_version(agent_model):
         return alias
-    alias_family = _get_model_family(alias)
-    agent_family = _get_model_family(agent_model)
+    alias_family = get_model_family(alias)
+    agent_family = get_model_family(agent_model)
     if alias_family and alias_family == agent_family:
         return agent_model
     return alias

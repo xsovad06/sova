@@ -46,10 +46,11 @@ crash path. The verified root causes are:
    registered in `_ROLE_MODEL_FIELDS` under both the task-type key (`"review"`) and the role
    name (`"reviewer"`). The reviewer resolves once per review and reuses the result for every
    diff chunk, every schema retry, and as the panel's `default_model`; the supervisor planner
-   resolves in `plan()` and passes the model into `_call_llm`. `developer_model` defaults to
-   empty on purpose: role config is consulted *before* complexity routing, so a non-empty
-   default would silently pin every developer run to one model. The two `"haiku"` literals and
-   the suggestion service remain, by design, for PR6 and a later PR.
+   resolves in `plan()` and passes the model into `_call_llm`. The `task_type="review"` tags
+   added at the reviewer's two `invoke` sites are inert until PR7 reworks precedence (see 2.2).
+   `developer_model` defaults to empty on purpose: role config is consulted *before* complexity
+   routing, so a non-empty default would silently pin every developer run to one model. The two
+   `"haiku"` literals and the suggestion service remain, by design, for PR6 and a later PR.
 
 4. **Fallback is split across three layers that do not cooperate.** The Claude CLI's own
    `--fallback-model` (fast, Anthropic-only, opaque to SOVA), `WorkflowEngine._advance_fallback`
@@ -102,13 +103,16 @@ step budget equals a single inner attempt's budget:
 |---|---|---|---|
 | Complexity routing | [routing.py:26-32,112-119](sova/llm/routing.py#L112-L119) | works | yes |
 | Config override (`llm.routing[tier]`) | [routing.py:113-116](sova/llm/routing.py#L113-L116) | works | yes |
-| Task-type routing (`llm.routing[task_type]`) | [routing.py:106-110](sova/llm/routing.py#L106-L110) | dead in the pipeline; live only via `harden.py`, `batch_service.py`, `planner.py` | **no (bug)** |
+| Task-type routing (`llm.routing[task_type]`) | [routing.py:106-110](sova/llm/routing.py#L106-L110) | dead in the pipeline; live only via `harden.py`, `batch_service.py`, `roles/planner.py` | **no (bug)** |
 | Role config (`researcher_model`, `triage_model`, `reviewer_model`, `developer_model`, `planner_model`) | [client.py:601-616](sova/llm/client.py#L601-L616) | works | only on the complexity fallback, never on the role field itself |
 
 Correction to the briefing: task-type routing is *not* entirely dead code. `harden.py:116`,
-`batch_service.py:335`, `roles/planner.py:133`, and `supervisor/planner.py:416` pass
-`task_type` today (`reviewer.py:494,513` joined them in PR5). It is dead only in the
-developer/reviewer/validate pipeline steps.
+`batch_service.py:335`, and `roles/planner.py:133` pass `task_type` with no explicit `model`,
+so `llm.routing[task_type]` genuinely selects there. `supervisor/planner.py:416` and
+`reviewer.py:494,513` (added in PR5) also pass `task_type`, but alongside an explicit `model=`,
+and `_resolve_task_type_model` returns early whenever a model is given
+([client.py:404](sova/llm/client.py#L404)). Those two tags declare intent for PR7 and route
+nothing today. It is dead in the developer/reviewer/validate pipeline steps.
 
 ### 2.3 The pinning trap (critical)
 
