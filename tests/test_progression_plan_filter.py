@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import SupervisorConfig
+from sova.config.models import ProjectConfig, SupervisorConfig
 from sova.supervisor.planner import PlannedAction, PlanResult
 from sova.supervisor.progression import (
     BlockReason,
@@ -37,8 +37,10 @@ def _task(
 
 def _make_engine(
     config: SupervisorConfig | None = None,
+    max_parallel_agents: int = 2,
 ) -> TaskProgressionEngine:
-    cfg = config or SupervisorConfig(auto_develop=True, auto_research=True, auto_integrate=True)
+    supervisor_cfg = config or SupervisorConfig(auto_develop=True, auto_research=True, auto_integrate=True)
+    cfg = ProjectConfig(supervisor=supervisor_cfg, max_parallel_agents=max_parallel_agents)
     return TaskProgressionEngine(
         config=cfg,
         adapter=AsyncMock(),
@@ -84,14 +86,14 @@ class TestPlanFiltering:
                 auto_research=True,
                 auto_integrate=True,
                 task_queue=issue_ids_list,
-            )
+            ),
+            max_parallel_agents=10,
         )
 
         # Mock all the internals so evaluate_all just returns our decisions
         with (
             patch("sova.supervisor.progression.check_github_rate_limit_gate", return_value=None),
             patch("sova.supervisor.progression.build_dependency_graph", new_callable=AsyncMock) as mock_graph,
-            patch("sova.supervisor.progression.load_config") as mock_cfg,
             patch("sova.supervisor.progression.check_memory_pressure_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_ci_budget_gate", new_callable=AsyncMock, return_value=None),
@@ -108,11 +110,6 @@ class TestPlanFiltering:
             graph.nodes = issue_ids
             graph.get_task.side_effect = lambda nid: _task(nid)
             mock_graph.return_value = graph
-
-            mock_cfg.return_value = MagicMock(
-                max_parallel_agents=10,
-                supervisor=engine._config,
-            )
 
             # Mock _evaluate_single to return our pre-built decisions
             decision_map = {d.issue_number: d for d in decisions}
