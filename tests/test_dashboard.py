@@ -12136,6 +12136,66 @@ class TestLivenessSweepMergeCheck:
             refreshed = await session.get(TaskRun, run_id)
             assert refreshed.status == "paused", "paused run should not be reclassified by sweep"
 
+    async def test_sweep_marks_dead_pid_awaiting_approval_as_interrupted(self) -> None:
+        """Regression test for #935: a dead-PID awaiting_approval run must be swept to
+        interrupted outside of startup. awaiting_approval is itself a member of
+        TASK_RUN_TERMINAL, so it's invisible to the sweep's ordinary notin_(_TERMINAL)
+        query and would otherwise block re-evaluation of its issue forever via
+        check_already_running(), even after the process holding the PID is long dead.
+        """
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="126",
+                    role="researcher",
+                    status="awaiting_approval",
+                    pid=999992,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        with self._patch_sweep_deps():
+            from sova.dashboard.app import _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        async with await get_session() as session:
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "interrupted"
+
+    async def test_sweep_skips_live_pid_awaiting_approval(self) -> None:
+        """A live-PID awaiting_approval run (spec genuinely pending human review) is
+        the normal case and must not be touched by the sweep."""
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="127",
+                    role="researcher",
+                    status="awaiting_approval",
+                    pid=999991,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        with self._patch_sweep_deps(
+            **{
+                "sova.dashboard.services.control_service._is_process_alive": {
+                    "return_value": True,
+                },
+            }
+        ):
+            from sova.dashboard.app import _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        async with await get_session() as session:
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "awaiting_approval", "live-PID awaiting_approval run should not be touched"
+
 
 class TestWaitAndFinalizeOutputWriter:
     """Cover the output_writer.close() try/except in _wait_and_finalize."""
