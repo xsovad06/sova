@@ -654,6 +654,14 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta("roles.researcher_model", "Researcher model", "Claude model for the researcher role", "roles"),
     SettingMeta("roles.triage_model", "Triage model", "Claude model for the triage role", "roles"),
+    SettingMeta("roles.reviewer_model", "Reviewer model", "Claude model for the reviewer role", "roles"),
+    SettingMeta(
+        "roles.developer_model",
+        "Developer model",
+        "Claude model for the developer role (leave empty to route by task complexity)",
+        "roles",
+    ),
+    SettingMeta("roles.planner_model", "Planner model", "Claude model for the supervisor planner", "roles"),
     SettingMeta(
         "roles.nicknames", "Role nicknames", "Short aliases for role names (e.g. dev=developer)", "roles", "object"
     ),

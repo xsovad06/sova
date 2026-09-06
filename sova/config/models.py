@@ -296,6 +296,11 @@ class RolesConfig(BaseSettings):
     default: str = "developer"
     researcher_model: str = "opus"
     triage_model: str = "sonnet"
+    reviewer_model: str = "sonnet"
+    # Empty by design: a non-empty default would short-circuit complexity-based
+    # routing for every developer run, since role config outranks it.
+    developer_model: str = ""
+    planner_model: str = "sonnet"
     nicknames: dict[str, str] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_ROLES_")
