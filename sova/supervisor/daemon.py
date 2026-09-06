@@ -42,10 +42,18 @@ class SupervisorDaemon:
         self._last_poll_at: datetime | None = None
         self._config_reloaded = asyncio.Event()
 
-    def reload_config(self, config: ProjectConfig) -> None:
-        """Hot-reload config (called by settings router after TOML update)."""
+    def reload_config(self, config: ProjectConfig, *, wake: bool = True) -> None:
+        """Hot-reload config (called by settings router after a config update).
+
+        ``wake=False`` updates the snapshot without waking an in-progress
+        sleep. Used by the queue-mutating endpoints so a dashboard edit lands
+        on the next natural poll cycle instead of triggering an immediate
+        one, since ``_poll_once()`` already reloads config fresh every cycle, so
+        the edit is picked up regardless.
+        """
         self._config = config
-        self._config_reloaded.set()
+        if wake:
+            self._config_reloaded.set()
 
     @property
     def running(self) -> bool:
@@ -123,12 +131,25 @@ class SupervisorDaemon:
     async def _poll_once(self) -> dict:
         """Single ordered poll: quota -> progression -> health.
 
-        Snapshots config at entry so a mid-poll reload_config() call
-        cannot mix old and new settings within one cycle.
+        Reloads config fresh at cycle entry (DB overrides included, e.g. the
+        supervisor task queue edited from the dashboard) and snapshots it
+        onto self._config, so the loop's sleep interval, get_status(), and
+        every phase of this cycle agree on exactly one config source. A
+        mid-poll reload_config() call still cannot mix old and new settings
+        within one cycle since the local `cfg` below is fixed for the rest
+        of this method. A failed reload (corrupt TOML, locked DB) falls back
+        to the previous snapshot and continues the cycle rather than
+        crashing the daemon loop or counting as a poll failure.
         """
         from sova.adapters import create_adapter
+        from sova.config.loader import load_config
 
-        cfg = self._config
+        try:
+            cfg = await asyncio.to_thread(load_config, self._project_dir)
+            self._config = cfg
+        except Exception:
+            log.warning("daemon.config_reload_failed", exc_info=True)
+            cfg = self._config
 
         if not cfg.supervisor.enabled:
             log.info("daemon.poll_skip_disabled")
@@ -203,7 +224,7 @@ class SupervisorDaemon:
                     )
 
             engine = TaskProgressionEngine(
-                config=cfg.supervisor,
+                config=cfg,
                 adapter=adapter,
                 project_dir=self._project_dir,
                 session_factory=self._session_factory,
@@ -262,7 +283,7 @@ class SupervisorDaemon:
 
             if engine is None or not isinstance(engine, TaskProgressionEngine):
                 engine = TaskProgressionEngine(
-                    config=cfg.supervisor,
+                    config=cfg,
                     adapter=adapter,
                     project_dir=self._project_dir,
                     session_factory=self._session_factory,

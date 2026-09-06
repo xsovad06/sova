@@ -280,7 +280,7 @@ class TestCheckFileOverlapThreshold:
 class TestGetActiveBranchFileSets:
     @pytest.mark.asyncio
     async def test_excludes_current_issue(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock
 
         from sova.db.models import TaskRun
 
@@ -299,15 +299,13 @@ class TestGetActiveBranchFileSets:
         mock_factory = MagicMock()
         mock_factory.return_value = mock_session
 
-        with patch("sova.supervisor.file_overlap.load_config") as mock_cfg:
-            cfg = MagicMock()
-            cfg.github_repo = "user/repo"
-            cfg.github_user = "user"
-            cfg.base_branch = "main"
-            mock_cfg.return_value = cfg
+        cfg = MagicMock()
+        cfg.github_repo = "user/repo"
+        cfg.github_user = "user"
+        cfg.base_branch = "main"
 
-            result = await get_active_branch_file_sets(mock_factory, MagicMock(), exclude_issue="42")
-            assert result == []
+        result = await get_active_branch_file_sets(mock_factory, cfg, exclude_issue="42")
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_file_sets_for_active_runs(self) -> None:
@@ -331,26 +329,22 @@ class TestGetActiveBranchFileSets:
         mock_factory = MagicMock()
         mock_factory.return_value = mock_session
 
-        with (
-            patch("sova.supervisor.file_overlap.load_config") as mock_cfg,
-            patch("sova.supervisor.file_overlap._fetch_branch_files") as mock_fetch,
-        ):
-            cfg = MagicMock()
-            cfg.github_repo = "user/repo"
-            cfg.github_user = "user"
-            cfg.base_branch = "main"
-            mock_cfg.return_value = cfg
+        cfg = MagicMock()
+        cfg.github_repo = "user/repo"
+        cfg.github_user = "user"
+        cfg.base_branch = "main"
 
+        with patch("sova.supervisor.file_overlap._fetch_branch_files") as mock_fetch:
             bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
             mock_fetch.return_value = bfs
 
-            result = await get_active_branch_file_sets(mock_factory, MagicMock())
+            result = await get_active_branch_file_sets(mock_factory, cfg)
             assert len(result) == 1
             assert result[0].issue_number == "10"
 
     @pytest.mark.asyncio
     async def test_empty_when_no_active_runs(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock
 
         mock_session = AsyncMock()
         mock_result = MagicMock()
@@ -362,15 +356,13 @@ class TestGetActiveBranchFileSets:
         mock_factory = MagicMock()
         mock_factory.return_value = mock_session
 
-        with patch("sova.supervisor.file_overlap.load_config") as mock_cfg:
-            cfg = MagicMock()
-            cfg.github_repo = "user/repo"
-            cfg.github_user = "user"
-            cfg.base_branch = "main"
-            mock_cfg.return_value = cfg
+        cfg = MagicMock()
+        cfg.github_repo = "user/repo"
+        cfg.github_user = "user"
+        cfg.base_branch = "main"
 
-            result = await get_active_branch_file_sets(mock_factory, MagicMock())
-            assert result == []
+        result = await get_active_branch_file_sets(mock_factory, cfg)
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_fetch_exception_skipped(self) -> None:
@@ -393,17 +385,13 @@ class TestGetActiveBranchFileSets:
         mock_factory = MagicMock()
         mock_factory.return_value = mock_session
 
-        with (
-            patch("sova.supervisor.file_overlap.load_config") as mock_cfg,
-            patch("sova.supervisor.file_overlap._fetch_branch_files", side_effect=RuntimeError("boom")),
-        ):
-            cfg = MagicMock()
-            cfg.github_repo = "user/repo"
-            cfg.github_user = "user"
-            cfg.base_branch = "main"
-            mock_cfg.return_value = cfg
+        cfg = MagicMock()
+        cfg.github_repo = "user/repo"
+        cfg.github_user = "user"
+        cfg.base_branch = "main"
 
-            result = await get_active_branch_file_sets(mock_factory, MagicMock())
+        with patch("sova.supervisor.file_overlap._fetch_branch_files", side_effect=RuntimeError("boom")):
+            result = await get_active_branch_file_sets(mock_factory, cfg)
             assert result == []
 
 

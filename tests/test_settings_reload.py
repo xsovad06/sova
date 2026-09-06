@@ -32,7 +32,8 @@ class TestDaemonEnabledGuard:
             session_factory=MagicMock(),
         )
 
-        result = await daemon._poll_once()
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            result = await daemon._poll_once()
         assert "skipped" in result
 
     @pytest.mark.asyncio
@@ -56,7 +57,10 @@ class TestDaemonEnabledGuard:
             session_factory=session_factory,
         )
 
-        with patch("sova.supervisor.daemon.SupervisorDaemon._poll_progression", new_callable=AsyncMock) as mock_prog:
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.supervisor.daemon.SupervisorDaemon._poll_progression", new_callable=AsyncMock) as mock_prog,
+        ):
             mock_prog.return_value = ({"decisions": 0, "executed": 0, "pending": 0}, None)
             with patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={"db": "ok"}):
                 result = await daemon._poll_once()

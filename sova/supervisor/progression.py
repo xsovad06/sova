@@ -15,8 +15,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.adapters.base import TaskAdapter, TaskState
-from sova.config.loader import load_config
-from sova.config.models import SupervisorConfig
+from sova.config.models import ProjectConfig
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 from sova.git.pr import PRInfo
@@ -110,7 +109,7 @@ class TaskProgressionEngine:
 
     def __init__(
         self,
-        config: SupervisorConfig,
+        config: ProjectConfig,
         adapter: TaskAdapter,
         project_dir: Path,
         session_factory: async_sessionmaker,
@@ -134,12 +133,12 @@ class TaskProgressionEngine:
 
     async def _fetch_file_overlap_sets(self) -> list[BranchFileSet] | None:
         """Fetch active branch file sets for the file overlap gate (fail-open)."""
-        if not self._config.file_overlap_gate:
+        if not self._config.supervisor.file_overlap_gate:
             return None
         try:
             return await get_active_branch_file_sets(
                 self._session_factory,
-                self._project_dir,
+                self._config,
             )
         except Exception:
             log.debug("evaluate_all.file_overlap_fetch_failed", exc_info=True)
@@ -150,7 +149,7 @@ class TaskProgressionEngine:
 
         Empty queue returns nothing: the queue is an exclusive filter.
         """
-        task_queue = self._config.task_queue
+        task_queue = self._config.supervisor.task_queue
         if not task_queue:
             return []
 
@@ -213,7 +212,7 @@ class TaskProgressionEngine:
             return []
 
         self._last_graph = graph
-        cfg = load_config(self._project_dir)
+        cfg = self._config
 
         global_memory = check_memory_pressure_gate(cfg.memory_guard)
         global_quota = await check_quota_gate(
@@ -373,11 +372,11 @@ class TaskProgressionEngine:
             task_body = task.body
             task_assignees = task.assignees
 
-        if self._config.file_overlap_gate and task is not None:
+        if self._config.supervisor.file_overlap_gate and task is not None:
             try:
                 precomputed_file_sets = await get_active_branch_file_sets(
                     self._session_factory,
-                    self._project_dir,
+                    self._config,
                     exclude_issue=str(issue_number),
                 )
             except Exception:
@@ -433,7 +432,7 @@ class TaskProgressionEngine:
                 return {"error": f"No open PR found for issue #{decision.issue_number}"}
             kwargs["pr_number"] = pr_number
 
-        if self._config.respect_ownership and decision.action in _ASSIGN_ACTIONS and role:
+        if self._config.supervisor.respect_ownership and decision.action in _ASSIGN_ACTIONS and role:
             try:
                 claimed = await self._adapter.assign(str(decision.issue_number), role)
                 if claimed:
@@ -469,7 +468,7 @@ class TaskProgressionEngine:
         Respects ``max_spawns_per_cycle`` to prevent burst API usage.
         """
         actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
-        cap = self._config.max_spawns_per_cycle
+        cap = self._config.supervisor.max_spawns_per_cycle
         if len(actionable) > cap:
             log.info(
                 "execute_decisions.capped",
@@ -708,7 +707,7 @@ class TaskProgressionEngine:
 
         if blockers:
             all_conflict = all(b.gate == "conflict" for b in blockers)
-            if all_conflict and self._config.auto_rebase:
+            if all_conflict and self._config.supervisor.auto_rebase:
                 log.info(
                     "evaluate_single.ready",
                     issue=issue_number,
@@ -781,7 +780,7 @@ class TaskProgressionEngine:
             blockers.append(rate_limit_block)
             return blockers, None
 
-        if self._config.respect_dependencies:
+        if self._config.supervisor.respect_dependencies:
             dep_block = check_dependency_gate(issue_number, graph)
             if dep_block:
                 blockers.append(dep_block)
@@ -800,7 +799,7 @@ class TaskProgressionEngine:
             check_ownership_gate(
                 issue_number,
                 is_integrate=(candidate == ProgressionAction.SPAWN_INTEGRATE),
-                respect_ownership=self._config.respect_ownership,
+                respect_ownership=self._config.supervisor.respect_ownership,
                 github_user=self._adapter.github_user,
                 repo=getattr(self._adapter, "repo", ""),
                 adapter=self._adapter,
@@ -814,22 +813,24 @@ class TaskProgressionEngine:
         if candidate == ProgressionAction.SPAWN_RESEARCHER:
             simple_results.append(
                 await check_repeated_failures_gate(
-                    issue_number, self._config.max_researcher_failures, self._session_factory
+                    issue_number, self._config.supervisor.max_researcher_failures, self._session_factory
                 )
             )
         if candidate == ProgressionAction.SPAWN_DEVELOPER:
             simple_results.append(
                 await check_repeated_failures_gate(
-                    issue_number, self._config.max_developer_failures, self._session_factory, role="developer"
+                    issue_number,
+                    self._config.supervisor.max_developer_failures,
+                    self._session_factory,
+                    role="developer",
                 )
             )
         if candidate == ProgressionAction.SPAWN_ADDRESS_REVIEW:
             cb_pr = (refined_pr_info.number if refined_pr_info else None) or discovered_pr
-            cfg = load_config(self._project_dir)
             cb_block = await check_address_review_circuit_breaker_gate(
                 issue_number,
                 pr_number=cb_pr,
-                max_cycles=cfg.pipeline.max_address_review_cycles,
+                max_cycles=self._config.pipeline.max_address_review_cycles,
                 project_dir=self._project_dir,
             )
             simple_results.append(cb_block)
@@ -853,13 +854,13 @@ class TaskProgressionEngine:
             if review_block:
                 blockers.append(review_block)
 
-        if self._config.file_overlap_gate and precomputed_file_sets is not None:
+        if self._config.supervisor.file_overlap_gate and precomputed_file_sets is not None:
             overlap_block = check_file_overlap_gate(
                 issue_number,
                 precomputed_file_sets,
                 task_labels or [],
                 task_body,
-                self._config.file_overlap_threshold,
+                self._config.supervisor.file_overlap_threshold,
             )
             if overlap_block:
                 blockers.append(overlap_block)
@@ -896,12 +897,7 @@ class TaskProgressionEngine:
         if rate_limit_block:
             blocks.append(rate_limit_block)
 
-        needs_config = any(
-            v is _NOT_COMPUTED
-            for v in (precomputed_quota, precomputed_ci_budget, precomputed_slots, precomputed_memory)
-        )
-        cfg = load_config(self._project_dir) if needs_config else None
-
+        cfg = self._config
         is_developer = candidate == ProgressionAction.SPAWN_DEVELOPER
         if precomputed_quota is _NOT_COMPUTED:
             quota_block = await check_quota_gate(
@@ -956,19 +952,25 @@ class TaskProgressionEngine:
         if state == TaskState.TRIAGED:
             return (
                 ProgressionAction.SPAWN_RESEARCHER
-                if self._config.auto_research
+                if self._config.supervisor.auto_research
                 else ProgressionAction.CHECKPOINT_NEEDED
             )
         if state == TaskState.RESEARCHED:
             return (
-                ProgressionAction.SPAWN_DEVELOPER if self._config.auto_develop else ProgressionAction.CHECKPOINT_NEEDED
+                ProgressionAction.SPAWN_DEVELOPER
+                if self._config.supervisor.auto_develop
+                else ProgressionAction.CHECKPOINT_NEEDED
             )
         if state == TaskState.IN_REVIEW:
-            if self._config.auto_integrate or self._config.auto_address_review:
+            if self._config.supervisor.auto_integrate or self._config.supervisor.auto_address_review:
                 return ProgressionAction.SPAWN_INTEGRATE
             return ProgressionAction.CHECKPOINT_NEEDED
         if state == TaskState.BACKLOG:
-            return ProgressionAction.SPAWN_TRIAGE if self._config.auto_triage else ProgressionAction.CHECKPOINT_NEEDED
+            return (
+                ProgressionAction.SPAWN_TRIAGE
+                if self._config.supervisor.auto_triage
+                else ProgressionAction.CHECKPOINT_NEEDED
+            )
         if state == TaskState.IN_PROGRESS:
             return ProgressionAction.RESET_STALE_STATE
         return None
@@ -1021,10 +1023,10 @@ class TaskProgressionEngine:
         has_review = verdict_data.get("has_sova_review", False)
 
         if has_review and verdict in ("revise", "block"):
-            if self._config.auto_address_review:
+            if self._config.supervisor.auto_address_review:
                 return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_info
             return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
-        if has_review and verdict == "approve" and self._config.auto_integrate:
+        if has_review and verdict == "approve" and self._config.supervisor.auto_integrate:
             return ProgressionAction.SPAWN_INTEGRATE, pr_info
         return ProgressionAction.CHECKPOINT_NEEDED, pr_info
