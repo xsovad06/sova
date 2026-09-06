@@ -421,7 +421,7 @@ class ReviewerRole(AgentRole):
         spec_sections: dict[str, str] | None,
         addressed_findings: list[dict] | None = None,
     ) -> ReviewResult:
-        """Delegate to parallel panel review."""
+        """Delegate to the dimension review panel."""
         from sova.roles.panel_review import run_panel_review
 
         budget_remaining = ctx.config.agent.max_budget - ctx.cost_usd

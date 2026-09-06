@@ -122,13 +122,14 @@ class AgentConfig(BaseSettings):
 
 
 class ReviewPanelConfig(BaseSettings):
-    """Panel review configuration -- sequential focused dimension reviewers."""
+    """Panel review configuration: focused dimension reviewers over a shared diff."""
 
     KNOWN_DIMENSIONS: ClassVar[frozenset[str]] = frozenset(
         {"correctness", "security", "error_handling", "design", "test_coverage"}
     )
 
     enabled: bool = False
+    combined: bool = True
     dimensions: list[str] = Field(
         default_factory=lambda: ["correctness", "security", "error_handling", "design", "test_coverage"],
     )
