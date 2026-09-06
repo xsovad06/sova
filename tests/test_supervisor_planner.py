@@ -10,7 +10,7 @@ import pytest
 from sova.config.models import ProjectConfig, SupervisorConfig
 from sova.dashboard.services.pr_service import list_open_prs_with_state
 from sova.supervisor.planner import (
-    _MODEL,
+    _DEFAULT_MODEL,
     _VALID_ACTIONS,
     DeferredAction,
     PlannedAction,
@@ -159,9 +159,9 @@ class TestCallLLM:
     async def test_successful_call(self, planner: SupervisorPlanner) -> None:
         from sova.llm.models import LLMResult
 
-        mock_result = LLMResult(text='{"reasoning": "test", "actions": [], "deferred": []}', model=_MODEL)
+        mock_result = LLMResult(text='{"reasoning": "test", "actions": [], "deferred": []}', model=_DEFAULT_MODEL)
         with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result):
-            result = await planner._call_llm("system", "user")
+            result = await planner._call_llm("system", "user", _DEFAULT_MODEL)
 
         assert result == {"reasoning": "test", "actions": [], "deferred": []}
 
@@ -169,15 +169,15 @@ class TestCallLLM:
         with patch(
             "sova.supervisor.planner.invoke", new_callable=AsyncMock, side_effect=RuntimeError("provider error")
         ):
-            result = await planner._call_llm("system", "user")
+            result = await planner._call_llm("system", "user", _DEFAULT_MODEL)
         assert result is None
 
     async def test_json_parse_error_returns_none(self, planner: SupervisorPlanner) -> None:
         from sova.llm.models import LLMResult
 
-        mock_result = LLMResult(text="not valid json", model=_MODEL)
+        mock_result = LLMResult(text="not valid json", model=_DEFAULT_MODEL)
         with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result):
-            result = await planner._call_llm("system", "user")
+            result = await planner._call_llm("system", "user", _DEFAULT_MODEL)
         assert result is None
 
     async def test_uses_config_timeout(self) -> None:
@@ -188,17 +188,17 @@ class TestCallLLM:
             github_repo="test/repo",
         )
         p = SupervisorPlanner(config=cfg, project_dir=Path("/tmp/test"), session_factory=MagicMock())
-        mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model=_MODEL)
+        mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model=_DEFAULT_MODEL)
         with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result) as mock_invoke:
-            await p._call_llm("system", "user")
+            await p._call_llm("system", "user", _DEFAULT_MODEL)
         assert mock_invoke.call_args[1]["timeout"] == 90
 
     async def test_default_timeout_is_180(self, planner: SupervisorPlanner) -> None:
         from sova.llm.models import LLMResult
 
-        mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model=_MODEL)
+        mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model=_DEFAULT_MODEL)
         with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result) as mock_invoke:
-            await planner._call_llm("system", "user")
+            await planner._call_llm("system", "user", _DEFAULT_MODEL)
         assert mock_invoke.call_args[1]["timeout"] == 180
 
 

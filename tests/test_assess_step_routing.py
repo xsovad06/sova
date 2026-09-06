@@ -24,6 +24,9 @@ def mock_config() -> MagicMock:
     config.agent.max_budget = Decimal("10")
     config.roles.researcher_model = None
     config.roles.triage_model = None
+    config.roles.reviewer_model = None
+    config.roles.developer_model = None
+    config.roles.planner_model = None
     config.llm.routing = {}
     return config
 

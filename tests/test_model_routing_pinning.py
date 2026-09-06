@@ -200,6 +200,9 @@ class TestResolveModelPinning:
         roles_config = MagicMock()
         roles_config.researcher_model = None
         roles_config.triage_model = None
+        roles_config.reviewer_model = None
+        roles_config.developer_model = None
+        roles_config.planner_model = None
 
         llm_config = MagicMock()
         llm_config.routing = {}
@@ -219,6 +222,9 @@ class TestResolveModelPinning:
         roles_config = MagicMock()
         roles_config.researcher_model = "sonnet"
         roles_config.triage_model = None
+        roles_config.reviewer_model = None
+        roles_config.developer_model = None
+        roles_config.planner_model = None
 
         result = resolve_model(
             role="researcher",
@@ -246,6 +252,9 @@ def pinned_config() -> MagicMock:
     config.agent.model = "claude-opus-4-6"
     config.roles.researcher_model = None
     config.roles.triage_model = None
+    config.roles.reviewer_model = None
+    config.roles.developer_model = None
+    config.roles.planner_model = None
     config.llm.routing = {}
     return config
 

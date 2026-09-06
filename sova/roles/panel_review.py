@@ -203,12 +203,17 @@ async def run_panel_review(
     cwd: Path | str | None = None,
     budget_remaining: Decimal | None = None,
     addressed_findings: list[dict] | None = None,
+    default_model: str = "sonnet",
 ) -> ReviewResult:
     """Run dimension reviewers sequentially and aggregate results.
 
     Each dimension gets its own LLM call in priority order
     (correctness > security > ...). Findings are deduplicated and
     merged into a single ReviewResult.
+
+    ``default_model`` is the model used for dimensions without an explicit
+    ``panel_config.dimension_models`` pin. Callers resolve it from config;
+    the literal default keeps this module free of a config-load path.
     """
     result = ReviewResult()
     chunks = _chunk_diff(diff)
@@ -228,7 +233,7 @@ async def run_panel_review(
             if dim in skipped_dimensions:
                 continue
 
-            model = panel_config.dimension_models.get(dim, "sonnet")
+            model = panel_config.dimension_models[dim] if dim in panel_config.dimension_models else default_model
             estimated_cost = _estimate_dimension_cost(model)
             if budget_remaining is not None and budget_remaining < estimated_cost:
                 skipped_dimensions.add(dim)

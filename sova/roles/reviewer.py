@@ -34,7 +34,7 @@ from sova.ipc.handoff import (
     write_handoff,
     write_handoff_file,
 )
-from sova.llm.client import invoke
+from sova.llm.client import invoke, resolve_model
 
 if TYPE_CHECKING:
     from sova.llm.models import LLMResult
@@ -98,6 +98,10 @@ __all__ = [
 ]
 
 log = get_logger(component="role.reviewer")
+
+# Terminal fallback when neither role config nor complexity routing resolves a
+# model (the reviewer is a standalone role, so ``ctx.complexity`` is usually None).
+_DEFAULT_REVIEW_MODEL = "sonnet"
 
 
 def _build_finding_summary(review: ReviewResult) -> dict:
@@ -412,6 +416,21 @@ class ReviewerRole(AgentRole):
             addressed_findings=addressed_findings,
         )
 
+    def _resolve_review_model(self, ctx: ExecutionContext) -> str:
+        """Resolve the model for review work, honouring ``roles.reviewer_model``."""
+        resolved = resolve_model(
+            role="reviewer",
+            roles_config=ctx.config.roles,
+            complexity=ctx.complexity,
+            llm_config=ctx.config.llm,
+            agent_model=ctx.config.agent.model,
+        )
+        if resolved is None:
+            return _DEFAULT_REVIEW_MODEL
+        model, reason = resolved
+        log.info("reviewer.model_resolved", model=model, reason=reason)
+        return model
+
     async def _run_panel_review(
         self,
         ctx: ExecutionContext,
@@ -436,6 +455,7 @@ class ReviewerRole(AgentRole):
             cwd=ctx.working_dir,
             budget_remaining=budget_remaining,
             addressed_findings=addressed_findings,
+            default_model=self._resolve_review_model(ctx),
         )
         ctx.add_cost(result.total_cost)
         return result
@@ -452,6 +472,8 @@ class ReviewerRole(AgentRole):
         """Original single-reviewer path."""
         chunks = _chunk_diff(diff)
         result = ReviewResult()
+        # Resolved once so every chunk and every schema retry share one model.
+        model = self._resolve_review_model(ctx)
 
         for i, chunk in enumerate(chunks):
             try:
@@ -468,7 +490,8 @@ class ReviewerRole(AgentRole):
 
                 llm_result = await invoke(
                     prompt,
-                    model="sonnet",
+                    model=model,
+                    task_type="review",
                     cwd=ctx.working_dir,
                     max_budget_usd=chunk_budget,
                 )
@@ -486,7 +509,8 @@ class ReviewerRole(AgentRole):
                     max_retry_budget = max(Decimal("0"), remaining)
                     retry_result = await invoke(
                         retry_prompt,
-                        model="sonnet",
+                        model=model,
+                        task_type="review",
                         cwd=ctx.working_dir,
                         max_budget_usd=max_retry_budget,
                     )
