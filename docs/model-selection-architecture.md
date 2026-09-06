@@ -232,8 +232,10 @@ And pinning must be applied on the task_type branch (section 2.3).
 
 **Hybrid, but SOVA is the source of truth.** One client-owned fallback loop builds the chain
 once (`[resolved primary] + agent.fallback_models`, alias-resolved and de-duped), walks it on
-fallback-eligible typed errors, records unavailable models in the cache, and re-raises a
-terminal error only on exhaustion. The Claude CLI's `--fallback-model` stays as a fast,
+fallback-eligible error *categories*, records unavailable models in the cache, and re-raises a
+terminal error only on exhaustion. The category comes from the exception's type once providers
+raise the typed hierarchy, and from its message until then, so the loop is not dead while the
+provider layer still raises bare `RuntimeError`. The Claude CLI's `--fallback-model` stays as a fast,
 provider-internal, capability-gated inner layer: SOVA hands it the same next chain hop it would
 pick, so CLI-internal and SOVA-level fallback agree, and cost is reconciled via `result.model`.
 Cross-provider fallback (claude -> ollama) can only happen in the client loop.
@@ -244,6 +246,22 @@ Two non-negotiable constraints from the critique:
 - The PR that adds client-level fallback **in the same commit** neuters
   `WorkflowEngine._advance_fallback` behind a single flag, to avoid nested N*N double fallback
   during the migration window.
+
+**Accepted gap: `ctx.resolved_model` is not updated by the client-owned loop.** With
+`llm.engine_owned_fallback=False` (the default), a step that recovers via a fallback candidate
+does not write the winner back to `ExecutionContext`, so the next step still calls
+`invoke(model=ctx.resolved_model or ctx.config.agent.model, ...)` with the original (possibly
+still-unavailable) primary and relies on `ModelAvailabilityCache`'s TTL to skip it quickly. This
+is deliberate, not an oversight: `LLMResult.model` is not a uniform signal to propagate, since
+`providers/claude_code.py` echoes back the alias it was given while `providers/anthropic_api.py`
+sets it to `response.model`, the concrete API model ID. Writing that back into
+`ctx.resolved_model` unconditionally would work for claude-code but silently break every
+alias-based comparison downstream (`_advance_fallback`, `route_model`, `_ROLE_MODEL_FIELDS`) the
+moment a non-claude-code provider is active. Propagating the winner correctly needs client-side
+alias resolution (`LLMConfig.model_aliases`, Q3) landing first so the loop can report "which
+alias won" rather than "what the provider echoed"; that is PR8 scope. Until then, the practical
+mitigation is the availability cache's TTL: keep it short enough that a dead model is not retried
+across steps for long, and long enough to avoid re-probing a model that is actually still down.
 
 ### Q6. Keeping `agent.model="opus"` working
 
@@ -305,7 +323,7 @@ step / role  ->  invoke(prompt, model=ctx.resolved_model, task_type="<step>")
 sova/llm/client.py  (ONE choke point)
   guard_prompt -> maybe_compress -> select_model(precedence) -> alias map (client-side)
     -> _invoke_with_fallback(chain, shared_deadline):
-         try candidate -> on typed fallback-eligible error: cache-unavailable, advance
+         try candidate -> on fallback-eligible category: cache-unavailable, advance
          exhausted -> raise terminal
 
         v

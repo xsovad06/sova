@@ -25,6 +25,7 @@ from sova.llm.errors import (
     classify_error,
     classify_exception,
     is_fallback_eligible,
+    resolve_error_category,
 )
 from sova.llm.guard import PromptInjectionError, ScanResult, scan_prompt
 from sova.llm.models import BatchRequest, BatchResult, BatchTimeoutError, LLMResult, StreamEvent
@@ -61,6 +62,7 @@ __all__ = [
     "is_fallback_eligible",
     "record_cost",
     "reset_provider",
+    "resolve_error_category",
     "resolve_model",
     "route_model",
     "scan_prompt",

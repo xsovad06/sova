@@ -16,6 +16,7 @@ from sova.llm.errors import (
     classify_exception,
     is_billing_failure,
     is_fallback_eligible,
+    resolve_error_category,
 )
 
 _ALL_ERRORS = (
@@ -135,6 +136,59 @@ class TestIsFallbackEligible:
 
     def test_non_exception_is_not_eligible(self) -> None:
         assert not is_fallback_eligible("rate_limit")
+
+
+class TestResolveErrorCategory:
+    """Providers still raise bare RuntimeError, so the category must come from the message."""
+
+    def test_typed_error_reports_its_own_class(self) -> None:
+        assert resolve_error_category(RateLimitError("anything")) is RateLimitError
+
+    def test_typed_error_wins_over_its_message(self) -> None:
+        """An explicit type is authoritative: no message re-classification."""
+        assert resolve_error_category(LLMInvocationError("rate_limit")) is LLMInvocationError
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ("Claude CLI failed (exit 1): claude-opus-5 is not available", ModelUnavailableError),
+            ("Claude CLI failed (exit 1): HTTP 429 rate_limit", RateLimitError),
+            ("Claude CLI failed (exit 1): connection refused", ProviderUnavailableError),
+            ("Claude CLI failed (exit 1): budget_exhausted", BillingError),
+            ("Claude CLI succeeded but produced no output", LLMInvocationError),
+        ],
+    )
+    def test_untyped_error_is_classified_from_its_message(self, message: str, expected: type[LLMError]) -> None:
+        assert resolve_error_category(RuntimeError(message)) is expected
+
+    def test_non_exception_is_uncategorized(self) -> None:
+        assert resolve_error_category("rate_limit") is LLMInvocationError
+
+
+class TestUntypedErrorEligibility:
+    """The fallback chain must still advance while providers raise RuntimeError."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Claude CLI failed (exit 1): claude-opus-5 is not available",
+            "Claude CLI failed (exit 1): HTTP 429 rate_limit",
+            "Claude CLI failed (exit 1): connection refused",
+            "Claude CLI failed (exit 1): request timed out",
+        ],
+    )
+    def test_untyped_recoverable_error_is_eligible(self, message: str) -> None:
+        assert is_fallback_eligible(RuntimeError(message))
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Claude CLI failed (exit 1): budget_exhausted",
+            "Claude CLI succeeded but produced no output",
+        ],
+    )
+    def test_untyped_terminal_error_is_not_eligible(self, message: str) -> None:
+        assert not is_fallback_eligible(RuntimeError(message))
 
 
 class TestIsBillingFailure:

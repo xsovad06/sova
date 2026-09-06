@@ -198,6 +198,14 @@ _REGISTRY: list[SettingMeta] = [
         "llm",
         "number",
     ),
+    SettingMeta(
+        "llm.engine_owned_fallback",
+        "Engine-owned model fallback",
+        "Let the workflow engine advance the model fallback chain as well as the LLM client. "
+        "Off by default: the client owns fallback, and enabling both nests two chain walks",
+        "llm",
+        "boolean",
+    ),
     # -- Agent --
     SettingMeta(
         "agent.runtime",

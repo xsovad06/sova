@@ -8,13 +8,20 @@ to work unchanged.  The actual implementation lives in the configured
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.config.models import LLMConfig, RolesConfig
 from sova.llm.complexity import ComplexityTier
+from sova.llm.errors import (
+    LLMInvocationError,
+    ModelUnavailableError,
+    is_fallback_eligible,
+    resolve_error_category,
+)
 from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent
 from sova.utils.logging import get_logger
 
@@ -68,6 +75,234 @@ def reload_provider(cfg: ProjectConfig) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Model fallback loop
+#
+# SOVA owns the fallback chain (docs/model-selection-architecture.md, Q5). The
+# Claude CLI's --fallback-model stays as a fast provider-internal inner layer:
+# the loop hands it the same next hop it would pick itself, so both layers
+# agree. WorkflowEngine's own advance is off unless llm.engine_owned_fallback
+# is set, so the two walks never nest.
+# ---------------------------------------------------------------------------
+
+# Floor for one attempt: a shorter slice is not worth starting.
+_MIN_ATTEMPT_SECONDS = 60.0
+
+# Multi-candidate chains stop just short of the caller's timeout so the loop
+# raises its own terminal error before the engine's outer asyncio.timeout fires
+# and mislabels the failure as step_hard_timeout (which also commits WIP work).
+_DEADLINE_SAFETY_MARGIN = 0.95
+
+# Negative entries expire quickly so a model enabled mid-run is picked up
+# without restarting the process.
+_UNAVAILABLE_TTL_SECONDS = 300.0
+
+# (model, next_hop, timeout, max_budget_usd) -> result. Lets invoke() and
+# invoke_command() share one chain walk without the loop knowing which
+# provider call it drives.
+_AttemptFn = Callable[[str | None, str | None, float, Decimal | None], Awaitable[LLMResult]]
+
+
+class ModelAvailabilityCache:
+    """Process-local negative cache of models that failed as unavailable.
+
+    Populated purely reactively from ``ModelUnavailableError`` caught inside the
+    fallback loop: it never probes the provider, so it adds no hang surface to
+    the CLI callback or to ``spawn_direct`` subprocesses. Entries are per
+    process, not per issue, and are lost on resume or restart.
+
+    Keyed by ``(provider_identity, model)`` per docs/model-selection-architecture.md
+    (Q2), not by model name alone: a process hosting multiple projects
+    (``sova server start --multi``) must not let a model disabled on one
+    project's deployment poison the lookup for another project whose deployment
+    enables it.
+
+    The cache is an optimization, never a hard gate. Callers must keep the last
+    candidate even when every entry is marked, so a stale negative entry can
+    never break all LLM calls in the process.
+    """
+
+    def __init__(self, ttl_seconds: float = _UNAVAILABLE_TTL_SECONDS) -> None:
+        self._ttl = ttl_seconds
+        self._expiry: dict[tuple[str, str], float] = {}
+
+    def mark_unavailable(self, identity: str, model: str | None) -> None:
+        """Record *model* as unavailable on *identity* for the TTL. ``None`` has no identity."""
+        if model is None:
+            return
+        self._expiry[(identity, model)] = time.monotonic() + self._ttl
+
+    def is_unavailable(self, identity: str, model: str | None) -> bool:
+        """Return True while *model* has a live negative entry on *identity*."""
+        if model is None:
+            return False
+        key = (identity, model)
+        expiry = self._expiry.get(key)
+        if expiry is None:
+            return False
+        if time.monotonic() >= expiry:
+            del self._expiry[key]
+            return False
+        return True
+
+    def reset(self) -> None:
+        """Drop every entry (used by tests to avoid cross-test leakage)."""
+        self._expiry.clear()
+
+
+_availability_cache = ModelAvailabilityCache()
+
+
+def get_availability_cache() -> ModelAvailabilityCache:
+    """Return the process-local model availability cache."""
+    return _availability_cache
+
+
+def reset_availability_cache() -> None:
+    """Clear the process-local availability cache (for testing)."""
+    _availability_cache.reset()
+
+
+def _normalize_model(model: str | None) -> str | None:
+    """Normalize *model* so aliases and native IDs compare (and cache) as one."""
+    if model is None:
+        return None
+    return get_provider().normalize_model_name(model)
+
+
+def _provider_identity(cfg: ProjectConfig | None) -> str:
+    """Return the availability cache's scoping key for the active deployment.
+
+    Combines ``llm.provider`` and ``llm.api_base`` so two projects on the same
+    provider type but different deployments (e.g. two Vertex projects) are
+    never conflated, and a missing config degrades to a single shared identity
+    rather than raising.
+    """
+    if cfg is None:
+        return "unknown:"
+    return f"{cfg.llm.provider}:{cfg.llm.api_base}"
+
+
+def _build_candidate_chain(primary: str | None, cfg: ProjectConfig | None) -> list[str | None]:
+    """Return the ordered chain: *primary* followed by ``agent.fallback_models``.
+
+    De-duplication runs on the normalized name so an alias cannot repeat the
+    model it resolves to, matching ``WorkflowEngine._advance_fallback``'s
+    skip-duplicates behavior. A ``None`` primary means "provider default": it is
+    never normalized and never compared against a named model. Candidates are
+    appended unnormalized so what reaches the provider is exactly what config
+    asked for.
+    """
+    chain: list[str | None] = [primary]
+    if cfg is None:
+        return chain
+
+    seen = {_normalize_model(primary)} if primary else set()
+    for candidate in cfg.agent.fallback_models:
+        if not candidate:
+            continue
+        normalized = _normalize_model(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        chain.append(candidate)
+    return chain
+
+
+def _drop_unavailable(chain: list[str | None], identity: str) -> list[str | None]:
+    """Filter cached-unavailable candidates, keeping the last one as a fail-open."""
+    cache = get_availability_cache()
+    kept = [model for model in chain if not cache.is_unavailable(identity, _normalize_model(model))]
+    return kept or chain[-1:]
+
+
+async def _invoke_with_fallback(
+    attempt: _AttemptFn,
+    *,
+    primary: str | None,
+    cfg: ProjectConfig | None,
+    caller_fallback: str | None,
+    timeout: float,
+    max_budget_usd: Decimal | None = None,
+) -> LLMResult:
+    """Walk the model chain until an attempt succeeds, sharing one deadline and budget.
+
+    A single-candidate chain (the default, empty ``agent.fallback_models``)
+    delegates straight through with the timeout, *max_budget_usd*, and the
+    caller-supplied *caller_fallback* unchanged, so the no-fallback path stays
+    identical to a direct provider call.
+
+    Multi-candidate chains share one deadline of ``timeout *
+    _DEADLINE_SAFETY_MARGIN`` and give each attempt ``remaining /
+    candidates_left`` (floored at ``_MIN_ATTEMPT_SECONDS``, capped at what is
+    left), so a hanging first attempt cannot consume the whole budget and a
+    fast-failing one leaves nearly the full window for the next. Each attempt
+    also receives the chain's next hop as its provider-level fallback, so the
+    CLI's inner fallback agrees with this one.
+
+    A caller-supplied *max_budget_usd* is divided the same way: each attempt is
+    allocated ``budget_remaining / candidates_left`` and that allocation is
+    deducted from ``budget_remaining`` regardless of what the attempt actually
+    spent (failed attempts report no cost), so the worst case across the whole
+    chain still sums to *max_budget_usd* instead of granting every candidate a
+    fresh ceiling.
+
+    Only errors accepted by ``is_fallback_eligible`` advance the chain; anything
+    else re-raises immediately. Eligibility is category-based, not type-based,
+    so the bare ``RuntimeError`` every provider still raises is classified from
+    its message rather than dropping straight through. Exhaustion re-raises the
+    last eligible error.
+    """
+    identity = _provider_identity(cfg)
+    chain = _drop_unavailable(_build_candidate_chain(primary, cfg), identity)
+    if len(chain) == 1:
+        return await attempt(chain[0], caller_fallback, timeout, max_budget_usd)
+
+    deadline = time.monotonic() + timeout * _DEADLINE_SAFETY_MARGIN
+    budget_remaining = max_budget_usd
+    last_error: Exception | None = None
+
+    for index, model in enumerate(chain):
+        remaining = deadline - time.monotonic()
+        if last_error is not None and remaining < _MIN_ATTEMPT_SECONDS:
+            log.warning("llm.fallback.budget_exhausted", model=model, remaining_s=round(remaining, 1))
+            break
+
+        candidates_left = len(chain) - index
+        attempt_timeout = min(remaining, max(remaining / candidates_left, _MIN_ATTEMPT_SECONDS))
+        attempt_budget = budget_remaining / candidates_left if budget_remaining is not None else None
+        next_hop = chain[index + 1] if index + 1 < len(chain) else None
+
+        try:
+            return await attempt(model, next_hop, attempt_timeout, attempt_budget)
+        except Exception as exc:
+            if not is_fallback_eligible(exc):
+                raise
+            # Providers still raise bare RuntimeError, so eligibility and the
+            # unavailable-model signal both come from the resolved category,
+            # never from the raised type alone.
+            category = resolve_error_category(exc)
+            if category is ModelUnavailableError:
+                get_availability_cache().mark_unavailable(identity, _normalize_model(model))
+            if attempt_budget is not None:
+                budget_remaining = budget_remaining - attempt_budget
+            last_error = exc
+            log.warning(
+                "llm.fallback.advance",
+                from_model=model,
+                to_model=next_hop,
+                error_type=type(exc).__name__,
+                category=category.__name__,
+                error=str(exc)[:200],
+                exc_info=True,
+            )
+
+    if last_error is None:  # pragma: no cover (the loop always returns or sets it)
+        raise LLMInvocationError("Model fallback chain produced no attempt")
+    log.error("llm.fallback.exhausted", chain=[str(m) for m in chain], error=str(last_error)[:200])
+    raise last_error
+
+
 async def invoke(
     prompt: str,
     *,
@@ -94,20 +329,39 @@ async def invoke(
 
     guard_prompt(prompt)
     original_prompt = prompt
-    prompt = maybe_compress(prompt, cwd)
-    cfg = _try_load_config(cwd) if model is None or timeout is None else None
+    # Loaded unconditionally, and before compression: the fallback chain lives
+    # in agent.fallback_models, so it is needed even when both model and
+    # timeout are supplied, and passing it into maybe_compress avoids loading
+    # config twice per call (it would otherwise reload internally).
+    cfg = _try_load_config(cwd)
+    prompt = maybe_compress(prompt, cwd, cfg=cfg)
     resolved = _resolve_task_type_model(model, task_type, cfg=cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
-    result = await get_provider().invoke(
-        prompt,
-        model=resolved,
-        fallback_model=fallback_model,
-        cwd=cwd,
-        max_budget_usd=max_budget_usd,
+
+    async def _attempt(
+        candidate: str | None, next_hop: str | None, attempt_timeout: float, attempt_budget: Decimal | None
+    ) -> LLMResult:
+        return await get_provider().invoke(
+            prompt,
+            model=candidate,
+            fallback_model=next_hop,
+            cwd=cwd,
+            max_budget_usd=attempt_budget,
+            timeout=attempt_timeout,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+        )
+
+    result = await _invoke_with_fallback(
+        _attempt,
+        primary=resolved,
+        cfg=cfg,
+        caller_fallback=fallback_model,
         timeout=resolved_timeout,
-        system_prompt=system_prompt,
-        max_tokens=max_tokens,
+        max_budget_usd=max_budget_usd,
     )
+    # Runs once, against the winning attempt: failed attempts raise before
+    # producing a result, so nothing is double-counted.
     _record_compression_savings(result, original_prompt, prompt)
     return result
 
@@ -210,14 +464,29 @@ def classify_content_type(text: str) -> str:
     return "text"
 
 
-def maybe_compress(prompt: str, cwd: Path | str | None = None) -> str:
+_CFG_UNSET = object()
+
+
+def maybe_compress(
+    prompt: str,
+    cwd: Path | str | None = None,
+    *,
+    cfg: ProjectConfig | None = _CFG_UNSET,  # type: ignore[assignment]
+) -> str:
     """Compress *prompt* via Headroom when compression is enabled.
 
     Gated on ``compression.enabled`` so the optional ``headroom-ai`` import path
     is never touched when disabled. Returns the prompt unchanged on any failure,
     so compression can never break the LLM call path.
+
+    *cfg* lets a caller that already loaded config (e.g. ``invoke()``) pass it
+    straight through instead of triggering a second ``load_config()`` round
+    trip. The sentinel default (rather than ``None``) distinguishes "caller
+    didn't load config, load it here" from "caller loaded it and got None
+    (load failure)", so a failed load is never retried pointlessly.
     """
-    cfg = _try_load_config(cwd)
+    if cfg is _CFG_UNSET:
+        cfg = _try_load_config(cwd)
     if cfg is None or not cfg.compression.enabled:
         return prompt
 
@@ -241,22 +510,40 @@ async def invoke_command(
     timeout: float | None = None,
 ) -> LLMResult:
     """Run a slash command via the active LLM provider."""
+    # Loaded before compression so args is compressed with the same cfg used
+    # for timeout/chain resolution below, instead of loading config twice.
+    cfg = _try_load_config(cwd)
     if args:
         from sova.llm.guard import guard_prompt
 
         assembled = f"{command} {args}".strip()
         guard_prompt(assembled)
-        args = maybe_compress(args, cwd)
-    resolved_timeout = _resolve_timeout(timeout, cwd=cwd)
-    async with asyncio.timeout(resolved_timeout):
+        args = maybe_compress(args, cwd, cfg=cfg)
+    resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
+
+    async def _attempt(
+        candidate: str | None, next_hop: str | None, attempt_timeout: float, attempt_budget: Decimal | None
+    ) -> LLMResult:
         return await get_provider().invoke_command(
             command,
             args,
-            model=model,
-            fallback_model=fallback_model,
+            model=candidate,
+            fallback_model=next_hop,
             cwd=cwd,
-            max_budget_usd=max_budget_usd,
+            max_budget_usd=attempt_budget,
+            timeout=attempt_timeout,
+        )
+
+    # The outer timeout stays a hard backstop; the loop's own deadline is a
+    # safety margin below it, so this never fires before the chain is walked.
+    async with asyncio.timeout(resolved_timeout):
+        return await _invoke_with_fallback(
+            _attempt,
+            primary=model,
+            cfg=cfg,
+            caller_fallback=fallback_model,
             timeout=resolved_timeout,
+            max_budget_usd=max_budget_usd,
         )
 
 

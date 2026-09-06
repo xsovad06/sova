@@ -178,9 +178,25 @@ def classify_exception(exc: BaseException) -> type[LLMError]:
     return classify_error(str(exc))
 
 
+def resolve_error_category(exc: object) -> type[LLMError]:
+    """Return the category *exc* belongs to.
+
+    A typed error reports its own class. Anything else is classified from its
+    message: every provider today still raises a bare RuntimeError
+    (sova/llm/providers/*), so type-only matching would file every real
+    invocation failure as uncategorized and silently disable the fallback chain.
+    Non-exceptions have no message to classify and stay uncategorized.
+    """
+    if isinstance(exc, LLMError):
+        return type(exc)
+    if isinstance(exc, Exception):
+        return classify_error(str(exc))
+    return LLMInvocationError
+
+
 def is_fallback_eligible(exc: object) -> bool:
     """Return True if retrying the invocation on a fallback model may help."""
-    return isinstance(exc, _FALLBACK_ELIGIBLE)
+    return issubclass(resolve_error_category(exc), _FALLBACK_ELIGIBLE)
 
 
 def is_billing_failure(detail: str | BaseException | None) -> bool:

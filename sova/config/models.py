@@ -90,6 +90,9 @@ class LLMConfig(BaseSettings):
     batch_poll_interval: int = Field(60, gt=0)
     batch_timeout: int = Field(86400, gt=0)
     cli_timeout: int = Field(900, gt=0)
+    # Fallback is owned by sova/llm/client.py. Set True only to restore the
+    # legacy WorkflowEngine-driven advance as a rollback path.
+    engine_owned_fallback: bool = False
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_LLM_")
 
