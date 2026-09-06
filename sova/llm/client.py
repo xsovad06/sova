@@ -598,9 +598,16 @@ async def invoke_streaming(
         yield event
 
 
+# Both the task-type key ("review") and the role name ("reviewer") are mapped:
+# callers may hold either, depending on whether they read TASK_TYPE_KEYS or
+# ``ctx.role`` (which dispatcher.py sets to the role's ``name``).
 _ROLE_MODEL_FIELDS: dict[str, str] = {
     "researcher": "researcher_model",
     "triage": "triage_model",
+    "review": "reviewer_model",
+    "reviewer": "reviewer_model",
+    "developer": "developer_model",
+    "planner": "planner_model",
 }
 
 
