@@ -171,6 +171,7 @@ class _DeadRunRecord(TypedDict):
     final_status: str
     error_msg: str
     needs_merge_check: bool
+    was_status: str
 
 
 async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> None:
@@ -178,10 +179,19 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
 
     Three-phase approach to prevent GitHub API calls from blocking DB write locks:
 
-      1. Read-only query per directory (no write lock).
+      1. Read-only query per directory (no write lock). Two branches: ordinary
+         non-terminal runs, plus a dedicated branch for dead-PID "awaiting_approval"
+         runs. The latter is itself a member of TASK_RUN_TERMINAL (it's a deliberate
+         paused state so check_already_running() blocks re-research unconditionally),
+         so it is invisible to the first branch's notin_(_TERMINAL) filter and would
+         otherwise never be swept outside of startup, permanently blocking re-evaluation
+         of its issue once the process holding the PID exits. Note: this does not cover
+         PID recycling (the OS reassigning the same PID to a new, unrelated live
+         process) since _is_process_alive() would still report the run as alive.
       2. Concurrent GitHub merge checks outside any session, bounded by a total timeout.
          Mirrors the pattern used in recover_stale_runs() in agent_recovery.py.
-      3. Write transaction per directory with terminal-status re-check to handle
+      3. Write transaction per directory with a was_status re-check (not a _TERMINAL
+         membership check, which would always skip awaiting_approval rows) to handle
          concurrent finalizations (e.g. _wait_and_finalize completing between phases).
     """
     from datetime import datetime, timezone
@@ -209,7 +219,14 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
                 TaskRun.pid.isnot(None),
             )
             result = await session.execute(stmt)
-            runs = result.scalars().all()
+            runs = list(result.scalars().all())
+
+            awaiting_stmt = select(TaskRun).where(
+                TaskRun.status == "awaiting_approval",
+                TaskRun.pid.isnot(None),
+            )
+            awaiting_result = await session.execute(awaiting_stmt)
+            runs.extend(awaiting_result.scalars().all())
 
         dead_runs: list[_DeadRunRecord] = []
         for run in runs:
@@ -225,6 +242,7 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
                     "final_status": "interrupted",
                     "error_msg": "Agent process died unexpectedly",
                     "needs_merge_check": needs_merge_check,
+                    "was_status": run.status,
                 }
             )
 
@@ -267,7 +285,7 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
         # Re-reading inside the transaction ensures we see any status change
         # committed by _wait_and_finalize between Phase 1 and now.
         # "database is locked" is a transient error: another writer held the lock past
-        # the 30s busy timeout. Retrying is safe because the terminal-status re-check
+        # the 30s busy timeout. Retrying is safe because the was_status re-check
         # inside the transaction is idempotent.
         now = datetime.now(timezone.utc)
         for _attempt in range(_SWEEP_WRITE_RETRY_ATTEMPTS):
@@ -282,8 +300,8 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
                             run = runs_by_id.get(rec["run_id"])
                             if run is None:
                                 continue
-                            if run.status in _TERMINAL:
-                                continue  # finalized by concurrent writer between Phase 1 and Phase 3
+                            if run.status != rec["was_status"]:
+                                continue  # changed by a concurrent writer between Phase 1 and Phase 3
                             run.status = rec["final_status"]
                             run.error_message = rec["error_msg"]
                             run.ended_at = now
