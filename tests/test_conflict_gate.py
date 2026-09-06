@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import SupervisorConfig
+from sova.config.models import ProjectConfig, SupervisorConfig
 from sova.dashboard.services.pr_service import get_pr_mergeability_map
 from sova.git.pr import PRInfo
 from sova.supervisor.gates.merge_conflict import check_merge_conflict_gate
@@ -37,8 +37,10 @@ def _task(
 def _make_engine(
     config: SupervisorConfig | None = None,
     adapter: Any | None = None,
+    max_parallel_agents: int = 2,
 ) -> TaskProgressionEngine:
-    cfg = config or SupervisorConfig()
+    supervisor_cfg = config or SupervisorConfig()
+    cfg = ProjectConfig(supervisor=supervisor_cfg, max_parallel_agents=max_parallel_agents)
     mock_adapter = adapter or AsyncMock()
     mock_session_factory = MagicMock()
     return TaskProgressionEngine(
@@ -220,13 +222,13 @@ class TestConflictGateIntegration:
         assert decision.action == ProgressionAction.SPAWN_INTEGRATE
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.load_config")
-    async def test_evaluate_all_fetches_mergeability(self, mock_cfg: MagicMock) -> None:
-        mock_cfg.return_value.max_parallel_agents = 5
+    async def test_evaluate_all_fetches_mergeability(self) -> None:
         tasks = [_task(1, state=TaskState.IN_REVIEW)]
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
-        engine = _make_engine(config=SupervisorConfig(auto_integrate=True, task_queue=[1]), adapter=adapter)
+        engine = _make_engine(
+            config=SupervisorConfig(auto_integrate=True, task_queue=[1]), adapter=adapter, max_parallel_agents=5
+        )
         with (
             patch.object(
                 engine,
@@ -258,13 +260,13 @@ class TestConflictGateIntegration:
         assert any(b.gate == "conflict" for b in decisions[0].blocked_by)
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.load_config")
-    async def test_evaluate_all_mergeability_api_failure_fails_open(self, mock_cfg: MagicMock) -> None:
-        mock_cfg.return_value.max_parallel_agents = 5
+    async def test_evaluate_all_mergeability_api_failure_fails_open(self) -> None:
         tasks = [_task(1, state=TaskState.IN_REVIEW)]
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
-        engine = _make_engine(config=SupervisorConfig(auto_integrate=True, task_queue=[1]), adapter=adapter)
+        engine = _make_engine(
+            config=SupervisorConfig(auto_integrate=True, task_queue=[1]), adapter=adapter, max_parallel_agents=5
+        )
         with (
             patch.object(
                 engine,
