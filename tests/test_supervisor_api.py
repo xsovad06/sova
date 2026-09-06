@@ -739,6 +739,7 @@ class TestSupervisorDaemonRequireApproval:
         decisions = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
 
         with (
+            patch("sova.config.loader.load_config", return_value=cfg),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
             patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
@@ -770,6 +771,7 @@ class TestSupervisorDaemonRequireApproval:
         execute_results = [{"run_id": 1}]
 
         with (
+            patch("sova.config.loader.load_config", return_value=cfg),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
             patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
@@ -1058,6 +1060,128 @@ class TestTaskQueueRouter:
                 resp = await client.get("/api/supervisor/queue")
         queue = resp.json()["queue"]
         assert len(queue) == len(set(queue)), f"Duplicate entries in queue: {queue}"
+
+
+class TestTaskQueueDaemonNotify:
+    """Queue-mutating endpoints must refresh a registered daemon's config
+    snapshot (non-fatal, without waking it early: see #935)."""
+
+    @pytest.fixture
+    def project_dir(self, tmp_path):
+        return tmp_path
+
+    @pytest.fixture
+    def app(self, project_dir):
+        from sova.dashboard.app import create_app
+
+        (project_dir / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
+
+        with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
+            with patch("sova.dashboard.app.list_projects", return_value={}):
+                return create_app(project_dir=project_dir)
+
+    @staticmethod
+    def _registered_daemon(project_dir):
+        """Context manager registering a mock daemon for project_dir, restored after."""
+        from contextlib import contextmanager
+
+        from sova.dashboard.routers import supervisor as sup_mod
+
+        @contextmanager
+        def _cm():
+            mock_daemon = MagicMock()
+            orig_registry = sup_mod._daemon_registry
+            sup_mod._daemon_registry = {str(project_dir.resolve()): mock_daemon}
+            try:
+                yield mock_daemon
+            finally:
+                sup_mod._daemon_registry = orig_registry
+
+        return _cm()
+
+    async def test_add_to_queue_notifies_daemon_without_waking(self, app, project_dir) -> None:
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            self._registered_daemon(project_dir) as mock_daemon,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+        assert resp.status_code == 201
+        mock_daemon.reload_config.assert_called_once()
+        _args, kwargs = mock_daemon.reload_config.call_args
+        assert kwargs.get("wake") is False
+
+    async def test_set_queue_notifies_daemon(self, app, project_dir) -> None:
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            self._registered_daemon(project_dir) as mock_daemon,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [1, 2]})
+        assert resp.status_code == 200
+        mock_daemon.reload_config.assert_called_once()
+
+    async def test_remove_from_queue_notifies_daemon(self, app, project_dir) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                await client.post("/api/supervisor/queue", json={"issue_number": 42})
+
+            with self._registered_daemon(project_dir) as mock_daemon:
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.delete("/api/supervisor/queue/42")
+        assert resp.status_code == 200
+        mock_daemon.reload_config.assert_called_once()
+
+    async def test_clear_queue_notifies_daemon(self, app, project_dir) -> None:
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            self._registered_daemon(project_dir) as mock_daemon,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.delete("/api/supervisor/queue")
+        assert resp.status_code == 200
+        mock_daemon.reload_config.assert_called_once()
+
+    async def test_no_registered_daemon_is_noop(self, app, project_dir) -> None:
+        """No daemon registered (supervisor disabled): endpoint still returns 200/201."""
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+        assert resp.status_code == 201
+
+    async def test_notify_failure_is_non_fatal(self, app, project_dir) -> None:
+        """A broken daemon.reload_config() must not fail the queue write."""
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            self._registered_daemon(project_dir) as mock_daemon,
+        ):
+            mock_daemon.reload_config.side_effect = RuntimeError("boom")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+        assert resp.status_code == 201
+        assert resp.json()["queue"] == [42]
+
+    async def test_notify_only_touches_daemon_for_own_project(self, app, project_dir, tmp_path_factory) -> None:
+        """A queue edit on project A must not refresh project B's daemon (multi-project isolation)."""
+        from sova.dashboard.routers import supervisor as sup_mod
+
+        other_project_dir = tmp_path_factory.mktemp("other-project")
+        mock_daemon_a = MagicMock()
+        mock_daemon_b = MagicMock()
+        orig_registry = sup_mod._daemon_registry
+        sup_mod._daemon_registry = {
+            str(project_dir.resolve()): mock_daemon_a,
+            str(other_project_dir.resolve()): mock_daemon_b,
+        }
+        try:
+            with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+            assert resp.status_code == 201
+            mock_daemon_a.reload_config.assert_called_once()
+            mock_daemon_b.reload_config.assert_not_called()
+        finally:
+            sup_mod._daemon_registry = orig_registry
 
 
 class TestTaskQueueValidation:

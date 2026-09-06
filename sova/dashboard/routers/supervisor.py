@@ -299,7 +299,7 @@ async def _execute_plan_decisions(decisions: list[ProgressionDecision], project_
     adapter = create_adapter(cfg)
     session_factory = await get_session_factory(project_dir)
     engine = TaskProgressionEngine(
-        config=cfg.supervisor,
+        config=cfg,
         adapter=adapter,
         project_dir=project_dir,
         session_factory=session_factory,
@@ -397,6 +397,28 @@ async def _read_queue(project_dir: Path | None) -> list[int]:
     return await load_task_queue(project_dir)
 
 
+async def _notify_daemon_queue_change(project_dir: Path | None) -> None:
+    """Refresh a running daemon's config snapshot after a queue edit.
+
+    Non-fatal: no registered daemon (supervisor disabled, or the dashboard
+    running without the scheduler) is a no-op. Does not wake the daemon
+    early (``wake=False``): ``_poll_once()`` already reloads config fresh
+    every cycle, so the edit lands on the next natural cycle rather than
+    triggering a burst of premature polls on rapid successive edits (e.g.
+    drag-to-reorder).
+    """
+    daemon = _get_daemon(project_dir)
+    if daemon is None:
+        return
+    try:
+        from sova.config.loader import load_config
+
+        cfg = await asyncio.to_thread(load_config, project_dir)
+        daemon.reload_config(cfg, wake=False)
+    except Exception:
+        log.debug("supervisor.queue.daemon_notify_failed", exc_info=True)
+
+
 _toml_migrated: set[str] = set()
 
 
@@ -430,7 +452,7 @@ async def _maybe_migrate_queue_from_toml(project_dir: Path | None) -> None:
 @router.get("/queue")
 async def get_queue() -> dict:
     """Return the current task queue."""
-    project_dir = get_project_dir()
+    project_dir = _resolve_project_dir()
     async with _queue_lock:
         await _maybe_migrate_queue_from_toml(project_dir)
     return {"queue": await _read_queue(project_dir)}
@@ -440,9 +462,10 @@ async def get_queue() -> dict:
 async def set_queue(body: QueueSetRequest) -> dict:
     """Replace the entire task queue (supports reordering)."""
     async with _queue_lock:
-        project_dir = get_project_dir()
+        project_dir = _resolve_project_dir()
         queue = _deduplicate(body.issue_numbers)
         await _persist_queue(project_dir, queue)
+        await _notify_daemon_queue_change(project_dir)
         return {"queue": queue}
 
 
@@ -457,7 +480,7 @@ async def set_queue(body: QueueSetRequest) -> dict:
 async def add_to_queue(body: QueueAddRequest) -> dict:
     """Add a single issue to the end of the queue."""
     async with _queue_lock:
-        project_dir = get_project_dir()
+        project_dir = _resolve_project_dir()
         queue = await _read_queue(project_dir)
 
         if body.issue_number in queue:
@@ -465,6 +488,7 @@ async def add_to_queue(body: QueueAddRequest) -> dict:
 
         queue.append(body.issue_number)
         await _persist_queue(project_dir, queue)
+        await _notify_daemon_queue_change(project_dir)
         return {"queue": queue}
 
 
@@ -478,7 +502,7 @@ async def add_to_queue(body: QueueAddRequest) -> dict:
 async def remove_from_queue(issue_number: int) -> dict:
     """Remove a single issue from the queue."""
     async with _queue_lock:
-        project_dir = get_project_dir()
+        project_dir = _resolve_project_dir()
         queue = await _read_queue(project_dir)
 
         if issue_number not in queue:
@@ -486,6 +510,7 @@ async def remove_from_queue(issue_number: int) -> dict:
 
         queue.remove(issue_number)
         await _persist_queue(project_dir, queue)
+        await _notify_daemon_queue_change(project_dir)
         return {"queue": queue}
 
 
@@ -493,8 +518,9 @@ async def remove_from_queue(issue_number: int) -> dict:
 async def clear_queue() -> dict:
     """Clear the entire task queue."""
     async with _queue_lock:
-        project_dir = get_project_dir()
+        project_dir = _resolve_project_dir()
         await _persist_queue(project_dir, [])
+        await _notify_daemon_queue_change(project_dir)
         return {"queue": []}
 
 

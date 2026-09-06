@@ -10,12 +10,11 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from sova.config.loader import load_config
+from sova.config.models import ProjectConfig
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.db.models import TaskRun
 from sova.utils.logging import get_logger
@@ -73,12 +72,17 @@ class OverlapResult:
 
 async def get_active_branch_file_sets(
     session_factory: async_sessionmaker,
-    project_dir: Path,
+    config: ProjectConfig,
     *,
     exclude_issue: str | None = None,
 ) -> list[BranchFileSet]:
-    """Fetch file sets for all in-flight branches from non-terminal TaskRuns."""
-    cfg = load_config(project_dir)
+    """Fetch file sets for all in-flight branches from non-terminal TaskRuns.
+
+    *config* must be the caller's already-loaded evaluation snapshot (not
+    reloaded here) so the repo/user/base_branch used to fetch PR files match
+    the rest of the same progression cycle.
+    """
+    cfg = config
 
     async with session_factory() as session:
         stmt = select(TaskRun).where(

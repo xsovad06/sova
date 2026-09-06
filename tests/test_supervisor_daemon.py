@@ -86,8 +86,9 @@ class TestSupervisorDaemon:
             await asyncio.gather(t1, t2)
             assert call_count == 2
 
-    async def test_poll_once_returns_all_phases(self, daemon: SupervisorDaemon) -> None:
+    async def test_poll_once_returns_all_phases(self, daemon: SupervisorDaemon, config: ProjectConfig) -> None:
         with (
+            patch("sova.config.loader.load_config", return_value=config),
             patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
             patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
             patch.object(daemon, "_poll_queue_maintenance", new_callable=AsyncMock, return_value={"changed": False}),
@@ -253,12 +254,81 @@ class TestSupervisorDaemon:
                 await daemon._run_loop()
         assert call_count >= 2
 
-    async def test_poll_once_adapter_creation_failure(self, daemon: SupervisorDaemon) -> None:
+    async def test_poll_once_adapter_creation_failure(self, daemon: SupervisorDaemon, config: ProjectConfig) -> None:
         """_poll_once should return error dict when adapter creation fails."""
-        with patch("sova.adapters.create_adapter", side_effect=Exception("no auth")):
+        with (
+            patch("sova.config.loader.load_config", return_value=config),
+            patch("sova.adapters.create_adapter", side_effect=Exception("no auth")),
+        ):
             result = await daemon._poll_once()
         assert "error" in result["progression"]
         assert "no auth" in result["progression"]["error"]
+
+    async def test_queue_mutated_between_cycles_is_picked_up(
+        self, daemon: SupervisorDaemon, config: ProjectConfig
+    ) -> None:
+        """Regression test for #935: the daemon used to hold a config snapshot
+        taken at construction time, so a task_queue edit persisted to the DB
+        between two poll_once() calls was never seen. _poll_once() now
+        reloads config fresh every cycle, so the second call must observe
+        the updated queue.
+        """
+        cfg_v1 = config.model_copy(update={"supervisor": config.supervisor.model_copy(update={"task_queue": [1]})})
+        cfg_v2 = config.model_copy(update={"supervisor": config.supervisor.model_copy(update={"task_queue": [1, 2]})})
+
+        seen_queues: list[list[int]] = []
+
+        async def capture_progression(_adapter, cfg):
+            seen_queues.append(list(cfg.supervisor.task_queue))
+            return {"decisions": 0, "executed": 0}, None
+
+        with (
+            patch("sova.config.loader.load_config", side_effect=[cfg_v1, cfg_v2]),
+            patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
+            patch.object(
+                daemon, "_poll_queue_maintenance", new_callable=AsyncMock, return_value={"skipped": "auto_queue"}
+            ),
+            patch.object(daemon, "_poll_progression", side_effect=capture_progression),
+            patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
+            patch("sova.adapters.create_adapter", return_value=AsyncMock()),
+        ):
+            await daemon.poll_once()
+            await daemon.poll_once()
+
+        assert seen_queues == [[1], [1, 2]]
+
+    async def test_poll_once_config_reload_failure_falls_back(
+        self, daemon: SupervisorDaemon, config: ProjectConfig
+    ) -> None:
+        """Regression test for #935: a failed config reload (corrupt TOML,
+        locked DB) must fall back to the previous snapshot and continue the
+        cycle rather than crashing the daemon loop or counting as a poll
+        failure that triggers exponential backoff.
+        """
+        with (
+            patch("sova.config.loader.load_config", side_effect=RuntimeError("db is locked")),
+            patch("sova.adapters.create_adapter", return_value=AsyncMock()),
+            patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
+            patch.object(
+                daemon, "_poll_queue_maintenance", new_callable=AsyncMock, return_value={"skipped": "auto_queue"}
+            ),
+            patch.object(
+                daemon,
+                "_poll_progression",
+                new_callable=AsyncMock,
+                return_value=({"decisions": 0, "executed": 0}, None),
+            ),
+            patch.object(
+                daemon, "_poll_epic_close", new_callable=AsyncMock, return_value={"checked": True, "closed": 0}
+            ),
+            patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={"db": "ok"}),
+        ):
+            result = await daemon._poll_once()
+
+        assert daemon._config is config
+        assert result["progression"] == {"decisions": 0, "executed": 0}
+        has_error = any(isinstance(v, dict) and "error" in v for v in result.values())
+        assert not has_error
 
     async def test_poll_progression_with_decisions(
         self,
@@ -451,7 +521,9 @@ class TestSupervisorDaemon:
         with patch.object(daemon, "_session_factory", side_effect=Exception("db down")):
             await daemon._purge_old_logs()
 
-    async def test_poll_once_quota_runs_before_progression(self, daemon: SupervisorDaemon) -> None:
+    async def test_poll_once_quota_runs_before_progression(
+        self, daemon: SupervisorDaemon, config: ProjectConfig
+    ) -> None:
         """Quota sync must complete before the progression engine evaluates tasks."""
         call_order: list[str] = []
 
@@ -468,6 +540,7 @@ class TestSupervisorDaemon:
             return {"decisions": 0, "executed": 0}, None
 
         with (
+            patch("sova.config.loader.load_config", return_value=config),
             patch.object(daemon, "_poll_quota", side_effect=mock_quota),
             patch.object(daemon, "_poll_queue_maintenance", side_effect=mock_queue),
             patch.object(daemon, "_poll_progression", side_effect=mock_progression),
@@ -525,6 +598,7 @@ class TestSupervisorDaemon:
         d = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
 
         with (
+            patch("sova.config.loader.load_config", return_value=cfg),
             patch.object(d, "_poll_quota", new_callable=AsyncMock, return_value={}),
             patch.object(d, "_poll_queue_maintenance", new_callable=AsyncMock) as mock_qm,
             patch.object(d, "_poll_progression", new_callable=AsyncMock, return_value=({}, None)),
@@ -642,3 +716,27 @@ class TestPollIntervalFloor:
 
         assert not daemon._config_reloaded.is_set()
         assert daemon._config.supervisor.poll_interval_seconds == 60
+
+    async def test_reload_config_wake_false_does_not_interrupt_sleep(self, session_factory: async_sessionmaker) -> None:
+        """reload_config(cfg, wake=False) updates the snapshot without waking sleep.
+
+        Used by the queue-mutating endpoints (#935) so a dashboard edit lands
+        on the next natural poll cycle instead of triggering an immediate one.
+        """
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, task_queue=[1], poll_interval_seconds=300),
+            github_repo="test/repo",
+        )
+        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+
+        new_cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, task_queue=[1, 2], poll_interval_seconds=300),
+            github_repo="test/repo",
+        )
+        daemon.reload_config(new_cfg, wake=False)
+
+        assert daemon._config.supervisor.task_queue == [1, 2]
+        assert not daemon._config_reloaded.is_set()
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(daemon._interruptible_sleep(300), timeout=0.1)
