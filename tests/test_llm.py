@@ -545,6 +545,51 @@ class TestInvokeCommand:
 
         assert mock_run.call_args[1]["timeout"] == 300.0
 
+    async def test_invoke_command_routes_by_task_type(self) -> None:
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.llm import client
+
+        provider = MagicMock()
+        provider.invoke_command = AsyncMock(return_value=LLMResult(text="ok", model="test"))
+        cfg = ProjectConfig(llm=LLMConfig(routing={"develop": "haiku"}), agent=AgentConfig(model="opus"))
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "_try_load_config", return_value=cfg),
+        ):
+            await client.invoke_command("/develop", args="42", model="opus", task_type="develop")
+
+        assert provider.invoke_command.call_args.kwargs["model"] == "haiku"
+
+    async def test_invoke_routes_by_task_type_over_explicit_model(self) -> None:
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.llm import client
+
+        provider = MagicMock()
+        provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="test"))
+        cfg = ProjectConfig(llm=LLMConfig(routing={"triage": "haiku"}), agent=AgentConfig(model="opus"))
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "_try_load_config", return_value=cfg),
+        ):
+            await client.invoke("hello", model="opus", task_type="triage")
+
+        assert provider.invoke.call_args.kwargs["model"] == "haiku"
+
+    async def test_invoke_command_without_route_keeps_model(self) -> None:
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.llm import client
+
+        provider = MagicMock()
+        provider.invoke_command = AsyncMock(return_value=LLMResult(text="ok", model="test"))
+        cfg = ProjectConfig(llm=LLMConfig(routing={}), agent=AgentConfig(model="opus"))
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "_try_load_config", return_value=cfg),
+        ):
+            await client.invoke_command("/develop", args="42", model="opus", task_type="develop")
+
+        assert provider.invoke_command.call_args.kwargs["model"] == "opus"
+
 
 # ---------------------------------------------------------------------------
 # Client: _resolve_timeout()
@@ -856,6 +901,45 @@ class TestRouteModel:
             "config:override->haiku",
         )
 
+    def test_task_type_route_pins_to_same_family_agent_model(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"review": "haiku"})
+        result = route_model(
+            ComplexityTier.COMPLEX,
+            task_type="review",
+            llm_config=llm_cfg,
+            agent_model="claude-haiku-4-5-20251001",
+        )
+        assert result == (
+            "claude-haiku-4-5-20251001",
+            "task_type:review->haiku,pinned->claude-haiku-4-5-20251001",
+        )
+
+    def test_task_type_route_does_not_pin_across_families(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"review": "haiku"})
+        result = route_model(
+            ComplexityTier.COMPLEX, task_type="review", llm_config=llm_cfg, agent_model="claude-opus-4-6"
+        )
+        assert result == ("haiku", "task_type:review->haiku")
+
+    def test_task_type_route_to_local_model_is_never_pinned(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"triage": "ollama/qwen3:8b"})
+        result = route_model(
+            ComplexityTier.TRIVIAL,
+            task_type="triage",
+            llm_config=llm_cfg,
+            agent_model="claude-haiku-4-5-20251001",
+        )
+        assert result == ("ollama/qwen3:8b", "task_type:triage->ollama/qwen3:8b")
+
 
 class TestTaskTypeKeys:
     def test_disjoint_from_complexity_tiers(self) -> None:
@@ -871,9 +955,28 @@ class TestTaskTypeKeys:
         for key in ("triage", "extraction", "pr_body", "harden", "planner"):
             assert key in TASK_TYPE_KEYS
 
+    def test_every_tagged_step_key_is_registered(self) -> None:
+        from sova.core.steps import (
+            get_address_review_steps,
+            get_developer_steps,
+            get_planner_steps,
+            get_researcher_steps,
+        )
+        from sova.llm.routing import TASK_TYPE_KEYS
+
+        steps = [
+            *get_developer_steps(),
+            *get_address_review_steps(),
+            *get_researcher_steps(),
+            *get_planner_steps(),
+        ]
+        tagged = {step.TASK_TYPE for step in steps if step.TASK_TYPE}
+        assert tagged, "no step declares a TASK_TYPE"
+        assert tagged <= TASK_TYPE_KEYS, f"unregistered task types: {tagged - TASK_TYPE_KEYS}"
+
 
 class TestResolveTaskTypeModel:
-    def test_explicit_model_takes_priority(self) -> None:
+    def test_unrouted_task_type_keeps_model(self) -> None:
         from sova.llm.client import _resolve_task_type_model
 
         assert _resolve_task_type_model("opus", "triage") == "opus"
@@ -913,6 +1016,135 @@ class TestResolveTaskTypeModel:
             mock_cfg.return_value.llm.routing = {}
             result = _resolve_task_type_model(None, "triage")
             assert result is None
+
+    def test_configured_route_beats_explicit_model(self) -> None:
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.llm.client import _resolve_task_type_model
+
+        cfg = ProjectConfig(llm=LLMConfig(routing={"develop": "opus"}), agent=AgentConfig(model="sonnet"))
+        assert _resolve_task_type_model("sonnet", "develop", cfg=cfg) == "opus"
+
+    def test_unconfigured_route_leaves_explicit_model_untouched(self) -> None:
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.llm.client import _resolve_task_type_model
+
+        cfg = ProjectConfig(llm=LLMConfig(routing={}), agent=AgentConfig(model="sonnet"))
+        assert _resolve_task_type_model("sonnet", "develop", cfg=cfg) == "sonnet"
+
+    def test_route_pins_to_same_family_agent_model(self) -> None:
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.llm.client import _resolve_task_type_model
+
+        cfg = ProjectConfig(
+            llm=LLMConfig(routing={"review": "haiku"}),
+            agent=AgentConfig(model="claude-haiku-4-5-20251001"),
+        )
+        assert _resolve_task_type_model("sonnet", "review", cfg=cfg) == "claude-haiku-4-5-20251001"
+
+    def test_route_does_not_pin_across_families(self) -> None:
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.llm.client import _resolve_task_type_model
+
+        cfg = ProjectConfig(llm=LLMConfig(routing={"review": "haiku"}), agent=AgentConfig(model="claude-opus-4-6"))
+        assert _resolve_task_type_model("sonnet", "review", cfg=cfg) == "haiku"
+
+    def test_local_model_route_returned_verbatim(self) -> None:
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.llm.client import _resolve_task_type_model
+
+        cfg = ProjectConfig(
+            llm=LLMConfig(routing={"develop": "ollama/qwen3:8b"}),
+            agent=AgentConfig(model="claude-haiku-4-5-20251001"),
+        )
+        assert _resolve_task_type_model("sonnet", "develop", cfg=cfg) == "ollama/qwen3:8b"
+
+    def test_empty_task_type_falls_through(self) -> None:
+        from sova.config.models import LLMConfig, ProjectConfig
+        from sova.llm.client import _resolve_task_type_model
+
+        cfg = ProjectConfig(llm=LLMConfig(routing={"": "haiku"}))
+        assert _resolve_task_type_model("sonnet", "", cfg=cfg) == "sonnet"
+
+    def test_config_load_failure_keeps_explicit_model(self) -> None:
+        from sova.llm.client import _resolve_task_type_model
+
+        with patch("sova.config.loader.load_config", side_effect=FileNotFoundError):
+            assert _resolve_task_type_model("sonnet", "develop") == "sonnet"
+
+
+class TestConfigRoot:
+    """Config lookups must survive the linked worktree every pipeline step runs in."""
+
+    def setup_method(self) -> None:
+        from sova.llm.client import reset_config_root_cache
+
+        reset_config_root_cache()
+
+    teardown_method = setup_method
+
+    def test_directory_with_own_toml_resolves_to_itself(self, tmp_path: Path) -> None:
+        from sova.llm.client import _config_root
+
+        (tmp_path / "sova.toml").write_text("")
+        assert _config_root(tmp_path) == tmp_path
+
+    def test_directory_with_own_db_resolves_to_itself(self, tmp_path: Path) -> None:
+        from sova.llm.client import _config_root
+
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / "sova.db").write_text("")
+        assert _config_root(tmp_path) == tmp_path
+
+    def test_worktree_without_config_resolves_to_primary_checkout(self, tmp_path: Path) -> None:
+        from sova.llm.client import _config_root
+
+        primary = tmp_path / "primary"
+        worktree = tmp_path / "primary" / ".claude" / "worktrees" / "913"
+        worktree.mkdir(parents=True)
+        with patch("sova.llm.provider._resolve_primary_root", return_value=primary):
+            assert _config_root(worktree) == primary
+
+    def test_falls_back_to_cwd_outside_a_repo(self, tmp_path: Path) -> None:
+        from sova.llm.client import _config_root
+
+        with patch("sova.llm.provider._resolve_primary_root", return_value=None):
+            assert _config_root(tmp_path) == tmp_path
+
+    def test_unset_cwd_stays_unset(self) -> None:
+        """None and "" both mean "process default", as load_config expects."""
+        from sova.llm.client import _config_root
+
+        assert _config_root(None) is None
+        assert _config_root("") is None
+
+    def test_resolution_is_cached_per_directory(self, tmp_path: Path) -> None:
+        from sova.llm.client import _config_root
+
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        with patch("sova.llm.provider._resolve_primary_root", return_value=primary) as mock_resolve:
+            assert _config_root(tmp_path) == primary
+            assert _config_root(tmp_path) == primary
+        assert mock_resolve.call_count == 1
+
+    def test_worktree_route_matches_primary_config(self, tmp_path: Path) -> None:
+        """The end-to-end gap: a route configured at the primary checkout must
+        still apply when the step passes its worktree as cwd."""
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.llm.client import _resolve_task_type_model
+
+        primary = tmp_path / "primary"
+        worktree = primary / ".claude" / "worktrees" / "913"
+        worktree.mkdir(parents=True)
+        cfg = ProjectConfig(llm=LLMConfig(routing={"develop": "haiku"}), agent=AgentConfig(model="opus"))
+
+        with (
+            patch("sova.llm.provider._resolve_primary_root", return_value=primary),
+            patch("sova.config.loader.load_config", return_value=cfg) as mock_load,
+        ):
+            assert _resolve_task_type_model("opus", "develop", cwd=worktree) == "haiku"
+
+        assert mock_load.call_args.args[0] == primary
 
 
 # ---------------------------------------------------------------------------

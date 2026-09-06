@@ -319,9 +319,11 @@ async def invoke(
 
     Args:
         task_type: Routing category (e.g. "triage", "harden", "planner").
-            When set and *model* is ``None``, looks up ``llm.routing[task_type]``
-            to select a model. Ignored when *model* is explicitly provided.
-            Requires ``provider = "litellm"`` or ``"hybrid"``.
+            When set, a configured ``llm.routing[task_type]`` entry selects the
+            model, outranking *model*. Under the default empty ``llm.routing``
+            no key matches and *model* is used unchanged. Routing to a local
+            model (``ollama/*``) additionally requires a provider that can reach
+            it (``litellm`` or ``hybrid``).
         system_prompt: Optional system prompt for the LLM call.
         max_tokens: Optional max output tokens (provider-dependent).
     """
@@ -382,12 +384,55 @@ def _record_compression_savings(result: LLMResult, original: str, compressed: st
     result.pre_compression_input_tokens = result.input_tokens + result.tokens_saved
 
 
+# Resolution is cached per cwd because invoke_batch loads config once per
+# request and _resolve_primary_root shells out to git. Process-local, so a
+# config source created after the first lookup is not picked up until restart.
+_config_root_cache: dict[str, Path] = {}
+
+
+def _config_root(cwd: Path | str | None) -> Path | None:
+    """Return the checkout that owns *cwd*'s config, or None for the process default.
+
+    A linked git worktree carries no config of its own: ``.claude/sova.db`` is
+    gitignored and ``sova.toml`` is frequently untracked. Pipeline steps pass
+    ``ctx.working_dir`` (that worktree) as *cwd*, so a lookup scoped to it
+    returned bare defaults and silently emptied ``llm.routing``,
+    ``agent.fallback_models``, and ``compression`` for every worktree-scoped
+    step, which is what kept task-type routing dead in the pipeline.
+
+    A directory that holds its own config source is used as-is, so a project
+    installed inside a monorepo subtree keeps resolving to itself. Only a
+    directory with neither source resolves upward, which is the worktree case.
+    """
+    if not cwd:
+        return None
+
+    start = Path(cwd)
+    cached = _config_root_cache.get(str(start))
+    if cached is not None:
+        return cached
+
+    if (start / "sova.toml").exists() or (start / ".claude" / "sova.db").exists():
+        root = start
+    else:
+        from sova.llm.provider import _resolve_primary_root
+
+        root = _resolve_primary_root(start) or start
+    _config_root_cache[str(start)] = root
+    return root
+
+
+def reset_config_root_cache() -> None:
+    """Clear the resolved-config-root cache (for testing)."""
+    _config_root_cache.clear()
+
+
 def _try_load_config(cwd: Path | str | None = None) -> ProjectConfig | None:
     """Load project config, returning None on failure."""
     try:
         from sova.config.loader import load_config
 
-        return load_config(Path(cwd) if cwd else None)
+        return load_config(_config_root(cwd))
     except Exception:
         log.debug("llm.config_load_failed", exc_info=True)
         return None
@@ -400,23 +445,36 @@ def _resolve_task_type_model(
     cfg: ProjectConfig | None = None,
     cwd: Path | str | None = None,
 ) -> str | None:
-    """Resolve model from task_type routing if no explicit model is provided."""
-    if model or not task_type:
+    """Resolve *model* from ``llm.routing[task_type]`` when a route is configured.
+
+    A configured route outranks *model*. It has to: every pipeline step passes
+    ``model=ctx.resolved_model or ctx.config.agent.model``, so a route that lost
+    to an explicit model could never fire. Under the default empty
+    ``llm.routing`` no key matches and *model* is returned untouched, which keeps
+    resolution identical to having no routing at all.
+
+    A matched route is pinned to ``agent.model`` when the two share a model
+    family, mirroring ``route_model()`` so a bare alias is never handed to the
+    CLI to resolve into a version the deployment may not have. Routes to
+    non-family models (``ollama/*`` and other third-party IDs) are returned
+    verbatim, so local-model offloading is unaffected.
+    """
+    if not task_type:
         return model
 
     resolved_cfg = cfg if cfg is not None else _try_load_config(cwd)
     if resolved_cfg is None:
         return model
 
-    if not resolved_cfg.llm.routing:
+    override = resolved_cfg.llm.routing.get(task_type)
+    if override is None:
         return model
 
-    override = resolved_cfg.llm.routing.get(task_type)
-    if override is not None:
-        log.info("llm.task_type_route", task_type=task_type, model=override)
-        return override
+    from sova.llm.routing import _apply_pin
 
-    return model
+    routed, reason = _apply_pin(override, resolved_cfg.agent.model, f"task_type:{task_type}->{override}")
+    log.info("llm.task_type_route", task_type=task_type, model=routed, reason=reason)
+    return routed
 
 
 def _resolve_timeout(
@@ -505,11 +563,18 @@ async def invoke_command(
     *,
     model: str | None = None,
     fallback_model: str | None = None,
+    task_type: str | None = None,
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
     timeout: float | None = None,
 ) -> LLMResult:
-    """Run a slash command via the active LLM provider."""
+    """Run a slash command via the active LLM provider.
+
+    Args:
+        task_type: Routing category (e.g. "develop", "self_review"). A routing
+            key only, never part of the payload: it is neither appended to
+            *command*/*args* nor compressed.
+    """
     # Loaded before compression so args is compressed with the same cfg used
     # for timeout/chain resolution below, instead of loading config twice.
     cfg = _try_load_config(cwd)
@@ -519,6 +584,7 @@ async def invoke_command(
         assembled = f"{command} {args}".strip()
         guard_prompt(assembled)
         args = maybe_compress(args, cwd, cfg=cfg)
+    resolved = _resolve_task_type_model(model, task_type, cfg=cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
 
     async def _attempt(
@@ -539,7 +605,7 @@ async def invoke_command(
     async with asyncio.timeout(resolved_timeout):
         return await _invoke_with_fallback(
             _attempt,
-            primary=model,
+            primary=resolved,
             cfg=cfg,
             caller_fallback=fallback_model,
             timeout=resolved_timeout,

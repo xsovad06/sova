@@ -46,6 +46,9 @@ class BaseStep(ABC):
 
     name: str = ""
     max_retries: int = 0
+    # Routing category for llm.routing lookups, empty when the step is not
+    # routable. Steps pass it to the LLM call via ctx.routing_task_type().
+    TASK_TYPE: str = ""
 
     @abstractmethod
     async def execute(self, ctx: ExecutionContext) -> StepResult:

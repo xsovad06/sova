@@ -13,6 +13,7 @@ log = get_logger(component="step.simplify")
 
 class SimplifyStep(BaseStep):
     name = "simplify"
+    TASK_TYPE = "simplify"
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
         if self.name in ctx.completed_steps:
@@ -30,6 +31,7 @@ class SimplifyStep(BaseStep):
                 "/simplify",
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
+                task_type=ctx.routing_task_type(self.TASK_TYPE),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,

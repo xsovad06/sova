@@ -16,6 +16,7 @@ log = get_logger(component="step.research")
 
 class ResearchStep(BaseStep):
     name = "research"
+    TASK_TYPE = "research"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.research", issue=ctx.issue_number, cwd=str(ctx.project_dir))
@@ -26,6 +27,7 @@ class ResearchStep(BaseStep):
                 args=ctx.issue_number,
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
+                task_type=ctx.routing_task_type(self.TASK_TYPE),
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 5,
                 timeout=ctx.config.agent.step_timeout,

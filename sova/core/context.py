@@ -149,6 +149,19 @@ class ExecutionContext:
     def base_branch(self) -> str:
         return self.config.base_branch
 
+    def routing_task_type(self, task_type: str) -> str | None:
+        """Return *task_type* for an ``llm.routing`` lookup, or None to skip routing.
+
+        A configured route outranks the model a step passes, so once a fallback
+        is in flight the route would pin the step straight back to the model
+        that just failed on every retry. Suppressing it there lets the engine's
+        fallback winner survive. An untagged step (empty *task_type*) never
+        routes.
+        """
+        if self.fallback_model_index > 0:
+            return None
+        return task_type or None
+
     def get_cli_fallback_model(self) -> str | None:
         """Get the next fallback model to pass to the Claude CLI via --fallback-model flag.
 

@@ -237,6 +237,23 @@ class TestGenerateTasksStep:
         assert result.cost_usd == Decimal("0.01")
 
     @pytest.mark.asyncio
+    async def test_generate_tags_task_type_and_suppresses_it_during_fallback(self) -> None:
+        """The step routes like every other tagged step, including fallback suppression."""
+        llm_result = MagicMock(text="[]", cost_usd=Decimal("0"), total_tokens=0)
+        ctx = _make_ctx()
+        ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test summary"))
+
+        step = GenerateTasksStep()
+        with patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke:
+            await step.execute(ctx)
+        assert mock_invoke.call_args.kwargs["task_type"] == "generate_tasks"
+
+        ctx.fallback_model_index = 1
+        with patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke:
+            await step.execute(ctx)
+        assert mock_invoke.call_args.kwargs["task_type"] is None
+
+    @pytest.mark.asyncio
     async def test_generate_handles_fenced_json(self) -> None:
         """GenerateTasksStep handles markdown-fenced JSON responses."""
         fenced = (

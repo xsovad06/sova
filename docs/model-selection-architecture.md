@@ -22,15 +22,30 @@ crash path. The verified root causes are:
    "real failure". (The briefing's claim that SOVA "logs it and moves on" is wrong; it hard
    crashes.)
 
-2. **Task-type routing is wired to nothing.** `route_model(..., task_type=...)` exists
-   ([routing.py:88-110](sova/llm/routing.py#L88-L110)) and `_resolve_task_type_model` exists
-   ([client.py:122-145](sova/llm/client.py#L122-L145)), but two facts kill it: `invoke()`
-   only loads config when `model is None` ([client.py:96](sova/llm/client.py#L96)) and every
-   step passes `model=ctx.resolved_model`, so the task_type branch is never reached; and
-   `invoke_command()` does not even accept a `task_type` parameter
-   ([client.py:213-240](sova/llm/client.py#L213-L240)), so the six slash-command steps
-   (develop, simplify, self_review, research, address_review, rearrange_commits) cannot route
-   at all.
+2. **Task-type routing was wired to nothing** (fixed in PR4). `route_model(..., task_type=...)`
+   and `_resolve_task_type_model` both existed, but two facts killed them: `invoke()` only
+   loaded config when `model is None` and every step passes `model=ctx.resolved_model`, so the
+   task_type branch was never reached; and `invoke_command()` did not accept a `task_type`
+   parameter, so the six slash-command steps (develop, simplify, self_review, research,
+   address_review, rearrange_commits) could not route at all. Both paths are live now: a
+   configured `llm.routing[task_type]` outranks the passed model, and each of the six steps
+   carries a `BaseStep.TASK_TYPE` tag it passes via `ctx.routing_task_type()` (`generate_tasks`
+   makes seven). A third fact had to be fixed with them: every one of those steps except
+   `research` passes `cwd=ctx.working_dir`, a linked worktree that holds neither `sova.toml` nor
+   the gitignored `.claude/sova.db`, so `_try_load_config()` returned bare defaults and no route
+   could ever match. `client.py:_config_root()` now resolves such a directory back to the primary
+   checkout. That also restores `agent.fallback_models` and `compression` inside the pipeline,
+   which the same lookup had been silently emptying.
+
+   Still unwired: six registered keys have no call site that passes them, so a route configured
+   for any of them does nothing. `triage` and `extraction` route through `_ROLE_MODEL_FIELDS`
+   (`roles.triage_model`) instead, never through `llm.routing`; `pr_body`
+   ([create_pr.py:372](sova/core/steps/create_pr.py#L372)), `validate`
+   ([validate.py:160](sova/core/steps/validate.py#L160)), `monitor_ci`
+   ([monitor_ci.py:427](sova/core/steps/monitor_ci.py#L427)), and `review` (`reviewer.py`, which
+   hardcodes `"sonnet"` per root cause 3) all pass an explicit `model=` and no `task_type`.
+   `TASK_TYPE_KEYS` is advisory and gates nothing at runtime, so this failure is silent: config
+   accepts the key and nothing reports that it was ignored.
 
 3. **Role hardcoding.** Seven literal model names bypass all config:
    `reviewer.py:471,489` (`"sonnet"`), `panel_review.py:231` (`"sonnet"` default),
@@ -92,21 +107,28 @@ step budget equals a single inner attempt's budget:
 |---|---|---|---|
 | Complexity routing | [routing.py:26-32,112-119](sova/llm/routing.py#L112-L119) | works | yes |
 | Config override (`llm.routing[tier]`) | [routing.py:113-116](sova/llm/routing.py#L113-L116) | works | yes |
-| Task-type routing (`llm.routing[task_type]`) | [routing.py:106-110](sova/llm/routing.py#L106-L110) | dead in the pipeline; live only via `harden.py`, `batch_service.py`, `planner.py` | **no (bug)** |
+| Task-type routing (`llm.routing[task_type]`) | [routing.py:106-110](sova/llm/routing.py#L106-L110), [client.py:_resolve_task_type_model](sova/llm/client.py) | works (PR4); live for the seven `BaseStep.TASK_TYPE`-tagged steps | yes (PR4) |
 | Role config (`researcher_model`, `triage_model`) | [client.py:294-297](sova/llm/client.py#L294-L297) | works for those two roles | via `route_model` |
 
-Correction to the briefing: task-type routing is *not* entirely dead code. `harden.py:116`,
-`batch_service.py:335`, and `planner.py:131` pass `task_type` today. It is dead only in the
-developer/reviewer/validate pipeline steps.
+Correction to the briefing: task-type routing was *not* entirely dead code even before PR4.
+`harden.py:116`, `batch_service.py:335`, and `planner.py:131` already passed `task_type`; it was
+dead only in the pipeline steps, which all pass an explicit `model=`.
 
 ### 2.3 The pinning trap (critical)
 
 Pinning exists precisely to stop the CLI resolving `"opus"` to a newer version the deployment
-does not have ([routing.py:99-102](sova/llm/routing.py#L99-L102)). But the task-type branch
-returns its override **without** `_apply_pin` ([routing.py:106-110](sova/llm/routing.py#L106-L110)),
-whereas the complexity branches do pin ([routing.py:116,119](sova/llm/routing.py#L116-L119)).
-So "just wire up task-type routing" reintroduces the exact unavailable-version bug this whole
-effort exists to fix. **The task-type path must also pin.**
+does not have ([routing.py:99-102](sova/llm/routing.py#L99-L102)). The task-type branch used to
+return its override **without** `_apply_pin`, whereas the complexity branches pinned
+([routing.py:116,119](sova/llm/routing.py#L116-L119)), so "just wire up task-type routing" would
+have reintroduced the exact unavailable-version bug this whole effort exists to fix. **The
+task-type path must also pin**, and as of PR4 both task-type paths do: `route_model`'s branch and
+`client.py:_resolve_task_type_model`, which pins against `agent.model` (the same source
+[assess.py:48-60](sova/core/steps/assess.py#L48-L60) already feeds `route_model`).
+
+Pinning is family-scoped by design, which has two consequences worth stating: a route to `haiku`
+under an opus-pinned `agent.model` is intentionally *not* pinned, and a route to a non-family
+model (`ollama/*`) is returned verbatim, so local-model offloading is never overridden by the
+pin.
 
 ### 2.4 What `ctx.resolved_model` actually is
 
@@ -219,14 +241,22 @@ explicit model= arg  >  llm.routing[task_type]  >  role config (_ROLE_MODEL_FIEL
   >  complexity route (route_model, with pinning)  >  ctx.resolved_model  >  agent.model
 ```
 
-Two wiring facts must be fixed for this to actually fire (both missed by design 1):
-1. `invoke()` must load config even when `model` is provided, so a configured task_type route
-   can override the passed `ctx.resolved_model`. This is a deliberate, documented semantic
-   change; it is a no-op under the default empty `llm.routing`.
-2. `invoke_command()` must gain a `task_type` parameter and route it through the resolver;
+Two wiring facts had to be fixed for this to actually fire (both missed by design 1), and both
+landed in PR4:
+1. `invoke()` loads config even when `model` is provided, so a configured task_type route can
+   override the passed `ctx.resolved_model`. This is a deliberate, documented semantic change;
+   it is a no-op under the default empty `llm.routing`.
+2. `invoke_command()` takes a `task_type` parameter and routes it through the resolver;
    otherwise the six slash-command steps get no routing.
 
-And pinning must be applied on the task_type branch (section 2.3).
+And pinning is applied on the task_type branch (section 2.3).
+
+One deviation from the precedence above, also PR4: `llm.routing[task_type]` outranks the explicit
+`model=` argument rather than losing to it. Every pipeline step passes
+`model=ctx.resolved_model or ctx.config.agent.model`, so a route that lost to an explicit model
+could never fire. The exception is a fallback in flight: `ctx.routing_task_type()` returns `None`
+once `fallback_model_index > 0`, so a configured route cannot pin a step back to the model the
+engine just fell back *from*.
 
 ### Q5. Fallback: SOVA-orchestrated or provider-delegated?
 

@@ -12,6 +12,7 @@ log = get_logger(component="step.self_review")
 
 class SelfReviewStep(BaseStep):
     name = "self_review"
+    TASK_TYPE = "self_review"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.self_review", cwd=str(ctx.working_dir))
@@ -21,6 +22,7 @@ class SelfReviewStep(BaseStep):
                 "/review",
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
+                task_type=ctx.routing_task_type(self.TASK_TYPE),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,

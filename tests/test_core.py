@@ -245,6 +245,18 @@ class TestExecutionContext:
         ctx.add_cost(Decimal("5.00"))
         assert ctx.budget_remaining_fraction == 0.0
 
+    def test_routing_task_type_passes_tag_through(self) -> None:
+        ctx = _make_ctx()
+        assert ctx.routing_task_type("develop") == "develop"
+
+    def test_routing_task_type_treats_untagged_step_as_unset(self) -> None:
+        ctx = _make_ctx()
+        assert ctx.routing_task_type("") is None
+
+    def test_routing_task_type_suppressed_while_falling_back(self) -> None:
+        ctx = _make_ctx(fallback_model_index=1)
+        assert ctx.routing_task_type("develop") is None
+
     def test_working_dir_defaults_to_project(self) -> None:
         ctx = _make_ctx()
         assert ctx.working_dir == Path("/tmp/test")
@@ -2770,6 +2782,7 @@ class TestRearrangeCommitsStep:
             "/rearrange-commits",
             model=ctx.config.agent.model,
             fallback_model=None,
+            task_type="rearrange_commits",
             cwd=ctx.working_dir,
             max_budget_usd=ANY,
             timeout=ANY,
@@ -6021,6 +6034,20 @@ class TestSimplifyStep:
         assert ctx.cost_usd == Decimal("0.03")
         mock_invoke.assert_awaited_once()
         assert mock_invoke.call_args[0][0] == "/simplify"
+        assert mock_invoke.call_args.kwargs["task_type"] == "simplify"
+
+    async def test_execute_suppresses_task_type_during_fallback(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"), fallback_model_index=1)
+        step = SimplifyStep()
+
+        with patch("sova.core.steps.simplify.invoke_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(text="Simplified", model="sonnet", cost_usd=Decimal("0"))
+            await step.execute(ctx)
+
+        assert mock_invoke.call_args.kwargs["task_type"] is None
 
     async def test_execute_handles_runtime_error(self) -> None:
         from sova.core.steps.simplify import SimplifyStep
@@ -6192,6 +6219,7 @@ class TestSelfReviewStep:
         assert ctx.cost_usd == Decimal("0.02")
         mock_invoke.assert_awaited_once()
         assert mock_invoke.call_args[0][0] == "/review"
+        assert mock_invoke.call_args.kwargs["task_type"] == "self_review"
 
     async def test_execute_handles_runtime_error(self) -> None:
         from sova.core.steps.self_review import SelfReviewStep
@@ -6306,6 +6334,7 @@ class TestDevelopStepExecute:
         assert ctx.session_id == "sess-123"
         mock_invoke.assert_awaited_once()
         assert mock_invoke.call_args.kwargs["args"] == "42"
+        assert mock_invoke.call_args.kwargs["task_type"] == "develop"
 
     async def test_execute_handles_runtime_error(self) -> None:
         from sova.core.steps.develop import DevelopStep
@@ -6651,6 +6680,7 @@ class TestAddressReviewStepExecute:
         prompt = mock_invoke.call_args[0][0]
         assert "Null check" in prompt
         assert "foo.py:10" in prompt
+        assert mock_invoke.call_args.kwargs["task_type"] == "address_review"
 
     async def test_execute_includes_coderabbit_findings(self) -> None:
         from sova.core.steps.address_review import AddressReviewStep

@@ -97,6 +97,7 @@ def _parse_tasks(text: str) -> list[PlannedTask] | None:
 
 class GenerateTasksStep(BaseStep):
     name = "generate_tasks"
+    TASK_TYPE = "generate_tasks"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.generate_tasks", project=str(ctx.project_dir))
@@ -114,7 +115,7 @@ class GenerateTasksStep(BaseStep):
 
             result = await invoke(
                 prompt,
-                task_type="generate_tasks",
+                task_type=ctx.routing_task_type(self.TASK_TYPE),
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 5,
                 timeout=180,

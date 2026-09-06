@@ -35,18 +35,22 @@ _MODEL_FAMILIES: tuple[str, ...] = ("opus", "sonnet", "haiku")
 
 # Known task-type keys (disjoint from complexity-tier keys).
 # Used to disambiguate when both namespaces share the routing dict.
-# Not referenced in routing logic yet -- serves as a registry for consumers
-# (settings UI, config validation) to distinguish task-type keys from
-# complexity-tier keys in the shared ``llm.routing`` dict.
+# Advisory, not a runtime gate: routing looks the caller's key up in
+# ``llm.routing`` directly and never checks membership here. The set is a
+# registry for consumers (settings UI, config validation) that need to tell
+# task-type keys apart from complexity-tier keys in the shared dict.
 TASK_TYPE_KEYS: frozenset[str] = frozenset(
     {
         "triage",
         "extraction",
         "pr_body",
         "develop",
+        "simplify",
         "review",
         "self_review",
+        "research",
         "address_review",
+        "rearrange_commits",
         "harden",
         "validate",
         "monitor_ci",
@@ -107,7 +111,7 @@ def route_model(
     if task_type and llm_config is not None:
         override = llm_config.routing.get(task_type)
         if override is not None:
-            return override, f"task_type:{task_type}->{override}"
+            return _apply_pin(override, agent_model, f"task_type:{task_type}->{override}")
 
     # Complexity config override
     if llm_config is not None:

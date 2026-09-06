@@ -141,6 +141,7 @@ async def _get_dirty_test_files(cwd: Path) -> set[str]:
 
 class DevelopStep(BaseStep):
     name = "develop"
+    TASK_TYPE = "develop"
     max_retries = 1
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
@@ -164,6 +165,7 @@ class DevelopStep(BaseStep):
                 args=args,
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
+                task_type=ctx.routing_task_type(self.TASK_TYPE),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.develop.step_timeout,

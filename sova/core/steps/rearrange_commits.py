@@ -25,6 +25,7 @@ log = get_logger(component="step.rearrange_commits")
 
 class RearrangeCommitsStep(BaseStep):
     name = "rearrange_commits"
+    TASK_TYPE = "rearrange_commits"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.rearrange_commits", branch=ctx.branch_name, base=ctx.base_branch)
@@ -34,6 +35,7 @@ class RearrangeCommitsStep(BaseStep):
                 "/rearrange-commits",
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
+                task_type=ctx.routing_task_type(self.TASK_TYPE),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,
