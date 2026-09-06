@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from sova.adapters.base import Task
 from sova.config.models import ReviewPanelConfig
 from sova.llm.client import invoke
+from sova.llm.routing import get_model_family
 from sova.roles._review_comments import (
     ReviewFinding,
     ReviewResult,
@@ -186,12 +187,18 @@ def deduplicate_findings(
 
 
 def _estimate_dimension_cost(model: str) -> Decimal:
-    """Estimate minimum cost for a dimension call based on model tier."""
+    """Estimate minimum cost for a dimension call based on model tier.
+
+    Keyed on the model *family*, not the exact string: both ``dimension_models``
+    pins and the resolved ``default_model`` may carry a pinned version
+    (``"claude-opus-4-6"``), which would otherwise fall through to the sonnet
+    price and under-estimate an opus dimension by 5x in the budget gate.
+    """
     return {
         "opus": Decimal("0.05"),
         "sonnet": Decimal("0.01"),
         "haiku": Decimal("0.002"),
-    }.get(model, Decimal("0.01"))
+    }.get(get_model_family(model) or "", Decimal("0.01"))
 
 
 async def run_panel_review(

@@ -15,15 +15,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.adapters.base import Task, TaskState
+from sova.config.models import RolesConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps.assess import AssessStep
 from sova.core.workflow import _is_billing_failure
 from sova.llm.client import resolve_model
 from sova.llm.complexity import ComplexityTier
 from sova.llm.routing import (
-    _get_model_family,
     _is_pinned_version,
     _pin_to_configured_model,
+    get_model_family,
     route_model,
 )
 
@@ -34,22 +35,22 @@ from sova.llm.routing import (
 
 class TestModelFamilyDetection:
     def test_bare_alias(self) -> None:
-        assert _get_model_family("opus") == "opus"
-        assert _get_model_family("sonnet") == "sonnet"
-        assert _get_model_family("haiku") == "haiku"
+        assert get_model_family("opus") == "opus"
+        assert get_model_family("sonnet") == "sonnet"
+        assert get_model_family("haiku") == "haiku"
 
     def test_versioned_model_id(self) -> None:
-        assert _get_model_family("claude-opus-4-6") == "opus"
-        assert _get_model_family("claude-sonnet-4-6") == "sonnet"
-        assert _get_model_family("claude-haiku-4-5") == "haiku"
+        assert get_model_family("claude-opus-4-6") == "opus"
+        assert get_model_family("claude-sonnet-4-6") == "sonnet"
+        assert get_model_family("claude-haiku-4-5") == "haiku"
 
     def test_unknown_model(self) -> None:
-        assert _get_model_family("ollama/llama3") is None
-        assert _get_model_family("gpt-4") is None
+        assert get_model_family("ollama/llama3") is None
+        assert get_model_family("gpt-4") is None
 
     def test_case_insensitive(self) -> None:
-        assert _get_model_family("Claude-Opus-4-6") == "opus"
-        assert _get_model_family("SONNET") == "sonnet"
+        assert get_model_family("Claude-Opus-4-6") == "opus"
+        assert get_model_family("SONNET") == "sonnet"
 
 
 class TestIsPinnedVersion:
@@ -197,12 +198,7 @@ class TestRouteModelPinning:
 
 class TestResolveModelPinning:
     def test_resolve_model_passes_agent_model(self) -> None:
-        roles_config = MagicMock()
-        roles_config.researcher_model = None
-        roles_config.triage_model = None
-        roles_config.reviewer_model = None
-        roles_config.developer_model = None
-        roles_config.planner_model = None
+        roles_config = RolesConfig()
 
         llm_config = MagicMock()
         llm_config.routing = {}
@@ -219,12 +215,7 @@ class TestResolveModelPinning:
         assert model == "claude-opus-4-6"
 
     def test_resolve_model_role_override_ignores_agent_model(self) -> None:
-        roles_config = MagicMock()
-        roles_config.researcher_model = "sonnet"
-        roles_config.triage_model = None
-        roles_config.reviewer_model = None
-        roles_config.developer_model = None
-        roles_config.planner_model = None
+        roles_config = RolesConfig(researcher_model="sonnet")
 
         result = resolve_model(
             role="researcher",
@@ -250,11 +241,7 @@ def pinned_config() -> MagicMock:
     config.base_branch = "main"
     config.agent.max_budget = Decimal("10")
     config.agent.model = "claude-opus-4-6"
-    config.roles.researcher_model = None
-    config.roles.triage_model = None
-    config.roles.reviewer_model = None
-    config.roles.developer_model = None
-    config.roles.planner_model = None
+    config.roles = RolesConfig()
     config.llm.routing = {}
     return config
 

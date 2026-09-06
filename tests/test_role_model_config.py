@@ -292,6 +292,19 @@ class TestPanelDefaultModel:
     def test_unrecognized_model_keeps_cost_fallback(self) -> None:
         assert _estimate_dimension_cost("ollama/llama3") == Decimal("0.01")
 
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("opus", Decimal("0.05")),
+            ("claude-opus-4-6", Decimal("0.05")),
+            ("claude-haiku-4-5", Decimal("0.002")),
+            ("claude-sonnet-4-5", Decimal("0.01")),
+        ],
+    )
+    def test_pinned_versions_cost_like_their_family(self, model: str, expected: Decimal) -> None:
+        """A pinned ``roles.reviewer_model`` must not be priced as sonnet by the budget gate."""
+        assert _estimate_dimension_cost(model) == expected
+
 
 # ---------------------------------------------------------------------------
 # Supervisor planner

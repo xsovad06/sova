@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.adapters.base import Task, TaskState
+from sova.config.models import RolesConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps.assess import AssessStep
 from sova.llm.complexity import ComplexityTier
@@ -22,11 +23,7 @@ def mock_config() -> MagicMock:
     config.github_user = "testuser"
     config.base_branch = "main"
     config.agent.max_budget = Decimal("10")
-    config.roles.researcher_model = None
-    config.roles.triage_model = None
-    config.roles.reviewer_model = None
-    config.roles.developer_model = None
-    config.roles.planner_model = None
+    config.roles = RolesConfig()
     config.llm.routing = {}
     return config
 
