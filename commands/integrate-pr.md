@@ -142,6 +142,14 @@ loop using the following bash command. This includes external review bots
 
 Requires gh CLI v2.32+ (for the `bucket` field).
 
+**Run this loop as a single synchronous foreground command and wait for it to
+finish.** Do NOT launch it as a background task and then stop to "wait" for a
+notification: headless mode has no mechanism to resume you when a
+background task completes, and ending your turn without a tool call
+terminates the run immediately, leaving the PR unmerged with no further
+action taken. Block on this command until it prints one of the terminal
+outcomes below, then proceed directly to Phase 5.
+
 ```bash
 # Poll CI checks in a loop (30 iterations x 30s = 15 minutes max)
 # Uses `bucket` (not `state`) -- bucket normalizes raw states into: pass, fail, pending, skipping, cancel
@@ -308,6 +316,7 @@ The user can fix the issue and re-run `/integrate-pr <PR_NUMBER>` to resume. The
 ## Rules
 
 - Never stop between phases unless there is a hard failure
+- Never end a turn without a tool call while "waiting" for a background task or notification: headless mode has no resumption mechanism, so this silently kills the run mid-pipeline with the PR left unmerged
 - Use the merge method from `[integration]` config (default: auto, uses GitHub repo default)
 - Handle merge queue when detected or configured
 - Use `--force-with-lease` for pushes, never `--force`
