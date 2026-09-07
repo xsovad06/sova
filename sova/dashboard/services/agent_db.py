@@ -518,9 +518,84 @@ async def _validate_review_pr(run_id: int, agent: AgentState) -> str | None:
     return None
 
 
+async def _has_active_merge_queue_entry(pr_number: int, project_dir: Path) -> bool:
+    """Check for an unresolved MergeQueueEntry for this PR.
+
+    A merge-role agent that enqueues a PR and exits is not a validation
+    failure: MergeQueueMonitor tracks the PR to completion independently
+    (see `_check_merge_queue_marker_file`, which converts the marker file
+    into this DB row before outcome validation runs).
+    """
+    from sqlalchemy import select
+
+    from sova.db.models import MergeQueueEntry
+    from sova.db.session import get_session
+
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            stmt = select(MergeQueueEntry).where(
+                MergeQueueEntry.pr_number == pr_number,
+                MergeQueueEntry.status == "queued",
+            )
+            result = await session.execute(stmt)
+            return result.scalars().first() is not None
+    except Exception:
+        log.debug("check_merge_queue_entry.failed", pr_number=pr_number, exc_info=True)
+        return False
+
+
+_COMMAND_ROLE_PREFIX = "command:"
+
+
+def _strip_command_prefix(role: str | None) -> str:
+    """Extract the bare command name from a `command:/name ...` role string."""
+    return (role or "").removeprefix(_COMMAND_ROLE_PREFIX).removeprefix("/").split()[0]
+
+
+async def _validate_merge_command(run_id: int, agent: AgentState) -> str | None:
+    """Check that integrate-pr / approve-merge actually reached a terminal PR state.
+
+    A headless `claude -p` process can exit cleanly (exit 0, is_error=False)
+    after the model spawns a long-running wait (e.g. the CI-polling phase) as
+    a background task, then ends its turn believing something will resume it
+    later. Headless mode has no such resumption mechanism: the process
+    exits on that text-only turn, so the run dies mid-pipeline with the PR
+    still open while looking like a clean success. Fail-closed: require the
+    PR to be MERGED, legitimately CLOSED (the command's own documented
+    early-stop), or actively tracked by the merge queue monitor before
+    accepting "done".
+    """
+    if agent.pr_number is None:
+        return None
+
+    from sova.config.loader import load_config
+    from sova.git.pr import get_pr_status
+
+    try:
+        cfg = load_config(agent.project_dir)
+        repo = cfg.github_repo
+        if not repo:
+            return None
+        pr_status = await get_pr_status(agent.pr_number, repo=repo, github_user=cfg.github_user)
+    except Exception:
+        log.debug("validate_merge_command.pr_status_failed", pr_number=agent.pr_number, exc_info=True)
+        return None
+
+    if pr_status.state in ("MERGED", "CLOSED"):
+        return None
+
+    if await _has_active_merge_queue_entry(agent.pr_number, agent.project_dir):
+        return None
+
+    cmd_name = _strip_command_prefix(agent.role)
+    return f"{cmd_name} exited without merging PR #{agent.pr_number} (state={pr_status.state})"
+
+
 _COMMAND_VALIDATORS = {
     "address-pr": _validate_address_pr,
     "review-pr": _validate_review_pr,
+    "integrate-pr": _validate_merge_command,
+    "approve-merge": _validate_merge_command,
 }
 
 _PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})
@@ -533,10 +608,10 @@ async def _validate_command_outcome(run_id: int, agent: AgentState) -> str | Non
     the expected side effects (commits pushed, review posted, etc.).
     Returns an error message if validation fails, None if OK or unknown command.
     """
-    if not agent.role or not agent.role.startswith("command:"):
+    if not agent.role or not agent.role.startswith(_COMMAND_ROLE_PREFIX):
         return None
 
-    cmd_name = agent.role.removeprefix("command:").removeprefix("/").split()[0]
+    cmd_name = _strip_command_prefix(agent.role)
     validator_fn = _COMMAND_VALIDATORS.get(cmd_name)
     if not validator_fn:
         return None

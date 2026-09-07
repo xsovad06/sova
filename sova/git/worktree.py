@@ -485,6 +485,8 @@ _ISSUE_BRANCH_RE = re.compile(
     r"(?:issue-(?P<gh_number>\d+)|(?P<jira_key>[A-Z][A-Z0-9]+-\d+))"
 )
 
+_JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
+
 
 @dataclass
 class GCResult:
@@ -565,13 +567,23 @@ async def cleanup_by_issue_state(
     *,
     project_dir: Path,
     dry_run: bool = False,
+    include_branches: bool = True,
 ) -> GCResult:
-    """Remove worktrees and branches for closed issues.
+    """Remove worktrees (and, unless disabled, branches) for closed issues.
 
     Uses a batch query to GitHub to find closed issues, then removes
-    worktrees and local branches that reference those issues. JIRA
-    branches are only cleaned when their remote tracking branch is gone
-    (no gh API for JIRA). Stashes are reported but never dropped.
+    worktrees and local branches that reference those issues. Every
+    worktree removal is gated on two safety checks: no active agent PID
+    is using it (``_check_worktree_active_agent``) and its working tree
+    is clean (``git status --porcelain``). A worktree for a closed issue
+    can still have a pipeline actively running in it, or hold in-progress
+    uncommitted work, and force-removing either destroys it silently. JIRA
+    worktrees and branches are never in ``closed_issues`` (no gh API for
+    JIRA), so both are only cleaned when their remote tracking branch is
+    gone (``_has_gone_upstream``). Stashes are reported but never dropped.
+
+    Set ``include_branches=False`` to remove only worktrees, skipping the
+    (more aggressive) local branch deletion pass.
     """
     gc_result = GCResult()
     closed_issues = await _fetch_closed_issues(project_dir)
@@ -589,7 +601,12 @@ async def cleanup_by_issue_state(
             if not entry.is_dir():
                 continue
             issue_id = entry.name
-            if issue_id in closed_issues:
+            eligible = issue_id in closed_issues
+            if not eligible and _JIRA_KEY_RE.match(issue_id):
+                branch_result = await run("git", "branch", "--show-current", cwd=entry)
+                branch = branch_result.stdout.strip() if branch_result.success else ""
+                eligible = bool(branch) and await _has_gone_upstream(branch, project_dir)
+            if eligible:
                 active_pid = await _check_worktree_active_agent(entry, project_dir=project_dir)
                 if active_pid is not None:
                     log.info("gc.worktree_skipped_active", path=str(entry), pid=active_pid)
@@ -610,24 +627,25 @@ async def cleanup_by_issue_state(
                         continue
                 gc_result.worktrees_removed += 1
 
-    branches = await _list_local_branches(project_dir)
-    for branch in branches:
-        if branch in active_wt_branches:
-            continue
-        gh_num, jira_key = extract_issue_from_branch(branch)
-        should_remove = False
-        if gh_num and gh_num in closed_issues:
-            should_remove = True
-        elif jira_key and await _has_gone_upstream(branch, project_dir):
-            should_remove = True
-        if should_remove:
-            log.info("gc.branch_cleanup", branch=branch, gh_issue=gh_num, jira_key=jira_key)
-            if not dry_run:
-                del_result = await run("git", "branch", "-d", branch, cwd=project_dir)
-                if not del_result.success:
-                    gc_result.errors.append(f"Failed to delete branch {branch}: {del_result.stderr.strip()}")
-                    continue
-            gc_result.branches_removed += 1
+    if include_branches:
+        branches = await _list_local_branches(project_dir)
+        for branch in branches:
+            if branch in active_wt_branches:
+                continue
+            gh_num, jira_key = extract_issue_from_branch(branch)
+            should_remove = False
+            if gh_num and gh_num in closed_issues:
+                should_remove = True
+            elif jira_key and await _has_gone_upstream(branch, project_dir):
+                should_remove = True
+            if should_remove:
+                log.info("gc.branch_cleanup", branch=branch, gh_issue=gh_num, jira_key=jira_key)
+                if not dry_run:
+                    del_result = await run("git", "branch", "-d", branch, cwd=project_dir)
+                    if not del_result.success:
+                        gc_result.errors.append(f"Failed to delete branch {branch}: {del_result.stderr.strip()}")
+                        continue
+                gc_result.branches_removed += 1
 
     stashes = await _list_stashes(project_dir)
     gc_result.stashes_found = stashes

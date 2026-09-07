@@ -7819,6 +7819,215 @@ class TestReviewPrVerdictPersistence:
         assert result == "review-pr completed without posting a review on GitHub"
 
 
+class TestValidateMergeCommand:
+    """_validate_merge_command catches integrate-pr/approve-merge runs that exit
+
+    cleanly without actually merging the PR. For example, a headless agent
+    that backgrounds the CI-poll loop and then ends its turn believing
+    something will resume it later.
+    """
+
+    async def test_skips_when_no_pr_number(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_merge_command
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:integrate-pr"
+        agent.pr_number = None
+
+        assert await _validate_merge_command(1, agent) is None
+
+    async def test_passes_when_pr_merged(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_merge_command
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:integrate-pr"
+        agent.pr_number = 955
+        agent.project_dir = None
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        mock_status = MagicMock(state="MERGED")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
+        ):
+            assert await _validate_merge_command(1, agent) is None
+
+    async def test_passes_when_pr_closed(self) -> None:
+        """A CLOSED (not merged) PR is the command's own documented early-stop, not a failure."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_merge_command
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:integrate-pr"
+        agent.pr_number = 955
+        agent.project_dir = None
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        mock_status = MagicMock(state="CLOSED")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
+        ):
+            assert await _validate_merge_command(1, agent) is None
+
+    async def test_fails_when_pr_still_open(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_merge_command
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:integrate-pr"
+        agent.pr_number = 955
+        agent.project_dir = None
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        mock_status = MagicMock(state="OPEN")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
+        ):
+            result = await _validate_merge_command(1, agent)
+        assert result == "integrate-pr exited without merging PR #955 (state=OPEN)"
+
+    async def test_passes_when_open_but_actively_queued(self) -> None:
+        """An enqueued PR is tracked by MergeQueueMonitor independently; not a failure."""
+        from datetime import datetime, timezone
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_merge_command
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import MergeQueueEntry
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                MergeQueueEntry(
+                    pr_number=956,
+                    repo="owner/repo",
+                    issue_number="915",
+                    project_dir="/tmp/test",
+                    enqueued_at=datetime.now(timezone.utc),
+                    github_user="user",
+                    branch_name="feat/issue-915",
+                    status="queued",
+                )
+            )
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:integrate-pr"
+        agent.pr_number = 956
+        agent.project_dir = None
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        mock_status = MagicMock(state="OPEN")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
+        ):
+            assert await _validate_merge_command(1, agent) is None
+
+    async def test_open_with_resolved_queue_entry_still_fails(self) -> None:
+        """A resolved (merged/ejected) queue entry no longer excuses an open PR."""
+        from datetime import datetime, timezone
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_merge_command
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import MergeQueueEntry
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                MergeQueueEntry(
+                    pr_number=957,
+                    repo="owner/repo",
+                    issue_number="916",
+                    project_dir="/tmp/test",
+                    enqueued_at=datetime.now(timezone.utc),
+                    github_user="user",
+                    branch_name="feat/issue-916",
+                    status="ejected",
+                    resolved_at=datetime.now(timezone.utc),
+                )
+            )
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:integrate-pr"
+        agent.pr_number = 957
+        agent.project_dir = None
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        mock_status = MagicMock(state="OPEN")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
+        ):
+            result = await _validate_merge_command(1, agent)
+        assert result == "integrate-pr exited without merging PR #957 (state=OPEN)"
+
+    async def test_fails_open_on_gh_api_error(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_merge_command
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:integrate-pr"
+        agent.pr_number = 955
+        agent.project_dir = None
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, side_effect=RuntimeError("not found")),
+        ):
+            assert await _validate_merge_command(1, agent) is None
+
+    async def test_skips_when_no_github_repo_configured(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_merge_command
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:integrate-pr"
+        agent.pr_number = 955
+        agent.project_dir = None
+
+        mock_cfg = MagicMock(github_repo="")
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            assert await _validate_merge_command(1, agent) is None
+
+    async def test_approve_merge_role_is_also_validated(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:approve-merge"
+        agent.pr_number = 958
+        agent.project_dir = None
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        mock_status = MagicMock(state="OPEN")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
+        ):
+            result = await _validate_command_outcome(1, agent)
+        assert result == "approve-merge exited without merging PR #958 (state=OPEN)"
+
+
 class TestDowngradeToFailed:
     """_downgrade_to_failed changes done runs to failed with a reason."""
 
