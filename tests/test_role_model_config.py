@@ -23,7 +23,7 @@ from sova.llm.client import _ROLE_MODEL_FIELDS, resolve_model
 from sova.llm.complexity import ComplexityTier
 from sova.llm.models import LLMResult
 from sova.llm.routing import route_model
-from sova.roles.panel_review import _estimate_dimension_cost, run_panel_review
+from sova.roles.panel_review import _estimate_call_cost, run_panel_review
 from sova.roles.reviewer import ReviewerRole
 from sova.supervisor.planner import _DEFAULT_MODEL, SupervisorPlanner
 
@@ -290,7 +290,7 @@ class TestPanelDefaultModel:
         assert mock_invoke.call_args[1]["model"] == "opus"
 
     def test_unrecognized_model_keeps_cost_fallback(self) -> None:
-        assert _estimate_dimension_cost("ollama/llama3") == Decimal("0.01")
+        assert _estimate_call_cost("ollama/llama3") == Decimal("0.01")
 
     @pytest.mark.parametrize(
         ("model", "expected"),
@@ -303,7 +303,7 @@ class TestPanelDefaultModel:
     )
     def test_pinned_versions_cost_like_their_family(self, model: str, expected: Decimal) -> None:
         """A pinned ``roles.reviewer_model`` must not be priced as sonnet by the budget gate."""
-        assert _estimate_dimension_cost(model) == expected
+        assert _estimate_call_cost(model) == expected
 
 
 # ---------------------------------------------------------------------------
