@@ -7,7 +7,9 @@ close).  The ``close()`` method also persists the final ``ResourceSummary``.
 
 from __future__ import annotations
 
+import asyncio
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -60,7 +62,6 @@ class ResourceWriter:
             return
 
         from sova.db.models import ResourceSampleRecord
-        from sova.db.session import get_session
 
         samples_to_flush = self._buffer[:]
         self._buffer.clear()
@@ -80,22 +81,71 @@ class ResourceWriter:
             for s in samples_to_flush
         ]
 
+        insert_task = asyncio.ensure_future(self._insert(records))
         try:
-            async with await get_session(project_dir=self._project_dir) as session:
-                async with session.begin():
-                    session.add_all(records)
-        except BaseException as exc:
+            # Shielded: cancellation must never abandon an in-flight transaction.
+            # An agent exit cancels this task, and a connection dropped between
+            # INSERT and COMMIT keeps SQLite's write lock forever, which bricks
+            # the whole project database for every other writer.
+            await asyncio.shield(insert_task)
+        except asyncio.CancelledError:
+            # Two different cancellations reach here and need opposite handling.
+            # If our own task was cancelled (an agent exiting), the shielded
+            # insert keeps running to completion, so re-buffering would
+            # duplicate the rows it is about to commit. If the insert itself
+            # was cancelled before writing, nothing landed and the samples must
+            # be kept. task.cancelling() tells the two apart.
+            task = asyncio.current_task()
+            if task is None or task.cancelling() == 0:
+                self._buffer = samples_to_flush + self._buffer
+            else:
+                # The shielded insert is now running detached: nothing else
+                # awaits it. If it later fails, observe that failure instead
+                # of losing the batch silently.
+                insert_task.add_done_callback(self._make_detached_flush_failure_handler(samples_to_flush))
+            raise
+        except Exception:
             log.warning("resource_writer.flush_failed", run_id=self._run_id, samples=len(records), exc_info=True)
-            # Re-add to buffer for retry on next flush (covers CancelledError too)
+            # Re-add to buffer for retry on next flush
             self._buffer = samples_to_flush + self._buffer
-            # Re-raise cancellation/interrupt so the task can be properly cancelled
-            if not isinstance(exc, Exception):
-                raise
+
+    def _make_detached_flush_failure_handler(
+        self, samples_to_flush: list[ResourceSample]
+    ) -> Callable[[asyncio.Task], None]:
+        """Build a done-callback that recovers a detached flush insert's failure.
+
+        Runs after this writer's own flush() has already returned (or raised)
+        following cancellation, so it must not assume the buffer is in the
+        same shape it left it in.
+        """
+
+        def _on_done(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is None:
+                return
+            log.warning(
+                "resource_writer.detached_insert_failed",
+                run_id=self._run_id,
+                samples=len(samples_to_flush),
+                exc_info=exc,
+            )
+            self._buffer = samples_to_flush + self._buffer
+
+        return _on_done
+
+    async def _insert(self, records: list) -> None:
+        """Persist *records* in one transaction (must run to completion)."""
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=self._project_dir) as session:
+            async with session.begin():
+                session.add_all(records)
 
     async def write_summary(self, summary: ResourceSummary) -> None:
         """Persist the final resource summary to the database."""
         from sova.db.models import ResourceSummaryRecord
-        from sova.db.session import get_session
 
         record = ResourceSummaryRecord(
             task_run_id=self._run_id,
@@ -109,12 +159,41 @@ class ResourceWriter:
             peak_num_threads=summary.peak_num_threads,
         )
 
+        summary_task = asyncio.ensure_future(self._insert_summary(record))
         try:
-            async with await get_session(project_dir=self._project_dir) as session:
-                async with session.begin():
-                    session.add(record)
+            # Shielded for the same reason as flush(): write_summary runs from
+            # _finalize_resource_monitoring, which _wait_and_finalize calls on
+            # the agent-exit path, and that task is cancelled on shutdown.
+            await asyncio.shield(summary_task)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                # Our own task was cancelled; the summary insert keeps running
+                # detached. Observe its result so a later failure is logged
+                # instead of silently dropped.
+                summary_task.add_done_callback(self._make_detached_summary_failure_handler())
+            raise
         except Exception:
             log.warning("resource_writer.summary_failed", run_id=self._run_id, exc_info=True)
+
+    def _make_detached_summary_failure_handler(self) -> Callable[[asyncio.Task], None]:
+        def _on_done(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is None:
+                return
+            log.warning("resource_writer.detached_summary_failed", run_id=self._run_id, exc_info=exc)
+
+        return _on_done
+
+    async def _insert_summary(self, record: object) -> None:
+        """Persist the summary in one transaction (must run to completion)."""
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=self._project_dir) as session:
+            async with session.begin():
+                session.add(record)
 
     async def close(self) -> None:
         """Flush remaining samples and mark closed."""

@@ -108,6 +108,27 @@ This prevents instant `SQLITE_BUSY` failures when the old and new uvicorn worker
 overlap during a `--reload` restart. `PRAGMA busy_timeout` is redundant with `connect_args`
 timeout -- only the latter is needed since it applies to all pooled connections.
 
+### Cancellation and the write lock
+
+SQLite holds the write lock of an abandoned connection until the owning process exits. A
+task cancelled between `INSERT` and `COMMIT` drops its connection mid-transaction, and the
+whole project database then becomes unwritable: no run can be finalized, the liveness
+sweep cannot reclaim dead runs, and no new agent can be registered. Recovery requires
+restarting the server.
+
+Any DB write that can run on a cancellable path must therefore be shielded:
+
+```python
+await asyncio.shield(self._insert(records))
+```
+
+This applies to every writer on the agent-exit path, which `cancel_background_tasks()`
+cancels with a 3 s timeout: `OutputWriter.flush`, `ResourceWriter.flush`, and
+`ResourceWriter.write_summary`. When re-queuing buffered rows after a cancel, distinguish
+the two cases with `asyncio.current_task().cancelling()`: if our own task was cancelled the
+shielded write still completes, so re-queuing would duplicate rows; if the write itself was
+cancelled before landing, the rows must be kept.
+
 ### Engine disposal after migrations
 
 `_run_migrations()` returns `bool`: `True` if DDL was executed (Alembic ran at least one

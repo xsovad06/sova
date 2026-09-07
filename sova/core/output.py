@@ -11,6 +11,8 @@ durable persistence layer that survives process restarts.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -76,14 +78,75 @@ class OutputWriter:
         ]
         self._next_line_number += len(records)
 
+        insert_task = asyncio.ensure_future(self._insert(records))
         try:
-            async with await get_session(project_dir=self._project_dir) as session:
-                async with session.begin():
-                    session.add_all(records)
+            # Shielded: cancellation must never abandon an in-flight transaction.
+            # An agent exit cancels this task, and a connection dropped between
+            # INSERT and COMMIT keeps SQLite's write lock forever, which bricks
+            # the whole project database for every other writer.
+            await asyncio.shield(insert_task)
+        except asyncio.CancelledError:
+            # Two different cancellations reach here and need opposite handling.
+            # If our own task was cancelled (an agent exiting), the shielded
+            # insert keeps running to completion, so re-buffering would
+            # duplicate the rows it is about to commit. If the insert itself
+            # was cancelled before writing, nothing landed and the lines must
+            # be kept. task.cancelling() tells the two apart.
+            task = asyncio.current_task()
+            if task is None or task.cancelling() == 0:
+                self._next_line_number -= len(records)
+                self._buffer = [r.text for r in records] + self._buffer
+            else:
+                # The shielded insert is now running detached: nothing else
+                # awaits it. If it later fails, observe that failure instead
+                # of losing the batch silently.
+                insert_task.add_done_callback(self._make_detached_failure_handler(records, lines_to_flush))
+            raise
         except Exception:
             log.warning("output_writer.flush_failed", run_id=self._run_id, lines=len(records), exc_info=True)
             self._next_line_number -= len(records)
             self._buffer = [r.text for r in records] + self._buffer
+
+    def _make_detached_failure_handler(
+        self, records: list, lines_to_flush: list[str]
+    ) -> Callable[[asyncio.Task], None]:
+        """Build a done-callback that recovers a detached insert's failure.
+
+        Runs after this writer's own flush() has already returned (or raised)
+        following cancellation, so it must not assume the buffer is in the
+        same shape it left it in: a later flush() can already have committed
+        records using line numbers built on top of the ones this batch
+        reserved. Rewinding ``_next_line_number`` here would let the retried
+        batch reuse those already-committed numbers, and ``output_lines`` has
+        a non-unique index, so a collision would make ``read_lines()``
+        ordering ambiguous. Re-buffer the text only; the retry gets fresh
+        line numbers from whatever ``_next_line_number`` has advanced to by
+        then, leaving a gap instead of a duplicate.
+        """
+
+        def _on_done(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is None:
+                return
+            log.warning(
+                "output_writer.detached_insert_failed",
+                run_id=self._run_id,
+                lines=len(records),
+                exc_info=exc,
+            )
+            self._buffer = lines_to_flush + self._buffer
+
+        return _on_done
+
+    async def _insert(self, records: list) -> None:
+        """Persist *records* in one transaction (must run to completion)."""
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=self._project_dir) as session:
+            async with session.begin():
+                session.add_all(records)
 
     async def close(self) -> None:
         """Flush remaining lines and mark closed."""
