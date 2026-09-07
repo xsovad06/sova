@@ -461,6 +461,30 @@ async def test_migration_034_revision_chain() -> None:
     assert mod.down_revision == "033"
 
 
+async def test_register_sqlite_pragmas_sets_synchronous_normal(tmp_path) -> None:
+    """Every new connection should get PRAGMA synchronous=NORMAL, not the FULL default.
+
+    FULL fsyncs on every commit; under concurrent agent writers the commit
+    window grows long enough to exhaust the 30s busy timeout. synchronous is
+    per-connection (unlike journal_mode, which persists in the file), so this
+    must run on the SQLAlchemy "connect" event rather than once at startup.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from sova.db.session import _register_sqlite_pragmas
+
+    db_path = tmp_path / "pragma_test.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    _register_sqlite_pragmas(engine)
+    try:
+        async with engine.connect() as conn:
+            result = await conn.exec_driver_sql("PRAGMA synchronous")
+            row = result.fetchone()
+            assert row[0] == 1, f"expected synchronous=NORMAL (1), got {row[0]}"
+    finally:
+        await engine.dispose()
+
+
 async def test_create_memory() -> None:
     """Create a memory entry."""
     async with await get_session() as session:

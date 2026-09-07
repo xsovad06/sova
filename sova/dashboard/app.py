@@ -97,8 +97,8 @@ BASE = Path(__file__).parent
 _AGENTS_URL = "/agents"
 _SWEEP_INTERVAL = 5  # seconds
 _RECOVERY_INTERVAL = 300  # 5 minutes
-_SWEEP_WRITE_RETRY_ATTEMPTS = 3
-_SWEEP_WRITE_RETRY_DELAY = 1.0
+_SWEEP_WRITE_RETRY_ATTEMPTS = 5
+_SWEEP_WRITE_RETRY_DELAY = 3.0
 
 
 class _DaemonComponents(TypedDict, total=False):
@@ -311,7 +311,11 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
                     log.debug("sweep.write_locked_retry", attempt=_attempt + 1, directory=str(d))
                     await asyncio.sleep(_SWEEP_WRITE_RETRY_DELAY)
                 else:
-                    raise
+                    # Log and move on: raising here would abandon every project
+                    # after this one, so a single locked database would stop
+                    # dead-run reclamation fleet-wide. The next tick retries.
+                    log.warning("sweep.write_failed", directory=str(d), error=str(exc), exc_info=True)
+                    break
 
 
 async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:

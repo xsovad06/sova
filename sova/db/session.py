@@ -173,13 +173,42 @@ async def _run_migrations(engine) -> bool:
     return True  # DDL was executed
 
 
+def _register_sqlite_pragmas(engine) -> None:
+    """Apply per-connection SQLite PRAGMAs to every new connection.
+
+    ``journal_mode`` persists in the database file, but ``synchronous`` is
+    per-connection, so it has to be set on each connect rather than once at
+    startup. NORMAL is the correct setting under WAL: it never risks
+    corruption (only the most recent transactions on an OS crash or power
+    loss) and avoids an fsync on every commit. With FULL, a machine running
+    several agents spends long enough inside each commit that other writers
+    exhaust the 30 s busy timeout and fail with "database is locked".
+    """
+    from typing import Any
+
+    from sqlalchemy import event
+    from sqlalchemy.pool import ConnectionPoolEntry
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection: Any, _connection_record: ConnectionPoolEntry) -> None:
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
+        except Exception:
+            log = logging.getLogger("sova.db")
+            log.warning("Failed to set SQLite synchronous mode", exc_info=True)
+
+
 async def _enable_sqlite_wal(engine) -> None:
     """Enable WAL journal mode on the first connection.
 
     WAL mode persists in the database file after the first set -- subsequent
     connections automatically use WAL without re-running the PRAGMA.
-    The busy timeout is handled per-connection via connect_args={"timeout": 30}.
+    The busy timeout is handled per-connection via connect_args={"timeout": 30},
+    and ``synchronous`` via the connect listener registered above.
     """
+    _register_sqlite_pragmas(engine)
     try:
         async with engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))

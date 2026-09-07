@@ -96,11 +96,20 @@ task_run.status = status
 
 `create_all` only creates missing tables -- it never adds columns to existing ones. Adding a column without a migration causes `OperationalError: no such column`.
 
-### SQLite WAL mode and busy timeout
+### SQLite WAL mode, synchronous, and busy timeout
 
 Before running migrations, `init_db()` calls `_enable_sqlite_wal(engine)` which runs
 `PRAGMA journal_mode=WAL`. WAL mode persists in the DB file after the first set -- all
 subsequent connections automatically use WAL without re-running the PRAGMA.
+
+`_enable_sqlite_wal()` also calls `_register_sqlite_pragmas(engine)`, which registers a
+SQLAlchemy `connect` listener running `PRAGMA synchronous=NORMAL` on every new connection.
+Unlike `journal_mode`, `synchronous` is per-connection, so setting it once at startup would
+only affect the first connection. NORMAL is the correct setting under WAL: it never risks
+corruption, only the most recent transactions on an OS crash or power loss. Under the
+default FULL, every commit pays an fsync, and with several agents plus the dashboard and
+scheduler writing to one file, commits queue long enough that other writers exhaust the
+30 s busy timeout and fail with "database is locked".
 
 All SQLite engines are also created with `connect_args={"check_same_thread": False, "timeout": 30}`.
 The `timeout` maps to `sqlite3.connect(timeout=30)` (Python's busy-wait duration in seconds).
