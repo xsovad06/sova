@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from sova.adapters.base import Task
 from sova.config.models import ReviewPanelConfig
 from sova.llm.client import invoke
+from sova.llm.routing import get_model_family
 from sova.roles._review_comments import (
     ReviewFinding,
     ReviewResult,
@@ -186,12 +187,18 @@ def deduplicate_findings(
 
 
 def _estimate_dimension_cost(model: str) -> Decimal:
-    """Estimate minimum cost for a dimension call based on model tier."""
+    """Estimate minimum cost for a dimension call based on model tier.
+
+    Keyed on the model *family*, not the exact string: both ``dimension_models``
+    pins and the resolved ``default_model`` may carry a pinned version
+    (``"claude-opus-4-6"``), which would otherwise fall through to the sonnet
+    price and under-estimate an opus dimension by 5x in the budget gate.
+    """
     return {
         "opus": Decimal("0.05"),
         "sonnet": Decimal("0.01"),
         "haiku": Decimal("0.002"),
-    }.get(model, Decimal("0.01"))
+    }.get(get_model_family(model) or "", Decimal("0.01"))
 
 
 async def run_panel_review(
@@ -203,12 +210,17 @@ async def run_panel_review(
     cwd: Path | str | None = None,
     budget_remaining: Decimal | None = None,
     addressed_findings: list[dict] | None = None,
+    default_model: str = "sonnet",
 ) -> ReviewResult:
     """Run dimension reviewers sequentially and aggregate results.
 
     Each dimension gets its own LLM call in priority order
     (correctness > security > ...). Findings are deduplicated and
     merged into a single ReviewResult.
+
+    ``default_model`` is the model used for dimensions without an explicit
+    ``panel_config.dimension_models`` pin. Callers resolve it from config;
+    the literal default keeps this module free of a config-load path.
     """
     result = ReviewResult()
     chunks = _chunk_diff(diff)
@@ -228,7 +240,7 @@ async def run_panel_review(
             if dim in skipped_dimensions:
                 continue
 
-            model = panel_config.dimension_models.get(dim, "sonnet")
+            model = panel_config.dimension_models[dim] if dim in panel_config.dimension_models else default_model
             estimated_cost = _estimate_dimension_cost(model)
             if budget_remaining is not None and budget_remaining < estimated_cost:
                 skipped_dimensions.add(dim)

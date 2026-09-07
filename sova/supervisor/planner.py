@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.dashboard.services.pr_service import list_open_prs_with_state
-from sova.llm.client import invoke
+from sova.llm.client import invoke, resolve_model
 from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
 
@@ -33,7 +33,9 @@ if TYPE_CHECKING:
 
 log = get_logger(component="supervisor.planner")
 
-_MODEL = "sonnet"  # Auto-resolves to latest Sonnet (currently claude-sonnet-4-5)
+# Terminal fallback when ``roles.planner_model`` is unset. Auto-resolves to the
+# latest Sonnet (currently claude-sonnet-4-5).
+_DEFAULT_MODEL = "sonnet"
 _MAX_TOKENS = 1024
 
 _VALID_ACTIONS = frozenset(
@@ -149,10 +151,11 @@ class SupervisorPlanner:
             safe_persona = persona.replace("{", "{{").replace("}", "}}")
             system_prompt = _SYSTEM_PROMPT.format(persona=safe_persona)
 
-            log.debug("planner.llm_call_start", model=_MODEL, prompt_length=len(user_prompt))
+            model = self._resolve_model()
+            log.debug("planner.llm_call_start", model=model, prompt_length=len(user_prompt))
             start = time.monotonic()
 
-            raw = await self._call_llm(system_prompt, user_prompt)
+            raw = await self._call_llm(system_prompt, user_prompt, model)
             if raw is None:
                 return None
 
@@ -395,11 +398,21 @@ class SupervisorPlanner:
             log.warning("supervisor.planner.issue_health_failed", exc_info=True)
             return "## Issue Health\nData unavailable"
 
-    async def _call_llm(self, system_prompt: str, user_prompt: str) -> dict | None:
+    def _resolve_model(self) -> str:
+        """Resolve the planner model, honouring ``roles.planner_model``."""
+        resolved = resolve_model(
+            role="planner",
+            roles_config=self._config.roles,
+            llm_config=self._config.llm,
+            agent_model=self._config.agent.model,
+        )
+        return resolved[0] if resolved else _DEFAULT_MODEL
+
+    async def _call_llm(self, system_prompt: str, user_prompt: str, model: str) -> dict | None:
         try:
             result = await invoke(
                 user_prompt,
-                model=_MODEL,
+                model=model,
                 task_type="planner",
                 system_prompt=system_prompt,
                 max_tokens=_MAX_TOKENS,

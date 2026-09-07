@@ -72,7 +72,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 8060 at last count)
+  tests/                           # pytest suite (3200+ tests, 8104 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
@@ -116,6 +116,7 @@ This project uses **GitHub Issues** with a project board.
 - **No double dashes**: never use `--` as a separator in prose, comments, descriptions, PR bodies, review comments, or any text output. Use a colon, period, comma, or parentheses instead. Example: `Fixed: updated type hint` not `Fixed -- updated type hint`. This applies everywhere: code comments, commit messages, PR descriptions, review findings, issue bodies, command descriptions, and documentation.
 - **Line length**: 120 max
 - **Formatter**: Ruff (lint + format) when available
+- **Falsy-default trap**: never use `x or default` when `x` can be a legitimate falsy non-`None` value (`0`, `""`, `[]`, `False`). It silently discards the real value. Use `x if x is not None else default` or an explicit membership/identity check instead.
 
 ### Code Patterns: Markdown (commands, personas, knowledge)
 - **Frontmatter**: commands use YAML frontmatter (`name`, `description`, `user-invocable`)
