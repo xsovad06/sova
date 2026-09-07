@@ -290,32 +290,61 @@ class TaskProgressionEngine:
             )
 
         if plan is not None:
-            approved_set = {(a.action, a.issue) for a in plan.actions}
-            filtered: list[ProgressionDecision] = []
-            for d in decisions:
-                if d.action in NON_ACTIONABLE_ACTIONS:
-                    filtered.append(d)
-                elif (d.action.value, d.issue_number) in approved_set:
-                    filtered.append(d)
-                else:
-                    log.info(
-                        "progression.plan_filtered",
-                        issue=d.issue_number,
-                        action=d.action.value,
-                        detail="not in LLM plan; skipped",
-                    )
-                    filtered.append(
-                        ProgressionDecision(
-                            issue_number=d.issue_number,
-                            action=ProgressionAction.WAIT,
-                            reason=f"not in LLM plan (deterministic: {d.action.value})",
-                            blocked_by=d.blocked_by,
-                            pr_number=d.pr_number,
-                        )
-                    )
-            decisions = filtered
+            decisions = self.apply_plan(decisions, plan)
 
         return decisions
+
+    def apply_plan(self, decisions: list[ProgressionDecision], plan: PlanResult) -> list[ProgressionDecision]:
+        """Convert actionable decisions the plan did not approve into WAIT.
+
+        The plan may only subtract. It can never unblock a deterministic gate,
+        so a decision that is already WAIT or blocked stays that way.
+
+        One exception keeps the two layers from vetoing each other into a
+        standstill: if the plan approved some actions but *none* of them name a
+        decision produced this cycle, the plan is describing work the engine is
+        not offering (it is not told the candidate list on older call paths).
+        Filtering on that basis would drop every ready action and the fleet
+        would idle indefinitely, so the deterministic decisions stand instead.
+        An empty ``plan.actions`` is different: that is the planner explicitly
+        holding the fleet, and it is honoured.
+        """
+        approved_set = {(a.action, a.issue) for a in plan.actions}
+        approved_issues = {issue for _, issue in approved_set}
+        actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
+
+        if approved_issues and actionable and approved_issues.isdisjoint({d.issue_number for d in actionable}):
+            log.warning(
+                "progression.plan_disjoint",
+                approved=sorted(f"{a}:{i}" for a, i in approved_set),
+                candidates=sorted(f"{d.action.value}:{d.issue_number}" for d in actionable),
+                detail="plan named no offered issue; keeping deterministic decisions",
+            )
+            return decisions
+
+        filtered: list[ProgressionDecision] = []
+        for d in decisions:
+            if d.action in NON_ACTIONABLE_ACTIONS:
+                filtered.append(d)
+            elif (d.action.value, d.issue_number) in approved_set:
+                filtered.append(d)
+            else:
+                log.info(
+                    "progression.plan_filtered",
+                    issue=d.issue_number,
+                    action=d.action.value,
+                    detail="not in LLM plan; skipped",
+                )
+                filtered.append(
+                    ProgressionDecision(
+                        issue_number=d.issue_number,
+                        action=ProgressionAction.WAIT,
+                        reason=f"not in LLM plan (deterministic: {d.action.value})",
+                        blocked_by=d.blocked_by,
+                        pr_number=d.pr_number,
+                    )
+                )
+        return filtered
 
     async def evaluate_task(self, issue_number: int) -> ProgressionDecision:
         """Evaluate a single task's readiness for progression."""
