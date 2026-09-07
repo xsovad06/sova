@@ -396,6 +396,35 @@ class TestGetResourceSnapshot:
         assert "CI Budget" in result
         assert "Agent Slots" in result
 
+    async def test_reports_slot_occupancy_not_just_the_ceiling(self, planner: SupervisorPlanner) -> None:
+        """The snapshot must say how many slots are in use.
+
+        Given only "max=N" the model infers occupancy from the in_progress
+        issue-label count, which goes stale when an agent dies without rolling
+        its issue back. It then defers every candidate on "capacity" while the
+        fleet is completely idle.
+        """
+        with patch(
+            "sova.supervisor.gates.slots.get_alive_count",
+            new_callable=AsyncMock,
+            return_value=0,
+        ):
+            result = await planner._get_resource_snapshot()
+
+        assert f"Agent Slots: 0/{planner._config.max_parallel_agents} in use" in result
+        assert f"{planner._config.max_parallel_agents} free" in result
+
+    async def test_slot_occupancy_degrades_without_hiding_the_max(self, planner: SupervisorPlanner) -> None:
+        with patch(
+            "sova.supervisor.gates.slots.get_alive_count",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ):
+            result = await planner._get_resource_snapshot()
+
+        assert f"max={planner._config.max_parallel_agents}" in result
+        assert "in-use unavailable" in result
+
     async def test_all_sources_fail(self, planner: SupervisorPlanner) -> None:
         with (
             patch(

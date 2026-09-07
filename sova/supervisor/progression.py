@@ -227,7 +227,11 @@ class TaskProgressionEngine:
         precomputed_conflicts = await self._fetch_mergeability_map()
         precomputed_file_sets = await self._fetch_file_overlap_sets()
 
+        # Fail open on an unavailable count, matching check_slot_gate's policy:
+        # an unknown occupancy never blocks.
         alive_count = await get_alive_count(self._session_factory)
+        if alive_count is None:
+            alive_count = 0
         global_slots: BlockReason | None = None
         if alive_count >= cfg.max_parallel_agents:
             global_slots = BlockReason(

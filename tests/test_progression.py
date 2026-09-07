@@ -1506,10 +1506,15 @@ class TestExceptionPaths:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_alive_count_exception_returns_zero(self) -> None:
+    async def test_get_alive_count_exception_returns_none(self) -> None:
+        """A failed query must be distinguishable from a confirmed zero count.
+
+        get_alive_count returns None on failure; callers each pick their own
+        fail-open policy instead of a failed query masquerading as an idle fleet.
+        """
         mock_session_factory = MagicMock(side_effect=RuntimeError("db down"))
         result = await get_alive_count(mock_session_factory)
-        assert result == 0
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_slot_gate_exception_fails_open(self) -> None:
@@ -1521,6 +1526,16 @@ class TestExceptionPaths:
             ),
         ):
             result = await check_slot_gate(MagicMock(), 3)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_slot_gate_unavailable_count_fails_open(self) -> None:
+        """A real (unmocked) failed query surfaces as None, not a raised exception.
+
+        check_slot_gate must not block just because occupancy is unknown.
+        """
+        mock_session_factory = MagicMock(side_effect=RuntimeError("db down"))
+        result = await check_slot_gate(mock_session_factory, 3)
         assert result is None
 
     @pytest.mark.asyncio

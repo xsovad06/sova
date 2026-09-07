@@ -239,8 +239,24 @@ class SupervisorPlanner:
         except Exception:
             lines.append("- CI Budget: data unavailable")
 
-        # Agent slots
-        lines.append(f"- Agent Slots: max={self._config.max_parallel_agents}")
+        # Agent slots. Report occupancy, not just the ceiling: given only
+        # "max=N" the model has no way to tell a busy fleet from an idle one,
+        # and infers it from whatever else is in the prompt (the in_progress
+        # issue-label count, which goes stale whenever an agent dies without
+        # rolling its issue back). That misread defers every candidate on
+        # "capacity" while nothing is actually running. get_alive_count is the
+        # same source the deterministic slot gate uses, so both agree.
+        try:
+            from sova.supervisor.gates.slots import get_alive_count
+
+            in_use = await get_alive_count(self._session_factory)
+            if in_use is None:
+                lines.append(f"- Agent Slots: max={self._config.max_parallel_agents}, in-use unavailable")
+            else:
+                free = max(0, self._config.max_parallel_agents - in_use)
+                lines.append(f"- Agent Slots: {in_use}/{self._config.max_parallel_agents} in use, {free} free")
+        except Exception:
+            lines.append(f"- Agent Slots: max={self._config.max_parallel_agents}, in-use unavailable")
 
         return "\n".join(lines)
 
