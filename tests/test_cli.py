@@ -1320,59 +1320,6 @@ class TestDoctorHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Admin helper functions
-# ---------------------------------------------------------------------------
-
-
-class TestAdminHelpers:
-    """Tests for extracted helper functions in admin.py."""
-
-    def test_parse_worktree_output_empty(self) -> None:
-        from sova.cli.commands.admin import _parse_worktree_output
-
-        result = _parse_worktree_output("")
-        assert result == []
-
-    def test_parse_worktree_output_single(self) -> None:
-        from sova.cli.commands.admin import _parse_worktree_output
-
-        output = "worktree /path/to/wt\nbranch refs/heads/feat/test\n\n"
-        result = _parse_worktree_output(output)
-        assert len(result) == 1
-        assert result[0]["path"] == "/path/to/wt"
-        assert result[0]["branch"] == "refs/heads/feat/test"
-
-    def test_parse_worktree_output_multiple(self) -> None:
-        from sova.cli.commands.admin import _parse_worktree_output
-
-        output = "worktree /a\nbranch refs/heads/main\n\nworktree /b\nbranch refs/heads/feat/x\n\n"
-        result = _parse_worktree_output(output)
-        assert len(result) == 2
-
-    def test_filter_stale_worktrees(self) -> None:
-        from sova.cli.commands.admin import _filter_stale_worktrees
-
-        worktrees = [
-            {"path": "/a", "branch": "refs/heads/main"},
-            {"path": "/b", "branch": "refs/heads/feat/my-feature"},
-            {"path": "/c", "branch": "refs/heads/fix/a-bug"},
-            {"path": "/d", "branch": "refs/heads/refactor/cleanup"},
-            {"path": "/e", "branch": "refs/heads/chore/deps"},
-        ]
-        stale = _filter_stale_worktrees(worktrees)
-        assert len(stale) == 3
-        paths = {wt["path"] for wt in stale}
-        assert paths == {"/b", "/c", "/d"}
-
-    def test_filter_stale_worktrees_no_branch(self) -> None:
-        from sova.cli.commands.admin import _filter_stale_worktrees
-
-        worktrees = [{"path": "/a"}]
-        stale = _filter_stale_worktrees(worktrees)
-        assert stale == []
-
-
-# ---------------------------------------------------------------------------
 # Triage helper functions
 # ---------------------------------------------------------------------------
 

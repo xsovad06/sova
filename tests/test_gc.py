@@ -145,6 +145,44 @@ class TestCleanupByIssueState:
                 gc = await cleanup_by_issue_state(project_dir=project)
         assert gc.branches_removed == 1
 
+    async def test_jira_worktree_cleaned_when_upstream_gone(self, project: Path) -> None:
+        (project / ".claude" / "worktrees" / "RHCLOUD-42").mkdir()
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _ok(stdout=""),
+                _ok(stdout=""),
+                _ok(stdout="feat/RHCLOUD-42-auth\n"),
+                _ok(stdout=""),
+            ]
+            with (
+                patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock) as mock_cw,
+                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree._has_gone_upstream", new_callable=AsyncMock, return_value=True),
+                patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
+                patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
+            ):
+                gc = await cleanup_by_issue_state(project_dir=project)
+        mock_cw.assert_awaited_once()
+        assert gc.worktrees_removed == 1
+
+    async def test_jira_worktree_kept_when_upstream_tracked(self, project: Path) -> None:
+        (project / ".claude" / "worktrees" / "RHCLOUD-42").mkdir()
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _ok(stdout=""),
+                _ok(stdout=""),
+                _ok(stdout="feat/RHCLOUD-42-auth\n"),
+            ]
+            with (
+                patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock) as mock_cw,
+                patch("sova.git.worktree._has_gone_upstream", new_callable=AsyncMock, return_value=False),
+                patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
+                patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
+            ):
+                gc = await cleanup_by_issue_state(project_dir=project)
+        mock_cw.assert_not_awaited()
+        assert gc.worktrees_removed == 0
+
     async def test_stash_reporting(self, project: Path) -> None:
         with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
@@ -227,6 +265,27 @@ class TestCleanupByIssueState:
                 gc = await cleanup_by_issue_state(project_dir=project)
         assert gc.worktrees_removed == 0
         assert len(gc.errors) == 1
+
+    async def test_include_branches_false_skips_branch_deletion(self, project: Path) -> None:
+        """include_branches=False removes worktrees but leaves branches alone."""
+        (project / ".claude" / "worktrees" / "42").mkdir()
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _ok(stdout="42\n"),
+                _ok(stdout=""),
+                _ok(stdout=""),
+            ]
+            with (
+                patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock) as mock_cw,
+                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock) as mock_branches,
+                patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
+            ):
+                gc = await cleanup_by_issue_state(project_dir=project, include_branches=False)
+        mock_cw.assert_awaited_once()
+        assert gc.worktrees_removed == 1
+        assert gc.branches_removed == 0
+        mock_branches.assert_not_awaited()
 
     async def test_no_worktrees_dir(self, tmp_path: Path) -> None:
         with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:

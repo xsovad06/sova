@@ -298,7 +298,7 @@ Run the full issue-aware GC to clean up any remaining stale worktrees and branch
 sova cleanup --all --project <PROJECT_DIR>
 ```
 
-This is safe post-merge because the issue is closed and its worktrees/branches are no longer needed.
+`sova cleanup --all` only removes a worktree once its own issue is confirmed closed on GitHub, no agent is actively using it, and its working tree is clean, so it will not touch other issues' in-progress work.
 
 ### Phase 7: Report
 

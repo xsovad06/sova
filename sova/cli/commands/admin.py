@@ -127,57 +127,44 @@ def cleanup(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be cleaned up.")] = False,
     logs: Annotated[bool, typer.Option("--logs", help="Also clean up old agent output lines from the DB.")] = False,
-    all_: Annotated[bool, typer.Option("--all", help="Run issue-aware GC (worktrees, branches, stashes).")] = False,
+    all_: Annotated[bool, typer.Option("--all", help="Also delete local branches for closed issues.")] = False,
 ) -> None:
-    """Remove stale worktrees, optionally old output logs, and with --all branches for closed issues."""
+    """Remove worktrees for closed issues (issue-aware, skips active/dirty ones), optionally old output logs
+    and, with --all, local branches for those closed issues too."""
     asyncio.run(_cleanup(project_dir=project, dry_run=dry_run, clean_logs=logs, run_all=all_))
 
 
 async def _cleanup(*, project_dir: Path | None, dry_run: bool, clean_logs: bool, run_all: bool = False) -> None:
-    from sova.utils.shell import run
+    from sova.git.worktree import cleanup_by_issue_state
 
     resolved_dir = project_dir or Path.cwd()
 
-    # List worktrees
-    result = await run("git", "worktree", "list", "--porcelain", cwd=resolved_dir)
-    if not result.success:
-        console.print("[red]Failed to list worktrees.[/red]")
-        raise typer.Exit(code=1)
-
-    worktrees = _parse_worktree_output(result.stdout)
-    stale = _filter_stale_worktrees(worktrees)
-
-    if not stale:
-        console.print("[green]No stale worktrees found.[/green]")
-    elif dry_run:
-        _preview_stale_worktrees(stale)
+    # Worktree removal always goes through the issue-aware, safety-checked path:
+    # a worktree is only removed once its issue is confirmed closed, no agent
+    # PID is actively using it, and its working tree is clean. `--all` additionally
+    # deletes local branches for those closed issues (a more aggressive action
+    # than removing a worktree checkout, so it stays opt-in).
+    gc = await cleanup_by_issue_state(project_dir=resolved_dir, dry_run=dry_run, include_branches=run_all)
+    if dry_run:
+        console.print(
+            f"[yellow]Would remove {gc.worktrees_removed} worktree(s)"
+            f" and {gc.branches_removed} branch(es) for closed issues.[/yellow]"
+        )
+    elif gc.worktrees_removed or gc.branches_removed:
+        console.print(
+            f"[green]Removed {gc.worktrees_removed} worktree(s)"
+            f" and {gc.branches_removed} branch(es) for closed issues.[/green]"
+        )
     else:
-        await _remove_worktrees(stale, resolved_dir)
-
-    if run_all:
-        from sova.git.worktree import cleanup_by_issue_state
-
-        gc = await cleanup_by_issue_state(project_dir=resolved_dir, dry_run=dry_run)
-        if dry_run:
-            console.print(
-                f"[yellow]Would remove {gc.worktrees_removed} worktree(s)"
-                f" and {gc.branches_removed} branch(es) for closed issues.[/yellow]"
-            )
-        elif gc.worktrees_removed or gc.branches_removed:
-            console.print(
-                f"[green]Removed {gc.worktrees_removed} worktree(s)"
-                f" and {gc.branches_removed} branch(es) for closed issues.[/green]"
-            )
-        else:
-            console.print("[green]No stale worktrees or branches for closed issues.[/green]")
-        if gc.stashes_found:
-            console.print(f"[yellow]Found {len(gc.stashes_found)} stash(es) (not auto-dropped):[/yellow]")
-            for stash in gc.stashes_found:
-                console.print(f"  {stash}")
-        for err in gc.errors:
-            console.print(f"[red]{err}[/red]")
-        if gc.errors:
-            raise typer.Exit(code=1)
+        console.print("[green]No stale worktrees or branches for closed issues.[/green]")
+    if gc.stashes_found:
+        console.print(f"[yellow]Found {len(gc.stashes_found)} stash(es) (not auto-dropped):[/yellow]")
+        for stash in gc.stashes_found:
+            console.print(f"  {stash}")
+    for err in gc.errors:
+        console.print(f"[red]{err}[/red]")
+    if gc.errors:
+        raise typer.Exit(code=1)
 
     if clean_logs and not dry_run:
         from sova.config.loader import load_config
@@ -188,53 +175,3 @@ async def _cleanup(*, project_dir: Path | None, dry_run: bool, clean_logs: bool,
         cfg = load_config(resolved_dir)
         deleted = await cleanup_old_output(resolved_dir, cfg.output.retention_days)
         console.print(f"[green]Cleaned up {deleted} old output line(s).[/green]")
-
-
-def _parse_worktree_output(stdout: str) -> list[dict[str, str]]:
-    """Parse `git worktree list --porcelain` output into a list of worktree dicts."""
-    worktrees: list[dict[str, str]] = []
-    current_wt: dict[str, str] = {}
-    for line in stdout.strip().split("\n"):
-        if line.startswith("worktree "):
-            if current_wt:
-                worktrees.append(current_wt)
-            current_wt = {"path": line.split(" ", 1)[1]}
-        elif line.startswith("branch "):
-            current_wt["branch"] = line.split(" ", 1)[1]
-        elif not line.strip() and current_wt:
-            worktrees.append(current_wt)
-            current_wt = {}
-
-    if current_wt:
-        worktrees.append(current_wt)
-
-    return worktrees
-
-
-def _filter_stale_worktrees(worktrees: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Filter to SOVA-managed worktrees (branches with feat/, fix/, refactor/ prefixes)."""
-    sova_prefixes = ("refs/heads/feat/", "refs/heads/fix/", "refs/heads/refactor/")
-    return [wt for wt in worktrees if wt.get("branch", "").startswith(sova_prefixes)]
-
-
-def _preview_stale_worktrees(stale: list[dict[str, str]]) -> None:
-    """Show what would be removed in a dry run."""
-    console.print(f"[yellow]Would remove {len(stale)} worktree(s):[/yellow]")
-    for wt in stale:
-        console.print(f"  - {wt['path']} ({wt.get('branch', 'detached')})")
-
-
-async def _remove_worktrees(stale: list[dict[str, str]], resolved_dir: Path) -> None:
-    """Remove stale worktrees and report results."""
-    from sova.utils.shell import run
-
-    removed = 0
-    for wt in stale:
-        result = await run("git", "worktree", "remove", "--force", wt["path"], cwd=resolved_dir)
-        if result.success:
-            removed += 1
-            console.print(f"  Removed: {wt['path']}")
-        else:
-            console.print(f"  [red]Failed: {wt['path']} -- {result.stderr.strip()}[/red]")
-
-    console.print(f"\n[green]Removed {removed} worktree(s).[/green]")
