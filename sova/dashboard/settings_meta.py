@@ -368,14 +368,23 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "review.panel.enabled",
         "Panel review",
-        "Use parallel focused dimension reviewers instead of a single monolithic review (3-5x cost)",
+        "Review the diff against focused dimensions (correctness, security, ...) instead of a single "
+        "monolithic review. Cost depends on the combined setting below",
+        "review",
+        "boolean",
+    ),
+    SettingMeta(
+        "review.panel.combined",
+        "Combined panel call",
+        "Review every dimension sharing a model in a single LLM call per diff chunk "
+        "instead of one call per dimension (much cheaper; disable to restore per-dimension calls)",
         "review",
         "boolean",
     ),
     SettingMeta(
         "review.panel.dimensions",
         "Dimensions",
-        "Review dimensions to evaluate in parallel (correctness, security, error_handling, design, test_coverage)",
+        "Review dimensions to evaluate (correctness, security, error_handling, design, test_coverage)",
         "review",
         "list",
     ),

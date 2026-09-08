@@ -255,36 +255,55 @@ def _extract_json(text: str) -> dict | None:
     return first_valid
 
 
-def _parse_findings(text: str) -> tuple[list[ReviewFinding], str]:
-    """Parse LLM response into findings. Returns (findings, summary)."""
+def _strip_json_fences(text: str) -> str:
+    """Strip a wrapping markdown code fence from *text*."""
     text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
+    return text
 
+
+def _load_findings_json(text: str) -> dict | None:
+    """Parse a findings payload out of an LLM response, tolerating fences and prose."""
+    stripped = _strip_json_fences(text)
     try:
-        data = json.loads(text)
+        data = json.loads(stripped)
     except json.JSONDecodeError:
-        data = _extract_json(text)
-        if data is None:
-            log.warning("parse_findings.failed", text_preview=text[:200])
-            return [], "Failed to parse review response"
+        data = None
+    # A bare array or scalar is not a findings payload either; scan for an object instead.
+    return data if isinstance(data, dict) else _extract_json(stripped)
 
-    findings = []
-    for item in data.get("findings", []):
-        findings.append(
-            ReviewFinding(
-                file=item.get("file", "unknown"),
-                severity=_safe_severity(item.get("severity", 5)),
-                category=item.get("category", "other"),
-                description=item.get("description", ""),
-                suggestion=item.get("suggestion", ""),
-                line=item.get("line"),
-            )
+
+def _findings_from_data(data: dict) -> list[ReviewFinding]:
+    """Build ReviewFinding objects from a parsed response's ``findings`` array."""
+    raw = data.get("findings")
+    if not isinstance(raw, list):
+        return []
+    return [
+        ReviewFinding(
+            file=item.get("file", "unknown"),
+            severity=_safe_severity(item.get("severity", 5)),
+            category=item.get("category", "other"),
+            description=item.get("description", ""),
+            suggestion=item.get("suggestion", ""),
+            line=item.get("line"),
         )
-    return findings, data.get("summary", "")
+        for item in raw
+        if isinstance(item, dict)
+    ]
+
+
+def _parse_findings(text: str) -> tuple[list[ReviewFinding], str]:
+    """Parse LLM response into findings. Returns (findings, summary)."""
+    data = _load_findings_json(text)
+    if data is None:
+        log.warning("parse_findings.failed", text_preview=text[:200])
+        return [], "Failed to parse review response"
+
+    return _findings_from_data(data), data.get("summary", "")
 
 
 def _chunk_diff(diff: str, chunk_size: int = DIFF_CHUNK_SIZE) -> list[str]:
