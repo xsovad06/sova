@@ -21,6 +21,10 @@ if TYPE_CHECKING:
 log = get_logger(component="git.rebase")
 
 _CONFLICT_MARKER_RE = re.compile(r"^(?:[<>|]{7}(?: .*)?|={7})$", re.MULTILINE)
+# Omits the `=======` separator that _CONFLICT_MARKER_RE accepts: a bare seven-equals
+# line is a valid markdown setext underline, and flagging one would abort a rebase
+# that was resolved correctly.
+_CONFLICT_FENCE_RE = re.compile(r"^(?:<{7}|>{7})(?: .*)?$", re.MULTILINE)
 
 _DEFAULT_RESOLUTION_PROMPT = (
     "The following file has git merge conflicts. The file uses diff3 conflict style "
@@ -52,6 +56,11 @@ def _normalize_resolution(text: str) -> str:
 
 def _has_conflict_markers(text: str) -> bool:
     return bool(_CONFLICT_MARKER_RE.search(text))
+
+
+def _has_unresolved_conflict(text: str) -> bool:
+    """Detect conflict fences in on-disk file content."""
+    return bool(_CONFLICT_FENCE_RE.search(text))
 
 
 def _is_valid_resolution(text: str, *, original_non_marker_lines: int) -> bool:
@@ -173,12 +182,48 @@ async def _resolve_file_with_consensus(
     return winner, cost
 
 
-async def _get_conflicted_files(cwd: Path | None = None) -> list[str]:
-    """Return list of files with merge conflicts (unmerged paths)."""
+async def _get_conflicted_files(cwd: Path | None = None) -> list[str] | None:
+    """Return files with merge conflicts, or None when the check could not run.
+
+    None is distinct from an empty list: a failed check leaves the conflict
+    state unknown and must never be read as "everything is resolved".
+    """
     result = await run("git", "diff", "--name-only", "--diff-filter=U", cwd=cwd)
-    if not result.success or not result.stdout.strip():
-        return []
+    if not result.success:
+        log.warning("git.rebase.conflict_check_failed", stderr=(result.stderr or "")[:200])
+        return None
     return [f.strip() for f in result.stdout.strip().splitlines() if f.strip()]
+
+
+def _file_has_conflict(path: Path) -> bool:
+    """Check on-disk content for conflict fences.
+
+    A missing file is a valid resolution (deletion), and a binary or unreadable
+    file cannot be scanned; both defer to the git-level unmerged check.
+    """
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return _has_unresolved_conflict(content)
+
+
+async def _unresolved_paths(files: list[str], *, cwd: Path) -> list[str] | None:
+    """Verify that *files* were really resolved, returning those that were not.
+
+    Returns None when the git-level check could not run. Git treats a file
+    staged with conflict markers still inside it as resolved, so `rebase
+    --continue` would happily commit those markers; the content check is what
+    catches that.
+    """
+    unmerged = await _get_conflicted_files(cwd=cwd)
+    if unmerged is None:
+        return None
+    unresolved = list(unmerged)
+    for rel_path in files:
+        if rel_path not in unresolved and _file_has_conflict(cwd / rel_path):
+            unresolved.append(rel_path)
+    return unresolved
 
 
 def _load_consensus_config(
@@ -348,6 +393,21 @@ async def rebase_with_conflict_resolution(
             return False
         return True
 
+    async def _abort_unverifiable(resolved: int) -> tuple[RebaseResult, Decimal]:
+        """Give up when a conflict check could not run, rather than guessing.
+
+        Every site that reads a conflict check routes its None case here, so the
+        "a failed check is not a resolved conflict" invariant cannot be dropped
+        by normalizing None to an empty list at one of them.
+        """
+        await run("git", "rebase", "--abort", cwd=cwd)
+        await _pop_stash()
+        return RebaseResult(
+            success=False,
+            conflicts_resolved=resolved,
+            error="Could not verify conflict resolution: the git conflict check failed",
+        ), cost
+
     result = await run("git", "rebase", f"origin/{base}", cwd=cwd)
     if result.success:
         if not await _pop_stash():
@@ -401,7 +461,10 @@ async def rebase_with_conflict_resolution(
             cost += consensus_cost
 
             if consensus_resolved:
-                remaining = await _get_conflicted_files(cwd=cwd)
+                remaining = await _unresolved_paths(conflicted, cwd=cwd)
+                if remaining is None:
+                    log.warning("git.rebase.verification_unavailable", commit=commit_idx + 1)
+                    return await _abort_unverifiable(conflicts_resolved)
                 if not remaining:
                     conflicts_resolved += len(conflicted)
                     env = {**os.environ, "GIT_EDITOR": "true"}
@@ -411,7 +474,10 @@ async def rebase_with_conflict_resolution(
                             return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
                         return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
                     last_meaningful_error = _update_error_tracking(cont.stderr, last_meaningful_error)
-                    conflicted = await _get_conflicted_files(cwd=cwd)
+                    next_conflicted = await _get_conflicted_files(cwd=cwd)
+                    if next_conflicted is None:
+                        return await _abort_unverifiable(conflicts_resolved)
+                    conflicted = next_conflicted
                     continue
                 consensus_resolved = False
 
@@ -437,7 +503,17 @@ async def rebase_with_conflict_resolution(
                     await _pop_stash()
                     return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=str(exc)), cost
 
-                remaining_list = await _get_conflicted_files(cwd=cwd)
+                verified = await _unresolved_paths(conflicted, cwd=cwd)
+                if verified is None:
+                    # A failed check means a structural fault (missing worktree, unreadable
+                    # index), which another resolution pass cannot fix and would pay for.
+                    log.warning(
+                        "git.rebase.verification_unavailable",
+                        commit=commit_idx + 1,
+                        attempt=attempt,
+                    )
+                    return await _abort_unverifiable(conflicts_resolved)
+                remaining_list = verified
                 if not remaining_list:
                     break
                 conflicted = remaining_list
@@ -460,7 +536,10 @@ async def rebase_with_conflict_resolution(
                 return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
             return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
         last_meaningful_error = _update_error_tracking(cont.stderr, last_meaningful_error)
-        conflicted = await _get_conflicted_files(cwd=cwd)
+        next_conflicted = await _get_conflicted_files(cwd=cwd)
+        if next_conflicted is None:
+            return await _abort_unverifiable(conflicts_resolved)
+        conflicted = next_conflicted
     else:
         hit_commit_cap = True
 
