@@ -230,6 +230,19 @@ path (which cannot enumerate anyway). Validation belongs in an opt-in `sova doct
 One resolution choke point in `client.py` (`select_model`), unifying the three fragmented
 paths with this precedence (most specific first):
 
+Shipped so far (PR8): `select_model` exists and applies the `llm.model_aliases` map only, but it
+is already wired into every model-selection surface, not just the primary `model=` argument.
+Concretely: `invoke()`, `invoke_streaming()` and `invoke_command()` alias the resolved primary
+before the provider call; `invoke_batch()` aliases each `BatchRequest.model`; and
+`_build_candidate_chain()` aliases every `agent.fallback_models` entry (not only the primary), so
+a fallback hop never reaches the provider unmapped. `create_provider()` in `sova/llm/provider.py`
+also resolves `llm.model`/`llm.fallback_model` through the same map (via the shared
+`sova/llm/client.py:resolve_alias` helper) before constructing a `LiteLLMProvider` or
+`AnthropicAPIProvider`, so a deployment can point those config fields at a generic tier name too.
+The other resolution paths still live where they were (`_resolve_task_type_model` in `client.py`,
+`resolve_model`/`route_model` in `llm/routing.py`); PR4 folds them in to complete the precedence
+chain below.
+
 ```
 explicit model= arg  >  llm.routing[task_type]  >  role config (_ROLE_MODEL_FIELDS)
   >  complexity route (route_model, with pinning)  >  ctx.resolved_model  >  agent.model

@@ -84,6 +84,13 @@ class LLMConfig(BaseSettings):
     api_base: str = ""
     api_key: str = Field("", repr=False)
     routing: dict[str, str] = Field(default_factory=dict)
+    # Client-side alias map: generic tier names (opus/sonnet/fast/smart) to the
+    # model IDs a given deployment actually serves. Resolved by
+    # sova/llm/client.py:select_model (per-call) and sova/llm/provider.py:
+    # create_provider (this field and fallback_model at construction time),
+    # never inside a provider's own normalize_model_name. Empty default
+    # reproduces today's resolution exactly.
+    model_aliases: dict[str, str] = Field(default_factory=dict)
     batch_eligible_tasks: list[str] = Field(default_factory=lambda: ["triage", "triage_enrich"])
     batch_gcs_bucket: str = ""
     batch_gcs_prefix: str = "sova-batch"

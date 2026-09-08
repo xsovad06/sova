@@ -64,15 +64,10 @@ def reload_provider(cfg: ProjectConfig) -> None:
     """
     from sova.llm.provider import create_provider
 
-    set_provider(
-        create_provider(
-            cfg.llm.provider,
-            model=cfg.llm.model,
-            fallback_model=cfg.llm.fallback_model,
-            api_base=cfg.llm.api_base,
-            api_key=cfg.llm.api_key,
-        )
-    )
+    # The whole llm section, not a hand-picked subset: forwarding individual
+    # kwargs is what let a new field keep applying at startup but silently stop
+    # applying after a settings hot-reload (R12).
+    set_provider(create_provider(cfg.llm))
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +181,12 @@ def _provider_identity(cfg: ProjectConfig | None) -> str:
 def _build_candidate_chain(primary: str | None, cfg: ProjectConfig | None) -> list[str | None]:
     """Return the ordered chain: *primary* followed by ``agent.fallback_models``.
 
+    Fallback candidates go through ``select_model`` for the same reason the
+    primary does at the call sites: an alias map that resolved only the primary
+    would leave every fallback hop sending an unmapped name to the provider.
+    The primary arrives already resolved, and a second lookup is a no-op because
+    resolution is a single hop.
+
     De-duplication runs on the normalized name so an alias cannot repeat the
     model it resolves to, matching ``WorkflowEngine._advance_fallback``'s
     skip-duplicates behavior. A ``None`` primary means "provider default": it is
@@ -198,9 +199,10 @@ def _build_candidate_chain(primary: str | None, cfg: ProjectConfig | None) -> li
         return chain
 
     seen = {_normalize_model(primary)} if primary else set()
-    for candidate in cfg.agent.fallback_models:
-        if not candidate:
+    for entry in cfg.agent.fallback_models:
+        if not entry:
             continue
+        candidate = select_model(entry, cfg)
         normalized = _normalize_model(candidate)
         if normalized in seen:
             continue
@@ -344,7 +346,7 @@ async def invoke(
     # config twice per call (it would otherwise reload internally).
     cfg = _try_load_config(cwd)
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
-    resolved = _resolve_task_type_model(model, task_type, cfg=cfg)
+    resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
 
     async def _attempt(
@@ -426,6 +428,52 @@ def _resolve_task_type_model(
         return override
 
     return model
+
+
+def resolve_alias(model: str, aliases: dict[str, str]) -> str:
+    """Resolve *model* through *aliases*, the raw ``llm.model_aliases`` map.
+
+    Shared by ``select_model`` (which holds a full ``ProjectConfig``) and
+    ``create_provider`` (which only ever holds the ``llm`` section, so it
+    cannot call ``select_model`` directly). Lookup is a single hop: an alias
+    whose target is itself an alias key is not chased, which keeps a
+    self-referential map from looping. An unmapped name, or a name mapped to
+    itself, passes through unchanged.
+    """
+    resolved = aliases.get(model)
+    if resolved is None or resolved == model:
+        return model
+
+    log.info("llm.model_alias", alias=model, model=resolved)
+    return resolved
+
+
+def select_model(model: str | None, cfg: ProjectConfig | None) -> str | None:
+    """Resolve *model* through the client-side ``llm.model_aliases`` map.
+
+    Alias resolution is client-side on purpose. ``normalize_model_name`` is
+    provider-owned and a no-op on the default claude-code path, so it cannot
+    serve as the alias layer (docs/model-selection-architecture.md, Q3).
+
+    Takes the whole project config, like its sibling resolvers
+    (``_resolve_task_type_model``, ``_resolve_timeout``): every call site
+    already holds one, and the resolution paths folded in below read outside
+    the ``llm`` section.
+
+    A ``None`` model means "provider default" and is never aliased; an unmapped
+    name passes through unchanged, so the default empty map reproduces today's
+    resolution exactly.
+
+    Scope: today this applies the alias map only. PR4 (#913) folds task-type,
+    role and complexity resolution into this same function to make it the single
+    precedence choke point the architecture doc describes; until then the other
+    resolution paths stay where they are (``_resolve_task_type_model`` here,
+    ``resolve_model``/``route_model`` in sova/llm/routing.py).
+    """
+    if model is None or cfg is None:
+        return model
+
+    return resolve_alias(model, cfg.llm.model_aliases)
 
 
 def _resolve_timeout(
@@ -528,6 +576,7 @@ async def invoke_command(
         assembled = f"{command} {args}".strip()
         guard_prompt(assembled)
         args = maybe_compress(args, cwd, cfg=cfg)
+    resolved = select_model(model, cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
 
     async def _attempt(
@@ -548,7 +597,7 @@ async def invoke_command(
     async with asyncio.timeout(resolved_timeout):
         return await _invoke_with_fallback(
             _attempt,
-            primary=model,
+            primary=resolved,
             cfg=cfg,
             caller_fallback=fallback_model,
             timeout=resolved_timeout,
@@ -585,8 +634,10 @@ async def invoke_batch(
     cfg = _try_load_config(cwd)
 
     # The batch backends post the model straight into an HTTP request body,
-    # which (unlike the Claude CLI) rejects bare aliases. Resolve routing and
-    # expand aliases here so both backends are covered at the one choke point.
+    # which (unlike the Claude CLI) rejects bare aliases. Resolve task-type
+    # routing, the client-side alias map (matching invoke()/invoke_streaming()),
+    # and the hardcoded tier expansion here so both backends are covered at the
+    # one choke point.
     #
     # When cfg failed to load, task_type routing can never resolve anything
     # (_resolve_task_type_model falls back to the request's own model as soon
@@ -599,12 +650,19 @@ async def invoke_batch(
         guard_prompt(req.prompt)
         resolved = req.model
         if cfg is not None:
-            resolved = _resolve_task_type_model(req.model or None, task_type, cfg=cfg) or req.model
+            routed = _resolve_task_type_model(req.model or None, task_type, cfg=cfg)
+            # Explicit None check, not `or`: a routed model can legitimately be
+            # the empty-string "provider default" sentinel, which `or` would
+            # mask by falling back to req.model.
+            resolved = routed if routed is not None else req.model
+        # An empty model is this dataclass's "provider default" sentinel and is
+        # never aliased, the counterpart of select_model's own None handling.
+        resolved = select_model(resolved, cfg) if resolved else resolved
         prepared.append(
             dataclasses.replace(
                 req,
                 prompt=maybe_compress(req.prompt, cwd, cfg=cfg),
-                model=resolve_model_alias(resolved),
+                model=resolve_model_alias(resolved) if resolved else resolved,
             )
         )
     requests = prepared
@@ -630,8 +688,11 @@ async def invoke_streaming(
     from sova.llm.guard import guard_prompt
 
     guard_prompt(prompt)
-    prompt = maybe_compress(prompt, cwd)
-    resolved = _resolve_task_type_model(model, task_type, cwd=cwd)
+    # Loaded once and shared, matching invoke(): compression, task-type routing
+    # and the alias map all need it, and each would otherwise reload it.
+    cfg = _try_load_config(cwd)
+    prompt = maybe_compress(prompt, cwd, cfg=cfg)
+    resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
     async for event in get_provider().invoke_streaming(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd):
         yield event
 

@@ -11,9 +11,13 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import LLMConfig
 
 log = get_logger(component="llm.provider")
 
@@ -184,23 +188,24 @@ class LLMProvider(ABC):
         ...
 
 
-def create_provider(
-    provider_type: str = "claude-code",
-    *,
-    model: str = "",
-    fallback_model: str = "",
-    api_base: str = "",
-    api_key: str = "",
-) -> LLMProvider:
-    """Create an LLM provider instance by type name.
+def create_provider(cfg: LLMConfig) -> LLMProvider:
+    """Create an LLM provider instance from the whole ``llm`` config section.
+
+    Takes the entire :class:`~sova.config.models.LLMConfig` rather than a
+    hand-picked set of keyword arguments so a newly added field cannot silently
+    no-op at a call site that was never updated to forward it (the failure mode
+    that made ``reload_provider`` drop fields after a settings hot-reload; see
+    docs/model-selection-risk-assessment.md, R12).
 
     Args:
-        provider_type: Provider identifier (e.g., "claude-code", "litellm", "anthropic").
-        model: Model name (used by LiteLLM and Anthropic providers; ignored for claude-code).
-        fallback_model: Fallback model on primary failure (LiteLLM only).
-        api_base: Custom API base URL (LiteLLM only).
-        api_key: Direct API key (Anthropic provider only; falls back to the
-            ``ANTHROPIC_API_KEY`` env var when empty).
+        cfg: The project's ``llm`` config section. ``cfg.provider`` selects the
+            backend; the remaining fields are read per backend (``model``,
+            ``fallback_model`` and ``api_base`` for LiteLLM; ``model`` and
+            ``api_key`` for the Anthropic API, which falls back to the
+            ``ANTHROPIC_API_KEY`` env var when the key is empty). ``model`` and
+            ``fallback_model`` are resolved through ``cfg.model_aliases`` first,
+            so a deployment can point a generic tier name (e.g. ``"smart"``) at
+            these fields exactly as it can at a per-call ``model=`` argument.
 
     Returns:
         An LLMProvider instance.
@@ -209,27 +214,34 @@ def create_provider(
         ValueError: If the provider type is unknown.
         ImportError: If litellm or anthropic SDK is not installed.
     """
-    if provider_type == "claude-code":
+    if cfg.provider == "claude-code":
         from sova.llm.providers.claude_code import ClaudeCodeProvider
 
         return ClaudeCodeProvider()
 
-    if provider_type in ("litellm", "hybrid"):
+    if cfg.provider in ("litellm", "hybrid"):
+        from sova.llm.client import resolve_alias
         from sova.llm.litellm_provider import LiteLLMProvider
 
+        model = resolve_alias(cfg.model, cfg.model_aliases) if cfg.model else cfg.model
+        fallback_model = (
+            resolve_alias(cfg.fallback_model, cfg.model_aliases) if cfg.fallback_model else cfg.fallback_model
+        )
         return LiteLLMProvider(
             model=model or "claude-sonnet-4-6",
             fallback_model=fallback_model or None,
-            api_base=api_base or None,
+            api_base=cfg.api_base or None,
         )
 
-    if provider_type == "anthropic":
+    if cfg.provider == "anthropic":
+        from sova.llm.client import resolve_alias
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
-        return AnthropicAPIProvider(model=model or "", api_key=api_key)
+        model = resolve_alias(cfg.model, cfg.model_aliases) if cfg.model else cfg.model
+        return AnthropicAPIProvider(model=model or "", api_key=cfg.api_key)
 
     available = ["claude-code", "litellm", "hybrid", "anthropic"]
-    raise ValueError(f"Unknown LLM provider: {provider_type!r}. Available: {', '.join(available)}")
+    raise ValueError(f"Unknown LLM provider: {cfg.provider!r}. Available: {', '.join(available)}")
 
 
 def _measure_ms(start: float) -> int:
