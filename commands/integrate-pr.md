@@ -147,15 +147,19 @@ finish.** Do NOT launch it as a background task and then stop to "wait" for a
 notification: headless mode has no mechanism to resume you when a
 background task completes, and ending your turn without a tool call
 terminates the run immediately, leaving the PR unmerged with no further
-action taken. Block on this command until it prints one of the terminal
-outcomes below, then proceed directly to Phase 5.
+action taken. The loop's worst case (below) exceeds the Bash tool's 2 minute
+default timeout, so pass an explicit `timeout` of at least 540000 (9 minutes,
+under the tool's 600000ms/10 minute cap) on this call. Block on this command
+until it prints one of the terminal outcomes below, then follow the "Act on
+the result" rules further down to decide the next step.
 
 ```bash
-# Poll CI checks in a loop (30 iterations x 30s = 15 minutes max)
+# Poll CI checks in a loop (16 iterations x 30s = 8 minutes max, safely under
+# the Bash tool's 600000ms/10 minute timeout cap)
 # Uses `bucket` (not `state`) -- bucket normalizes raw states into: pass, fail, pending, skipping, cancel
 # Grace period: first 5 iterations (2.5 min) tolerate TOTAL=0 for checks to register after push
-for i in $(seq 1 30); do
-  echo "--- CI poll attempt $i/30 ---"
+for i in $(seq 1 16); do
+  echo "--- CI poll attempt $i/16 ---"
   CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null || echo "[]")
   echo "$CHECKS_JSON" | jq -r '.[] | "\(.bucket)\t\(.name)"'
   STATS=$(echo "$CHECKS_JSON" | jq -r '
@@ -183,8 +187,8 @@ for i in $(seq 1 30); do
       break
     fi
   fi
-  if [ "$i" -eq 30 ]; then
-    echo "CI TIMEOUT: checks still pending after 15 minutes"
+  if [ "$i" -eq 16 ]; then
+    echo "CI TIMEOUT: checks still pending after 8 minutes"
     break
   fi
   sleep 30
@@ -316,7 +320,7 @@ The user can fix the issue and re-run `/integrate-pr <PR_NUMBER>` to resume. The
 ## Rules
 
 - Never stop between phases unless there is a hard failure
-- Never end a turn without a tool call while "waiting" for a background task or notification: headless mode has no resumption mechanism, so this silently kills the run mid-pipeline with the PR left unmerged
+- Never background the CI-poll loop and stop to wait for a notification (see the Phase 4 note above for why and how to pass an extended timeout instead)
 - Use the merge method from `[integration]` config (default: auto, uses GitHub repo default)
 - Handle merge queue when detected or configured
 - Use `--force-with-lease` for pushes, never `--force`
