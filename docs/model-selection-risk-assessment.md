@@ -127,11 +127,19 @@ An in-dashboard-process provider/availability cache does not affect `developer`/
   correctness fix; noted for the migration phase).
 
 ### R14: Batch and consensus/httpx bypass paths escape the choke point
-`invoke_batch` sends bare aliases to an API needing full IDs; `git/rebase.py:146` and
+`invoke_batch` sent bare aliases to an API needing full IDs; `git/rebase.py:146` and
 `llm_suggestion_service.py` bypass `client.py` entirely. "One authoritative place" is overstated
 until these are handled.
-- Mitigation: batch alias normalization (PR9); explicit per-path decision for the two bypasses
-  (PR15).
+- Mitigation: batch alias normalization (PR9, done). `invoke_batch()` now runs each request through
+  `_resolve_task_type_model()` and `models.py:resolve_model_alias()` inside its existing
+  `dataclasses.replace` rebuild loop, so both batch backends receive full model IDs. This normalizes
+  to a full Anthropic ID unconditionally, even on the sequential `ClaudeCodeProvider` fallback path
+  (no batch backend configured) rather than routing through that provider's own
+  `normalize_model_name()`: one alias table at the one choke point, not per-provider mapping,
+  deliberately narrower than "each provider gets its preferred form". `BatchProvider` also gained
+  its own `normalize_model_name()` (defense in depth, applied in `_resolve_model()` and
+  `_message_params()`) for a caller that constructs it and calls `invoke_batch()` directly. The two
+  httpx bypasses still need an explicit per-path decision (PR15).
 
 ### R15: Reclassifying stdout can turn CLI-internal-fallback successes into spurious SOVA fallbacks
 The partial-success guard ([claude_code.py:58-69](sova/llm/providers/claude_code.py#L58-L69))

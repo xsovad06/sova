@@ -476,6 +476,8 @@ class TriageRole(AgentRole):
                 timeout=ctx.config.llm.batch_timeout,
                 gcs_bucket=ctx.config.llm.batch_gcs_bucket,
                 gcs_prefix=ctx.config.llm.batch_gcs_prefix,
+                cwd=ctx.project_dir,
+                task_type="triage",
             )
         except Exception as exc:
             log.warning("triage.batch_fallback", error=str(exc), exc_info=True)

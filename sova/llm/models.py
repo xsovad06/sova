@@ -94,14 +94,28 @@ _MTOK = Decimal("1_000_000")
 # IDs. Map each alias to the current release in its family so rate lookups (used
 # for cost/savings estimates) resolve instead of falling back to 0. Keep in sync
 # with _ANTHROPIC_RATE_CARD as new releases ship.
+# These values are also sent to raw HTTP model endpoints via resolve_model_alias()
+# (batch submission, AnthropicAPIProvider.normalize_model_name), so a stale entry
+# does not merely skew a cost estimate: it makes those calls fail outright.
 _ALIAS_TO_CURRENT_MODEL: dict[str, str] = {
     "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5",
+    "haiku": "claude-haiku-4-5-20251001",
     "smart": "claude-opus-5",
     "fast": "claude-sonnet-5",
-    "cheap": "claude-haiku-4-5",
+    "cheap": "claude-haiku-4-5-20251001",
 }
+
+
+def resolve_model_alias(model: str) -> str:
+    """Expand a bare family alias to the current full model ID in that family.
+
+    Unrecognized values (already-full IDs, third-party model names, empty
+    strings) pass through unchanged. Raw HTTP model endpoints reject bare
+    aliases, so any caller that hands a model straight to an API rather than to
+    the Claude CLI (which resolves aliases itself) must run it through here.
+    """
+    return _ALIAS_TO_CURRENT_MODEL.get(model, model)
 
 
 def compute_anthropic_cost(
@@ -136,8 +150,7 @@ def input_rate_per_mtok(model: str) -> Decimal:
     release in their family before lookup, since the rate card is keyed by full
     model IDs and config commonly stores bare aliases.
     """
-    resolved = _ALIAS_TO_CURRENT_MODEL.get(model, model)
-    rates = _lookup_rates(resolved)
+    rates = _lookup_rates(resolve_model_alias(model))
     return rates[0] if rates else Decimal("0")
 
 

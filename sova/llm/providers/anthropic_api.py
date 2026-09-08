@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from sova.llm.errors import classify_exception
-from sova.llm.models import LLMResult, StreamEvent, compute_anthropic_cost
+from sova.llm.models import LLMResult, StreamEvent, compute_anthropic_cost, resolve_model_alias
 from sova.llm.provider import LLMProvider, _measure_ms
 from sova.utils.logging import get_logger
 
@@ -27,15 +27,6 @@ try:
     _HAS_ANTHROPIC = True
 except ImportError:
     _HAS_ANTHROPIC = False
-
-_MODEL_ALIASES: dict[str, str] = {
-    "sonnet": "claude-sonnet-5",
-    "opus": "claude-opus-5",
-    "haiku": "claude-haiku-4-5-20251001",
-    "fast": "claude-sonnet-5",
-    "smart": "claude-opus-5",
-    "cheap": "claude-haiku-4-5-20251001",
-}
 
 _DEFAULT_MODEL = "claude-sonnet-5"
 _DEFAULT_MAX_TOKENS = 4096
@@ -121,7 +112,7 @@ class AnthropicAPIProvider(LLMProvider):
         return self._client
 
     def normalize_model_name(self, model: str) -> str:
-        return _MODEL_ALIASES.get(model, model)
+        return resolve_model_alias(model)
 
     async def invoke(
         self,

@@ -139,8 +139,9 @@ invariant is **not** "opus everywhere". Any defaults-parity test must assert the
 `supervisor/`, `dashboard/services/`, `git/`, `knowledge/`, `cli/commands/`, `mcp/`. Two
 deliberately bypass the client abstraction: `git/rebase.py:146` (multi-model consensus fan-out)
 and `dashboard/services/llm_suggestion_service.py` (direct httpx to Anthropic/Vertex). The
-batch path (`triage.py:473` -> `invoke_batch` -> `anthropic_batch.py`) sends bare aliases to an
-API that needs full model IDs and performs no alias normalization.
+batch path (`triage.py` -> `invoke_batch` -> `anthropic_batch.py`) used to send bare aliases to
+an API that needs full model IDs; `invoke_batch()` now resolves `task_type` routing and expands
+aliases via `models.py:resolve_model_alias()` before either backend is reached.
 
 ### 2.6 Cost and budget coupling
 

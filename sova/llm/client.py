@@ -22,7 +22,7 @@ from sova.llm.errors import (
     is_fallback_eligible,
     resolve_error_category,
 )
-from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent
+from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent, resolve_model_alias
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -564,9 +564,15 @@ async def invoke_batch(
     gcs_bucket: str = "",
     gcs_prefix: str = "sova-batch",
     cwd: Path | str | None = None,
+    task_type: str | None = None,
 ) -> list[BatchResult]:
     """Submit a batch of prompts. Uses a dedicated batch provider if available,
-    otherwise falls back to the global provider's sequential default."""
+    otherwise falls back to the global provider's sequential default.
+
+    Args:
+        task_type: Routing category (e.g. "triage"). Used to resolve a model for
+            requests that carry none; an explicit ``BatchRequest.model`` wins.
+    """
     if not requests:
         return []
 
@@ -574,11 +580,34 @@ async def invoke_batch(
 
     from sova.llm.guard import guard_prompt
 
-    compressed_requests: list[BatchRequest] = []
+    # Loaded once for the whole batch and shared with every per-request
+    # resolution, so a 50-issue triage batch does not reload config 50 times.
+    cfg = _try_load_config(cwd)
+
+    # The batch backends post the model straight into an HTTP request body,
+    # which (unlike the Claude CLI) rejects bare aliases. Resolve routing and
+    # expand aliases here so both backends are covered at the one choke point.
+    #
+    # When cfg failed to load, task_type routing can never resolve anything
+    # (_resolve_task_type_model falls back to the request's own model as soon
+    # as its cfg is None), so the call is skipped entirely rather than made
+    # once per request: cfg=None is indistinguishable from "not passed" to
+    # that helper, and it would otherwise retry _try_load_config(cwd=None) on
+    # every iteration, silently reloading from the wrong cwd besides.
+    prepared: list[BatchRequest] = []
     for req in requests:
         guard_prompt(req.prompt)
-        compressed_requests.append(dataclasses.replace(req, prompt=maybe_compress(req.prompt, cwd)))
-    requests = compressed_requests
+        resolved = req.model
+        if cfg is not None:
+            resolved = _resolve_task_type_model(req.model or None, task_type, cfg=cfg) or req.model
+        prepared.append(
+            dataclasses.replace(
+                req,
+                prompt=maybe_compress(req.prompt, cwd, cfg=cfg),
+                model=resolve_model_alias(resolved),
+            )
+        )
+    requests = prepared
 
     from sova.llm.providers.anthropic_batch import create_batch_provider
 

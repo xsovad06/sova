@@ -25,6 +25,7 @@ from sova.llm.models import (
     BatchTimeoutError,
     LLMResult,
     StreamEvent,
+    resolve_model_alias,
 )
 from sova.llm.provider import LLMProvider
 from sova.utils.logging import get_logger
@@ -447,7 +448,7 @@ class BatchProvider(LLMProvider):
 
     def _message_params(self, req: BatchRequest) -> dict:
         params: dict = {
-            "model": req.model or _DEFAULT_MODEL,
+            "model": self.normalize_model_name(req.model) if req.model else _DEFAULT_MODEL,
             "max_tokens": req.max_tokens,
             "messages": [{"role": "user", "content": req.prompt}],
         }
@@ -598,6 +599,16 @@ class BatchProvider(LLMProvider):
 
     # -- Shared helpers --
 
+    def normalize_model_name(self, model: str) -> str:
+        """Expand a bare family alias to a full model ID.
+
+        Defense in depth: ``client.invoke_batch()`` already normalizes every
+        request before it reaches this provider, so this is a no-op on the
+        production path. It protects any other caller that constructs a
+        ``BatchProvider`` and calls ``invoke_batch()`` directly.
+        """
+        return resolve_model_alias(model)
+
     def _parse_message_response(self, message: dict) -> LLMResult:
         content_blocks = message.get("content", [])
         text = ""
@@ -616,12 +627,12 @@ class BatchProvider(LLMProvider):
         )
 
     def _resolve_model(self, requests: list[BatchRequest]) -> str:
-        models = {req.model for req in requests if req.model}
+        models = {self.normalize_model_name(req.model) for req in requests if req.model}
         if len(models) > 1:
             log.warning("batch.vertex.mixed_models", models=sorted(models))
         for req in requests:
             if req.model:
-                return req.model
+                return self.normalize_model_name(req.model)
         return _DEFAULT_MODEL
 
     async def _post_with_retry(
