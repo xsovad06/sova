@@ -16,6 +16,15 @@ function escapeHtml(text) {
     .replace(/'/g, '&#39;');
 }
 
+// Shared across logs.html and agents.html so both color-code log levels identically.
+var LOG_LEVEL_COLORS = {
+  DEBUG: 'text-gray-500',
+  INFO: 'text-accent-green',
+  WARNING: 'text-accent-yellow',
+  ERROR: 'text-accent-red',
+  CRITICAL: 'text-accent-red font-bold',
+};
+
 var _markedConfigured = false;
 function _ensureMarked() {
   if (_markedConfigured) return;
