@@ -233,19 +233,19 @@ async def _invoke_with_fallback(
     identical to a direct provider call.
 
     Multi-candidate chains share one deadline of ``timeout *
-    _DEADLINE_SAFETY_MARGIN`` and give each attempt ``remaining /
-    candidates_left`` (floored at ``_MIN_ATTEMPT_SECONDS``, capped at what is
-    left), so a hanging first attempt cannot consume the whole budget and a
-    fast-failing one leaves nearly the full window for the next. Each attempt
-    also receives the chain's next hop as its provider-level fallback, so the
-    CLI's inner fallback agrees with this one.
+    _DEADLINE_SAFETY_MARGIN``, and every attempt gets whatever is left of it
+    rather than a per-candidate slice. The primary therefore runs with the full
+    window the caller configured; a fast failure leaves nearly all of it for the
+    next hop, and a primary that consumes the whole deadline legitimately spent
+    the caller's time, so no fallback follows. Each attempt also receives the
+    chain's next hop as its provider-level fallback, so the CLI's inner fallback
+    agrees with this one.
 
-    A caller-supplied *max_budget_usd* is divided the same way: each attempt is
-    allocated ``budget_remaining / candidates_left`` and that allocation is
-    deducted from ``budget_remaining`` regardless of what the attempt actually
-    spent (failed attempts report no cost), so the worst case across the whole
-    chain still sums to *max_budget_usd* instead of granting every candidate a
-    fresh ceiling.
+    A caller-supplied *max_budget_usd* is passed to each attempt in full, for
+    the same reason: pre-dividing it would silently halve the ceiling the caller
+    set. This cannot spend the cap repeatedly, because an exhausted budget
+    raises ``BillingError``, which is not fallback-eligible and re-raises before
+    another candidate is tried.
 
     Only errors accepted by ``is_fallback_eligible`` advance the chain; anything
     else re-raises immediately. Eligibility is category-based, not type-based,
@@ -259,7 +259,6 @@ async def _invoke_with_fallback(
         return await attempt(chain[0], caller_fallback, timeout, max_budget_usd)
 
     deadline = time.monotonic() + timeout * _DEADLINE_SAFETY_MARGIN
-    budget_remaining = max_budget_usd
     last_error: Exception | None = None
 
     for index, model in enumerate(chain):
@@ -268,9 +267,17 @@ async def _invoke_with_fallback(
             log.warning("llm.fallback.budget_exhausted", model=model, remaining_s=round(remaining, 1))
             break
 
-        candidates_left = len(chain) - index
-        attempt_timeout = min(remaining, max(remaining / candidates_left, _MIN_ATTEMPT_SECONDS))
-        attempt_budget = budget_remaining / candidates_left if budget_remaining is not None else None
+        # Every attempt gets what is left of the shared deadline, so the
+        # primary runs with the whole window the caller asked for. Splitting
+        # the window across candidates up front instead would hand the model
+        # that almost always succeeds a fraction of the configured timeout
+        # (half of it with a single fallback entry), turning a slow-but-healthy
+        # call into a timeout. A fast failure still leaves nearly the full
+        # window for the next hop, and a primary that burns the whole deadline
+        # has genuinely spent the caller's budget, so there is nothing left to
+        # fall back with, which is the correct outcome, not a lost chance.
+        attempt_timeout = remaining
+        attempt_budget = max_budget_usd
         next_hop = chain[index + 1] if index + 1 < len(chain) else None
 
         try:
@@ -284,8 +291,10 @@ async def _invoke_with_fallback(
             category = resolve_error_category(exc)
             if category is ModelUnavailableError:
                 get_availability_cache().mark_unavailable(identity, _normalize_model(model))
-            if attempt_budget is not None:
-                budget_remaining = budget_remaining - attempt_budget
+            # A failed attempt reports no cost, so there is nothing to deduct.
+            # The chain cannot spend the cap repeatedly: budget exhaustion
+            # raises BillingError, which is not fallback-eligible and re-raises
+            # above before another candidate is tried.
             last_error = exc
             log.warning(
                 "llm.fallback.advance",

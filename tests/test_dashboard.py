@@ -12405,6 +12405,73 @@ class TestLivenessSweepMergeCheck:
             refreshed = await session.get(TaskRun, run_id)
             assert refreshed.status == "awaiting_approval", "live-PID awaiting_approval run should not be touched"
 
+    async def test_sweep_write_retry_exhaustion_does_not_raise(self) -> None:
+        """Phase 3 write retries exhausting on a locked DB must log and move on.
+
+        Raising here would abandon every remaining project directory in the
+        same sweep pass, which is the exact bug this retry loop exists to
+        avoid. The run should be left untouched (still its original status)
+        rather than the sweep crashing.
+        """
+        from sqlalchemy.exc import OperationalError
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="128",
+                    role="developer",
+                    status="running",
+                    pid=999990,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        class _LockedBegin:
+            async def __aenter__(self):
+                raise OperationalError("BEGIN", {}, Exception("database is locked"))
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+        class _LockedSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+            def begin(self):
+                return _LockedBegin()
+
+        call_count = 0
+
+        async def _test_get_session(project_dir=None):  # noqa: ARG001
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Phase 1 read must succeed so the dead run is discovered.
+                return await get_session()
+            return _LockedSession()
+
+        with self._patch_sweep_deps(
+            **{
+                "sova.db.session.get_session": {"new": _test_get_session},
+                "sova.dashboard.app._SWEEP_WRITE_RETRY_DELAY": {"new": 0},
+            }
+        ):
+            from sova.dashboard.app import _SWEEP_WRITE_RETRY_ATTEMPTS, _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        # Phase 1 (real session) + one call per retry attempt.
+        assert call_count == 1 + _SWEEP_WRITE_RETRY_ATTEMPTS
+
+        async with await get_session() as session:
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "running", "exhausted retries must leave the run untouched, not raise"
+
 
 class TestWaitAndFinalizeOutputWriter:
     """Cover the output_writer.close() try/except in _wait_and_finalize."""

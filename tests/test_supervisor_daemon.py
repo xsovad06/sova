@@ -427,6 +427,9 @@ class TestSupervisorDaemon:
         )
         mock_engine = AsyncMock()
         mock_engine.evaluate_all.return_value = [mock_decision]
+        # apply_plan is sync on the real engine; without this the AsyncMock
+        # child would hand the daemon a coroutine instead of the decisions.
+        mock_engine.apply_plan = MagicMock(return_value=[mock_decision])
 
         adapter = AsyncMock()
 
@@ -436,8 +439,11 @@ class TestSupervisorDaemon:
         ):
             result, engine = await daemon._poll_progression(adapter, daemon._config)
 
-        mock_planner.plan.assert_awaited_once_with(adapter)
-        mock_engine.evaluate_all.assert_awaited_once_with(plan=mock_plan)
+        # The engine is evaluated first and its actionable candidates are handed
+        # to the planner, so the plan can only approve work actually on offer.
+        mock_engine.evaluate_all.assert_awaited_once_with()
+        mock_planner.plan.assert_awaited_once_with(adapter, candidates=[("spawn_developer", 42)])
+        mock_engine.apply_plan.assert_called_once_with([mock_decision], mock_plan)
         assert result["pending"] == 1
 
     async def test_poll_health_ok(

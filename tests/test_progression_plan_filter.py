@@ -191,6 +191,42 @@ class TestPlanFiltering:
         assert result[0].action == ProgressionAction.WAIT
         assert "spawn_researcher" in result[0].reason
 
+    async def test_plan_about_other_issues_does_not_stall_the_fleet(self) -> None:
+        """A plan naming only issues the engine never offered must not veto everything.
+
+        Observed in production: the engine had #777 spawn_developer ready while
+        the planner approved address_review on #935, an issue outside the
+        evaluated set. Every ready action was filtered to WAIT and the project
+        idled through every cycle.
+        """
+        decisions = [
+            _decision(777, ProgressionAction.SPAWN_DEVELOPER, "ready"),
+            _decision(913, ProgressionAction.SPAWN_RESEARCHER, "triaged"),
+        ]
+        plan = PlanResult(
+            reasoning="address review on an issue the engine did not offer",
+            actions=(PlannedAction(action="spawn_address_review", issue=935, priority=1, reason="pr"),),
+        )
+        result = await self._evaluate_with_plan(decisions, plan=plan)
+        actions = {d.issue_number: d.action for d in result}
+        assert actions[777] == ProgressionAction.SPAWN_DEVELOPER
+        assert actions[913] == ProgressionAction.SPAWN_RESEARCHER
+
+    async def test_partial_overlap_still_filters_the_rest(self) -> None:
+        """The escape hatch needs total disjointness, not merely an unapproved item."""
+        decisions = [
+            _decision(1, ProgressionAction.SPAWN_DEVELOPER, "ready"),
+            _decision(2, ProgressionAction.SPAWN_DEVELOPER, "ready"),
+        ]
+        plan = PlanResult(
+            reasoning="only issue 1",
+            actions=(PlannedAction(action="spawn_developer", issue=1, priority=1, reason="go"),),
+        )
+        result = await self._evaluate_with_plan(decisions, plan=plan)
+        actions = {d.issue_number: d.action for d in result}
+        assert actions[1] == ProgressionAction.SPAWN_DEVELOPER
+        assert actions[2] == ProgressionAction.WAIT
+
     async def test_empty_plan_actions_filters_all_actionable(self) -> None:
         decisions = [
             _decision(1, ProgressionAction.SPAWN_DEVELOPER, "ready"),
