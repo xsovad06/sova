@@ -13,7 +13,8 @@ Fully documented in `.claude/rules/` or `.claude/skills/`. One-line refs only.
 | Git | Check main's imports when resolving conflicts; `make lint` before `--continue` | `workflow.md` |
 | Testing | Project dir isolation via `monkeypatch.setattr` | `testing-patterns` skill |
 | Testing | Module-level cache needs `setup_method` in ALL classes; direct tests for mocked fns; `MagicMock(name=)` trap; `TaskRun.started_at` not `created_at` | `testing-patterns` skill |
-| Docs | Doc counts drift after refactors; stale refs after renames; architecture.md bullets must enumerate all signals | `architecture.md` |
+| Docs | Doc counts drift after refactors; verify test count via `pytest --collect-only -q` (last line is total); stale refs after renames; architecture.md bullets must enumerate all signals | `architecture.md` |
+| Server | `sova server restart` can fail to find/kill stale processes if PID file tracking drifted; `kill -TERM` + sleep + `kill -KILL` required; non-reloading `uvicorn.run()` means code changes need explicit restart, not auto-reload | |
 | Dashboard | Polling clears stale UI; innerHTML kills dropdowns; auto-handoff clears file first; pipeline variant gates on `current_step`; pipeline roles validated at exit (4 signals); orphaned steps finalized on all paths | `architecture.md` |
 | Workflow | API side-effect steps return bool (never raise); `review_post_failed` next_action; state-adopting steps replicate all side effects; seed data before clearing handoff; headless prompts frame CLI as bash blocks; per-issue handoff files; address-review 4 fallback sources; monitor_ci 4-layer zombie recovery; `/address-pr` wrong-directory guard | `architecture.md` |
 | Finalization | Audit ALL return paths for cleanup; non-fatal side effects swallow exceptions | `architecture.md` |
