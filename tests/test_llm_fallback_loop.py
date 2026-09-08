@@ -237,34 +237,69 @@ class TestInvokeWithFallbackLoop:
         assert [c[0] for c in attempt.calls] == ["sonnet"]
 
     async def test_attempts_share_one_deadline_below_caller_timeout(self) -> None:
-        """Two candidates split the budget so attempt #2 is never guillotined."""
+        """Every attempt gets the rest of the shared deadline, not a slice of it."""
         attempt = _Recorder(RateLimitError("rate_limit"), _ok("sonnet"))
         await client._invoke_with_fallback(
             attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=1000.0
         )
         first, second = attempt.calls[0][2], attempt.calls[1][2]
-        # Attempt #1 is capped at an equal share so it cannot eat the budget.
-        assert first == pytest.approx(475.0, abs=5.0)  # 1000 * 0.95 / 2
+        # The primary runs with the whole window the caller configured.
+        assert first == pytest.approx(950.0, abs=5.0)  # 1000 * 0.95
         # It failed fast, so the last candidate inherits everything still left.
         assert second == pytest.approx(950.0, abs=5.0)
         # Either way the walk ends inside the caller's timeout.
         assert second < 1000.0
 
-    async def test_hanging_first_attempt_cannot_consume_whole_budget(self) -> None:
-        """The equal split is what stops attempt #1 from guillotining attempt #2."""
+    async def test_primary_gets_the_whole_window_on_a_longer_chain(self) -> None:
+        """Chain length must not shrink the primary's timeout.
+
+        Slicing the window per candidate used to hand the model that almost
+        always succeeds a fraction of the configured timeout (a third here),
+        which turned a slow-but-healthy call into a spurious timeout.
+        """
         attempt = _Recorder(RateLimitError("rate_limit"), _ok("haiku"))
         await client._invoke_with_fallback(
             attempt, primary="opus", cfg=_cfg("sonnet", "haiku"), caller_fallback=None, timeout=900.0
         )
-        assert attempt.calls[0][2] == pytest.approx(285.0, abs=5.0)  # 900 * 0.95 / 3
+        assert attempt.calls[0][2] == pytest.approx(855.0, abs=5.0)  # 900 * 0.95
 
-    async def test_attempt_slice_floored_at_minimum(self) -> None:
-        """An equal split below the floor is raised to the minimum viable slice."""
+    async def test_slow_first_attempt_leaves_only_the_remainder(self) -> None:
+        """A primary that burns most of the deadline shortens what follows it."""
+        import asyncio
+
+        elapsed = 0.4
+
+        class _SlowThenOk:
+            def __init__(self) -> None:
+                self.calls: list[float] = []
+
+            async def __call__(self, model, next_hop, timeout, budget):  # noqa: ANN001
+                self.calls.append(timeout)
+                if len(self.calls) == 1:
+                    await asyncio.sleep(elapsed)
+                    raise RateLimitError("rate_limit")
+                return _ok("sonnet")
+
+        attempt = _SlowThenOk()
+        # Stay well above _MIN_ATTEMPT_SECONDS so the second attempt still runs.
+        await client._invoke_with_fallback(
+            attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=200.0
+        )
+        # 200 * 0.95 = 190 for the primary, computed before anything is spent.
+        assert attempt.calls[0] == pytest.approx(190.0, abs=0.5)
+        # The second attempt inherits only the remainder. Assert the shape of
+        # that relationship rather than an exact figure: a loaded CI runner can
+        # spend noticeably more wall clock than the sleep asked for.
+        assert attempt.calls[1] <= attempt.calls[0] - elapsed
+        assert attempt.calls[1] > attempt.calls[0] - elapsed - 5.0
+
+    async def test_short_timeout_still_gives_the_primary_everything(self) -> None:
+        """A small caller timeout is passed through, not rounded up to a floor."""
         attempt = _Recorder(RateLimitError("rate_limit"), _ok("sonnet"))
         await client._invoke_with_fallback(
             attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=100.0
         )
-        assert attempt.calls[0][2] == pytest.approx(client._MIN_ATTEMPT_SECONDS, abs=1.0)
+        assert attempt.calls[0][2] == pytest.approx(95.0, abs=1.0)  # 100 * 0.95
 
     async def test_budget_below_minimum_stops_walk_and_raises_last_error(self) -> None:
         attempt = _Recorder(RateLimitError("rate_limit"), _ok("sonnet"))
@@ -287,8 +322,13 @@ class TestInvokeWithFallbackLoop:
         )
         assert attempt.calls[0][3] == Decimal("5")
 
-    async def test_budget_is_divided_across_the_chain_not_repeated(self) -> None:
-        """Each candidate gets a share of the ceiling, not a fresh copy of it."""
+    async def test_budget_passed_to_each_attempt_in_full(self) -> None:
+        """The caller's ceiling is not silently halved by having a fallback.
+
+        Pre-dividing meant a configured $10 cap reached the provider as $5.
+        Repeat spending is prevented by BillingError instead: it is not
+        fallback-eligible, so an exhausted budget ends the walk.
+        """
         attempt = _Recorder(RateLimitError("rate_limit"), _ok("sonnet"))
         await client._invoke_with_fallback(
             attempt,
@@ -298,12 +338,23 @@ class TestInvokeWithFallbackLoop:
             timeout=900.0,
             max_budget_usd=Decimal("10"),
         )
-        first_budget, second_budget = attempt.calls[0][3], attempt.calls[1][3]
-        assert first_budget == Decimal("5")
-        assert second_budget == Decimal("5")
-        assert first_budget + second_budget == Decimal("10")
+        assert [c[3] for c in attempt.calls] == [Decimal("10"), Decimal("10")]
 
-    async def test_three_way_chain_divides_budget_equally(self) -> None:
+    async def test_budget_exhaustion_does_not_advance_the_chain(self) -> None:
+        """The guard that makes a full per-attempt ceiling safe."""
+        attempt = _Recorder(BillingError("credit balance is too low"), _ok("sonnet"))
+        with pytest.raises(BillingError):
+            await client._invoke_with_fallback(
+                attempt,
+                primary="opus",
+                cfg=_cfg("sonnet"),
+                caller_fallback=None,
+                timeout=900.0,
+                max_budget_usd=Decimal("10"),
+            )
+        assert len(attempt.calls) == 1
+
+    async def test_three_way_chain_keeps_the_full_ceiling(self) -> None:
         attempt = _Recorder(RateLimitError("first"), RateLimitError("second"), _ok("haiku"))
         await client._invoke_with_fallback(
             attempt,
@@ -314,7 +365,7 @@ class TestInvokeWithFallbackLoop:
             max_budget_usd=Decimal("9"),
         )
         budgets = [c[3] for c in attempt.calls]
-        assert budgets == [Decimal("3"), Decimal("3"), Decimal("3")]
+        assert budgets == [Decimal("9"), Decimal("9"), Decimal("9")]
 
     async def test_no_budget_cap_means_no_budget_cap_on_any_attempt(self) -> None:
         attempt = _Recorder(RateLimitError("rate_limit"), _ok("sonnet"))
@@ -453,7 +504,7 @@ class TestInvokeFallbackWiring:
                 await client.invoke_command("/develop", args="42", model="opus", timeout=900.0)
         assert provider.invoke_command.await_count == 1
 
-    async def test_invoke_budget_is_divided_across_provider_calls(self) -> None:
+    async def test_invoke_forwards_the_full_budget_to_provider_calls(self) -> None:
         provider = MagicMock()
         provider.normalize_model_name = lambda m: m
         provider.invoke = AsyncMock(side_effect=[RateLimitError("rate_limit"), _ok("sonnet")])
@@ -463,7 +514,7 @@ class TestInvokeFallbackWiring:
         ):
             await client.invoke("prompt", model="opus", timeout=900.0, max_budget_usd=Decimal("10"))
         budgets = [c.kwargs["max_budget_usd"] for c in provider.invoke.call_args_list]
-        assert budgets == [Decimal("5"), Decimal("5")]
+        assert budgets == [Decimal("10"), Decimal("10")]
 
     async def test_exit_one_with_valid_json_does_not_trigger_fallback(self) -> None:
         """The provider's partial-success guard returns, so the loop never sees an error."""

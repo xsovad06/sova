@@ -161,3 +161,18 @@ Active interval: 300s (`watch.interval_active`), idle interval: 1800s (`watch.in
 | Per-issue budget | $50.00 | `agent.max_issue_budget` |
 | Max CI fix attempts | 3 | `ci.max_fix_attempts` (0=disable) |
 | Max address-review cycles | 2 | `pipeline.max_address_review_cycles` (0=unlimited) |
+
+**`max_budget_usd` caps per attempt, not per call, when `agent.fallback_models` is
+non-empty.** `_invoke_with_fallback()` in `sova/llm/client.py` passes the caller's
+full `max_budget_usd` to every candidate in the chain rather than dividing it
+up front, so a fast-failing primary does not starve a healthy fallback of
+budget. A failed attempt reports no cost back to SOVA, so an exhausted budget
+(`BillingError`) cannot repeat: it is not fallback-eligible and re-raises
+before the next candidate runs. A fallback-eligible failure (rate limit,
+timeout, provider unavailable) that occurs after the CLI subprocess has
+already billed partial output within that attempt's own window is not
+tracked, since the exception carries no cost data. The practical worst case
+for spend across one call is therefore `chain_length x max_budget_usd`, not
+`max_budget_usd`, when fallback models are configured. Operators who need a
+hard aggregate ceiling should size `agent.max_budget` with this in mind rather
+than assuming per-candidate deduction.

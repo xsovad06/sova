@@ -96,7 +96,14 @@ class TestDataclasses:
 
 class TestValidActions:
     def test_valid_actions_set(self) -> None:
-        expected = {"spawn_researcher", "spawn_developer", "spawn_integrate", "spawn_address_review", "spawn_rebase"}
+        expected = {
+            "spawn_researcher",
+            "spawn_developer",
+            "spawn_integrate",
+            "spawn_address_review",
+            "spawn_rebase",
+            "reset_stale_state",
+        }
         assert _VALID_ACTIONS == expected
 
 
@@ -266,6 +273,24 @@ class TestParseResponse:
         assert result is not None
         assert len(result.actions) == 0
 
+    def test_reset_stale_state_is_a_valid_action(self, planner: SupervisorPlanner) -> None:
+        """reset_stale_state must survive parsing, not be silently dropped as invalid.
+
+        It is offered to the planner as a candidate (RESET_STALE_STATE is not in
+        NON_ACTIONABLE_ACTIONS), so if the model approves it and the parser drops
+        it, apply_plan() converts the decision to WAIT even though it was approved.
+        """
+        raw = {
+            "reasoning": "test",
+            "actions": [
+                {"action": "reset_stale_state", "issue": 7, "priority": 1, "reason": "no agent running"},
+            ],
+        }
+        result = planner._parse_response(raw)
+        assert result is not None
+        assert len(result.actions) == 1
+        assert result.actions[0].action == "reset_stale_state"
+
 
 class TestContextAssembly:
     async def test_assembles_all_sections(self, planner: SupervisorPlanner, mock_adapter: AsyncMock) -> None:
@@ -366,6 +391,42 @@ class TestLoadPersona:
         assert result == "Be strategic."
 
 
+class TestGetAvailableActions:
+    """The planner must be told exactly which actions are on offer.
+
+    Approvals are matched verbatim against the engine's (action, issue) pairs,
+    so a planner that cannot see the candidate list approves work that is not
+    available and every offered action gets filtered away.
+    """
+
+    def test_lists_each_candidate(self, planner: SupervisorPlanner) -> None:
+        result = planner._get_available_actions([("spawn_developer", 777), ("spawn_researcher", 913)])
+        assert "## Available Actions This Cycle" in result
+        assert "- spawn_developer on #777" in result
+        assert "- spawn_researcher on #913" in result
+
+    def test_empty_candidate_list_says_nothing_is_actionable(self, planner: SupervisorPlanner) -> None:
+        result = planner._get_available_actions([])
+        assert "None: no issue is currently actionable." in result
+
+    def test_omitted_candidates_render_no_section(self, planner: SupervisorPlanner) -> None:
+        """Callers that do not supply candidates keep the previous prompt shape."""
+        assert planner._get_available_actions(None) == ""
+
+    async def test_context_includes_the_candidate_section(self, planner: SupervisorPlanner) -> None:
+        adapter = AsyncMock()
+        with (
+            patch.object(planner, "_get_resource_snapshot", new_callable=AsyncMock, return_value=""),
+            patch.object(planner, "_get_open_prs", new_callable=AsyncMock, return_value=""),
+            patch.object(planner, "_get_issue_counts", new_callable=AsyncMock, return_value=""),
+            patch.object(planner, "_get_priority_queue", return_value=""),
+            patch.object(planner, "_get_recent_failures", new_callable=AsyncMock, return_value=""),
+            patch.object(planner, "_get_issue_health", new_callable=AsyncMock, return_value=""),
+        ):
+            ctx = await planner._assemble_context(adapter, [("spawn_developer", 777)])
+        assert "spawn_developer on #777" in ctx
+
+
 class TestGetResourceSnapshot:
     async def test_happy_path(self, planner: SupervisorPlanner) -> None:
         mock_status = MagicMock(is_limited=False, hits_in_window=5, cooldown_remaining_seconds=0.0)
@@ -395,6 +456,35 @@ class TestGetResourceSnapshot:
         assert "CodeRabbit" in result
         assert "CI Budget" in result
         assert "Agent Slots" in result
+
+    async def test_reports_slot_occupancy_not_just_the_ceiling(self, planner: SupervisorPlanner) -> None:
+        """The snapshot must say how many slots are in use.
+
+        Given only "max=N" the model infers occupancy from the in_progress
+        issue-label count, which goes stale when an agent dies without rolling
+        its issue back. It then defers every candidate on "capacity" while the
+        fleet is completely idle.
+        """
+        with patch(
+            "sova.supervisor.gates.slots.get_alive_count",
+            new_callable=AsyncMock,
+            return_value=0,
+        ):
+            result = await planner._get_resource_snapshot()
+
+        assert f"Agent Slots: 0/{planner._config.max_parallel_agents} in use" in result
+        assert f"{planner._config.max_parallel_agents} free" in result
+
+    async def test_slot_occupancy_degrades_without_hiding_the_max(self, planner: SupervisorPlanner) -> None:
+        with patch(
+            "sova.supervisor.gates.slots.get_alive_count",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ):
+            result = await planner._get_resource_snapshot()
+
+        assert f"max={planner._config.max_parallel_agents}" in result
+        assert "in-use unavailable" in result
 
     async def test_all_sources_fail(self, planner: SupervisorPlanner) -> None:
         with (

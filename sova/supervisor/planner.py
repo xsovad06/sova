@@ -26,6 +26,8 @@ from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from sova.adapters.base import TaskAdapter
@@ -45,6 +47,7 @@ _VALID_ACTIONS = frozenset(
         "spawn_integrate",
         "spawn_address_review",
         "spawn_rebase",
+        "reset_stale_state",
     }
 )
 
@@ -88,7 +91,7 @@ Respond with a JSON object (no markdown fences, no commentary):
 }}
 
 Valid action types: spawn_researcher, spawn_developer, spawn_integrate,
-spawn_address_review, spawn_rebase.
+spawn_address_review, spawn_rebase, reset_stale_state.
 
 Rules:
 - Only include actions that make sense given available resources
@@ -139,14 +142,18 @@ class SupervisorPlanner:
         self._project_dir = project_dir
         self._session_factory = session_factory
 
-    async def plan(self, adapter: TaskAdapter) -> PlanResult | None:
+    async def plan(
+        self,
+        adapter: TaskAdapter,
+        candidates: Sequence[tuple[str, int]] | None = None,
+    ) -> PlanResult | None:
         """Assemble context, call LLM, return structured plan.
 
         Returns None when the LLM provider is unavailable, the call times out,
         the response is unparseable, or any other error occurs.
         """
         try:
-            user_prompt = await self._assemble_context(adapter)
+            user_prompt = await self._assemble_context(adapter, candidates)
             persona = self._load_persona()
             safe_persona = persona.replace("{", "{{").replace("}", "}}")
             system_prompt = _SYSTEM_PROMPT.format(persona=safe_persona)
@@ -175,10 +182,15 @@ class SupervisorPlanner:
             log.warning("planner.plan_error", exc_info=True)
             return None
 
-    async def _assemble_context(self, adapter: TaskAdapter) -> str:
+    async def _assemble_context(
+        self,
+        adapter: TaskAdapter,
+        candidates: Sequence[tuple[str, int]] | None = None,
+    ) -> str:
         """Build the structured context prompt from all available data sources."""
         sections: list[str] = []
 
+        sections.append(self._get_available_actions(candidates))
         sections.append(await self._get_resource_snapshot())
         sections.append(await self._get_open_prs())
         sections.append(await self._get_issue_counts(adapter))
@@ -189,6 +201,24 @@ class SupervisorPlanner:
         section_count = len([s for s in sections if s])
         log.debug("planner.context_assembled", section_count=section_count, persona_loaded=True)
         return "\n\n".join(s for s in sections if s)
+
+    def _get_available_actions(self, candidates: Sequence[tuple[str, int]] | None) -> str:
+        """Render the exact (action, issue) pairs the engine is offering.
+
+        Approvals are matched against this set verbatim, so anything the model
+        invents outside it is discarded. Naming the options explicitly is what
+        keeps the plan and the deterministic engine talking about the same work.
+        """
+        if candidates is None:
+            return ""
+        if not candidates:
+            return "## Available Actions This Cycle\nNone: no issue is currently actionable."
+        lines = [
+            "## Available Actions This Cycle",
+            "Approve only from this list. Anything else is ignored.",
+        ]
+        lines.extend(f"- {action} on #{issue}" for action, issue in candidates)
+        return "\n".join(lines)
 
     def _load_persona(self) -> str:
         from sova.supervisor.persona import load_persona
@@ -239,8 +269,24 @@ class SupervisorPlanner:
         except Exception:
             lines.append("- CI Budget: data unavailable")
 
-        # Agent slots
-        lines.append(f"- Agent Slots: max={self._config.max_parallel_agents}")
+        # Agent slots. Report occupancy, not just the ceiling: given only
+        # "max=N" the model has no way to tell a busy fleet from an idle one,
+        # and infers it from whatever else is in the prompt (the in_progress
+        # issue-label count, which goes stale whenever an agent dies without
+        # rolling its issue back). That misread defers every candidate on
+        # "capacity" while nothing is actually running. get_alive_count is the
+        # same source the deterministic slot gate uses, so both agree.
+        try:
+            from sova.supervisor.gates.slots import get_alive_count
+
+            in_use = await get_alive_count(self._session_factory)
+            if in_use is None:
+                lines.append(f"- Agent Slots: max={self._config.max_parallel_agents}, in-use unavailable")
+            else:
+                free = max(0, self._config.max_parallel_agents - in_use)
+                lines.append(f"- Agent Slots: {in_use}/{self._config.max_parallel_agents} in use, {free} free")
+        except Exception:
+            lines.append(f"- Agent Slots: max={self._config.max_parallel_agents}, in-use unavailable")
 
         return "\n".join(lines)
 

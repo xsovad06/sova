@@ -203,6 +203,18 @@ class SupervisorDaemon:
             from sova.supervisor.progression import NON_ACTIONABLE_ACTIONS, TaskProgressionEngine
 
             plan = None
+            engine = TaskProgressionEngine(
+                config=cfg,
+                adapter=adapter,
+                project_dir=self._project_dir,
+                session_factory=self._session_factory,
+            )
+            # Evaluate first, then plan. The planner can only approve or hold
+            # what the engine actually offers, so it has to be told the
+            # candidate list; planning blind made it approve work that was not
+            # on the table, and every offered action was then filtered away.
+            decisions = await engine.evaluate_all()
+
             if cfg.supervisor.llm_planning:
                 from sova.supervisor.planner import SupervisorPlanner
 
@@ -211,25 +223,23 @@ class SupervisorDaemon:
                     project_dir=self._project_dir,
                     session_factory=self._session_factory,
                 )
-                plan = await planner.plan(adapter)
+                candidates = [
+                    (d.action.value, d.issue_number) for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS
+                ]
+                plan = await planner.plan(adapter, candidates=candidates)
 
-                if cfg.supervisor.auto_queue and plan and (plan.queue_removals or plan.queue_reorder):
-                    from sova.supervisor.queue_maintenance import apply_planner_queue_changes
+                if plan is not None:
+                    decisions = engine.apply_plan(decisions, plan)
 
-                    await apply_planner_queue_changes(
-                        cfg.supervisor,
-                        self._project_dir,
-                        removals=list(plan.queue_removals),
-                        reorder=list(plan.queue_reorder),
-                    )
+                    if cfg.supervisor.auto_queue and (plan.queue_removals or plan.queue_reorder):
+                        from sova.supervisor.queue_maintenance import apply_planner_queue_changes
 
-            engine = TaskProgressionEngine(
-                config=cfg,
-                adapter=adapter,
-                project_dir=self._project_dir,
-                session_factory=self._session_factory,
-            )
-            decisions = await engine.evaluate_all(plan=plan)
+                        await apply_planner_queue_changes(
+                            cfg.supervisor,
+                            self._project_dir,
+                            removals=list(plan.queue_removals),
+                            reorder=list(plan.queue_reorder),
+                        )
 
             records = [
                 SupervisorDecision(
@@ -251,18 +261,8 @@ class SupervisorDaemon:
             actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
 
             if cfg.supervisor.require_approval:
-                from sova.dashboard.services.supervisor_service import resolve_project_slug, set_pending_plan
-
-                reasoning = plan.reasoning if plan else None
-                deferred = (
-                    [{"action": d.action, "issue": d.issue, "reason": d.reason} for d in plan.deferred]
-                    if plan
-                    else None
-                )
-                project_slug = resolve_project_slug(cfg.github_repo, self._project_dir)
-                set_pending_plan(actionable, project_slug=project_slug, reasoning=reasoning, deferred=deferred)
-                log.info("poll.progression_pending_approval", count=len(actionable))
-                return {"decisions": len(decisions), "pending": len(actionable), "executed": 0}, engine
+                result = self._defer_to_pending_plan(decisions, actionable, plan, cfg)
+                return result, engine
 
             executed = await engine.execute_decisions(decisions)
             return {"decisions": len(decisions), "executed": executed, "pending": 0}, engine
@@ -275,6 +275,21 @@ class SupervisorDaemon:
             )
             log.warning("poll.progression_error", exc_info=True)
             return {"error": str(exc)}, None
+
+    def _defer_to_pending_plan(self, decisions: list, actionable: list, plan: object, cfg: ProjectConfig) -> dict:
+        """Store actionable decisions on the pending plan instead of executing them.
+
+        Used when ``require_approval`` is True: the dashboard shows these for
+        human approve/skip rather than the daemon acting on them directly.
+        """
+        from sova.dashboard.services.supervisor_service import resolve_project_slug, set_pending_plan
+
+        reasoning = plan.reasoning if plan else None
+        deferred = [{"action": d.action, "issue": d.issue, "reason": d.reason} for d in plan.deferred] if plan else None
+        project_slug = resolve_project_slug(cfg.github_repo, self._project_dir)
+        set_pending_plan(actionable, project_slug=project_slug, reasoning=reasoning, deferred=deferred)
+        log.info("poll.progression_pending_approval", count=len(actionable))
+        return {"decisions": len(decisions), "pending": len(actionable), "executed": 0}
 
     async def _poll_epic_close(self, adapter: TaskAdapter, cfg: ProjectConfig, *, engine: object = None) -> dict:
         """Auto-close epic issues when all children are DONE."""

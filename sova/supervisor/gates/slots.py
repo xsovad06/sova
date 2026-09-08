@@ -14,8 +14,13 @@ from sova.utils.process import is_process_alive
 log = get_logger(component="supervisor.gates.slots")
 
 
-async def get_alive_count(session_factory: async_sessionmaker) -> int:
-    """Count active agent reservations: alive processes plus pending (PID-less) runs."""
+async def get_alive_count(session_factory: async_sessionmaker) -> int | None:
+    """Count active agent reservations: alive processes plus pending (PID-less) runs.
+
+    Returns ``None`` on query failure so callers can distinguish "unavailable"
+    from a confirmed zero and pick their own fail-open policy, instead of a
+    failed query silently masquerading as an idle fleet.
+    """
     try:
         async with session_factory() as session:
             stmt = select(TaskRun).where(TaskRun.status.notin_(TASK_RUN_TERMINAL))
@@ -24,7 +29,7 @@ async def get_alive_count(session_factory: async_sessionmaker) -> int:
             return sum(1 for run in active_runs if run.pid is None or is_process_alive(run.pid))
     except Exception:
         log.debug("get_alive_count.failed", exc_info=True)
-        return 0
+        return None
 
 
 async def check_slot_gate(
@@ -38,7 +43,8 @@ async def check_slot_gate(
         max_concurrent: Maximum number of concurrent agents (must be > 0).
 
     Returns:
-        BlockReason if slots are full, None otherwise. Fails open on invalid config or errors.
+        BlockReason if slots are full, None otherwise. Fails open on invalid config,
+        errors, or an unavailable count (an unknown occupancy never blocks).
     """
     if max_concurrent <= 0:
         log.warning("slot_gate.invalid_max_concurrent", value=max_concurrent)
@@ -46,7 +52,7 @@ async def check_slot_gate(
 
     try:
         alive_count = await get_alive_count(session_factory)
-        if alive_count >= max_concurrent:
+        if alive_count is not None and alive_count >= max_concurrent:
             return BlockReason(
                 gate="slots",
                 detail=f"All agent slots occupied ({alive_count}/{max_concurrent})",
