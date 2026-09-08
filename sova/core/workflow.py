@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sova.core.context import ExecutionContext
+from sova.core.context import ExecutionContext, TokenUsage
 from sova.core.output import OutputWriter
 from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
@@ -419,20 +419,34 @@ class WorkflowEngine:
         returned StepResult so the dashboard can surface it.
         """
         timeout_seconds = self._step_timeout(step.name)
+        usage_before = self._ctx.usage_snapshot()
+        cost_before = self._ctx.cost_usd
         try:
             async with asyncio.timeout(timeout_seconds):
-                return await step.execute(self._ctx)
+                result = await step.execute(self._ctx)
         except TimeoutError:
             partial_work = await self._preserve_partial_work_on_timeout(step.name)
-            return StepResult(
+            result = StepResult(
                 success=False,
                 summary=f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)",
                 error="step_hard_timeout",
                 partial_work=partial_work,
+                cost_usd=self._ctx.cost_usd - cost_before,
             )
         except Exception as exc:
             log.exception("workflow.step.unhandled_exception", step=step.name, error=str(exc))
-            return StepResult(success=False, summary=f"Exception in {step.name}", error=str(exc))
+            result = StepResult(
+                success=False,
+                summary=f"Exception in {step.name}",
+                error=str(exc),
+                cost_usd=self._ctx.cost_usd - cost_before,
+            )
+        # Spend before a timeout or exception is still billed. The synthetic
+        # results above carry it explicitly because _update_step_execution only
+        # writes a CostRecord when cost_usd > 0, so leaving it at the default
+        # would discard both the cost and the usage attached below.
+        result.usage = self._ctx.usage_snapshot() - usage_before
+        return result
 
     async def _preserve_partial_work_on_timeout(self, step_name: str) -> bool:
         """Commit staged changes on timeout to preserve partial work.
@@ -855,6 +869,7 @@ class WorkflowEngine:
                 record.ended_at = datetime.now(timezone.utc)
 
                 if result.cost_usd > 0:
+                    usage = result.usage or TokenUsage()
                     cost_record = CostRecord(
                         task_run_id=self._task_run_id,
                         phase=record.step_name,
@@ -863,6 +878,15 @@ class WorkflowEngine:
                         cost_usd=result.cost_usd,
                         duration_ms=elapsed_ms,
                         model_selection_reason=self._ctx.model_selection_reason,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        cache_tokens=usage.cache_read_tokens + usage.cache_write_tokens,
+                        cache_read_tokens=usage.cache_read_tokens,
+                        cache_write_tokens=usage.cache_write_tokens,
+                        tokens_saved=usage.tokens_saved,
+                        pre_compression_input_tokens=(
+                            usage.input_tokens + usage.tokens_saved if usage.tokens_saved is not None else None
+                        ),
                     )
                     session.add(cost_record)
 

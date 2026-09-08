@@ -30,7 +30,7 @@ class ResearchStep(BaseStep):
                 max_budget_usd=ctx.config.agent.max_budget / 5,
                 timeout=ctx.config.agent.step_timeout,
             )
-            ctx.add_cost(result.cost_usd)
+            ctx.add_usage(result)
 
             return StepResult(
                 success=True,

@@ -94,7 +94,7 @@ Commits:
 Return ONLY the section content (no heading, no markdown fences). Keep it under 10 bullet points."""
 
         llm_result = await invoke(prompt, model=ctx.resolved_model or "haiku", cwd=ctx.working_dir, timeout=60)
-        ctx.add_cost(llm_result.cost_usd)
+        ctx.add_usage(llm_result)
 
         append_spec_section(ctx.issue_number, SECTION_IMPLEMENTATION_NOTES, llm_result.text.strip(), ctx.project_dir)
     except Exception:
@@ -168,7 +168,7 @@ class DevelopStep(BaseStep):
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.develop.step_timeout,
             )
-            ctx.add_cost(result.cost_usd)
+            ctx.add_usage(result)
             ctx.session_id = result.session_id
 
             if result.cost_usd < 0.50:
@@ -416,7 +416,7 @@ class DevelopStep(BaseStep):
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.develop.fix_timeout,
             )
-            ctx.add_cost(llm_result.cost_usd)
+            ctx.add_usage(llm_result)
         except RuntimeError as exc:
             log.error("step.develop.fix_llm_failed", error=str(exc), exc_info=True)
             return f"check fix LLM failed on cycle {cycle}: {exc}"

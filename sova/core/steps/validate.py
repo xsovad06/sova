@@ -164,7 +164,7 @@ class ValidateStep(BaseStep):
                     max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                     timeout=ctx.config.validation.fix_timeout,
                 )
-                ctx.add_cost(llm_result.cost_usd)
+                ctx.add_usage(llm_result)
             except RuntimeError as exc:
                 log.error("step.validate.llm_failed", error=str(exc))
                 return StepResult(

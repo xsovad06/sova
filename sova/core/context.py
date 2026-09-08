@@ -18,6 +18,7 @@ from sova.llm.complexity import ComplexityTier
 
 if TYPE_CHECKING:
     from sova.core.output import OutputWriter
+    from sova.llm.models import LLMResult
 
 # Budget degradation thresholds (fraction of max_budget remaining).
 # Below each threshold, the developer pipeline degrades gracefully rather
@@ -25,6 +26,48 @@ if TYPE_CHECKING:
 BUDGET_SKIP_OPTIONAL_THRESHOLD = 0.40
 BUDGET_STOP_RETRY_THRESHOLD = 0.20
 BUDGET_SKIP_HOOKS_THRESHOLD = 0.08
+
+
+def _delta_saved(after: int | None, before: int | None, compressed_calls: int) -> int | None:
+    """Compression saving attributable to one window.
+
+    ``None`` means no invocation in the window ran compression, which is a
+    different fact from running and saving nothing (``0``), and the CostRecord
+    column carries that same distinction. Cumulative totals cannot express it
+    alone: a window where compression never ran leaves the running total
+    untouched, which subtracts to 0 and reads as a real saving of nothing.
+    Hence the separate count of compressed invocations.
+    """
+    if compressed_calls <= 0:
+        return None
+    return (0 if after is None else after) - (0 if before is None else before)
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    """Immutable snapshot of accumulated token counters.
+
+    Subtracting two snapshots yields the usage attributable to the work done
+    between them, which is how per-step attribution is derived.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    tokens_saved: int | None = None
+    compressed_calls: int = 0
+
+    def __sub__(self, other: TokenUsage) -> TokenUsage:
+        compressed_calls = self.compressed_calls - other.compressed_calls
+        return TokenUsage(
+            input_tokens=self.input_tokens - other.input_tokens,
+            output_tokens=self.output_tokens - other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens - other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens - other.cache_write_tokens,
+            tokens_saved=_delta_saved(self.tokens_saved, other.tokens_saved, compressed_calls),
+            compressed_calls=compressed_calls,
+        )
 
 
 @dataclass
@@ -48,6 +91,12 @@ class ExecutionContext:
     test_baseline_path: Path | None = None
     session_id: str | None = None
     cost_usd: Decimal = Decimal("0")
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    tokens_saved: int | None = None
+    compressed_calls: int = 0
     force: bool = False
     budget_override: bool = False
     task_run_id: int | None = None
@@ -94,6 +143,33 @@ class ExecutionContext:
     def add_cost(self, amount: Decimal) -> None:
         """Accumulate cost from an LLM invocation."""
         self.cost_usd += amount
+
+    def add_usage(self, result: LLMResult) -> None:
+        """Accumulate cost and token usage from one LLM invocation.
+
+        Prefer this over add_cost() wherever an LLMResult is in hand. Recording
+        cost alone leaves every CostRecord token column empty, which is what
+        made pipeline spend unattributable to tokens.
+        """
+        self.cost_usd += result.cost_usd
+        self.input_tokens += result.input_tokens
+        self.output_tokens += result.output_tokens
+        self.cache_read_tokens += result.cache_read_tokens
+        self.cache_write_tokens += result.cache_creation_tokens
+        if result.tokens_saved is not None:
+            self.tokens_saved = (0 if self.tokens_saved is None else self.tokens_saved) + result.tokens_saved
+            self.compressed_calls += 1
+
+    def usage_snapshot(self) -> TokenUsage:
+        """Accumulated token counters as an immutable snapshot."""
+        return TokenUsage(
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens,
+            tokens_saved=self.tokens_saved,
+            compressed_calls=self.compressed_calls,
+        )
 
     @property
     def is_budget_exceeded(self) -> bool:

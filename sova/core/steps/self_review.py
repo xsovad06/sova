@@ -25,7 +25,7 @@ class SelfReviewStep(BaseStep):
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,
             )
-            ctx.add_cost(result.cost_usd)
+            ctx.add_usage(result)
             return StepResult(success=True, summary="Self-review completed", cost_usd=result.cost_usd)
         except RuntimeError as exc:
             return StepResult(success=False, summary="Self-review failed", error=str(exc))
