@@ -98,6 +98,27 @@ class TestAssessTasksBatch:
         assert results[1][1].suitability == "needs_spec"
 
     @pytest.mark.asyncio
+    async def test_batch_passes_triage_task_type_and_project_dir(self) -> None:
+        """The batch call opts into task_type routing, scoped to the project's own config."""
+        role = TriageRole()
+        ctx = _make_ctx()
+        tasks = [_make_task("1")]
+
+        mock_invoke = AsyncMock(return_value=[])
+        with (
+            patch("sova.llm.client.invoke_batch", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=None),
+            patch("sova.llm.cost.record_cost", new_callable=AsyncMock),
+        ):
+            await role.assess_tasks_batch(tasks, ctx)
+
+        kwargs = mock_invoke.await_args.kwargs
+        assert kwargs["task_type"] == "triage"
+        # Routing and compression are read from this project's config, not the
+        # server process CWD (which in multi-project mode is a different project).
+        assert kwargs["cwd"] == ctx.project_dir
+
+    @pytest.mark.asyncio
     async def test_heuristic_fallback_for_empty_body(self) -> None:
         role = TriageRole()
         ctx = _make_ctx()

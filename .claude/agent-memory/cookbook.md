@@ -27,6 +27,7 @@ Fully documented in `.claude/rules/` or `.claude/skills/`. One-line refs only.
 | CI | SonarCloud 500/504 is transient; re-run up to 2x; `pull_request_target` security model | cookbook inline |
 | Other | Provider selection wired at startup; dual-install commands; JSON column NULL gotcha; config nesting max 2 levels | `architecture.md` |
 | Environment | Spawn-boundary scrub for inherited provider-routing vars (`scrub_agent_env`); auth-aware `check_available()`; `agent.env_passthrough` escape hatch | `architecture.md` |
+| LLM client | A shared `client.py` entry point that reads config must be given `cwd`: callers omitting it silently resolve routing/compression from the process CWD, which in the multi-project server is another project. `anthropic_api.py` and `models.py` are unified onto one canonical alias table (`resolve_model_alias`); `BatchProvider` also carries a defense-in-depth `normalize_model_name()` override for callers that reach it directly. `claude_code.py` keeps a separate CLI-tier `_MODEL_ALIASES` table (bare tier names, e.g. `fast`->`sonnet`) by design, out of scope for unification. A per-request helper (`_resolve_task_type_model`) that itself reloads config when its own `cfg` kwarg is `None` cannot be called blindly in a batch loop: `cfg=None` there is indistinguishable from "not passed", so a caller that already tried and failed to load config once must skip the per-request call entirely rather than let it retry the load on every iteration | `architecture.md` |
 
 ## Git Worktree Lifecycle
 

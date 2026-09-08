@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.llm import ComplexityTier, assess_complexity
-from sova.llm.models import LLMResult, StreamEvent
+from sova.llm.models import BatchRequest, LLMResult, StreamEvent
 
 # ---------------------------------------------------------------------------
 # LLMResult dataclass
@@ -644,6 +644,87 @@ class TestInvokeBatch:
             assert result == mock_result
             mock_get_provider.assert_called_once_with()
             mock_provider.invoke_batch.assert_awaited_once_with([req], poll_interval=60, timeout=86400)
+
+    @staticmethod
+    async def _models_sent(
+        req: BatchRequest,
+        *,
+        task_type: str | None = None,
+        routing: dict[str, str] | None = None,
+        batch_provider: bool = True,
+    ) -> list[str]:
+        """Run invoke_batch and return the models the receiving provider saw.
+
+        Both provider sources resolve to the same mock, so *batch_provider*
+        only selects which path invoke_batch takes to reach it.
+        """
+        from sova.llm.client import invoke_batch
+
+        provider = AsyncMock()
+        provider.invoke_batch = AsyncMock(return_value=[])
+        with (
+            patch(
+                "sova.llm.providers.anthropic_batch.create_batch_provider",
+                return_value=provider if batch_provider else None,
+            ),
+            patch("sova.llm.client.get_provider", return_value=provider),
+            patch("sova.llm.client._try_load_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.llm.routing = routing or {}
+            mock_cfg.return_value.compression.enabled = False
+            await invoke_batch([req], task_type=task_type)
+
+        return [r.model for r in provider.invoke_batch.await_args.args[0]]
+
+    @pytest.mark.parametrize(
+        ("model", "task_type", "routing", "expected"),
+        [
+            # A bare family alias becomes a full model ID before the batch API sees it.
+            ("sonnet", None, None, "claude-sonnet-5"),
+            ("claude-opus-5", None, None, "claude-opus-5"),
+            # No model and no task_type leaves the provider default in charge.
+            ("", None, None, ""),
+            ("", "triage", {"triage": "haiku"}, "claude-haiku-4-5-20251001"),
+            # An explicit request model outranks task_type routing.
+            ("opus", "triage", {"triage": "haiku"}, "claude-opus-5"),
+        ],
+    )
+    async def test_model_resolved_before_provider(
+        self, model: str, task_type: str | None, routing: dict[str, str] | None, expected: str
+    ) -> None:
+        req = BatchRequest(custom_id="req-1", prompt="hello", model=model)
+
+        assert await self._models_sent(req, task_type=task_type, routing=routing) == [expected]
+        # The caller's own request object is never mutated.
+        assert req.model == model
+
+    async def test_sequential_fallback_also_normalizes(self) -> None:
+        """The non-batch provider path gets the same resolved model."""
+        req = BatchRequest(custom_id="req-1", prompt="hello", model="cheap")
+
+        assert await self._models_sent(req, batch_provider=False) == ["claude-haiku-4-5-20251001"]
+
+    async def test_config_load_failure_does_not_retry_routing_per_request(self) -> None:
+        """A failed config load is not retried once per request in the batch.
+
+        _resolve_task_type_model() reloads config itself when passed cfg=None,
+        so without a short-circuit a batch of N requests with unset models would
+        call _try_load_config N+1 times (once upfront, then once per request).
+        """
+        from sova.llm.client import invoke_batch
+
+        reqs = [BatchRequest(custom_id=f"req-{i}", prompt="hello") for i in range(5)]
+        provider = AsyncMock()
+        provider.invoke_batch = AsyncMock(return_value=[])
+
+        with (
+            patch("sova.llm.providers.anthropic_batch.create_batch_provider", return_value=None),
+            patch("sova.llm.client.get_provider", return_value=provider),
+            patch("sova.llm.client._try_load_config", return_value=None) as mock_load,
+        ):
+            await invoke_batch(reqs, task_type="triage")
+
+        mock_load.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -2518,6 +2599,21 @@ class TestAnthropicRateCard:
         assert input_rate_per_mtok("sonnet") == Decimal("2")
         assert input_rate_per_mtok("haiku") == Decimal("1")
 
+    def test_resolve_model_alias_known(self) -> None:
+        from sova.llm.models import resolve_model_alias
+
+        assert resolve_model_alias("sonnet") == "claude-sonnet-5"
+        assert resolve_model_alias("opus") == "claude-opus-5"
+        assert resolve_model_alias("haiku") == "claude-haiku-4-5-20251001"
+        assert resolve_model_alias("cheap") == "claude-haiku-4-5-20251001"
+
+    def test_resolve_model_alias_passes_through_unknown(self) -> None:
+        from sova.llm.models import resolve_model_alias
+
+        assert resolve_model_alias("claude-sonnet-5") == "claude-sonnet-5"
+        assert resolve_model_alias("ollama/qwen3:8b") == "ollama/qwen3:8b"
+        assert resolve_model_alias("") == ""
+
     def test_cache_tokens(self) -> None:
         from sova.llm.models import compute_anthropic_cost
 
@@ -3410,7 +3506,9 @@ class TestCompressionWiring:
         ]
         with (
             patch.object(client, "get_provider", return_value=provider),
-            patch.object(client, "maybe_compress", side_effect=lambda p, cwd=None: p.upper()) as mock_compress,
+            patch.object(
+                client, "maybe_compress", side_effect=lambda p, cwd=None, cfg=None: p.upper()
+            ) as mock_compress,
             patch("sova.llm.providers.anthropic_batch.create_batch_provider", return_value=None),
         ):
             await client.invoke_batch(reqs)
