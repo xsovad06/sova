@@ -536,7 +536,14 @@ async def rebase_with_conflict_resolution(
                 return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
             return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
         last_meaningful_error = _update_error_tracking(cont.stderr, last_meaningful_error)
-        next_conflicted = await _get_conflicted_files(cwd=cwd)
+        next_conflicted = await _unresolved_paths(conflicted, cwd=cwd)
+        log.warning(
+            "git.rebase.continue_failed",
+            commit=commit_idx + 1,
+            stdout=(cont.stdout or "")[:200],
+            stderr=(cont.stderr or "")[:200],
+            unresolved=next_conflicted,
+        )
         if next_conflicted is None:
             return await _abort_unverifiable(conflicts_resolved)
         conflicted = next_conflicted

@@ -293,6 +293,30 @@ class TestRebaseVerificationIntegration:
         aborts = [c for c in mock_run.call_args_list if "--abort" in c[0]]
         assert len(aborts) == 1, "the worktree must be left clean, and aborted exactly once"
 
+    async def test_continue_failure_after_resolution_is_logged(self, tmp_path: Path) -> None:
+        """The post-resolution --continue was silent, hiding the real failure point."""
+        (tmp_path / "file.py").write_text("clean\n")
+
+        with (
+            patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.rebase._load_consensus_config", return_value=([], 0.66, {}, None)),
+            patch("sova.git.rebase.invoke_command", new_callable=AsyncMock) as mock_llm,
+            patch("sova.git.rebase.log") as mock_log,
+        ):
+            mock_run.side_effect = _git_side_effect(["file.py\n", ""], continue_ok=False)
+            mock_llm.return_value = MagicMock(text="done", cost_usd=Decimal("0.01"))
+
+            result, _cost = await rebase_with_conflict_resolution("main", cwd=tmp_path)
+
+        assert result.success is False
+        first_commit_warnings = [
+            call
+            for call in mock_log.warning.call_args_list
+            if call[0][0] == "git.rebase.continue_failed" and call[1].get("commit") == 1
+        ]
+        assert first_commit_warnings, "the --continue that follows resolution must be logged"
+        assert "unresolved" in first_commit_warnings[0][1], "the log must name what is still unresolved"
+
     async def test_check_failing_after_continue_aborts_rather_than_guessing(self, tmp_path: Path) -> None:
         """A failed check after `--continue` must not collapse to "nothing conflicted".
 
