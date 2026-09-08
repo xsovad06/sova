@@ -414,6 +414,69 @@ async def test_consolidate_cluster_llm_failure() -> None:
     assert new_id is None
 
 
+async def test_consolidate_cluster_default_model_is_haiku() -> None:
+    """No config / no llm.routing override at cwd -> resolves to the haiku default."""
+    from sova.knowledge.lifecycle import ConsolidationCluster, consolidate_cluster
+    from sova.knowledge.memory import store
+
+    m1 = await store(category="learning", title="Quote vars A", content="A\n\n[confirmed: 1]", tags=[])
+    m2 = await store(category="learning", title="Quote vars B", content="B\n\n[confirmed: 1]", tags=[])
+    m3 = await store(category="learning", title="Quote vars C", content="C\n\n[confirmed: 1]", tags=[])
+
+    cluster = ConsolidationCluster(
+        representative_id=m1.id,
+        member_ids=[m1.id, m2.id, m3.id],
+        titles=[m1.title, m2.title, m3.title],
+    )
+
+    mock_invoke = AsyncMock()
+    mock_invoke.return_value.text = '{"title": "Merged", "content": "Merged content."}'
+    mock_invoke.return_value.cost_usd = 0.001
+
+    with (
+        patch("sova.knowledge.lifecycle._try_load_config", return_value=None),
+        patch("sova.llm.client.invoke", mock_invoke),
+    ):
+        new_id = await consolidate_cluster(cluster, cwd="/tmp")
+
+    assert new_id is not None
+    assert mock_invoke.call_args.kwargs["model"] == "haiku"
+    assert mock_invoke.call_args.kwargs["task_type"] == "extraction"
+
+
+async def test_consolidate_cluster_extraction_routing_override() -> None:
+    """llm.routing['extraction'] set at cwd overrides the haiku default."""
+    from sova.config.models import ProjectConfig
+    from sova.knowledge.lifecycle import ConsolidationCluster, consolidate_cluster
+    from sova.knowledge.memory import store
+
+    m1 = await store(category="learning", title="Quote vars A", content="A\n\n[confirmed: 1]", tags=[])
+    m2 = await store(category="learning", title="Quote vars B", content="B\n\n[confirmed: 1]", tags=[])
+    m3 = await store(category="learning", title="Quote vars C", content="C\n\n[confirmed: 1]", tags=[])
+
+    cluster = ConsolidationCluster(
+        representative_id=m1.id,
+        member_ids=[m1.id, m2.id, m3.id],
+        titles=[m1.title, m2.title, m3.title],
+    )
+
+    cfg = ProjectConfig()
+    cfg.llm.routing = {"extraction": "sonnet"}
+
+    mock_invoke = AsyncMock()
+    mock_invoke.return_value.text = '{"title": "Merged", "content": "Merged content."}'
+    mock_invoke.return_value.cost_usd = 0.001
+
+    with (
+        patch("sova.knowledge.lifecycle._try_load_config", return_value=cfg),
+        patch("sova.llm.client.invoke", mock_invoke),
+    ):
+        new_id = await consolidate_cluster(cluster, cwd="/tmp")
+
+    assert new_id is not None
+    assert mock_invoke.call_args.kwargs["model"] == "sonnet"
+
+
 # ---------------------------------------------------------------------------
 # lifecycle.py -- auto_cleanup
 # ---------------------------------------------------------------------------
