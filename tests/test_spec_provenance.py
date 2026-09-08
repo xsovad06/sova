@@ -188,6 +188,66 @@ async def test_develop_llm_failure_nonfatal(tmp_path: Path) -> None:
     assert "Implementation Notes" not in spec_file.read_text()
 
 
+async def test_develop_notes_use_extraction_routing_override(tmp_path: Path) -> None:
+    """llm.routing['extraction'] overrides the default haiku model for implementation notes."""
+    from sova.core.steps.develop import _append_implementation_notes
+    from sova.llm.models import LLMResult
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec: Feature\n\n## Solution\nPlan.\n")
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    ctx.config.llm.routing = {"extraction": "sonnet"}
+
+    mock_invoke = AsyncMock(
+        return_value=LLMResult(
+            text="Implementation followed the spec as designed.",
+            model="sonnet",
+            cost_usd=Decimal("0.005"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+    )
+    mock_run = AsyncMock(return_value=MagicMock(success=True, stdout=""))
+
+    with patch("sova.core.steps.develop.invoke", mock_invoke), patch("sova.core.steps.develop.run", mock_run):
+        await _append_implementation_notes(ctx)
+
+    assert mock_invoke.call_args.kwargs["model"] == "sonnet"
+    assert mock_invoke.call_args.kwargs["task_type"] == "extraction"
+
+
+async def test_develop_notes_default_haiku_when_no_override(tmp_path: Path) -> None:
+    """With no llm.routing['extraction'] override, implementation notes still resolve to haiku."""
+    from sova.core.steps.develop import _append_implementation_notes
+    from sova.llm.models import LLMResult
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec: Feature\n\n## Solution\nPlan.\n")
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_invoke = AsyncMock(
+        return_value=LLMResult(
+            text="Implementation followed the spec as designed.",
+            model="haiku",
+            cost_usd=Decimal("0.005"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+    )
+    mock_run = AsyncMock(return_value=MagicMock(success=True, stdout=""))
+
+    with patch("sova.core.steps.develop.invoke", mock_invoke), patch("sova.core.steps.develop.run", mock_run):
+        await _append_implementation_notes(ctx)
+
+    assert mock_invoke.call_args.kwargs["model"] == "haiku"
+
+
 # ---------------------------------------------------------------------------
 # ReviewerRole: _append_review_rationale
 # ---------------------------------------------------------------------------
@@ -1162,6 +1222,7 @@ def _make_ctx(
     ctx.config.agent.max_budget = Decimal("5")
     ctx.config.check_cmd = ""
     ctx.config.develop.max_fix_cycles = 0
+    ctx.config.llm.routing = {}
 
     # Make add_cost actually update cost_usd
     def add_cost(amount):

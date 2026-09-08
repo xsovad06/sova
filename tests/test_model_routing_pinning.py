@@ -25,6 +25,7 @@ from sova.llm.routing import (
     _is_pinned_version,
     _pin_to_configured_model,
     get_model_family,
+    resolve_extraction_model,
     route_model,
 )
 
@@ -189,6 +190,34 @@ class TestRouteModelPinning:
         )
         assert model == "claude-haiku-4-5"
         assert "pinned" in reason
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for resolve_extraction_model
+# ---------------------------------------------------------------------------
+
+
+class TestResolveExtractionModel:
+    def test_no_config_returns_haiku(self) -> None:
+        assert resolve_extraction_model(None) == "haiku"
+
+    def test_no_override_returns_haiku(self) -> None:
+        llm_config = MagicMock()
+        llm_config.routing = {}
+
+        assert resolve_extraction_model(llm_config) == "haiku"
+
+    def test_empty_string_override_falls_back_to_haiku(self) -> None:
+        llm_config = MagicMock()
+        llm_config.routing = {"extraction": ""}
+
+        assert resolve_extraction_model(llm_config) == "haiku"
+
+    def test_override_returns_configured_model(self) -> None:
+        llm_config = MagicMock()
+        llm_config.routing = {"extraction": "sonnet"}
+
+        assert resolve_extraction_model(llm_config) == "sonnet"
 
 
 # ---------------------------------------------------------------------------

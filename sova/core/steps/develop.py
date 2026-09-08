@@ -93,7 +93,10 @@ Commits:
 
 Return ONLY the section content (no heading, no markdown fences). Keep it under 10 bullet points."""
 
-        llm_result = await invoke(prompt, model=ctx.resolved_model or "haiku", cwd=ctx.working_dir, timeout=60)
+        from sova.llm.routing import resolve_extraction_model
+
+        model = resolve_extraction_model(ctx.config.llm)
+        llm_result = await invoke(prompt, model=model, task_type="extraction", cwd=ctx.working_dir, timeout=60)
         ctx.add_usage(llm_result)
 
         append_spec_section(ctx.issue_number, SECTION_IMPLEMENTATION_NOTES, llm_result.text.strip(), ctx.project_dir)

@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
@@ -19,6 +20,9 @@ from sova.db.models import Memory
 from sova.db.session import get_session
 from sova.knowledge.similarity import parse_confirmation_counter, set_confirmation_counter, titles_match
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="knowledge.lifecycle")
 
@@ -28,6 +32,17 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _try_load_config(cwd: Path | str) -> ProjectConfig | None:
+    """Load project config, returning None on failure (no sova.toml, ephemeral worktree, etc.)."""
+    try:
+        from sova.config.loader import load_config
+
+        return load_config(Path(cwd))
+    except Exception:
+        log.debug("lifecycle.config_load_failed", exc_info=True)
+        return None
 
 
 # Health score weights (3-factor; edge_count deferred until #225)
@@ -336,8 +351,11 @@ Return ONLY a JSON object (no markdown fences, no extra text):
 
     try:
         from sova.llm.client import invoke
+        from sova.llm.routing import resolve_extraction_model
 
-        llm_result = await invoke(prompt, model="haiku", cwd=cwd, timeout=60)
+        cfg = _try_load_config(cwd)
+        model = resolve_extraction_model(cfg.llm if cfg else None)
+        llm_result = await invoke(prompt, model=model, task_type="extraction", cwd=cwd, timeout=60)
         import json
 
         text = llm_result.text.strip()

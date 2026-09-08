@@ -125,3 +125,15 @@ def _apply_pin(model: str, agent_model: str | None, reason: str) -> tuple[str, s
     if pinned != model:
         return pinned, f"{reason},pinned->{pinned}"
     return model, reason
+
+
+def resolve_extraction_model(cfg: LLMConfig | None) -> str:
+    """Resolve the model for extraction-tier sub-tasks (implementation notes, memory consolidation).
+
+    Returns ``llm.routing["extraction"]`` when configured, else ``"haiku"``.
+    """
+    if cfg is not None:
+        override = cfg.routing.get("extraction")
+        if override:
+            return override
+    return "haiku"
