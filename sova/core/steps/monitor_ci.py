@@ -431,7 +431,7 @@ class MonitorCIStep(BaseStep):
                 max_budget_usd=budget,
                 timeout=ctx.config.validation.fix_timeout,
             )
-            ctx.add_cost(llm_result.cost_usd)
+            ctx.add_usage(llm_result)
             return llm_result.cost_usd, None
         except RuntimeError as exc:
             log.error("step.monitor_ci.llm_failed", error=str(exc), exc_info=True)

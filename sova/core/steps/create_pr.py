@@ -374,7 +374,7 @@ class CreatePRStep(BaseStep):
             log.warning("step.create_pr.body_generation_failed", fallback="structured")
             return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)
 
-        ctx.add_cost(result.cost_usd)
+        ctx.add_usage(result)
         body = strip_preamble(result.text)
         if ctx.has_issue:
             if ts.is_jira:

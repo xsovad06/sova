@@ -119,7 +119,7 @@ class GenerateTasksStep(BaseStep):
                 max_budget_usd=ctx.config.agent.max_budget / 5,
                 timeout=180,
             )
-            ctx.add_cost(result.cost_usd)
+            ctx.add_usage(result)
         except Exception as exc:
             log.error("generate.llm_failed", error=str(exc), exc_info=True)
             return StepResult(success=False, summary="Task generation failed", error=str(exc))

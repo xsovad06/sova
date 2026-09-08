@@ -174,7 +174,7 @@ class AddressExternalFindingsStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
             )
-            ctx.add_cost(result.cost_usd)
+            ctx.add_usage(result)
         except RuntimeError:
             log.warning("step.address_external_findings.llm_failed", exc_info=True)
             return Decimal("0")

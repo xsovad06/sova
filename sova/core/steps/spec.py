@@ -329,7 +329,7 @@ class SpecStep(BaseStep):
                 max_budget_usd=ctx.config.agent.max_budget / 5,
                 timeout=ctx.config.agent.step_timeout,
             )
-            ctx.add_cost(result.cost_usd)
+            ctx.add_usage(result)
         except (RuntimeError, PromptInjectionError) as exc:
             return StepResult(success=False, summary="Spec generation failed", error=str(exc))
 

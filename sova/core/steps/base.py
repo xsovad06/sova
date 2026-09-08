@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sova.core.context import ExecutionContext
+from sova.core.context import ExecutionContext, TokenUsage
 
 if TYPE_CHECKING:
     from sova.ipc.handoff import HandoffAction
@@ -31,6 +31,8 @@ class StepResult:
     awaiting_approval: bool = False
     handoff_actions: list[HandoffAction] | None = None
     partial_work: bool = False
+    # Set by WorkflowEngine from the context delta, not by steps themselves.
+    usage: TokenUsage | None = None
 
 
 @dataclass
