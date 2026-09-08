@@ -10,6 +10,7 @@ from sova.llm.client import (
     invoke_streaming,
     reset_provider,
     resolve_model,
+    select_model,
     set_provider,
 )
 from sova.llm.complexity import ComplexityTier, assess_complexity
@@ -66,5 +67,6 @@ __all__ = [
     "resolve_model",
     "route_model",
     "scan_prompt",
+    "select_model",
     "set_provider",
 ]

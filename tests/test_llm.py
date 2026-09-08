@@ -671,6 +671,7 @@ class TestInvokeBatch:
             patch("sova.llm.client._try_load_config") as mock_cfg,
         ):
             mock_cfg.return_value.llm.routing = routing or {}
+            mock_cfg.return_value.llm.model_aliases = {}
             mock_cfg.return_value.compression.enabled = False
             await invoke_batch([req], task_type=task_type)
 
@@ -1294,19 +1295,24 @@ class TestLLMProvider:
             LLMProvider()  # type: ignore[abstract]
 
     def test_create_provider_default(self) -> None:
+        from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
         from sova.llm.providers.claude_code import ClaudeCodeProvider
 
-        provider = create_provider("claude-code")
+        provider = create_provider(LLMConfig())
         assert isinstance(provider, ClaudeCodeProvider)
 
     def test_create_provider_unknown(self) -> None:
+        from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
 
+        # model_construct bypasses the provider Literal so the defensive
+        # ValueError branch stays reachable from a test.
         with pytest.raises(ValueError, match="Unknown LLM provider"):
-            create_provider("nonexistent")
+            create_provider(LLMConfig.model_construct(provider="nonexistent"))
 
     def test_create_provider_hybrid(self) -> None:
+        from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
 
         with patch.dict("sys.modules", {"litellm": MagicMock(__version__="1.0.0")}):
@@ -1316,7 +1322,7 @@ class TestLLMProvider:
             llm_mod.litellm = MagicMock()
             from sova.llm.litellm_provider import LiteLLMProvider
 
-            provider = create_provider("hybrid")
+            provider = create_provider(LLMConfig(provider="hybrid"))
             assert isinstance(provider, LiteLLMProvider)
 
     def test_get_provider_default(self) -> None:
@@ -1733,10 +1739,11 @@ class TestProviderInitFromConfig:
 
     def test_init_provider_unknown_raises(self, tmp_path: Path) -> None:
         """Unknown provider type raises ValueError (not silently swallowed)."""
+        from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
 
         with pytest.raises(ValueError, match="Unknown LLM provider"):
-            create_provider("nonexistent")
+            create_provider(LLMConfig.model_construct(provider="nonexistent"))
 
 
 class TestModuleExports:
@@ -2237,10 +2244,11 @@ class TestLiteLLMProvider:
         assert result.stop_reason == "length"
 
     def test_create_provider_litellm(self, mock_litellm: MagicMock) -> None:
+        from sova.config.models import LLMConfig
         from sova.llm.litellm_provider import LiteLLMProvider
         from sova.llm.provider import create_provider
 
-        provider = create_provider("litellm")
+        provider = create_provider(LLMConfig(provider="litellm"))
         assert isinstance(provider, LiteLLMProvider)
 
     async def test_invoke_streaming_fallback(self, mock_litellm: MagicMock) -> None:
@@ -2292,19 +2300,41 @@ class TestLiteLLMProvider:
                 pass
 
     async def test_create_provider_forwards_config(self, mock_litellm: MagicMock) -> None:
+        """Every LiteLLM-relevant field is read off cfg, not silently dropped."""
+        from sova.config.models import LLMConfig
         from sova.llm.litellm_provider import LiteLLMProvider
         from sova.llm.provider import create_provider
 
         provider = create_provider(
-            "litellm",
-            model="gpt-4o",
-            fallback_model="ollama/qwen3-coder",
-            api_base="http://localhost:4000",
+            LLMConfig(
+                provider="litellm",
+                model="gpt-4o",
+                fallback_model="ollama/qwen3-coder",
+                api_base="http://localhost:4000",
+            )
         )
         assert isinstance(provider, LiteLLMProvider)
         assert provider.model == "gpt-4o"
         assert provider.fallback_model == "ollama/qwen3-coder"
         assert provider.api_base == "http://localhost:4000"
+
+    def test_create_provider_resolves_model_aliases(self, mock_litellm: MagicMock) -> None:
+        """llm.model and llm.fallback_model may be alias names, not just native IDs."""
+        from sova.config.models import LLMConfig
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.provider import create_provider
+
+        provider = create_provider(
+            LLMConfig(
+                provider="litellm",
+                model="smart",
+                fallback_model="cheap",
+                model_aliases={"smart": "ollama/llama3.1:70b", "cheap": "ollama/qwen3-coder"},
+            )
+        )
+        assert isinstance(provider, LiteLLMProvider)
+        assert provider.model == "ollama/llama3.1:70b"
+        assert provider.fallback_model == "ollama/qwen3-coder"
 
     async def test_check_available(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
@@ -2440,6 +2470,24 @@ class TestDoctorOllamaCheck:
             model_check = [c for c in checks if "qwen3" in c[0]]
             assert model_check
             assert model_check[0][1] is True
+
+    async def test_alias_map_targets_are_checked(self, tmp_path: Path) -> None:
+        """An alias pointing at a local model must be checked like a routing entry."""
+        from sova.cli.commands.doctor import _check_ollama
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_cfg.return_value.llm.routing = {}
+            mock_cfg.return_value.llm.model_aliases = {"smart": "ollama/llama3.1:70b"}
+            mock_run.return_value = MagicMock(success=True, stdout="NAME\tID\nqwen3:8b\tabc123\n")
+            checks = await _check_ollama(tmp_path)
+
+        model_check = [c for c in checks if "llama3.1" in c[0]]
+        assert model_check
+        assert model_check[0][1] is False
 
     async def test_ollama_model_not_pulled(self, tmp_path: Path) -> None:
         from sova.cli.commands.doctor import _check_ollama
@@ -2975,13 +3023,28 @@ class TestAnthropicAPIProvider:
             assert "anthropic SDK" in msg
 
     def test_create_provider_forwards_api_key(self, mock_anthropic: MagicMock) -> None:
+        from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("ANTHROPIC_API_KEY", None)
-            provider = create_provider("anthropic", model="claude-opus-5", api_key="sk-from-config")
+            provider = create_provider(LLMConfig(provider="anthropic", model="claude-opus-5", api_key="sk-from-config"))
 
         assert provider._api_key == "sk-from-config"
+        assert provider._default_model == "claude-opus-5"
+
+    def test_create_provider_resolves_model_alias(self, mock_anthropic: MagicMock) -> None:
+        """llm.model may be an alias name, not just a native ID."""
+        from sova.config.models import LLMConfig
+        from sova.llm.provider import create_provider
+
+        provider = create_provider(
+            LLMConfig(
+                provider="anthropic",
+                model="smart",
+                model_aliases={"smart": "claude-opus-5"},
+            )
+        )
         assert provider._default_model == "claude-opus-5"
 
     def test_normalize_model_name(self, mock_anthropic: MagicMock) -> None:
@@ -3263,6 +3326,7 @@ class TestAnthropicAPIProvider:
 
 class TestCreateProviderAnthropic:
     def test_create_provider_anthropic(self) -> None:
+        from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
 
         with (
@@ -3276,14 +3340,15 @@ class TestCreateProviderAnthropic:
 
             from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
-            provider = create_provider("anthropic")
+            provider = create_provider(LLMConfig(provider="anthropic"))
             assert isinstance(provider, AnthropicAPIProvider)
 
     def test_create_provider_anthropic_in_available_list(self) -> None:
+        from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
 
         with pytest.raises(ValueError, match="anthropic") as exc_info:
-            create_provider("nonexistent")
+            create_provider(LLMConfig.model_construct(provider="nonexistent"))
         assert "anthropic" in str(exc_info.value)
 
 

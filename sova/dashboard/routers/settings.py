@@ -223,13 +223,7 @@ async def test_llm_connection() -> dict:
         return {"ok": False, "provider": None, "detail": f"Failed to load configuration: {exc}"}
 
     try:
-        provider = create_provider(
-            cfg.llm.provider,
-            model=cfg.llm.model,
-            fallback_model=cfg.llm.fallback_model,
-            api_base=cfg.llm.api_base,
-            api_key=cfg.llm.api_key,
-        )
+        provider = create_provider(cfg.llm)
     except Exception as exc:  # noqa: BLE001 - misconfiguration must not 500
         log.info("settings.llm.test.create_failed", provider=cfg.llm.provider, exc_info=True)
         return {"ok": False, "provider": cfg.llm.provider, "detail": str(exc)}

@@ -112,8 +112,8 @@ unlisted models.
   `strict_validation=raise` default is rejected.
 
 ### R12: New config fields silently no-op unless every `create_provider` call site is updated
-`create_provider` is called from `_init_llm_provider`, dashboard `create_app`, and
-`reload_provider` (the last passes only model/fallback/api_base). A new field missed at
+`create_provider` was called from `_init_llm_provider`, dashboard `create_app`, and
+`reload_provider` (the last forwarded only model/fallback/api_base/api_key). A new field missed at
 `reload_provider` would stop applying after a settings hot-reload.
 - Mitigation: `create_provider` takes the whole `LLMConfig` (PR8), with a `reload_provider`
   regression test.

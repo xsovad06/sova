@@ -159,6 +159,14 @@ _REGISTRY: list[SettingMeta] = [
         "object",
     ),
     SettingMeta(
+        "llm.model_aliases",
+        "Model aliases",
+        "Maps generic model names (opus/sonnet/fast/smart) to the model IDs this deployment "
+        "serves. Applied client-side before the model reaches the provider; empty means no aliasing",
+        "llm",
+        "object",
+    ),
+    SettingMeta(
         "llm.batch_eligible_tasks",
         "Batch-eligible tasks",
         "Task types routed through the Batch API when available (50% discount, async delivery)",

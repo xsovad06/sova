@@ -146,7 +146,10 @@ Acceptance criteria:
 ### PR8: Client-side alias map plus `create_provider(LLMConfig)` `[llm][config]`
 Add `LLMConfig.model_aliases: dict[str,str] = {}` (settings_meta entry) resolved client-side in
 `select_model`. Change `create_provider` to accept the whole `LLMConfig` so new fields cannot
-skip a call site, and update all four call sites including `reload_provider`.
+skip a call site, and update all three direct call sites: `reload_provider` (`llm/client.py`),
+`_check_llm_provider` (`cli/commands/doctor.py`) and `test_llm_connection`
+(`dashboard/routers/settings.py`). `_init_llm_provider` and the dashboard's `create_app` reach
+the factory through `reload_provider` and need no change of their own.
 
 Acceptance criteria:
 - `model_aliases = {"smart": "ollama/llama3.1:70b"}` resolves `smart` for a LiteLLM provider.

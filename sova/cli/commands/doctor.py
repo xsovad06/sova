@@ -250,12 +250,7 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
         cfg = load_config(project_dir)
         provider_type = cfg.llm.provider
         try:
-            provider = create_provider(
-                provider_type,
-                model=cfg.llm.model,
-                fallback_model=cfg.llm.fallback_model,
-                api_base=cfg.llm.api_base,
-            )
+            provider = create_provider(cfg.llm)
         except ValueError as exc:
             # Only ValueError from create_provider (unknown provider type).
             # pydantic.ValidationError also inherits ValueError in v2 but
@@ -278,7 +273,11 @@ async def _check_ollama(project_dir: Path) -> list[_Check]:
         from sova.config.loader import load_config
 
         cfg = load_config(project_dir)
-        ollama_models = [v for v in cfg.llm.routing.values() if v.startswith("ollama/")]
+        # Aliases are scanned alongside routing: an alias map is the intended way
+        # to point a generic tier at a local model, so checking routing alone
+        # would report "no ollama models" on a deployment that runs on them.
+        configured = [*cfg.llm.routing.values(), *cfg.llm.model_aliases.values()]
+        ollama_models = sorted({v for v in configured if v.startswith("ollama/")})
         if not ollama_models:
             return []
 

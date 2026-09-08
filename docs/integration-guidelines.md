@@ -77,7 +77,7 @@ For setup instructions, JQL filter recipes, and status mapping configuration, se
 
 ### Provider ABC (`sova/llm/provider.py`)
 
-`LLMProvider` ABC with factory `create_provider(type)`. Two backends: `claude-code` (default) and `litellm`. Module-level singleton via `get_provider()`/`set_provider()`.
+`LLMProvider` ABC with factory `create_provider(cfg: LLMConfig)`. It takes the whole `llm` config section, not individual kwargs, so a newly added field cannot silently no-op at a call site that was never updated to forward it. Four backends: `claude-code` (default), `litellm`, `hybrid`, `anthropic`. Module-level singleton via `get_provider()`/`set_provider()`.
 
 ### Claude Code CLI (`sova/llm/providers/claude_code.py`)
 
@@ -89,7 +89,7 @@ Automatic fallback: primary model fails, `fallback_model` is tried. Optional dep
 
 ### Wiring Requirement
 
-Adding a provider config field without calling `set_provider(create_provider(cfg))` at startup means the config has no effect. Wire in CLI (`sova/cli/app.py`) and dashboard (`sova/dashboard/app.py`).
+Adding a provider config field without calling `set_provider(create_provider(cfg.llm))` at startup means the config has no effect. Wire in CLI (`sova/cli/app.py`) and dashboard (`sova/dashboard/app.py`); both delegate to `reload_provider(cfg)`, which is also the settings hot-reload path.
 
 ## Desktop Notifications (`sova/ipc/notifications.py`)
 

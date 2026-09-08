@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sova.llm.models import LLMResult
+
 
 class TestDaemonEnabledGuard:
     """SupervisorDaemon._poll_once skips when supervisor.enabled is False."""
@@ -690,16 +692,13 @@ class TestSingletonReload:
     """reload_provider and reload_runtime swap global singletons."""
 
     def test_reload_provider(self) -> None:
+        from sova.config.models import LLMConfig, ProjectConfig
         from sova.llm.client import get_provider, reload_provider, reset_provider
 
         reset_provider()
         old = get_provider()
 
-        cfg = MagicMock()
-        cfg.llm.provider = "claude-code"
-        cfg.llm.model = "test-model"
-        cfg.llm.fallback_model = None
-        cfg.llm.api_base = ""
+        cfg = ProjectConfig(llm=LLMConfig(model="test-model"))
 
         with patch("sova.llm.provider.create_provider") as mock_create:
             mock_provider = MagicMock()
@@ -709,8 +708,39 @@ class TestSingletonReload:
         new = get_provider()
         assert new is mock_provider
         assert new is not old
+        # The whole section, not a kwarg subset: a hand-picked forward is how a
+        # newly added field stops applying after a hot-reload (R12).
+        assert mock_create.call_args.args[0] is cfg.llm
 
         reset_provider()
+
+    @pytest.mark.asyncio
+    async def test_llm_hot_reload_honors_a_changed_alias_map(self) -> None:
+        """A settings save that only changes model_aliases must reach the new provider."""
+        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+        from sova.dashboard.routers.settings import _dispatch_config_reload
+        from sova.llm import client
+
+        client.reset_provider()
+        cfg = ProjectConfig(
+            llm=LLMConfig(provider="litellm", model_aliases={"smart": "ollama/llama3.1:70b"}),
+            agent=AgentConfig(model="smart"),
+        )
+
+        provider = MagicMock()
+        provider.normalize_model_name = lambda m: m
+        provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="ollama/llama3.1:70b"))
+        with patch("sova.llm.provider.create_provider", return_value=provider) as mock_create:
+            await _dispatch_config_reload("llm", cfg, {}, Path("/tmp"))
+
+        assert mock_create.call_args.args[0].model_aliases == {"smart": "ollama/llama3.1:70b"}
+        assert client.get_provider() is provider
+
+        with patch.object(client, "_try_load_config", return_value=cfg):
+            await client.invoke("prompt", model="smart", timeout=900.0)
+        assert provider.invoke.call_args.kwargs["model"] == "ollama/llama3.1:70b"
+
+        client.reset_provider()
 
     def test_reload_runtime(self) -> None:
         from sova.ipc.runtime import get_runtime, reload_runtime, set_runtime
