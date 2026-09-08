@@ -83,8 +83,7 @@ async function loadLogs() {
       var ts = e.timestamp ? e.timestamp.substring(11, 19) : '';
       var lvl = (e.level || 'INFO').padEnd(7);
       var comp = e.component ? '[' + e.component + ']' : '';
-      var event = e.event || '';
-      var msg = e.message || event || '';
+      var event = e.event || e.message || '';
 
       var contextKeys = Object.keys(e).filter(function(k) {
         return ['component','level','timestamp','event','message'].indexOf(k) === -1 && e[k] != null;
@@ -94,8 +93,8 @@ async function loadLogs() {
       }).join(' ');
 
       return '<div class="py-0.5 px-2 hover:bg-surface-hover/50 ' + color + '">' +
-        '<span class="text-gray-600">' + ts + '</span> ' +
-        '<span>' + lvl + '</span> ' +
+        '<span class="text-gray-600">' + escapeHtml(ts) + '</span> ' +
+        '<span>' + escapeHtml(lvl) + '</span> ' +
         '<span class="text-gray-500">' + escapeHtml(comp) + ' </span>' +
         '<span class="text-gray-300">' + escapeHtml(event) + '</span>' +
         (context ? '  <span class="text-gray-500">' + context + '</span>' : '') +
