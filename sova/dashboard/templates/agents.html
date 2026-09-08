@@ -1126,7 +1126,9 @@ async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride
     } else {
       var result = await res.json();
       if (result.error) { showToast(result.error, 'error'); return; }
-      if (result.run_id) viewLogs(result.run_id);
+      // Only auto-open when no viewer is currently open, so this doesn't
+      // steal focus from a log panel the user is already watching.
+      if (result.run_id && activeLogRunId === null) viewLogs(result.run_id);
       var agentLabel = issue ? '#' + issue : (role || 'agent');
       showToast('Agent started: ' + agentLabel, 'success');
     }
@@ -1348,7 +1350,7 @@ async function runCommand(command, args) {
         hidePrActionsPanel();
         document.getElementById('agent-issue').value = '';
         document.getElementById('agent-issue-number').value = '';
-        if (result.run_id) viewLogs(result.run_id);
+        if (result.run_id && activeLogRunId === null) viewLogs(result.run_id);
       }
     }
   } catch (e) {
@@ -1367,6 +1369,7 @@ var _LOG_BACKOFF_BASE = 1000;
 var _LOG_BACKOFF_MAX = 5000;
 var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted'];
 var lastAgentFingerprint = null;
+var _lastActiveAgents = [];
 
 function agentFingerprint(data) {
   var running = data.agents.map(function(a) {
@@ -1381,6 +1384,7 @@ function agentFingerprint(data) {
 async function loadAgents() {
   try {
     var data = await fetchAPI(apiUrl('/agents/active'));
+    _lastActiveAgents = data.agents;
 
     var fp = agentFingerprint(data);
     var changed = fp !== lastAgentFingerprint;
@@ -1463,7 +1467,7 @@ function renderAgentCard(agent) {
     '<div class="mb-3" data-pipeline-container>' + pipeline + '</div>' +
     '<div id="handoff-inline-' + agent.run_id + '"></div>' +
     '<div class="flex items-center gap-2 mt-3">' +
-      '<button onclick="event.stopPropagation(); viewLogs(' + agent.run_id + ', \'' + escapeHtml(agent.status) + '\')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" aria-label="View agent output" data-tooltip="View agent output">' +
+      '<button id="log-btn-' + agent.run_id + '" onclick="event.stopPropagation(); viewLogs(' + agent.run_id + ', \'' + escapeHtml(agent.status) + '\')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" aria-label="View agent output" data-tooltip="View agent output">' +
         (activeLogRunId === agent.run_id ? 'Viewing Logs' : 'View Logs') +
       '</button>' +
       (agent.source !== 'external'
@@ -1617,6 +1621,59 @@ function _submitPlannerIssues(runId, handoffIssue) {
 
 // -- Log Viewer --
 
+var _LOG_LEVEL_COLORS = {
+  DEBUG: 'text-gray-500',
+  INFO: 'text-accent-green',
+  WARNING: 'text-accent-yellow',
+  ERROR: 'text-accent-red',
+  CRITICAL: 'text-accent-red font-bold',
+};
+var _LOG_PREFIX_RE = /^\[(stderr|stdout)\]\s?(.*)$/;
+var _LOG_STRUCT_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s+\[\s*(\w+)\s*\]\s*(.*)$/;
+var _LOG_CTX_RE = /\s([A-Za-z_][\w.]*)=/;
+
+// Formats one raw agent output line for display. Lines follow structlog's
+// ConsoleRenderer layout (timestamp, level, event, then key=value context),
+// prefixed with [stderr]/[stdout] by agent_output.py. Lines that don't match
+// (plain prints, tracebacks) fall back to escaped plain text so nothing breaks.
+function formatLogLine(raw) {
+  var stream = '';
+  var rest = raw;
+  var pm = _LOG_PREFIX_RE.exec(raw);
+  if (pm) { stream = pm[1]; rest = pm[2]; }
+  var streamTag = stream ? '<span class="text-gray-600">' + stream + '</span> ' : '';
+
+  var sm = _LOG_STRUCT_RE.exec(rest);
+  if (!sm) {
+    return '<div class="py-0.5">' + streamTag + '<span class="text-gray-300">' + escapeHtml(rest) + '</span></div>';
+  }
+
+  var ts = sm[1], level = sm[2].toUpperCase(), body = sm[3];
+  var color = _LOG_LEVEL_COLORS[level] || 'text-gray-400';
+  var tsShort = ts.length >= 19 ? ts.substring(11, 19) : ts;
+
+  var ctxMatch = _LOG_CTX_RE.exec(body);
+  var event = ctxMatch ? body.slice(0, ctxMatch.index).trim() : body.trim();
+  var context = ctxMatch ? body.slice(ctxMatch.index).trim() : '';
+
+  return '<div class="py-0.5">' +
+    streamTag +
+    '<span class="text-gray-600">' + escapeHtml(tsShort) + '</span> ' +
+    '<span class="' + color + '">' + escapeHtml(level.padEnd(8)) + '</span> ' +
+    '<span class="text-gray-200">' + escapeHtml(event) + '</span>' +
+    (context ? '  <span class="text-gray-500">' + escapeHtml(context) + '</span>' : '') +
+  '</div>';
+}
+
+function _setLogButtonLabel(runId, isActive) {
+  var btn = document.getElementById('log-btn-' + runId);
+  if (!btn) return;
+  btn.textContent = isActive ? 'Viewing Logs' : 'View Logs';
+  var hint = isActive ? 'Hide agent output' : 'View agent output';
+  btn.setAttribute('aria-label', hint);
+  btn.setAttribute('data-tooltip', hint);
+}
+
 function updateLogTabs(agents) {
   var tabs = document.getElementById('log-tabs');
   if (!tabs) return;
@@ -1638,20 +1695,24 @@ function updateLogTabs(agents) {
 }
 
 function viewLogs(runId, runStatus) {
-  var viewer = document.getElementById('log-viewer');
-  var content = document.getElementById('log-content');
-
   if (activeLogRunId === runId) {
     closeLogViewer();
     return;
   }
 
+  // Closing here (rather than leaving the previous stream connected) means
+  // switching tabs never shows a stale mix of two runs' output.
   closeLogViewer();
+
+  var viewer = document.getElementById('log-viewer');
+  var content = document.getElementById('log-content');
   activeLogRunId = runId;
   logCursor = 0;
   _logBackoffMs = _LOG_BACKOFF_BASE;
   content.textContent = '';
   viewer.classList.remove('hidden');
+  _setLogButtonLabel(runId, true);
+  updateLogTabs(_lastActiveAgents);
 
   if (runStatus && _TERMINAL.includes(runStatus)) {
     _startLogPolling();
@@ -1672,7 +1733,7 @@ function _connectLogSSE(runId) {
     var content = document.getElementById('log-content');
     if (content) {
       var text = e.data.replace(/\\([nr\\])/g, function(_, c) { return c === 'n' ? '\n' : c === 'r' ? '\r' : '\\'; });
-      content.textContent += text + '\n';
+      content.insertAdjacentHTML('beforeend', formatLogLine(text));
       content.scrollTop = content.scrollHeight;
     }
   });
@@ -1700,12 +1761,15 @@ function _startLogPolling() {
 }
 
 function closeLogViewer() {
+  var prevRunId = activeLogRunId;
   activeLogRunId = null;
   logCursor = 0;
   if (logPollInterval) { clearTimeout(logPollInterval); logPollInterval = null; }
   if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
   var viewer = document.getElementById('log-viewer');
   if (viewer) viewer.classList.add('hidden');
+  if (prevRunId !== null) _setLogButtonLabel(prevRunId, false);
+  updateLogTabs(_lastActiveAgents);
 }
 
 async function pollLogs() {
@@ -1715,7 +1779,7 @@ async function pollLogs() {
     if (data.lines && data.lines.length > 0) {
       var content = document.getElementById('log-content');
       data.lines.forEach(function(line) {
-        content.textContent += line + '\n';
+        content.insertAdjacentHTML('beforeend', formatLogLine(line));
       });
       logCursor = data.total;
       content.scrollTop = content.scrollHeight;
@@ -1797,7 +1861,7 @@ async function executeHandoffAction(actionId, issue) {
       return;
     }
     var result = await res.json();
-    if (result.run_id) viewLogs(result.run_id);
+    if (result.run_id && activeLogRunId === null) viewLogs(result.run_id);
     loadAgents();
     loadTaskCards();
   } catch (e) {
@@ -1818,7 +1882,7 @@ async function resumeFromApproval(runId) {
       showToast(result.detail || 'Failed to resume', 'error');
       return;
     }
-    if (result.run_id) viewLogs(result.run_id);
+    if (result.run_id && activeLogRunId === null) viewLogs(result.run_id);
     loadAgents();
     loadTaskCards();
   } catch (e) {
