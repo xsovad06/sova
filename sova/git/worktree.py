@@ -377,6 +377,21 @@ _CLAUDE_DIRS = ("commands", "rules", "agent-memory", "skills")
 _CLAUDE_FILES = ("CLAUDE.md", "settings.local.json", "settings.json")
 
 
+def _copy2_skip_identical(src: str, dst: str, *, follow_symlinks: bool = True) -> str:
+    """Like ``shutil.copy2``, but a no-op when *src* and *dst* are already the same file.
+
+    Some ``.claude/commands`` entries are themselves symlinks to a shared
+    file (e.g. a command kept in sync across projects via a symlink into
+    ``~/.claude/commands``). If the worktree's copy already resolves to that
+    same target, ``shutil.copy2`` raises ``SameFileError``, even though there's
+    nothing to copy, so treat it as success instead of a copy failure.
+    """
+    try:
+        return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+    except shutil.SameFileError:
+        return dst
+
+
 def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     """Copy .claude/ artifacts that are gitignored but needed by agents.
 
@@ -408,7 +423,7 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
         src = claude_src / dirname
         if src.is_dir():
             try:
-                shutil.copytree(src, claude_dst / dirname, dirs_exist_ok=True)
+                shutil.copytree(src, claude_dst / dirname, dirs_exist_ok=True, copy_function=_copy2_skip_identical)
             except OSError:
                 log.warning("worktree.copy_claude_dir.failed", dir=dirname, exc_info=True)
 

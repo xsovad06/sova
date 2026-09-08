@@ -190,6 +190,31 @@ class TestCopyClaudeArtifacts:
         assert wt_skill.exists()
         assert wt_skill.read_text() == "test skill"
 
+    def test_reruns_cleanly_when_worktree_command_symlinks_same_global_target(self, tmp_path: Path) -> None:
+        global_target = tmp_path / "global-commands"
+        global_target.mkdir()
+        shared_cmd = global_target / "optimize-knowledge.md"
+        shared_cmd.write_text("shared command")
+
+        project = tmp_path / "project"
+        commands_dir = project / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "optimize-knowledge.md").symlink_to(shared_cmd)
+        (commands_dir / "regular.md").write_text("regular command")
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        wt_commands = worktree / ".claude" / "commands"
+        wt_commands.mkdir(parents=True)
+        (wt_commands / "optimize-knowledge.md").symlink_to(shared_cmd)
+
+        with patch("sova.git.worktree.log.warning") as mock_warning:
+            _copy_claude_artifacts(project, worktree)
+
+        assert (wt_commands / "regular.md").read_text() == "regular command"
+        assert (wt_commands / "optimize-knowledge.md").resolve() == shared_cmd.resolve()
+        mock_warning.assert_not_called()
+
 
 class TestEnsureClaudeArtifactsAlias:
     def test_backward_compat_alias_exists(self) -> None:
