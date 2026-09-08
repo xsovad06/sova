@@ -40,14 +40,6 @@ var currentLevel = '';
 var refreshTimer = null;
 var debounceTimer = null;
 
-var levelColors = {
-  DEBUG: 'text-gray-500',
-  INFO: 'text-accent-green',
-  WARNING: 'text-accent-yellow',
-  ERROR: 'text-accent-red',
-  CRITICAL: 'text-accent-red font-bold',
-};
-
 function setLevel(level) {
   currentLevel = level;
   // Update button styles
@@ -87,7 +79,7 @@ async function loadLogs() {
     }
 
     container.innerHTML = data.entries.map(function(e) {
-      var color = levelColors[e.level] || 'text-gray-400';
+      var color = LOG_LEVEL_COLORS[e.level] || 'text-gray-400';
       var ts = e.timestamp ? e.timestamp.substring(11, 19) : '';
       var lvl = (e.level || 'INFO').padEnd(7);
       var comp = e.component ? '[' + e.component + ']' : '';

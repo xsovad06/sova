@@ -1126,9 +1126,7 @@ async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride
     } else {
       var result = await res.json();
       if (result.error) { showToast(result.error, 'error'); return; }
-      // Only auto-open when no viewer is currently open, so this doesn't
-      // steal focus from a log panel the user is already watching.
-      if (result.run_id && activeLogRunId === null) viewLogs(result.run_id);
+      _autoOpenLogsIfIdle(result.run_id);
       var agentLabel = issue ? '#' + issue : (role || 'agent');
       showToast('Agent started: ' + agentLabel, 'success');
     }
@@ -1350,7 +1348,7 @@ async function runCommand(command, args) {
         hidePrActionsPanel();
         document.getElementById('agent-issue').value = '';
         document.getElementById('agent-issue-number').value = '';
-        if (result.run_id && activeLogRunId === null) viewLogs(result.run_id);
+        _autoOpenLogsIfIdle(result.run_id);
       }
     }
   } catch (e) {
@@ -1621,13 +1619,6 @@ function _submitPlannerIssues(runId, handoffIssue) {
 
 // -- Log Viewer --
 
-var _LOG_LEVEL_COLORS = {
-  DEBUG: 'text-gray-500',
-  INFO: 'text-accent-green',
-  WARNING: 'text-accent-yellow',
-  ERROR: 'text-accent-red',
-  CRITICAL: 'text-accent-red font-bold',
-};
 var _LOG_PREFIX_RE = /^\[(stderr|stdout)\]\s?(.*)$/;
 var _LOG_STRUCT_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s+\[\s*(\w+)\s*\]\s*(.*)$/;
 var _LOG_CTX_RE = /\s([A-Za-z_][\w.]*)=/;
@@ -1649,7 +1640,7 @@ function formatLogLine(raw) {
   }
 
   var ts = sm[1], level = sm[2].toUpperCase(), body = sm[3];
-  var color = _LOG_LEVEL_COLORS[level] || 'text-gray-400';
+  var color = LOG_LEVEL_COLORS[level] || 'text-gray-400';
   var tsShort = ts.length >= 19 ? ts.substring(11, 19) : ts;
 
   var ctxMatch = _LOG_CTX_RE.exec(body);
@@ -1692,6 +1683,12 @@ function updateLogTabs(agents) {
       escapeHtml(tabLabel) + ' <span class="' + colors.text + '">' + escapeHtml(formatRole(a.role, a.pipeline_variant)) + '</span>' +
     '</button>';
   }).join('');
+}
+
+// Auto-opens a freshly started run's logs only when no viewer is already
+// open, so this never steals focus from a log panel the user is watching.
+function _autoOpenLogsIfIdle(runId) {
+  if (runId && activeLogRunId === null) viewLogs(runId);
 }
 
 function viewLogs(runId, runStatus) {
@@ -1861,7 +1858,7 @@ async function executeHandoffAction(actionId, issue) {
       return;
     }
     var result = await res.json();
-    if (result.run_id && activeLogRunId === null) viewLogs(result.run_id);
+    _autoOpenLogsIfIdle(result.run_id);
     loadAgents();
     loadTaskCards();
   } catch (e) {
@@ -1882,7 +1879,7 @@ async function resumeFromApproval(runId) {
       showToast(result.detail || 'Failed to resume', 'error');
       return;
     }
-    if (result.run_id && activeLogRunId === null) viewLogs(result.run_id);
+    _autoOpenLogsIfIdle(result.run_id);
     loadAgents();
     loadTaskCards();
   } catch (e) {
