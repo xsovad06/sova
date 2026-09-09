@@ -160,7 +160,7 @@ def test_remove_handles_oserror(tmp_path: Path) -> None:
     assert result is False
 
 
-# -- build_atlassian_mcp_server_config --
+# build_atlassian_mcp_server_config
 
 
 def test_build_atlassian_config_api_token_auth() -> None:
@@ -213,7 +213,7 @@ def test_build_atlassian_config_empty_toolsets_omitted() -> None:
     assert "TOOLSETS" not in server["env"]
 
 
-# -- remove_settings_mcp_server (legacy settings.json cleanup) --
+# remove_settings_mcp_server (legacy settings.json cleanup)
 
 
 def test_remove_legacy_settings_entry(tmp_path: Path) -> None:
@@ -231,7 +231,7 @@ def test_remove_legacy_settings_entry_missing(tmp_path: Path) -> None:
     assert remove_settings_mcp_server(tmp_path, "test-mcp") is False
 
 
-# -- set_project_mcp_approval --
+# set_project_mcp_approval
 
 
 def test_approval_added_to_empty_settings(tmp_path: Path) -> None:
@@ -277,7 +277,7 @@ def test_approval_skips_malformed_key(tmp_path: Path) -> None:
     assert set_project_mcp_approval(tmp_path, "test-mcp", approved=True) is False
 
 
-# -- atlassian_config_problems --
+# atlassian_config_problems
 
 
 def test_atlassian_problems_none_when_complete() -> None:

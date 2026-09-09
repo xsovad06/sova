@@ -944,7 +944,7 @@ _REGISTRY: list[SettingMeta] = [
         "mcp",
         "number",
     ),
-    # -- MCP: Atlassian sidecar (mcp-atlassian) --
+    # MCP: Atlassian sidecar (mcp-atlassian)
     SettingMeta(
         "mcp.atlassian.enabled",
         "Atlassian sidecar enabled",
