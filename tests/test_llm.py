@@ -1247,6 +1247,56 @@ class TestConfigRoot:
         assert mock_load.call_args.args[0] == primary
 
 
+class TestTryLoadConfigAsync:
+    """Config resolution may shell out to git (``_resolve_primary_root``) on a
+    worktree cwd; the async wrapper must offload that to a worker thread so it
+    never blocks the event loop."""
+
+    def setup_method(self) -> None:
+        from sova.llm.client import reset_config_root_cache
+
+        reset_config_root_cache()
+
+    teardown_method = setup_method
+
+    async def test_returns_same_result_as_sync_variant(self, tmp_path: Path) -> None:
+        from sova.llm.client import _try_load_config, _try_load_config_async
+
+        (tmp_path / "sova.toml").write_text("")
+        assert await _try_load_config_async(tmp_path) == _try_load_config(tmp_path)
+
+    async def test_offloads_to_a_worker_thread_without_blocking_the_loop(self, tmp_path: Path) -> None:
+        import asyncio
+        import time
+
+        from sova.llm.client import _try_load_config_async
+
+        worktree = tmp_path / "primary" / ".claude" / "worktrees" / "913"
+        worktree.mkdir(parents=True)
+
+        def _slow_resolve(start):
+            time.sleep(0.2)
+            return tmp_path / "primary"
+
+        first_tick_at: float | None = None
+
+        async def _tick_while_waiting() -> None:
+            nonlocal first_tick_at
+            await asyncio.sleep(0.05)
+            first_tick_at = time.monotonic()
+
+        with patch("sova.llm.provider._resolve_primary_root", side_effect=_slow_resolve):
+            start = time.monotonic()
+            await asyncio.gather(_try_load_config_async(worktree), _tick_while_waiting())
+
+        # A blocked loop could only run the tick's sleep callback after the
+        # 0.2s resolve finished, so its completion would land at ~0.2s instead
+        # of its own ~0.05s schedule. This fails if asyncio.to_thread in
+        # _try_load_config_async is ever reverted to a direct blocking call.
+        assert first_tick_at is not None
+        assert first_tick_at - start < 0.15
+
+
 # ---------------------------------------------------------------------------
 # Provider: _parse_result()
 # ---------------------------------------------------------------------------

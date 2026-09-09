@@ -347,7 +347,7 @@ async def invoke(
     # in agent.fallback_models, so it is needed even when both model and
     # timeout are supplied, and passing it into maybe_compress avoids loading
     # config twice per call (it would otherwise reload internally).
-    cfg = _try_load_config(cwd)
+    cfg = await _try_load_config_async(cwd)
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
     resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
@@ -452,6 +452,19 @@ def _try_load_config(cwd: Path | str | None = None) -> ProjectConfig | None:
     except Exception:
         log.debug("llm.config_load_failed", exc_info=True)
         return None
+
+
+async def _try_load_config_async(cwd: Path | str | None = None) -> ProjectConfig | None:
+    """Async-safe wrapper for ``_try_load_config``.
+
+    ``_config_root`` may shell out to git (``_resolve_primary_root``, a
+    blocking ``subprocess.run``) on a worktree cwd with no config of its own,
+    which every pipeline step now passes. Run on the event loop, that call
+    would stall it (and any concurrent cancellation) for up to its 5s
+    timeout. Offloaded to a worker thread so the four ``invoke*`` entry
+    points never block on it directly.
+    """
+    return await asyncio.to_thread(_try_load_config, cwd)
 
 
 # Sentinel default for the *cfg* keyword: distinguishes "caller did not load config,
@@ -642,7 +655,7 @@ async def invoke_command(
     """
     # Loaded before compression so args is compressed with the same cfg used
     # for timeout/chain resolution below, instead of loading config twice.
-    cfg = _try_load_config(cwd)
+    cfg = await _try_load_config_async(cwd)
     if args:
         from sova.llm.guard import guard_prompt
 
@@ -704,7 +717,7 @@ async def invoke_batch(
 
     # Loaded once for the whole batch and shared with every per-request
     # resolution, so a 50-issue triage batch does not reload config 50 times.
-    cfg = _try_load_config(cwd)
+    cfg = await _try_load_config_async(cwd)
 
     # The batch backends post the model straight into an HTTP request body,
     # which (unlike the Claude CLI) rejects bare aliases. Resolve task-type
@@ -774,7 +787,7 @@ async def invoke_streaming(
     guard_prompt(prompt)
     # Loaded once and shared, matching invoke(): compression, task-type routing
     # and the alias map all need it, and each would otherwise reload it.
-    cfg = _try_load_config(cwd)
+    cfg = await _try_load_config_async(cwd)
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
     resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
     async for event in get_provider().invoke_streaming(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd):
