@@ -29,6 +29,8 @@ async def _address_pr(*, pr: int, project_dir: Path | None) -> None:
 
     console.print(f"[bold]Addressing review comments on PR #{pr}...[/bold]")
 
+    # No task_type: this is a dynamic user-invoked CLI command, not a pipeline
+    # step, so it inherits config.agent.model and client-level fallback only.
     result = await invoke_command(
         "/develop",
         f"Address all review comments on PR #{pr}",

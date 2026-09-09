@@ -171,6 +171,12 @@ class AddressExternalFindingsStep(BaseStep):
             result = await invoke(
                 prompt,
                 model=ctx.resolved_model or ctx.config.agent.model,
+                # Reuses "address_review" rather than a key of its own: both
+                # steps address reviewer findings against an open PR, and a
+                # second key would split one routing decision across two
+                # config entries (same reasoning as develop.py's "extraction"
+                # tag).
+                task_type="address_review",
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
             )

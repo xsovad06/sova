@@ -417,7 +417,7 @@ class DevelopStep(BaseStep):
                 prompt,
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
-                task_type=ctx.routing_task_type(self.TASK_TYPE),
+                task_type=ctx.routing_task_type("develop_fix"),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.develop.fix_timeout,

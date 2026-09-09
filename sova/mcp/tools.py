@@ -172,6 +172,8 @@ async def _run_command(command: str, args: str, project_dir: str, *, allowed_roo
 
     log.info("mcp.run_command", command=command, args=args, project_dir=str(resolved))
 
+    # No task_type: command is caller-supplied and arbitrary, so it inherits
+    # config.agent.model and client-level fallback only, by design.
     result = await invoke_command(
         command,
         args=args,

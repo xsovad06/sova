@@ -283,7 +283,7 @@ async def _resolve_conflicts_with_llm(
         f"Conflicted files:\n{file_list}\n\n"
         "After resolving, stage each file with `git add`."
     )
-    return await invoke_command(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd)
+    return await invoke_command(prompt, model=model, task_type="rebase", cwd=cwd, max_budget_usd=max_budget_usd)
 
 
 async def _try_consensus_resolution(
