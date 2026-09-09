@@ -29,12 +29,6 @@ finding must reference concrete code, files, or patterns in THIS codebase.
 
 ## Procedure
 
-### Step 0: Benchmark start
-
-```bash
-bash .claude/benchmark/log.sh "health_audit_start" "" "" 2>/dev/null || true
-```
-
 ### Step 1: Staleness check
 
 Before generating a new audit, check if `docs/HEALTH-AUDIT.md` already exists.
@@ -422,23 +416,10 @@ with the issue numbers and links.
 3. Wait for explicit user confirmation before creating any issues
 4. After creation, report all issue numbers
 
-## Phase D: Verify and Log
+## Phase D: Verify
 
 After creating issues, verify the new issues appear on the project board and have
 correct labels, milestones, and dependencies.
-
-Log completion and cost:
-
-```bash
-bash .claude/benchmark/log.sh "health_audit_complete" "" "" 2>/dev/null || true
-```
-
-On any unrecoverable error at any step (agent spawn failure, `gh` command error,
-etc.), log the failure before stopping:
-
-```bash
-bash .claude/benchmark/log.sh "health_audit_failed" "" "" 2>/dev/null || true
-```
 
 ## Constraints
 - Do NOT fabricate findings. If you are unsure whether an issue exists, say so and

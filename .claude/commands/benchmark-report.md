@@ -67,7 +67,7 @@ Compute human idle as the sum of all `human_idle_start` to `human_idle_end` inte
 
 **CI wait time**: sum of intervals from `ci_check_start` to `ci_passed` or `ci_failed`.
 
-**Review rounds**: count of `review_start` events.
+**Review rounds**: no longer tracked from JSONL (the `review_start` event was removed from the review commands to avoid duplicating SOVA's own DB-tracked run data; see "Data source note" below). Mark as "N/A" for interactive issues.
 
 **Cost**: look for cost data in this priority order:
 1. `session_end` events with `cost_usd` field (from session_end_hook.sh)
@@ -77,9 +77,11 @@ Sum all cost values found. If none exist, mark as "N/A".
 
 **Model**: extract from `model_set` events or `session_end` events with a `model` field. If multiple models were used, list them (e.g., "Opus 4.6 / Sonnet 4.6").
 
-**PR number**: extract from `pr_created` events. Parse the `notes` field for patterns like `PR #560`, `pr_number=582`, or just a number.
+**PR number**: no longer tracked from JSONL (the `pr_created` event was removed from `pr.md` for the same reason). Mark as "N/A" for interactive issues; LOC and Files columns (which depend on the PR number) follow the existing "unknown PR number -> N/A" handling in Step 4.
 
 Collect all extracted metrics into a structured list of interactive issues.
+
+**Data source note**: `pr_created` and `review_start` events may still be present in JSONL files logged before this change. Use them opportunistically when they exist in a given `issue-{N}.jsonl` file, but do not treat their absence as an error.
 
 ### Step 3: Collect SOVA Autonomous Data (DB)
 
