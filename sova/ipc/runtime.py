@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.ipc.control import AgentProcess, FileAgentProcess
+from sova.llm.cli_args import build_claude_cli_args
 from sova.llm.models import LLMResult, StreamEvent
 from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
@@ -213,25 +214,13 @@ class ClaudeCodeRuntime(AgentRuntime):
         output_dir: Path | None = None,
         run_label: str | None = None,
     ) -> AgentProcess | FileAgentProcess:
-        args: list[str] = [
-            "claude",
-            "-p",
+        args = build_claude_cli_args(
             _HEADLESS_PREAMBLE + prompt,
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--permission-mode",
-            "bypassPermissions",
-        ]
-
-        if model:
-            args.extend(["--model", model])
-
-        if fallback_model:
-            args.extend(["--fallback-model", fallback_model])
-
-        if max_budget_usd is not None:
-            args.extend(["--max-budget-usd", str(max_budget_usd)])
+            model=model,
+            fallback_model=fallback_model,
+            max_budget_usd=max_budget_usd,
+            output_format="stream-json",
+        )
 
         log.info("process.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
 

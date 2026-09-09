@@ -1034,7 +1034,27 @@ class TestTaskTypeKeys:
     def test_known_keys_present(self) -> None:
         from sova.llm.routing import TASK_TYPE_KEYS
 
-        for key in ("triage", "extraction", "pr_body", "harden", "planner"):
+        for key in (
+            "triage",
+            "extraction",
+            "pr_body",
+            "develop",
+            "develop_fix",
+            "simplify",
+            "review",
+            "review_panel",
+            "self_review",
+            "validate",
+            "monitor_ci",
+            "rebase",
+            "address_review",
+            "rearrange_commits",
+            "research",
+            "spec",
+            "harden",
+            "generate_tasks",
+            "planner",
+        ):
             assert key in TASK_TYPE_KEYS
 
     def test_every_tagged_step_key_is_registered(self) -> None:
@@ -1725,60 +1745,16 @@ class TestLLMProvider:
         with pytest.raises(RuntimeError, match="Failed to parse Claude CLI JSON"):
             _parse_json_output("not valid json {{{")
 
-    def test_build_args_includes_permission_mode_bypass(self) -> None:
+    def test_build_args_is_shared_cli_args_builder(self) -> None:
+        """The provider re-exports the shared builder under its historical name.
+
+        Behaviour of the builder itself is covered in tests/test_cli_args.py;
+        this identity assertion is what makes that coverage apply here too.
+        """
+        from sova.llm.cli_args import build_claude_cli_args
         from sova.llm.providers.claude_code import _build_args
 
-        args = _build_args("hello")
-        assert "--permission-mode" in args
-        pm_idx = args.index("--permission-mode")
-        assert args[pm_idx + 1] == "bypassPermissions"
-
-    def test_build_args_includes_all_flags(self) -> None:
-        from sova.llm.providers.claude_code import _build_args
-
-        args = _build_args(
-            "test prompt",
-            model="opus",
-            max_budget_usd=Decimal("5.00"),
-            output_format="stream-json",
-        )
-        assert args[0] == "claude"
-        assert "-p" in args
-        assert "--output-format" in args
-        assert "stream-json" in args
-        assert "--model" in args
-        assert "opus" in args
-        assert "--max-budget-usd" in args
-        assert "5.00" in args
-        assert "--permission-mode" in args
-
-    def test_build_args_includes_fallback_model(self) -> None:
-        from sova.llm.providers.claude_code import _build_args
-
-        args = _build_args("prompt", model="opus", fallback_model="sonnet")
-        assert "--fallback-model" in args
-        fm_idx = args.index("--fallback-model")
-        assert args[fm_idx + 1] == "sonnet"
-
-    def test_build_args_omits_fallback_model_when_empty(self) -> None:
-        from sova.llm.providers.claude_code import _build_args
-
-        args = _build_args("prompt", model="opus")
-        assert "--fallback-model" not in args
-
-    def test_build_args_includes_system_prompt(self) -> None:
-        from sova.llm.providers.claude_code import _build_args
-
-        args = _build_args("prompt", system_prompt="You are a planner.")
-        assert "--system-prompt" in args
-        sp_idx = args.index("--system-prompt")
-        assert args[sp_idx + 1] == "You are a planner."
-
-    def test_build_args_omits_system_prompt_when_empty(self) -> None:
-        from sova.llm.providers.claude_code import _build_args
-
-        args = _build_args("prompt")
-        assert "--system-prompt" not in args
+        assert _build_args is build_claude_cli_args
 
     async def test_invoke_command_delegates_to_invoke(self) -> None:
         from sova.llm.provider import LLMProvider
@@ -2183,6 +2159,21 @@ class TestClaudeCodeProvider:
             with pytest.raises(ModelUnavailableError, match="Claude CLI streaming failed"):
                 async for _ in provider.invoke_streaming("Hello"):
                     pass
+
+    async def test_start_streaming_process_includes_verbose(self) -> None:
+        """Regression: streaming previously omitted --verbose, which the CLI requires
+        alongside -p plus --output-format stream-json."""
+        from sova.llm.providers.claude_code import _start_streaming_process
+
+        with patch(
+            "sova.llm.providers.claude_code.asyncio.create_subprocess_exec", new_callable=AsyncMock
+        ) as mock_exec:
+            await _start_streaming_process("hello")
+
+        call_args = mock_exec.call_args[0]
+        assert "--verbose" in call_args
+        assert "--output-format" in call_args
+        assert "stream-json" in call_args
 
     async def test_check_available(self) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
