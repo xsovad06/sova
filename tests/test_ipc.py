@@ -1214,6 +1214,39 @@ class TestClaudeCodeRuntime:
         pm_idx = args.index("--permission-mode")
         assert args[pm_idx + 1] == "bypassPermissions"
 
+    async def test_spawn_uses_shared_cli_args_builder(self, tmp_path: Path) -> None:
+        """The runtime spawn path shares its argv construction with the LLM
+        provider path via sova.llm.cli_args, rather than building it inline."""
+        from decimal import Decimal
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+        from sova.llm.cli_args import build_claude_cli_args
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 104
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        runtime = ClaudeCodeRuntime()
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+            patch("sova.ipc.runtime.build_claude_cli_args", wraps=build_claude_cli_args) as mock_builder,
+        ):
+            await runtime.spawn(
+                "test", tmp_path, model="sonnet", fallback_model="haiku", max_budget_usd=Decimal("2.50")
+            )
+
+        mock_builder.assert_called_once()
+        assert mock_builder.call_args.kwargs["model"] == "sonnet"
+        assert mock_builder.call_args.kwargs["fallback_model"] == "haiku"
+        assert mock_builder.call_args.kwargs["max_budget_usd"] == Decimal("2.50")
+        assert mock_builder.call_args.kwargs["output_format"] == "stream-json"
+
+        args = mock_exec.call_args[0]
+        assert "--max-budget-usd" in args
+        assert "2.50" in args
+
     def test_headless_preamble_forbids_pipeline_actions(self) -> None:
         from sova.ipc.runtime import _HEADLESS_PREAMBLE
 

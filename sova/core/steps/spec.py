@@ -325,6 +325,7 @@ class SpecStep(BaseStep):
             result = await invoke(
                 prompt,
                 model=ctx.resolved_model or ctx.config.roles.researcher_model or ctx.config.agent.model,
+                task_type="spec",
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 5,
                 timeout=ctx.config.agent.step_timeout,

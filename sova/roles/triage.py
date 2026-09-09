@@ -355,6 +355,7 @@ class TriageRole(AgentRole):
             result = await invoke(
                 prompt,
                 model=model,
+                task_type="triage",
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 10,
                 timeout=120,
@@ -385,6 +386,7 @@ class TriageRole(AgentRole):
                     retry_result = await invoke(
                         retry_prompt,
                         model=model,
+                        task_type="triage",
                         cwd=ctx.project_dir,
                         max_budget_usd=max_retry_budget,
                         timeout=120,
@@ -897,6 +899,7 @@ class TriageRole(AgentRole):
             result = await invoke(
                 prompt,
                 model=model,
+                task_type="triage",
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 10,
                 timeout=120,

@@ -9,6 +9,9 @@ from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 
+# Aliased to the provider's historical name: imported as `_build_args` by
+# tests/test_llm.py and tests/test_model_fallback_cli.py.
+from sova.llm.cli_args import build_claude_cli_args as _build_args
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import LLMInvocationError, classify_error
 from sova.llm.models import LLMResult, StreamEvent
@@ -257,40 +260,6 @@ def _extract_failure_detail(result: ShellResult) -> str:
             return result.stdout[:500]
 
     return "(no error detail captured)"
-
-
-def _build_args(
-    prompt: str,
-    *,
-    model: str | None = None,
-    fallback_model: str | None = None,
-    max_budget_usd: Decimal | None = None,
-    output_format: str = "json",
-    system_prompt: str | None = None,
-) -> list[str]:
-    args = [
-        "claude",
-        "-p",
-        prompt,
-        "--output-format",
-        output_format,
-        "--permission-mode",
-        "bypassPermissions",
-    ]
-
-    if model:
-        args.extend(["--model", model])
-
-    if fallback_model:
-        args.extend(["--fallback-model", fallback_model])
-
-    if max_budget_usd is not None:
-        args.extend(["--max-budget-usd", str(max_budget_usd)])
-
-    if system_prompt:
-        args.extend(["--system-prompt", system_prompt])
-
-    return args
 
 
 def _parse_json_output(stdout: str) -> LLMResult:
