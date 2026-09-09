@@ -415,12 +415,15 @@ class TestResearchStep:
             input_tokens=100,
             output_tokens=50,
         )
-        with patch("sova.core.steps.research.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+        with patch(
+            "sova.core.steps.research.invoke_command", new_callable=AsyncMock, return_value=llm_result
+        ) as mock_invoke:
             result = await step.execute(ctx)
 
         assert result.success
         assert result.cost_usd == Decimal("0.02")
         assert ctx.cost_usd == Decimal("0.02")
+        assert mock_invoke.call_args.kwargs["task_type"] == "research"
 
     async def test_execute_runtime_error(self) -> None:
         from unittest.mock import patch
