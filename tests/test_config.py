@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from sova.config.loader import load_config
 from sova.config.models import (
     AgentConfig,
+    AtlassianMCPConfig,
     CIConfig,
     IntegrationGatesConfig,
     PipelineConfig,
@@ -1207,3 +1208,43 @@ def test_feed_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     cfg = load_config(tmp_path)
     assert cfg.feed.retention_days == 7
     assert cfg.feed.page_size == 25
+
+
+class TestAtlassianMCPConfig:
+    def test_disabled_by_default(self) -> None:
+        cfg = AtlassianMCPConfig()
+        assert cfg.enabled is False
+        assert cfg.read_only is True
+        assert cfg.auth_type == "api_token"
+        assert cfg.toolsets == ["jira_read", "confluence_read", "confluence_search"]
+
+    def test_project_config_includes_atlassian_sidecar(self) -> None:
+        cfg = ProjectConfig()
+        assert cfg.mcp.atlassian.enabled is False
+
+    def test_invalid_auth_type_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="auth_type"):
+            AtlassianMCPConfig(auth_type="oauth")
+
+    def test_toml_loading(self, tmp_path: Path) -> None:
+        toml_content = """
+[project]
+github_repo = "user/repo"
+
+[mcp.atlassian]
+enabled = true
+jira_url = "https://issues.redhat.com"
+confluence_url = "https://docs.engineering.redhat.com"
+auth_type = "pat"
+token = "secret-token"
+read_only = true
+toolsets = ["jira_read", "confluence_read"]
+"""
+        (tmp_path / "sova.toml").write_text(toml_content)
+        cfg = load_config(tmp_path)
+        assert cfg.mcp.atlassian.enabled is True
+        assert cfg.mcp.atlassian.jira_url == "https://issues.redhat.com"
+        assert cfg.mcp.atlassian.confluence_url == "https://docs.engineering.redhat.com"
+        assert cfg.mcp.atlassian.auth_type == "pat"
+        assert cfg.mcp.atlassian.token == "secret-token"
+        assert cfg.mcp.atlassian.toolsets == ["jira_read", "confluence_read"]

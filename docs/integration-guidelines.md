@@ -64,6 +64,23 @@ Always wrap `json.loads(result.stdout)` in `try/except (json.JSONDecodeError, Ty
 
 For setup instructions, JQL filter recipes, and status mapping configuration, see [JIRA Configuration Guide](jira-configuration-guide.md).
 
+### Atlassian MCP sidecar (Confluence + enhanced Jira)
+
+`[mcp.atlassian]` (`AtlassianMCPConfig` in `sova/config/models.py`) configures [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) as an opt-in MCP sidecar server for the Claude Code CLI, separate from the `TaskAdapter` used for issue state transitions. It gives agents read access to Confluence pages and richer Jira queries during research/development, not a replacement for the Jira adapter's workflow-level operations.
+
+- `mcp.atlassian.enabled` (default `False`): opt-in per project
+- `auth_type`: `"pat"` (on-prem Personal Access Token, e.g. Red Hat's `issues.redhat.com`) or `"api_token"` (Cloud, paired with `email`)
+- `read_only` (default `True`): mcp-atlassian's `READ_ONLY_MODE` env var; writes still go through the `TaskAdapter`
+- `toolsets`: mcp-atlassian's `TOOLSETS` env var (e.g. `jira_read`, `confluence_read`, `confluence_search`)
+- `sova/utils/mcp_config.py:build_atlassian_mcp_server_config()` builds the server entry (`uvx mcp-atlassian` plus auth env vars); `sova/cli/commands/project.py:_configure_atlassian_mcp()` writes it during `sova install` when enabled, mirroring the existing PatternFly MCP auto-configuration
+- **The entry goes in `<project>/.mcp.json`, not `.claude/settings.json`**: the Claude Code CLI reads project-scope MCP servers only from `.mcp.json` and ignores an `mcpServers` key inside settings.json, so a server written there is silently never started. `.mcp.json` is resolved by walking up from the working directory, so agents running in `.claude/worktrees/{id}` inherit the project's servers
+- Servers declared in `.mcp.json` stay pending until approved, and a headless agent never sees the approval prompt, so `set_project_mcp_approval()` also adds the server name to `enabledMcpjsonServers` in `.claude/settings.json`
+- Injection is an upsert, not add-only: a changed config (rotated token, new URL, different toolsets) is rewritten on the next `sova install`, and an unchanged one is left alone
+- Credentials: with `mcp.atlassian.token` set, the literal token lands in `.mcp.json` and the file is restricted to mode 600 (a warning says so, since `.mcp.json` is conventionally committed). Leave the token empty and export `SOVA_MCP_ATLASSIAN_TOKEN` instead to emit a `${SOVA_MCP_ATLASSIAN_TOKEN}` placeholder that the CLI expands at launch, keeping the secret off disk
+- `atlassian_config_problems()` gates injection: an enabled sidecar with no URL, no credential, or `auth_type = "api_token"` without an `email` is skipped with the missing keys listed, instead of writing an entry that cannot start
+- Enabling the sidecar in the dashboard or `sova.toml` does not write the entry on its own: re-run `sova install` (or `sova install --update`) to propagate the change
+- Graceful degradation is inherent to the MCP sidecar model: if the server fails to start or auth fails, the Claude CLI simply has no Confluence/Jira tools available that turn; no SOVA-side fallback code is needed
+
 ## SonarCloud and CodeRabbit
 
 `sova/adapters/external_reviews.py` fetches findings from both services.
