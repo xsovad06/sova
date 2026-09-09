@@ -37,15 +37,14 @@ crash path. The verified root causes are:
    checkout. That also restores `agent.fallback_models` and `compression` inside the pipeline,
    which the same lookup had been silently emptying.
 
-   Still unwired: six registered keys have no call site that passes them, so a route configured
-   for any of them does nothing. `triage` and `extraction` route through `_ROLE_MODEL_FIELDS`
-   (`roles.triage_model`) instead, never through `llm.routing`; `pr_body`
-   ([create_pr.py:372](sova/core/steps/create_pr.py#L372)), `validate`
-   ([validate.py:160](sova/core/steps/validate.py#L160)), `monitor_ci`
-   ([monitor_ci.py:427](sova/core/steps/monitor_ci.py#L427)), and `review` (`reviewer.py`, which
-   hardcodes `"sonnet"` per root cause 3) all pass an explicit `model=` and no `task_type`.
-   `TASK_TYPE_KEYS` is advisory and gates nothing at runtime, so this failure is silent: config
-   accepts the key and nothing reports that it was ignored.
+   *Resolved by PR7 (#916):* `pr_body` ([create_pr.py:372](sova/core/steps/create_pr.py#L372)),
+   `validate` ([validate.py:163](sova/core/steps/validate.py#L163)), `monitor_ci`
+   ([monitor_ci.py:430](sova/core/steps/monitor_ci.py#L430)), and `review` (`reviewer.py:494,513`,
+   tagged since PR5 but inert until the PR4 resolver flip) now route live. `triage` and
+   `extraction` still resolve primarily through `_ROLE_MODEL_FIELDS` (`roles.triage_model`), not
+   `llm.routing`, but `roles/triage.py` also carries a `task_type="triage"` tag for the config
+   surface. `TASK_TYPE_KEYS` remains advisory and gates nothing at runtime, so an unconsumed key
+   still fails silently: config accepts it and nothing reports that it was ignored.
 
 3. **Role hardcoding.** Seven literal model names bypass all config:
    `reviewer.py:471,489` (`"sonnet"`), `panel_review.py:231` (`"sonnet"` default),
@@ -62,7 +61,8 @@ crash path. The verified root causes are:
    name (`"reviewer"`). The reviewer resolves once per review and reuses the result for every
    diff chunk, every schema retry, and as the panel's `default_model`; the supervisor planner
    resolves in `plan()` and passes the model into `_call_llm`. The `task_type="review"` tags
-   added at the reviewer's two `invoke` sites are inert until PR7 reworks precedence (see 2.2).
+   added at the reviewer's two `invoke` sites were inert until PR4 flipped the resolver
+   precedence (see 2.2); they route live now.
    `developer_model` defaults to empty on purpose: role config is consulted *before* complexity
    routing, so a non-empty default would silently pin every developer run to one model. The two
    `"haiku"` literals and the suggestion service remain, by design, for PR6 and a later PR.
@@ -116,14 +116,36 @@ step budget equals a single inner attempt's budget:
 
 | Mechanism | Location | State | Applies pinning? |
 |---|---|---|---|
-| Complexity routing | [routing.py:26-32,121-122](sova/llm/routing.py#L121-L122) | works | yes |
-| Config override (`llm.routing[tier]`) | [routing.py:116-119](sova/llm/routing.py#L116-L119) | works | yes |
-| Task-type routing (`llm.routing[task_type]`) | [routing.py:110-113,125-145](sova/llm/routing.py#L110-L113), [client.py:_resolve_task_type_model](sova/llm/client.py) | works (PR4); live for the seven `BaseStep.TASK_TYPE`-tagged steps | yes (PR4) |
+| Complexity routing | [routing.py:26-32,97-127](sova/llm/routing.py#L97-L127) | works | yes |
+| Config override (`llm.routing[tier]`) | [routing.py:120-124](sova/llm/routing.py#L120-L124) | works | yes |
+| Task-type routing (`llm.routing[task_type]`) | [routing.py:130-148](sova/llm/routing.py#L130-L148), [client.py:_resolve_task_type_model](sova/llm/client.py) | works (PR4); PR7 extends the `BaseStep.TASK_TYPE` tag from the original seven steps to every remaining pipeline call site, all live immediately since the PR4 resolver already outranks an explicit model | yes (PR4) |
 | Role config (`researcher_model`, `triage_model`) | [client.py:691-695](sova/llm/client.py#L691-L695) | works for those two roles | via `route_model` |
 
 Correction to the briefing: task-type routing was *not* entirely dead code even before PR4.
 `harden.py:116`, `batch_service.py:335`, and `planner.py:133` already passed `task_type`; it was
 dead only in the pipeline steps, which all pass an explicit `model=`.
+
+PR7 extends the `BaseStep.TASK_TYPE` tagging begun by the original seven steps
+(`address_review`, `develop`, `generate_tasks`, `rearrange_commits`, `research`, `self_review`,
+`simplify`) to every remaining pipeline `invoke()`/`invoke_command()` call site: `validate`,
+`monitor_ci`, `spec`, `pr_body` (`create_pr.py`), `rebase`, `develop_fix`, and `triage`.
+`address_external_findings.py` reuses the `address_review` key rather than getting one of its
+own: both steps address reviewer findings against an open PR, and a second key would split one
+routing decision across two config entries. The implementation-notes call in `develop.py` is
+tagged `extraction` for the same reason: PR6 (#915) already routes it through
+`resolve_extraction_model`, so a second key would split one routing decision across two config
+entries. `invoke_command()` also gains the `task_type` parameter so the six slash-command steps
+route too. Because PR4 already landed, every one of these tags is live selection immediately
+rather than a future hook. Two call sites are deliberately left untagged and documented as such
+in place: `cli/commands/pr.py` (dynamic user-invoked CLI command) and `mcp/tools.py`
+(caller-supplied arbitrary command). Both inherit `config.agent.model` and client-level fallback
+without task-type routing.
+
+One known gap remains outside the pipeline: `roles/panel_review.py` tags each dimension with a
+dynamic `review_{dimension}` key built from user-configurable `panel_config.dimensions`, so those
+keys cannot be enumerated in `TASK_TYPE_KEYS`. A consumer that validates config keys against that
+frozenset would reject them; resolving this needs prefix-aware matching, tracked separately. Its
+static aggregate key, `review_panel`, is enumerated like any other fixed tag.
 
 ### 2.3 The pinning trap (critical)
 

@@ -90,13 +90,14 @@ fallback ([assess.py:48-60](sova/core/steps/assess.py#L48-L60)). A parity test a
 everywhere" would be wrong and would mask a routing regression.
 - Mitigation: parity tests assert the correct model **per tier** (haiku/sonnet/opus) (PR4/PR5).
 
-### R9: `invoke_command()` cannot route today
-It has no `task_type` parameter ([client.py:213-240](sova/llm/client.py#L213-L240)), so tagging
-the six slash-command steps would be a `TypeError`. And `invoke()` skips config load when `model`
-is set ([client.py:96](sova/llm/client.py#L96)), so a configured route never overrides
-`ctx.resolved_model`.
-- Mitigation: add the parameter and load config even when `model` is set (PR4). Both are
-  no-ops under empty `llm.routing`.
+### R9: `invoke_command()` cannot route today (resolved)
+`invoke_command()` now accepts `task_type` (PR7), and `invoke()` loads config unconditionally, so
+the six slash-command steps are tagged and the config is in hand. The resolver itself is also
+resolved: `_resolve_task_type_model` ([client.py:_resolve_task_type_model](sova/llm/client.py))
+lets a configured `llm.routing[task_type]` route outrank the explicit `model=` every pipeline step
+passes (`model=ctx.resolved_model or ctx.config.agent.model`) rather than returning early when one
+is given (PR4, #913, landed). Under empty `llm.routing` no route matches and behavior is
+unchanged, but a configured route reroutes the step immediately.
 
 ### R10: `develop.py:96` reroute is a real behavior change, not cleanup
 Today it runs on `ctx.resolved_model or "haiku"`, i.e. the full model on a COMPLEX issue.
