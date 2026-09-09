@@ -287,6 +287,7 @@ def _format_findings_prompt(findings: list[dict], *, spec_context: str = "") -> 
 
 class AddressReviewStep(BaseStep):
     name = "address_review"
+    TASK_TYPE = "address_review"
 
     def __init__(self) -> None:
         super().__init__()
@@ -336,6 +337,7 @@ class AddressReviewStep(BaseStep):
                 prompt,
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
+                task_type=ctx.routing_task_type(self.TASK_TYPE),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,

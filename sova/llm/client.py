@@ -11,6 +11,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from decimal import Decimal
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -330,9 +331,11 @@ async def invoke(
 
     Args:
         task_type: Routing category (e.g. "triage", "harden", "planner").
-            When set and *model* is ``None``, looks up ``llm.routing[task_type]``
-            to select a model. Ignored when *model* is explicitly provided.
-            Requires ``provider = "litellm"`` or ``"hybrid"``.
+            When set, a configured ``llm.routing[task_type]`` entry selects the
+            model, outranking *model*. Under the default empty ``llm.routing``
+            no key matches and *model* is used unchanged. Routing to a local
+            model (``ollama/*``) additionally requires a provider that can reach
+            it (``litellm`` or ``hybrid``).
         system_prompt: Optional system prompt for the LLM call.
         max_tokens: Optional max output tokens (provider-dependent).
     """
@@ -344,7 +347,7 @@ async def invoke(
     # in agent.fallback_models, so it is needed even when both model and
     # timeout are supplied, and passing it into maybe_compress avoids loading
     # config twice per call (it would otherwise reload internally).
-    cfg = _try_load_config(cwd)
+    cfg = await _try_load_config_async(cwd)
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
     resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
@@ -393,41 +396,120 @@ def _record_compression_savings(result: LLMResult, original: str, compressed: st
     result.pre_compression_input_tokens = result.input_tokens + result.tokens_saved
 
 
+@lru_cache(maxsize=256)
+def _resolve_config_root(start: Path) -> Path:
+    """Walk *start* up to the checkout that owns its config.
+
+    Cached because config is loaded once per LLM call and ``_resolve_primary_root``
+    shells out to git. The cache is bounded because worktree paths are ephemeral
+    (one per issue, removed on cleanup), so an unbounded map would only ever grow.
+    Process-local, so a config source created after the first lookup is not
+    picked up until restart.
+    """
+    if (start / "sova.toml").exists() or (start / ".claude" / "sova.db").exists():
+        return start
+
+    from sova.llm.provider import _resolve_primary_root
+
+    return _resolve_primary_root(start) or start
+
+
+def _config_root(cwd: Path | str | None) -> Path | None:
+    """Return the checkout that owns *cwd*'s config, or None for the process default.
+
+    A linked git worktree carries no config of its own: ``.claude/sova.db`` is
+    gitignored and ``sova.toml`` is frequently untracked. Pipeline steps pass
+    ``ctx.working_dir`` (that worktree) as *cwd*, so a lookup scoped to it
+    returned bare defaults and silently emptied ``llm.routing``,
+    ``agent.fallback_models``, and ``compression`` for every worktree-scoped
+    step, which is what kept task-type routing dead in the pipeline.
+
+    A directory that holds its own config source is used as-is, so a project
+    installed inside a monorepo subtree keeps resolving to itself. Only a
+    directory with neither source resolves upward, which is the worktree case.
+    """
+    if not cwd:
+        return None
+    # Resolved before the cache lookup: two spellings of the same directory
+    # (relative vs. absolute, or a symlinked worktree path) would otherwise be
+    # distinct lru_cache keys, repeating the git shell-out and consuming the
+    # bounded cache faster. load_config() resolves its own project_dir anyway,
+    # so this is the same normalization the loader would apply regardless.
+    return _resolve_config_root(Path(cwd).resolve())
+
+
+def reset_config_root_cache() -> None:
+    """Clear the resolved-config-root cache (for testing)."""
+    _resolve_config_root.cache_clear()
+
+
 def _try_load_config(cwd: Path | str | None = None) -> ProjectConfig | None:
     """Load project config, returning None on failure."""
     try:
         from sova.config.loader import load_config
 
-        return load_config(Path(cwd) if cwd else None)
+        return load_config(_config_root(cwd))
     except Exception:
         log.debug("llm.config_load_failed", exc_info=True)
         return None
+
+
+async def _try_load_config_async(cwd: Path | str | None = None) -> ProjectConfig | None:
+    """Async-safe wrapper for ``_try_load_config``.
+
+    ``_config_root`` may shell out to git (``_resolve_primary_root``, a
+    blocking ``subprocess.run``) on a worktree cwd with no config of its own,
+    which every pipeline step now passes. Run on the event loop, that call
+    would stall it (and any concurrent cancellation) for up to its 5s
+    timeout. Offloaded to a worker thread so the four ``invoke*`` entry
+    points never block on it directly.
+    """
+    return await asyncio.to_thread(_try_load_config, cwd)
+
+
+# Sentinel default for the *cfg* keyword: distinguishes "caller did not load config,
+# load it here" from "caller loaded it and got None", so a failed load is never
+# retried against the process cwd (a different project under the dashboard server).
+_CFG_UNSET = object()
 
 
 def _resolve_task_type_model(
     model: str | None,
     task_type: str | None,
     *,
-    cfg: ProjectConfig | None = None,
+    cfg: ProjectConfig | None = _CFG_UNSET,  # type: ignore[assignment]
     cwd: Path | str | None = None,
 ) -> str | None:
-    """Resolve model from task_type routing if no explicit model is provided."""
-    if model or not task_type:
+    """Resolve *model* from ``llm.routing[task_type]`` when a route is configured.
+
+    A configured route outranks *model*. It has to: every pipeline step passes
+    ``model=ctx.resolved_model or ctx.config.agent.model``, so a route that lost
+    to an explicit model could never fire. Under the default empty
+    ``llm.routing`` no key matches and *model* is returned untouched, which keeps
+    resolution identical to having no routing at all.
+
+    A matched route is pinned to ``agent.model`` when the two share a model
+    family, mirroring ``route_model()`` so a bare alias is never handed to the
+    CLI to resolve into a version the deployment may not have. Routes to
+    non-family models (``ollama/*`` and other third-party IDs) are returned
+    verbatim, so local-model offloading is unaffected.
+    """
+    if not task_type:
         return model
 
-    resolved_cfg = cfg if cfg is not None else _try_load_config(cwd)
+    resolved_cfg = _try_load_config(cwd) if cfg is _CFG_UNSET else cfg
     if resolved_cfg is None:
         return model
 
-    if not resolved_cfg.llm.routing:
+    from sova.llm.routing import route_task_type
+
+    routed = route_task_type(task_type, llm_config=resolved_cfg.llm, agent_model=resolved_cfg.agent.model)
+    if routed is None:
         return model
 
-    override = resolved_cfg.llm.routing.get(task_type)
-    if override is not None:
-        log.info("llm.task_type_route", task_type=task_type, model=override)
-        return override
-
-    return model
+    routed_model, reason = routed
+    log.info("llm.task_type_route", task_type=task_type, model=routed_model, reason=reason)
+    return routed_model
 
 
 def resolve_alias(model: str, aliases: dict[str, str]) -> str:
@@ -479,14 +561,14 @@ def select_model(model: str | None, cfg: ProjectConfig | None) -> str | None:
 def _resolve_timeout(
     timeout: float | None,
     *,
-    cfg: ProjectConfig | None = None,
+    cfg: ProjectConfig | None = _CFG_UNSET,  # type: ignore[assignment]
     cwd: Path | str | None = None,
 ) -> float:
     """Resolve timeout from config when None, with hardcoded fallback."""
     if timeout is not None:
         return timeout
 
-    resolved_cfg = cfg if cfg is not None else _try_load_config(cwd)
+    resolved_cfg = _try_load_config(cwd) if cfg is _CFG_UNSET else cfg
     if resolved_cfg is None:
         return 900.0
 
@@ -519,9 +601,6 @@ def classify_content_type(text: str) -> str:
     if head.startswith(_CODE_PREFIXES):
         return "code"
     return "text"
-
-
-_CFG_UNSET = object()
 
 
 def maybe_compress(
@@ -562,21 +641,28 @@ async def invoke_command(
     *,
     model: str | None = None,
     fallback_model: str | None = None,
+    task_type: str | None = None,
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
     timeout: float | None = None,
 ) -> LLMResult:
-    """Run a slash command via the active LLM provider."""
+    """Run a slash command via the active LLM provider.
+
+    Args:
+        task_type: Routing category (e.g. "develop", "self_review"). A routing
+            key only, never part of the payload: it is neither appended to
+            *command*/*args* nor compressed.
+    """
     # Loaded before compression so args is compressed with the same cfg used
     # for timeout/chain resolution below, instead of loading config twice.
-    cfg = _try_load_config(cwd)
+    cfg = await _try_load_config_async(cwd)
     if args:
         from sova.llm.guard import guard_prompt
 
         assembled = f"{command} {args}".strip()
         guard_prompt(assembled)
         args = maybe_compress(args, cwd, cfg=cfg)
-    resolved = select_model(model, cfg)
+    resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
 
     async def _attempt(
@@ -631,7 +717,7 @@ async def invoke_batch(
 
     # Loaded once for the whole batch and shared with every per-request
     # resolution, so a 50-issue triage batch does not reload config 50 times.
-    cfg = _try_load_config(cwd)
+    cfg = await _try_load_config_async(cwd)
 
     # The batch backends post the model straight into an HTTP request body,
     # which (unlike the Claude CLI) rejects bare aliases. Resolve task-type
@@ -639,18 +725,29 @@ async def invoke_batch(
     # and the hardcoded tier expansion here so both backends are covered at the
     # one choke point.
     #
-    # When cfg failed to load, task_type routing can never resolve anything
-    # (_resolve_task_type_model falls back to the request's own model as soon
-    # as its cfg is None), so the call is skipped entirely rather than made
-    # once per request: cfg=None is indistinguishable from "not passed" to
-    # that helper, and it would otherwise retry _try_load_config(cwd=None) on
-    # every iteration, silently reloading from the wrong cwd besides.
+    # Unlike invoke()'s "route outranks model" contract (pipeline steps always
+    # pass a default model, so the route would never fire otherwise), an
+    # explicit BatchRequest.model is a genuine per-request caller choice and
+    # must win over task_type routing: routing only fills in for requests that
+    # carry none. _resolve_task_type_model() is therefore only consulted when
+    # req.model is empty, rather than delegating priority to its own contract.
+    #
+    # When cfg failed to load, routing can never resolve anything anyway, so
+    # the call is skipped entirely rather than made once per request: cfg=None
+    # is indistinguishable from "not passed" to that helper, and it would
+    # otherwise retry _try_load_config(cwd=None) on every iteration, silently
+    # reloading from the wrong cwd besides.
     prepared: list[BatchRequest] = []
     for req in requests:
         guard_prompt(req.prompt)
         resolved = req.model
-        if cfg is not None:
-            routed = _resolve_task_type_model(req.model or None, task_type, cfg=cfg)
+        if cfg is not None and not req.model:
+            # Only consulted when req.model is empty: _resolve_task_type_model()
+            # itself lets a configured route outrank whatever model it is given
+            # (see its docstring), so calling it with a non-empty req.model would
+            # let routing override an explicit per-request choice regardless of
+            # this function's own precedence contract.
+            routed = _resolve_task_type_model(None, task_type, cfg=cfg)
             # Explicit None check, not `or`: a routed model can legitimately be
             # the empty-string "provider default" sentinel, which `or` would
             # mask by falling back to req.model.
@@ -690,7 +787,7 @@ async def invoke_streaming(
     guard_prompt(prompt)
     # Loaded once and shared, matching invoke(): compression, task-type routing
     # and the alias map all need it, and each would otherwise reload it.
-    cfg = _try_load_config(cwd)
+    cfg = await _try_load_config_async(cwd)
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
     resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
     async for event in get_provider().invoke_streaming(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd):
