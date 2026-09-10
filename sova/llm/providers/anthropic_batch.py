@@ -23,8 +23,10 @@ from sova.llm.models import (
     BatchRequest,
     BatchResult,
     BatchTimeoutError,
+    CostSource,
     LLMResult,
     StreamEvent,
+    compute_model_cost,
     resolve_model_alias,
 )
 from sova.llm.provider import LLMProvider
@@ -38,6 +40,8 @@ _ANTHROPIC_VERSION = "2023-06-01"
 _VERTEX_ANTHROPIC_VERSION = "vertex-2023-10-16"
 _MAX_SUBMIT_RETRIES = 3
 _MAX_POLL_FAILURES = 3
+_BATCH_DISCOUNT = Decimal("0.5")
+_COST_PRECISION = Decimal("0.000001")
 
 _warned_no_backend = False
 
@@ -62,6 +66,12 @@ class BatchProvider(LLMProvider):
         self._gcs_bucket = gcs_bucket
         self._gcs_prefix = gcs_prefix
         self._credentials: object | None = None
+        # Warn once per model per provider instance: a batch can hold thousands
+        # of items, and one line per item would bury the signal it is meant to
+        # raise. Scoped to the instance (not module-level) so it is reset by
+        # simply creating a new BatchProvider, rather than needing an explicit
+        # reset hook or leaking across tests/settings hot-reloads.
+        self._warned_unpriced_models: set[str] = set()
 
     async def invoke(
         self,
@@ -616,13 +626,19 @@ class BatchProvider(LLMProvider):
             if isinstance(block, dict) and block.get("type") == "text":
                 text += block.get("text", "")
 
-        usage = message.get("usage", {})
+        raw_usage = message.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        model = message.get("model", "")
+        input_tokens = _as_token_count(usage.get("input_tokens"))
+        output_tokens = _as_token_count(usage.get("output_tokens"))
+        cost, cost_source = self._batch_cost(model, input_tokens, output_tokens)
         return LLMResult(
             text=text,
-            model=message.get("model", ""),
-            cost_usd=Decimal("0"),
-            input_tokens=usage.get("input_tokens", 0),
-            output_tokens=usage.get("output_tokens", 0),
+            model=model,
+            cost_usd=cost,
+            cost_source=cost_source,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             stop_reason=message.get("stop_reason", ""),
         )
 
@@ -653,6 +669,49 @@ class BatchProvider(LLMProvider):
             resp.raise_for_status()
             return resp
         raise RuntimeError("Unreachable")  # pragma: no cover
+
+    def _batch_cost(self, model: str, input_tokens: int, output_tokens: int) -> tuple[Decimal, CostSource]:
+        """Return the discounted USD cost and provenance of one batch message.
+
+        Anthropic bills the Batch API at 50% of the standard rate card. A model
+        the rate card does not recognize yields ``(0, CostSource.UNKNOWN)``,
+        which is logged rather than recorded silently: an unnoticed $0 is
+        exactly the budget blind spot R6 tracks in
+        docs/model-selection-risk-assessment.md. ``compute_model_cost()``
+        checks both sides of the rate card pair, so a hypothetical future entry
+        priced on only one of input/output cannot be misclassified as fully
+        unpriced (or the reverse).
+
+        The warned-models set is scoped to this provider instance (not module
+        level), so it is naturally reset by constructing a new ``BatchProvider``
+        rather than needing an explicit reset hook.
+        """
+        resolved = resolve_model_alias(model)
+        cost, cost_source = compute_model_cost(resolved, input_tokens, output_tokens)
+        if cost_source is not CostSource.PRICED:
+            # Warn once per model: a batch can hold thousands of items, and one
+            # line per item would bury the signal it is meant to raise.
+            if model not in self._warned_unpriced_models:
+                self._warned_unpriced_models.add(model)
+                if cost_source is CostSource.FREE_LOCAL:
+                    log.debug("batch.cost_unknown_local", model=model)
+                else:
+                    log.warning("batch.cost_unknown_model", model=model)
+            return Decimal("0"), cost_source
+        return (cost * _BATCH_DISCOUNT).quantize(_COST_PRECISION), cost_source
+
+
+def _as_token_count(value: object) -> int:
+    """Coerce a batch ``usage`` token field to a non-negative int, defaulting to 0.
+
+    Malformed or absent usage must never fail an otherwise successful batch item:
+    both callers of ``_parse_message_response`` turn any exception into a failed
+    ``BatchResult``, which would discard the completion text along with the cost.
+    """
+    try:
+        return max(0, int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def create_batch_provider(

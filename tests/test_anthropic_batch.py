@@ -12,8 +12,9 @@ import httpx
 import pytest
 import respx
 
-from sova.llm.models import BatchRequest, BatchResult, BatchTimeoutError, LLMResult
+from sova.llm.models import BatchRequest, BatchResult, BatchTimeoutError, CostSource, LLMResult
 from sova.llm.provider import LLMProvider
+from sova.llm.providers import anthropic_batch as batch_mod
 from sova.llm.providers.anthropic_batch import (
     _DEFAULT_MODEL,
     BatchProvider,
@@ -104,8 +105,81 @@ class TestBatchProviderShared:
         assert result.model == "claude-sonnet-4-6"
         assert result.input_tokens == 100
         assert result.output_tokens == 50
-        assert result.cost_usd == Decimal("0")
+        # 100 input + 50 output tokens at claude-sonnet-4's $3/$15 per-mtok rate,
+        # discounted 50% for the batch API.
+        assert result.cost_usd == Decimal("0.000525")
+        assert result.cost_source == CostSource.PRICED
         assert result.stop_reason == "end_turn"
+
+    def test_parse_message_response_unknown_model_is_zero_cost(self) -> None:
+        provider = BatchProvider("anthropic", api_key="test-key")
+        message = {
+            "content": [{"type": "text", "text": "Hello world"}],
+            "model": "some-unrecognized-model",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        }
+        with patch.object(batch_mod.log, "warning") as mock_warning:
+            result = provider._parse_message_response(message)
+            # Warned once per model, not once per batch item.
+            provider._parse_message_response(message)
+        assert result.cost_usd == Decimal("0")
+        assert result.cost_source == CostSource.UNKNOWN
+        # A silent $0 is the budget blind spot R6 tracks, so it must be logged.
+        assert mock_warning.call_count == 1
+        assert mock_warning.call_args[0][0] == "batch.cost_unknown_model"
+
+    def test_parse_message_response_warned_models_scoped_to_instance(self) -> None:
+        """The warn-once set must not leak across provider instances."""
+        message = {
+            "content": [{"type": "text", "text": "Hello world"}],
+            "model": "some-unrecognized-model",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        }
+        with patch.object(batch_mod.log, "warning") as mock_warning:
+            BatchProvider("anthropic", api_key="test-key")._parse_message_response(message)
+            BatchProvider("anthropic", api_key="test-key")._parse_message_response(message)
+        assert mock_warning.call_count == 2
+
+    def test_parse_message_response_resolves_bare_alias_for_cost(self) -> None:
+        provider = BatchProvider("anthropic", api_key="test-key")
+        message = {
+            "content": [{"type": "text", "text": "Hello world"}],
+            "model": "sonnet",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1000, "output_tokens": 1000},
+        }
+        result = provider._parse_message_response(message)
+        # claude-sonnet-5 at $2/$10 per mtok, halved for the batch API.
+        assert result.cost_usd == Decimal("0.006")
+        assert result.model == "sonnet"
+
+    @pytest.mark.parametrize(
+        "usage",
+        [
+            {"input_tokens": None, "output_tokens": None},
+            {"input_tokens": "bad", "output_tokens": "bad"},
+            {},
+            None,
+            "not-a-dict",
+            [1, 2, 3],
+        ],
+    )
+    def test_parse_message_response_survives_malformed_usage(self, usage: object) -> None:
+        """Cost accounting must never discard an otherwise successful batch item."""
+        provider = BatchProvider("anthropic", api_key="test-key")
+        message = {
+            "content": [{"type": "text", "text": "Hello world"}],
+            "model": "claude-sonnet-4-6",
+            "stop_reason": "end_turn",
+            "usage": usage,
+        }
+        result = provider._parse_message_response(message)
+        assert result.text == "Hello world"
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert result.cost_usd == Decimal("0")
 
     def test_resolve_model_uses_first_request(self) -> None:
         provider = BatchProvider("anthropic", api_key="test-key")

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from sova.config.models import LLMConfig, RolesConfig
 from sova.llm.complexity import ComplexityTier
 from sova.llm.errors import (
+    BillingError,
     LLMInvocationError,
     ModelUnavailableError,
     is_fallback_eligible,
@@ -218,10 +219,13 @@ _DEADLINE_SAFETY_MARGIN = 0.95
 # without restarting the process.
 _UNAVAILABLE_TTL_SECONDS = 300.0
 
-# (model, next_hop, timeout, max_budget_usd) -> result. Lets invoke() and
-# invoke_command() share one chain walk without the loop knowing which
-# provider call it drives.
-_AttemptFn = Callable[[str | None, str | None, float, Decimal | None], Awaitable[LLMResult]]
+# (provider, model, next_hop, timeout, max_budget_usd) -> result. Lets invoke()
+# and invoke_command() share one chain walk without the loop knowing which
+# provider call it drives. The provider is threaded through explicitly (not
+# re-fetched via get_provider() inside the closure) so the budget-cap gate and
+# every attempt in one fallback walk observe the same provider instance even if
+# reload_provider() swaps the global mid-walk.
+_AttemptFn = Callable[["LLMProvider", str | None, str | None, float, Decimal | None], Awaitable[LLMResult]]
 
 
 class ModelAvailabilityCache:
@@ -344,6 +348,28 @@ def _drop_unavailable(chain: list[str | None], identity: str) -> list[str | None
     return kept or chain[-1:]
 
 
+def _raise_if_budget_cap_unsupported(provider: LLMProvider, max_budget_usd: Decimal | None) -> None:
+    """Raise before invoking a provider that cannot enforce ``max_budget_usd`` itself.
+
+    Every step passes ``max_budget - ctx.cost_usd`` as *max_budget_usd*, so a
+    non-positive value means the run is already over budget. When
+    ``provider.capabilities.supports_budget_cap`` is True (claude-code today,
+    via ``--max-budget-usd``), this is a no-op: the provider handles its own
+    enforcement, including today's behavior for a non-positive value, so
+    defaults stay unchanged for the default provider. Every other provider
+    silently ignores the parameter, so this pre-invoke check is the only
+    enforcement point left for it.
+    """
+    if max_budget_usd is None or max_budget_usd > 0:
+        return
+    if provider.capabilities.supports_budget_cap:
+        return
+    raise BillingError(
+        f"Remaining budget ${max_budget_usd} is exhausted and "
+        f"{type(provider).__name__} cannot enforce a budget cap natively"
+    )
+
+
 async def _invoke_with_fallback(
     attempt: _AttemptFn,
     *,
@@ -380,11 +406,20 @@ async def _invoke_with_fallback(
     so the bare ``RuntimeError`` every provider still raises is classified from
     its message rather than dropping straight through. Exhaustion re-raises the
     last eligible error.
+
+    The provider is fetched exactly once, before the budget-cap check, and that
+    same instance is threaded into every attempt in the walk. ``get_provider()``
+    called again per-attempt would let ``reload_provider()`` swap in a different
+    provider mid-walk (e.g. a cap-supporting one to a LiteLLM instance that
+    ignores ``max_budget_usd``) after the check already passed against the old
+    one.
     """
+    provider = get_provider()
+    _raise_if_budget_cap_unsupported(provider, max_budget_usd)
     identity = _provider_identity(cfg)
     chain = _drop_unavailable(_build_candidate_chain(primary, cfg), identity)
     if len(chain) == 1:
-        return await attempt(chain[0], caller_fallback, timeout, max_budget_usd)
+        return await attempt(provider, chain[0], caller_fallback, timeout, max_budget_usd)
 
     deadline = time.monotonic() + timeout * _DEADLINE_SAFETY_MARGIN
     last_error: Exception | None = None
@@ -409,7 +444,7 @@ async def _invoke_with_fallback(
         next_hop = chain[index + 1] if index + 1 < len(chain) else None
 
         try:
-            return await attempt(model, next_hop, attempt_timeout, attempt_budget)
+            return await attempt(provider, model, next_hop, attempt_timeout, attempt_budget)
         except Exception as exc:
             if not is_fallback_eligible(exc):
                 raise
@@ -482,9 +517,13 @@ async def invoke(
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
 
     async def _attempt(
-        candidate: str | None, next_hop: str | None, attempt_timeout: float, attempt_budget: Decimal | None
+        provider: LLMProvider,
+        candidate: str | None,
+        next_hop: str | None,
+        attempt_timeout: float,
+        attempt_budget: Decimal | None,
     ) -> LLMResult:
-        return await get_provider().invoke(
+        return await provider.invoke(
             prompt,
             model=candidate,
             fallback_model=next_hop,
@@ -797,9 +836,13 @@ async def invoke_command(
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
 
     async def _attempt(
-        candidate: str | None, next_hop: str | None, attempt_timeout: float, attempt_budget: Decimal | None
+        provider: LLMProvider,
+        candidate: str | None,
+        next_hop: str | None,
+        attempt_timeout: float,
+        attempt_budget: Decimal | None,
     ) -> LLMResult:
-        return await get_provider().invoke_command(
+        return await provider.invoke_command(
             command,
             args,
             model=candidate,
@@ -933,7 +976,9 @@ async def invoke_streaming(
     _increment_call_counter()
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
     resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
-    async for event in get_provider().invoke_streaming(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd):
+    provider = get_provider()
+    _raise_if_budget_cap_unsupported(provider, max_budget_usd)
+    async for event in provider.invoke_streaming(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd):
         yield event
 
 

@@ -16,7 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from sova.llm.errors import LLMError, ProviderUnavailableError, classify_exception
-from sova.llm.models import LLMResult, StreamEvent
+from sova.llm.models import CostSource, LLMResult, StreamEvent, is_local_model_id
 from sova.llm.provider import LLMProvider, ProviderCapabilities, _measure_ms
 from sova.utils.logging import get_logger
 
@@ -87,6 +87,16 @@ class LiteLLMProvider(LLMProvider):
 
     _DEFAULT_TIMEOUT: float = 300.0
 
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        # reports_cost=True: LiteLLM populates a real per-result cost for any
+        # model in its pricing database, and _get_cost()/cost_source now flag
+        # the unpriced case (CostSource.UNKNOWN/FREE_LOCAL) instead of a value
+        # that lies. supports_budget_cap stays False: max_budget_usd is still
+        # accepted but ignored by this provider (see class docstring), so the
+        # client-side budget-cap gate is the only enforcement for it.
+        return ProviderCapabilities(reports_cost=True, dynamic_models=True)
+
     def __init__(
         self,
         model: str = "claude-sonnet-4-6",
@@ -99,6 +109,13 @@ class LiteLLMProvider(LLMProvider):
         self.fallback_model = fallback_model
         self.api_base = api_base
         self.timeout = timeout or self._DEFAULT_TIMEOUT
+        # Warn once per model per provider instance: a long-running process can
+        # invoke the same unpriced model many times, and repeating the warning
+        # on every call would bury the signal it is meant to raise. Scoped to
+        # the instance (not module level) so it resets naturally when a new
+        # provider is constructed (e.g. reload_provider()) rather than needing
+        # an explicit reset hook.
+        self._warned_unpriced_models: set[str] = set()
 
     async def invoke(
         self,
@@ -216,7 +233,7 @@ class LiteLLMProvider(LLMProvider):
         except Exception as exc:
             log.error("llm.litellm.stream_error", model=model, exc_info=True)
             accumulated_text = "".join(text_parts)
-            cost = _get_cost(response_model, input_tokens, output_tokens)
+            cost, cost_source = self._get_cost(response_model, input_tokens, output_tokens, requested_model=model)
             yield StreamEvent(
                 type="result",
                 text=accumulated_text,
@@ -224,6 +241,7 @@ class LiteLLMProvider(LLMProvider):
                     text=accumulated_text,
                     model=response_model,
                     cost_usd=cost,
+                    cost_source=cost_source,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     duration_ms=_measure_ms(start),
@@ -233,11 +251,12 @@ class LiteLLMProvider(LLMProvider):
             raise _as_llm_error(exc) from exc
 
         accumulated_text = "".join(text_parts)
-        cost = _get_cost(response_model, input_tokens, output_tokens)
+        cost, cost_source = self._get_cost(response_model, input_tokens, output_tokens, requested_model=model)
         result = LLMResult(
             text=accumulated_text,
             model=response_model,
             cost_usd=cost,
+            cost_source=cost_source,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             duration_ms=_measure_ms(start),
@@ -250,22 +269,6 @@ class LiteLLMProvider(LLMProvider):
             return False, "litellm is not installed -- pip install sova[litellm]"
         version = getattr(litellm, "__version__", "unknown")
         return True, f"litellm {version}"
-
-    @property
-    def capabilities(self) -> ProviderCapabilities:
-        # cost_usd comes from LiteLLM's own pricing database (_get_cost() ->
-        # completion_cost/cost_per_token), which covers many providers but not
-        # all of them: a model missing from that database, a custom api_base
-        # proxy, or any lookup error yields Decimal("0"), indistinguishable
-        # from a genuine zero-cost call. A budget guard cannot tell those
-        # apart, so the reported cost is not a usable spend signal. No CLI
-        # --max-budget-usd equivalent exists for this path either.
-        return ProviderCapabilities(
-            supports_cli_fallback=False,
-            supports_budget_cap=False,
-            reports_cost=False,
-            dynamic_models=False,
-        )
 
     async def _call(
         self,
@@ -297,13 +300,16 @@ class LiteLLMProvider(LLMProvider):
         input_tokens = getattr(usage, "prompt_tokens", 0) or 0
         output_tokens = getattr(usage, "completion_tokens", 0) or 0
         response_model = getattr(response, "model", model) or model
-        cost = _get_cost(response_model, input_tokens, output_tokens, completion_response=response)
+        cost, cost_source = self._get_cost(
+            response_model, input_tokens, output_tokens, completion_response=response, requested_model=model
+        )
         stop = response.choices[0].finish_reason or "end_turn"
 
         return LLMResult(
             text=text,
             model=response_model,
             cost_usd=cost,
+            cost_source=cost_source,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             duration_ms=_measure_ms(start),
@@ -319,6 +325,69 @@ class LiteLLMProvider(LLMProvider):
             kwargs["api_base"] = self.api_base
         return kwargs
 
+    def _report_unpriced(self, model: str, requested_model: str, *, exc_info: bool = False) -> CostSource:
+        """Log a cost lookup miss (once per model per instance) and return its provenance.
+
+        *model* is the ID the provider echoed back; *requested_model* is the ID the
+        call was made with. Both are checked, because LiteLLM does not guarantee
+        the echoed ID carries the provider prefix the request used. Local/
+        self-hosted models (e.g. Ollama) are never in LiteLLM's hosted pricing
+        database, so a lookup miss there is expected and harmless (logged at debug,
+        ``CostSource.FREE_LOCAL``), unlike a genuine pricing gap on a hosted model
+        (logged as a warning, ``CostSource.UNKNOWN``). Dedup is keyed on the echoed
+        *model*, matching what is stored and compared on every call.
+        """
+        already_warned = model in self._warned_unpriced_models
+        self._warned_unpriced_models.add(model)
+        if is_local_model_id(model) or is_local_model_id(requested_model):
+            if not already_warned:
+                log.debug("llm.litellm.cost_unknown_local", model=model)
+            return CostSource.FREE_LOCAL
+        if not already_warned:
+            log.warning("llm.litellm.cost_unknown", model=model, exc_info=exc_info)
+        return CostSource.UNKNOWN
+
+    def _get_cost(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        completion_response: object | None = None,
+        requested_model: str = "",
+    ) -> tuple[Decimal, CostSource]:
+        """Get cost and its provenance from LiteLLM's cost tracking.
+
+        When *completion_response* is provided (non-streaming calls), passes it
+        directly to ``litellm.completion_cost`` for accurate pricing.  For
+        streaming calls where only token counts are available, uses
+        ``litellm.cost_per_token`` for per-token pricing.
+
+        Returns ``(Decimal('0'), CostSource.UNKNOWN | CostSource.FREE_LOCAL)`` when
+        cost calculation fails, *and* when it succeeds but reports a non-positive
+        figure: LiteLLM's documented failure mode for an unpriced model is
+        returning ``0.0`` from ``completion_cost()``/``cost_per_token()`` instead
+        of raising, so a bare try/except would otherwise let that case through as
+        a silent, unlogged $0: exactly the budget blind spot this reporting
+        exists to surface.
+        """
+        try:
+            if completion_response is not None:
+                cost = litellm.completion_cost(completion_response=completion_response)  # type: ignore[union-attr]
+            else:
+                prompt_cost, completion_cost = litellm.cost_per_token(  # type: ignore[union-attr]
+                    model=model,
+                    prompt_tokens=input_tokens,
+                    completion_tokens=output_tokens,
+                )
+                cost = prompt_cost + completion_cost
+            decimal_cost = Decimal(str(cost))
+        except Exception:  # noqa: BLE001
+            return Decimal("0"), self._report_unpriced(model, requested_model, exc_info=True)
+        if decimal_cost <= 0:
+            return Decimal("0"), self._report_unpriced(model, requested_model)
+        return decimal_cost, CostSource.PRICED
+
 
 def _build_messages(prompt: str, *, system_prompt: str | None = None) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
@@ -326,32 +395,3 @@ def _build_messages(prompt: str, *, system_prompt: str | None = None) -> list[di
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
     return messages
-
-
-def _get_cost(
-    model: str, input_tokens: int, output_tokens: int, *, completion_response: object | None = None
-) -> Decimal:
-    """Get cost from LiteLLM's cost tracking.
-
-    When *completion_response* is provided (non-streaming calls), passes it
-    directly to ``litellm.completion_cost`` for accurate pricing.  For
-    streaming calls where only token counts are available, uses
-    ``litellm.cost_per_token`` for per-token pricing.
-
-    Returns Decimal('0') when cost calculation fails, including models that
-    are not in LiteLLM's pricing database.
-    """
-    try:
-        if completion_response is not None:
-            cost = litellm.completion_cost(completion_response=completion_response)  # type: ignore[union-attr]
-        else:
-            prompt_cost, completion_cost = litellm.cost_per_token(  # type: ignore[union-attr]
-                model=model,
-                prompt_tokens=input_tokens,
-                completion_tokens=output_tokens,
-            )
-            cost = prompt_cost + completion_cost
-        return Decimal(str(cost))
-    except Exception:  # noqa: BLE001
-        log.warning("llm.litellm.cost_unknown", model=model, exc_info=True)
-        return Decimal("0")
