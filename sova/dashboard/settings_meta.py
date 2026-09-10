@@ -903,7 +903,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "ldap.server",
         "LDAP server",
-        "LDAP server URI (e.g. ldap://ldap.corp.redhat.com)",
+        "LDAP server URI (e.g. ldaps://ldap.corp.redhat.com)",
         "ldap",
     ),
     SettingMeta(

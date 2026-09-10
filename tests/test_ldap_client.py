@@ -126,6 +126,10 @@ class TestParseServer:
         client = lc.LdapClient(_config(server="ldap://ldap.corp.redhat.com"))
         assert client._parse_server() == ("ldap.corp.redhat.com", 389)
 
+    def test_ldaps_defaults_port_636(self, mock_ldap3) -> None:
+        client = lc.LdapClient(_config(server="ldaps://ldap.corp.redhat.com"))
+        assert client._parse_server() == ("ldap.corp.redhat.com", 636)
+
 
 # ---------------------------------------------------------------------------
 # check_connectivity

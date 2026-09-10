@@ -378,7 +378,7 @@ class LdapConfig(BaseSettings):
     """
 
     enabled: bool = False
-    server: str = "ldap://ldap.corp.redhat.com"
+    server: str = "ldaps://ldap.corp.redhat.com"
     base_dn: str = "ou=users,dc=redhat,dc=com"
     group_base_dn: str = "ou=adhoc,ou=managedGroups,dc=redhat,dc=com"
     timeout_seconds: int = Field(5, gt=0)

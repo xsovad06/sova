@@ -31,6 +31,7 @@ except ImportError:
 log = get_logger(component="adapters.ldap")
 
 _DEFAULT_LDAP_PORT = 389
+_DEFAULT_LDAPS_PORT = 636
 
 # Red Hat-specific LDAP attributes plus the common ones needed for org traversal.
 _PERSON_ATTRIBUTES = [
@@ -267,7 +268,9 @@ class LdapClient:
         scope: str,
         size_limit: int,
     ) -> list[dict]:
-        server = ldap3.Server(self._config.server, connect_timeout=self._config.timeout_seconds)
+        host, port = self._parse_server()
+        use_ssl = urlparse(self._config.server).scheme == "ldaps"
+        server = ldap3.Server(host, port=port, use_ssl=use_ssl, connect_timeout=self._config.timeout_seconds)
         conn = ldap3.Connection(server, auto_bind=True, receive_timeout=self._config.timeout_seconds)
         try:
             conn.search(
@@ -291,7 +294,8 @@ class LdapClient:
     def _parse_server(self) -> tuple[str, int]:
         parsed = urlparse(self._config.server)
         host = parsed.hostname or self._config.server
-        port = parsed.port or _DEFAULT_LDAP_PORT
+        default_port = _DEFAULT_LDAPS_PORT if parsed.scheme == "ldaps" else _DEFAULT_LDAP_PORT
+        port = parsed.port or default_port
         return host, port
 
     def _cache_get(self, key: str) -> object:
