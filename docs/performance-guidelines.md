@@ -159,6 +159,10 @@ Active interval: 300s (`watch.interval_active`), idle interval: 1800s (`watch.in
 |-------|---------|------------|
 | Per-run budget | $10.00 | `agent.max_budget` |
 | Per-issue budget | $50.00 | `agent.max_issue_budget` |
+| Max run wall clock | 14400s | `runaway.max_run_wall_clock_seconds` (0=disable, scaled by task complexity) |
+| Max run steps | 100 | `runaway.max_run_steps` (0=disable) |
+| Max LLM calls | 250 | `runaway.max_llm_calls` (0=disable) |
+| Max step attempts | 80 | `runaway.max_step_attempts` (0=disable) |
 | Max CI fix attempts | 3 | `ci.max_fix_attempts` (0=disable) |
 | Max address-review cycles | 2 | `pipeline.max_address_review_cycles` (0=unlimited) |
 

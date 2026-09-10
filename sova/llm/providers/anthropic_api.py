@@ -16,7 +16,7 @@ from pathlib import Path
 
 from sova.llm.errors import classify_exception
 from sova.llm.models import LLMResult, StreamEvent, compute_anthropic_cost, resolve_model_alias
-from sova.llm.provider import LLMProvider, _measure_ms
+from sova.llm.provider import LLMProvider, ProviderCapabilities, _measure_ms
 from sova.utils.logging import get_logger
 
 log = get_logger(component="llm.anthropic_api")
@@ -282,3 +282,26 @@ class AnthropicAPIProvider(LLMProvider):
             return True, f"anthropic SDK {anthropic.__version__}"
         except Exception as exc:
             return False, f"Anthropic API unavailable: {_sanitize_error(exc, key)}"
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        # cost_usd is computed locally by compute_anthropic_cost() rather than
+        # reported by the callee (claude-code reads total_cost_usd straight off
+        # the CLI). That is the right rate card for a model this provider
+        # recognizes, but LLMConfig.model accepts arbitrary IDs and an
+        # unmatched prefix silently costs $0 (compute_anthropic_cost's own
+        # documented fallback). reports_cost=True would suppress the R6
+        # warning for exactly that case, letting agent.max_budget /
+        # max_issue_budget silently fail to enforce against a newly released
+        # or custom model ID the rate card hasn't caught up with yet. False
+        # keeps the warning live and relies on the runaway guard as the
+        # backstop, matching litellm_provider's stance until pricing is
+        # tracked per-model rather than assumed reliable. There is no CLI
+        # --max-budget-usd equivalent for a raw API call, and no CLI process
+        # to hand a --fallback-model to.
+        return ProviderCapabilities(
+            supports_cli_fallback=False,
+            supports_budget_cap=False,
+            reports_cost=False,
+            dynamic_models=False,
+        )

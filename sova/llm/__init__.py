@@ -30,7 +30,7 @@ from sova.llm.errors import (
 )
 from sova.llm.guard import PromptInjectionError, ScanResult, scan_prompt
 from sova.llm.models import BatchRequest, BatchResult, BatchTimeoutError, LLMResult, StreamEvent
-from sova.llm.provider import LLMProvider, create_provider
+from sova.llm.provider import LLMProvider, ProviderCapabilities, create_provider
 from sova.llm.routing import TASK_TYPE_KEYS, route_model
 
 __all__ = [
@@ -46,6 +46,7 @@ __all__ = [
     "LLMTimeoutError",
     "ModelUnavailableError",
     "PromptInjectionError",
+    "ProviderCapabilities",
     "ProviderUnavailableError",
     "RateLimitError",
     "ScanResult",

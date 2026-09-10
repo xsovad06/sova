@@ -140,6 +140,13 @@ class ExecutionContext:
     # Model fallback chain (index into config.agent.fallback_models)
     fallback_model_index: int = 0
 
+    # Wall-clock start of the current run (time.monotonic()), mirrored from
+    # WorkflowEngine._run_started_at. 0.0 means "not set" (e.g. no
+    # WorkflowEngine involved, such as reviewer/custom roles), in which case
+    # the wall-clock component of resource_remaining_fraction contributes no
+    # constraint.
+    run_started_at: float = 0.0
+
     def add_cost(self, amount: Decimal) -> None:
         """Accumulate cost from an LLM invocation."""
         self.cost_usd += amount
@@ -190,6 +197,61 @@ class ExecutionContext:
             return 1.0
         fraction = Decimal("1") - (self.cost_usd / max_budget)
         return float(max(Decimal("0"), min(Decimal("1"), fraction)))
+
+    @property
+    def _wall_clock_remaining_fraction(self) -> float:
+        """Remaining wall-clock budget as a fraction, scaled by task complexity.
+
+        Falls back to 1.0 (no constraint) when the guard is disabled (limit 0)
+        or when no run has started (``run_started_at`` unset, e.g. outside
+        WorkflowEngine). Uses the same complexity multiplier as
+        WorkflowEngine._step_timeout so a legitimate COMPLEX/EPIC run does not
+        read as more resource-constrained than a run sized for it actually is.
+        """
+        from sova.llm.complexity import complexity_multiplier
+
+        max_seconds = self.config.runaway.max_run_wall_clock_seconds
+        if not max_seconds or not self.run_started_at:
+            return 1.0
+
+        import time
+
+        scaled_max = max_seconds * complexity_multiplier(self.complexity)
+        elapsed = time.monotonic() - self.run_started_at
+        fraction = 1.0 - (elapsed / scaled_max)
+        return max(0.0, min(1.0, fraction))
+
+    @property
+    def _call_count_remaining_fraction(self) -> float:
+        """Remaining LLM-call budget as a fraction of ``runaway.max_llm_calls``.
+
+        Falls back to 1.0 (no constraint) when the guard is disabled (limit 0).
+        """
+        max_calls = self.config.runaway.max_llm_calls
+        if not max_calls:
+            return 1.0
+
+        from sova.llm.client import get_call_count
+
+        fraction = 1.0 - (get_call_count() / max_calls)
+        return max(0.0, min(1.0, fraction))
+
+    @property
+    def resource_remaining_fraction(self) -> float:
+        """Composite remaining-resource signal: budget, wall clock, and LLM call count.
+
+        The minimum (most-constrained) of the three, so graceful-degradation
+        call sites (skip optional steps, stop retrying, skip hooks) react to
+        whichever resource is closest to exhausted, not just dollar spend.
+        Backstops the dollar-based budget_remaining_fraction, which reads as
+        1.0 forever against a provider that always reports cost_usd=0
+        (docs/model-selection-risk-assessment.md, R6).
+        """
+        return min(
+            self.budget_remaining_fraction,
+            self._wall_clock_remaining_fraction,
+            self._call_count_remaining_fraction,
+        )
 
     @property
     def working_dir(self) -> Path:

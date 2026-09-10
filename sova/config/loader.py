@@ -97,6 +97,7 @@ _NESTED_SECTIONS = (
     "coderabbit_quota",
     "pr_monitor",
     "supervisor",
+    "runaway",
     "memory_guard",
     "watchdog",
     "telemetry",

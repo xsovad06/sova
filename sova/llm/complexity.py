@@ -148,6 +148,27 @@ def _score_file_count(file_count: int) -> ComplexityTier:
     return ComplexityTier.EPIC
 
 
+# Timeout/budget scaling by complexity tier, shared by WorkflowEngine._step_timeout
+# (per-step hard timeouts) and the wall-clock runaway guard, so a legitimate
+# COMPLEX/EPIC run is never killed by a limit sized for the default tier.
+_COMPLEXITY_MULTIPLIERS: dict[ComplexityTier, float] = {
+    ComplexityTier.COMPLEX: 1.5,
+    ComplexityTier.EPIC: 2.0,
+}
+_MAX_COMPLEXITY_MULTIPLIER = 3.0
+
+
+def complexity_multiplier(tier: ComplexityTier | None) -> float:
+    """Return the timeout/budget scaling multiplier for *tier*, capped at 3.0x.
+
+    ``None`` (complexity not yet assessed) and any tier without an explicit
+    entry (TRIVIAL, SIMPLE, MODERATE) return 1.0, i.e. no scaling.
+    """
+    if tier is None:
+        return 1.0
+    return min(_COMPLEXITY_MULTIPLIERS.get(tier, 1.0), _MAX_COMPLEXITY_MULTIPLIER)
+
+
 def assess_complexity(
     title: str,
     description: str,

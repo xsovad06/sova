@@ -132,17 +132,17 @@ class ValidateStep(BaseStep):
                     error="budget_exceeded",
                 )
 
-            if ctx.budget_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
+            if ctx.resource_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
                 log.warning(
                     "step.validate.budget_fraction_stop_retry",
                     attempt=attempt,
-                    fraction=ctx.budget_remaining_fraction,
+                    fraction=ctx.resource_remaining_fraction,
                 )
                 return StepResult(
                     success=True,
                     summary=(
                         f"Pre-push hook failed; stopping fix retries at "
-                        f"{ctx.budget_remaining_fraction:.0%} budget remaining ({attempt - 1} attempt(s) made)"
+                        f"{ctx.resource_remaining_fraction:.0%} budget remaining ({attempt - 1} attempt(s) made)"
                     ),
                 )
 

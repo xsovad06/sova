@@ -718,6 +718,7 @@ class TestInvokeBatch:
             mock_cfg.return_value.llm.routing = routing or {}
             mock_cfg.return_value.llm.model_aliases = {}
             mock_cfg.return_value.compression.enabled = False
+            mock_cfg.return_value.runaway.max_llm_calls = 0
             await invoke_batch([req], task_type=task_type)
 
         return [r.model for r in provider.invoke_batch.await_args.args[0]]
@@ -1722,6 +1723,28 @@ class TestLLMProvider:
         assert p.normalize_model_name("opus") == "opus"
         assert p.normalize_model_name("anything") == "anything"
 
+    def test_capabilities_default_conservative(self) -> None:
+        """A provider that doesn't override capabilities is assumed unreliable."""
+        from sova.llm.provider import LLMProvider, ProviderCapabilities
+
+        class MinimalProvider(LLMProvider):
+            async def invoke(self, prompt, **kwargs):
+                return LLMResult(text="", model="")
+
+            async def invoke_streaming(self, prompt, **kwargs):
+                yield StreamEvent(type="result", text="")
+
+            async def check_available(self):
+                return True, ""
+
+        p = MinimalProvider()
+        assert p.capabilities == ProviderCapabilities(
+            supports_cli_fallback=False,
+            supports_budget_cap=False,
+            reports_cost=False,
+            dynamic_models=False,
+        )
+
     async def test_check_available_version_fails(self) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
         from sova.utils.shell import ShellResult
@@ -2021,12 +2044,105 @@ class TestProviderInitFromConfig:
         with pytest.raises(ValueError, match="Unknown LLM provider"):
             create_provider(LLMConfig.model_construct(provider="nonexistent"))
 
+    def test_init_llm_provider_makes_no_network_calls(self) -> None:
+        """Regression guard for R7: startup init must stay network-call-free.
+
+        _init_llm_provider only constructs objects (load_config is a local DB
+        read, create_provider/create_runtime build lazy objects). If a future
+        change adds a live availability probe here, this test fails loudly
+        instead of the probe silently running on every command.
+        """
+        import socket
+
+        from sova.cli.app import _init_llm_provider
+        from sova.config.models import ProjectConfig
+
+        with (
+            patch("sova.cli.app.load_config", return_value=ProjectConfig(llm={"provider": "claude-code"})),
+            patch.object(socket.socket, "connect", side_effect=AssertionError("unexpected network call")),
+        ):
+            _init_llm_provider()  # must not raise
+
+    async def test_spawn_direct_makes_no_network_calls_before_exec(self) -> None:
+        """Regression guard for R7: spawn_direct must not probe the network.
+
+        The subprocess boundary (asyncio.create_subprocess_exec) is a local
+        exec, not a network call; only a live socket connection would
+        indicate a regression toward startup availability probing.
+        """
+        import socket
+
+        from sova.ipc.runtime import spawn_direct
+
+        with patch.object(socket.socket, "connect", side_effect=AssertionError("unexpected network call")):
+            proc = await spawn_direct(["true"], cwd="/tmp")
+        await proc.stop()
+
+
+class TestReloadProviderCapabilityWarning:
+    """reload_provider is the single chokepoint (CLI callback, dashboard lifespan,
+    settings hot-reload) that must warn when the active provider can't be trusted
+    to report real cost, since that makes the dollar-based budget guard blind (R6).
+    """
+
+    def test_warns_when_reports_cost_false(self) -> None:
+        """A provider declaring reports_cost=False must warn at the chokepoint.
+
+        Stubs create_provider rather than standing up LiteLLM: the concrete
+        capability values are asserted in TestLiteLLMProvider.test_capabilities,
+        and mutating litellm_provider's module globals here would leak an
+        import-guard override into every later test in the session.
+        """
+        from sova.config.models import ProjectConfig
+        from sova.llm import ProviderCapabilities
+        from sova.llm.client import reload_provider, reset_provider_warning_state
+
+        stub = MagicMock(capabilities=ProviderCapabilities(reports_cost=False))
+        reset_provider_warning_state()
+        with (
+            patch("sova.llm.client.create_provider", return_value=stub),
+            patch("sova.llm.client.log") as mock_log,
+        ):
+            reload_provider(ProjectConfig(llm={"provider": "litellm"}))
+
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args[0][0] == "llm.provider_reports_cost_false"
+        assert mock_log.warning.call_args[1]["provider"] == "litellm"
+
+    def test_warning_suppressed_on_repeat_call_same_provider_type(self) -> None:
+        """A second reload_provider() with the same reports_cost=False provider type must not re-warn."""
+        from sova.config.models import ProjectConfig
+        from sova.llm import ProviderCapabilities
+        from sova.llm.client import reload_provider, reset_provider_warning_state
+
+        stub = MagicMock(capabilities=ProviderCapabilities(reports_cost=False))
+        reset_provider_warning_state()
+        with (
+            patch("sova.llm.client.create_provider", return_value=stub),
+            patch("sova.llm.client.log") as mock_log,
+        ):
+            reload_provider(ProjectConfig(llm={"provider": "litellm"}))
+            reload_provider(ProjectConfig(llm={"provider": "litellm"}))
+
+        mock_log.warning.assert_called_once()
+
+    def test_no_warning_when_reports_cost_true(self) -> None:
+        from sova.config.models import ProjectConfig
+        from sova.llm.client import reload_provider, reset_provider_warning_state
+
+        reset_provider_warning_state()
+        with patch("sova.llm.client.log") as mock_log:
+            reload_provider(ProjectConfig(llm={"provider": "claude-code"}))
+
+        mock_log.warning.assert_not_called()
+
 
 class TestModuleExports:
     def test_imports(self) -> None:
         from sova.llm import (
             LLMProvider,
             LLMResult,
+            ProviderCapabilities,
             StreamEvent,
             create_provider,
             get_provider,
@@ -2049,6 +2165,9 @@ class TestModuleExports:
         assert LLMResult is not None
         assert StreamEvent is not None
         assert LLMProvider is not None
+        # A third-party provider overriding LLMProvider.capabilities needs the
+        # return type from the same package it imports the ABC from.
+        assert ProviderCapabilities is not None
 
 
 # ---------------------------------------------------------------------------
@@ -2061,6 +2180,15 @@ class TestClaudeCodeProvider:
     def mock_run(self):
         with patch("sova.llm.providers.claude_code.run", new_callable=AsyncMock) as mock:
             yield mock
+
+    def test_capabilities(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        caps = ClaudeCodeProvider().capabilities
+        assert caps.supports_cli_fallback is True
+        assert caps.supports_budget_cap is True
+        assert caps.reports_cost is True
+        assert caps.dynamic_models is False
 
     async def test_invoke(self, mock_run: AsyncMock) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
@@ -2272,6 +2400,15 @@ class TestLiteLLMProvider:
         else:
             sys.modules.pop("litellm", None)
         importlib.reload(llm_mod)
+
+    def test_capabilities(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        caps = LiteLLMProvider(model="gpt-4o").capabilities
+        assert caps.supports_cli_fallback is False
+        assert caps.supports_budget_cap is False
+        assert caps.reports_cost is False
+        assert caps.dynamic_models is False
 
     async def test_invoke_basic(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
@@ -3077,6 +3214,16 @@ class TestAnthropicAPIProvider:
         else:
             sys.modules.pop("anthropic", None)
         importlib.reload(api_mod)
+
+    def test_capabilities(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            caps = AnthropicAPIProvider().capabilities
+        assert caps.supports_cli_fallback is False
+        assert caps.supports_budget_cap is False
+        assert caps.reports_cost is False
+        assert caps.dynamic_models is False
 
     async def test_invoke_basic(self, mock_anthropic: MagicMock) -> None:
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider

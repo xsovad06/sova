@@ -245,6 +245,69 @@ class TestExecutionContext:
         ctx.add_cost(Decimal("5.00"))
         assert ctx.budget_remaining_fraction == 0.0
 
+    def test_resource_remaining_fraction_matches_budget_when_others_disabled(self) -> None:
+        config = ProjectConfig(
+            agent={"max_budget": Decimal("10.00")},
+            runaway={"max_run_wall_clock_seconds": 0, "max_llm_calls": 0},
+        )
+        ctx = _make_ctx(config=config)
+        ctx.add_cost(Decimal("5.00"))
+        assert ctx.resource_remaining_fraction == 0.5
+
+    def test_resource_remaining_fraction_constrained_by_call_count(self) -> None:
+        """The composite fraction reacts to LLM call pressure even with $0 spent,
+        the exact R6 gap budget_remaining_fraction alone cannot see."""
+        from sova.llm.client import _increment_call_counter, reset_call_counter, start_call_counter
+
+        config = ProjectConfig(
+            agent={"max_budget": Decimal("10.00")},
+            runaway={"max_run_wall_clock_seconds": 0, "max_llm_calls": 10},
+        )
+        ctx = _make_ctx(config=config)
+        start_call_counter()
+        try:
+            _increment_call_counter(9)
+            assert ctx.budget_remaining_fraction == 1.0
+            assert ctx.resource_remaining_fraction == pytest.approx(0.1)
+        finally:
+            reset_call_counter()
+
+    def test_resource_remaining_fraction_constrained_by_wall_clock(self) -> None:
+        import time
+
+        config = ProjectConfig(
+            agent={"max_budget": Decimal("10.00")},
+            runaway={"max_run_wall_clock_seconds": 100, "max_llm_calls": 0},
+        )
+        ctx = _make_ctx(config=config)
+        ctx.run_started_at = time.monotonic() - 90.0
+
+        assert ctx.budget_remaining_fraction == 1.0
+        assert ctx.resource_remaining_fraction == pytest.approx(0.1, abs=0.02)
+
+    def test_resource_remaining_fraction_wall_clock_scaled_by_complexity(self) -> None:
+        import time
+
+        from sova.llm.complexity import ComplexityTier
+
+        config = ProjectConfig(
+            agent={"max_budget": Decimal("10.00")},
+            runaway={"max_run_wall_clock_seconds": 100, "max_llm_calls": 0},
+        )
+        ctx = _make_ctx(config=config)
+        ctx.complexity = ComplexityTier.EPIC
+        # 90s elapsed against a flat 100s ceiling would read as nearly exhausted,
+        # but the EPIC 2.0x multiplier scales the ceiling to 200s.
+        ctx.run_started_at = time.monotonic() - 90.0
+
+        assert ctx.resource_remaining_fraction == pytest.approx(0.55, abs=0.02)
+
+    def test_resource_remaining_fraction_full_when_run_not_started(self) -> None:
+        config = ProjectConfig(runaway={"max_run_wall_clock_seconds": 100})
+        ctx = _make_ctx(config=config)
+        assert ctx.run_started_at == 0.0
+        assert ctx.resource_remaining_fraction == 1.0
+
     def test_routing_task_type_passes_tag_through(self) -> None:
         ctx = _make_ctx()
         assert ctx.routing_task_type("develop") == "develop"
@@ -454,6 +517,114 @@ class TestWorkflowEngine:
         assert not result.success
         assert result.final_status == TaskStatus.PAUSED
 
+    async def test_runaway_guard_step_count_pauses(self) -> None:
+        """Step-count guard trips even when cost stays at $0 the whole run.
+
+        Named acceptance scenario for the R6 backstop: a provider that always
+        reports cost_usd=0 never trips is_budget_exceeded, but the pipeline
+        must still be stopped.
+        """
+        config = ProjectConfig(runaway={"max_run_steps": 1, "max_run_wall_clock_seconds": 0, "max_llm_calls": 0})
+        ctx = _make_ctx(config=config)
+        steps = [
+            DummyStep(should_pass=True, gate_pass=True, name="step1"),
+            DummyStep(should_pass=True, gate_pass=True, name="step2"),
+        ]
+        engine = WorkflowEngine(steps=steps, ctx=ctx)
+
+        result = await engine.run()
+
+        assert not ctx.is_budget_exceeded
+        assert not result.success
+        assert result.final_status == TaskStatus.PAUSED
+        assert result.steps_completed == 1
+        assert len(result.step_records) == 1
+
+    async def test_runaway_guard_step_count_disabled_by_zero(self) -> None:
+        config = ProjectConfig(runaway={"max_run_steps": 0, "max_run_wall_clock_seconds": 0, "max_llm_calls": 0})
+        ctx = _make_ctx(config=config)
+        steps = [
+            DummyStep(should_pass=True, gate_pass=True, name="step1"),
+            DummyStep(should_pass=True, gate_pass=True, name="step2"),
+        ]
+        engine = WorkflowEngine(steps=steps, ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.success
+        assert result.steps_completed == 2
+
+    async def test_runaway_guard_wall_clock_pauses(self) -> None:
+        import time
+
+        config = ProjectConfig(runaway={"max_run_wall_clock_seconds": 100, "max_run_steps": 0, "max_llm_calls": 0})
+        ctx = _make_ctx(config=config)
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        # Simulate a run that started 500s ago (real time.monotonic() can't be
+        # mocked globally without breaking asyncio's own event loop clock).
+        engine._run_started_at = time.monotonic() - 500.0
+
+        result = await engine.run()
+
+        assert not result.success
+        assert result.final_status == TaskStatus.PAUSED
+        assert result.steps_completed == 0
+
+        async with await get_session() as session:
+            rows = (await session.execute(select(FailureRecord))).scalars().all()
+            assert any(r.failure_type == "runaway_guard" and "wall clock" in r.message for r in rows)
+
+    async def test_runaway_guard_wall_clock_scales_with_complexity(self) -> None:
+        """An EPIC-complexity run gets 2x the configured wall-clock ceiling."""
+        import time
+
+        from sova.llm.complexity import ComplexityTier
+
+        config = ProjectConfig(runaway={"max_run_wall_clock_seconds": 100, "max_run_steps": 0, "max_llm_calls": 0})
+        ctx = _make_ctx(config=config)
+        ctx.complexity = ComplexityTier.EPIC
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        # 150s elapsed exceeds the flat 100s ceiling but not the EPIC-scaled 200s.
+        engine._run_started_at = time.monotonic() - 150.0
+
+        result = await engine.run()
+
+        assert result.success
+
+    async def test_runaway_guard_llm_call_count_pauses(self) -> None:
+        """LLM call count guard trips even when cost stays at $0 and step count is small.
+
+        Named acceptance scenario for the R6 gap: retry/fix loops that burn LLM
+        calls inside a single step's execute() without incrementing
+        steps_completed are invisible to the step-count guard alone.
+        """
+        from sova.llm.client import _increment_call_counter
+
+        class _LLMCallStep(DummyStep):
+            """Simulates a step whose execute() makes LLM calls internally
+            (e.g. MonitorCIStep's CI-fix loop) without incrementing steps_completed
+            more than once."""
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                _increment_call_counter(2)
+                return await super().execute(ctx)
+
+        config = ProjectConfig(runaway={"max_llm_calls": 1, "max_run_steps": 0, "max_run_wall_clock_seconds": 0})
+        ctx = _make_ctx(config=config)
+        steps = [
+            _LLMCallStep(should_pass=True, gate_pass=True, name="step1"),
+            DummyStep(should_pass=True, gate_pass=True, name="step2"),
+        ]
+        engine = WorkflowEngine(steps=steps, ctx=ctx)
+
+        result = await engine.run()
+
+        assert not result.success
+        assert result.final_status == TaskStatus.PAUSED
+        assert result.steps_completed == 1
+
     async def test_step_retry_on_failure(self) -> None:
         """A step with max_retries > 0 retries before failing."""
         ctx = _make_ctx()
@@ -476,6 +647,43 @@ class TestWorkflowEngine:
 
         assert result.success
         assert call_count == 2
+
+    async def test_max_step_attempts_caps_total_attempts(self) -> None:
+        """runaway.max_step_attempts caps cumulative attempts even when the
+        step's own max_retries would allow more, catching the case where a
+        fallback-model chain would otherwise reset the per-model retry
+        counter and multiply attempts unbounded. Exhaustion is a runaway
+        trip (PAUSED, resumable), not an ordinary step failure (FAILED).
+        """
+        config = ProjectConfig(runaway={"max_step_attempts": 3})
+        ctx = _make_ctx(config=config)
+
+        step = DummyStep(should_pass=False)
+        step.max_retries = 10
+
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert result.final_status == TaskStatus.PAUSED
+        assert result.step_records[0].total_attempts == 3
+
+        async with await get_session() as session:
+            rows = (await session.execute(select(FailureRecord))).scalars().all()
+            assert any(r.failure_type == "runaway_guard" and "attempts" in r.message for r in rows)
+
+    async def test_max_step_attempts_disabled_by_zero(self) -> None:
+        config = ProjectConfig(runaway={"max_step_attempts": 0})
+        ctx = _make_ctx(config=config)
+
+        step = DummyStep(should_pass=False)
+        step.max_retries = 2
+
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert result.step_records[0].total_attempts == 3
 
     async def test_step_records_populated(self) -> None:
         ctx = _make_ctx()
@@ -4428,6 +4636,37 @@ class TestCIMaxFixAttemptsInSettingsMeta:
         assert meta.value_type == "number"
 
 
+class TestRunawayGuardConfig:
+    """Verify the cost-independent runaway guard fields ([runaway] section) and
+    their settings_meta registration."""
+
+    def test_defaults(self) -> None:
+        config = ProjectConfig()
+        assert config.runaway.max_run_wall_clock_seconds == 14400
+        assert config.runaway.max_run_steps == 100
+        assert config.runaway.max_llm_calls == 250
+        assert config.runaway.max_step_attempts == 80
+
+    def test_registered_in_settings_meta(self) -> None:
+        from sova.dashboard.settings_meta import get_meta
+
+        for key in (
+            "runaway.max_run_wall_clock_seconds",
+            "runaway.max_run_steps",
+            "runaway.max_llm_calls",
+            "runaway.max_step_attempts",
+        ):
+            meta = get_meta(key)
+            assert meta is not None
+            assert meta.group == "runaway"
+            assert meta.value_type == "number"
+
+    def test_nested_section_registered(self) -> None:
+        from sova.config.loader import _NESTED_SECTIONS
+
+        assert "runaway" in _NESTED_SECTIONS
+
+
 class TestParseReviewBody:
     """Tests for _parse_review_body structured finding parser."""
 
@@ -4736,8 +4975,10 @@ class TestMonitorCIFixLoop:
         assert "Tests" in result.summary
         assert mock_invoke.await_count == 2
 
-    async def test_low_budget_fraction_stops_retry_without_failing(self) -> None:
-        """Below the 20% threshold, CI fix retries stop but the step reports success."""
+    async def test_low_budget_fraction_stops_retry_and_fails(self) -> None:
+        """Below the 20% threshold, CI fix retries stop and the step reports
+        failure: CI is still red, so returning success=True here would let
+        WorkflowEngine advance past a broken build."""
         from sova.config.models import AgentConfig
         from sova.core.steps.monitor_ci import MonitorCIStep
 
@@ -4768,8 +5009,9 @@ class TestMonitorCIFixLoop:
                 mock_run.side_effect = _shell_side_effect
                 result = await step.execute(ctx)
 
-        assert result.success
+        assert not result.success
         assert "stopping retries" in result.summary
+        assert "Tests" in (result.error or "")
         mock_invoke.assert_not_awaited()
 
     async def test_ci_fix_disabled_when_zero(self) -> None:
@@ -6562,15 +6804,17 @@ class TestPushStepExecute:
         )
 
     async def test_execute_skips_hooks_when_budget_critically_low(self) -> None:
-        """When ValidateStep gave up fixing a failing pre-push hook due to low
-        budget, Push must skip the same hook or the push aborts for the same
-        unfixed reason, silently undoing the graceful-degradation attempt."""
+        """When dollar budget is critically low, Push must skip the pre-push
+        hook, matching CommitStep's BUDGET_SKIP_HOOKS_THRESHOLD so both
+        hook-skip decisions agree. Keyed on budget_remaining_fraction alone
+        (not the composite resource_remaining_fraction), since wall-clock or
+        LLM-call pressure must never disable validation on its own."""
         from sova.config.models import AgentConfig
         from sova.core.steps.push import PushStep
 
         config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
         ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"), config=config)
-        ctx.cost_usd = Decimal("8.50")  # 15% remaining, below the 20% stop-retry threshold
+        ctx.cost_usd = Decimal("9.50")  # 5% remaining, below the 8% skip-hooks threshold
         step = PushStep()
 
         with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:

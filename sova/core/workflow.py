@@ -27,6 +27,7 @@ from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import get_session
 from sova.ipc.notifications import notify
+from sova.llm.client import start_call_counter
 from sova.llm.errors import is_billing_failure
 from sova.utils.logging import get_logger
 
@@ -38,6 +39,19 @@ log = get_logger(component="workflow")
 # exceptions into StepResult.error before this ever runs, so the pattern table
 # stays the classifier that actually fires today.
 _is_billing_failure = is_billing_failure
+
+# Prefix sova.llm.client raises a plain RuntimeError with when
+# runaway.max_llm_calls is already exhausted at the invocation boundary (see
+# _check_runaway_call_limit), matching _check_runaway_guard's own message
+# format. Detected here the same way billing failures are: by the time a step
+# raises through to WorkflowEngine, the exception has already been
+# stringified into StepResult.error.
+_RUNAWAY_GUARD_PREFIX = "Runaway guard:"
+
+
+def _is_runaway_failure(error: str | None) -> bool:
+    """Return True if *error* is a runaway-guard failure raised through the LLM call boundary."""
+    return bool(error) and error.startswith(_RUNAWAY_GUARD_PREFIX)
 
 
 # Maps step names to the TaskStatus they represent while executing
@@ -71,6 +85,11 @@ class StepRecord:
     duration_ms: int = 0
     retries: int = 0
     step_exec_id: int | None = None
+    # Cumulative attempts at this step across every pass through
+    # _execute_with_retries' outer fallback-switch loop, not just the current
+    # model's inner retry loop. The record is reused across fallback switches,
+    # so this persists where `retries` (reset per model) does not.
+    total_attempts: int = 0
 
 
 @dataclass
@@ -100,9 +119,21 @@ class WorkflowEngine:
         self._ctx = ctx
         self._task_run_id: int | None = None
         self._output_writer: OutputWriter | None = None
+        self._run_started_at: float = 0.0
 
     async def run(self) -> WorkflowResult:
         """Execute all steps in order, respecting gates and retries."""
+        # Set once, never re-stamped: the wall-clock guard must not be resettable
+        # by re-entering run() on the same engine. The conditional is also what
+        # lets a test preset the start to simulate an already-long-running pipeline
+        # (time.monotonic() cannot be patched globally without breaking asyncio).
+        if not self._run_started_at:
+            self._run_started_at = time.monotonic()
+            # Fresh counter per run: a resumed run's own retry/fallback loops
+            # must not inherit a stale count from whatever call happened to run
+            # earlier in this process or asyncio task tree.
+            start_call_counter()
+        self._ctx.run_started_at = self._run_started_at
         if self._ctx.task_run_id is not None:
             self._task_run_id = self._ctx.task_run_id
             await self._adopt_task_run()
@@ -165,6 +196,9 @@ class WorkflowEngine:
             await self._sync_task_run_context()
             return False
 
+        if await self._check_runaway_guard(step, result):
+            return False
+
         if await step.can_skip(self._ctx):
             log.info("workflow.step.skip", step=step.name)
             result.steps_skipped += 1
@@ -190,6 +224,10 @@ class WorkflowEngine:
 
         if record.result and record.result.summary:
             await self._write_output(record.result.summary)
+
+        if record.status == "runaway":
+            await self._pause_for_runaway(step, record, result)
+            return False
 
         if record.status == "failed":
             await self._handle_step_failure(step, record, result)
@@ -246,6 +284,89 @@ class WorkflowEngine:
             error=result.error,
             status=result.final_status,
         )
+
+    async def _check_runaway_guard(self, step: BaseStep, result: WorkflowResult) -> bool:
+        """Cost-independent runaway guard: wall-clock, step-count, and LLM call-count limits.
+
+        Backstops the dollar-based budget checks (is_budget_exceeded,
+        _check_per_issue_budget), which go blind against a provider that
+        always reports cost_usd=0 (docs/model-selection-risk-assessment.md,
+        R6). Each limit set to 0 disables that check. Returns True if the
+        pipeline was paused and should abort.
+
+        The LLM call count (sova.llm.client.get_call_count) is the limit that
+        actually catches retry/fix loops burning calls inside a single step's
+        execute() (MonitorCIStep's CI-fix loop, AddressReviewStep's consensus
+        loop) without ever incrementing steps_completed: invisible to the
+        step-count guard alone. Wall clock is scaled by task complexity (the
+        same multiplier _step_timeout applies) so a legitimate EPIC run isn't
+        paused by a limit sized for the default tier. ``steps_completed`` is
+        bounded by ``len(self._steps)`` within a single run (retries produce one
+        record, and the engine never loops), so ``max_run_steps`` is a ceiling
+        for future longer pipelines rather than an active guard on today's
+        16-step developer pipeline.
+
+        A single ``failure_type="runaway_guard"`` is recorded for every trip
+        (mirroring the single "budget_exceeded" type), with the specific
+        dimension and its value carried in the message so downstream
+        consumers (dashboard filters, retry classification) only need to match
+        one value.
+        """
+        from sova.llm.client import get_call_count
+        from sova.llm.complexity import complexity_multiplier
+
+        runaway = self._ctx.config.runaway
+        elapsed = time.monotonic() - self._run_started_at
+        scaled_wall_clock = runaway.max_run_wall_clock_seconds * complexity_multiplier(self._ctx.complexity)
+        call_count = get_call_count()
+
+        if runaway.max_run_wall_clock_seconds and elapsed > scaled_wall_clock:
+            message = (
+                f"Runaway guard: wall clock exceeded {scaled_wall_clock:.0f}s "
+                f"(base {runaway.max_run_wall_clock_seconds}s, elapsed {elapsed:.0f}s)"
+            )
+        elif runaway.max_run_steps and result.steps_completed >= runaway.max_run_steps:
+            message = f"Runaway guard: step count exceeded {runaway.max_run_steps} steps"
+        elif runaway.max_llm_calls and call_count >= runaway.max_llm_calls:
+            message = f"Runaway guard: LLM call count exceeded {runaway.max_llm_calls} calls"
+        else:
+            return False
+
+        await self._pause_run(step.name, "runaway_guard", message, result)
+        return True
+
+    async def _pause_run(self, step_name: str, failure_type: str, message: str, result: WorkflowResult) -> None:
+        """Pause the run: record a failure, close output, and persist state.
+
+        Shared by three trip points that must all produce the same PAUSED +
+        failure_type="runaway_guard" contract: the pre-step check above, a
+        step aborted mid-execution by the wall-clock deadline
+        (``_run_step_with_timeout``), and step-attempt-limit exhaustion
+        (``_try_step_with_retries``). Without a single helper, the latter two
+        would fall through to ``_handle_step_failure``'s generic FAILED +
+        "exception" path, which is indistinguishable from an ordinary bug.
+        """
+        log.warning("workflow.runaway_guard", message=message, step=step_name)
+        result.final_status = TaskStatus.PAUSED
+        result.error = message
+        await self._write_output(f"PAUSED: {message}")
+        await self._close_output()
+        await self._record_failure(step_name, failure_type, message)
+        await self._update_task_run_status(TaskStatus.PAUSED, error=message)
+        await self._sync_task_run_context()
+
+    async def _pause_for_runaway(self, step: BaseStep, record: StepRecord, result: WorkflowResult) -> None:
+        """Pause the run for a runaway trip discovered inside the retry loop.
+
+        Covers the two trip points ``_check_runaway_guard`` cannot see because
+        they fire mid-attempt rather than between steps: a step aborted by the
+        wall-clock deadline (``record.result.runaway_triggered``) and
+        step-attempt-limit exhaustion (``runaway.max_step_attempts``). Both
+        paths set ``record.status = "runaway"`` and stash the message on
+        ``record.result.error`` before returning here.
+        """
+        message = (record.result.error if record.result else None) or f"Runaway guard tripped in step '{step.name}'"
+        await self._pause_run(step.name, "runaway_guard", message, result)
 
     async def _handle_step_approval(self, step: BaseStep, record: StepRecord, result: WorkflowResult) -> None:
         """Handle a step requesting human approval: pause pipeline, notify.
@@ -342,19 +463,49 @@ class WorkflowEngine:
 
         Returns:
             "done" if step succeeded, "failed" for non-billing failure,
-            "billing_exhausted" if all retries failed with billing errors.
+            "billing_exhausted" if all retries failed with billing errors,
+            "runaway" if a runaway guard tripped (attempt limit or a
+            wall-clock/call-count deadline caught mid-attempt); never retried.
         """
         attempts = 0
         max_attempts = step.max_retries + 1
+        max_total_attempts = self._ctx.config.runaway.max_step_attempts
         last_was_billing = False
 
         while attempts < max_attempts:
+            # Incremented here (per attempt, cumulative across every fallback
+            # switch via _execute_with_retries' outer loop reusing `record`),
+            # not in the outer loop: each billing_exhausted advance resets
+            # `attempts` to 0 for the new model, so without a counter that
+            # survives model switches a long fallback chain could retry a
+            # single step an unbounded number of times. 0 disables the cap.
+            if max_total_attempts and record.total_attempts >= max_total_attempts:
+                message = f"Runaway guard: step '{step.name}' exceeded {max_total_attempts} attempts"
+                log.warning(
+                    "workflow.step.max_attempts_exceeded",
+                    step=step.name,
+                    total_attempts=record.total_attempts,
+                    limit=max_total_attempts,
+                )
+                # Routed as a runaway trip (PAUSED), not a generic failure
+                # (FAILED): an attempt-limit exhaustion is the runaway guard's
+                # own contract, not an ordinary step bug, and must be
+                # resumable the same way the pre-step wall-clock/call-count
+                # checks are.
+                record.result = StepResult(success=False, summary=message, error=message)
+                record.status = "runaway"
+                return "runaway"
+            record.total_attempts += 1
+
             attempt_result = await self._execute_single_attempt(step, record, attempts)
             attempts += 1
             record.retries = attempts - 1
 
             if attempt_result == "continue":
                 continue
+            if attempt_result == "runaway":
+                record.status = "runaway"
+                return "runaway"
             if attempt_result == "done":
                 record.status = "done"
                 log.info("workflow.step.done", step=step.name, duration_ms=record.duration_ms)
@@ -376,6 +527,9 @@ class WorkflowEngine:
         Returns:
             "done" if succeeded, "failed" for non-billing failure,
             "billing_exhausted" for billing failure with fallbacks available,
+            "runaway" if the runaway guard tripped mid-attempt (wall-clock
+            deadline expiry, or an LLM call rejected at the invocation
+            boundary once runaway.max_llm_calls was already reached),
             "continue" to retry with same model.
         """
         step_exec_id = await self._prepare_step_execution(step, record, attempt)
@@ -392,6 +546,8 @@ class WorkflowEngine:
         await self._persist_step_result(step_exec_id, step_result, elapsed_ms, step.name)
 
         if not step_result.success:
+            if step_result.runaway_triggered:
+                return "runaway"
             return self._handle_step_failure_result(step_result)
 
         return await self._validate_step_gate(step, step_exec_id, record)
@@ -418,7 +574,7 @@ class WorkflowEngine:
         WIP message so partial work is not lost. Sets partial_work=True in the
         returned StepResult so the dashboard can surface it.
         """
-        timeout_seconds = self._step_timeout(step.name)
+        timeout_seconds, runaway_deadline = self._effective_step_timeout(step.name)
         usage_before = self._ctx.usage_snapshot()
         cost_before = self._ctx.cost_usd
         try:
@@ -426,13 +582,32 @@ class WorkflowEngine:
                 result = await step.execute(self._ctx)
         except TimeoutError:
             partial_work = await self._preserve_partial_work_on_timeout(step.name)
-            result = StepResult(
-                success=False,
-                summary=f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)",
-                error="step_hard_timeout",
-                partial_work=partial_work,
-                cost_usd=self._ctx.cost_usd - cost_before,
-            )
+            if runaway_deadline:
+                # The scaled runaway.max_run_wall_clock_seconds deadline, not
+                # the step's own configured timeout, was the binding
+                # constraint: _check_runaway_guard only checks between steps,
+                # so a long-running attempt could otherwise keep going past
+                # the deadline until its own (longer) timeout fired.
+                message = (
+                    f"Runaway guard: wall clock exceeded during step '{step.name}' "
+                    f"(step aborted after {timeout_seconds}s of remaining budget)"
+                )
+                result = StepResult(
+                    success=False,
+                    summary=message,
+                    error=message,
+                    partial_work=partial_work,
+                    cost_usd=self._ctx.cost_usd - cost_before,
+                    runaway_triggered=True,
+                )
+            else:
+                result = StepResult(
+                    success=False,
+                    summary=f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)",
+                    error="step_hard_timeout",
+                    partial_work=partial_work,
+                    cost_usd=self._ctx.cost_usd - cost_before,
+                )
         except Exception as exc:
             log.exception("workflow.step.unhandled_exception", step=step.name, error=str(exc))
             result = StepResult(
@@ -503,6 +678,8 @@ class WorkflowEngine:
 
     def _handle_step_failure_result(self, step_result: StepResult) -> str:
         """Classify step failure and determine retry strategy."""
+        if _is_runaway_failure(step_result.error):
+            return "runaway"
         is_billing = _is_billing_failure(step_result.error)
         if is_billing and self._has_fallback_models():
             return "billing_exhausted"
@@ -611,11 +788,12 @@ class WorkflowEngine:
         develop uses develop.step_timeout;
         all other steps use agent.step_timeout.
 
-        Complexity multiplier: COMPLEX issues get 1.5x timeout, EPIC get 2.0x,
-        capped at 3.0x (max multiplier). Applied to the final computed value
-        so all paths benefit.
+        Complexity multiplier (shared with the wall-clock runaway guard via
+        sova.llm.complexity.complexity_multiplier): COMPLEX issues get 1.5x
+        timeout, EPIC get 2.0x, capped at 3.0x (max multiplier). Applied to
+        the final computed value so all paths benefit.
         """
-        from sova.llm.complexity import ComplexityTier
+        from sova.llm.complexity import complexity_multiplier
 
         if step_name == "monitor_ci":
             base = self._ctx.config.ci.max_wait + 120
@@ -624,16 +802,35 @@ class WorkflowEngine:
         else:
             base = self._ctx.config.agent.step_timeout
 
-        # Apply complexity multiplier (default 1.0 when complexity is None)
-        multiplier = 1.0
-        if self._ctx.complexity == ComplexityTier.COMPLEX:
-            multiplier = 1.5
-        elif self._ctx.complexity == ComplexityTier.EPIC:
-            multiplier = 2.0
+        return int(base * complexity_multiplier(self._ctx.complexity))
 
-        # Cap at 3.0x to prevent unbounded timeouts
-        multiplier = min(multiplier, 3.0)
-        return int(base * multiplier)
+    def _effective_step_timeout(self, step_name: str) -> tuple[int, bool]:
+        """Return ``(timeout_seconds, capped_by_runaway)`` for the active attempt.
+
+        ``_check_runaway_guard`` only checks the scaled wall-clock deadline
+        between steps, so a step whose own ``_step_timeout`` is longer than
+        what remains of that deadline could otherwise keep running past it.
+        Caps the step's timeout to whatever remains of
+        ``runaway.max_run_wall_clock_seconds`` (scaled by complexity, same as
+        the pre-step guard), so a step never runs past the deadline just
+        because its own timeout is longer. ``capped_by_runaway`` is True when
+        the runaway deadline (not the step's own timeout) is the binding
+        constraint, so the caller can attribute a subsequent TimeoutError to
+        the runaway guard's PAUSED path rather than the generic
+        FAILED/step_hard_timeout path.
+        """
+        step_timeout = self._step_timeout(step_name)
+        runaway = self._ctx.config.runaway
+        if not runaway.max_run_wall_clock_seconds or not self._run_started_at:
+            return step_timeout, False
+
+        from sova.llm.complexity import complexity_multiplier
+
+        scaled = runaway.max_run_wall_clock_seconds * complexity_multiplier(self._ctx.complexity)
+        remaining = max(0, int(scaled - (time.monotonic() - self._run_started_at)))
+        if remaining < step_timeout:
+            return remaining, True
+        return step_timeout, False
 
     # -- Output helpers --
 

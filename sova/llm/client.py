@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextvars import ContextVar
+from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +26,12 @@ from sova.llm.errors import (
     resolve_error_category,
 )
 from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent, resolve_model_alias
+
+# Module-level, unlike get_provider()'s lazy per-call ClaudeCodeProvider import:
+# reload_provider() is the chokepoint tests patch as sova.llm.client.create_provider,
+# and a name bound at import time is what makes that the correct, unambiguous
+# patch target rather than sova.llm.provider.create_provider.
+from sova.llm.provider import create_provider
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -57,18 +65,135 @@ def reset_provider() -> None:
     _provider = None
 
 
+# Once-per-process dedup for the reports_cost=False warning below. A plain
+# module global (not a ContextVar): the warning is about which provider TYPE
+# is installed process-wide, not about a single run's context, so it must
+# stay suppressed across every reload_provider() call (dashboard settings
+# saves, hot-reloads) as long as the provider type hasn't actually changed.
+_last_warned_provider_type: str | None = None
+
+
 def reload_provider(cfg: ProjectConfig) -> None:
     """Recreate the global LLM provider from fresh config.
 
     Python's GIL ensures the reference swap is atomic. In-flight calls hold
     their own reference to the old provider, which stays alive via refcount.
     """
-    from sova.llm.provider import create_provider
+    global _last_warned_provider_type  # noqa: PLW0603
 
     # The whole llm section, not a hand-picked subset: forwarding individual
     # kwargs is what let a new field keep applying at startup but silently stop
     # applying after a settings hot-reload (R12).
-    set_provider(create_provider(cfg.llm))
+    provider = create_provider(cfg.llm)
+    set_provider(provider)
+
+    # Single chokepoint for the CLI callback, dashboard lifespan, and the
+    # "llm" hot-reload dispatch target in settings.py: a provider that can't
+    # report real cost makes the dollar-based budget guard blind (R6). Logged
+    # once per provider type, not once per call: reload_provider() re-runs on
+    # every dashboard settings save and every hot-reload, and a provider type
+    # that already warned would otherwise re-log indefinitely. Re-warns only
+    # when the provider type actually changes (e.g. litellm -> anthropic ->
+    # litellm), including back to a previously-warned type, since that is a
+    # genuine new swap the operator should see.
+    if not provider.capabilities.reports_cost:
+        if cfg.llm.provider != _last_warned_provider_type:
+            log.warning(
+                "llm.provider_reports_cost_false",
+                provider=cfg.llm.provider,
+                detail="budget caps (agent.max_budget, agent.max_issue_budget) cannot be enforced "
+                "reliably against this provider's reported cost; rely on the wall-clock/step-count/"
+                "call-count runaway guard instead",
+            )
+        _last_warned_provider_type = cfg.llm.provider
+    else:
+        _last_warned_provider_type = None
+
+
+def reset_provider_warning_state() -> None:
+    """Clear the once-per-process reports_cost warning dedup (for testing)."""
+    global _last_warned_provider_type  # noqa: PLW0603
+    _last_warned_provider_type = None
+
+
+# ---------------------------------------------------------------------------
+# LLM invocation-count runaway guard (docs/model-selection-risk-assessment.md, R6)
+#
+# A ContextVar holding a *mutable* counter object, not a plain int: plain-int
+# ContextVars are copy-on-inherit into child asyncio tasks, so a mutation made
+# inside a child task (e.g. a step's own asyncio.gather sub-tasks) would never
+# propagate back to the parent run. A shared mutable object inherited by
+# reference propagates correctly, while a separate top-level run that installs
+# its own counter object stays isolated (required because the dashboard
+# process runs batch triage concurrently with other work).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _CallCounter:
+    count: int = 0
+
+
+_call_counter: ContextVar[_CallCounter | None] = ContextVar("_call_counter", default=None)
+
+
+def start_call_counter() -> None:
+    """Install a fresh LLM invocation counter for the current run.
+
+    Called once per run (WorkflowEngine.run(), guarded like its own
+    ``_run_started_at`` so a resumed run does not reset the count mid-flight).
+    """
+    _call_counter.set(_CallCounter())
+
+
+def get_call_count() -> int:
+    """Return the current run's LLM invocation count, or 0 if none installed."""
+    counter = _call_counter.get()
+    return counter.count if counter is not None else 0
+
+
+def reset_call_counter() -> None:
+    """Uninstall the current run's call counter (for testing)."""
+    _call_counter.set(None)
+
+
+def _increment_call_counter(n: int = 1) -> None:
+    """Increment the current run's LLM invocation count by *n*, a no-op if none installed.
+
+    A run outside WorkflowEngine (reviewer/custom roles, which don't call
+    start_call_counter()) simply never accumulates a count, which is correct:
+    the guard that reads it is only checked from WorkflowEngine's step loop.
+    """
+    counter = _call_counter.get()
+    if counter is not None:
+        counter.count += n
+
+
+def _check_runaway_call_limit(cfg: ProjectConfig | None) -> None:
+    """Reject a new invocation once ``runaway.max_llm_calls`` is already reached.
+
+    WorkflowEngine._check_runaway_guard() only checks between steps, so a
+    step that issues many invoke() calls inside a single execute() (e.g.
+    MonitorCIStep's CI-fix loop, AddressReviewStep's consensus loop) could
+    otherwise keep dispatching provider calls past the configured ceiling.
+    Checked before the counter increments and before any provider attempt, at
+    every one of the four call-counting entry points (invoke, invoke_command,
+    invoke_streaming, invoke_batch).
+
+    The message is prefixed identically to _check_runaway_guard's own
+    ("Runaway guard: ..."), so once this propagates up through a step's
+    execute() and is stringified into StepResult.error, WorkflowEngine's
+    _is_runaway_failure() recognizes it and routes the failure through the
+    same PAUSED path as every other runaway trip, instead of a generic
+    FAILED.
+
+    0 disables the check (matching every other runaway limit); a missing
+    config (no project resolved yet) never blocks.
+    """
+    if cfg is None or not cfg.runaway.max_llm_calls:
+        return
+    if get_call_count() >= cfg.runaway.max_llm_calls:
+        raise RuntimeError(f"Runaway guard: LLM call count exceeded {cfg.runaway.max_llm_calls} calls")
 
 
 # ---------------------------------------------------------------------------
@@ -346,8 +471,12 @@ async def invoke(
     # Loaded unconditionally, and before compression: the fallback chain lives
     # in agent.fallback_models, so it is needed even when both model and
     # timeout are supplied, and passing it into maybe_compress avoids loading
-    # config twice per call (it would otherwise reload internally).
+    # config twice per call (it would otherwise reload internally). Also
+    # needed before the counter increments, so the runaway call-limit check
+    # can reject the invocation before any provider attempt.
     cfg = await _try_load_config_async(cwd)
+    _check_runaway_call_limit(cfg)
+    _increment_call_counter()
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
     resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
     resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
@@ -656,6 +785,8 @@ async def invoke_command(
     # Loaded before compression so args is compressed with the same cfg used
     # for timeout/chain resolution below, instead of loading config twice.
     cfg = await _try_load_config_async(cwd)
+    _check_runaway_call_limit(cfg)
+    _increment_call_counter()
     if args:
         from sova.llm.guard import guard_prompt
 
@@ -737,6 +868,14 @@ async def invoke_batch(
     # is indistinguishable from "not passed" to that helper, and it would
     # otherwise retry _try_load_config(cwd=None) on every iteration, silently
     # reloading from the wrong cwd besides.
+    # Checked once against the whole batch, before any request is prepared or
+    # dispatched: a batch submitted once the ceiling is already reached is
+    # rejected outright rather than partially processed.
+    _check_runaway_call_limit(cfg)
+    # One increment per request: each is an independent LLM invocation, even
+    # though the batch backends may submit them as a single HTTP call.
+    _increment_call_counter(len(requests))
+
     prepared: list[BatchRequest] = []
     for req in requests:
         guard_prompt(req.prompt)
@@ -786,8 +925,12 @@ async def invoke_streaming(
 
     guard_prompt(prompt)
     # Loaded once and shared, matching invoke(): compression, task-type routing
-    # and the alias map all need it, and each would otherwise reload it.
+    # and the alias map all need it, and each would otherwise reload it. Also
+    # needed before the counter increments, so the runaway call-limit check
+    # can reject the invocation before any provider attempt.
     cfg = await _try_load_config_async(cwd)
+    _check_runaway_call_limit(cfg)
+    _increment_call_counter()
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
     resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
     async for event in get_provider().invoke_streaming(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd):
