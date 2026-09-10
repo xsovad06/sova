@@ -369,6 +369,25 @@ class ExternalReviewsConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_EXTERNAL_REVIEWS_")
 
 
+class LdapConfig(BaseSettings):
+    """LDAP directory configuration for issue routing and reviewer suggestions.
+
+    Opt-in and organization-specific (default server targets Red Hat's
+    corporate LDAP). Queries require VPN connectivity; callers must degrade
+    gracefully to ``github_user`` when the directory is unreachable.
+    """
+
+    enabled: bool = False
+    server: str = "ldap://ldap.corp.redhat.com"
+    base_dn: str = "ou=users,dc=redhat,dc=com"
+    group_base_dn: str = "ou=adhoc,ou=managedGroups,dc=redhat,dc=com"
+    uid_mapping: str = "github_username"
+    timeout_seconds: int = Field(5, gt=0)
+    cache_ttl_seconds: int = Field(300, ge=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_LDAP_")
+
+
 class EgressConfig(BaseSettings):
     """Egress filter configuration for outbound text scanning."""
 
@@ -787,6 +806,7 @@ class ProjectConfig(BaseSettings):
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     external_reviews: ExternalReviewsConfig = Field(default_factory=ExternalReviewsConfig)
+    ldap: LdapConfig = Field(default_factory=LdapConfig)
     egress: EgressConfig = Field(default_factory=EgressConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)

@@ -301,6 +301,47 @@ class CreatePRStep(BaseStep):
             except Exception:
                 log.warning("step.create_pr.tracker_update_failed", exc_info=True)
         await self._trigger_coderabbit_review(ctx, pr_number)
+        if ctx.config.ldap.enabled:
+            await self._suggest_reviewers(ctx, pr_number)
+
+    _MAX_SUGGESTED_REVIEWERS = 2
+
+    async def _suggest_reviewers(self, ctx: ExecutionContext, pr_number: int) -> None:
+        """Suggest teammates of the PR author as reviewers via LDAP org data.
+
+        Best-effort: any missing precondition (LDAP unavailable, no VPN,
+        author not found, no manager/teammates) is a silent no-op so PR
+        creation is never blocked on a directory lookup.
+        """
+        from sova.adapters.ldap_client import create_ldap_client
+
+        client = create_ldap_client(ctx.config.ldap)
+        if client is None:
+            return
+
+        author_uid = ctx.config.github_user
+        if not author_uid:
+            return
+
+        if not await client.check_connectivity():
+            log.warning("step.create_pr.ldap_vpn_unavailable", pr=pr_number)
+            return
+
+        try:
+            manager_chain = await client.find_manager_chain(author_uid, max_depth=1)
+            if not manager_chain:
+                return
+            teammates = await client.get_org_chart(manager_chain[0].uid, depth=1)
+        except Exception:
+            log.warning("step.create_pr.ldap_reviewer_lookup_failed", pr=pr_number, exc_info=True)
+            return
+
+        candidates = [p for p in teammates if p.uid and p.uid != author_uid][: self._MAX_SUGGESTED_REVIEWERS]
+        for person in candidates:
+            try:
+                await ctx.adapter.add_reviewer(ctx.issue_number if ctx.has_issue else "", pr_number, person.uid)
+            except Exception:
+                log.warning("step.create_pr.add_reviewer_failed", pr=pr_number, user=person.uid, exc_info=True)
 
     @staticmethod
     async def _trigger_coderabbit_review(ctx: ExecutionContext, pr_number: int) -> None:

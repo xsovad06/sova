@@ -24,6 +24,7 @@ from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from sova.adapters.ldap_client import Person
     from sova.llm.models import LLMResult
 
 log = get_logger(component="role.triage")
@@ -794,7 +795,13 @@ class TriageRole(AgentRole):
             if label:
                 await ctx.adapter.add_label(ctx.issue_number, label)
 
-        assessment_section = self._build_assessment_comment(task, assessment, quality)
+        suggested_assignee: Person | None = None
+        if assessment.suitability == "ready" and ctx.config.ldap.enabled:
+            suggested_assignee = await self._suggest_assignee(ctx, task)
+            if suggested_assignee:
+                await ctx.adapter.assign_to_user(ctx.issue_number, suggested_assignee.uid)
+
+        assessment_section = self._build_assessment_comment(task, assessment, quality, suggested_assignee)
         if triage_cfg.mode == "comment":
             await ctx.adapter.post_comment(ctx.issue_number, assessment_section)
         elif triage_cfg.write_body:
@@ -944,8 +951,44 @@ class TriageRole(AgentRole):
 
         return None
 
+    async def _suggest_assignee(self, ctx: ExecutionContext, task: Task) -> Person | None:
+        """Query LDAP for a candidate assignee based on the issue's declared component.
+
+        Best-effort: any missing precondition (LDAP disabled, unavailable, no
+        VPN, no component to search on) returns None so triage proceeds
+        without an assignee suggestion.
+        """
+        from sova.adapters.ldap_client import create_ldap_client
+
+        client = create_ldap_client(ctx.config.ldap)
+        if client is None:
+            return None
+
+        query = task.components[0] if task.components else None
+        if not query:
+            area_labels = [lbl.split(":", 1)[1] for lbl in task.labels if lbl.startswith("area:")]
+            query = area_labels[0] if area_labels else None
+        if not query:
+            return None
+
+        if not await client.check_connectivity():
+            log.warning("triage.ldap_vpn_unavailable", issue=ctx.issue_number)
+            return None
+
+        try:
+            people = await client.search_people(query)
+        except Exception:
+            log.warning("triage.ldap_search_failed", issue=ctx.issue_number, exc_info=True)
+            return None
+
+        return people[0] if people else None
+
     def _build_assessment_comment(
-        self, task: Task, assessment: TaskAssessment, quality: QualityScore | None = None
+        self,
+        task: Task,
+        assessment: TaskAssessment,
+        quality: QualityScore | None = None,
+        suggested_assignee: Person | None = None,
     ) -> str:
         """Build a triage assessment section to append to the issue body."""
         has_body = bool(task.body and task.body.strip())
@@ -978,5 +1021,14 @@ class TriageRole(AgentRole):
             parts.append("\n### Suggested sub-tasks:\n")
             for sub in assessment.sub_tasks:
                 parts.append(f"- {sub}")
+
+        if suggested_assignee:
+            parts.append("\n### Suggested assignee (LDAP)\n")
+            name = suggested_assignee.display_name or suggested_assignee.uid
+            details = ", ".join(d for d in (suggested_assignee.job_title, suggested_assignee.cost_center_desc) if d)
+            line = f"**{name}** (`{suggested_assignee.uid}`)"
+            if details:
+                line += f": {details}"
+            parts.append(line)
 
         return "\n".join(parts)

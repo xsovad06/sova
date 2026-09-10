@@ -288,6 +288,19 @@ class JiraAdapter(TaskAdapter):
         await self.add_label(task_id, f"role:{agent_role}")
         return True
 
+    async def assign_to_user(self, task_id: str, username: str) -> None:
+        issue_key = self._resolve_key(task_id)
+        response = await self._http.put(
+            self._issue_path(issue_key),
+            json={"fields": {"assignee": {"name": username}}},
+        )
+        if response.status_code not in (200, 204):
+            log.warning("assign_to_user.failed", issue=issue_key, user=username, status=response.status_code)
+
+    async def add_reviewer(self, task_id: str, pr_number: int, username: str) -> None:
+        # Jira has no native concept of a GitHub PR reviewer; this is a GitHub-specific operation.
+        log.info("add_reviewer.no_op_for_jira", pr=pr_number, user=username)
+
     async def add_label(self, task_id: str, label: str) -> None:
         issue_key = self._resolve_key(task_id)
         response = await self._http.put(

@@ -617,6 +617,33 @@ class TestLabels:
         assert b"remove" in body
 
 
+class TestAssignToUser:
+    @respx.mock
+    async def test_assign_to_user_success(self) -> None:
+        adapter = _adapter()
+        route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        await adapter.assign_to_user("1", "jdoe")
+        assert route.called
+        body = route.calls[0].request.content
+        assert b"jdoe" in body
+
+    @respx.mock
+    async def test_assign_to_user_failure_is_non_fatal(self) -> None:
+        adapter = _adapter()
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(400, text="Bad request"),
+        )
+        await adapter.assign_to_user("1", "jdoe")  # should not raise
+
+
+class TestAddReviewer:
+    async def test_add_reviewer_is_noop_for_jira(self) -> None:
+        adapter = _adapter()
+        await adapter.add_reviewer("1", 42, "jdoe")  # should not raise, no HTTP call
+
+
 class TestPostComment:
     @respx.mock
     async def test_post_comment(self) -> None:
