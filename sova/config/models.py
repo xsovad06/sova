@@ -381,7 +381,6 @@ class LdapConfig(BaseSettings):
     server: str = "ldap://ldap.corp.redhat.com"
     base_dn: str = "ou=users,dc=redhat,dc=com"
     group_base_dn: str = "ou=adhoc,ou=managedGroups,dc=redhat,dc=com"
-    uid_mapping: str = "github_username"
     timeout_seconds: int = Field(5, gt=0)
     cache_ttl_seconds: int = Field(300, ge=0)
 

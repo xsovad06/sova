@@ -134,6 +134,8 @@ _BRANCH_PREFIX_RE = re.compile(r"^(?:feat|fix|refactor|chore)/")
 _ISSUE_PREFIX_RE = re.compile(r"^issue-\d+-?")
 _JIRA_KEY_PREFIX_RE = re.compile(r"^[A-Z]+-\d+-?")
 
+_MAX_SUGGESTED_REVIEWERS = 2
+
 
 def _title_from_branch(branch: str) -> str:
     """Extract a human-readable title from a branch name."""
@@ -304,8 +306,6 @@ class CreatePRStep(BaseStep):
         if ctx.config.ldap.enabled:
             await self._suggest_reviewers(ctx, pr_number)
 
-    _MAX_SUGGESTED_REVIEWERS = 2
-
     async def _suggest_reviewers(self, ctx: ExecutionContext, pr_number: int) -> None:
         """Suggest teammates of the PR author as reviewers via LDAP org data.
 
@@ -336,7 +336,7 @@ class CreatePRStep(BaseStep):
             log.warning("step.create_pr.ldap_reviewer_lookup_failed", pr=pr_number, exc_info=True)
             return
 
-        candidates = [p for p in teammates if p.uid and p.uid != author_uid][: self._MAX_SUGGESTED_REVIEWERS]
+        candidates = [p for p in teammates if p.uid and p.uid != author_uid][:_MAX_SUGGESTED_REVIEWERS]
         for person in candidates:
             try:
                 await ctx.adapter.add_reviewer(ctx.issue_number if ctx.has_issue else "", pr_number, person.uid)

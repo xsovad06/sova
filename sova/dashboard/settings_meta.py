@@ -919,12 +919,6 @@ _REGISTRY: list[SettingMeta] = [
         "ldap",
     ),
     SettingMeta(
-        "ldap.uid_mapping",
-        "UID mapping",
-        "Convention for mapping a GitHub username to an LDAP uid",
-        "ldap",
-    ),
-    SettingMeta(
         "ldap.timeout_seconds",
         "Timeout (s)",
         "Seconds to wait for LDAP connectivity and queries before failing open",

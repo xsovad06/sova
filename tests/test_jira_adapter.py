@@ -621,21 +621,38 @@ class TestAssignToUser:
     @respx.mock
     async def test_assign_to_user_success(self) -> None:
         adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/user/search").mock(
+            return_value=Response(200, json=[{"accountId": "acc-123"}]),
+        )
         route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
             return_value=Response(204),
         )
         await adapter.assign_to_user("1", "jdoe")
         assert route.called
         body = route.calls[0].request.content
-        assert b"jdoe" in body
+        assert b"acc-123" in body
+        assert b"jdoe" not in body
 
     @respx.mock
     async def test_assign_to_user_failure_is_non_fatal(self) -> None:
         adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/user/search").mock(
+            return_value=Response(200, json=[{"accountId": "acc-123"}]),
+        )
         respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
             return_value=Response(400, text="Bad request"),
         )
         await adapter.assign_to_user("1", "jdoe")  # should not raise
+
+    @respx.mock
+    async def test_assign_to_user_unresolvable_account_is_non_fatal(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/user/search").mock(
+            return_value=Response(200, json=[]),
+        )
+        route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1")
+        await adapter.assign_to_user("1", "ghost")  # should not raise
+        assert not route.called
 
 
 class TestAddReviewer:
