@@ -1146,7 +1146,12 @@ class TestRunMigrationsAtHead:
 
 
 async def test_get_alembic_head_returns_current_head() -> None:
-    """_get_alembic_head must return the actual head revision ('034')."""
+    """_get_alembic_head must return the highest-numbered migration.
+
+    Derived from the version filenames rather than hardcoded, so adding a
+    migration does not fail this test. It still catches a broken chain, where
+    the resolved head is not the newest revision on disk.
+    """
     import pathlib
 
     from alembic.config import Config
@@ -1156,9 +1161,12 @@ async def test_get_alembic_head_returns_current_head() -> None:
 
     session_mod._ALEMBIC_HEAD_CACHE = None
 
+    migrations_dir = pathlib.Path(session_mod.__file__).parent / "migrations" / "versions"
+    expected = max(path.name.split("_")[0] for path in migrations_dir.glob("[0-9]*_*.py"))
+
     alembic_cfg = Config(str(pathlib.Path(session_mod.__file__).parent / "alembic.ini"))
     head = _get_alembic_head(alembic_cfg)
-    assert head == "034"
+    assert head == expected
 
 
 async def test_get_alembic_head_caches_result() -> None:
@@ -1405,3 +1413,265 @@ async def test_resolve_issue_worktree_skips_when_wt_id_all_hyphens(tmp_path) -> 
 
     assert result == tmp_path
     mock_create.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Migration 035 (schema drift repair) and the ORM/migration drift guard
+# ---------------------------------------------------------------------------
+
+_MEMORY_LIFECYCLE_COLUMNS = (
+    "embedding",
+    "retrieval_count",
+    "last_retrieved_at",
+    "archived",
+    "health_score",
+)
+
+
+async def _migrated_engine(db_path):
+    """Build a file-backed SQLite DB by replaying the real migration chain.
+
+    Not create_all: only a migration-built schema can reveal a model column that
+    no migration creates, which is the drift these tests exist to catch.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from sova.db.session import _run_migrations
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    await _run_migrations(engine)
+    return engine
+
+
+async def test_migration_035_revision_chain() -> None:
+    """Migration 035 follows 034."""
+    mod = _import_migration("035")
+
+    assert mod.revision == "035"
+    assert mod.down_revision == "034"
+
+
+async def test_migration_035_upgrade_adds_memory_columns() -> None:
+    """Migration 035 upgrade adds all five drifted memory columns."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("035")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [{"name": "id"}, {"name": "title"}]
+    mock_inspector.get_indexes.return_value = []
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+
+    added = [call.args[1].name for call in mock_op.add_column.call_args_list]
+    assert sorted(added) == sorted(_MEMORY_LIFECYCLE_COLUMNS)
+
+
+async def test_migration_035_upgrade_skip_when_exists() -> None:
+    """Migration 035 upgrade is idempotent for both columns and indexes."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("035")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [{"name": c} for c in _MEMORY_LIFECYCLE_COLUMNS]
+    mock_inspector.get_indexes.return_value = [{"name": name} for name, _t, _c in mod._MISSING_INDEXES]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+
+    mock_op.add_column.assert_not_called()
+    mock_op.create_index.assert_not_called()
+
+
+async def test_migration_035_does_not_duplicate_task_assessment_indexes() -> None:
+    """001_initial_schema already indexes those columns under different names.
+
+    Creating the model's names too would leave a second redundant index on each
+    column, so 035 must leave task_assessments alone.
+    """
+    mod = _import_migration("035")
+
+    indexed_tables = {table for _name, table, _cols in mod._MISSING_INDEXES}
+    assert "task_assessments" not in indexed_tables
+
+
+async def test_migration_035_repairs_a_drifted_database(tmp_path) -> None:
+    """A DB stamped at 034 without the memory columns is repaired, rows intact."""
+    from sqlalchemy import text
+
+    from sova.db.session import _run_migrations
+
+    engine = await _migrated_engine(tmp_path / "drifted.db")
+
+    # Simulate the real-world drift: drop the columns and rewind the stamp to 034.
+    async with engine.begin() as conn:
+        await conn.execute(text("INSERT INTO memories (category, title, content) VALUES ('learning', 'kept', 'body')"))
+        # SQLite refuses to drop a column an index still references.
+        await conn.execute(text("DROP INDEX ix_memories_archived"))
+        for column in _MEMORY_LIFECYCLE_COLUMNS:
+            await conn.execute(text(f"ALTER TABLE memories DROP COLUMN {column}"))
+        await conn.execute(text("UPDATE alembic_version SET version_num = '034'"))
+
+    assert await _run_migrations(engine) is True
+
+    async with engine.connect() as conn:
+        columns = await conn.run_sync(lambda c: {col["name"] for col in inspect(c).get_columns("memories")})
+        rows = await conn.execute(text("SELECT title FROM memories"))
+        titles = [r[0] for r in rows]
+
+    assert set(_MEMORY_LIFECYCLE_COLUMNS) <= columns
+    assert titles == ["kept"]
+    await engine.dispose()
+
+
+class TestSchemaDriftGuard:
+    """The migration chain must produce exactly the schema the ORM declares.
+
+    Columns added to a model without a migration are invisible to Alembic: the DB
+    stays stamped at head while every query naming that column fails. That is how
+    the whole memory subsystem broke. Tests build their schema with create_all, so
+    only a migration-replayed database can catch it.
+    """
+
+    async def test_no_table_or_column_drift(self, tmp_path) -> None:
+        """Every ORM table and column must exist in the migration-built schema.
+
+        Reuses the same helper the server runs at startup, which is itself covered
+        by TestFindMissingColumns.
+        """
+        from sova.db.session import _find_missing_columns
+
+        engine = await _migrated_engine(tmp_path / "drift-guard.db")
+        async with engine.connect() as conn:
+            drift = await conn.run_sync(_find_missing_columns)
+        await engine.dispose()
+
+        assert not drift, (
+            f"ORM declares {len(drift)} table/column(s) no migration creates: {drift}. "
+            "Add a migration for them, or every existing database will fail on queries touching that table."
+        )
+
+    async def test_no_index_column_drift(self, tmp_path) -> None:
+        """Every ORM index must have a physical counterpart over the same columns.
+
+        Matched by column set rather than name: 001_initial_schema created some
+        indexes under names the models later diverged from, which is harmless.
+        """
+        from sova.db.models import Base
+
+        engine = await _migrated_engine(tmp_path / "index-drift.db")
+
+        def _collect(sync_conn):
+            inspector = inspect(sync_conn)
+            return {
+                name: {tuple(i["column_names"]) for i in inspector.get_indexes(name)}
+                for name in inspector.get_table_names()
+            }
+
+        async with engine.connect() as conn:
+            live_indexes = await conn.run_sync(_collect)
+        await engine.dispose()
+
+        drift: list[str] = []
+        for name, table in Base.metadata.tables.items():
+            covered = live_indexes.get(name, set())
+            for index in table.indexes:
+                columns = tuple(c.name for c in index.columns)
+                if columns not in covered:
+                    drift.append(f"{name}{list(columns)}")
+
+        assert not drift, f"ORM declares {len(drift)} index(es) no migration creates: {drift}"
+
+
+class TestFindMissingColumns:
+    """_run_migrations must report drift it cannot repair instead of staying silent."""
+
+    async def test_returns_empty_for_a_healthy_schema(self, tmp_path) -> None:
+        from sova.db.session import _find_missing_columns
+
+        engine = await _migrated_engine(tmp_path / "healthy.db")
+        async with engine.connect() as conn:
+            missing = await conn.run_sync(_find_missing_columns)
+        await engine.dispose()
+
+        assert missing == []
+
+    async def test_reports_a_dropped_column(self, tmp_path) -> None:
+        from sqlalchemy import text
+
+        from sova.db.session import _find_missing_columns
+
+        engine = await _migrated_engine(tmp_path / "dropped.db")
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE memories DROP COLUMN embedding"))
+
+        async with engine.connect() as conn:
+            missing = await conn.run_sync(_find_missing_columns)
+        await engine.dispose()
+
+        assert missing == ["memories.embedding"]
+
+    async def test_at_head_with_drift_logs_an_error(self, tmp_path) -> None:
+        """The fast path must name the missing column, not skip silently."""
+        from unittest.mock import MagicMock, patch
+
+        from sqlalchemy import text
+
+        from sova.db.session import _run_migrations
+
+        engine = await _migrated_engine(tmp_path / "at-head-drift.db")
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE memories DROP COLUMN embedding"))
+
+        mock_logger = MagicMock()
+        with patch("sova.db.session.logging.getLogger", return_value=mock_logger):
+            result = await _run_migrations(engine)
+        await engine.dispose()
+
+        assert result is False  # still no DDL: Alembic cannot repair this
+        mock_logger.error.assert_called_once()
+        # Rendered rather than indexed by position, so reordering the log args cannot
+        # turn this into a false pass.
+        fmt, *params = mock_logger.error.call_args.args
+        assert "memories.embedding" in fmt % tuple(params)
+
+    async def test_verification_failure_does_not_block_startup(self, tmp_path) -> None:
+        """The check is diagnostic: a schema it cannot inspect must still start."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.db.session import _run_migrations
+
+        engine = await _migrated_engine(tmp_path / "uninspectable.db")
+
+        mock_logger = MagicMock()
+        with (
+            patch("sova.db.session._find_missing_columns", side_effect=RuntimeError("inspection blew up")),
+            patch("sova.db.session.logging.getLogger", return_value=mock_logger),
+        ):
+            result = await _run_migrations(engine)
+        await engine.dispose()
+
+        assert result is False
+        mock_logger.warning.assert_called_once()
+        mock_logger.error.assert_not_called()
+
+    async def test_at_head_without_drift_logs_nothing(self, tmp_path) -> None:
+        """A healthy at-head database must not log a drift error on every restart."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.db.session import _run_migrations
+
+        engine = await _migrated_engine(tmp_path / "at-head-clean.db")
+
+        mock_logger = MagicMock()
+        with patch("sova.db.session.logging.getLogger", return_value=mock_logger):
+            result = await _run_migrations(engine)
+        await engine.dispose()
+
+        assert result is False
+        mock_logger.error.assert_not_called()

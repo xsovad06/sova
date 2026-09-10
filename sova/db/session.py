@@ -101,13 +101,35 @@ def _get_alembic_head(alembic_cfg) -> str | None:
         return None
 
 
+def _find_missing_columns(sync_conn) -> list[str]:
+    """Return "table.column" entries the ORM declares but the database lacks.
+
+    Alembic tracks only which revisions ran, so a column added to a model without
+    a migration leaves the database permanently stamped at head yet missing that
+    column. Nothing in the revision number can reveal that; only the live schema
+    can. Compares names only (not types or nullability) to stay cheap enough for
+    the already-at-head startup path.
+    """
+    inspector = inspect(sync_conn)
+    live_tables = set(inspector.get_table_names())
+    missing: list[str] = []
+    for table_name, table in Base.metadata.tables.items():
+        if table_name not in live_tables:
+            missing.append(f"{table_name} (entire table)")
+            continue
+        live_columns = {c["name"] for c in inspector.get_columns(table_name)}
+        missing.extend(f"{table_name}.{c.name}" for c in table.columns if c.name not in live_columns)
+    return sorted(missing)
+
+
 async def _run_migrations(engine) -> bool:
     """Run Alembic migrations programmatically.
 
     Handles four cases:
     1. Fresh DB (no tables): run all migrations from scratch
     2. Existing DB without alembic_version: stamp at current head (pre-Alembic DB)
-    3. Existing DB with alembic_version at head: skip upgrade (fast path)
+    3. Existing DB with alembic_version at head: verify no ORM column is missing,
+       then skip the upgrade (fast path)
     4. Existing DB with alembic_version behind head: upgrade to head
 
     Falls back to create_all + stamp if Alembic migration fails.
@@ -142,6 +164,29 @@ async def _run_migrations(engine) -> bool:
     if has_alembic and current_version:
         head = _get_alembic_head(alembic_cfg)
         if head is not None and current_version == head:
+            # Being at head proves every revision ran, not that the schema matches the
+            # ORM: a model column added without a migration is invisible to Alembic and
+            # cannot be repaired by it either (upgrade is a no-op at head, and create_all
+            # never alters an existing table). Verify and report so the cause is named
+            # here rather than surfacing later as OperationalError on an unrelated query.
+            # Purely diagnostic, so it fails open: a database this cannot inspect must
+            # still start the server, exactly as it did before the check existed.
+            log = logging.getLogger("sova.db")
+            try:
+                async with engine.connect() as conn:
+                    missing = await conn.run_sync(_find_missing_columns)
+            except Exception:
+                log.warning("Could not verify schema against the ORM", exc_info=True)
+                missing = []
+            if missing:
+                log.error(
+                    "Schema drift: database is stamped at migration head %s but lacks %d ORM column(s): %s. "
+                    "A model column was added without a migration; queries touching these tables will fail. "
+                    "Add a migration that creates them.",
+                    head,
+                    len(missing),
+                    ", ".join(missing),
+                )
             return False  # Already at head, no DDL needed
 
     def _do_upgrade(sync_conn):

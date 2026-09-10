@@ -5078,6 +5078,32 @@ class TestLogsAPI:
         assert resp.status_code == 200
         assert b"Logs" in resp.content
 
+    async def test_logs_with_non_dict_json_line(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        """A traceback fragment that happens to parse as a JSON scalar (not an object)
+        must be treated as plain text, not crash the parser."""
+        import json
+
+        log_dir = tmp_path / ".claude"
+        log_dir.mkdir()
+        log_file = log_dir / "sova.log"
+        lines = [
+            json.dumps({"level": "INFO", "message": "ok", "component": "core", "timestamp": "2026-01-01T10:00:00"}),
+            '"no active connection"',
+            "42",
+            "true",
+        ]
+        log_file.write_text("\n".join(lines) + "\n")
+
+        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
+
+        resp = await client.get("/api/logs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 4
+        messages = {e["message"] for e in data["entries"]}
+        assert "ok" in messages
+        assert '"no active connection"' in messages
+
 
 class TestSettingsAPI:
     """Tests for the settings API endpoints."""

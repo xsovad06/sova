@@ -50,10 +50,12 @@ def _parse_log_file(log_path: Path) -> list[dict]:
                 continue
             try:
                 entry = json.loads(line)
+                if not isinstance(entry, dict):
+                    raise ValueError("log line is not a JSON object")
                 if "message" not in entry:
                     entry["message"] = _build_message(entry)
                 entries.append(entry)
-            except json.JSONDecodeError:
+            except ValueError:  # json.JSONDecodeError subclasses ValueError
                 entries.append(
                     {
                         "level": "INFO",
