@@ -14,7 +14,7 @@ from pathlib import Path
 from sova.llm.cli_args import build_claude_cli_args as _build_args
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import LLMInvocationError, classify_error
-from sova.llm.models import LLMResult, StreamEvent
+from sova.llm.models import CostSource, LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider, ProviderCapabilities
 from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
@@ -35,6 +35,15 @@ _MODEL_ALIASES: dict[str, str] = {
 
 class ClaudeCodeProvider(LLMProvider):
     """LLM provider that wraps the Claude Code CLI (``claude -p``)."""
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            supports_cli_fallback=True,
+            supports_budget_cap=True,
+            reports_cost=True,
+            dynamic_models=True,
+        )
 
     async def invoke(
         self,
@@ -188,15 +197,6 @@ class ClaudeCodeProvider(LLMProvider):
             return False, f"{version} but {auth_detail}"
         return True, f"{version} ({auth_detail})"
 
-    @property
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            supports_cli_fallback=True,
-            supports_budget_cap=True,
-            reports_cost=True,
-            dynamic_models=False,
-        )
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers (moved from client.py)
@@ -280,14 +280,17 @@ def _parse_json_output(stdout: str) -> LLMResult:
 
 
 def _parse_result(data: dict) -> LLMResult:
-    usage = data.get("usage", {})
-    model_usage = data.get("modelUsage", {})
+    raw_usage = data.get("usage")
+    usage = raw_usage if isinstance(raw_usage, dict) else {}
+    raw_model_usage = data.get("modelUsage")
+    model_usage = raw_model_usage if isinstance(raw_model_usage, dict) else {}
     model = next(iter(model_usage), "") if model_usage else ""
 
     return LLMResult(
         text=data.get("result", ""),
         model=model,
         cost_usd=Decimal(str(data.get("total_cost_usd", 0))),
+        cost_source=CostSource.PRICED,
         input_tokens=usage.get("input_tokens", 0),
         output_tokens=usage.get("output_tokens", 0),
         cache_read_tokens=usage.get("cache_read_input_tokens", 0),

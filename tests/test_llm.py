@@ -1366,6 +1366,17 @@ class TestParseResult:
         assert result.cost_usd == Decimal("0")
         assert result.input_tokens == 0
 
+    @pytest.mark.parametrize("usage", ["not-a-dict", [1, 2, 3], 42])
+    def test_parse_survives_truthy_non_dict_usage(self, usage: object) -> None:
+        from sova.llm.providers.claude_code import _parse_result
+
+        raw = {"result": "ok", "type": "result", "usage": usage, "modelUsage": usage}
+        result = _parse_result(raw)
+        assert result.text == "ok"
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert result.model == ""
+
 
 # ---------------------------------------------------------------------------
 # Cost tracking: record_cost()
@@ -2188,7 +2199,7 @@ class TestClaudeCodeProvider:
         assert caps.supports_cli_fallback is True
         assert caps.supports_budget_cap is True
         assert caps.reports_cost is True
-        assert caps.dynamic_models is False
+        assert caps.dynamic_models is True
 
     async def test_invoke(self, mock_run: AsyncMock) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
@@ -2407,8 +2418,8 @@ class TestLiteLLMProvider:
         caps = LiteLLMProvider(model="gpt-4o").capabilities
         assert caps.supports_cli_fallback is False
         assert caps.supports_budget_cap is False
-        assert caps.reports_cost is False
-        assert caps.dynamic_models is False
+        assert caps.reports_cost is True
+        assert caps.dynamic_models is True
 
     async def test_invoke_basic(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
@@ -2649,15 +2660,125 @@ class TestLiteLLMProvider:
         assert events[-1].result.stop_reason == "error"
 
     async def test_cost_tracking_fallback(self, mock_litellm: MagicMock) -> None:
+        from sova.llm import litellm_provider as llm_mod
         from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CostSource
 
         mock_litellm.acompletion.return_value = _MockResponse()
         mock_litellm.completion_cost.side_effect = ValueError("Unknown model")
 
         provider = LiteLLMProvider(model="custom-model")
-        result = await provider.invoke("Hello")
+        with patch.object(llm_mod.log, "warning") as mock_warning, patch.object(llm_mod.log, "debug") as mock_debug:
+            result = await provider.invoke("Hello")
 
         assert result.cost_usd == Decimal("0")
+        assert result.cost_source == CostSource.UNKNOWN
+        mock_warning.assert_called_once()
+        mock_debug.assert_not_called()
+
+    async def test_cost_tracking_fallback_logs_debug_for_ollama_model(self, mock_litellm: MagicMock) -> None:
+        from sova.llm import litellm_provider as llm_mod
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CostSource
+
+        mock_litellm.acompletion.return_value = _MockResponse(model="ollama/qwen3-coder")
+        mock_litellm.completion_cost.side_effect = ValueError("Unknown model")
+
+        provider = LiteLLMProvider(model="ollama/qwen3-coder")
+        with patch.object(llm_mod.log, "warning") as mock_warning, patch.object(llm_mod.log, "debug") as mock_debug:
+            result = await provider.invoke("Hello")
+
+        assert result.cost_usd == Decimal("0")
+        assert result.cost_source == CostSource.FREE_LOCAL
+        mock_debug.assert_called_once()
+        mock_warning.assert_not_called()
+
+    async def test_cost_tracking_fallback_local_model_without_echoed_prefix(self, mock_litellm: MagicMock) -> None:
+        """LiteLLM may echo a local model ID without its provider prefix."""
+        from sova.llm import litellm_provider as llm_mod
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CostSource
+
+        mock_litellm.acompletion.return_value = _MockResponse(model="qwen3-coder")
+        mock_litellm.completion_cost.side_effect = ValueError("Unknown model")
+
+        provider = LiteLLMProvider(model="ollama/qwen3-coder")
+        with patch.object(llm_mod.log, "warning") as mock_warning, patch.object(llm_mod.log, "debug") as mock_debug:
+            result = await provider.invoke("Hello")
+
+        assert result.cost_usd == Decimal("0")
+        assert result.cost_source == CostSource.FREE_LOCAL
+        mock_debug.assert_called_once()
+        mock_warning.assert_not_called()
+
+    async def test_cost_tracking_non_raising_zero_cost_still_warns(self, mock_litellm: MagicMock) -> None:
+        """litellm.completion_cost() returns 0.0 for an unknown model instead of raising."""
+        from sova.llm import litellm_provider as llm_mod
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CostSource
+
+        mock_litellm.acompletion.return_value = _MockResponse()
+        mock_litellm.completion_cost.return_value = 0.0
+
+        provider = LiteLLMProvider(model="custom-model")
+        with patch.object(llm_mod.log, "warning") as mock_warning, patch.object(llm_mod.log, "debug") as mock_debug:
+            result = await provider.invoke("Hello")
+
+        assert result.cost_usd == Decimal("0")
+        assert result.cost_source == CostSource.UNKNOWN
+        mock_warning.assert_called_once()
+        mock_debug.assert_not_called()
+
+    async def test_cost_tracking_non_raising_zero_cost_local_model_logs_debug(self, mock_litellm: MagicMock) -> None:
+        """The non-raising zero-cost path must still distinguish local models."""
+        from sova.llm import litellm_provider as llm_mod
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CostSource
+
+        mock_litellm.acompletion.return_value = _MockResponse(model="ollama/qwen3-coder")
+        mock_litellm.completion_cost.return_value = 0.0
+
+        provider = LiteLLMProvider(model="ollama/qwen3-coder")
+        with patch.object(llm_mod.log, "warning") as mock_warning, patch.object(llm_mod.log, "debug") as mock_debug:
+            result = await provider.invoke("Hello")
+
+        assert result.cost_usd == Decimal("0")
+        assert result.cost_source == CostSource.FREE_LOCAL
+        mock_debug.assert_called_once()
+        mock_warning.assert_not_called()
+
+    async def test_cost_tracking_warns_once_per_model_per_instance(self, mock_litellm: MagicMock) -> None:
+        """Repeated calls for the same unpriced hosted model must not repeat the warning."""
+        from sova.llm import litellm_provider as llm_mod
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CostSource
+
+        mock_litellm.acompletion.return_value = _MockResponse()
+        mock_litellm.completion_cost.side_effect = ValueError("Unknown model")
+
+        provider = LiteLLMProvider(model="custom-model")
+        with patch.object(llm_mod.log, "warning") as mock_warning:
+            first = await provider.invoke("Hello")
+            second = await provider.invoke("Hello again")
+
+        assert first.cost_source == CostSource.UNKNOWN
+        assert second.cost_source == CostSource.UNKNOWN
+        mock_warning.assert_called_once()
+
+    async def test_cost_tracking_warning_dedup_is_scoped_to_instance(self, mock_litellm: MagicMock) -> None:
+        """A fresh provider instance must warn again, independent of any prior instance."""
+        from sova.llm import litellm_provider as llm_mod
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.return_value = _MockResponse()
+        mock_litellm.completion_cost.side_effect = ValueError("Unknown model")
+
+        await LiteLLMProvider(model="custom-model").invoke("Hello")
+
+        with patch.object(llm_mod.log, "warning") as mock_warning:
+            await LiteLLMProvider(model="custom-model").invoke("Hello")
+
+        mock_warning.assert_called_once()
 
     async def test_stop_reason_mapping(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
