@@ -51,7 +51,8 @@ async def get_status() -> dict:
     project_dir = get_project_dir()
     try:
         cfg = load_config(project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+        log.warning("oversight.config_load_failed", project_dir=str(project_dir), exc_info=True)
         cfg = None
 
     enabled = cfg.oversight.enabled if cfg else False
@@ -66,7 +67,7 @@ async def get_status() -> dict:
                 agent_running=agent_running,
                 wake_interval_minutes=wake_interval,
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("oversight.status.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch oversight status")
 
@@ -78,7 +79,7 @@ async def get_runs(limit: int = Query(default=20, ge=1, le=100)) -> dict:
         async with await get_session() as session:
             runs = await oversight_service.get_runs(session, limit=limit)
             return {"runs": runs}
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("oversight.runs.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch oversight runs")
 
@@ -93,7 +94,7 @@ async def get_findings(
         async with await get_session() as session:
             findings = await oversight_service.get_findings(session, status=status, limit=limit)
             return {"findings": findings}
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("oversight.findings.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch oversight findings")
 
@@ -161,7 +162,7 @@ async def create_issue_from_finding(finding_id: int) -> dict:
                 return {"issue_number": issue_number, "finding_id": finding_id}
     except HTTPException:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("oversight.create_issue.error", finding_id=finding_id, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create issue from finding")
 
@@ -181,6 +182,6 @@ async def dismiss_finding(finding_id: int) -> dict:
                 return {"finding_id": finding_id, "dismissed": True}
     except HTTPException:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("oversight.dismiss.error", finding_id=finding_id, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to dismiss finding")

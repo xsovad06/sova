@@ -6,6 +6,8 @@ import asyncio
 import re
 from typing import TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.adapters.base import TaskState
 from sova.config.models import TaskSourceConfig
 from sova.core.context import ExecutionContext
@@ -178,7 +180,7 @@ class CreatePRStep(BaseStep):
                 task = await ctx.adapter.get_task(ctx.issue_number)
                 ctx.task = task
                 return task.title
-            except Exception:
+            except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                 log.warning("step.create_pr.title_fallback_failed", issue=ctx.issue_number, exc_info=True)
         return _title_from_branch(ctx.branch_name)
 
@@ -226,7 +228,7 @@ class CreatePRStep(BaseStep):
                         github_user=ctx.config.github_user,
                         project_slug=ctx.config.github_repo,
                     )
-        except Exception as exc:
+        except (OSError, RuntimeError, SQLAlchemyError) as exc:
             log.warning("step.create_pr.enqueue_failed", error=str(exc), exc_info=True)
             return await self._create_pr_immediate(ctx, title, body)
 
@@ -265,7 +267,7 @@ class CreatePRStep(BaseStep):
         ctx.pr_url = existing.url
         try:
             await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
-        except Exception:
+        except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning("step.create_pr.tracker_update_failed", exc_info=True)
         return StepResult(success=True, summary=f"Adopted existing PR #{existing.number}")
 
@@ -293,12 +295,12 @@ class CreatePRStep(BaseStep):
                     repo=ctx.repo,
                     github_user=ctx.config.github_user,
                 )
-            except Exception:
+            except (RuntimeError, OSError):
                 log.warning("step.create_pr.assign_failed", exc_info=True)
         if ctx.has_issue:
             try:
                 await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
-            except Exception:
+            except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                 log.warning("step.create_pr.tracker_update_failed", exc_info=True)
         await self._trigger_coderabbit_review(ctx, pr_number)
 
@@ -309,7 +311,7 @@ class CreatePRStep(BaseStep):
         log.info("step.create_pr.trigger_coderabbit", pr=pr_number)
         try:
             await ctx.adapter.post_pr_comment(pr_number, "@coderabbitai review")
-        except Exception:
+        except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning("step.create_pr.trigger_coderabbit_failed", pr=pr_number, exc_info=True)
 
     async def _generate_pr_body(self, ctx: ExecutionContext, task_title: str) -> str:

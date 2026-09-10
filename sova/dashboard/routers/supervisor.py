@@ -122,7 +122,8 @@ async def get_decisions(
     try:
         cfg = load_config(project_dir)
         project_slug = cfg.github_repo or None
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+        log.warning("supervisor.config_load_failed", project_dir=str(project_dir), exc_info=True)
         project_slug = None
     decisions = await get_recent_decisions(
         project_dir,
@@ -208,7 +209,7 @@ async def get_ci_budget() -> dict:
     try:
         tracker = get_ci_budget_tracker(cfg.github_user)
         budget = await tracker.get_budget(cfg.github_repo, cfg.github_user)
-    except Exception:
+    except Exception:  # noqa: BLE001 (budget display falls back to zero state on any failure)
         log.warning("ci_budget.endpoint_failed", exc_info=True)
         return dict(_CI_BUDGET_ZERO)
 
@@ -238,7 +239,8 @@ async def get_counts() -> dict:
     try:
         cfg = load_config(project_dir)
         project_slug = cfg.github_repo or None
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+        log.warning("supervisor.config_load_failed", project_dir=str(project_dir), exc_info=True)
         project_slug = None
     counts = await get_decision_counts(project_dir, project_slug=project_slug)
     return {"counts": counts}
@@ -309,7 +311,7 @@ async def _execute_plan_decisions(decisions: list[ProgressionDecision], project_
         try:
             result = await engine.execute_decision(decision)
             results.append(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (one failed decision must not abort the rest of the plan)
             log.warning("plan.execute_decision_failed", issue_number=decision.issue_number, exc_info=True)
             results.append({"error": str(exc), "issue_number": decision.issue_number})
     return results
@@ -415,7 +417,7 @@ async def _notify_daemon_queue_change(project_dir: Path | None) -> None:
 
         cfg = await asyncio.to_thread(load_config, project_dir)
         daemon.reload_config(cfg, wake=False)
-    except Exception:
+    except Exception:  # noqa: BLE001 (best-effort daemon notify; queue mutation must not fail on it)
         log.debug("supervisor.queue.daemon_notify_failed", exc_info=True)
 
 
@@ -445,7 +447,7 @@ async def _maybe_migrate_queue_from_toml(project_dir: Path | None) -> None:
             log.info("supervisor.queue.toml_migration", count=len(toml_queue))
             await _persist_queue(project_dir, toml_queue)
         _toml_migrated.add(cache_key)
-    except Exception:
+    except Exception:  # noqa: BLE001 (one-time migration is best-effort; the queue works without it)
         log.debug("supervisor.queue.toml_migration_skipped", exc_info=True)
 
 
@@ -537,7 +539,7 @@ async def get_supervisor_persona() -> dict:
         project_dir = get_project_dir()
         cfg = load_config(project_dir)
         return get_persona_info(cfg.supervisor.persona_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("supervisor.persona.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch supervisor persona")
 
@@ -558,7 +560,7 @@ async def open_supervisor_persona_in_editor() -> dict:
     try:
         project_dir = get_project_dir()
         cfg = load_config(project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("supervisor.persona.open.config_error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to load project configuration")
 
@@ -578,7 +580,7 @@ async def open_supervisor_persona_in_editor() -> dict:
             status_code=400,
             detail=f"'{cmd}' not found. Edit the file manually: {path}",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("supervisor.persona.open.subprocess_error", exc_info=True)
         raise HTTPException(
             status_code=500,

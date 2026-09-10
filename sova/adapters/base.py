@@ -94,7 +94,7 @@ def _get_egress_mode() -> EgressMode:
         from sova.config.loader import load_config
 
         return load_config().egress.mode
-    except Exception:
+    except Exception:  # noqa: BLE001 (egress filter defaults to warn mode when config is unavailable)
         _log.warning("egress.config_load_failed", exc_info=True)
         return "warn"
 

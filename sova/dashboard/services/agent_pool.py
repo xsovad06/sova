@@ -116,7 +116,8 @@ def read_max_parallel(project_dir: Path) -> int:
         from sova.config.loader import load_config
 
         return load_config(project_dir).max_parallel_agents
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+        log.warning("pool.max_parallel_config_failed", project_dir=str(project_dir), exc_info=True)
         return ProjectAgents.max_concurrent
 
 
@@ -147,7 +148,7 @@ def sync_max_concurrent(project_dir: Path | None = None, slug: str | None = None
                 new=cfg.max_parallel_agents,
             )
             pa.max_concurrent = cfg.max_parallel_agents
-    except Exception:
+    except Exception:  # noqa: BLE001 (slot count keeps its previous value when config is unavailable)
         log.debug("pool.max_concurrent.sync_failed", exc_info=True)
 
 

@@ -271,5 +271,5 @@ def _auto_migrate_toml_to_db(project_dir: Path, toml_flat: dict[str, Any]) -> No
 
     try:
         _save_config_to_db_sync(project_dir, toml_flat, only_if_empty=True)
-    except Exception:
+    except Exception:  # noqa: BLE001 (auto-migration is best-effort; the file config stays authoritative)
         logger.warning("Auto-migration of sova.toml to database failed", exc_info=True)

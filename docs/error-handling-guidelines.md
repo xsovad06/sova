@@ -10,9 +10,17 @@ SOVA defines two custom exception groups. Prefer standard library exceptions els
 |-----------|--------|---------|
 | `InvalidTransitionError` | `sova/core/state.py` | Invalid state machine transition (`current` and `target` fields) |
 | `LLMError` and subclasses | `sova/llm/errors.py` | Typed LLM invocation failures (see below) |
+| `AdapterError` | `sova/adapters/base.py` | Tracker API failure (network, rate limit, auth, unparseable list response) |
 | `RuntimeError` | stdlib | Step failures, subprocess errors, suspicious file detection |
 | `ValueError` | stdlib | Config/parsing errors; parent of `json.JSONDecodeError` |
 | `OSError` | stdlib | File I/O errors; parent of `ProcessLookupError` |
+
+**`AdapterError` subclasses `Exception` directly**, not `RuntimeError`. A handler narrowed to
+`except (RuntimeError, OSError)` around an adapter call (`list_tasks`, `get_task`, `post_pr_review`, ...)
+therefore lets every tracker API failure escape, which is exactly the case those fail-open handlers exist
+to absorb. Adapter getters also parse `gh` output, so `json.JSONDecodeError` (a `ValueError`) is a second
+escape route. Keep `except Exception` with a justified `# noqa: BLE001` on any fail-open path that calls
+the adapter.
 
 ### LLM Error Hierarchy
 
@@ -58,6 +66,11 @@ try:
 except Exception:
     log.warning("step.create_pr.tracker_update_failed", exc_info=True)
 ```
+
+**Enforced by CI**: `tests/test_exception_handlers.py` walks `sova/` with `ast` and fails if a broad
+handler (`except Exception`/`except BaseException`/bare `except`) neither logs (with `exc_info=True`
+on warning/error/critical calls), reports, nor re-raises. A broad catch that is intentionally silent
+must carry `# noqa: BLE001 (<reason>)` on the `except` line.
 
 This pattern appears in 100+ locations including:
 - Tracker state transitions (`create_pr.py`, `_handoff_helpers.py`)

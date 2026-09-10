@@ -59,7 +59,7 @@ async def maintain_queue(
 
     try:
         tasks = await adapter.list_tasks()
-    except Exception:
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
         log.warning("queue_maintenance.list_tasks_failed", exc_info=True)
         return QueueMaintenanceResult(previous=previous, current=previous)
 
@@ -102,7 +102,7 @@ async def maintain_queue(
                 added=list(added_issues),
                 queue_size=len(current),
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (queue is reverted in memory on any persistence failure)
             log.warning("queue_maintenance.persist_failed_reverting", exc_info=True)
             current = list(previous)
             changed = False
@@ -237,7 +237,7 @@ async def apply_planner_queue_changes(
         try:
             await save_task_queue(project_dir, current)
             config.task_queue = current
-        except Exception:
+        except Exception:  # noqa: BLE001 (queue is reverted in memory on any persistence failure)
             log.warning("queue_maintenance.planner_persist_failed", exc_info=True)
             return list(config.task_queue)
 

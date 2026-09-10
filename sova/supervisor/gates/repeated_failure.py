@@ -64,7 +64,7 @@ async def check_repeated_failures_gate(
                         f"human review required (threshold: {max_failures})"
                     ),
                 )
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("repeated_failures.check_failed", issue=issue, role=role, exc_info=True)
 
     return None

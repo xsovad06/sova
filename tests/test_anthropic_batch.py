@@ -355,6 +355,9 @@ class TestAnthropicBackend:
         respx.get("https://api.anthropic.com/v1/messages/batches/batch-cancel").mock(
             return_value=httpx.Response(200, json={"processing_status": "canceled"})
         )
+        respx.post("https://api.anthropic.com/v1/messages/batches/batch-cancel/cancel").mock(
+            return_value=httpx.Response(200, json={})
+        )
 
         with pytest.raises(BatchTimeoutError, match="canceled"):
             await provider.invoke_batch([_make_request("r1")], poll_interval=0, timeout=10)
@@ -482,6 +485,12 @@ class TestVertexBackend:
                     },
                 )
             )
+            respx.get(url__regex=r".*storage\.googleapis\.com/storage/v1/b/test-bucket/o.*").mock(
+                return_value=httpx.Response(200, json={"items": []})
+            )
+            respx.delete(url__regex=r".*storage\.googleapis\.com/storage/v1/b/test-bucket/o/.*").mock(
+                return_value=httpx.Response(204)
+            )
 
             with pytest.raises(BatchTimeoutError, match="JOB_STATE_FAILED"):
                 await provider.invoke_batch([_make_request("r1")], poll_interval=0, timeout=10)
@@ -505,6 +514,12 @@ class TestVertexBackend:
             )
             respx.get(url__regex=r".*batchPredictionJobs/789$").mock(
                 return_value=httpx.Response(200, json={"state": "JOB_STATE_RUNNING"})
+            )
+            respx.get(url__regex=r".*storage\.googleapis\.com/storage/v1/b/test-bucket/o.*").mock(
+                return_value=httpx.Response(200, json={"items": []})
+            )
+            respx.delete(url__regex=r".*storage\.googleapis\.com/storage/v1/b/test-bucket/o/.*").mock(
+                return_value=httpx.Response(204)
             )
 
             with pytest.raises(BatchTimeoutError, match="timed out"):

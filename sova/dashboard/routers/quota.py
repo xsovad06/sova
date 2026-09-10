@@ -37,7 +37,7 @@ async def coderabbit_quota() -> dict:
             "window_minutes": status.window_minutes,
             "synced_at": status.synced_at,
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("quota.coderabbit.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch CodeRabbit quota status")
 
@@ -62,7 +62,7 @@ async def sync_coderabbit_quota() -> dict:
                 force=True,
             )
         return {"enabled": True, "synced": new_count}
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("quota.coderabbit.sync_error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to sync CodeRabbit quota data")
 
@@ -113,6 +113,6 @@ async def pr_queue_status() -> dict:
             ]
 
         return {"enabled": True, "pending": pending_count, "entries": entries}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("quota.pr_queue.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch PR queue status") from exc

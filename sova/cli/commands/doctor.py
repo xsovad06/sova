@@ -216,7 +216,7 @@ def _validate_sova_config(project_dir: Path) -> list[_Check]:
             checks.extend(_check_github_config(cfg))
         elif ts_type == "jira":
             checks.extend(_check_jira_config(cfg))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
         checks.append(("config valid", False, str(exc)[:80], False))
     return checks
 
@@ -261,7 +261,7 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
 
         available, detail = await provider.check_available()
         checks.append(("llm provider", available, f"{provider_type}: {detail}", True))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
         checks.append(("llm provider", False, str(exc)[:80], False))
     return checks
 
@@ -307,7 +307,7 @@ async def _check_ollama(project_dir: Path) -> list[_Check]:
             detail = "installed" if found else f"not pulled -- run: ollama pull {model_name}"
             checks.append((f"ollama model: {model_name}", found, detail, False))
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
         checks.append(("ollama", False, str(exc)[:80], False))
     return checks
 
@@ -330,7 +330,7 @@ async def _check_agent_runtime(project_dir: Path) -> list[_Check]:
 
         available, detail = await runtime.check_available()
         checks.append((_LABEL, available, f"{runtime_type}: {detail}", True))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
         checks.append((_LABEL, False, str(exc)[:80], False))
     return checks
 

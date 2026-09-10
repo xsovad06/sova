@@ -124,7 +124,7 @@ async def _fetch_github_review_fallback(pr_number: int, adapter: Any) -> dict | 
     try:
         reviews = await adapter.get_pr_reviews(pr_number)
         return _parse_sova_review_from_github(reviews)
-    except Exception:
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
         log.debug("work_items.github_review_fallback_failed", pr=pr_number, exc_info=True)
         return None
 
@@ -156,7 +156,7 @@ async def _fetch_sova_verdicts(
 
         cfg = load_config(project_dir)
         _fallback_adapter = create_adapter(cfg)
-    except Exception:
+    except Exception:  # noqa: BLE001 (fallback adapter is optional; verdict lookup uses other sources)
         log.debug("work_items.github_fallback_adapter_build_failed", exc_info=True)
 
     async def fetch_one(key: str, issue_num: str | None, pr_number: int | None) -> tuple[str, dict]:
@@ -193,7 +193,7 @@ async def _fetch_sova_verdicts(
                 _sova_verdict_cache[pr_number] = (time.monotonic(), verdict)
 
             return key, verdict
-        except Exception:
+        except Exception:  # noqa: BLE001 (verdict lookup spans labels, DB and GitHub; failure yields no verdict)
             log.debug("work_items.verdict_fetch_failed", issue=issue_num, pr=pr_number, exc_info=True)
             return key, {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
 

@@ -145,7 +145,7 @@ class AnthropicAPIProvider(LLMProvider):
         try:
             client = await self._get_client()
             response = await client.messages.create(**kwargs)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (SDK boundary: failures are classified and reraised as typed LLMError)
             message = f"Anthropic API error: {_sanitize_error(exc, self._resolve_api_key())}"
             raise classify_exception(exc)(message) from exc
 
@@ -235,7 +235,8 @@ class AnthropicAPIProvider(LLMProvider):
                         if delta_usage:
                             output_tokens = getattr(delta_usage, "output_tokens", 0) or 0
                         stop_reason = getattr(event.delta, "stop_reason", None) or stop_reason
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (any SDK/transport failure is surfaced on the LLMResult)
+            log.warning("anthropic.stream_failed", model=response_model, exc_info=True)
             stop_reason = "error"
             error = exc
 
@@ -280,7 +281,8 @@ class AnthropicAPIProvider(LLMProvider):
                 messages=[{"role": "user", "content": "test"}],
             )
             return True, f"anthropic SDK {anthropic.__version__}"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (availability probe reports any failure as unavailable)
+            log.debug("anthropic.availability_check_failed", exc_info=True)
             return False, f"Anthropic API unavailable: {_sanitize_error(exc, key)}"
 
     @property

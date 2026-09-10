@@ -41,7 +41,7 @@ async def check_ci_budget_gate(
                 gate="ci_budget",
                 detail=(f"CI minutes low: {budget.remaining} remaining (threshold: {ci_block_minutes})"),
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("ci_budget_gate.check_failed", exc_info=True)
 
     return None

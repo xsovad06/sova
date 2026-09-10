@@ -157,7 +157,7 @@ async def sync_from_github(
             reviews = await _fetch_coderabbit_reviews_from_github(
                 repo, github_user=github_user, window_minutes=config.window_minutes
             )
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("sync_from_github.api_failed", repo=repo, exc_info=True)
             return 0
 

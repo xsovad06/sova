@@ -242,15 +242,15 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
                     item.detail = f"Suitability: {assessment.suitability}"
                     log.info("batch.triage.done", issue=item.issue_id, suitability=assessment.suitability)
 
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 (one issue must not abort the batch; the error lands in the result row)
                     item.status = "failed"
                     item.detail = str(exc)
-                    log.warning("batch.triage.failed", issue=item.issue_id, error=str(exc))
+                    log.warning("batch.triage.failed", issue=item.issue_id, error=str(exc), exc_info=True)
 
         await asyncio.gather(*[_process_item(item) for item in job.results])
 
-    except Exception as exc:
-        log.error("batch.triage.fatal", error=str(exc))
+    except Exception as exc:  # noqa: BLE001 (batch driver must mark every pending item failed rather than crash)
+        log.error("batch.triage.fatal", error=str(exc), exc_info=True)
         for item in job.results:
             if item.status == "pending":
                 item.status = "failed"
@@ -304,7 +304,7 @@ async def _run_batch_harden(
 
         try:
             all_open = await adapter.list_tasks(TaskFilters(state="open"))
-        except Exception:
+        except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning("batch.list_tasks_failed", exc_info=True)
             all_open = []
         project_docs = _load_project_docs(project_dir)
@@ -354,22 +354,23 @@ async def _run_batch_harden(
                                 if label:
                                     await adapter.add_label(task.id, label)
                             triage_detail = f", re-triaged: {assessment.suitability}"
-                        except Exception:
+                        except Exception:  # noqa: BLE001 (re-triage is a best-effort extra; hardening already succeeded)
+                            log.warning("batch.harden.retriage_failed", issue=item.issue_id, exc_info=True)
                             triage_detail = ", re-triage failed"
 
                     item.status = "done"
                     item.detail = f"Hardened{triage_detail}"
                     log.info("batch.harden.done", issue=item.issue_id)
 
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 (one issue must not abort the batch; the error lands in the result row)
                     item.status = "failed"
                     item.detail = str(exc)
-                    log.warning("batch.harden.failed", issue=item.issue_id, error=str(exc))
+                    log.warning("batch.harden.failed", issue=item.issue_id, error=str(exc), exc_info=True)
 
         await asyncio.gather(*[_process_item(item) for item in job.results])
 
-    except Exception as exc:
-        log.error("batch.harden.fatal", error=str(exc))
+    except Exception as exc:  # noqa: BLE001 (batch driver must mark every pending item failed rather than crash)
+        log.error("batch.harden.fatal", error=str(exc), exc_info=True)
         for item in job.results:
             if item.status == "pending":
                 item.status = "failed"
@@ -429,7 +430,7 @@ async def _try_batch_llm_triage(
                     continue
                 eligible_tasks.append(task)
                 task_issue_ids[str(task.id)] = item.issue_id
-            except Exception:
+            except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                 log.warning("batch.triage.fetch_failed", issue=item.issue_id, exc_info=True)
 
         if not eligible_tasks:
@@ -446,6 +447,6 @@ async def _try_batch_llm_triage(
         log.info("batch.triage.llm_batch_done", assessed=len(assessments))
         return assessments
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (batch LLM assessment falls back to per-issue triage on any failure)
         log.warning("batch.triage.llm_batch_failed", error=str(exc), exc_info=True)
         return {}

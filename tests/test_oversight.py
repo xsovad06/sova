@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.models import OversightConfig
 from sova.db.models import OversightRunStatus
@@ -119,7 +120,7 @@ class TestOversightAgent:
         call_count = 0
 
         async def _failing_record(*args, **kwargs):
-            raise RuntimeError("DB unavailable")
+            raise SQLAlchemyError("DB unavailable")
 
         async def _fake_sleep(seconds):
             nonlocal call_count
@@ -288,7 +289,7 @@ class TestOversightAgent:
             call_count += 1
             if call_count == 1:
                 raise asyncio.CancelledError
-            raise RuntimeError("DB gone during cancellation")
+            raise SQLAlchemyError("DB gone during cancellation")
 
         async def _noop_observe():
             return None

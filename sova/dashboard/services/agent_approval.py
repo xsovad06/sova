@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
@@ -69,7 +71,7 @@ def _clear_handoff_for_issue(issue: str, caller: str) -> None:
         from sova.dashboard.services import handoff_service
 
         handoff_service.clear_handoff(issue=issue)
-    except Exception:
+    except (OSError, ValueError):
         log.debug(f"{caller}.clear_handoff_failed", issue=issue, exc_info=True)
 
 
@@ -176,7 +178,7 @@ async def complete_awaiting_approval_by_issue(
 
         log.info("complete_awaiting_approval.done", run_id=run_id, issue=issue_number, target=target_status)
         return run_id
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("complete_awaiting_approval.failed", issue=issue_number, exc_info=True)
         return None
 
@@ -223,7 +225,7 @@ async def _link_run_to_lifecycle(
                 run = await session.get(TaskRun, run_id)
                 if run:
                     await link_task_run_to_lifecycle(session, run)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("lifecycle.link_failed", run_id=run_id, issue=issue, exc_info=True)
 
 
@@ -241,5 +243,5 @@ async def _finalize_lifecycle_phase(
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
                 await finalize_phase_from_run(session, run_id, exit_code, cost)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("lifecycle.finalize_failed", run_id=run_id, exc_info=True)

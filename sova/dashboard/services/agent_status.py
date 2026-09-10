@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.core.state import STEP_DONE_STATUSES
 from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
@@ -114,7 +115,7 @@ async def get_agent_status(
             completed_steps=completed,
             error_message=task_run.error_message,
         )
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning(f"Failed to get agent status for run {run_id}", exc_info=True)
         return None
 
@@ -196,7 +197,7 @@ async def get_all_agent_statuses(
                         error_message=run.error_message,
                     )
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 (one malformed run must not break the status listing)
                 log.warning(f"Failed to compute status for run {run.id}", exc_info=True)
                 continue
 

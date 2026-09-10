@@ -1048,7 +1048,10 @@ class TestFetchPrMap:
     async def test_pr_fetch_failure_returns_empty(self) -> None:
         from sova.dashboard.routers.dependencies import _fetch_pr_map
 
-        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", side_effect=Exception("API error")):
+        with patch(
+            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            side_effect=RuntimeError("API error"),
+        ):
             result = await _fetch_pr_map()
 
         assert result == {}
@@ -1130,7 +1133,7 @@ class TestFetchAgentMap:
     async def test_agent_fetch_failure_returns_empty(self) -> None:
         from sova.dashboard.routers.dependencies import _fetch_agent_map
 
-        with patch("sova.dashboard.services.agent_lifecycle.get_unified_agents", side_effect=Exception("fail")):
+        with patch("sova.dashboard.services.agent_lifecycle.get_unified_agents", side_effect=RuntimeError("fail")):
             result = await _fetch_agent_map()
         assert result == {}
 
@@ -1185,7 +1188,7 @@ class TestFetchHandoffMap:
     def test_handoff_fetch_failure_returns_empty(self) -> None:
         from sova.dashboard.routers.dependencies import _fetch_handoff_map
 
-        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", side_effect=Exception("fail")):
+        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", side_effect=OSError("fail")):
             result = _fetch_handoff_map()
         assert result == {}
 
@@ -1225,7 +1228,7 @@ class TestFetchLastRunMap:
     async def test_last_run_fetch_failure_returns_empty(self) -> None:
         from sova.dashboard.routers.dependencies import _fetch_last_run_map
 
-        with patch("sova.dashboard.project_context.get_project_dir", side_effect=Exception("no project")):
+        with patch("sova.dashboard.project_context.get_project_dir", side_effect=RuntimeError("no project")):
             result = await _fetch_last_run_map()
         assert result == {}
 

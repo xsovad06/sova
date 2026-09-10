@@ -131,7 +131,7 @@ class GmailProvider(AwarenessProvider):
         try:
             authenticate_google(self.config)
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 (Google API client surfaces arbitrary transport and auth errors)
             _log.debug("gmail.auth_failed", exc_info=True)
             return False
 
@@ -144,7 +144,7 @@ class GmailProvider(AwarenessProvider):
 
         try:
             creds = authenticate_google(self.config)
-        except Exception:
+        except Exception:  # noqa: BLE001 (Google API client surfaces arbitrary transport and auth errors)
             _log.warning("gmail.auth_failed", exc_info=True)
             return []
 
@@ -155,7 +155,7 @@ class GmailProvider(AwarenessProvider):
         try:
             service = build_service("gmail", "v1", credentials=creds, cache_discovery=False)
             messages = _list_messages(service, since, self.config.gmail_ignore_labels)
-        except Exception:
+        except Exception:  # noqa: BLE001 (Google API client surfaces arbitrary transport and auth errors)
             _log.warning("gmail.list_failed", exc_info=True)
             return []
 
@@ -172,7 +172,7 @@ class GmailProvider(AwarenessProvider):
 
             try:
                 msg = _get_message(service, msg_id)
-            except Exception:
+            except Exception:  # noqa: BLE001 (Google API client surfaces arbitrary transport and auth errors)
                 _log.debug("gmail.get_message_failed", msg_id=msg_id, exc_info=True)
                 continue
 
@@ -321,7 +321,8 @@ def _decode_base64(data: str) -> str:
         return ""
     try:
         return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-    except Exception:
+    except (ValueError, TypeError):
+        _log.debug("gmail.base64_decode_failed", exc_info=True)
         return ""
 
 

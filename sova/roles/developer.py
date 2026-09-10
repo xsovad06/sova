@@ -136,7 +136,7 @@ class DeveloperRole(AgentRole):
                 if branch:
                     ctx.branch_name = branch
                     log.info("developer.discovered_branch", branch=branch, pr=ctx.pr_number)
-            except Exception:
+            except (RuntimeError, OSError):
                 log.warning("developer.branch_discovery_failed", exc_info=True)
 
         if ctx.worktree_dir is None:
@@ -159,5 +159,5 @@ class DeveloperRole(AgentRole):
                 if wt_path is not None and wt_path.resolve() != ctx.project_dir.resolve():
                     ctx.worktree_dir = wt_path
                     log.info("developer.discovered_worktree_by_branch", branch=ctx.branch_name, path=str(wt_path))
-            except Exception:
+            except (RuntimeError, OSError):
                 log.debug("developer.branch_worktree_lookup_failed", exc_info=True)

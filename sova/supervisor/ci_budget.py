@@ -79,7 +79,8 @@ class CIBudgetTracker:
             from sova.utils.gh import resolve_gh_env
 
             env = await resolve_gh_env(github_user) if github_user else None
-        except Exception:
+        except (RuntimeError, OSError):
+            log.warning("ci_budget.gh_env_failed", github_user=github_user, exc_info=True)
             env = None
 
         owner = repo.split("/")[0] if "/" in repo else repo
@@ -117,7 +118,7 @@ class CIBudgetTracker:
         endpoint = f"users/{owner}/settings/billing/usage?year={now.year}&month={now.month:02d}"
         try:
             result = await run("gh", "api", endpoint, "--paginate", env=env)
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("ci_budget.usage_api_error", endpoint=endpoint, exc_info=True)
             return None
 
@@ -152,7 +153,7 @@ class CIBudgetTracker:
         async def _check(name: str) -> str | None:
             try:
                 result = await run("gh", "api", f"repos/{owner}/{name}", "--jq", ".private", env=env)
-            except Exception:
+            except (RuntimeError, OSError):
                 log.warning("ci_budget.repo_visibility_error", repo=name, exc_info=True)
                 return None
             return name if result.success and result.stdout.strip() == "false" else None
@@ -169,7 +170,7 @@ class CIBudgetTracker:
 
         try:
             result = await run("gh", "api", "user", env=env)
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("ci_budget.plan_lookup_error", exc_info=True)
             return _PLAN_INCLUDED_MINUTES["free"]
 
@@ -201,7 +202,8 @@ class CIBudgetTracker:
         for endpoint in endpoints:
             try:
                 result = await run("gh", "api", endpoint, env=env)
-            except Exception:
+            except (RuntimeError, OSError):
+                log.debug("ci_budget.billing_endpoint_failed", endpoint=endpoint, exc_info=True)
                 continue
             if result.success:
                 return result

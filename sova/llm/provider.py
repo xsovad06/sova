@@ -44,7 +44,8 @@ def _resolve_primary_root(cwd: Path) -> Path | None:
         if root == cwd:
             return None
         return root
-    except Exception:
+    except Exception:  # noqa: BLE001 (subprocess+path ops, silent fallback)
+        log.debug("llm.resolve_primary_root_failed", exc_info=True)
         return None
 
 
@@ -69,7 +70,7 @@ def _assert_command_exists(command: str, cwd: Path) -> None:
                 if cmd_path.is_file():
                     log.info("llm.command_restored", command=command, cwd=str(cwd))
                     return
-            except Exception:
+            except (RuntimeError, OSError):
                 log.debug("llm.command_restore_failed", command=command, cwd=str(cwd), exc_info=True)
         raise RuntimeError(
             f"Command {command} not found at {cmd_path}. Run 'sova commands update --project {cwd}' to install it."
@@ -186,7 +187,8 @@ class LLMProvider(ABC):
                     max_tokens=req.max_tokens,
                 )
                 results.append(BatchResult(request=req, result=r))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 (arbitrary provider error)
+                log.warning("llm.batch_item_failed", custom_id=req.custom_id, error=str(exc), exc_info=True)
                 results.append(BatchResult(request=req, error=str(exc)))
         return results
 

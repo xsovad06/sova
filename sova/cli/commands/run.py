@@ -11,7 +11,10 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 
+from sova.utils.logging import get_logger
+
 console = Console(stderr=True)
+log = get_logger(component="cli.run")
 
 
 def run_issue(
@@ -233,7 +236,8 @@ async def _watch(*, project_dir: Path | None, force: bool) -> None:
         except KeyboardInterrupt:
             console.print("\n[bold]Watch mode stopped.[/bold]")
             break
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (watch loop must survive any single-cycle error)
+            log.warning("watch.cycle_failed", exc_info=True)
             console.print(f"[red]Error: {exc}[/red]")
 
         await asyncio.sleep(interval)
@@ -281,7 +285,7 @@ async def _parallel(*, issues: list[str], project_dir: Path | None, force: bool)
             try:
                 _, result = await dispatch(ctx, config=config.roles)
                 return issue, result.success, result.summary
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 (one issue must not abort the batch; the error lands in the result row)
                 return issue, False, str(exc)
 
     results = await asyncio.gather(*[process_issue(i) for i in issues])

@@ -42,7 +42,7 @@ class ExtractMemoryStep(BaseStep):
 
             return StepResult(success=True, summary=summary, cost_usd=result.cost_usd)
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (memory extraction is non-fatal; the pipeline continues without it)
             log.warning("step.extract_memory.failed", exc_info=True)
             return StepResult(
                 success=True,
@@ -57,7 +57,7 @@ class ExtractMemoryStep(BaseStep):
 
             content = read_spec_sections(ctx.issue_number, ctx.project_dir, MEMORY_EXTRACTION_SECTIONS)
             return content or None
-        except Exception:
+        except (OSError, ValueError):
             log.debug("step.extract_memory.spec_read_failed", exc_info=True)
             return None
 

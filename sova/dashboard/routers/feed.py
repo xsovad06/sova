@@ -128,7 +128,7 @@ async def feed_briefing() -> dict[str, Any]:
         start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         briefing = await BriefingService(providers).generate_briefing(since=start_of_day)
         return _serialize_briefing(briefing)
-    except Exception:
+    except Exception:  # noqa: BLE001 (briefing aggregates many providers; an empty briefing beats a 500)
         log.debug("feed.briefing_failed", exc_info=True)
         return empty
 

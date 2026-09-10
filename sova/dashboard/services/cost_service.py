@@ -9,6 +9,9 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import CostRecord, TaskRun
+from sova.utils.logging import get_logger
+
+log = get_logger(component="dashboard.costs")
 
 
 async def get_summary(session: AsyncSession) -> dict:
@@ -59,7 +62,8 @@ def _compression_savings_usd(tokens_saved: int) -> Decimal:
 
         cfg = load_config()
         model = cfg.llm.model or cfg.agent.model
-    except Exception:
+    except Exception:  # noqa: BLE001 (savings display is best-effort; any config failure yields no estimate)
+        log.debug("costs.compression_rate_lookup_failed", exc_info=True)
         return Decimal("0")
 
     rate = input_rate_per_mtok(model)

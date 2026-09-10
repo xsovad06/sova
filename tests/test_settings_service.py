@@ -160,7 +160,7 @@ class TestUpdateConfigIntegration:
     async def test_db_exception_returns_false(self, tmp_path) -> None:
         from sova.dashboard.services.settings_service import _save_setting_to_db
 
-        with patch("sova.db.session.get_session", side_effect=Exception("db down")):
+        with patch("sova.db.session.get_session", side_effect=RuntimeError("db down")):
             result = await _save_setting_to_db(tmp_path, "agent.max_budget", 25)
         assert result is False
 

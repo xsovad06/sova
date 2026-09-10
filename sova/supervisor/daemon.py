@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.adapters.base import TaskAdapter
@@ -117,7 +118,7 @@ class SupervisorDaemon:
                     consecutive_failures = 0
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 (daemon loop must survive any single-cycle error)
                 consecutive_failures += 1
                 log.warning("daemon.poll_error", consecutive=consecutive_failures, exc_info=True)
             base_interval = max(self._config.supervisor.poll_interval_seconds, _MIN_POLL_INTERVAL)
@@ -147,7 +148,7 @@ class SupervisorDaemon:
         try:
             cfg = await asyncio.to_thread(load_config, self._project_dir)
             self._config = cfg
-        except Exception:
+        except Exception:  # noqa: BLE001 (config may fail for many reasons; poll cycle keeps the stale config)
             log.warning("daemon.config_reload_failed", exc_info=True)
             cfg = self._config
 
@@ -157,7 +158,7 @@ class SupervisorDaemon:
 
         try:
             adapter = create_adapter(cfg)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (adapter construction failure is reported per component, not crashed on)
             log.warning("poll.adapter_creation_failed", exc_info=True)
             err = str(exc)
             return {"progression": {"error": err}, "quota": {"error": err}, "health": {"adapter": f"error: {err}"}}
@@ -266,7 +267,7 @@ class SupervisorDaemon:
 
             executed = await engine.execute_decisions(decisions)
             return {"decisions": len(decisions), "executed": executed, "pending": 0}, engine
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (one component failure must not abort the poll cycle)
             await self._log_decision(
                 component="progression",
                 event_type="health",
@@ -317,7 +318,7 @@ class SupervisorDaemon:
                     )
 
             return {"checked": True, "closed": len([r for r in results if r.get("closed")])}
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (one component failure must not abort the poll cycle)
             await self._log_decision(
                 component="epic_close",
                 event_type="health",
@@ -366,7 +367,7 @@ class SupervisorDaemon:
                 "reviews_in_window": status.reviews_in_window,
                 "can_create_pr": status.can_create_pr,
             }
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (one component failure must not abort the poll cycle)
             await self._log_decision(
                 component="quota",
                 event_type="health",
@@ -388,7 +389,7 @@ class SupervisorDaemon:
                 "added": list(result.added),
                 "queue_size": len(result.current),
             }
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (one component failure must not abort the poll cycle)
             log.warning("poll.queue_maintenance_error", exc_info=True)
             return {"error": str(exc)}
 
@@ -400,7 +401,8 @@ class SupervisorDaemon:
             async with self._session_factory() as session:
                 await session.execute(select(SupervisorDecision.id).limit(1))
             checks["db"] = "ok"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (health check reports the error instead of propagating it)
+            log.warning("daemon.db_health_check_failed", exc_info=True)
             checks["db"] = f"error: {exc}"
 
         return checks
@@ -436,7 +438,7 @@ class SupervisorDaemon:
             async with self._session_factory() as session:
                 async with session.begin():
                     session.add_all(records)
-        except Exception:
+        except (OSError, SQLAlchemyError):
             log.debug("log_decision.write_failed", exc_info=True)
 
     async def _purge_old_logs(self) -> None:
@@ -447,5 +449,5 @@ class SupervisorDaemon:
                 async with session.begin():
                     await session.execute(delete(SupervisorDecision).where(SupervisorDecision.created_at < cutoff))
             log.info("daemon.purged_old_logs", retention_days=self._config.supervisor.log_retention_days)
-        except Exception:
+        except (OSError, SQLAlchemyError):
             log.warning("daemon.purge_failed", exc_info=True)

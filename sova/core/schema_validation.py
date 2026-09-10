@@ -132,7 +132,7 @@ async def validate_step_output(
             logger.warning(f"Retry {attempt} still invalid: {error}")
             raw_text = llm_result.text  # Update for next retry preview
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 (any retry failure is re-raised as ValidationError with retry cost)
             logger.error(f"Retry {attempt} failed with exception: {e}", exc_info=True)
             # The exception was raised before we could access llm_result, so only count
             # cost if we got a result first

@@ -232,7 +232,8 @@ class SOVAServer:
                 return True
             finally:
                 await session.close()
-        except Exception:
+        except Exception:  # noqa: BLE001 (health probe reports unhealthy rather than propagating)
+            log.warning("server.db_health_check_failed", exc_info=True)
             return False
 
     def _count_active_agents(self) -> int:
@@ -241,7 +242,8 @@ class SOVAServer:
             from sova.dashboard.services.control_service import _projects
 
             return sum(len(pa.agents) for pa in _projects.values())
-        except Exception:
+        except (ImportError, AttributeError):
+            log.warning("server.agent_count_failed", exc_info=True)
             return 0
 
     async def _get_scheduler_digest(self, hours: int) -> dict:
@@ -319,7 +321,7 @@ class SOVAServer:
         except asyncio.CancelledError:
             self._watch_loop.stop()
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 (daemon loop must survive any error rather than kill the server)
             log.error("scheduler.crash", exc_info=True)
         finally:
             self._running = False

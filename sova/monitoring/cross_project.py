@@ -68,7 +68,7 @@ class MetricsSnapshotWriter:
         # Write one snapshot immediately so the widget has data on startup
         try:
             self._write_snapshot()
-        except Exception:
+        except Exception:  # noqa: BLE001 (cross-project metrics are optional; monitoring continues without them)
             log.warning("cross_project.initial_write_error", slug=self._slug, exc_info=True)
 
         self._task = asyncio.create_task(self._write_loop())
@@ -102,7 +102,7 @@ class MetricsSnapshotWriter:
                 if data is not None:
                     # Only the disk I/O is offloaded -- no shared state accessed.
                     await loop.run_in_executor(None, self._flush_to_disk, data)
-            except Exception:
+            except Exception:  # noqa: BLE001 (writer loop must survive any single-cycle error)
                 log.warning("cross_project.write_error", slug=self._slug, exc_info=True)
 
     def _collect_metrics(self) -> dict | None:
@@ -139,7 +139,7 @@ class MetricsSnapshotWriter:
                 with os.fdopen(fd, "w") as f:
                     json.dump(snapshot, f)
                 os.replace(tmp_path, str(self._snapshot_path))
-            except BaseException:
+            except BaseException:  # noqa: BLE001 (temp file must be removed even on KeyboardInterrupt; re-raised below)
                 try:
                     os.unlink(tmp_path)
                 except OSError:

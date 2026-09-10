@@ -17,7 +17,7 @@ async def cost_summary() -> dict:
     try:
         async with await get_session() as session:
             return await cost_service.get_summary(session)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("costs.summary.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch cost summary")
 
@@ -27,7 +27,7 @@ async def daily_costs(days: int = Query(default=14, ge=1, le=90)) -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_daily(session, days)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("costs.daily.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch daily costs")
 
@@ -37,7 +37,7 @@ async def costs_by_issue() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_issue(session)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("costs.by_issue.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch costs by issue")
 
@@ -47,7 +47,7 @@ async def costs_by_phase() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_phase(session)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("costs.by_phase.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch costs by phase")
 
@@ -57,7 +57,7 @@ async def costs_by_model() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_model(session)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("costs.by_model.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch costs by model")
 
@@ -71,6 +71,6 @@ async def costs_by_routing() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_routing(session)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("costs.by_routing.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch costs by routing") from exc

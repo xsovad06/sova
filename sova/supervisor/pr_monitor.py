@@ -105,7 +105,7 @@ class PRMonitor:
                 await self._poll_cycle()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 (monitor loop must survive any single-cycle error)
                 log.warning("pr_monitor.cycle_error", exc_info=True)
             await self._interruptible_sleep(self.monitor_config.poll_interval)
 
@@ -170,7 +170,7 @@ class PRMonitor:
             prev = self._last_state.get(number)
             try:
                 await self._handle_transition(prev, snapshot)
-            except Exception:
+            except Exception:  # noqa: BLE001 (monitor loop must survive any single-cycle error)
                 log.warning("pr_monitor.transition_error", pr=number, exc_info=True)
 
         self._last_state = current
@@ -225,7 +225,7 @@ class PRMonitor:
         log.info("pr_monitor.retry_coderabbit", pr=pr_number)
         try:
             env = await resolve_gh_env(self.github_user) if self.github_user else None
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("pr_monitor.gh_env_failed", pr=pr_number, exc_info=True)
             return
         result = await run(
@@ -265,7 +265,7 @@ def create_monitors_for_projects() -> list[PRMonitor]:
             continue
         try:
             pcfg = load_config(p)
-        except Exception:
+        except Exception:  # noqa: BLE001 (one unloadable project must not abort monitor startup)
             log.warning("pr_monitor.config_load_failed", project=str(p), exc_info=True)
             continue
         if not pcfg.pr_monitor.enabled or not pcfg.github_repo:

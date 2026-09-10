@@ -16,10 +16,12 @@ from sova.adapters.base import Task, TaskAdapter, TaskFilters, TaskState
 from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
 from sova.roles.triage import TriageRole
+from sova.utils.logging import get_logger
 from sova.utils.markdown import strip_code_fences as _strip_code_fences
 from sova.utils.markdown import strip_preamble as _strip_preamble
 
 console = Console(stderr=True)
+log = get_logger(component="cli.harden")
 
 # Max lines to read from each project doc file.
 _MAX_DOC_LINES = 500
@@ -53,7 +55,8 @@ async def _harden(
     # Fetch all open issues once (used for both target selection and conflict analysis).
     try:
         all_open = await adapter.list_tasks(TaskFilters(state="open"))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (adapter failure is reported to the user; the command aborts cleanly)
+        log.warning("harden.list_tasks_failed", exc_info=True)
         console.print(f"[red]Failed to fetch issues: {exc}[/red]")
         return
     tasks = await _resolve_harden_tasks(adapter, issue, all_open)
@@ -162,7 +165,8 @@ async def _retriage_task(
                 await adapter.add_label(task.id, label)
         console.print(f"[green]  Re-triaged: {verdict}[/green]")
         return verdict
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (one issue must not abort the harden batch)
+        log.warning("harden.retriage_failed", issue=task.id, exc_info=True)
         console.print(f"[yellow]  Re-triage failed: {exc}[/yellow]")
         return None
 

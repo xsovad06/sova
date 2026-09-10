@@ -16,6 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import aiosqlite
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.models import FleetConfig
 from sova.config.registry import list_projects
@@ -146,7 +147,7 @@ class FleetService:
         registry = list_projects()
         try:
             remote_runs, remote_steps = await self._query_telemetry_events()
-        except Exception:
+        except Exception:  # noqa: BLE001 (remote telemetry is optional; local data still renders)
             log.debug("fleet.telemetry_query_failed", exc_info=True)
             remote_runs, remote_steps = [], []
 
@@ -200,7 +201,7 @@ class FleetService:
                 except (TimeoutError, asyncio.TimeoutError):
                     log.warning("fleet.query_timeout", slug=slug, exc_info=True)
                     return slug, None
-                except Exception:
+                except Exception:  # noqa: BLE001 (one unreachable project must not abort the fleet query)
                     log.warning("fleet.query_failed", slug=slug, exc_info=True)
                     return slug, None
 
@@ -284,7 +285,7 @@ class FleetService:
                     cost=Decimal(str(row["cost"] or 0)),
                 )
             ]
-        except Exception:
+        except (OSError, SQLAlchemyError, aiosqlite.Error):
             log.warning("fleet.query_runs_failed", slug=slug, exc_info=True)
             return []
 
@@ -306,7 +307,7 @@ class FleetService:
                 _StepRow(step_name=row["step_name"], total=row["total"], failures=int(row["failures"] or 0))
                 for row in rows
             ]
-        except Exception:
+        except (OSError, SQLAlchemyError, aiosqlite.Error):
             log.warning("fleet.query_steps_failed", exc_info=True)
             return []
 
@@ -324,7 +325,7 @@ class FleetService:
             async with db.execute(sql) as cur:
                 rows = await cur.fetchall()
             return [_FailureRow(slug=slug, message=row["message"], count=row["cnt"]) for row in rows]
-        except Exception:
+        except (OSError, SQLAlchemyError, aiosqlite.Error):
             log.warning("fleet.query_failures_failed", slug=slug, exc_info=True)
             return []
 
@@ -342,7 +343,7 @@ class FleetService:
             async with db.execute(sql) as cur:
                 row = await cur.fetchone()
             return [_ResumedRow(resumed_total=row["resumed_total"] or 0, resumed_done=int(row["resumed_done"] or 0))]
-        except Exception:
+        except (OSError, SQLAlchemyError, aiosqlite.Error):
             # resumed_from_id column may not exist in old schemas
             log.debug("fleet.query_resumed_runs_failed", exc_info=True)
             return []
@@ -447,7 +448,7 @@ class FleetService:
             step_rows = await _query_telemetry_step_stats(TelemetryEvent, get_session, select, cutoff)
 
             return run_rows, step_rows
-        except Exception:
+        except Exception:  # noqa: BLE001 (remote telemetry is optional; local data still renders)
             log.debug("fleet.telemetry_query_failed", exc_info=True)
             return [], []
 
@@ -534,7 +535,8 @@ async def _query_telemetry_step_stats(
                     status = str(raw) if not isinstance(raw, str) else raw
                 else:
                     continue
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
+                log.debug("fleet.step_outcome_malformed", step=step_name, exc_info=True)
                 continue
             counts = step_stats.setdefault(step_name, [0, 0])
             counts[0] += 1

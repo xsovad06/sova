@@ -121,7 +121,7 @@ class GenerateTasksStep(BaseStep):
                 timeout=180,
             )
             ctx.add_usage(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (any LLM or transport failure becomes a failed StepResult)
             log.error("generate.llm_failed", error=str(exc), exc_info=True)
             return StepResult(success=False, summary="Task generation failed", error=str(exc))
 

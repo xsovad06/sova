@@ -130,7 +130,7 @@ def _try_load_config(project_path: Path) -> ProjectConfig | None:
 
     try:
         return load_config(project_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 (one unloadable project must not abort multi-project startup)
         log.warning("supervisor.config_load_failed", project=str(project_path), exc_info=True)
         return None
 
@@ -262,7 +262,7 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
                         timeout=_MERGE_CHECK_TIMEOUT,
                     )
                     return rec["run_id"], merged
-                except Exception:
+                except (RuntimeError, OSError):
                     log.debug("sweep.merge_check_skipped", run_id=rec["run_id"], exc_info=True)
                     return rec["run_id"], False
 
@@ -326,7 +326,7 @@ async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None
             await _liveness_sweep_once(project_dir, is_multi=is_multi)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 (background sweep must survive any single-cycle error)
             log.warning("sweep.error", exc_info=True)
 
 
@@ -344,7 +344,7 @@ async def _periodic_recovery_loop(project_dir: Path | None, is_multi: bool) -> N
                 await recover_stale_runs(d)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 (background recovery must survive any single-cycle error)
             log.warning("periodic_recovery.error", exc_info=True)
 
 
@@ -361,7 +361,7 @@ async def _startup_gc(project_dir: Path) -> None:
                 branches=gc.branches_removed,
                 stashes=len(gc.stashes_found),
             )
-    except Exception:
+    except (RuntimeError, OSError):
         log.warning("lifespan.gc_failed", exc_info=True)
 
 
@@ -429,7 +429,7 @@ async def _check_db_health(project_dir: Path | None = None, timeout: float = _HE
     try:
         await asyncio.wait_for(_probe(), timeout=timeout)
         return "ok"
-    except Exception:
+    except Exception:  # noqa: BLE001 (health probe reports any failure as unhealthy)
         log.warning("healthz.db_check_failed", project_dir=str(project_dir) if project_dir else None, exc_info=True)
         return "fail"
 
@@ -915,7 +915,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
             except SystemExit:
                 removed = unregister_project(slug)
                 return {"removed": removed, "files_cleaned": False}
-            except Exception:
+            except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
                 log.exception("Uninstall failed for %s", slug)
                 raise HTTPException(status_code=500, detail="Failed to uninstall project") from None
             return {"removed": True, "files_cleaned": len(failures) == 0}
@@ -1174,7 +1174,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
             sup_cfg = load_config(get_project_dir())
             github_repo = sup_cfg.github_repo or ""
-        except Exception:
+        except Exception:  # noqa: BLE001 (page renders without the repo name if config is unavailable)
             log.debug("Failed to load github_repo for supervisor page", exc_info=True)
             github_repo = ""
         return templates.TemplateResponse(

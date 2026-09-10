@@ -66,7 +66,7 @@ class OutputWriter:
                     )
                     if max_ln is not None:
                         self._next_line_number = max_ln + 1
-            except Exception:
+            except Exception:  # noqa: BLE001 (fail-open: line-number seeding must not abort the flush)
                 log.warning("output_writer.seed_line_number_failed", run_id=self._run_id, exc_info=True)
 
         lines_to_flush = self._buffer[:]
@@ -102,7 +102,7 @@ class OutputWriter:
                 # of losing the batch silently.
                 insert_task.add_done_callback(self._make_detached_failure_handler(records, lines_to_flush))
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: DB write failure must not lose buffered output lines)
             log.warning("output_writer.flush_failed", run_id=self._run_id, lines=len(records), exc_info=True)
             self._next_line_number -= len(records)
             self._buffer = [r.text for r in records] + self._buffer
@@ -187,7 +187,7 @@ async def read_lines(
                 )
                 lines = [row[0] for row in rows]
                 return lines, total
-    except Exception:
+    except Exception:  # noqa: BLE001 (fail-open: output read must not crash the caller)
         log.warning("read_lines.failed", run_id=run_id, exc_info=True)
         return [], 0
 
@@ -233,6 +233,6 @@ async def cleanup_old_output(project_dir: Path, retention_days: int = 30) -> int
                 deleted: int = result.rowcount
         log.info("output.cleanup", deleted=deleted, retention_days=retention_days)
         return deleted
-    except Exception:
+    except Exception:  # noqa: BLE001 (fail-open: retention cleanup must not crash the caller)
         log.warning("output.cleanup_failed", exc_info=True)
         return 0

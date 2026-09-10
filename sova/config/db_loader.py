@@ -37,7 +37,7 @@ async def load_config_from_db(session: AsyncSession) -> dict[str, Any] | None:
     except (OperationalError, ProgrammingError):
         await session.rollback()
         return None
-    except Exception:
+    except Exception:  # noqa: BLE001 (fail-open: docstring guarantees None on any read failure)
         logger.warning("Failed to load config from DB", exc_info=True)
         await session.rollback()
         return None
@@ -236,7 +236,7 @@ def _save_with_immediate_lock(engine: Any, config: dict[str, Any], flat: dict[st
 
             _write_flat_config(conn, config, flat)
             conn.execute(text("COMMIT"))
-        except Exception:
+        except Exception:  # noqa: BLE001 (rolled back then re-raised; the caller decides how to handle it)
             conn.execute(text("ROLLBACK"))
             raise
     finally:
@@ -290,7 +290,7 @@ def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any], *, only_i
                 _save_within_transaction(engine, config, flat)
         finally:
             engine.dispose()
-    except Exception:
+    except Exception:  # noqa: BLE001 (config save is best-effort; the file-based config remains authoritative)
         logger.warning("Failed to save config to DB (sync)", exc_info=True)
 
 
@@ -351,7 +351,8 @@ def _is_db_confirmed_empty(project_dir: Path | str | None) -> bool:
                 return row is not None and row[0] == 0
         finally:
             engine.dispose()
-    except Exception:
+    except Exception:  # noqa: BLE001 (fail-closed: docstring guarantees False on any error)
+        logger.debug("db_config.emptiness_probe_failed", exc_info=True)
         return False
 
 
@@ -393,6 +394,6 @@ def _try_load_from_db(project_dir: Path | str | None) -> dict[str, Any] | None:
             return _rows_to_nested(rows)
         finally:
             engine.dispose()
-    except Exception:
+    except Exception:  # noqa: BLE001 (silent fallback to file-based config on any DB failure)
         logger.debug("DB config load skipped", exc_info=True)
         return None

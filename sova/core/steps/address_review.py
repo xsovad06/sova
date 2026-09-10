@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.handoff import read_handoff, read_handoff_file
@@ -33,7 +35,7 @@ async def _load_review_findings_from_db(task_run_id: int | None) -> list[dict]:
         handoff = await read_handoff(task_run_id)
         if handoff and handoff.pending_findings:
             return handoff.pending_findings
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("address_review.db_findings_failed", exc_info=True)
     return []
 
@@ -69,7 +71,7 @@ async def _load_review_findings_by_issue(issue_number: str) -> list[dict]:
                 if findings:
                     log.info("address_review.findings_from_reviewer", run_id=run_record.id, count=len(findings))
                     return findings
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("address_review.issue_findings_failed", exc_info=True)
     return []
 
@@ -191,7 +193,7 @@ async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict
         if findings:
             log.info("address_review.github_review_findings", count=len(findings))
         return findings
-    except Exception:
+    except Exception:  # noqa: BLE001 (one of four finding sources; failure falls through to the others)
         log.warning("address_review.github_review_fetch_failed", exc_info=True)
         return []
 
@@ -226,7 +228,7 @@ async def _load_coderabbit_findings(ctx: ExecutionContext) -> tuple[list[dict], 
         if findings:
             log.info("address_review.coderabbit_findings", count=len(findings))
         return findings, cr_result.thread_ids
-    except Exception:
+    except Exception:  # noqa: BLE001 (one of four finding sources; failure falls through to the others)
         log.warning("address_review.coderabbit_fetch_failed", exc_info=True)
         return [], []
 
@@ -237,7 +239,7 @@ def _load_spec_for_context(ctx: ExecutionContext) -> str:
         from sova.core.steps._spec_helpers import REVIEW_CONTEXT_SECTIONS, read_spec_sections
 
         return read_spec_sections(ctx.issue_number, ctx.project_dir, REVIEW_CONTEXT_SECTIONS)
-    except Exception:
+    except (OSError, ValueError):
         log.debug("address_review.spec_context_failed", exc_info=True)
         return ""
 

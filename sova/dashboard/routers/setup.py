@@ -111,7 +111,7 @@ async def install_project(req: InstallRequest) -> dict:
         await _install(path=project, no_dashboard=True, update=req.update_only)
         slug = register_project(project)
         return {"status": "ok", "slug": slug}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.exception("setup.install.error", project=str(project))
         raise HTTPException(status_code=500, detail="Installation failed") from exc
 

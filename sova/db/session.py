@@ -23,6 +23,7 @@ _session_factory = None
 _engines: dict[str, tuple] = {}
 
 _DB_FILENAME = "sova.db"
+_log = logging.getLogger("sova.db")
 _init_lock: asyncio.Lock | None = None
 
 
@@ -97,7 +98,8 @@ def _get_alembic_head(alembic_cfg) -> str | None:
         if result is not None:
             _ALEMBIC_HEAD_CACHE = result
         return result
-    except Exception:
+    except Exception:  # noqa: BLE001 (alembic surfaces arbitrary errors; head detection is advisory)
+        _log.debug("alembic.head_cache_failed", exc_info=True)
         return None
 
 
@@ -175,7 +177,7 @@ async def _run_migrations(engine) -> bool:
             try:
                 async with engine.connect() as conn:
                     missing = await conn.run_sync(_find_missing_columns)
-            except Exception:
+            except Exception:  # noqa: BLE001 (diagnostic check must fail open; schema drift is reported, not fatal)
                 log.warning("Could not verify schema against the ORM", exc_info=True)
                 missing = []
             if missing:
@@ -204,17 +206,16 @@ async def _run_migrations(engine) -> bool:
         else:
             async with engine.begin() as conn:
                 await conn.run_sync(_do_upgrade)
-    except Exception:
-        log = logging.getLogger("sova.db")
-        log.warning("Alembic migration failed, falling back to create_all", exc_info=True)
+    except Exception:  # noqa: BLE001 (any migration failure falls back to create_all)
+        _log.warning("Alembic migration failed, falling back to create_all", exc_info=True)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(lambda c: c.execute(text("DROP TABLE IF EXISTS alembic_version")))
                 await conn.run_sync(_do_stamp)
-        except Exception:
-            log.warning("Alembic stamp also failed; tables created but untracked", exc_info=True)
+        except Exception:  # noqa: BLE001 (tables exist either way; stamping is advisory)
+            _log.warning("Alembic stamp also failed; tables created but untracked", exc_info=True)
     return True  # DDL was executed
 
 
@@ -240,9 +241,8 @@ def _register_sqlite_pragmas(engine) -> None:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.close()
-        except Exception:
-            log = logging.getLogger("sova.db")
-            log.warning("Failed to set SQLite synchronous mode", exc_info=True)
+        except Exception:  # noqa: BLE001 (sqlite3 DB-API connection is opaque; pragma failure is advisory)
+            _log.warning("Failed to set SQLite synchronous mode", exc_info=True)
 
 
 async def _enable_sqlite_wal(engine) -> None:
@@ -257,9 +257,8 @@ async def _enable_sqlite_wal(engine) -> None:
     try:
         async with engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
-    except Exception:
-        log = logging.getLogger("sova.db")
-        log.warning("Failed to set SQLite WAL mode", exc_info=True)
+    except Exception:  # noqa: BLE001 (WAL mode is an optimization; non-SQLite backends and locked DBs both fail here)
+        _log.warning("Failed to set SQLite WAL mode", exc_info=True)
 
 
 async def init_db(project_dir: Path | None = None, *, run_migrations: bool = True) -> None:

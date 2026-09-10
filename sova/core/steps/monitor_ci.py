@@ -85,7 +85,7 @@ class MonitorCIStep(BaseStep):
                 repo=ctx.repo,
                 github_user=ctx.config.github_user,
             )
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("step.monitor_ci.existing_check_failed", exc_info=True)
             return None
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.db.models import Memory, MemoryEdge
 from sova.db.session import get_session
@@ -87,7 +88,7 @@ async def store(
             from sova.knowledge.graph import auto_link
 
             await auto_link(memory.id)
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("knowledge.auto_link_failed", memory_id=memory.id, exc_info=True)
 
     return memory

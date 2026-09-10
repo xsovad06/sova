@@ -382,7 +382,7 @@ async def test_jira_connection(base_url: str, email: str, api_token: str) -> dic
                 "email": data.get("emailAddress", ""),
             }
         return {"status": "error", "detail": f"HTTP {resp.status_code}: {resp.text[:200]}"}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 (connection test reports any failure to the user)
         log.exception("jira_test.failed")
         return {"status": "error", "detail": str(e)}
 
@@ -488,7 +488,7 @@ async def create_starter_milestones(
 
     try:
         existing = await adapter.list_milestones(state="all")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
         log.warning("create_starter_milestones.list_failed", exc_info=True)
         return {"status": "error", "detail": f"Failed to list milestones: {e}"}
 
@@ -506,7 +506,8 @@ async def create_starter_milestones(
             desc = DEFAULT_PHASE_DESCRIPTIONS[i] if i < len(DEFAULT_PHASE_DESCRIPTIONS) else ""
             await adapter.create_milestone(title=title, description=desc)
             created.append(title)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
+            log.warning("setup.milestone_create_failed", title=title, exc_info=True)
             failed.append({"title": title, "error": str(e)})
 
     return {
@@ -536,5 +537,6 @@ def _read_existing_toml(project: Path) -> dict:
             else:
                 flat[key] = str(val)
         return flat
-    except Exception:
+    except (OSError, ValueError):
+        log.warning("setup.toml_read_failed", toml_file=str(toml_file), exc_info=True)
         return {}

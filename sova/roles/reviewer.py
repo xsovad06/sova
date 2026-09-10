@@ -170,7 +170,8 @@ class ReviewerRole(AgentRole):
         try:
             diff = await get_pr_diff(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
             files = await get_pr_files(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
-        except Exception as exc:
+        except (RuntimeError, OSError) as exc:
+            log.warning("reviewer.pr_fetch_failed", issue=ctx.issue_number, pr=ctx.pr_number, exc_info=True)
             return RoleResult(
                 success=False,
                 summary=f"Failed to fetch PR #{ctx.pr_number} diff",
@@ -240,7 +241,7 @@ class ReviewerRole(AgentRole):
                     repo=ctx.repo,
                     github_user=ctx.config.github_user,
                 )
-            except Exception:
+            except (RuntimeError, OSError):
                 log.warning("reviewer.branch_discovery_failed", exc_info=True)
 
         return None
@@ -259,7 +260,7 @@ class ReviewerRole(AgentRole):
             handoff = read_handoff_file(ctx.project_dir, issue=ctx.issue_number or None)
             if handoff and handoff.details.get("addressed_findings"):
                 return handoff.details["addressed_findings"]
-        except Exception:
+        except (OSError, ValueError):
             log.debug("reviewer.addressed_findings_file_failed", exc_info=True)
 
         if ctx.resume_run_id:
@@ -274,7 +275,7 @@ class ReviewerRole(AgentRole):
                         count=len(db_handoff.addressed_findings),
                     )
                     return db_handoff.addressed_findings
-            except Exception:
+            except (SQLAlchemyError, OSError, ValueError):
                 log.debug("reviewer.addressed_findings_resume_failed", exc_info=True)
 
         issue = (ctx.issue_number or "").lstrip("#").strip()
@@ -302,7 +303,7 @@ class ReviewerRole(AgentRole):
                         if findings:
                             log.info("reviewer.addressed_findings_from_db", run_id=run_record.id, count=len(findings))
                             return findings
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.debug("reviewer.addressed_findings_db_failed", exc_info=True)
 
         return []
@@ -326,7 +327,7 @@ class ReviewerRole(AgentRole):
                     task_run = await session.get(TaskRun, ctx.task_run_id)
                     if task_run:
                         task_run.current_step = None
-        except (OSError, SQLAlchemyError):
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("reviewer.clear_step_failed", exc_info=True)
 
     async def _post_review(self, ctx: ExecutionContext, review: ReviewResult, diff: str) -> bool:
@@ -352,7 +353,7 @@ class ReviewerRole(AgentRole):
             )
             log.info("reviewer.posted_review", inline=len(inline_comments), body_only=len(body_only))
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             if inline_comments:
                 log.warning("reviewer.inline_review_failed", exc_info=True)
                 try:
@@ -364,7 +365,7 @@ class ReviewerRole(AgentRole):
                     )
                     log.info("reviewer.posted_review_body_only", finding_count=len(review.findings))
                     return True
-                except Exception:
+                except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                     log.warning("reviewer.body_only_review_failed", exc_info=True)
             else:
                 log.warning("reviewer.review_api_failed", exc_info=True)
@@ -374,7 +375,7 @@ class ReviewerRole(AgentRole):
             await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
             log.info("reviewer.posted_comment_fallback", finding_count=len(review.findings))
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning(
                 "reviewer.all_posting_attempts_failed",
                 pr=ctx.pr_number,
@@ -553,7 +554,7 @@ class ReviewerRole(AgentRole):
                 if i == 0 or not result.summary:
                     result.summary = summary
 
-            except Exception:
+            except Exception:  # noqa: BLE001 (a failed chunk must not abort the review; remaining chunks still run)
                 log.warning("reviewer.llm_failed", chunk=i + 1, total=len(chunks), exc_info=True)
                 if not result.findings:
                     result.summary = "LLM review unavailable -- manual review recommended"
@@ -576,7 +577,7 @@ class ReviewerRole(AgentRole):
             if sections:
                 log.info("reviewer.spec_loaded", issue=issue, sections=list(sections.keys()))
             return sections or None
-        except Exception:
+        except (OSError, ValueError):
             log.warning("reviewer.spec_load_failed", issue=issue, exc_info=True)
             return None
 
@@ -599,7 +600,7 @@ class ReviewerRole(AgentRole):
 
             project_dir = ctx.working_dir or ctx.project_dir
             append_spec_section(ctx.issue_number, SECTION_REVIEW_RATIONALE, "\n".join(lines), project_dir)
-        except Exception:
+        except (OSError, ValueError):
             log.warning("reviewer.review_rationale_failed", exc_info=True)
 
     async def _write_verdict_label(self, ctx: ExecutionContext, review: ReviewResult) -> None:
@@ -622,7 +623,7 @@ class ReviewerRole(AgentRole):
                 await ctx.adapter.remove_label(issue, old_label)
             await ctx.adapter.add_label(issue, label)
             log.info("reviewer.verdict_label_written", issue=issue, label=label)
-        except Exception:
+        except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning("reviewer.verdict_label_failed", issue=issue, label=label, exc_info=True)
 
     async def _write_handoff(self, ctx: ExecutionContext, review: ReviewResult) -> None:
@@ -777,10 +778,10 @@ class ReviewerRole(AgentRole):
         if ctx.task_run_id:
             try:
                 await write_handoff(ctx.task_run_id, agent_handoff)
-            except Exception:
+            except (SQLAlchemyError, OSError):
                 log.warning("reviewer.handoff_db_failed", exc_info=True)
 
         try:
             write_handoff_file(ctx.project_dir, dashboard_handoff)
-        except Exception:
+        except (OSError, ValueError):
             log.warning("reviewer.handoff_file_failed", exc_info=True)

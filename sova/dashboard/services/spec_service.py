@@ -119,7 +119,7 @@ def _iter_all_specs(project_dir: Path | None = None) -> list[dict]:
         try:
             text = f.read_text()
             parsed = _parse_spec(text, f, issue_match.group(1))
-        except Exception:
+        except (OSError, ValueError):
             log.warning("spec.parse_failed", file=str(f), exc_info=True)
             continue
         results.append(parsed)

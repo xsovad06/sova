@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.settings")
@@ -15,7 +17,8 @@ def get_config(project_dir: Path | None = None) -> dict:
 
     try:
         cfg = load_config(project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+        log.warning("settings.config_load_failed", project_dir=str(project_dir), exc_info=True)
         return {"_error": "No configuration found"}
 
     # Flatten the config into displayable key-value pairs
@@ -103,7 +106,7 @@ async def _save_setting_to_db(project_dir: Path | None, key: str, value: object)
         async with await get_session(project_dir=project_dir) as session, session.begin():
             await save_setting(session, key, value)
         return True
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("settings.db_save_failed", key=key, exc_info=True)
         return False
 
@@ -133,7 +136,7 @@ def _save_setting_to_toml(project_dir: Path | None, key: str, value: object) -> 
     except ImportError:
         log.debug("tomlkit not available")
         return False
-    except Exception:
+    except Exception:  # noqa: BLE001 (tomlkit surfaces arbitrary parse errors; the write is reported as failed)
         log.warning("settings.toml_write_failed", exc_info=True)
         return False
 
@@ -248,5 +251,6 @@ def get_detected_persona(project_dir: Path | None = None) -> str | None:
         from sova.knowledge.personas import detect_persona
 
         return detect_persona(project_dir)
-    except Exception:
+    except (OSError, ValueError):
+        log.warning("settings.persona_detect_failed", project_dir=str(project_dir), exc_info=True)
         return None

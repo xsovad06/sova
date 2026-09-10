@@ -126,7 +126,7 @@ async def cancel_a2a_task(request: Request, task_id: str):
 
     try:
         await control_service.stop_agent(run_id=run_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 (the run is already marked rejected; stop failure is reported only)
         log.warning("stop_agent failed after marking run %d rejected", run_id, exc_info=True)
     return {"id": task_id, "status": {"state": "canceled", "message": "Task canceled"}}
 

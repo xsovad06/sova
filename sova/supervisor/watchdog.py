@@ -114,7 +114,7 @@ class AgentWatchdog:
             await self._scan_once()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 (watchdog loop must survive any single-scan error)
             log.warning("watchdog.scan_error", exc_info=True)
 
         while True:
@@ -123,7 +123,7 @@ class AgentWatchdog:
                 await self._scan_once()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 (watchdog loop must survive any single-scan error)
                 log.warning("watchdog.scan_error", exc_info=True)
 
     async def _scan_once(self) -> list[WatchdogFinding]:
@@ -402,5 +402,5 @@ class AgentWatchdog:
         )
         try:
             await stop_agent(run_id=finding.run_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 (kill is best-effort; the finding is recorded regardless)
             log.warning("watchdog.kill_failed", run_id=finding.run_id, exc_info=True)

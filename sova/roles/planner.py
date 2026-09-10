@@ -11,6 +11,7 @@ import json
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
@@ -136,8 +137,8 @@ class PlannerRole(AgentRole):
                 timeout=180,
             )
             ctx.add_cost(result.cost_usd)
-        except Exception as exc:
-            log.error("planner.llm_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 (LLM failure is reported as a failed RoleResult, not a crash)
+            log.error("planner.llm_failed", error=str(exc), exc_info=True)
             return RoleResult(
                 success=False,
                 summary="Planner failed: LLM invocation error",
@@ -168,8 +169,8 @@ class PlannerRole(AgentRole):
     async def _gather_open_issues(self, ctx: ExecutionContext) -> list[Task]:
         try:
             return await ctx.adapter.list_tasks()
-        except Exception as exc:
-            log.warning("planner.list_tasks_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
+            log.warning("planner.list_tasks_failed", error=str(exc), exc_info=True)
             return []
 
     def _read_vision(self, ctx: ExecutionContext) -> str:
@@ -246,8 +247,8 @@ class PlannerRole(AgentRole):
         )
         try:
             write_handoff_file(ctx.project_dir, dashboard_handoff)
-        except Exception as exc:
-            log.warning("planner.file_handoff_failed", error=str(exc))
+        except (OSError, ValueError) as exc:
+            log.warning("planner.file_handoff_failed", error=str(exc), exc_info=True)
 
         # DB-backed handoff for history
         if ctx.task_run_id:
@@ -260,5 +261,5 @@ class PlannerRole(AgentRole):
             )
             try:
                 await write_handoff(ctx.task_run_id, agent_handoff)
-            except Exception as exc:
-                log.warning("planner.db_handoff_failed", error=str(exc))
+            except (OSError, RuntimeError, SQLAlchemyError) as exc:
+                log.warning("planner.db_handoff_failed", error=str(exc), exc_info=True)

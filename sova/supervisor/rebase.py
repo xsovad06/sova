@@ -117,7 +117,7 @@ async def attempt_auto_rebase(
         await _finalize_run(task_run.id, "done", None, head_sha, session_factory)
         return {"status": "success", "pr_number": pr_number, "conflicts_resolved": result.conflicts_resolved}
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (rebase spans git, LLM and DB; any failure is recorded on the run)
         log.exception("auto_rebase.unexpected_error", issue=issue_number, pr=pr_number)
         if task_run is not None:
             await _finalize_run(task_run.id, "failed", str(exc), head_sha, session_factory)
@@ -127,7 +127,7 @@ async def attempt_auto_rebase(
         if worktree_path is not None:
             try:
                 await cleanup_worktree(worktree_path, cwd=project_dir)
-            except Exception:
+            except (RuntimeError, OSError):
                 log.debug("auto_rebase.worktree_cleanup_failed", path=str(worktree_path), exc_info=True)
 
 

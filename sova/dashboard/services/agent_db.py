@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
@@ -41,7 +43,7 @@ async def _create_task_run(
                 run_id = task_run.id
         log.info("task_run.created", run_id=run_id, issue=issue or "(none)")
         return run_id
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("task_run.create_failed", exc_info=True)
         return None
 
@@ -57,7 +59,7 @@ async def _update_task_run_pid(run_id: int, pid: int, project_dir: Path) -> None
                 task_run = await session.get(TaskRun, run_id)
                 if task_run:
                     task_run.pid = pid
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("task_run.pid_update_failed", run_id=run_id, exc_info=True)
 
 
@@ -72,7 +74,7 @@ async def _update_task_run_output_path(run_id: int, output_path: str, project_di
                 task_run = await session.get(TaskRun, run_id)
                 if task_run:
                     task_run.output_file_path = output_path
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("task_run.output_path_update_failed", run_id=run_id, exc_info=True)
 
 
@@ -89,7 +91,7 @@ async def _finalize_orphaned_run(run_id: int, project_dir: Path) -> None:
                     task_run.status = "failed"
                     task_run.error_message = "Process spawn failed"
                     task_run.ended_at = datetime.now(timezone.utc)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("task_run.orphan_cleanup_failed", run_id=run_id, exc_info=True)
 
 
@@ -110,7 +112,7 @@ def _read_file_handoff(project_dir: Path, issue: str = "") -> dict | None:
             "details": handoff.details,
             "source": handoff.source,
         }
-    except Exception:
+    except (OSError, ValueError, TypeError):
         log.debug("task_run.file_handoff_read_failed", exc_info=True)
         return None
 
@@ -177,7 +179,7 @@ async def _dequeue_pr_entry(session: object, run_id: int) -> None:
         from sova.supervisor.pr_throttle import dequeue as pr_dequeue
 
         await pr_dequeue(session, task_run_id=run_id)
-    except Exception:
+    except (SQLAlchemyError, OSError):
         log.debug("task_run.pr_dequeue_failed", run_id=run_id, exc_info=True)
 
 
@@ -232,11 +234,11 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
 
             try:
                 await rollback_issue_state(run_id, agent.project_dir)
-            except Exception:
+            except Exception:  # noqa: BLE001 (rollback is best-effort; finalization must complete regardless)
                 log.debug("task_run.rollback_on_finalize_failed", run_id=run_id, exc_info=True)
 
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 (finalization boundary spans DB, file I/O and agent state; must not crash exit handling)
         log.warning("task_run.finalize_failed", exc_info=True)
         return False
 
@@ -262,7 +264,7 @@ async def _finalize_orphaned_steps(session: object, run_id: int) -> None:
         )
         if result.rowcount:
             log.info("task_run.orphaned_steps_finalized", run_id=run_id, count=result.rowcount)
-    except Exception:
+    except (OSError, SQLAlchemyError):
         log.debug("task_run.orphaned_steps_finalize_failed", run_id=run_id, exc_info=True)
 
 
@@ -280,7 +282,7 @@ async def _fetch_output_lines(run_id: int, project_dir: Path | None) -> list[str
                 result = await session.execute(stmt)
                 rows = [row[0] for row in result.fetchall()]
                 return rows or None
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("fetch_output_lines.failed", run_id=run_id, exc_info=True)
         return None
 
@@ -307,7 +309,7 @@ async def _fetch_pr_fields(pr_number: int, project_dir: Path, fields: str, jq_ex
         )
         if result.success and (output := result.stdout.strip()):
             return output
-    except Exception:
+    except (RuntimeError, OSError):
         log.debug("fetch_pr_fields.failed", pr=pr_number, fields=fields, exc_info=True)
     return None
 
@@ -432,7 +434,7 @@ async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
             return True
         if count_result.success and count_result.stdout.strip().isdigit():
             return False
-    except Exception:
+    except (RuntimeError, OSError):
         log.debug("check_pr_branch_pushed.failed", pr=agent.pr_number, exc_info=True)
     return None
 
@@ -482,7 +484,7 @@ async def _persist_review_verdict(run_id: int, verdict: str, project_dir: Path |
                     return
                 task_run.handoff_json = handoff_data
                 log.info("review_pr.verdict_persisted", run_id=run_id, verdict=verdict, next_action=next_action)
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged then re-raised; the caller decides how to handle it)
         log.warning("review_pr.persist_verdict_failed", run_id=run_id, exc_info=True)
         raise
 
@@ -539,7 +541,7 @@ async def _has_active_merge_queue_entry(pr_number: int, project_dir: Path) -> bo
             )
             result = await session.execute(stmt)
             return result.scalars().first() is not None
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("check_merge_queue_entry.failed", pr_number=pr_number, exc_info=True)
         return False
 
@@ -577,7 +579,7 @@ async def _validate_merge_command(run_id: int, agent: AgentState) -> str | None:
         if not repo:
             return None
         pr_status = await get_pr_status(agent.pr_number, repo=repo, github_user=cfg.github_user)
-    except Exception:
+    except Exception:  # noqa: BLE001 (config load or PR status lookup failure aborts validation gracefully)
         log.debug("validate_merge_command.pr_status_failed", pr_number=agent.pr_number, exc_info=True)
         return None
 
@@ -618,7 +620,7 @@ async def _validate_command_outcome(run_id: int, agent: AgentState) -> str | Non
 
     try:
         return await validator_fn(run_id, agent)
-    except Exception:
+    except Exception:  # noqa: BLE001 (a raising validator must not fail the run it is validating)
         log.debug("validate_command.failed", run_id=run_id, cmd=cmd_name, exc_info=True)
         return None
 
@@ -773,7 +775,7 @@ async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | No
                     agent.project_dir,
                     session,
                 )
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("validate_pipeline.failed", run_id=run_id, exc_info=True)
         return None
 
@@ -796,9 +798,9 @@ async def _downgrade_to_failed(run_id: int, reason: str, project_dir: Path) -> N
 
         try:
             await rollback_issue_state(run_id, project_dir)
-        except Exception:
+        except Exception:  # noqa: BLE001 (rollback is best-effort; the downgrade must still be recorded)
             log.debug("task_run.rollback_on_downgrade_failed", run_id=run_id, exc_info=True)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("task_run.downgrade_failed", run_id=run_id, exc_info=True)
 
 
@@ -826,6 +828,6 @@ async def _fetch_run_states(run_ids: list[int]) -> dict[int, dict]:
             }
             for r in runs
         }
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("fetch_run_states.failed", exc_info=True)
         return {}

@@ -89,7 +89,7 @@ class GitHubQuotaTracker:
                 detail="Dashboard data may be stale until the limit resets. The supervisor will pause spawning.",
                 category="rate_limit",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (feed emission must never break rate limit tracking)
             log.debug("emit_hit_event.failed", exc_info=True)
 
     @staticmethod
@@ -103,7 +103,7 @@ class GitHubQuotaTracker:
                 detail="API access restored. Dashboard data will refresh on the next poll.",
                 category="rate_limit",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (feed emission must never break rate limit tracking)
             log.debug("emit_recovery_event.failed", exc_info=True)
 
 

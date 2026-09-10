@@ -33,7 +33,7 @@ def create_providers(config: AwarenessConfig) -> list[AwarenessProvider]:
             continue
         try:
             providers.append(cls(config))
-        except Exception:
+        except Exception:  # noqa: BLE001 (one broken provider must not disable the rest)
             _log.exception("provider_init_failed", provider=name)
     return providers
 
@@ -60,8 +60,8 @@ def _auto_register() -> None:
         try:
             importlib.import_module(module_name)
         except ImportError:
-            _log.debug("provider_import_skipped", module=module_name)
-        except Exception:
+            _log.debug("provider_import_skipped", module=module_name, exc_info=True)
+        except Exception:  # noqa: BLE001 (a broken provider module must not break registry import)
             _log.exception("provider_import_failed", module=module_name)
 
 

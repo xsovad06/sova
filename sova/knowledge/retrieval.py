@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.db.models import Memory
 from sova.knowledge.embeddings import is_available
 from sova.knowledge.memory import increment_retrieval, search, semantic_search
@@ -161,7 +163,7 @@ async def _track_retrieval(results: list[tuple[Memory, float]]) -> None:
         return
     try:
         await increment_retrieval(retrieved_ids)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("retrieval.increment_failed", exc_info=True)
 
 

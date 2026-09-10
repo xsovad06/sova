@@ -109,7 +109,7 @@ async def _safe_query(
         except TimeoutError:
             _log.warning("agent_runs.query_timeout", slug=slug)
             return []
-        except Exception:
+        except Exception:  # noqa: BLE001 (one unreachable project must not abort the fleet query)
             _log.warning("agent_runs.query_failed", slug=slug, exc_info=True)
             return []
 

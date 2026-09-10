@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cachetools import TTLCache
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
@@ -128,7 +129,8 @@ def _is_zombie_process(pid: int, started_at: datetime | None) -> bool:
                 )
                 return False
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 (psutil import or process lookup can fail many ways; fall back to a plain PID check)
+        log.debug("recovery.pid_probe_failed", pid=pid, exc_info=True)
         return _is_process_alive(pid)
 
 
@@ -145,7 +147,7 @@ def _get_managed_run_ids() -> tuple[set[int], bool]:
         for pa in _projects.values():
             ids.update(pa.agents.keys())
         return ids, True
-    except Exception:
+    except Exception:  # noqa: BLE001 (pool snapshot is best-effort; callers fall back to DB-only recovery)
         log.warning("recovery.managed_run_ids_failed", exc_info=True)
         return set(), False
 
@@ -193,7 +195,7 @@ async def _kill_terminal_zombies(project_dir: Path | None = None) -> int:
         if kill_tasks:
             await asyncio.gather(*kill_tasks, return_exceptions=True)
             killed = len(kill_tasks)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("recovery.terminal_zombie_scan_failed", exc_info=True)
 
     if killed:
@@ -208,7 +210,8 @@ def _get_recovery_config(project_dir: Path | None) -> tuple[str, str]:
 
         cfg = load_config(project_dir)
         return cfg.github_repo or "", cfg.github_user or ""
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+        log.warning("recovery.config_load_failed", project_dir=str(project_dir), exc_info=True)
         return "", ""
 
 
@@ -237,7 +240,7 @@ async def _get_pr_branch_for_recovery(pr_number: int, repo: str, project_dir: Pa
         )
         if result.success and result.stdout.strip():
             return result.stdout.strip()
-    except Exception:
+    except (RuntimeError, OSError):
         log.debug("recovery.pr_branch_lookup_failed", pr=pr_number, exc_info=True)
     return ""
 
@@ -320,7 +323,7 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                         if cost is not None:
                             cost_override = Decimal(str(cost))
                         log.info("recovery.completed_with_handoff", run_id=run.id, issue=run.issue_number)
-            except Exception:
+            except Exception:  # noqa: BLE001 (fail-open: handoff check spans file I/O, JSON parsing and date math)
                 log.debug("recovery.handoff_check_failed", run_id=run.id, exc_info=True)
 
             _role_parts = (run.role or "").removeprefix("command:").removeprefix("/").split()
@@ -370,7 +373,7 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                     )
                     if merged:
                         return rec["run_id"], "merged", None
-                except (asyncio.TimeoutError, Exception):
+                except (RuntimeError, OSError):
                     log.debug("recovery.merge_check_skipped", run_id=rec["run_id"], exc_info=True)
                     return rec["run_id"], "unknown", None
 
@@ -390,7 +393,7 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                         return rec["run_id"], "in_queue", {"state": queue_status.state}
                     if queue_status.is_merged:
                         return rec["run_id"], "merged", None
-                except (asyncio.TimeoutError, Exception):
+                except (RuntimeError, OSError):
                     log.debug("recovery.queue_check_skipped", run_id=rec["run_id"], exc_info=True)
 
                 return rec["run_id"], "unknown", None
@@ -474,7 +477,7 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                         github_user=github_user,
                         branch_name=branch,
                     )
-                except Exception:
+                except (RuntimeError, OSError, SQLAlchemyError):
                     log.warning("recovery.queue_entry_failed", run_id=rec["run_id"], exc_info=True)
 
         if interrupted:
@@ -484,11 +487,11 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
         for rec in interrupted:
             try:
                 await rollback_issue_state(rec["run_id"], project_dir)
-            except Exception:
+            except Exception:  # noqa: BLE001 (rollback is best-effort cleanup; recovery continues either way)
                 log.debug("recovery.rollback_failed", run_id=rec["run_id"], exc_info=True)
 
         return interrupted
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("recovery.failed", exc_info=True)
         return []
 
@@ -560,7 +563,7 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
                 for label in agent_labels:
                     await adapter.remove_label(issue_number, label)
                 log.info("rollback.triage_labels_removed", issue=issue_number, count=len(agent_labels))
-            except Exception:
+            except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                 log.warning("rollback.triage_failed", issue=issue_number, exc_info=True)
             return
 
@@ -585,7 +588,7 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
 
         await adapter.transition_state(issue_number, target_state)
         log.info("rollback.completed", run_id=run_id, issue=issue_number, target_state=target_state.value)
-    except Exception:
+    except Exception:  # noqa: BLE001 (config load, DB read and tracker call each fail differently)
         log.warning("rollback.failed", run_id=run_id, exc_info=True)
 
 
@@ -598,7 +601,7 @@ async def get_interrupted_runs(limit: int = 5) -> list[dict]:
         async with await get_session() as session:
             async with session.begin():
                 return await run_service.list_runs(session, status="interrupted", limit=limit)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("interrupted_runs.query_failed", exc_info=True)
         return []
 
@@ -620,7 +623,7 @@ async def dismiss_interrupted_runs() -> int:
                 )
                 result = await session.execute(stmt)
                 return result.rowcount
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("dismiss_interrupted.failed", exc_info=True)
         return 0
 
@@ -832,7 +835,7 @@ async def get_sova_review_verdict(
                 "reviewed_at": ts.isoformat() if (ts := run.ended_at or run.started_at) else None,
                 "run_status": run.status,
             }
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("sova_review_verdict.query_failed", issue=issue_number, exc_info=True)
         return no_review
 
@@ -864,7 +867,8 @@ def _load_repo_config() -> tuple[str, str] | None:
         return None
     try:
         cfg = load_config(project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+        log.warning("recovery.config_load_failed", project_dir=str(project_dir), exc_info=True)
         return None
     if not cfg.github_repo:
         return None
@@ -886,7 +890,7 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
 
     try:
         status = await get_pr_status(pr_info.number, repo=repo, github_user=gh_user)
-    except Exception:
+    except (RuntimeError, OSError):
         log.debug("pr_status.fetch_failed", issue=issue_number, exc_info=True)
         return {"has_pr": True, "pr_number": pr_info.number, "error": "Failed to fetch PR status"}
 
@@ -894,7 +898,7 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
     try:
         checks = await get_ci_checks(pr_info.number, repo=repo, github_user=gh_user)
         ci_summary = _summarize_ci_checks(checks)
-    except Exception:
+    except (RuntimeError, OSError):
         log.debug("ci_checks.fetch_failed", pr=pr_info.number, exc_info=True)
 
     from sova.dashboard.project_context import get_project_dir as _get_project_dir
@@ -1001,7 +1005,7 @@ async def _fetch_and_interpret_reviews(issue_number: str, pr_number: int, cache_
     try:
         adapter = create_adapter(cfg)
         reviews = await adapter.get_pr_reviews(pr_number)
-    except Exception:
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
         log.debug("synthesize.fetch_reviews_failed", issue=issue_number, exc_info=True)
         with _cache_lock:
             _synthesis_cache[cache_key] = None
@@ -1070,7 +1074,7 @@ async def synthesize_pr_actions(issue_number: str) -> list[dict] | None:
             with _cache_lock:
                 _synthesis_cache[cache_key] = None
             return None
-    except Exception:
+    except Exception:  # noqa: BLE001 (fail-open: active-run check must not block PR action synthesis)
         log.debug("synthesize.active_run_check_failed", issue=issue_number, exc_info=True)
 
     return await _fetch_and_interpret_reviews(issue_number, pr_number, cache_key)
@@ -1125,7 +1129,7 @@ async def get_synthesized_handoff() -> dict | None:
                     "summary": "Actions synthesized from PR review state",
                     "next_actions": actions,
                 }
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("synthesized_handoff.failed", exc_info=True)
 
     return None

@@ -20,6 +20,6 @@ def check_github_rate_limit_gate(github_user: str) -> BlockReason | None:
                 gate="rate_limit",
                 detail=f"GitHub API rate limited (cooldown: {status.cooldown_remaining_seconds:.0f}s remaining)",
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("rate_limit_gate.check_failed", exc_info=True)
     return None

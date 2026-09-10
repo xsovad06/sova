@@ -34,7 +34,7 @@ async def _safe_notify(log_event: str, coro: Coroutine[Any, Any, None], title: s
     """Generic notification wrapper that logs but never raises."""
     try:
         await coro
-    except Exception:
+    except Exception:  # noqa: BLE001 (notification delivery must never break the caller)
         log.warning(log_event, title=title, exc_info=True)
 
 

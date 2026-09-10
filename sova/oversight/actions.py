@@ -11,6 +11,8 @@ the configured threshold are proposed.
 
 from __future__ import annotations
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.adapters.base import TaskAdapter
 from sova.config.models import OversightConfig
 from sova.db.models import OversightFinding
@@ -72,7 +74,7 @@ async def _find_existing_issue_by_fingerprint(fingerprint: str | None) -> int | 
             result = await session.execute(stmt)
             row = result.first()
             return row[0] if row else None
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("oversight.actions.fingerprint_check_failed", exc_info=True)
         return None
 
@@ -82,7 +84,7 @@ async def _is_issue_open(adapter: TaskAdapter, issue_number: int) -> bool:
     try:
         task = await adapter.get_task(str(issue_number))
         return task.state != "done"
-    except Exception:
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
         log.debug("oversight.actions.issue_check_failed", issue=issue_number, exc_info=True)
         return True
 
@@ -168,7 +170,7 @@ async def propose_issues(
                 issue=task.id,
                 scope=finding.scope,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning(
                 "oversight.actions.create_failed",
                 title=finding.title,
@@ -207,5 +209,5 @@ async def _persist_issue_numbers(findings: list[OversightFinding]) -> None:
                 for finding in findings:
                     merged = await session.merge(finding)
                     merged.github_issue_number = finding.github_issue_number
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.error("oversight.actions.persist_failed", count=len(findings), exc_info=True)

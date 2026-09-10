@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.core.context import ExecutionContext, TokenUsage
 from sova.core.output import OutputWriter
 from sova.core.state import TaskStatus
@@ -212,7 +214,7 @@ class WorkflowEngine:
                     started_at=now,
                     ended_at=now,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 (non-fatal: DB bookkeeping failure must not abort the workflow)
                 log.warning("workflow.step_exec.skip_create_failed", step=step.name, exc_info=True)
             return True
 
@@ -558,7 +560,7 @@ class WorkflowEngine:
             step_exec_id = await self._create_step_execution(step.name, retry_count=attempt)
             record.step_exec_id = step_exec_id
             return step_exec_id
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (non-fatal: DB bookkeeping failure must not abort the step)
             log.warning("workflow.step_exec.create_failed", step=step.name, error=str(exc), exc_info=True)
             record.result = StepResult(
                 success=False,
@@ -608,7 +610,7 @@ class WorkflowEngine:
                     partial_work=partial_work,
                     cost_usd=self._ctx.cost_usd - cost_before,
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (documented boundary: any step failure becomes StepResult(success=False))
             log.exception("workflow.step.unhandled_exception", step=step.name, error=str(exc))
             result = StepResult(
                 success=False,
@@ -663,7 +665,7 @@ class WorkflowEngine:
             else:
                 log.warning("workflow.timeout.commit_failed", error=commit_result.stderr)
                 return False
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("workflow.timeout.partial_work_failed", step=step_name, exc_info=True)
             return False
 
@@ -673,7 +675,7 @@ class WorkflowEngine:
         """Update StepExecution record with result (non-fatal on failure)."""
         try:
             await self._update_step_execution(step_exec_id, result, elapsed_ms)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (non-fatal: DB bookkeeping failure must not fail a completed step)
             log.warning("workflow.step_exec.update_failed", step=step_name, error=str(exc), exc_info=True)
 
     def _handle_step_failure_result(self, step_result: StepResult) -> str:
@@ -699,7 +701,7 @@ class WorkflowEngine:
         except TimeoutError:
             log.warning("workflow.gate.timeout", step=step.name, timeout_seconds=timeout_seconds)
             gate = GateCheckResult(passed=False, reason=f"Gate check timed out after {timeout_seconds}s")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (a raising gate check must fail the gate, not the run)
             log.warning("workflow.gate.exception", step=step.name, error=str(exc), exc_info=True)
             gate = GateCheckResult(
                 passed=False, reason=f"Gate check failed with exception: {type(exc).__name__}: {exc}"
@@ -733,7 +735,7 @@ class WorkflowEngine:
         except TimeoutError:
             log.warning("workflow.verify.timeout", step=step.name, timeout_seconds=timeout_seconds)
             gate = GateCheckResult(passed=False, reason=f"Verification timed out after {timeout_seconds}s")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (a raising verification must fail the gate, not the run)
             log.warning("workflow.verify.exception", step=step.name, error=str(exc), exc_info=True)
             gate = GateCheckResult(
                 passed=False, reason=f"Verification failed with exception: {type(exc).__name__}: {exc}"
@@ -891,7 +893,7 @@ class WorkflowEngine:
                     await self._close_output()
                     await self._record_failure("budget_check", "per_issue_budget_exceeded", result.error)
                     await self._update_task_run_status(TaskStatus.PAUSED, error=result.error)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 (cleanup after a budget stop must not mask the stop itself)
                     log.error("workflow.budget_check_cleanup_failed", error=str(exc), exc_info=True)
                 log.warning(
                     "workflow.per_issue_budget_exceeded",
@@ -1002,7 +1004,7 @@ class WorkflowEngine:
                 step_exec = await session.get(StepExecution, step_exec_id)
                 if step_exec:
                     step_exec.status = status
-        except Exception as exc:
+        except (OSError, RuntimeError, SQLAlchemyError) as exc:
             log.warning(
                 "workflow.step_exec.status_update_failed", step_exec_id=step_exec_id, error=str(exc), exc_info=True
             )
@@ -1027,7 +1029,7 @@ class WorkflowEngine:
                 next_actions=result.handoff_actions or [],
             )
             write_handoff_file(self._ctx.project_dir, dashboard_handoff)
-        except Exception:
+        except (OSError, ValueError):
             log.warning("workflow.approval_handoff.write_failed", step=step_name, exc_info=True)
 
     async def _create_step_execution(

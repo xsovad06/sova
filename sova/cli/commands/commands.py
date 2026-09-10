@@ -25,6 +25,7 @@ from sova.commands.distribution import (
 from sova.commands.templates import build_variables, reverse_render
 from sova.config.loader import load_config
 from sova.config.registry import list_projects
+from sova.utils.logging import get_logger
 
 app = typer.Typer(
     name="commands",
@@ -33,6 +34,7 @@ app = typer.Typer(
 )
 
 console = Console(stderr=True)
+log = get_logger(component="cli.commands")
 
 _COMMANDS_SUBDIR = Path(".claude") / "commands"
 
@@ -143,7 +145,8 @@ def sync_cmd(
         target_dir = project_dir / _COMMANDS_SUBDIR
         try:
             cfg = load_config(project_dir)
-        except Exception:
+        except Exception:  # noqa: BLE001 (one project must not abort the sync loop)
+            log.warning("commands.sync_load_config_failed", slug=slug, exc_info=True)
             console.print(f"  [red]{slug}[/red]: failed to load config")
             continue
 

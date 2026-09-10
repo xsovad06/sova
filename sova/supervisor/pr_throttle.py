@@ -206,7 +206,7 @@ async def process_queue(
             head=entry_head_branch,
             repo=entry_repo,
         )
-    except Exception as exc:
+    except (RuntimeError, OSError) as exc:
         async with session.begin():
             entry = await session.get(PRCreationQueue, entry_id)
             if entry is not None:
@@ -291,7 +291,7 @@ async def run_post_create_side_effects(
                 repo=repo,
                 github_user=github_user,
             )
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("pr_throttle.assign_failed", pr=pr_number, exc_info=True)
 
     if issue_number:
@@ -302,7 +302,7 @@ async def run_post_create_side_effects(
             cfg = load_config(project_dir)
             adapter = create_adapter(cfg)
             await adapter.transition_state(issue_number, TaskState.IN_REVIEW)
-        except Exception:
+        except Exception:  # noqa: BLE001 (config load, adapter construction and tracker call each fail differently)
             log.warning("pr_throttle.tracker_update_failed", pr=pr_number, exc_info=True)
 
     await _trigger_coderabbit_review(pr_number=pr_number, repo=repo, github_user=github_user, project_dir=project_dir)
@@ -328,7 +328,7 @@ async def _trigger_coderabbit_review(
     log.info("pr_throttle.trigger_coderabbit", pr=pr_number)
     try:
         env = await resolve_gh_env(github_user) if github_user else None
-    except Exception:
+    except (RuntimeError, OSError):
         log.warning("pr_throttle.trigger_coderabbit_gh_env_failed", pr=pr_number, exc_info=True)
         return
     result = await run(
@@ -415,7 +415,7 @@ class PRThrottleLoop:
                     )
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 (background loop must survive any single-cycle error)
                 log.warning("pr_throttle.loop_error", exc_info=True)
             await self._interruptible_sleep(_PROCESS_INTERVAL_SECONDS)
 

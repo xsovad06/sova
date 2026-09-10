@@ -52,7 +52,7 @@ async def check_ownership_gate(
         block = await _check_issue_ownership(issue, github_user, adapter, task_assignees)
         return block, discovered_pr
 
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.warning("ownership_gate.check_failed", issue=issue, exc_info=True)
         return None, None
 

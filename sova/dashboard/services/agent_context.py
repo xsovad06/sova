@@ -139,7 +139,7 @@ async def _resolve_issue_worktree(
             log.info("command.created_worktree", branch=branch_name, wt_id=wt_id, path=str(wt_info.path))
             await _pop_stash(stashed, project_dir)
             return wt_info.path
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("command.create_worktree_failed", branch=branch_name, exc_info=True)
             await _pop_stash(stashed, project_dir)
 
@@ -267,7 +267,7 @@ async def _resolve_issue_from_pr(pr_number: int | str, project_dir: Path) -> str
                 if await _is_issue(candidate, project_dir):
                     return candidate
                 log.debug("resolve_issue_from_pr.not_issue", pr=pr_number, ref=candidate)
-    except Exception:
+    except (RuntimeError, OSError, ValueError):
         log.debug("resolve_issue_from_pr.failed", pr=pr_number, exc_info=True)
     return ""
 
@@ -285,7 +285,7 @@ async def _is_issue(number: str, project_dir: Path) -> bool:
             timeout=10,
         )
         return result.success and not result.stdout.strip()
-    except Exception:
+    except (RuntimeError, OSError):
         log.debug("is_issue.failed", number=number, exc_info=True)
         return True
 
@@ -308,7 +308,7 @@ def _resolve_mcp_env(run_id: int, project_dir: Path) -> dict[str, str]:
             "SOVA_MCP_TOKEN": token,
             "SOVA_MCP_URL": url,
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 (MCP wiring is optional; the agent runs without those env vars)
         log.debug("mcp_env.resolve_failed", exc_info=True)
         return {}
 
@@ -340,6 +340,6 @@ async def _resolve_project_gh_env(project_dir: Path) -> dict[str, str] | None:
 
         cfg = load_config(project_dir)
         return await resolve_gh_env(cfg.github_user)
-    except Exception:
+    except Exception:  # noqa: BLE001 (config load and gh env resolution fail in unrelated ways)
         log.debug("gh_env.resolve_failed", exc_info=True)
         return None

@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import TaskState
 from sova.dashboard.project_context import get_project_dir
@@ -55,7 +56,7 @@ async def _build_graph(milestone: str = ""):
         project_dir = get_project_dir()
         cfg = load_config(project_dir)
         adapter = create_adapter(cfg)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (config load and adapter construction fail in many ways; translated to _ConfigError)
         raise _ConfigError(str(exc)) from exc
     return await build_dependency_graph(adapter, milestone=milestone)
 
@@ -66,7 +67,7 @@ async def _fetch_pr_map() -> dict[int, dict]:
 
     try:
         prs = await list_open_prs_with_state()
-    except Exception:
+    except (RuntimeError, OSError):
         log.warning("dependency_graph.pr_fetch_failed", exc_info=True)
         return {}
 
@@ -103,7 +104,7 @@ async def _fetch_agent_map() -> dict[int, dict]:
 
     try:
         data = await get_unified_agents()
-    except Exception:
+    except (RuntimeError, OSError):
         log.warning("dependency_graph.agent_fetch_failed", exc_info=True)
         return {}
 
@@ -129,7 +130,7 @@ def _fetch_handoff_map() -> dict[int, dict]:
 
     try:
         handoffs = get_all_handoffs()
-    except Exception:
+    except (OSError, ValueError):
         log.warning("dependency_graph.handoff_fetch_failed", exc_info=True)
         return {}
 
@@ -185,7 +186,7 @@ async def _fetch_last_run_map() -> dict[int, dict]:
             if issue is not None:
                 result[issue] = {"run_id": row.id, "status": row.status}
         return result
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("dependency_graph.last_run_fetch_failed", exc_info=True)
         return {}
 
@@ -201,7 +202,7 @@ def _enrich_with_queue_position(graph_dict: dict, project_dir: str | Path) -> No
     try:
         cfg = load_config(project_dir)
         queue = list(cfg.supervisor.task_queue)
-    except Exception:
+    except Exception:  # noqa: BLE001 (queue enrichment is optional; graph renders without it)
         log.warning("dependency_graph.queue_config_load_failed", exc_info=True)
         return
 
@@ -257,7 +258,7 @@ async def get_graph(milestone: str = "") -> dict:
     except _ConfigError:
         log.error("Project config/adapter error for dependency graph", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.error("Failed to build dependency graph", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to build dependency graph")
 
@@ -276,7 +277,7 @@ async def get_ready(milestone: str = "") -> dict:
     except _ConfigError:
         log.error("Project config/adapter error for ready tasks", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.error("Failed to get ready tasks", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get ready tasks")
 
@@ -311,7 +312,7 @@ async def get_chain(issue_number: int, milestone: str = "") -> dict:
     except _ConfigError:
         log.error("Project config/adapter error for chain #%d", issue_number, exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.error("Failed to get chain for #%d", issue_number, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get chain for #{issue_number}")
 

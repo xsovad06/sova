@@ -353,7 +353,7 @@ async def _attach_integration_gates(
                 config=config,
             )
             action["gate_result"] = result
-        except Exception:
+        except Exception:  # noqa: BLE001 (a raising gate check must fail the gate, not the listing)
             log.warning("work_items.gate_check_failed", issue=item.get("issue_number"), exc_info=True)
             action["gate_result"] = {"passed": False, "gates": [], "error": "Gate check failed"}
 
@@ -382,7 +382,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
 
         cfg = load_config(project_dir)
         external_reviews_enabled = cfg.external_reviews.enabled
-    except Exception:
+    except Exception:  # noqa: BLE001 (work items still render with default settings when config is unavailable)
         log.warning("work_items.config_load_failed", project_dir=str(project_dir), exc_info=True)
         cfg = None
         external_reviews_enabled = True
@@ -459,7 +459,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
                 "cooldown_seconds": round(gh_status.cooldown_remaining_seconds),
                 "hits": gh_status.hits_in_window,
             }
-    except Exception:
+    except Exception:  # noqa: BLE001 (quota banner is optional context)
         log.debug("work_items.quota_status_failed", exc_info=True)
 
     jira_display_name = cfg.task_source.jira_display_name if cfg else ""
@@ -492,28 +492,28 @@ async def _fetch_all_sources(
     async def safe_queue() -> list[dict]:
         try:
             return await get_priority_queue(project_dir)
-        except Exception:
+        except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
             log.warning("work_items.queue_failed", exc_info=True)
             return []
 
     async def safe_prs() -> list[dict]:
         try:
             return await list_open_prs_with_state()
-        except Exception:
+        except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
             log.warning("work_items.prs_failed", exc_info=True)
             return []
 
     async def safe_agents() -> dict:
         try:
             return await get_unified_agents(slug)
-        except Exception:
+        except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
             log.warning("work_items.agents_failed", exc_info=True)
             return {"agents": [], "completed": []}
 
     def safe_handoffs() -> list[dict]:
         try:
             return get_all_handoffs(project_dir)
-        except Exception:
+        except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
             log.warning("work_items.handoffs_failed", exc_info=True)
             return []
 

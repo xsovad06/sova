@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.config.models import ProjectConfig, SupervisorConfig
@@ -463,7 +464,7 @@ class TestSupervisorDaemon:
             event_type="test",
             action="test",
         )
-        with patch.object(daemon, "_session_factory", side_effect=Exception("db down")):
+        with patch.object(daemon, "_session_factory", side_effect=SQLAlchemyError("db down")):
             # Should not raise
             await daemon._log_decisions_batch([bad_record])
 
@@ -503,7 +504,7 @@ class TestSupervisorDaemon:
 
         daemon._config.coderabbit_quota = CodeRabbitQuotaConfig(enabled=True, reviews_per_hour=4)
 
-        with patch("sova.supervisor.coderabbit_quota.sync_from_github", side_effect=Exception("api error")):
+        with patch("sova.supervisor.coderabbit_quota.sync_from_github", side_effect=RuntimeError("api error")):
             result = await daemon._poll_quota(daemon._config)
 
         assert "error" in result
@@ -524,7 +525,7 @@ class TestSupervisorDaemon:
         daemon: SupervisorDaemon,
     ) -> None:
         """_purge_old_logs should swallow exceptions without raising."""
-        with patch.object(daemon, "_session_factory", side_effect=Exception("db down")):
+        with patch.object(daemon, "_session_factory", side_effect=SQLAlchemyError("db down")):
             await daemon._purge_old_logs()
 
     async def test_poll_once_quota_runs_before_progression(

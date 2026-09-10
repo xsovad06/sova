@@ -44,7 +44,7 @@ class SyncStep(BaseStep):
         if ctx.task is None and ctx.has_issue:
             try:
                 ctx.task = await ctx.adapter.get_task(ctx.issue_number)
-            except Exception:
+            except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                 log.warning("step.sync.task_fetch_failed", issue=ctx.issue_number, exc_info=True)
 
         return StepResult(success=True, summary=f"Synced {base}")

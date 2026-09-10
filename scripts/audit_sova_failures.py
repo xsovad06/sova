@@ -326,7 +326,7 @@ async def main() -> int:
 
         return 0
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 (CLI boundary: any failure becomes a non-zero exit with a message)
         print(f"Error: {e}", file=sys.stderr)
         if args.json:
             print(json.dumps({"error": str(e)}), file=sys.stdout)
