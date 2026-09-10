@@ -58,5 +58,5 @@ The `sova:pr` command creates a pull request for the current branch, analyzing e
 - `$1` (optional): an issue reference to link in the pull request body.
 
 ## See Also
-- `/sova:review` -- self-review the changes before opening the pull request
-- `/sova:develop` -- implement the change this pull request contains
+- `/sova:review`: self-review the changes before opening the pull request
+- `/sova:develop`: implement the change this pull request contains

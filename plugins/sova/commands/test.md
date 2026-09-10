@@ -57,5 +57,5 @@ The `sova:test` command runs the project's linter and test suite, iterating on f
 - `$1` (optional): a path or module to scope the linter and test run to. Defaults to the files changed on the current branch.
 
 ## See Also
-- `/sova:develop` -- implement changes before testing them
-- `/sova:review` -- self-review the change after tests pass, before opening a pull request
+- `/sova:develop`: implement changes before testing them
+- `/sova:review`: self-review the change after tests pass, before opening a pull request

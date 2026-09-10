@@ -59,5 +59,5 @@ The output is a written document the user reviews and approves (or requests chan
 - `$1` (required): a description of the task, or a reference to an issue/ticket to specify.
 
 ## See Also
-- `/sova:develop` -- implement the task once the spec is approved
-- `/sova:debug` -- for investigating an existing bug rather than planning new work
+- `/sova:develop`: implement the task once the spec is approved
+- `/sova:debug`: for investigating an existing bug rather than planning new work

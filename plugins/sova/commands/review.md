@@ -64,5 +64,5 @@ Run this before `/sova:pr` to catch issues while they are still cheap to fix, ra
 - `$1` (optional): the scope to review (a path, branch, or diff range). Defaults to the current working tree's changes.
 
 ## See Also
-- `/sova:develop` -- implement the change being reviewed
-- `/sova:pr` -- create a pull request once the review is clean
+- `/sova:develop`: implement the change being reviewed
+- `/sova:pr`: create a pull request once the review is clean

@@ -68,6 +68,6 @@ The command favors the smallest, simplest change that satisfies the request over
 - `$1` (required): a description of the task, or a reference to an issue/ticket to develop.
 
 ## See Also
-- `/sova:spec` -- produce a design document before development starts, for larger or ambiguous tasks
-- `/sova:test` -- run the linter and test suite iteratively without making new changes
-- `/sova:review` -- self-review the change before pushing
+- `/sova:spec`: produce a design document before development starts, for larger or ambiguous tasks
+- `/sova:test`: run the linter and test suite iteratively without making new changes
+- `/sova:review`: self-review the change before pushing

@@ -1,5 +1,5 @@
 ---
-description: Systematic debugging workflow -- reproduce, locate, diagnose, fix, verify, prevent
+description: Systematic debugging workflow: reproduce, locate, diagnose, fix, verify, prevent
 argument-hint: "<issue-description>"
 example: "/sova:debug Users are getting logged out after 5 minutes instead of 30"
 ---
@@ -62,5 +62,5 @@ The `sova:debug` command works through a bug systematically instead of guessing 
 - `$1` (required): a description of the bug, or a reference to an issue describing it.
 
 ## See Also
-- `/sova:develop` -- implement a change once the bug is understood, if a larger fix is needed
-- `/sova:test` -- run the test suite to check for regressions after a fix
+- `/sova:develop`: implement a change once the bug is understood, if a larger fix is needed
+- `/sova:test`: run the test suite to check for regressions after a fix
