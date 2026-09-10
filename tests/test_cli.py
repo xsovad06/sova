@@ -89,6 +89,49 @@ class TestAppHelp:
         assert result.exit_code in (0, 2)
         assert "run" in result.output or "Usage" in result.output
 
+    def test_config_error_exits_cleanly(self) -> None:
+        """A bad config (e.g. unknown llm.provider) prints a clean error, not a traceback."""
+        from sova.cli.app import app
+
+        with patch(
+            "sova.cli.app._init_llm_provider",
+            side_effect=RuntimeError("Invalid configuration:\nllm.provider: bad value"),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 1
+        assert "Configuration error" in result.output
+        assert "llm.provider" in result.output
+        assert "Traceback" not in result.output
+
+    def test_missing_provider_extra_exits_cleanly(self) -> None:
+        """A provider whose optional extra is missing is a config error, not a traceback."""
+        from sova.cli.app import app
+
+        with patch(
+            "sova.cli.app._init_llm_provider",
+            side_effect=ImportError("litellm is not installed. Install it with: pip install sova[litellm]"),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 1
+        assert "Configuration error" in result.output
+        assert "Traceback" not in result.output
+
+    def test_doctor_still_runs_with_unloadable_config(self) -> None:
+        """`sova doctor` diagnoses a broken config, so it must not be aborted by one."""
+        from sova.cli.app import app
+
+        with (
+            patch("sova.cli.app._init_llm_provider", side_effect=RuntimeError("Invalid configuration")),
+            patch("sova.cli.commands.doctor._doctor", new_callable=AsyncMock) as mock_doctor,
+        ):
+            result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 0
+        assert "Configuration error" in result.output
+        assert mock_doctor.called
+
 
 # ---------------------------------------------------------------------------
 # Dashboard command

@@ -177,6 +177,86 @@ class TestUpdateConfigIntegration:
         assert toml_file.read_text() == original
 
 
+class TestCrossFieldValidation:
+    """A save must never persist a value that makes load_config() raise.
+
+    llm.provider is the concrete case: the settings dropdown offers
+    openai/ollama/vertex, all of which require an explicit llm.model, and the
+    per-field type check cannot see that cross-field rule.
+    """
+
+    async def test_rejects_provider_requiring_model(self, tmp_path) -> None:
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\n')
+        original = toml_file.read_text()
+
+        from sova.dashboard.services.settings_service import update_config
+
+        result = await update_config(tmp_path, key="llm.provider", value="ollama")
+        assert "error" in result
+        assert "llm.model" in result["error"]
+        assert toml_file.read_text() == original
+
+        from sova.config.loader import load_config
+
+        # The project config is still loadable: nothing was persisted.
+        assert load_config(tmp_path).llm.provider == "claude-code"
+
+    async def test_accepts_provider_once_model_is_set(self, tmp_path) -> None:
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\nmodel = "ollama/llama3.1"\n')
+
+        from sova.dashboard.services.settings_service import update_config
+
+        result = await update_config(tmp_path, key="llm.provider", value="ollama")
+        assert result.get("status") == "ok"
+
+    async def test_unrelated_section_error_does_not_block_save(self, tmp_path) -> None:
+        """Only errors touching the edited section may block the save."""
+        from sova.dashboard.services.settings_service import _validate_config_consistency
+
+        with patch(
+            "sova.config.loader.load_config",
+            side_effect=RuntimeError("Invalid configuration"),
+        ):
+            assert _validate_config_consistency(tmp_path, "agent.max_budget", 25) is None
+
+    async def test_unknown_nested_key_is_ignored(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import _validate_config_consistency
+
+        assert _validate_config_consistency(tmp_path, "llm.not_a_field", "x") is None
+        assert _validate_config_consistency(tmp_path, "not_a_section.field", "x") is None
+
+    async def test_concurrent_updates_never_persist_an_unloadable_combination(self, tmp_path) -> None:
+        """Two saves that are each valid against the old state must not both land.
+
+        Without serializing validate-then-persist, setting llm.provider="ollama"
+        (valid while llm.model is still set) and llm.model="" (valid while
+        llm.provider is still "claude-code") can both validate against the same
+        stale snapshot and both persist, leaving provider="ollama" with an empty
+        model: unloadable. The lock in update_config() must force one to see the
+        other's write and get rejected instead.
+        """
+        import asyncio
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\nmodel = "ollama/llama3.1"\n')
+
+        from sova.dashboard.services.settings_service import update_config
+
+        results = await asyncio.gather(
+            update_config(tmp_path, key="llm.provider", value="ollama"),
+            update_config(tmp_path, key="llm.model", value=""),
+        )
+
+        from sova.config.loader import load_config
+
+        # Regardless of interleaving, the persisted config must remain loadable.
+        load_config(tmp_path)
+        # At least one of the two racing updates must have been rejected.
+        assert any("error" in r for r in results)
+
+
 class TestSecretMaskRoundTrip:
     async def test_masked_secret_is_noop(self, tmp_path) -> None:
         from sova.config.db_loader import get_setting

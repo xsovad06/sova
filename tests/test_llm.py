@@ -1663,8 +1663,11 @@ class TestLLMProvider:
 
         # model_construct bypasses the provider Literal so the defensive
         # ValueError branch stays reachable from a test.
-        with pytest.raises(ValueError, match="Unknown LLM provider"):
+        with pytest.raises(ValueError, match="Unknown LLM provider") as exc_info:
             create_provider(LLMConfig.model_construct(provider="nonexistent"))
+        message = str(exc_info.value)
+        for name in ("claude-code", "litellm", "hybrid", "anthropic", "openai", "ollama", "vertex"):
+            assert name in message
 
     def test_create_provider_hybrid(self) -> None:
         from sova.config.models import LLMConfig
@@ -1679,6 +1682,35 @@ class TestLLMProvider:
 
             provider = create_provider(LLMConfig(provider="hybrid"))
             assert isinstance(provider, LiteLLMProvider)
+
+    @pytest.mark.parametrize(
+        ("provider_type", "model"),
+        [
+            ("openai", "gpt-5"),
+            ("ollama", "ollama/llama3.1"),
+            ("vertex", "vertex_ai/gemini-2.5-pro"),
+        ],
+    )
+    def test_create_provider_vendor_types(self, provider_type: str, model: str) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.provider import create_provider
+
+        with patch.dict("sys.modules", {"litellm": MagicMock(__version__="1.0.0")}):
+            import sova.llm.litellm_provider as llm_mod
+
+            llm_mod._HAS_LITELLM = True
+            llm_mod.litellm = MagicMock()
+            from sova.llm.litellm_provider import LiteLLMProvider
+
+            provider = create_provider(LLMConfig(provider=provider_type, model=model))
+            assert isinstance(provider, LiteLLMProvider)
+            assert provider.model == model
+
+    def test_create_provider_vendor_type_requires_model(self) -> None:
+        from sova.config.models import LLMConfig
+
+        with pytest.raises(ValueError, match="requires an explicit llm.model"):
+            LLMConfig(provider="ollama")
 
     def test_get_provider_default(self) -> None:
         from sova.llm.client import get_provider
@@ -2472,6 +2504,28 @@ class TestLiteLLMProvider:
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
 
+    async def test_ollama_provider_round_trip_no_daemon(self, mock_litellm: MagicMock) -> None:
+        """create_provider('ollama', ...) -> invoke(...) works against a faked backend.
+
+        No real `ollama serve` daemon is required: litellm is faked at the
+        module level by the mock_litellm fixture, exactly as the other
+        LiteLLMProvider tests in this class do.
+        """
+        from sova.config.models import LLMConfig
+        from sova.llm.provider import create_provider
+
+        mock_litellm.acompletion.return_value = _MockResponse(
+            content="local response",
+            model="ollama/llama3.1",
+        )
+
+        provider = create_provider(LLMConfig(provider="ollama", model="ollama/llama3.1"))
+        result = await provider.invoke("Hello")
+
+        assert result.text == "local response"
+        call_kwargs = mock_litellm.acompletion.call_args
+        assert call_kwargs[1]["model"] == "ollama/llama3.1"
+
     async def test_invoke_with_model_override(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
 
@@ -2989,12 +3043,34 @@ class TestHybridConfig:
 # ---------------------------------------------------------------------------
 
 
+def _mock_llm_config(
+    mock_cfg: MagicMock,
+    *,
+    routing: dict[str, str] | None = None,
+    model_aliases: dict[str, str] | None = None,
+    model: str = "",
+    fallback_model: str = "",
+    provider: str = "claude-code",
+) -> None:
+    """Populate a patched load_config mock with concrete llm fields.
+
+    Every field _check_ollama reads must be a real string or dict: a bare
+    MagicMock attribute satisfies `.startswith("ollama/")` (and compares
+    unequal to "ollama") and would add a phantom model to every check.
+    """
+    mock_cfg.return_value.llm.routing = routing or {}
+    mock_cfg.return_value.llm.model_aliases = model_aliases or {}
+    mock_cfg.return_value.llm.model = model
+    mock_cfg.return_value.llm.fallback_model = fallback_model
+    mock_cfg.return_value.llm.provider = provider
+
+
 class TestDoctorOllamaCheck:
     async def test_no_ollama_models_returns_empty(self, tmp_path: Path) -> None:
         from sova.cli.commands.doctor import _check_ollama
 
         with patch("sova.config.loader.load_config") as mock_cfg:
-            mock_cfg.return_value.llm.routing = {"trivial": "haiku"}
+            _mock_llm_config(mock_cfg, routing={"trivial": "haiku"})
             checks = await _check_ollama(tmp_path)
             assert checks == []
 
@@ -3005,7 +3081,7 @@ class TestDoctorOllamaCheck:
             patch("sova.config.loader.load_config") as mock_cfg,
             patch("sova.cli.commands.doctor.shutil.which", return_value=None),
         ):
-            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            _mock_llm_config(mock_cfg, routing={"triage": "ollama/qwen3:8b"})
             checks = await _check_ollama(tmp_path)
             assert len(checks) == 1
             assert checks[0][0] == "ollama CLI"
@@ -3019,7 +3095,7 @@ class TestDoctorOllamaCheck:
             patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
             patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
         ):
-            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            _mock_llm_config(mock_cfg, routing={"triage": "ollama/qwen3:8b"})
             mock_run.return_value = MagicMock(success=False, stdout="")
             checks = await _check_ollama(tmp_path)
             assert any(c[0] == "ollama running" and c[1] is False for c in checks)
@@ -3032,7 +3108,7 @@ class TestDoctorOllamaCheck:
             patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
             patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
         ):
-            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            _mock_llm_config(mock_cfg, routing={"triage": "ollama/qwen3:8b"})
             mock_run.return_value = MagicMock(
                 success=True,
                 stdout="NAME\tID\tSIZE\tMODIFIED\nqwen3:8b\tabc123\t5.0 GB\t2 hours ago\n",
@@ -3052,14 +3128,100 @@ class TestDoctorOllamaCheck:
             patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
             patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
         ):
-            mock_cfg.return_value.llm.routing = {}
-            mock_cfg.return_value.llm.model_aliases = {"smart": "ollama/llama3.1:70b"}
+            _mock_llm_config(mock_cfg, model_aliases={"smart": "ollama/llama3.1:70b"})
             mock_run.return_value = MagicMock(success=True, stdout="NAME\tID\nqwen3:8b\tabc123\n")
             checks = await _check_ollama(tmp_path)
 
         model_check = [c for c in checks if "llama3.1" in c[0]]
         assert model_check
         assert model_check[0][1] is False
+
+    async def test_ollama_model_tag_mismatch_is_not_reported_installed(self, tmp_path: Path) -> None:
+        """A configured tag must not match a different installed tag of the same base model."""
+        from sova.cli.commands.doctor import _check_ollama
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
+        ):
+            _mock_llm_config(mock_cfg, routing={"triage": "ollama/llama3.1:70b"})
+            mock_run.return_value = MagicMock(success=True, stdout="NAME\tID\nllama3.1:8b\tabc123\n")
+            checks = await _check_ollama(tmp_path)
+
+        model_check = [c for c in checks if "llama3.1" in c[0]]
+        assert model_check
+        assert model_check[0][1] is False
+
+    async def test_ollama_model_without_tag_matches_latest(self, tmp_path: Path) -> None:
+        """A configured model with no explicit tag matches an installed ':latest' pull."""
+        from sova.cli.commands.doctor import _check_ollama
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
+        ):
+            _mock_llm_config(mock_cfg, routing={"triage": "ollama/llama3.1"})
+            mock_run.return_value = MagicMock(success=True, stdout="NAME\tID\nllama3.1:latest\tabc123\n")
+            checks = await _check_ollama(tmp_path)
+
+        model_check = [c for c in checks if "llama3.1" in c[0]]
+        assert model_check
+        assert model_check[0][1] is True
+
+    async def test_ollama_provider_without_prefix_is_flagged(self, tmp_path: Path) -> None:
+        """provider = 'ollama' with an unprefixed model must not silently check nothing."""
+        from sova.cli.commands.doctor import _check_ollama
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            _mock_llm_config(mock_cfg, provider="ollama", model="llama3.1")
+            checks = await _check_ollama(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0][0] == "ollama model prefix"
+        assert checks[0][1] is False
+        assert "ollama/" in checks[0][2]
+
+    async def test_non_ollama_provider_without_models_stays_silent(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_ollama
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            _mock_llm_config(mock_cfg, provider="openai", model="gpt-5")
+            assert await _check_ollama(tmp_path) == []
+
+    async def test_llm_model_field_is_checked(self, tmp_path: Path) -> None:
+        """provider = 'ollama' with llm.model set directly (no routing entry) is checked."""
+        from sova.cli.commands.doctor import _check_ollama
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
+        ):
+            _mock_llm_config(mock_cfg, model="ollama/llama3.1")
+            mock_run.return_value = MagicMock(success=True, stdout="NAME\tID\nqwen3:8b\tabc123\n")
+            checks = await _check_ollama(tmp_path)
+
+        model_check = [c for c in checks if "llama3.1" in c[0]]
+        assert model_check
+        assert model_check[0][1] is False
+
+    async def test_llm_fallback_model_field_is_checked(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_ollama
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
+        ):
+            _mock_llm_config(mock_cfg, model="gpt-5", fallback_model="ollama/llama3.1")
+            mock_run.return_value = MagicMock(success=True, stdout="NAME\tID\nllama3.1:latest\tabc123\n")
+            checks = await _check_ollama(tmp_path)
+
+        model_check = [c for c in checks if "llama3.1" in c[0]]
+        assert model_check
+        assert model_check[0][1] is True
 
     async def test_ollama_model_not_pulled(self, tmp_path: Path) -> None:
         from sova.cli.commands.doctor import _check_ollama
@@ -3069,7 +3231,7 @@ class TestDoctorOllamaCheck:
             patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
             patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
         ):
-            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            _mock_llm_config(mock_cfg, routing={"triage": "ollama/qwen3:8b"})
             mock_run.return_value = MagicMock(
                 success=True,
                 stdout="NAME\tID\tSIZE\tMODIFIED\nllama3:8b\tabc123\t5.0 GB\t2 hours ago\n",

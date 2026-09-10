@@ -124,10 +124,11 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "llm.provider",
         "Provider",
-        "LLM provider backend (claude-code, litellm, hybrid, or anthropic for direct API access)",
+        "LLM provider backend (claude-code, litellm, hybrid, anthropic for direct API access, "
+        "or the openai/ollama/vertex vendor-specific LiteLLM shortcuts)",
         "llm",
         "select",
-        options=("claude-code", "litellm", "hybrid", "anthropic"),
+        options=("claude-code", "litellm", "hybrid", "anthropic", "openai", "ollama", "vertex"),
     ),
     SettingMeta(
         "llm.model",

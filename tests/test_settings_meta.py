@@ -194,7 +194,7 @@ class TestLLMProviderMeta:
         assert meta is not None
         assert meta.value_type == "select"
         assert meta.requires_restart is False
-        assert meta.options == ("claude-code", "litellm", "hybrid", "anthropic")
+        assert meta.options == ("claude-code", "litellm", "hybrid", "anthropic", "openai", "ollama", "vertex")
 
     def test_api_key_is_secret(self) -> None:
         meta = get_meta("llm.api_key")
@@ -208,7 +208,7 @@ class TestLLMProviderMeta:
         llm_group = next(g for g in groups if g["id"] == "llm")
         setting = next(s for s in llm_group["settings"] if s["key"] == "llm.provider")
         assert setting["value_type"] == "select"
-        assert setting["options"] == ["claude-code", "litellm", "hybrid", "anthropic"]
+        assert setting["options"] == ["claude-code", "litellm", "hybrid", "anthropic", "openai", "ollama", "vertex"]
 
     def test_grouped_config_options_default_empty(self) -> None:
         groups = get_grouped_config({"agent.model": "opus"})
