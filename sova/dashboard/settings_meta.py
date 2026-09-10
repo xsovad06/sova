@@ -24,6 +24,7 @@ GROUPS: dict[str, str] = {
     "agent": "Agent",
     "runaway": "Runaway Guards",
     "pipeline": "Pipeline",
+    "pipelines": "Step Pipelines",
     "task_source": "Task Source",
     "review": "Code Review",
     "develop": "Development",
@@ -57,6 +58,7 @@ GROUP_ORDER: list[str] = [
     "agent",
     "runaway",
     "pipeline",
+    "pipelines",
     "spec",
     "roles",
     "task_source",
@@ -331,6 +333,31 @@ _REGISTRY: list[SettingMeta] = [
         "Maximum auto address-review runs per PR before requiring manual intervention (0 = unlimited)",
         "pipeline",
         "number",
+    ),
+    # Step Pipelines
+    SettingMeta(
+        "pipelines.developer",
+        "Developer pipeline steps",
+        "Ordered step names for the Developer pipeline. Empty falls back to the built-in default. "
+        "Edit via [pipelines] in sova.toml",
+        "pipelines",
+        "list",
+    ),
+    SettingMeta(
+        "pipelines.address_review",
+        "Address-review pipeline steps",
+        "Ordered step names for the address-review pipeline. Empty falls back to the built-in default. "
+        "Edit via [pipelines] in sova.toml",
+        "pipelines",
+        "list",
+    ),
+    SettingMeta(
+        "pipelines.researcher",
+        "Researcher pipeline steps",
+        "Ordered step names for the Researcher pipeline. Empty falls back to the built-in default. "
+        "Edit via [pipelines] in sova.toml",
+        "pipelines",
+        "list",
     ),
     # -- Spec --
     SettingMeta(

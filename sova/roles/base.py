@@ -78,5 +78,13 @@ class AgentRole(ABC):
 
         Override in roles that use the WorkflowEngine. Roles with
         simpler workflows can implement execute() directly.
+
+        Note: this method takes no ExecutionContext, so it cannot honour a
+        project's [pipelines] config override. Roles that support
+        configurable pipelines (e.g. DeveloperRole, ResearcherRole) resolve
+        their actual step list from ctx.config.pipelines inside execute()
+        via build_configured_pipeline(), and get_steps() there returns only
+        the hardcoded default for callers (tests, introspection) that need a
+        pipeline shape without an ExecutionContext.
         """
         return []

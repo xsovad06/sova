@@ -283,6 +283,21 @@ class TestResearcherRole:
         assert "awaiting" in result.summary.lower()
         adapter.transition_state.assert_awaited_once_with("42", TaskState.RESEARCHED)
 
+    async def test_invalid_pipeline_config_fails_cleanly(self) -> None:
+        from sova.config.models import ProjectConfig
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        cfg = ProjectConfig()
+        cfg.pipelines.researcher = ["fetch_task", "no_such_step"]
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter, config=cfg)
+
+        result = await ResearcherRole().execute(ctx)
+
+        assert not result.success
+        assert "no_such_step" in (result.error or "")
+        adapter.transition_state.assert_not_awaited()
+
     def test_get_steps_returns_researcher_pipeline(self) -> None:
         from sova.roles.researcher import ResearcherRole
 
@@ -762,6 +777,23 @@ class TestDeveloperRole:
 
         assert result.success
         adapter.transition_state.assert_called_once_with("42", TaskState.IN_PROGRESS)
+
+    async def test_invalid_pipeline_config_fails_cleanly(self) -> None:
+        """An unknown step name in [pipelines] fails the run instead of crashing the agent."""
+        from sova.config.models import ProjectConfig
+        from sova.roles.developer import DeveloperRole
+
+        adapter = _mock_adapter(TaskState.RESEARCHED)
+        cfg = ProjectConfig()
+        cfg.pipelines.developer = ["sync", "no_such_step"]
+        ctx = _make_ctx(role="developer", state=TaskState.RESEARCHED, adapter=adapter, config=cfg)
+
+        result = await DeveloperRole().execute(ctx)
+
+        assert not result.success
+        assert "no_such_step" in (result.error or "")
+        # The issue must not be left in IN_PROGRESS with no agent running.
+        adapter.transition_state.assert_not_awaited()
 
     def test_get_steps_returns_developer_pipeline(self) -> None:
         from sova.roles.developer import DeveloperRole

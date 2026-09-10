@@ -15,6 +15,7 @@ from sova.config.models import (
     ConfidenceConfig,
     IntegrationGatesConfig,
     PipelineConfig,
+    PipelineDefinitions,
     ProjectConfig,
     ReviewConfig,
     TaskSourceConfig,
@@ -44,6 +45,36 @@ def test_default_config() -> None:
     assert cfg.triage.auto_label is True
     assert cfg.triage.min_confidence == 0.7
     assert cfg.monitoring.enabled is True
+
+
+def test_pipeline_definitions_defaults_match_builtin_pipelines() -> None:
+    """PipelineDefinitions defaults mirror the hardcoded factories in core/steps."""
+    from sova.core.steps import (
+        get_address_review_step_names,
+        get_developer_step_names,
+        get_researcher_step_names,
+    )
+
+    defs = PipelineDefinitions()
+    assert defs.developer == get_developer_step_names()
+    assert defs.address_review == get_address_review_step_names()
+    assert defs.researcher == get_researcher_step_names()
+
+
+def test_pipeline_definitions_override_from_toml(tmp_path: Path) -> None:
+    """Users can override step pipelines via [pipelines] in sova.toml."""
+    toml_content = """
+[pipelines]
+developer = ["sync", "assess", "develop", "commit", "push"]
+researcher = []
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.pipelines.developer == ["sync", "assess", "develop", "commit", "push"]
+    # Empty override falls back to the default at build time, not at load time.
+    assert cfg.pipelines.researcher == []
 
 
 def test_load_from_toml(tmp_path: Path) -> None:
