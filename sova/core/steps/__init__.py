@@ -11,6 +11,7 @@ from sova.core.steps.assess import AssessStep
 from sova.core.steps.base import BaseStep
 from sova.core.steps.capture_baseline import CaptureBaselineStep
 from sova.core.steps.commit import CommitStep
+from sova.core.steps.confidence_score import ConfidenceScoreStep
 from sova.core.steps.create_pr import CreatePRStep
 from sova.core.steps.create_worktree import WorktreeStep
 from sova.core.steps.develop import DevelopStep
@@ -57,6 +58,7 @@ def get_developer_steps() -> list[BaseStep]:
         WaitForExternalReviewsStep(),
         AddressExternalFindingsStep(),
         MonitorCIStep(),
+        ConfidenceScoreStep(),
         ExtractMemoryStep(),
         HandoffToReviewerStep(),
     ]

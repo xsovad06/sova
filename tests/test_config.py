@@ -12,6 +12,7 @@ from sova.config.loader import load_config
 from sova.config.models import (
     AgentConfig,
     CIConfig,
+    ConfidenceConfig,
     IntegrationGatesConfig,
     PipelineConfig,
     ProjectConfig,
@@ -90,6 +91,42 @@ reviewer = "Koda"
     assert cfg.triage.min_confidence == 0.8
     assert cfg.roles.default == "researcher"
     assert cfg.roles.nicknames == {"reviewer": "Koda"}
+
+
+def test_confidence_config_from_toml(tmp_path: Path) -> None:
+    """ConfidenceConfig loads from the [confidence] TOML section."""
+    toml_content = """
+[confidence]
+enabled = true
+gate_enabled = true
+auto_merge_threshold = 85
+review_threshold = 65
+critical_threshold = 45
+model = "haiku"
+max_budget_usd = 0.10
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.confidence.enabled is True
+    assert cfg.confidence.gate_enabled is True
+    assert cfg.confidence.auto_merge_threshold == 85
+    assert cfg.confidence.review_threshold == 65
+    assert cfg.confidence.critical_threshold == 45
+    assert cfg.confidence.model == "haiku"
+    assert cfg.confidence.max_budget_usd == Decimal("0.10")
+
+
+def test_confidence_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SOVA_CONFIDENCE_* env vars override TOML confidence settings."""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text("[confidence]\nenabled = true\ngate_enabled = true\n")
+    monkeypatch.setenv("SOVA_CONFIDENCE_GATE_ENABLED", "false")
+
+    cfg = load_config(tmp_path)
+    assert cfg.confidence.enabled is True
+    assert cfg.confidence.gate_enabled is False
 
 
 def test_notification_config_defaults() -> None:
@@ -742,10 +779,41 @@ class TestFieldConstraints:
         AgentConfig()
         ReviewConfig()
         CIConfig()
+        ConfidenceConfig()
         WatchConfig()
         WorktreeConfig()
         TriageConfig()
         PipelineConfig()
+
+
+class TestConfidenceConfig:
+    def test_defaults_are_advisory(self) -> None:
+        cfg = ConfidenceConfig()
+        assert cfg.enabled is False
+        assert cfg.gate_enabled is False
+        assert cfg.critical_threshold <= cfg.review_threshold <= cfg.auto_merge_threshold
+
+    def test_rejects_out_of_order_thresholds(self) -> None:
+        with pytest.raises(ValidationError, match="thresholds must satisfy"):
+            ConfidenceConfig(critical_threshold=70, review_threshold=60, auto_merge_threshold=80)
+
+    def test_rejects_gate_enabled_without_enabled(self) -> None:
+        with pytest.raises(ValidationError, match="gating requires confidence scoring"):
+            ConfidenceConfig(enabled=False, gate_enabled=True)
+
+    def test_accepts_gate_enabled_with_enabled(self) -> None:
+        cfg = ConfidenceConfig(enabled=True, gate_enabled=True)
+        assert cfg.enabled is True
+        assert cfg.gate_enabled is True
+
+    def test_accepts_equal_thresholds(self) -> None:
+        cfg = ConfidenceConfig(critical_threshold=50, review_threshold=50, auto_merge_threshold=50)
+        assert cfg.critical_threshold == cfg.review_threshold == cfg.auto_merge_threshold == 50
+
+    def test_project_config_nests_confidence_section(self) -> None:
+        config = ProjectConfig(confidence={"enabled": True, "auto_merge_threshold": 90})
+        assert config.confidence.enabled is True
+        assert config.confidence.auto_merge_threshold == 90
 
 
 class TestJiraStatusMappingConfig:

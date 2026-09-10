@@ -29,6 +29,15 @@
 <!-- Run info (branch, PR, duration) -->
 <div id="run-info" class="hidden text-xs text-gray-500 mb-4"></div>
 
+<!-- Confidence score -->
+<div id="confidence-section" class="hidden mb-4">
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50 inline-block">
+    <p class="text-xs text-gray-500 uppercase">Confidence Score</p>
+    <p class="text-xl font-bold" id="detail-confidence">--</p>
+    <p class="text-xs text-gray-500 mt-1 max-w-md" id="detail-confidence-summary"></p>
+  </div>
+</div>
+
 <!-- Run chain (other runs for the same issue) -->
 <div id="run-chain" class="hidden mb-4">
   <div class="flex items-center gap-2 flex-wrap text-xs" id="run-chain-content"></div>
@@ -150,6 +159,17 @@ async function loadRunDetail() {
     if (infoParts.length > 0) {
       infoEl.classList.remove('hidden');
       infoEl.innerHTML = infoParts.join('<span class="text-gray-700 mx-2">|</span>');
+    }
+
+    if (run.confidence_score !== null && run.confidence_score !== undefined) {
+      var score = run.confidence_score;
+      var scoreColor = score >= 80 ? 'text-accent-green' : (score >= 60 ? 'text-accent-yellow' : 'text-accent-red');
+      var scoreEl = document.getElementById('detail-confidence');
+      scoreEl.textContent = score + '/100';
+      scoreEl.className = 'text-xl font-bold ' + scoreColor;
+      var confidenceDetails = run.confidence_details || {};
+      document.getElementById('detail-confidence-summary').textContent = confidenceDetails.summary || '';
+      document.getElementById('confidence-section').classList.remove('hidden');
     }
 
     var pipelineContainer = document.getElementById('pipeline-bar');

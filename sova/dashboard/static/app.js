@@ -100,6 +100,7 @@ var _STEP_LABELS = {
   push: 'Pushing',
   create_pr: 'Creating PR',
   monitor_ci: 'CI checks',
+  confidence_score: 'Scoring confidence',
   extract_memory: 'Extracting memory',
   rebase: 'Rebasing',
   address_review: 'Addressing review',
@@ -1180,7 +1181,7 @@ var PIPELINE_STEPS = [
   'sync', 'assess', 'create_worktree', 'capture_baseline', 'develop', 'simplify',
   'self_review', 'commit', 'validate', 'push', 'create_pr',
   'wait_for_external_reviews', 'address_external_findings',
-  'monitor_ci', 'extract_memory', 'handoff_to_reviewer'
+  'monitor_ci', 'confidence_score', 'extract_memory', 'handoff_to_reviewer'
 ];
 
 var STEP_LABELS = {
@@ -1188,7 +1189,7 @@ var STEP_LABELS = {
   capture_baseline: 'Baseline', develop: 'Develop', simplify: 'Simplify', self_review: 'Review',
   commit: 'Commit', validate: 'Validate', push: 'Push', create_pr: 'PR',
   wait_for_external_reviews: 'Ext Reviews', address_external_findings: 'Address Ext',
-  monitor_ci: 'CI', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff',
+  monitor_ci: 'CI', confidence_score: 'Confidence', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff',
   rebase: 'Rebase', address_review: 'Address', resolve_external_reviews: 'Resolve',
   handoff_to_user: 'Handoff', fetch_task: 'Fetch', research: 'Research', spec: 'Spec'
 };

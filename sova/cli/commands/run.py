@@ -109,6 +109,8 @@ async def _run_workflow(
         pr_number=pr_number or checkpoint.get("pr_number"),
         cost_usd=checkpoint.get("cost_usd", Decimal("0")),
         task_run_id=task_run_id,
+        confidence_score=checkpoint.get("confidence_score"),
+        confidence_details=checkpoint.get("confidence_details"),
     )
 
     if resume_run_id:
@@ -161,6 +163,8 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
                 if wt.exists():
                     worktree_dir = wt
 
+            assessment = task_run.assessment_json or {}
+
             return {
                 "completed_steps": completed_steps,
                 "branch_name": task_run.branch_name or "",
@@ -168,6 +172,8 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
                 "pr_number": task_run.pr_number,
                 "cost_usd": task_run.total_cost_usd or Decimal("0"),
                 "role": task_run.role,
+                "confidence_score": assessment.get("confidence_score"),
+                "confidence_details": assessment.get("confidence_details"),
             }
 
 

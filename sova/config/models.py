@@ -210,6 +210,32 @@ class CIConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CI_")
 
 
+class ConfidenceConfig(BaseSettings):
+    """Confidence scoring configuration for the developer pipeline.
+
+    Advisory by default: the score is computed and persisted but does not
+    influence handoff routing unless ``gate_enabled`` is also set.
+    """
+
+    enabled: bool = False
+    gate_enabled: bool = False
+    auto_merge_threshold: int = Field(80, ge=0, le=100)
+    review_threshold: int = Field(60, ge=0, le=100)
+    critical_threshold: int = Field(50, ge=0, le=100)
+    model: str = "sonnet"
+    max_budget_usd: Decimal = Field(Decimal("0.05"), gt=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CONFIDENCE_")
+
+    @model_validator(mode="after")
+    def _thresholds_ordered(self) -> ConfidenceConfig:
+        if self.gate_enabled and not self.enabled:
+            raise ValueError("confidence gating requires confidence scoring to be enabled")
+        if not (self.critical_threshold <= self.review_threshold <= self.auto_merge_threshold):
+            raise ValueError("confidence thresholds must satisfy critical <= review <= auto_merge")
+        return self
+
+
 class WatchConfig(BaseSettings):
     """Watch mode configuration."""
 
@@ -777,6 +803,7 @@ class ProjectConfig(BaseSettings):
     develop: DevelopConfig = Field(default_factory=DevelopConfig)
     validation: ValidateConfig = Field(default_factory=ValidateConfig)
     ci: CIConfig = Field(default_factory=CIConfig)
+    confidence: ConfidenceConfig = Field(default_factory=ConfidenceConfig)
     watch: WatchConfig = Field(default_factory=WatchConfig)
     worktree: WorktreeConfig = Field(default_factory=WorktreeConfig)
     commit: CommitConfig = Field(default_factory=CommitConfig)

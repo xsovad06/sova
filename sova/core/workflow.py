@@ -974,6 +974,11 @@ class WorkflowEngine:
                     task_run.worktree_path = str(self._ctx.worktree_dir)
                 if self._ctx.pr_number:
                     task_run.pr_number = self._ctx.pr_number
+                if self._ctx.confidence_score is not None:
+                    task_run.assessment_json = {
+                        "confidence_score": self._ctx.confidence_score,
+                        "confidence_details": self._ctx.confidence_details,
+                    }
 
     async def _finalize_task_run(self) -> None:
         """Write final state to the TaskRun after successful completion."""

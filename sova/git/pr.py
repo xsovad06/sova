@@ -468,6 +468,34 @@ async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> 
     )
 
 
+async def get_pr_body(pr_number: int, *, repo: str, github_user: str = "") -> str:
+    """Fetch a pull request's current body via gh CLI."""
+    env = await resolve_gh_env(github_user)
+    result = await run("gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "body", env=env)
+    _track_gh_rate_limit(result, github_user)
+
+    if not result.success:
+        raise RuntimeError(f"Failed to get body for PR #{pr_number}: {result.stderr[:200]}")
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse PR #{pr_number} response: {result.stdout[:200]}") from exc
+
+    return data.get("body", "") or ""
+
+
+async def update_pr_body(pr_number: int, *, body: str, repo: str, github_user: str = "") -> None:
+    """Overwrite a pull request's body via gh CLI."""
+    log.info("git.update_pr_body", pr=pr_number)
+    env = await resolve_gh_env(github_user)
+    result = await run("gh", "pr", "edit", str(pr_number), "--repo", repo, "--body", body, env=env)
+    _track_gh_rate_limit(result, github_user)
+
+    if not result.success:
+        raise RuntimeError(f"Failed to update PR #{pr_number} body: {result.stderr[:200]}")
+
+
 _GH_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] = {
     "SUCCESS": (CheckStatus.COMPLETED, CheckConclusion.SUCCESS),
     "FAILURE": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),

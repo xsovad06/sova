@@ -85,6 +85,7 @@ class TestStepAreaMap:
             "assess",
             "capture_baseline",
             "commit",
+            "confidence_score",
             "create_pr",
             "create_worktree",
             "develop",
