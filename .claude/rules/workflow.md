@@ -28,6 +28,10 @@ When the user asks to "start the next task", "what should we work on", or simila
 
 - **Mirror changes across SOVA/distributable command pairs**: when a command exists in both `.claude/commands/` (SOVA-specific) and `commands/` (distributable), changes to shared sections must be applied to both files. CodeRabbit only reviews `commands/` (`.claude/` is excluded via path filters), so inconsistencies in the SOVA variant go undetected. After editing one, always diff the pair.
 
+## Push/PR Approval Precedence
+
+The cross-project default is to never push or open a PR without explicit user approval. Slash commands that document their own push/PR steps (`/pr`, `/integrate-pr`, `/address-pr`, etc.) are self-approving for exactly those steps: invoking the command IS the approval, so they push without pausing to ask again. The cross-project default still applies to any push made outside of a command's documented steps (ad-hoc `git push`, or an action a command doesn't itself call for).
+
 ## External Reviews
 
 CodeRabbit does NOT auto-review this repository. Auto-review unlocks at 10+ GitHub stars; below that the plan is manual-only at 1 review/hour. A PR therefore gets no CodeRabbit review at all unless someone posts `@coderabbitai review` on it, and the green "CodeRabbit" status check does not mean a review happened. Post the trigger comment after the code is pushed (never before: it re-reviews unfixed code), then treat the result as a real reviewer per the address-review cycle in architecture.md.

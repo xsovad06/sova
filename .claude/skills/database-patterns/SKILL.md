@@ -36,7 +36,7 @@ SQLAlchemy `JSON` defaults to `none_as_null=False`. Python `None` becomes JSON `
 
 ```python
 _TERMINAL = frozenset({TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.REJECTED})         # state machine
-TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted"})  # DB queries
+TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "paused", "awaiting_approval"})  # DB queries, sova/core/state.py
 ```
 Use `TASK_RUN_TERMINAL` for DB queries. Always guard finalization:
 ```python
@@ -48,7 +48,7 @@ if task_run.status in TASK_RUN_TERMINAL:
 
 - Always use `batch_alter_table` (SQLite requires it)
 - Use idempotent helpers: `_column_exists()`, `_table_exists()`, `_index_exists()`
-- Sequential numbering (`001`-`008`), not Alembic UUIDs
+- Sequential numbering (currently up to `034`), not Alembic UUIDs
 - Engine disposal after migration for file-backed SQLite (stale schema cache)
 - Self-healing: if Alembic fails, drops corrupted `alembic_version`, runs `create_all` + stamps head
 

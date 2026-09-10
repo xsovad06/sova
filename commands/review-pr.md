@@ -157,7 +157,7 @@ Format the review body through the shared SOVA formatter:
 REVIEW_BODY=$(python3 -c "import sys; from sova.roles._review_format import format_from_json; print(format_from_json(sys.stdin.read()))" < /tmp/sova-review-findings.json) || REVIEW_BODY=""
 ```
 
-The formatter produces: `<!-- sova-review: {verdict} -->` marker, `## Review:` heading, severity-sorted findings with `[LABEL N/10]` scores, `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity (7+ = block, 3-6 = revise, below 3 or none = approve).
+The formatter produces: `<!-- sova-review: {verdict} -->` marker, `## Review:` heading, severity-sorted findings with `[LABEL N/10]` scores, `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity (7+ = block, any lower non-zero severity = revise, no findings = approve).
 
 **Fallback**: if `python3` fails (SOVA not installed, import error, malformed JSON), `REVIEW_BODY` will be empty. In that case, write the review body manually: first line `<!-- sova-review: {verdict} -->`, then `### Findings` heading, then findings as `- **[LABEL N/10]** [category] \`file:line\`: description. Fix: suggestion`. Determine the verdict from the highest severity in your JSON: 7+ = block, any findings (severity 1-6) = revise, no findings = approve. A finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely.
 

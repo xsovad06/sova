@@ -68,6 +68,16 @@ grep -rn --include='*.html' --include='*.js' '\.toFixed(' sova/dashboard/templat
 grep -rn --include='*.html' -E "'&#x2[0-9a-fA-F]{3};|&rarr;|&larr;|&check;|\\\\u2" sova/dashboard/templates/
 ```
 
+### Step 3.5: Live Verification (mandatory for any audit ahead of approving a PR)
+
+Static grep checks and code reading cannot catch browser-only bugs (layout timing, focus handling, JS runtime errors): a change can look correct on review and still be completely broken in the browser. Before signing off on a frontend/dashboard PR:
+
+- Start the dashboard and load the affected page(s). Do not start or stop the user's own `make dev` instance: if it's already running, use it; otherwise start an isolated instance on an alternate port (e.g. `uvicorn sova.dashboard.app:create_app --factory --port 8112`).
+- Exercise the actual golden path the PR touches (click through it, don't just look at it).
+- If the PR claims "manually verified," verify independently anyway.
+
+This step is required before the audit report can mark any finding as resolved-by-inspection, and before `/review` approves a UI PR based on this audit.
+
 ### Step 4: Manual Inspection Checklist
 
 For each template in scope, check:
@@ -156,6 +166,7 @@ Report findings as a structured list, grouped by severity:
 - Critical: N | High: N | Medium: N | Low: N
 - Templates audited: N
 - Templates clean: N
+- Live-verified in browser: yes/no (see Step 3.5) -- if no, say why and flag the audit as incomplete
 ```
 
 Do NOT auto-fix findings. Report them for human review. The user decides which to address.

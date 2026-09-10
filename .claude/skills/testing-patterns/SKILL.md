@@ -11,8 +11,9 @@ When writing or modifying files in `tests/`, follow these conventions. Reference
 ## Framework
 
 - `asyncio_mode = "auto"` -- no `@pytest.mark.asyncio` needed on async tests
-- All tests flat in `tests/` -- no subdirectories, no `conftest.py`
-- Tests grouped with classes. Fixtures defined per-file, not shared.
+- Most tests are flat in `tests/`; a few isolated areas (e.g. `tests/runtime/`) get their own subdirectory with a local `conftest.py` when their fixtures don't apply elsewhere
+- `tests/conftest.py` holds only truly cross-suite fixtures: `_isolate_sova_env` (autouse, strips ambient `SOVA_*` env vars) and `seed_config` (seeds DB-backed `project_settings` instead of writing `sova.toml`, matching production config storage). Use `seed_config(project_dir, **values)` for any test that needs configured values, don't write a `sova.toml` file.
+- Tests grouped with classes. Beyond the shared fixtures above, fixtures are defined per-file, not shared.
 
 ## Required Fixtures
 
@@ -74,9 +75,10 @@ async def client(tmp_path):
 - **Clear caches**: file-backed services (handoff, log) cache by mtime. Clear `_handoff_caches` in tests.
 - **Session pattern**: always `async with await get_session() as session:`.
 - **DB fixture scope**: per-test only. Never `scope="module"`.
-- **No conftest.py**: copy helpers per-file, don't share.
+- **Don't add new shared fixtures to `tests/conftest.py`** beyond `_isolate_sova_env`/`seed_config`: copy per-file helpers instead, unless the fixture is genuinely needed suite-wide.
 - **Module-level cache requires `setup_method` in ALL test classes**: when a service function has a module-level cache, add `setup_method: clear_cache()` to every test class in the file that calls it, not just new ones. Cache type changes (`tuple|None` -> `dict`) require updating all reset patterns (`= None` -> `.clear()`).
-- **Direct unit tests for mocked functions**: if a function is always mocked in integration tests, SonarCloud flags 0% coverage. Add a dedicated test class with direct calls to cover the implementation paths.
+- **Direct unit tests for mocked functions**: if a function is always mocked in integration tests, SonarCloud flags 0% coverage. Add a dedicated test class with direct calls to cover the implementation paths (e.g. `TestIsIssue` alongside code that always mocks `_is_issue()`).
+- **Cover except blocks explicitly for the SonarCloud gate**: swallowed-error handlers (`except (OSError, Exception)`) add uncovered lines that can fail the `new_coverage` threshold (80%) even on a small diff. Add a test with `side_effect=OSError(...)` (or the specific exception) that triggers each except path; for file I/O, `patch.object(Path, "read_text"/"write_text", side_effect=OSError(...))` covers read and write failures independently.
 - **`MagicMock(name="foo")` sets repr, not `.name`**: `name=` is a reserved constructor arg. Assign after construction: `mock = MagicMock(); mock.name = "foo"`.
 - **Spawn mock functions must use `**kwargs`**: `async def _capture_spawn(prompt, cwd, **kwargs)` absorbs new parameters without breaking when `spawn()` gains kwargs.
 - **`TaskRun` uses `started_at`, not `created_at`**: most ORM models use `created_at`, but `TaskRun` uses `started_at`/`ended_at`. Referencing `TaskRun.created_at` raises `AttributeError` silently swallowed by broad `except Exception`.

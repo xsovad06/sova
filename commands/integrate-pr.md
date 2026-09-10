@@ -81,7 +81,7 @@ Run this phase on the feature branch BEFORE merge to avoid post-merge commits on
 
 Only run if `.claude/agent-memory/` exists in the project.
 
-1. **Capture review learnings**: fetch review data from the PR (`gh pr view`, `gh api repos/.../pulls/<N>/comments`). Analyze for actionable findings and update `.claude/agent-memory/cookbook.md` (no duplicates). Promote patterns confirmed in 2+ PRs to `.claude/rules/*.md`.
+1. **Capture review learnings**: fetch review data from the PR (`gh pr view`, `gh api repos/.../pulls/<N>/comments`, `gh api repos/.../pulls/<N>/reviews`). Enumerate every unresolved AND resolved review thread from the whole PR history, not just what came up during this session's CI/merge back-and-forth: score each for actionable content and update `.claude/agent-memory/cookbook.md` (no duplicates). Promote patterns confirmed in 2+ PRs to `.claude/rules/*.md`. A later `/ingest-review` run on the same PR should find nothing new; if it would, this step was too shallow.
 
 2. **Update documentation counts**: run verification commands (test count, service count, router count) and fix any drifted values in `AGENTS.md`, `README.md`, or `docs/VISION.md`.
 
@@ -196,7 +196,9 @@ done
 ```
 
 Act on the result:
-- **CI PASSED**: also verify that no blocking `CHANGES_REQUESTED` review remains (`gh pr view <PR_NUMBER> --json reviewDecision` -- `gh pr checks` monitors CI status only, not review decisions). Then proceed to Phase 5.
+- **CI PASSED**: also verify that no blocking `CHANGES_REQUESTED` review remains (`gh pr view <PR_NUMBER> --json reviewDecision`; `gh pr checks` monitors CI status only, not review decisions).
+  - If `reviewDecision` is `CHANGES_REQUESTED`: stop. Never merge while a review (bot or human) is requesting changes, treat it as a real reviewer with its own address-review cycle. Write a handoff pointing at `/address-pr <PR_NUMBER>` and report that integration is blocked on unaddressed review feedback.
+  - Otherwise, proceed to Phase 5.
 - **NO_CHECKS** (no CI checks configured): proceed to Phase 5. No checks means nothing to wait for.
 - **CI FAILED**: analyze the failure output briefly.
   - For infrastructure/flaky issues (network timeouts, resource limits, unrelated tests), post a retry comment and re-run the polling loop once more. On second failure, stop and report the diagnosis.
