@@ -85,3 +85,8 @@ async def test_summary_savings_usd_unknown_model_falls_back_to_zero() -> None:
             summary = await cost_service.get_summary(session)
 
     assert summary["compression_savings_usd"] == Decimal("0")
+
+
+def test_compression_savings_usd_returns_zero_on_config_load_failure() -> None:
+    with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad toml")):
+        assert cost_service._compression_savings_usd(1_000_000) == Decimal("0")

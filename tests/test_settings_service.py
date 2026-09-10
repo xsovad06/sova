@@ -388,3 +388,19 @@ class TestSettingsRouterErrors:
         data = resp.json()
         assert "error" in data
         assert "number" in data["error"]
+
+
+class TestGetConfigAndPersona:
+    def test_get_config_returns_error_dict_on_load_failure(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import get_config
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad toml")):
+            result = get_config(tmp_path)
+
+        assert result == {"_error": "No configuration found"}
+
+    def test_get_detected_persona_returns_none_on_error(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import get_detected_persona
+
+        with patch("sova.knowledge.personas.detect_persona", side_effect=OSError("unreadable")):
+            assert get_detected_persona(tmp_path) is None

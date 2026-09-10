@@ -130,6 +130,28 @@ class TestPostReviewReturnsBool:
         mock_ctx.adapter.post_pr_comment.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_post_review_returns_false_on_non_runtime_adapter_error(self) -> None:
+        """The adapter layer raises AdapterError and json ValueError, not just RuntimeError.
+
+        _post_review must never raise, or _write_handoff never runs and the null
+        handoff is misread as a "revise" verdict (see architecture.md, PR #502).
+        """
+        from sova.adapters.base import AdapterError
+        from sova.roles.reviewer import ReviewerRole
+
+        role = ReviewerRole()
+        mock_ctx = MagicMock()
+        mock_ctx.adapter.post_pr_review = AsyncMock(side_effect=AdapterError("rate limited"))
+        mock_ctx.adapter.post_pr_comment = AsyncMock(side_effect=ValueError("bad json from gh"))
+        mock_ctx.pr_number = 1
+
+        review = ReviewResult(findings=[], summary="clean")
+        result = await role._post_review(mock_ctx, review, "diff content")
+
+        assert result is False
+        mock_ctx.adapter.post_pr_comment.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_post_review_falls_back_to_comment_after_review_api_failure(self) -> None:
         from sova.roles.reviewer import ReviewerRole
 

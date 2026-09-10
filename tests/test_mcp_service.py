@@ -360,3 +360,43 @@ async def test_list_run_history_ordered_by_start(session: AsyncSession, seed_run
 
     assert result[0]["run_id"] == seed_runs[0].id
     assert result[1]["run_id"] == seed_runs[1].id
+
+
+def test_get_or_generate_secret_falls_back_when_persisted_read_fails(tmp_path, monkeypatch):
+    """A corrupt/unreadable persisted secret file is logged and a new secret is generated."""
+    from unittest.mock import MagicMock, patch
+
+    from sova.dashboard.services.mcp_service import get_or_generate_secret
+
+    cfg = MagicMock()
+    cfg.mcp.token_secret = ""
+    secret_file = tmp_path / ".claude" / "mcp_secret"
+    secret_file.parent.mkdir(parents=True)
+    secret_file.write_text("existing-secret")
+
+    with (
+        patch("sova.dashboard.services.mcp_service.load_config", return_value=cfg),
+        patch.object(Path, "read_text", side_effect=OSError("corrupt file")),
+    ):
+        secret = get_or_generate_secret(tmp_path)
+
+    assert secret
+    assert secret != "existing-secret"
+
+
+def test_get_or_generate_secret_swallows_write_failure(tmp_path):
+    """A failing persist write (parent path is not a directory) is logged; the secret is still returned."""
+    from unittest.mock import MagicMock, patch
+
+    from sova.dashboard.services.mcp_service import get_or_generate_secret
+
+    cfg = MagicMock()
+    cfg.mcp.token_secret = ""
+    # ".claude" is a file, not a directory, so mkdir(parents=True) inside the
+    # write path raises instead of the secret file's read path being taken.
+    (tmp_path / ".claude").write_text("not a directory")
+
+    with patch("sova.dashboard.services.mcp_service.load_config", return_value=cfg):
+        secret = get_or_generate_secret(tmp_path)
+
+    assert secret

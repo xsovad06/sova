@@ -384,7 +384,7 @@ class LiteLLMProvider(LLMProvider):
                 )
                 cost = prompt_cost + completion_cost
             decimal_cost = Decimal(str(cost))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 (litellm pricing tables raise varied errors for unknown models)
             return Decimal("0"), self._report_unpriced(model, requested_model, exc_info=True)
         if decimal_cost <= 0:
             return Decimal("0"), self._report_unpriced(model, requested_model)

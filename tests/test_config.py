@@ -1045,6 +1045,30 @@ class TestSaveConfigToDbSync:
         assert "jira_project_key" not in loaded.get("task_source", {})
         assert "jira_status_mapping" not in loaded.get("task_source", {})
 
+    def test_immediate_lock_rolls_back_and_is_swallowed(self, tmp_path: Path) -> None:
+        """A write failure under only_if_empty rolls back, re-raises, and is swallowed by the sync bridge."""
+        import asyncio
+        from unittest.mock import patch
+
+        from sova.config import db_loader
+        from sova.db.session import init_db
+
+        asyncio.run(init_db(tmp_path))
+        with patch.object(db_loader, "_write_flat_config", side_effect=RuntimeError("disk full")):
+            db_loader._save_config_to_db_sync(tmp_path, {"github_repo": "a/b"}, only_if_empty=True)
+
+    def test_is_db_confirmed_empty_fails_closed_on_error(self, tmp_path: Path) -> None:
+        """Any error probing the DB reports not-confirmed-empty rather than raising."""
+        import asyncio
+        from unittest.mock import patch
+
+        from sova.config.db_loader import _is_db_confirmed_empty
+        from sova.db.session import init_db
+
+        asyncio.run(init_db(tmp_path))
+        with patch("sqlalchemy.create_engine", side_effect=RuntimeError("engine unavailable")):
+            assert _is_db_confirmed_empty(tmp_path) is False
+
 
 @pytest.mark.asyncio
 class TestSaveConfigToDbAsync:
