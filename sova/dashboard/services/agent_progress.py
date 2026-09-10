@@ -63,7 +63,7 @@ async def _resolve_pipelines(project_dir: Path | None) -> dict[str, list[str]]:
             configured = getattr(pipelines, variant, None)
             if configured:
                 resolved[variant] = list(configured)
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
         log.warning("agent_progress.pipeline_config_load_failed", project_dir=cache_key, exc_info=True)
 
     _pipeline_cache[cache_key] = (now, resolved)
