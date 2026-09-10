@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from sova.config.context import get_project_dir
 from sova.dashboard.services import work_service
 from sova.db.session import get_session
 
@@ -13,18 +14,20 @@ router = APIRouter(tags=["work"])
 @router.get("/work/active")
 async def get_active() -> dict:
     """Get non-terminal task runs with step progress."""
+    project_dir = get_project_dir()
     async with await get_session() as session:
         async with session.begin():
-            items = await work_service.get_active_work(session)
+            items = await work_service.get_active_work(session, project_dir)
         return {"tasks": items}
 
 
 @router.get("/work/active-grouped")
 async def get_active_grouped() -> dict:
     """Get non-terminal runs grouped by issue (latest run per issue + previous)."""
+    project_dir = get_project_dir()
     async with await get_session() as session:
         async with session.begin():
-            groups = await work_service.get_active_work_grouped(session)
+            groups = await work_service.get_active_work_grouped(session, project_dir)
         return {"issues": groups}
 
 
@@ -44,9 +47,10 @@ async def get_history(
 @router.get("/work/summary")
 async def get_summary() -> dict:
     """Get aggregate counts for overview cards."""
+    project_dir = get_project_dir()
     async with await get_session() as session:
         async with session.begin():
-            summary = await work_service.get_work_summary(session)
+            summary = await work_service.get_work_summary(session, project_dir)
         return summary
 
 
@@ -62,9 +66,10 @@ async def get_issue_runs(issue_number: str) -> dict:
 @router.get("/work/{run_id}", responses={404: {"description": "Run not found"}})
 async def get_detail(run_id: int) -> dict:
     """Get a single run with step details and pipeline progress."""
+    project_dir = get_project_dir()
     async with await get_session() as session:
         async with session.begin():
-            detail = await work_service.get_work_detail(session, run_id)
+            detail = await work_service.get_work_detail(session, run_id, project_dir)
         if detail is None:
             raise HTTPException(status_code=404, detail="Run not found")
         return detail
