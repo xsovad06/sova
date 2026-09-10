@@ -96,6 +96,41 @@ task_run.status = status
 
 `create_all` only creates missing tables -- it never adds columns to existing ones. Adding a column without a migration causes `OperationalError: no such column`.
 
+### Adding a model column always requires a migration
+
+This rule has been broken twice, and the failure is silent for months. Five columns were
+added to the `Memory` model (`embedding` on 2026-06-30, then `retrieval_count`,
+`last_retrieved_at`, `archived` and `health_score` on 2026-07-02) with no migration in
+either commit. Consequences, all of which repeat for any column added this way:
+
+1. **Every existing database breaks.** SQLAlchemy names every mapped column in its SELECT
+   list, so one absent column takes down every query against that table. The whole memory
+   subsystem (dashboard `/api/memory`, `sova memory search`, `sova memory health`) was dead
+   for two months.
+2. **New installs break too.** Production always replays the chain, so a column that exists
+   only in the model is missing from a freshly created database as well.
+3. **It cannot self-repair.** `alembic_version` records which revisions ran, not what the
+   schema looks like, so a drifted DB is stamped at head and case 3 below skips the upgrade.
+   The self-healing fallback does not help either: it fires only when Alembic raises, and
+   `create_all` cannot alter an existing table.
+4. **Tests cannot see it.** They build their schema with `create_all`, which reflects the
+   model perfectly, so ORM and migration chain diverge invisibly.
+
+`TestSchemaDriftGuard` in `tests/test_db.py` is the backstop: it replays the migrations onto
+an empty database and asserts the result contains every ORM table, column, and index. The
+index check matches on the column set rather than the index name, because
+`001_initial_schema` created two `task_assessments` indexes under names the model later
+diverged from (`ix_task_assessments_issue` versus the model's `ix_assessments_issue`), which
+is harmless name drift and must not be "fixed" by creating a second index over the same
+column. Migration `035_repair_schema_drift` repaired the original damage.
+
+Note that the guard deliberately checks names, not types: a full `compare_metadata()` diff
+reports 65 further entries of pre-existing cosmetic drift (51 nullability mismatches, 5
+foreign keys SQLite reflects differently, 4 index names, 3 VARCHAR lengths) whose repair
+would require batch-mode rebuilds of roughly 16 tables holding live run history. That
+cleanup is deliberately deferred to issue #1008, and the guard is scoped to stay green
+without it.
+
 ### SQLite WAL mode, synchronous, and busy timeout
 
 Before running migrations, `init_db()` calls `_enable_sqlite_wal(engine)` which runs
@@ -149,7 +184,7 @@ head), neither disposal nor backup runs, saving one connection round-trip (~300 
 
 1. **Use `batch_alter_table`** for all SQLite DDL (env.py has `render_as_batch=True`)
 2. **Idempotent checks**: use `_column_exists()`, `_table_exists()`, `_index_exists()` helpers (defined in migrations 006, 008)
-3. **Sequential numbering**: `001` through `018` (not Alembic UUIDs)
+3. **Sequential numbering**: `001` onward (not Alembic UUIDs)
 4. **Pre-migration backup**: `_backup_db()` copies `.db` to `.db.bak` -- only when DDL ran
 5. **Self-healing fallback**: if Alembic fails, drops corrupted `alembic_version`, runs `create_all` + stamps at head
 
@@ -159,7 +194,7 @@ Handled in `_run_migrations()` (`sova/db/session.py`):
 
 1. **Fresh DB** (no tables): run all migrations from scratch
 2. **Pre-Alembic DB** (tables exist, no `alembic_version`): stamp at current head
-3. **Already at head** (version == `_get_alembic_head()`): return `False` immediately; skip upgrade, dispose, and backup
+3. **Already at head** (version == `_get_alembic_head()`): verify the schema via `_find_missing_columns()`, logging an error naming any ORM column the database lacks, then return `False`; skip upgrade, dispose, and backup. The check compares names only, so it stays cheap enough for the startup path. It reports rather than repairs, because a column with no migration behind it cannot be recreated from the revision history
 4. **Behind head** (version < head): upgrade to head; dispose pool; backup DB
 5. **Empty/corrupted `alembic_version`**: `DROP TABLE` then treat as case 1
 
