@@ -451,6 +451,62 @@ def test_load_nonexistent_dir_returns_defaults(tmp_path: Path) -> None:
     assert cfg.task_source.type == "github"
 
 
+def test_llm_config_rejects_unknown_provider() -> None:
+    """Invalid llm.provider value is rejected by Literal validation."""
+    from sova.config.models import LLMConfig
+
+    with pytest.raises(ValidationError):
+        LLMConfig(provider="not-a-real-provider")
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "model"),
+    [
+        ("openai", "gpt-5"),
+        ("ollama", "ollama/llama3.1"),
+        ("vertex", "vertex_ai/gemini-2.5-pro"),
+    ],
+)
+def test_llm_config_accepts_new_vendor_providers(provider_type: str, model: str) -> None:
+    """openai/ollama/vertex are accepted provider values given an explicit model."""
+    from sova.config.models import LLMConfig
+
+    cfg = LLMConfig(provider=provider_type, model=model)
+    assert cfg.provider == provider_type
+    assert cfg.model == model
+
+
+def test_load_config_invalid_llm_provider_raises_runtime_error(tmp_path: Path) -> None:
+    """A bad llm.provider value raises a readable RuntimeError, not a raw ValidationError."""
+    toml_content = """
+[llm]
+provider = "not-a-real-provider"
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+
+    with pytest.raises(RuntimeError, match="llm.provider") as exc_info:
+        load_config(tmp_path)
+    assert not isinstance(exc_info.value, ValidationError)
+
+
+def test_llm_provider_settings_meta_matches_literal() -> None:
+    """settings_meta's llm.provider options must list every Literal value.
+
+    options is hand-maintained (not derived from the Pydantic Literal via
+    introspection), so a new provider type is valid config but invisible in
+    the dashboard settings UI dropdown unless both are updated together.
+    """
+    from typing import get_args
+
+    from sova.config.models import LLMConfig
+    from sova.dashboard.settings_meta import get_meta
+
+    meta = get_meta("llm.provider")
+    assert meta is not None
+    literal_values = get_args(LLMConfig.model_fields["provider"].annotation)
+    assert set(meta.options or ()) == set(literal_values)
+
+
 def test_shared_knowledge_path_expansion() -> None:
     """Shared knowledge dir expands ~ to home."""
     cfg = ProjectConfig()

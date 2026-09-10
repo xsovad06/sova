@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.settings")
+
+# One lock per project, serializing the validate-then-persist sequence in
+# update_config() within this process. Without it, two concurrent saves (e.g.
+# llm.provider="ollama" and llm.model="") can both validate against the same
+# stale snapshot and both pass, leaving an unloadable combination persisted.
+# This closes the race for the common case of one dashboard process serving
+# concurrent requests; it does not provide cross-process serialization.
+_update_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_update_lock(project_dir: Path | None) -> asyncio.Lock:
+    """Return the per-project lock guarding update_config's validate+persist sequence."""
+    key = str((project_dir or Path.cwd()).resolve())
+    lock = _update_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _update_locks[key] = lock
+    return lock
 
 
 def get_config(project_dir: Path | None = None) -> dict:
@@ -76,9 +95,14 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
 
     cast = _cast_value(value)
 
-    db_ok = await _save_setting_to_db(project_dir, key, cast)
-    if not db_ok:
-        log.warning("settings.db_write_failed", key=key)
+    async with _get_update_lock(project_dir):
+        consistency_error = _validate_config_consistency(project_dir, key, cast)
+        if consistency_error:
+            return {"error": consistency_error}
+
+        db_ok = await _save_setting_to_db(project_dir, key, cast)
+        if not db_ok:
+            log.warning("settings.db_write_failed", key=key)
 
     # Secrets are DB-only: never written to sova.toml in plaintext.
     if meta.value_type == "secret":
@@ -178,6 +202,55 @@ def _validate_value_type(key: str, value: str) -> str | None:
         if value.lower() not in ("true", "false"):
             return f"'{key}' expects true or false, got '{value}'"
 
+    return None
+
+
+def _validate_config_consistency(project_dir: Path | None, key: str, value: object) -> str | None:
+    """Reject a value that would make the whole project config unloadable.
+
+    _validate_value_type only inspects the edited field in isolation, so a
+    cross-field rule (llm.provider="ollama" requires an explicit llm.model)
+    passes it, gets persisted, and then every load_config() call for the
+    project raises: agents stop spawning and the settings page can no longer
+    render the field needed to undo it.
+
+    Fails open. Only errors whose location touches the edited section are
+    reported, so an unrelated pre-existing config problem can never block an
+    unrelated save.
+    """
+    from pydantic import ValidationError
+
+    from sova.config.loader import load_config
+    from sova.config.models import ProjectConfig
+
+    try:
+        data = load_config(project_dir).model_dump()
+    except Exception:
+        return None
+
+    section, _, field = key.partition(".")
+    if field:
+        target = data.get(section)
+        if not isinstance(target, dict) or field not in target:
+            return None
+        target[field] = value
+    elif key in data:
+        data[key] = value
+    else:
+        return None
+
+    try:
+        ProjectConfig(**data)
+    except ValidationError as exc:
+        related = [
+            f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
+            for err in exc.errors()
+            if err.get("loc") and str(err["loc"][0]) == section
+        ]
+        if related:
+            return f"'{key}' rejected: {'; '.join(related)}"
+    except Exception:
+        return None
     return None
 
 

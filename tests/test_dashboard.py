@@ -2805,6 +2805,57 @@ class TestMultiProject:
         resp = await multi_client.get("/api/overview")
         assert resp.status_code == 200
 
+    async def test_startup_skips_project_with_unloadable_config(self, tmp_path) -> None:
+        """One registered project with a broken config must not abort startup for the rest.
+
+        load_config() raises for llm.provider="ollama" without an explicit
+        llm.model. The multi-project startup loop must skip that project
+        (via _try_load_config) rather than letting the exception propagate
+        out of the lifespan context manager and fail ASGI startup entirely.
+
+        httpx's ASGITransport never drives the ASGI lifespan protocol, so a
+        regular client-fixture test would pass even with the bug (the buggy
+        loop would simply never run). Enter the FastAPI lifespan context
+        manager directly to actually exercise the startup loop.
+
+        setup_logging() is patched out: it calls structlog.configure()
+        globally, and leaving that in place after this test would corrupt
+        caplog-based assertions in every test module that runs afterward in
+        the same session.
+        """
+        from unittest.mock import patch
+
+        from sova.config import registry
+
+        reg_file = tmp_path / "registry" / "projects.json"
+        import sova.config.registry as reg_mod
+
+        orig_file = reg_mod._REGISTRY_FILE
+        orig_dir = reg_mod._REGISTRY_DIR
+        reg_mod._REGISTRY_FILE = reg_file
+        reg_mod._REGISTRY_DIR = tmp_path / "registry"
+
+        try:
+            good = tmp_path / "project-good"
+            good.mkdir()
+            (good / ".claude").mkdir()
+
+            broken = tmp_path / "project-broken"
+            broken.mkdir()
+            (broken / ".claude").mkdir()
+            (broken / "sova.toml").write_text('[llm]\nprovider = "ollama"\n')
+
+            registry.register_project(good, slug="good")
+            registry.register_project(broken, slug="broken")
+
+            app = create_app(multi_project=True)
+            with patch("sova.utils.logging.setup_logging"):
+                async with app.router.lifespan_context(app):
+                    pass
+        finally:
+            reg_mod._REGISTRY_FILE = orig_file
+            reg_mod._REGISTRY_DIR = orig_dir
+
     async def test_setup_page_loads(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/setup")
         assert resp.status_code == 200

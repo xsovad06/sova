@@ -250,10 +250,13 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
 
         return ClaudeCodeProvider()
 
-    if cfg.provider in ("litellm", "hybrid"):
+    if cfg.provider in ("litellm", "hybrid", "openai", "ollama", "vertex"):
         from sova.llm.client import resolve_alias
         from sova.llm.litellm_provider import LiteLLMProvider
 
+        # The vendor-specific types are LiteLLM under a more discoverable name.
+        # LLMConfig._default_model_for_litellm guarantees cfg.model is set for
+        # them, so the Claude default below only ever applies to litellm/hybrid.
         model = resolve_alias(cfg.model, cfg.model_aliases) if cfg.model else cfg.model
         fallback_model = (
             resolve_alias(cfg.fallback_model, cfg.model_aliases) if cfg.fallback_model else cfg.fallback_model
@@ -271,7 +274,7 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
         model = resolve_alias(cfg.model, cfg.model_aliases) if cfg.model else cfg.model
         return AnthropicAPIProvider(model=model or "", api_key=cfg.api_key)
 
-    available = ["claude-code", "litellm", "hybrid", "anthropic"]
+    available = ["claude-code", "litellm", "hybrid", "anthropic", "openai", "ollama", "vertex"]
     raise ValueError(f"Unknown LLM provider: {cfg.provider!r}. Available: {', '.join(available)}")
 
 

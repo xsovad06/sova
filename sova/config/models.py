@@ -23,6 +23,15 @@ _VALID_TASK_STATES = frozenset(
     }
 )
 
+# Illustrative llm.model shape per vendor-specific provider type. Used only to
+# make the "you must set llm.model" validation error actionable; SOVA never
+# picks one of these automatically (see LLMConfig._default_model_for_litellm).
+_VENDOR_MODEL_EXAMPLES = {
+    "openai": "gpt-5",
+    "ollama": "ollama/llama3.1",
+    "vertex": "vertex_ai/gemini-2.5-pro",
+}
+
 
 class TaskSourceConfig(BaseSettings):
     """Task source configuration."""
@@ -78,7 +87,7 @@ class TaskSourceConfig(BaseSettings):
 class LLMConfig(BaseSettings):
     """LLM provider configuration."""
 
-    provider: Literal["claude-code", "litellm", "hybrid", "anthropic"] = "claude-code"
+    provider: Literal["claude-code", "litellm", "hybrid", "anthropic", "openai", "ollama", "vertex"] = "claude-code"
     model: str = ""
     fallback_model: str = ""
     api_base: str = ""
@@ -108,6 +117,15 @@ class LLMConfig(BaseSettings):
         """Ensure litellm provider always has an explicit model."""
         if self.provider in ("litellm", "hybrid") and not self.model:
             self.model = "claude-sonnet-4-6"
+        elif self.provider in _VENDOR_MODEL_EXAMPLES and not self.model:
+            # Unlike litellm/hybrid (an Anthropic-first default makes sense),
+            # these vendor-specific provider types have no shared default
+            # model: guessing one would silently route to an unexpected paid
+            # model instead of failing fast at config-validation time.
+            raise ValueError(
+                f"llm.provider={self.provider!r} requires an explicit llm.model "
+                f"(e.g. {_VENDOR_MODEL_EXAMPLES[self.provider]!r})"
+            )
         return self
 
 

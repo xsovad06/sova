@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from sova.config.models import (
     ProjectConfig,
 )
@@ -60,7 +62,22 @@ def load_config(project_dir: Path | None = None) -> ProjectConfig:
 
     _apply_env_overrides(merged)
 
-    return ProjectConfig(**merged) if merged else ProjectConfig()
+    try:
+        return ProjectConfig(**merged) if merged else ProjectConfig()
+    except ValidationError as exc:
+        raise RuntimeError(_format_config_error(exc)) from exc
+
+
+def _format_config_error(exc: ValidationError) -> str:
+    """Render a pydantic.ValidationError as a human-readable message.
+
+    Callers (dashboard startup, roles, CLI, `sova doctor`) all treat
+    RuntimeError as the typed failure contract for config problems (see
+    docs/model-selection-architecture.md Q6), so a raw ValidationError must
+    never escape load_config().
+    """
+    lines = [f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in exc.errors()]
+    return "Invalid configuration:\n" + "\n".join(lines)
 
 
 _NESTED_SECTIONS = (

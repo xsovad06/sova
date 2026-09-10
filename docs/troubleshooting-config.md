@@ -61,6 +61,37 @@ sqlite3 .claude/sova.db "UPDATE project_settings SET value = 'true' WHERE key = 
 
 ---
 
+## Setting an Unknown LLM Provider
+
+**Symptom**: `sova` commands print `Configuration error: Invalid configuration: llm.provider:
+Input should be 'claude-code', 'litellm', 'hybrid', 'anthropic', 'openai', 'ollama' or 'vertex'`
+and exit cleanly, instead of a raw traceback.
+
+**Root Cause**: `llm.provider` was set to an unsupported value (typo, or a value from before a
+SOVA upgrade added new provider types).
+
+**Diagnosis**:
+```bash
+sqlite3 .claude/sova.db "SELECT key, value FROM project_settings WHERE key = 'llm.provider';"
+```
+
+**Fix**: set it to one of the seven supported values (see
+`docs/model-selection-migration-guide.md` for the vendor-specific ones):
+```bash
+sqlite3 .claude/sova.db "UPDATE project_settings SET value = '\"claude-code\"' WHERE key = 'llm.provider';"
+```
+
+**Related symptom**: `Configuration error: Invalid configuration: llm: Value error,
+llm.provider='ollama' requires an explicit llm.model`. The `openai`, `ollama`, and `vertex`
+provider types have no default model, so `llm.model` must be set in the same edit. The dashboard
+settings page rejects this combination before saving; only a hand-edited `sova.toml` or a direct
+`sqlite3` write can reach it.
+
+`sova doctor` keeps working while the config is unloadable (it prints the configuration error and
+then runs its checks anyway), so it is the fastest way to confirm the fix.
+
+---
+
 ## Database Corruption or Missing Table
 
 **Symptom**: Commands fail with "no such column" or "no such table" errors.

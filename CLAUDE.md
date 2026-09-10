@@ -75,6 +75,9 @@ When Python upgrades (e.g., 3.13 → 3.14), reinstall SOVA:
 python3 -m pip install --user --break-system-packages -e .
 ```
 
+For an unknown `llm.provider` value (e.g. after a typo or downgrade), see
+"Setting an Unknown LLM Provider" in `docs/troubleshooting-config.md`.
+
 ## RTK Token Compression (Optional)
 
 SOVA supports RTK (Rust Token Killer) for reducing token consumption by 60-90% on bash command outputs. When RTK is installed, `sova install` automatically configures it.

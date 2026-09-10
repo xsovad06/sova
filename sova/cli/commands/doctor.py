@@ -273,13 +273,28 @@ async def _check_ollama(project_dir: Path) -> list[_Check]:
         from sova.config.loader import load_config
 
         cfg = load_config(project_dir)
-        # Aliases are scanned alongside routing: an alias map is the intended way
-        # to point a generic tier at a local model, so checking routing alone
-        # would report "no ollama models" on a deployment that runs on them.
-        configured = [*cfg.llm.routing.values(), *cfg.llm.model_aliases.values()]
+        # Aliases and the direct model fields are scanned alongside routing:
+        # provider = "ollama" is the first-class way to point straight at a
+        # local model via llm.model/llm.fallback_model (no routing entry
+        # needed), so checking routing alone would report "no ollama models"
+        # on exactly that deployment shape.
+        configured = [
+            *cfg.llm.routing.values(),
+            *cfg.llm.model_aliases.values(),
+            cfg.llm.model,
+            cfg.llm.fallback_model,
+        ]
         ollama_models = sorted({v for v in configured if v.startswith("ollama/")})
         if not ollama_models:
-            return []
+            if cfg.llm.provider == "ollama":
+                # LiteLLM routes to Ollama on the model prefix, not on the SOVA
+                # provider name, so an unprefixed model here reaches a different
+                # vendor (or none) and silently skips every check below.
+                detail = (
+                    f"llm.provider='ollama' but no model starts with 'ollama/' (llm.model={cfg.llm.model or _EMPTY})"
+                )
+                checks.append(("ollama model prefix", False, detail, False))
+            return checks
 
         ollama_path = shutil.which("ollama")
         if not ollama_path:
@@ -297,13 +312,13 @@ async def _check_ollama(project_dir: Path) -> list[_Check]:
         for line in result.stdout.strip().splitlines()[1:]:
             parts = line.split()
             if parts:
-                name = parts[0].split(":")[0]
-                installed_models.add(name)
+                installed_models.add(parts[0])
 
         for model in ollama_models:
             model_name = model.removeprefix("ollama/")
-            base_name = model_name.split(":")[0]
-            found = base_name in installed_models
+            # Ollama's own default: a name with no explicit tag means ":latest".
+            lookup_name = model_name if ":" in model_name else f"{model_name}:latest"
+            found = lookup_name in installed_models
             detail = "installed" if found else f"not pulled -- run: ollama pull {model_name}"
             checks.append((f"ollama model: {model_name}", found, detail, False))
 

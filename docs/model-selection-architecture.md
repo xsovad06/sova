@@ -102,7 +102,8 @@ step budget equals a single inner attempt's budget:
 - `LLMProvider` ABC ([provider.py](sova/llm/provider.py)): 3 abstract methods (`invoke`,
   `invoke_streaming`, `check_available`) plus concrete template-method defaults
   (`invoke_command`, `invoke_batch`, `normalize_model_name`). `create_provider` factory
-  dispatches `claude-code` / `litellm` / `hybrid` / `anthropic`.
+  dispatches `claude-code` / `litellm` / `hybrid` / `anthropic` as base branches; `openai` /
+  `ollama` / `vertex` alias into the `litellm` branch (see section 4).
 - Global singleton via `get_provider()` / `set_provider()` / `reload_provider()`
   ([client.py](sova/llm/client.py)). Created once at CLI startup (`_init_llm_provider`) and
   dashboard startup (`create_app`).

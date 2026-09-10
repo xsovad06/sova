@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -133,6 +134,25 @@ def _try_load_config(project_path: Path) -> ProjectConfig | None:
     except Exception:
         log.warning("supervisor.config_load_failed", project=str(project_path), exc_info=True)
         return None
+
+
+def _load_config_or_fail(project_path: Path) -> ProjectConfig:
+    """Load the primary dashboard config, exiting with a readable message on failure.
+
+    Mirrors the CLI's `main()` callback (sova/cli/app.py): RuntimeError
+    (load_config() rejected the merged config), ValueError (unknown provider
+    or runtime type), and ImportError (the provider's optional extra is not
+    installed) are all configuration problems, not bugs, so none of them
+    should surface as an unhandled ASGI startup traceback.
+    """
+    from sova.config.loader import load_config
+
+    try:
+        return load_config(project_path)
+    except (RuntimeError, ValueError, ImportError) as exc:
+        log.error("dashboard.config_load_failed", project=str(project_path), error=str(exc), exc_info=True)
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 def _collect_supervisor_configs(project_dirs: dict[str, str]) -> list[tuple[Path, ProjectConfig]]:
@@ -516,11 +536,10 @@ def create_app(
         # Initialize the global LLM provider from project config.
         # NOTE: in multi_project mode this uses the first resolved dir's config.
         # Per-project provider selection requires threading through ExecutionContext.
-        from sova.config.loader import load_config
         from sova.ipc.runtime import create_runtime, set_runtime
         from sova.llm.client import reload_provider
 
-        cfg = load_config(resolved)
+        cfg = _load_config_or_fail(resolved)
         reload_provider(cfg)
         set_runtime(create_runtime(cfg.agent.runtime))
 
@@ -535,7 +554,9 @@ def create_app(
             for path_str in list_projects().values():
                 p = Path(path_str)
                 if p.is_dir():
-                    pcfg = load_config(p)
+                    pcfg = _try_load_config(p)
+                    if pcfg is None:
+                        continue
                     await init_db_for_project(p)
                     await recover_stale_runs(p)
                     await _kill_terminal_zombies(p)
@@ -763,9 +784,7 @@ def create_app(
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)
 
     # Rate limiting middleware
-    from sova.config.loader import load_config
-
-    cfg = load_config(resolved)
+    cfg = _load_config_or_fail(resolved)
     rate_limit = cfg.dashboard.rate_limit_per_minute
 
     if rate_limit > 0:

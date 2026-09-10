@@ -81,6 +81,12 @@ app.add_typer(supervisor_app)
 console = Console(stderr=True)
 
 
+# Commands that must still run when the project config is unloadable. `sova
+# doctor` exists to diagnose exactly that state and already reports config
+# failures as failed checks rather than crashing.
+_CONFIG_TOLERANT_COMMANDS = frozenset({"doctor"})
+
+
 def _init_llm_provider() -> None:
     """Initialize the global LLM provider and agent runtime from project config."""
     from sova.ipc.runtime import create_runtime, set_runtime
@@ -99,13 +105,25 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: Annotated[
         Optional[bool],
         typer.Option("--version", "-v", callback=version_callback, is_eager=True, help="Show version and exit."),
     ] = None,
 ) -> None:
     """SOVA -- an autonomous AI development crew."""
-    _init_llm_provider()
+    try:
+        _init_llm_provider()
+    except (RuntimeError, ValueError, ImportError) as exc:
+        # RuntimeError: load_config() rejected the merged config. ValueError:
+        # unknown provider or runtime type. ImportError: the provider's
+        # optional extra (litellm, anthropic) is not installed. All three are
+        # configuration problems, so none of them should surface a traceback.
+        typer.echo(f"Configuration error: {exc}", err=True)
+        if ctx.invoked_subcommand in _CONFIG_TOLERANT_COMMANDS:
+            typer.echo(f"Continuing: 'sova {ctx.invoked_subcommand}' runs without an LLM provider.", err=True)
+            return
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
