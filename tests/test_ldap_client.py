@@ -1,4 +1,4 @@
-"""Tests for sova.adapters.ldap_client -- LDAP directory client."""
+"""Tests for sova.adapters.ldap_client (LDAP directory client)."""
 
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ class TestCheckConnectivity:
 
 
 # ---------------------------------------------------------------------------
-# search_people / get_person -- exercise the real ldap3 protocol path
+# search_people / get_person: exercise the real ldap3 protocol path
 # ---------------------------------------------------------------------------
 
 

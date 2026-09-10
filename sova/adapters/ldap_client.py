@@ -226,7 +226,7 @@ class LdapClient:
         self._cache_set(cache_key, uids)
         return uids
 
-    # -- internals -----------------------------------------------------------
+    # internals ---------------------------------------------------------------
 
     async def _direct_reports(self, manager_dn: str, depth: int) -> list[Person]:
         if depth <= 0:
