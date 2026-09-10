@@ -232,7 +232,7 @@ class TestStripFencedBlocks:
     def test_closing_fence_must_match_opening_type(self) -> None:
         from sova.utils.markdown import _strip_fenced_blocks
 
-        # A tilde line cannot close a backtick fence -- content stays masked
+        # A tilde line cannot close a backtick fence: content stays masked
         # through EOF since no valid closer appears.
         text = "before\n```\n## Heading\n~~~\nafter"
         result = _strip_fenced_blocks(text)
