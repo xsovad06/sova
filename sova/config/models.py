@@ -408,12 +408,33 @@ class DashboardConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
 
 
+class AtlassianMCPConfig(BaseSettings):
+    """mcp-atlassian sidecar server configuration (Confluence + enhanced Jira access).
+
+    Opt-in per project. Separate from ``TaskSourceConfig``'s Jira fields: this drives
+    a read-only MCP tool server (github.com/sooperset/mcp-atlassian) exposed to agents
+    for research/context, not the TaskAdapter used for issue state transitions.
+    """
+
+    enabled: bool = False
+    jira_url: str = ""
+    confluence_url: str = ""
+    auth_type: Literal["pat", "api_token"] = "api_token"
+    email: str = ""
+    token: str = Field("", repr=False)
+    read_only: bool = True
+    toolsets: list[str] = Field(default_factory=lambda: ["jira_read", "confluence_read", "confluence_search"])
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_MCP_ATLASSIAN_")
+
+
 class MCPConfig(BaseSettings):
     """MCP (Model Context Protocol) endpoint configuration."""
 
     enabled: bool = True
     token_secret: str = ""
     token_expiry_hours: int = Field(24, gt=0)
+    atlassian: AtlassianMCPConfig = Field(default_factory=AtlassianMCPConfig)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_MCP_")
 

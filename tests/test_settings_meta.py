@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from sova.config.models import AtlassianMCPConfig
 from sova.dashboard.settings_meta import (
+    _REGISTRY,
     GROUP_ORDER,
     GROUPS,
     _humanize_key,
@@ -40,6 +42,39 @@ class TestSettingMeta:
         assert meta is not None
         assert meta.group == "integration"
         assert meta.value_type == "boolean"
+
+    @pytest.mark.parametrize(
+        ("key", "value_type"),
+        [
+            ("mcp.atlassian.enabled", "boolean"),
+            ("mcp.atlassian.jira_url", "string"),
+            ("mcp.atlassian.confluence_url", "string"),
+            ("mcp.atlassian.auth_type", "select"),
+            ("mcp.atlassian.email", "string"),
+            ("mcp.atlassian.token", "secret"),
+            ("mcp.atlassian.read_only", "boolean"),
+            ("mcp.atlassian.toolsets", "list"),
+        ],
+    )
+    def test_atlassian_mcp_meta_registered(self, key: str, value_type: str) -> None:
+        meta = get_meta(key)
+        assert meta is not None
+        assert meta.group == "mcp"
+        assert meta.value_type == value_type
+
+    def test_atlassian_mcp_keys_match_flattened_config(self) -> None:
+        """The registry keys must match what get_config() actually flattens out.
+
+        Registering the container (``mcp.atlassian``) instead of its leaves would
+        stop the flattener from recursing, and every sidecar setting would vanish
+        from the settings page.
+        """
+        from sova.dashboard.services.settings_service import _flatten_dict
+
+        flat: dict = {}
+        _flatten_dict("", {"mcp": {"atlassian": AtlassianMCPConfig().model_dump()}}, flat)
+        registered = {m.key for m in _REGISTRY if m.key.startswith("mcp.atlassian.")}
+        assert registered == set(flat)
 
     def test_commit_pr_auto_link_issues_meta_registered(self) -> None:
         meta = get_meta("commit.pr_auto_link_issues")

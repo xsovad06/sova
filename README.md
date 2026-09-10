@@ -172,7 +172,16 @@ auto_address_review = true  # Reviewer auto-triggers address-review
 hub_url = "https://your-hub.example.com"  # Push run summaries to a central hub (SOVA_TELEMETRY_HUB_URL)
 hub_token = ""                             # Bearer token (SOVA_TELEMETRY_HUB_TOKEN)
 machine_id = ""                            # Auto-derived from hostname+username when empty (SOVA_TELEMETRY_MACHINE_ID)
+
+[mcp.atlassian]
+enabled = false             # Opt-in Confluence + Jira sidecar (mcp-atlassian, needs uvx)
+jira_url = "https://issues.example.com"
+confluence_url = "https://docs.example.com"
+auth_type = "pat"           # "pat" for on-prem, "api_token" for Cloud (paired with email)
+read_only = true            # Agents read context; writes still go through the task adapter
 ```
+
+`sova install` writes enabled MCP sidecars to `<project>/.mcp.json` and approves them in `.claude/settings.json`. Leave `token` empty and export `SOVA_MCP_ATLASSIAN_TOKEN` to keep the credential out of that file. See [Integration Guidelines](docs/integration-guidelines.md) for details.
 
 For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py). Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA_BASE_BRANCH=develop`).
 
