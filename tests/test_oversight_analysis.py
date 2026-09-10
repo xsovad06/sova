@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sova.db.models import Base, OversightFinding, OversightRun, OversightRunStatus
@@ -760,7 +761,7 @@ class TestOversightAgentUnit:
         agent = OversightAgent(config=OversightConfig())
 
         async def _failing_record(*args, **kwargs):
-            raise RuntimeError("DB exploded")
+            raise SQLAlchemyError("DB exploded")
 
         with patch.object(agent, "_record_run", side_effect=_failing_record):
             from datetime import datetime, timezone

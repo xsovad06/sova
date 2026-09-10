@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from cachetools import TTLCache
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -635,7 +636,7 @@ async def link_task_run_to_lifecycle(
         await start_phase(session, lifecycle.id, phase, task_run_id=run.id)
         await session.flush()
         return lifecycle.id
-    except Exception:
+    except (OSError, SQLAlchemyError):
         log.warning("lifecycle.link_failed", issue=run.issue_number, exc_info=True)
         return None
 
@@ -668,7 +669,7 @@ async def finalize_phase_from_run(
             await complete_phase(session, run.lifecycle_id, phase, cost)
         else:
             await fail_phase(session, run.lifecycle_id, phase, run.error_message)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("lifecycle.finalize_failed", run_id=run_id, exc_info=True)
 
 

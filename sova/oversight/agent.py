@@ -16,6 +16,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.config.models import OversightConfig, ProjectConfig
 from sova.db.models import OversightFinding, OversightRun, OversightRunStatus
 from sova.oversight.persona import load_persona
@@ -46,7 +48,7 @@ class OversightAgent:
             project_dir = Path(self._project_dir) if self._project_dir else None
             cfg = load_config(project_dir)
             self._config = cfg.oversight
-        except Exception:
+        except Exception:  # noqa: BLE001 (config reload keeps the previous config on any failure)
             log.warning("oversight.config_reload_failed", exc_info=True)
         return self._config
 
@@ -131,7 +133,7 @@ class OversightAgent:
                 started_at=started_at,
                 error=error,
             )
-        except Exception:
+        except (SQLAlchemyError, OSError):
             log.warning("oversight.error_record_failed", exc_info=True)
 
     @property
@@ -184,7 +186,7 @@ class OversightAgent:
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 await self._record_error_safe(run_id, cycle, duration_ms, started_at, "cancelled")
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 (daemon loop must survive any single-cycle error)
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 log.warning("oversight.cycle_error", cycle=cycle, run_id=run_id, exc_info=True)
                 await self._record_error_safe(run_id, cycle, duration_ms, started_at, str(exc))
@@ -226,7 +228,7 @@ class OversightAgent:
                 analysis_timeout=self._config.analysis_timeout_seconds,
             )
             return findings, error
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (LLM analysis failure is reported as a cycle error, not a crash)
             log.warning("oversight.analyze_failed", run_id=run_id, exc_info=True)
             return [], f"analyze_failed: {exc}"
 
@@ -256,7 +258,7 @@ class OversightAgent:
                     proj_cfg = load_config(Path(path_str))
                     if proj_cfg.github_repo and proj_cfg.task_source.type == "github":
                         project_adapters[slug] = create_adapter(proj_cfg)
-                except Exception:
+                except Exception:  # noqa: BLE001 (one misconfigured project must not abort adapter discovery)
                     log.debug("oversight.actions.project_adapter_failed", slug=slug, exc_info=True)
 
             created = await propose_issues(
@@ -270,7 +272,7 @@ class OversightAgent:
             if created and self._config.auto_triage:
                 await self._auto_triage(created)
 
-        except Exception:
+        except Exception:  # noqa: BLE001 (action stage spans config, tracker and subprocess failures)
             log.warning("oversight.actions.failed", exc_info=True)
 
     async def _auto_triage(self, findings: list[OversightFinding]) -> None:
@@ -301,7 +303,7 @@ class OversightAgent:
                     issue=finding.github_issue_number,
                     exc_info=True,
                 )
-            except Exception:
+            except (RuntimeError, OSError):
                 log.warning(
                     "oversight.actions.triage_failed",
                     issue=finding.github_issue_number,
@@ -315,7 +317,7 @@ class OversightAgent:
         try:
             snapshot = await build_snapshot()
             return snapshot.to_dict()
-        except Exception:
+        except Exception:  # noqa: BLE001 (observation aggregates many providers; any failure yields no snapshot)
             log.warning("oversight.observe_failed", exc_info=True)
             return None
 
@@ -348,5 +350,5 @@ class OversightAgent:
                         ended_at=now,
                     )
                     session.add(record)
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("oversight.record_failed", run_id=run_id, cycle=cycle, exc_info=True)

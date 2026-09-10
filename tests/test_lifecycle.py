@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.core.state import PhaseStatus
@@ -924,7 +925,7 @@ class TestLinkTaskRunExceptionPath:
             session.add(run)
             await session.flush()
 
-        with patch.object(lifecycle_service, "get_or_create_lifecycle", side_effect=RuntimeError("DB error")):
+        with patch.object(lifecycle_service, "get_or_create_lifecycle", side_effect=SQLAlchemyError("DB error")):
             async with session.begin():
                 result = await lifecycle_service.link_task_run_to_lifecycle(session, run)
                 assert result is None

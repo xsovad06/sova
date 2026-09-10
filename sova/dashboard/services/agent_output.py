@@ -6,6 +6,8 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.dashboard.services.output_stream_service import get_output_stream_service
 from sova.utils.logging import get_logger
 
@@ -75,12 +77,12 @@ async def _read_output(agent: AgentState) -> None:
                 await _buffer_line(agent, text)
     except asyncio.CancelledError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 (reader task must report and exit cleanly, never crash the event loop)
         log.exception("output_reader.failed", run_id=agent.run_id)
         msg = "[ERROR] Output reader crashed -- agent may still be running"
         try:
             await _buffer_line(agent, msg)
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.debug("output_reader.error_line_write_failed", run_id=agent.run_id, exc_info=True)
 
 
@@ -130,5 +132,5 @@ async def _read_stderr(agent: AgentState) -> None:
                 await _buffer_line(agent, f"[stderr] {line}")
     except asyncio.CancelledError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 (reader task must report and exit cleanly, never crash the event loop)
         log.exception("stderr_reader.failed", run_id=agent.run_id)

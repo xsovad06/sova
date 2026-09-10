@@ -55,7 +55,7 @@ async def get_fleet_insights(
     """Return aggregated fleet insights across all registered projects."""
     try:
         insights = await service.get_insights(force_refresh=force)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
         log.error("Failed to load fleet insights", exc_info=True)
         raise HTTPException(
             status_code=503,
@@ -72,7 +72,7 @@ async def get_issue_draft(
     """Return a pre-filled issue draft for a fleet failure pattern."""
     try:
         insights = await service.get_insights()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
         log.error("Failed to load fleet insights for draft", exc_info=True)
         raise HTTPException(status_code=503, detail="Fleet insights temporarily unavailable") from exc
 
@@ -104,7 +104,7 @@ async def propose_issue(req: ProposeIssueRequest) -> dict[str, object]:
             cfg = load_config(project_dir)
             github_user = cfg.github_user
             sova_repo = cfg.fleet.sova_repo
-        except Exception:
+        except Exception:  # noqa: BLE001 (proposal renders without repo context when config is unavailable)
             log.warning("propose_issue.config_load_failed", exc_info=True)
 
     adapter = GitHubAdapter(repo=sova_repo, github_user=github_user)

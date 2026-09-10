@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sova.adapters.base import Task, TaskState
+from sova.adapters.base import AdapterError, Task, TaskState
 from sova.config.models import SupervisorConfig
 from sova.supervisor.queue_maintenance import (
     _discover_ready,
@@ -239,7 +239,20 @@ class TestMaintainQueue:
         assert result.current == (30,)
 
     async def test_list_tasks_failure_skips_maintenance(self, adapter: AsyncMock, config: SupervisorConfig) -> None:
-        adapter.list_tasks.side_effect = Exception("rate limited")
+        adapter.list_tasks.side_effect = RuntimeError("rate limited")
+
+        result = await maintain_queue(adapter, config, Path("/tmp/test"))
+
+        assert result.changed is False
+        assert result.current == (10, 20, 30)
+
+    async def test_adapter_error_skips_maintenance(self, adapter: AsyncMock, config: SupervisorConfig) -> None:
+        """AdapterError is what the real adapters raise on rate limit / auth / bad JSON.
+
+        It subclasses Exception directly, not RuntimeError, so a narrowed handler
+        would let it escape and abort the poll cycle instead of skipping the pass.
+        """
+        adapter.list_tasks.side_effect = AdapterError("Failed to fetch issues from test/repo: rate limited")
 
         result = await maintain_queue(adapter, config, Path("/tmp/test"))
 

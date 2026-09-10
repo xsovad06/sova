@@ -30,7 +30,7 @@ async def _transition_to_researched(issue_number: str) -> bool:
         await adapter.transition_state(issue_number, TaskState.RESEARCHED)
         log.info("spec.transition_researched", issue=issue_number)
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 (config load, adapter construction and tracker call each fail differently)
         log.warning("spec.transition_researched_failed", issue=issue_number, exc_info=True)
         return False
 
@@ -91,7 +91,7 @@ async def approve_spec(issue_number: str, req: ApproveRequest | None = None) -> 
     # Spawn developer agent, then clear handoff only on success
     try:
         agent_result = await control_service.start_agent(issue_number, role="developer")
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
         log.warning("spec.approve.agent_spawn_failed", issue=issue_number, exc_info=True)
         raise
     if isinstance(agent_result, dict) and ("error" in agent_result or agent_result.get("status") == "error"):
@@ -113,7 +113,7 @@ async def revise_spec(issue_number: str) -> dict:
     # Respawn researcher to re-run /spec, then clear handoff on success
     try:
         agent_result = await control_service.start_agent(issue_number, role="researcher")
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
         log.warning("spec.revise.agent_spawn_failed", issue=issue_number, exc_info=True)
         raise
     if isinstance(agent_result, dict) and ("error" in agent_result or agent_result.get("status") == "error"):
@@ -136,7 +136,7 @@ async def skip_spec(issue_number: str) -> dict:
     # Spawn developer without spec, then clear handoff on success
     try:
         agent_result = await control_service.start_agent(issue_number, role="developer")
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
         log.warning("spec.skip.agent_spawn_failed", issue=issue_number, exc_info=True)
         raise
     if isinstance(agent_result, dict) and ("error" in agent_result or agent_result.get("status") == "error"):

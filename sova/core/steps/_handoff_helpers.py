@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import StepResult
 from sova.ipc.handoff import (
@@ -52,7 +54,7 @@ async def write_step_handoff(
     if ctx.task_run_id:
         try:
             await write_handoff(ctx.task_run_id, agent_handoff)
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("step.handoff.db_failed", exc_info=True)
 
     dashboard_handoff = DashboardHandoff(
@@ -72,7 +74,7 @@ async def write_step_handoff(
 
     try:
         write_handoff_file(ctx.project_dir, dashboard_handoff)
-    except Exception:
+    except (OSError, ValueError):
         log.warning("step.handoff.file_failed", exc_info=True)
 
     project_name = ctx.project_dir.name

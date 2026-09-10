@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.adapters.base import Task, TaskState
 from sova.config.models import TriageConfig
 from sova.core.context import ExecutionContext
@@ -419,8 +421,8 @@ class TriageRole(AgentRole):
                 if assessment:
                     return assessment
 
-        except Exception as exc:
-            log.warning("triage.llm_fallback", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 (LLM assessment falls back to the heuristic path on any failure)
+            log.warning("triage.llm_fallback", error=str(exc), exc_info=True)
 
         return self._heuristic_assess(task)
 
@@ -481,7 +483,7 @@ class TriageRole(AgentRole):
                 cwd=ctx.project_dir,
                 task_type="triage",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (batch API falls back to sequential invocation on any failure)
             log.warning("triage.batch_fallback", error=str(exc), exc_info=True)
             return await self._sequential_fallback(tasks, ctx)
 
@@ -509,7 +511,7 @@ class TriageRole(AgentRole):
                         task_run_id=ctx.task_run_id,
                         model_selection_reason=f"batch:{model_reason}" if model_reason else "batch",
                     )
-                except Exception:
+                except (OSError, RuntimeError, SQLAlchemyError):
                     log.warning("triage.batch_cost_record_failed", issue=task.id, exc_info=True)
 
                 assessment = self._parse_llm_assessment(br.result.text)
@@ -939,8 +941,8 @@ class TriageRole(AgentRole):
 
         except (KeyError, ValueError) as exc:
             log.warning("triage.assess_enrich_parse_failed", error=str(exc), exc_info=True)
-        except Exception as exc:
-            log.warning("triage.assess_enrich_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 (enrichment is optional; the assessment stands without it)
+            log.warning("triage.assess_enrich_failed", error=str(exc), exc_info=True)
 
         return None
 

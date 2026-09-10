@@ -113,7 +113,7 @@ async def _fetch_triage_tasks(adapter: TaskAdapter, issue: str | None) -> list[T
     filters = TaskFilters(state="open")
     try:
         all_tasks = await adapter.list_tasks(filters)
-    except Exception:
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
         log.warning("triage.list_tasks_failed", exc_info=True)
         return []
     return [t for t in all_tasks if t.state == TaskState.BACKLOG]

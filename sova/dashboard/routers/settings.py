@@ -182,7 +182,7 @@ async def get_config() -> dict:
     try:
         project_dir = get_project_dir()
         return {"config": settings_service.get_config(project_dir)}
-    except Exception as exc:  # noqa: BLE001 - route boundary translates config/pydantic/IO errors to HTTP 500
+    except Exception as exc:  # noqa: BLE001 (route boundary translates config/pydantic/IO errors to HTTP 500)
         log.warning("settings.config.get.error", exc_info=True)
         detail = _extract_validation_detail(exc)
         raise HTTPException(status_code=500, detail=detail) from None
@@ -198,7 +198,7 @@ async def get_config_grouped() -> dict:
         project_dir = get_project_dir()
         flat = settings_service.get_config(project_dir)
         return {"groups": get_grouped_config(flat)}
-    except Exception as exc:  # noqa: BLE001 - route boundary translates config/pydantic/IO errors to HTTP 500
+    except Exception as exc:  # noqa: BLE001 (route boundary translates config/pydantic/IO errors to HTTP 500)
         log.warning("settings.config.grouped.error", exc_info=True)
         detail = _extract_validation_detail(exc)
         raise HTTPException(status_code=500, detail=detail) from None
@@ -218,19 +218,19 @@ async def test_llm_connection() -> dict:
     try:
         project_dir = get_project_dir()
         cfg = load_config(project_dir)
-    except Exception as exc:  # noqa: BLE001 - report config errors inline, not as 500
+    except Exception as exc:  # noqa: BLE001 (report config errors inline, not as 500)
         log.warning("settings.llm.test.config_error", exc_info=True)
         return {"ok": False, "provider": None, "detail": f"Failed to load configuration: {exc}"}
 
     try:
         provider = create_provider(cfg.llm)
-    except Exception as exc:  # noqa: BLE001 - misconfiguration must not 500
+    except Exception as exc:  # noqa: BLE001 (misconfiguration must not 500)
         log.info("settings.llm.test.create_failed", provider=cfg.llm.provider, exc_info=True)
         return {"ok": False, "provider": cfg.llm.provider, "detail": str(exc)}
 
     try:
         available, detail = await provider.check_available()
-    except Exception as exc:  # noqa: BLE001 - provider errors must not 500
+    except Exception as exc:  # noqa: BLE001 (provider errors must not 500)
         log.info("settings.llm.test.check_failed", provider=cfg.llm.provider, exc_info=True)
         return {"ok": False, "provider": cfg.llm.provider, "detail": str(exc)}
 
@@ -260,7 +260,7 @@ async def llm_cost_projection() -> dict:
         project_dir = get_project_dir()
         async with await get_session(project_dir=project_dir) as session:
             projection = await cost_service.get_monthly_projection(session)
-    except Exception as exc:  # noqa: BLE001 - never 500 a widget
+    except Exception as exc:  # noqa: BLE001 (never 500 a widget)
         log.warning("settings.llm.cost_projection.error", exc_info=True)
         return {"insufficient_data": True, "detail": str(exc)}
 
@@ -349,7 +349,7 @@ async def _reload_all_configs(project_dir: Path | None, key: str) -> str | None:
         resolved_key = str(project_dir.resolve()) if project_dir else str(Path.cwd().resolve())
         components = get_daemon_components().get(resolved_key, {})
         await _dispatch_config_reload(matched, cfg, components, project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 (reload spans config load, daemon lookup and per-component dispatch)
         log.warning("settings.reload_failed", target=matched, exc_info=True)
         return f"Config saved but {matched} reload failed"
 
@@ -400,7 +400,7 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
             ):
                 result["restart_required"] = True
         return result
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.config.update.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update configuration") from exc
 
@@ -460,7 +460,7 @@ async def installation_status() -> dict[str, object]:
             "total_updates": total,
             "has_updates": total > 0,
         }
-    except Exception as exc:  # noqa: BLE001 - route boundary translates unexpected failures to HTTP 500
+    except Exception as exc:  # noqa: BLE001 (route boundary translates unexpected failures to HTTP 500)
         log.warning("settings.installation.status.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to check installation status") from exc
 
@@ -471,7 +471,7 @@ async def list_invariants() -> dict:
     try:
         project_dir = get_project_dir()
         return {"invariants": settings_service.list_invariants(project_dir)}
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.invariants.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch invariants")
 
@@ -485,7 +485,7 @@ async def list_personas() -> dict:
             "personas": settings_service.list_personas(project_dir),
             "detected": settings_service.get_detected_persona(project_dir),
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.personas.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch personas")
 
@@ -502,7 +502,7 @@ async def get_operations_persona():
         from sova.oversight.persona import get_persona_info
 
         return get_persona_info(cfg.oversight.persona_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.persona.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch operations persona")
 
@@ -524,7 +524,7 @@ async def open_persona_in_editor():
     try:
         project_dir = get_project_dir()
         cfg = load_config(project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.persona.open.config_error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to load project configuration")
 
@@ -544,7 +544,7 @@ async def open_persona_in_editor():
             status_code=400,
             detail=f"'{cmd}' not found. Edit the file manually: {path}",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.persona.open.subprocess_error", exc_info=True)
         raise HTTPException(
             status_code=500,
@@ -673,7 +673,7 @@ async def audit_labels() -> dict:
 
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.labels.audit.error", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to audit labels: {exc}") from exc
 
@@ -721,6 +721,6 @@ async def create_missing_labels() -> dict:
 
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.labels.create.error", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create labels: {exc}") from exc

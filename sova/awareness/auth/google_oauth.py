@@ -153,7 +153,7 @@ def _try_refresh_expired_token(creds: object, token_path: Path) -> Credentials |
         _save_token(creds, token_path)
         _log.info("token_refreshed", path=str(token_path))
         return _cache_and_return_creds(creds, token_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 (Google auth library surfaces arbitrary transport and token errors)
         _log.warning("token_refresh_failed", path=str(token_path), exc_info=True)
         return None
 

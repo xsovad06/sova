@@ -31,7 +31,7 @@ async def logs(
             limit=limit,
             offset=offset,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("logs.query.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch logs")
 
@@ -42,6 +42,6 @@ async def log_components() -> dict:
     try:
         project_dir = get_project_dir()
         return {"components": await get_components(project_dir)}
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("logs.components.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch log components")

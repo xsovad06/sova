@@ -166,7 +166,7 @@ class ConfidenceScoreStep(BaseStep):
                 max_budget_usd=max_budget,
                 timeout=ctx.config.agent.step_timeout,
             )
-        except Exception as exc:
+        except RuntimeError as exc:
             log.warning("step.confidence_score.llm_failed", exc_info=True)
             return StepResult(success=True, summary=f"Confidence scoring skipped (non-fatal): {exc}")
 
@@ -246,7 +246,7 @@ class ConfidenceScoreStep(BaseStep):
             body = await get_pr_body(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
             new_body = upsert_section(body, _PR_BODY_HEADING, self._render_pr_section(ctx))
             await update_pr_body(ctx.pr_number, body=new_body, repo=ctx.repo, github_user=ctx.config.github_user)
-        except Exception:
+        except RuntimeError:
             log.warning("step.confidence_score.pr_body_update_failed", pr=ctx.pr_number, exc_info=True)
 
     @staticmethod

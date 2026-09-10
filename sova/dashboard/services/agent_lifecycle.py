@@ -15,6 +15,8 @@ import shlex
 import time
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.dashboard.services.agent_approval import (  # re-export facade
     _claim_awaiting_approval as _claim_awaiting_approval,
 )
@@ -311,7 +313,7 @@ async def get_unified_agents(slug: str | None = None) -> dict:
                     "pr_number": run.pr_number,
                 }
             )
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("unified_agents.external_fetch_failed", exc_info=True)
 
     for agent in base["agents"]:
@@ -349,7 +351,7 @@ async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None
             if pr is not None:
                 log.info("start_agent.recovered_pr_number", issue=issue, pr_number=pr)
             return pr
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("start_agent.recover_pr_number_failed", issue=issue, exc_info=True)
         return None
 
@@ -361,7 +363,7 @@ def _resolve_config_model(project_dir: Path) -> str | None:
 
         cfg = load_config(project_dir)
         return cfg.agent.model or None
-    except Exception:
+    except Exception:  # noqa: BLE001 (model resolution falls back to the runtime default)
         log.debug("resolve_config_model.failed", exc_info=True)
         return None
 
@@ -373,7 +375,7 @@ def _resolve_config_fallback_model(project_dir: Path) -> str | None:
 
         cfg = load_config(project_dir)
         return cfg.agent.fallback_models[0] if cfg.agent.fallback_models else None
-    except Exception:
+    except Exception:  # noqa: BLE001 (model resolution falls back to the runtime default)
         log.debug("resolve_config_fallback_model.failed", exc_info=True)
         return None
 
@@ -406,7 +408,7 @@ async def _record_budget_override(issue: str, run_id: int, budget_error: dict, p
             metadata={"issue": issue, "run_id": run_id, "spend_usd": spend, "limit_usd": limit},
         )
         log.info("agent.budget_override_recorded", issue=issue, run_id=run_id, spend=spend, limit=limit)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("agent.budget_override_record_failed", issue=issue, run_id=run_id, exc_info=True)
 
 
@@ -496,7 +498,7 @@ async def start_agent(
                     handoff_service.clear_handoff(project_dir, issue=issue)
                 else:
                     handoff_service.clear_handoff(project_dir, issue=role or "run")
-            except Exception:
+            except Exception:  # noqa: BLE001 (non-fatal: handoff cleanup must not block agent spawn)
                 log.debug("agent.clear_handoff_failed", issue=issue or role, exc_info=True)
 
         cmd_parts = ["sova", "run"]
@@ -566,7 +568,7 @@ async def start_agent(
                     output_dir=output_dir,
                     run_label=str(run_id),
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001 (any spawn failure must finalize the run rather than leave it orphaned)
             log.error("agent.spawn_failed", run_id=run_id, exc_info=True)
             await _finalize_orphaned_run(run_id, project_dir)
             return {"error": "Failed to spawn agent process"}
@@ -704,7 +706,7 @@ async def start_command(
             from sova.dashboard.services import handoff_service
 
             handoff_service.clear_handoff(project_dir, issue=issue)
-        except Exception:
+        except Exception:  # noqa: BLE001 (non-fatal: handoff cleanup must not block command spawn)
             log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
         model = _resolve_config_model(project_dir)
@@ -733,7 +735,7 @@ async def start_command(
                 output_dir=output_dir,
                 run_label=str(pre_run_id),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (any spawn failure must finalize the run rather than leave it orphaned)
             log.error("command.spawn_failed", command=command, issue=issue, error=str(exc), exc_info=True)
             await _finalize_orphaned_run(pre_run_id, project_dir)
             return {"error": f"Failed to spawn runtime: {exc}"}

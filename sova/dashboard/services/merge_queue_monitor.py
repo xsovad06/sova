@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.config.models import IntegrationConfig
 from sova.utils.logging import get_logger
 
@@ -81,7 +83,7 @@ class MergeQueueMonitor:
                 await self._poll_cycle()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 (monitor loop must survive any single-cycle error)
                 log.warning("merge_queue_monitor.cycle_error", exc_info=True)
             interval = self.integration_config.merge_queue_poll_interval
             should_stop = await self._interruptible_sleep(interval)
@@ -109,7 +111,7 @@ class MergeQueueMonitor:
                 await self._check_entry(entry)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 (one bad entry must not abort the poll cycle)
                 log.warning(
                     "merge_queue_monitor.entry_error",
                     entry_id=entry["id"],
@@ -175,7 +177,7 @@ class MergeQueueMonitor:
 
                 await delete_remote_branch(branch_name, repo=repo, github_user=github_user)
                 cleanup_actions.append(f"branch {branch_name!r} deleted")
-            except Exception:
+            except (RuntimeError, OSError):
                 log.warning("merge_queue_monitor.branch_delete_failed", branch=branch_name, exc_info=True)
 
         if issue_number:
@@ -183,7 +185,7 @@ class MergeQueueMonitor:
                 await self._transition_issue_state(issue_number, repo, github_user)
                 state = self.integration_config.post_merge_state
                 cleanup_actions.append(f"issue #{issue_number} moved to {state}")
-            except Exception:
+            except (RuntimeError, OSError):
                 log.warning("merge_queue_monitor.state_transition_failed", issue=issue_number, exc_info=True)
 
         await self._cleanup_local_worktree(entry)
@@ -289,7 +291,7 @@ class MergeQueueMonitor:
 
             await cleanup_worktree(worktree_path, cwd=self.project_dir)
             log.info("merge_queue_monitor.worktree_cleaned", path=str(worktree_path))
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("merge_queue_monitor.worktree_cleanup_failed", path=str(worktree_path), exc_info=True)
 
     async def _check_pr_merged_directly(self, pr_number: int, repo: str, github_user: str) -> bool:
@@ -299,7 +301,7 @@ class MergeQueueMonitor:
 
             status = await get_pr_status(pr_number, repo=repo, github_user=github_user)
             return status.state == "MERGED"
-        except Exception:
+        except (RuntimeError, OSError):
             log.debug("merge_queue_monitor.merged_check_failed", pr=pr_number, exc_info=True)
             return False
 
@@ -317,7 +319,7 @@ class MergeQueueMonitor:
                 subtitle=subtitle,
                 group="sova-merge-queue",
             )
-        except Exception:
+        except (RuntimeError, OSError):
             log.debug("merge_queue_monitor.notify_failed", exc_info=True)
 
 
@@ -367,7 +369,7 @@ async def create_merge_queue_entry(
 
         log.info("merge_queue.entry_created", entry_id=entry_id, pr=pr_number, repo=repo)
         return entry_id
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("merge_queue.create_failed", pr=pr_number, repo=repo, exc_info=True)
         return None
 
@@ -402,7 +404,7 @@ async def _load_queued_entries(project_dir: Path) -> list[dict]:
                 }
                 for e in entries
             ]
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("merge_queue.load_failed", exc_info=True)
         return []
 
@@ -423,7 +425,7 @@ async def _update_entry_status(entry_id: int, status: str, project_dir: Path) ->
                     return
                 entry.status = status
                 entry.resolved_at = datetime.now(timezone.utc)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("merge_queue.update_failed", entry_id=entry_id, status=status, exc_info=True)
 
 
@@ -439,7 +441,7 @@ def create_monitors_for_merge_queue() -> list[MergeQueueMonitor]:
             continue
         try:
             pcfg = load_config(p)
-        except Exception:
+        except Exception:  # noqa: BLE001 (one unloadable project must not abort monitor startup)
             log.warning("merge_queue_monitor.config_load_failed", project=str(p), exc_info=True)
             continue
         if pcfg.integration.merge_queue_enabled == "false":

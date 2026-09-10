@@ -44,6 +44,6 @@ def check_file_overlap_gate(
             gate="file_overlap",
             detail="; ".join(details),
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("file_overlap_gate.check_failed", issue=issue_number, exc_info=True)
         return None

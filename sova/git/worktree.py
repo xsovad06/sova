@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run, run_checked, subprocess_error
 
@@ -278,7 +280,7 @@ async def _check_worktree_active_agent(worktree_path: Path, *, project_dir: Path
                     except PermissionError:
                         # Process exists but we lack permission to signal it
                         return run_record.pid
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("worktree.active_agent_check_failed", path=str(worktree_path), exc_info=True)
         raise RuntimeError(
             f"Cannot verify worktree safety for {worktree_path}: DB query failed. Refusing to remove (fail-closed)."
@@ -637,7 +639,8 @@ async def cleanup_by_issue_state(
                 if not dry_run:
                     try:
                         await cleanup_worktree(entry, cwd=project_dir)
-                    except Exception as exc:
+                    except (RuntimeError, OSError) as exc:
+                        log.warning("gc.worktree_remove_failed", path=str(entry), exc_info=True)
                         gc_result.errors.append(f"Failed to remove worktree {entry}: {exc}")
                         continue
                 gc_result.worktrees_removed += 1

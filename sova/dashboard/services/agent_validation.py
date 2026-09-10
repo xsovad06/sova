@@ -8,6 +8,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.dashboard.services.agent_pool import ProjectAgents
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
@@ -65,7 +67,7 @@ async def _check_issue_conflict(issue: str, pa: ProjectAgents, *, force: bool = 
                     run.error_message = "Stale run: process no longer alive"
                     run.ended_at = datetime.now(timezone.utc)
                     log.warning("issue_conflict.auto_recovered", run_id=run.id, issue=issue, pid=run.pid)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("issue_conflict_check.db_failed", issue=issue, exc_info=True)
 
     return None
@@ -89,7 +91,7 @@ async def _check_pr_merged_on_failure(pr_number: int | None, project_dir: Path |
             return False
         status = await get_pr_status(pr_number, repo=repo, github_user=cfg.github_user)
         return status.state == "MERGED"
-    except Exception:
+    except (RuntimeError, OSError):
         log.debug("check_pr_merged.failed", pr_number=pr_number, exc_info=True)
         return False
 
@@ -128,7 +130,7 @@ async def _check_issue_budget(issue: str, project_dir: Path) -> dict | None:
                     "total_cost_usd": decimal_to_json(current),
                     "max_issue_budget": decimal_to_json(max_budget),
                 }
-    except Exception:
+    except Exception:  # noqa: BLE001 (budget check spans config, DB and lifecycle lookups)
         log.warning("issue_budget_check.failed", issue=issue, exc_info=True)
 
     return None
@@ -173,7 +175,7 @@ def check_memory_pressure(project_dir: Path) -> tuple[dict | None, str | None]:
             return None, (
                 f"Low memory: {available_gb:.1f} GB available (warn threshold: {guard.warn_threshold_gb:.1f} GB)"
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 (memory guard is advisory; spawning proceeds if it cannot be evaluated)
         log.warning("memory_guard.check_failed", exc_info=True)
 
     return None, None
@@ -190,5 +192,5 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
         adapter = create_adapter(cfg)
         await adapter.transition_state(issue, TaskState.IN_PROGRESS)
         log.info("issue.transitioned", issue=issue, state="in_progress")
-    except Exception:
+    except Exception:  # noqa: BLE001 (config load, adapter construction and tracker call each fail differently)
         log.warning("issue.transition_failed", issue=issue, exc_info=True)

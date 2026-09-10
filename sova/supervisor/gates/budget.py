@@ -17,7 +17,7 @@ async def check_budget_gate(issue: int, project_dir: Path) -> BlockReason | None
         error = await _check_issue_budget(str(issue), project_dir)
         if error:
             return BlockReason(gate="budget", detail=error["error"])
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("budget_gate.check_failed", issue=issue, exc_info=True)
 
     return None

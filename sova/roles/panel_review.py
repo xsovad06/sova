@@ -447,7 +447,7 @@ async def _review_dimensions(state: _PanelState, dimensions: list[str], request:
         )
         try:
             llm_result = await invoke(prompt, model=model, task_type=f"review_{dim}", cwd=request.cwd)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (one dimension failing must not abort the panel review)
             log.warning("panel_review.dimension_failed", dimension=dim, error=str(exc), exc_info=True)
             continue
 
@@ -493,7 +493,7 @@ async def _review_groups(state: _PanelState, groups: list[tuple[str, list[str]]]
         )
         try:
             llm_result = await invoke(prompt, model=model, task_type="review_panel", cwd=request.cwd)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (one group failing must not abort the panel review)
             log.warning("panel_review.group_failed", dimensions=active, error=str(exc), exc_info=True)
             continue
 

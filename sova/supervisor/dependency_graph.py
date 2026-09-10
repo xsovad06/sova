@@ -373,7 +373,7 @@ class DependencyGraph:
             if task.state == TaskState.RESEARCHED:
                 try:
                     spec_meta = _get_spec_meta(tid, project_dir)
-                except Exception:
+                except Exception:  # noqa: BLE001 (spec enrichment is optional; the node renders without it)
                     log.warning("dependency_graph.spec_meta_failed", issue=tid, exc_info=True)
                 if spec_meta:
                     actions = [
@@ -556,7 +556,7 @@ async def build_dependency_graph(
         async def _fetch(mid: int) -> Task | None:
             try:
                 return await adapter.get_task(str(mid))
-            except Exception:
+            except Exception:  # noqa: BLE001 (best-effort: missing deps still surface via validate())
                 log.debug("Could not fetch dependency #%d", mid, exc_info=True)
                 return None
 

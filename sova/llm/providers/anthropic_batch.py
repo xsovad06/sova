@@ -325,7 +325,7 @@ class BatchProvider(LLMProvider):
                 log.debug("batch.gcs.cleanup", name=name)
             else:
                 log.warning("batch.gcs.cleanup_rejected", name=name, status=resp.status_code)
-        except Exception:
+        except (httpx.HTTPError, OSError):
             log.warning("batch.gcs.cleanup_failed", name=name, exc_info=True)
 
     async def _gcs_cleanup_prefix(
@@ -336,7 +336,7 @@ class BatchProvider(LLMProvider):
     ) -> None:
         try:
             token = await self._get_vertex_token()
-        except Exception:
+        except (httpx.HTTPError, OSError, RuntimeError):
             log.warning("batch.gcs.cleanup_token_failed", exc_info=True)
             return
 
@@ -349,7 +349,7 @@ class BatchProvider(LLMProvider):
             )
             resp.raise_for_status()
             names.extend(item["name"] for item in resp.json().get("items", []) if item.get("name"))
-        except Exception:
+        except Exception:  # noqa: BLE001 (best-effort cleanup: a malformed listing must not propagate)
             log.warning("batch.gcs.cleanup_list_failed", prefix=output_prefix, exc_info=True)
 
         for name in names:
@@ -391,7 +391,8 @@ class BatchProvider(LLMProvider):
             try:
                 llm_result = self._parse_message_response(response)
                 results[idx] = BatchResult(request=requests[idx], result=llm_result)
-            except Exception as exc:
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                log.warning("batch.vertex.parse_error", custom_id=custom_id, error=str(exc), exc_info=True)
                 results[idx] = BatchResult(request=requests[idx], error=f"Parse error: {exc}")
 
         for i, r in enumerate(results):
@@ -419,7 +420,8 @@ class BatchProvider(LLMProvider):
                 if resp.status_code < 400:
                     return True, f"Vertex AI batch available (project={self._project_id}, region={self._region})"
                 return False, f"Vertex AI returned {resp.status_code}: {resp.text[:200]}"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (availability probe reports any failure as unavailable)
+            log.warning("batch.vertex.availability_check_failed", error=str(exc), exc_info=True)
             return False, f"Vertex AI unavailable: {exc}"
 
     # -- Anthropic direct backend --
@@ -563,7 +565,8 @@ class BatchProvider(LLMProvider):
                     message = result_data.get("message", {})
                     llm_result = self._parse_message_response(message)
                     results[idx] = BatchResult(request=requests[idx], result=llm_result)
-                except Exception as exc:
+                except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                    log.warning("batch.anthropic.parse_error", custom_id=custom_id, error=str(exc), exc_info=True)
                     results[idx] = BatchResult(request=requests[idx], error=f"Parse error: {exc}")
             else:
                 err = result_data.get("error")
@@ -591,7 +594,7 @@ class BatchProvider(LLMProvider):
                 headers=headers,
             )
             log.info("batch.anthropic.cancel_requested", batch_id=batch_id, status=resp.status_code)
-        except Exception:
+        except (httpx.HTTPError, OSError):
             log.warning("batch.anthropic.cancel_failed", batch_id=batch_id, exc_info=True)
 
     async def _check_anthropic_available(self) -> tuple[bool, str]:
@@ -604,7 +607,8 @@ class BatchProvider(LLMProvider):
                 if resp.status_code < 400:
                     return True, "Anthropic Batch API available"
                 return False, f"Anthropic API returned {resp.status_code}: {resp.text[:200]}"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (availability probe reports any failure as unavailable)
+            log.warning("batch.anthropic.availability_check_failed", error=str(exc), exc_info=True)
             return False, f"Anthropic API unavailable: {exc}"
 
     # -- Shared helpers --

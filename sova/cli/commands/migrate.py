@@ -84,7 +84,7 @@ def migrate_config(
 
     try:
         _save_config_to_db_sync(project_dir, save_config)
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged and reported; the command exits non-zero)
         logger.exception("Failed to write settings to database")
         typer.echo("Error: failed to write settings to database.", err=True)
         raise typer.Exit(1)

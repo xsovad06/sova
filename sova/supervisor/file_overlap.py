@@ -128,7 +128,7 @@ async def _fetch_branch_files(
             from sova.git.pr import get_pr_files
 
             files = await get_pr_files(run.pr_number, repo=repo, github_user=github_user)
-        except Exception:
+        except (RuntimeError, OSError):
             log.debug(
                 "fetch_branch_files.pr_api_failed",
                 pr=run.pr_number,
@@ -147,7 +147,7 @@ async def _fetch_branch_files(
             )
             if result.success:
                 files = [f for f in result.stdout.strip().splitlines() if f.strip()]
-        except Exception:
+        except (RuntimeError, OSError):
             log.debug(
                 "fetch_branch_files.git_diff_failed",
                 branch=run.branch_name,

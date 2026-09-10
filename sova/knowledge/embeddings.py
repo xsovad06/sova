@@ -33,7 +33,7 @@ def _load_model() -> object | None:
     except ImportError:
         log.debug("embeddings.unavailable", reason="sentence-transformers not installed")
         return None
-    except Exception:
+    except Exception:  # noqa: BLE001 (optional dependency; a broken install must degrade to no embeddings)
         log.warning("embeddings.load_failed", model=_MODEL_NAME, exc_info=True)
         return None
 
@@ -50,7 +50,7 @@ def embed_text(text: str) -> list[float] | None:
     try:
         vector = model.encode(text, convert_to_numpy=True)
         return vector.tolist()
-    except Exception:
+    except Exception:  # noqa: BLE001 (model inference surfaces arbitrary backend errors)
         log.warning("embeddings.encode_failed", text_preview=text[:80], exc_info=True)
         return None
 

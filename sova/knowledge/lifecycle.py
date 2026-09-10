@@ -40,7 +40,7 @@ def _try_load_config(cwd: Path | str) -> ProjectConfig | None:
         from sova.config.loader import load_config
 
         return load_config(Path(cwd))
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
         log.debug("lifecycle.config_load_failed", exc_info=True)
         return None
 
@@ -375,7 +375,7 @@ Return ONLY a JSON object (no markdown fences, no extra text):
             log.warning("lifecycle.consolidation_empty_content", cluster_id=cluster.representative_id)
             return None
 
-    except Exception:
+    except Exception:  # noqa: BLE001 (LLM call and JSON parse both fail here; consolidation is skipped)
         log.warning("lifecycle.consolidation_llm_failed", cluster_id=cluster.representative_id, exc_info=True)
         return None
 

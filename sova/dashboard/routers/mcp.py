@@ -60,7 +60,8 @@ async def mcp_endpoint(
     """
     try:
         body = await request.json()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 (JSON-RPC boundary: any body-read/parse failure becomes a -32700 error)
+        log.warning("mcp.request_parse_failed", exc_info=True)
         return {
             "jsonrpc": "2.0",
             "error": {
@@ -154,7 +155,7 @@ async def mcp_endpoint(
                 },
                 "id": req_id,
             }
-        except Exception:
+        except Exception:  # noqa: BLE001 (JSON-RPC boundary: any tool failure becomes an error response)
             log.exception("mcp.tool_error", tool=tool_name)
             return {
                 "jsonrpc": "2.0",

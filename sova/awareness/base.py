@@ -80,6 +80,6 @@ class AwarenessProvider(ABC):
             if not configured:
                 return False, f"{self.display_name}: not configured"
             return True, f"{self.display_name}: ok"
-        except Exception as e:
-            _log.warning("health_check_failed", provider=self.name, error=str(e))
+        except Exception as e:  # noqa: BLE001 (health check reports any failure as unhealthy)
+            _log.warning("health_check_failed", provider=self.name, error=str(e), exc_info=True)
             return False, f"{self.display_name}: {e}"

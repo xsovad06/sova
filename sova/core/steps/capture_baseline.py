@@ -50,7 +50,7 @@ class CaptureBaselineStep(BaseStep):
             log.info("step.capture_baseline.done", mode=snapshot.mode, tests=test_count)
             return StepResult(success=True, summary=summary)
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (baseline capture is non-fatal; the pipeline continues without it)
             log.warning("step.capture_baseline.failed", error=str(exc), exc_info=True)
             return StepResult(
                 success=True,

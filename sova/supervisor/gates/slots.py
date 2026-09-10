@@ -27,7 +27,7 @@ async def get_alive_count(session_factory: async_sessionmaker) -> int | None:
             result = await session.execute(stmt)
             active_runs = result.scalars().all()
             return sum(1 for run in active_runs if run.pid is None or is_process_alive(run.pid))
-    except Exception:
+    except Exception:  # noqa: BLE001 (fail-open: an unevaluable count must not block progression)
         log.debug("get_alive_count.failed", exc_info=True)
         return None
 
@@ -57,7 +57,7 @@ async def check_slot_gate(
                 gate="slots",
                 detail=f"All agent slots occupied ({alive_count}/{max_concurrent})",
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("slot_gate.check_failed", exc_info=True)
 
     return None

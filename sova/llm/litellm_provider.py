@@ -26,7 +26,7 @@ try:
     import litellm  # type: ignore[import-untyped]
 
     _HAS_LITELLM = True
-except Exception:  # noqa: BLE001 -- catch broken installs (AttributeError, SyntaxError, etc.)
+except Exception:  # noqa: BLE001 (catch broken installs (AttributeError, SyntaxError, etc.))
     _HAS_LITELLM = False
 
 
@@ -142,7 +142,7 @@ class LiteLLMProvider(LLMProvider):
                 system_prompt=system_prompt,
                 max_tokens=max_tokens,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (LiteLLM raises arbitrary exceptions from providers)
             if not self.fallback_model or target_model == self.fallback_model:
                 raise
             reason = "connection_error" if _is_connection_error(exc) else "api_error"
@@ -151,6 +151,7 @@ class LiteLLMProvider(LLMProvider):
                 primary=target_model,
                 fallback=self.fallback_model,
                 reason=reason,
+                exc_info=True,
             )
             start = time.monotonic()
             return await self._call(
@@ -179,7 +180,7 @@ class LiteLLMProvider(LLMProvider):
         try:
             async for event in self._stream(target_model, prompt, start):
                 yield event
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (LiteLLM raises arbitrary exceptions from providers)
             if not self.fallback_model or target_model == self.fallback_model:
                 raise
             reason = "connection_error" if _is_connection_error(exc) else "api_error"
@@ -188,6 +189,7 @@ class LiteLLMProvider(LLMProvider):
                 primary=target_model,
                 fallback=self.fallback_model,
                 reason=reason,
+                exc_info=True,
             )
             start = time.monotonic()
             async for event in self._stream(self.fallback_model, prompt, start):
@@ -230,7 +232,7 @@ class LiteLLMProvider(LLMProvider):
                     input_tokens, output_tokens = chunk_input, chunk_output
                 if chunk_model:
                     response_model = chunk_model
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (LiteLLM raises arbitrary exceptions from providers)
             log.error("llm.litellm.stream_error", model=model, exc_info=True)
             accumulated_text = "".join(text_parts)
             cost, cost_source = self._get_cost(response_model, input_tokens, output_tokens, requested_model=model)
@@ -382,7 +384,7 @@ class LiteLLMProvider(LLMProvider):
                 )
                 cost = prompt_cost + completion_cost
             decimal_cost = Decimal(str(cost))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 (litellm pricing tables raise varied errors for unknown models)
             return Decimal("0"), self._report_unpriced(model, requested_model, exc_info=True)
         if decimal_cost <= 0:
             return Decimal("0"), self._report_unpriced(model, requested_model)

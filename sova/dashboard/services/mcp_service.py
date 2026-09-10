@@ -92,7 +92,7 @@ def get_or_generate_secret(project_dir: Path | None) -> str:
     if secret_file.exists():
         try:
             return secret_file.read_text().strip()
-        except Exception:
+        except (OSError, ValueError):
             log.debug("mcp.secret_read_failed", exc_info=True)
 
     # Generate and persist new secret with restrictive permissions
@@ -104,7 +104,7 @@ def get_or_generate_secret(project_dir: Path | None) -> str:
             os.write(fd, secret.encode())
         finally:
             os.close(fd)
-    except Exception:
+    except (OSError, ValueError):
         log.debug("mcp.secret_write_failed", exc_info=True)
     return secret
 

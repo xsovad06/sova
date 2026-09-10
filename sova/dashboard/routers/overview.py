@@ -25,6 +25,6 @@ async def overview() -> dict:
             "costs": costs,
             "memory_count": mem_count,
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("overview.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch overview data")

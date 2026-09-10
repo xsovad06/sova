@@ -158,7 +158,7 @@ async def _resolve_file_with_consensus(
                 max_budget_usd=per_model_budget,
             )
             return result.text, result.cost_usd
-        except Exception:
+        except Exception:  # noqa: BLE001 (one model failing must not abort the consensus round)
             log.warning("git.rebase.consensus_model_failed", model=model_id, file=filename, exc_info=True)
             return None, Decimal("0")
 
@@ -237,7 +237,7 @@ def _load_consensus_config(
         cr = cfg.conflict_resolution
         timeout = float(cfg.llm.cli_timeout) if cfg.llm.cli_timeout else None
         return list(cr.models), cr.consensus_threshold, dict(cr.prompt_templates), timeout
-    except Exception:
+    except Exception:  # noqa: BLE001 (conflict resolution falls back to defaults when config is unavailable)
         log.debug("git.rebase.config_load_failed", exc_info=True)
         from sova.config.models import ConflictResolutionConfig
 
@@ -262,7 +262,7 @@ def _create_providers(
         for model_id in models:
             providers[model_id] = LiteLLMProvider(model=model_id, timeout=timeout)
         return providers
-    except Exception:
+    except Exception:  # noqa: BLE001 (LiteLLM init surfaces arbitrary provider errors; consensus is then skipped)
         log.warning("git.rebase.litellm_provider_init_failed", exc_info=True)
         return None
 

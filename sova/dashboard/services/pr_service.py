@@ -10,6 +10,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -463,7 +465,7 @@ async def get_pr_mergeability_map() -> dict[int, str]:
     """
     try:
         prs = await list_open_prs_with_state()
-    except Exception:
+    except (RuntimeError, OSError):
         log.debug("mergeability_map.fetch_failed", exc_info=True)
         return {}
     result: dict[int, str] = {}
@@ -493,7 +495,7 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
 
     try:
         cfg = load_config(project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged then optionally re-raised; the caller decides)
         log.warning("pr_service.config_load_failed", project_dir=str(project_dir), exc_info=True)
         if raise_on_error:
             raise
@@ -513,7 +515,7 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     pr_numbers = [p["number"] for p in raw_prs]
     try:
         thread_counts = await get_review_thread_counts(pr_numbers, repo=repo, github_user=cfg.github_user)
-    except Exception:
+    except (RuntimeError, OSError):
         log.warning("pr_service.thread_counts_failed", exc_info=True)
         thread_counts = {}
     for pr in raw_prs:
@@ -576,7 +578,7 @@ async def _record_state_transitions(prs: list[dict], *, repo: str, project_dir: 
                 async with await get_session(project_dir) as session:
                     session.add(PREvent(**ev))
                     await session.commit()
-            except Exception:
+            except (OSError, RuntimeError, SQLAlchemyError):
                 log.debug("pr_service.event_write_conflict", pr=ev.get("pr_number"), exc_info=True)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("pr_service.event_record_failed", exc_info=True)

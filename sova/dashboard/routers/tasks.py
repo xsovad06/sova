@@ -48,7 +48,7 @@ async def list_issues() -> dict:
         ]
         _issues_cache[cache_key] = (time.time(), issues)
         return {"issues": issues}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
         log.warning("Failed to fetch issues from task source", exc_info=True)
         raise HTTPException(status_code=503, detail="Task source unavailable") from exc
 

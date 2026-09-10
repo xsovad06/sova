@@ -142,7 +142,7 @@ class ParallelExecutor:
                     role=role.name,
                 )
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (one task failure becomes a failed TaskResult, not a stopped executor)
             log.error("task.exception", task_id=task.id, exc_info=True)
             return TaskResult(
                 task_id=task.id,

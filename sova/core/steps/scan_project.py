@@ -112,7 +112,7 @@ class ScanProjectStep(BaseStep):
                     }
                     for t in tasks
                 ]
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                 log.warning("scan.list_tasks_failed", error=str(exc), exc_info=True)
                 issue_fetch_error = str(exc)
                 return []
@@ -123,7 +123,7 @@ class ScanProjectStep(BaseStep):
                 if result.success:
                     return [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
                 return []
-            except Exception as exc:
+            except (RuntimeError, OSError) as exc:
                 log.warning("scan.git_failed", error=str(exc), exc_info=True)
                 return []
 

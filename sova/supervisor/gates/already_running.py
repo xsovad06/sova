@@ -46,7 +46,7 @@ async def check_already_running(issue: int, session_factory: async_sessionmaker)
                         gate="already_running",
                         detail=f"Agent already running for #{issue} (run {run.id}, PID {run.pid})",
                     )
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("already_running.check_failed", issue=issue, exc_info=True)
 
     return None

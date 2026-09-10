@@ -81,7 +81,7 @@ def configured_passthrough() -> tuple[str, ...]:
         from sova.config.loader import load_config
 
         return tuple(load_config().agent.env_passthrough)
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons; scrubbing defaults to strict)
         log.debug("env.passthrough_unavailable", exc_info=True)
         return ()
 

@@ -45,7 +45,7 @@ def _load_spec_for_develop(ctx: ExecutionContext) -> str:
                 spec_chars=len(content),
             )
         return content
-    except Exception:
+    except (OSError, ValueError):
         log.debug("step.develop.spec_load_failed", exc_info=True)
         return ""
 
@@ -100,7 +100,7 @@ Return ONLY the section content (no heading, no markdown fences). Keep it under 
         ctx.add_usage(llm_result)
 
         append_spec_section(ctx.issue_number, SECTION_IMPLEMENTATION_NOTES, llm_result.text.strip(), ctx.project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 (implementation notes are optional; the develop step still succeeds)
         log.warning("step.develop.implementation_notes_failed", exc_info=True)
 
 

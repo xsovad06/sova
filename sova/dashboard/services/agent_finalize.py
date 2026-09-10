@@ -10,6 +10,8 @@ import asyncio
 import json
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.dashboard.services.agent_context import (
     _resolve_issue_from_pr,
 )
@@ -159,8 +161,8 @@ async def _check_merge_queue_on_failure(
             )
             if result.success and result.stdout.strip():
                 branch = result.stdout.strip()
-        except Exception:
-            pass
+        except (RuntimeError, OSError):
+            log.debug("finalize.merge_queue_branch_lookup_failed", pr=agent.pr_number, exc_info=True)
 
         await create_merge_queue_entry(
             pr_number=agent.pr_number,
@@ -189,7 +191,7 @@ async def _check_merge_queue_on_failure(
             queue_state=queue_status.state,
         )
         return "done", 0
-    except Exception:
+    except Exception:  # noqa: BLE001 (merge-queue probe spans config, DB and gh; failure keeps the original status)
         log.debug("finalize.merge_queue_check_failed", run_id=run_id, exc_info=True)
         return status, exit_code
 
@@ -210,7 +212,7 @@ async def _is_run_terminal_in_db(run_id: int, project_dir: Path | None) -> bool:
             if task_run is None:
                 return True
             return task_run.status in _TERMINAL_STATUSES
-    except Exception:
+    except Exception:  # noqa: BLE001 (safety-net check must fail open, not crash the finalize watchdog)
         log.debug("finalize.terminal_check_failed", run_id=run_id, exc_info=True)
         return False
 
@@ -275,7 +277,7 @@ async def _check_merge_queue_marker_file(agent: AgentState, run_id: int | None) 
             log.info("finalize.merge_queue_marker_processed", pr=pr_number, repo=repo)
 
             marker_path.unlink(missing_ok=True)
-        except Exception:
+        except Exception:  # noqa: BLE001 (one bad marker file must not abort finalization)
             log.debug("finalize.merge_queue_marker_failed", path=str(marker_path), exc_info=True)
 
 
@@ -301,7 +303,8 @@ async def _wait_with_terminal_check(agent: AgentState) -> int:
             )
             try:
                 await agent.process.stop(timeout=5.0)
-            except Exception:
+            except Exception:  # noqa: BLE001 (fall through to SIGKILL regardless of why the graceful stop failed)
+                log.warning("finalize.graceful_stop_failed", run_id=agent.run_id, exc_info=True)
                 try:
                     agent.process._proc.kill()
                 except OSError:
@@ -359,7 +362,7 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 
                 try:
                     await _crash_recovery_cleanup(agent)
-                except Exception:
+                except Exception:  # noqa: BLE001 (cleanup is best-effort; finalization must complete regardless)
                     log.warning(
                         "finalize.crash_recovery_cleanup_failed",
                         pr=agent.pr_number,
@@ -381,7 +384,7 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     if agent.output_writer:
         try:
             await agent.output_writer.close()
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("output_writer.close_failed", run_id=run_id, exc_info=True)
 
     await _finalize_resource_monitoring(agent)
@@ -410,7 +413,7 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
             from sova.dashboard.routers.agents import _ws_manager
 
             await _ws_manager.broadcast_event("graph_invalidated", agent.project_dir)
-        except Exception:
+        except Exception:  # noqa: BLE001 (best-effort UI notification must not crash finalization)
             log.debug("ws.graph_invalidated_failed", run_id=run_id, exc_info=True)
 
     async with pa._lock:
@@ -459,7 +462,7 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                 subtitle=f"{role_label} finished {issue_label}",
                 group=group_key,
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 (notification is best-effort; config and OS notifier both fail in many ways)
         log.debug("notify.failed", run_id=run_id, exc_info=True)
 
     log.info("agent.completed", run_id=run_id, issue=agent.issue, status=status, cost=cost)
@@ -476,7 +479,7 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
             t = asyncio.create_task(push_telemetry(run_id, agent.project_dir, tel_cfg))
             _background_tasks.add(t)
             t.add_done_callback(_background_tasks.discard)
-    except Exception:
+    except Exception:  # noqa: BLE001 (telemetry scheduling is best-effort and must not block finalization)
         log.debug("telemetry.schedule_failed", run_id=run_id, exc_info=True)
 
     if exit_code == 0:

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, RolesConfig
@@ -1146,7 +1147,7 @@ class TestReviewerRole:
             patch(
                 "sova.roles.reviewer.write_handoff",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("DB write failed"),
+                side_effect=SQLAlchemyError("DB write failed"),
             ),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
@@ -4978,7 +4979,7 @@ class TestReviewerExceptionPaths:
         review = ReviewResult(findings=[], summary="OK", total_cost=0)
 
         with (
-            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock, side_effect=RuntimeError("DB down")),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock, side_effect=SQLAlchemyError("DB down")),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             # Should not raise

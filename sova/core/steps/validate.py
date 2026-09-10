@@ -255,7 +255,7 @@ class ValidateStep(BaseStep):
                 cwd=test_dir,
                 cmd_timeout=ctx.config.testing.baseline_timeout,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (regression check is advisory; validation proceeds without a baseline diff)
             log.warning("step.validate.regression_check_failed", exc_info=True)
             return None
 

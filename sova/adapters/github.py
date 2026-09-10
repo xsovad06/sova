@@ -128,7 +128,11 @@ class GitHubAdapter(TaskAdapter):
         if not result.success:
             raise RuntimeError(f"Failed to fetch issue #{task_id}: {result.stderr[:200]}")
 
-        issue = json.loads(result.stdout)
+        try:
+            issue = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            log.warning("get_task.bad_json", issue=task_id, stdout=result.stdout[:200])
+            raise RuntimeError(f"Failed to parse issue #{task_id} from {self.repo}: {e}") from e
         return _parse_issue(issue)
 
     async def transition_state(self, task_id: str, new_state: TaskState) -> None:
@@ -287,7 +291,11 @@ class GitHubAdapter(TaskAdapter):
         if not result.success:
             raise RuntimeError(f"Failed to get state for issue #{task_id}: {result.stderr[:200]}")
 
-        data = json.loads(result.stdout)
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            log.warning("get_state.bad_json", issue=task_id, stdout=result.stdout[:200])
+            raise RuntimeError(f"Failed to parse state for issue #{task_id}: {e}") from e
 
         if data.get("state") == "CLOSED":
             return TaskState.DONE

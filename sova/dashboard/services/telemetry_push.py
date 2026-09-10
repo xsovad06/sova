@@ -92,5 +92,5 @@ async def push_telemetry(run_id: int, project_dir: Path, cfg: ProjectConfig) -> 
             resp.raise_for_status()
             log.debug("push_telemetry.sent", run_id=run_id, status_code=resp.status_code)
 
-    except Exception:
+    except Exception:  # noqa: BLE001 (fire-and-forget: spans DB, httpx and hashing; must never affect finalization)
         log.debug("push_telemetry.failed", run_id=run_id, exc_info=True)

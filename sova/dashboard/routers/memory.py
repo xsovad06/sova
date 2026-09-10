@@ -42,7 +42,7 @@ async def list_memories(
                     limit=limit,
                 )
         return {"memories": memories, "total": total}
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("memory.list.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch memories")
 
@@ -59,7 +59,7 @@ async def export_memories(dry_run: bool = False) -> dict:
             repo=cfg.github_repo,
         )
         return {"exported": result.exported, "skipped": result.skipped, "entries": result.entries}
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("memory.export.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to export memories")
 
@@ -80,6 +80,6 @@ async def import_memories(dry_run: bool = False) -> dict:
             "ignored": result.ignored,
             "entries": result.entries,
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("memory.import.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to import memories")

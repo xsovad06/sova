@@ -61,7 +61,7 @@ async def get_integration_gates(pr_number: int) -> dict:
 
     try:
         cfg = load_config(project_dir)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 400)
         log.warning("prs.gates.config_error", pr=pr_number, exc_info=True)
         raise HTTPException(status_code=400, detail="Failed to load project configuration") from exc
 
@@ -198,7 +198,7 @@ async def trigger_pr_backfill(days: int = Query(90, ge=7, le=365)) -> dict:
     project_dir = get_project_dir() or Path.cwd()
     try:
         cfg = load_config(project_dir)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 400)
         log.warning("prs.backfill.config_error", project_dir=str(project_dir), exc_info=True)
         raise HTTPException(status_code=400, detail="Failed to load config") from exc
 

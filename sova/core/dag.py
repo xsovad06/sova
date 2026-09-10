@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.core.context import ExecutionContext
 from sova.db.models import StepExecution, WorkflowDefinition
 from sova.db.session import get_session
@@ -150,8 +152,9 @@ class DAGExecutor:
                 cost_usd=cost_usd,
                 duration_ms=elapsed_ms,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (any node failure becomes a failed NodeResult, not a crashed DAG)
             elapsed_ms = int((time.monotonic() - start) * 1000)
+            log.warning("dag.node_execution_failed", node_id=node_id, command=command, error=str(exc), exc_info=True)
             node_result = NodeResult(
                 node_id=node_id,
                 command=command,
@@ -177,7 +180,7 @@ class DAGExecutor:
                             ended_at=datetime.now(timezone.utc),
                         )
                         session.add(step)
-            except Exception:
+            except (OSError, RuntimeError, SQLAlchemyError):
                 log.warning("dag.step_record.failed", exc_info=True)
 
         log.info("dag.node.done", node=node_id, success=node_result.success, ms=elapsed_ms)

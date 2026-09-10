@@ -65,7 +65,7 @@ def compress(text: str, content_type: str = "text", cwd: str | None = None) -> s
     try:
         result = headroom_compression.compress(text, content_type=strategy)
         compressed = result.compressed
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (Headroom surfaces arbitrary errors; any failure returns the original text)
         log.warning("compression.failed", content_type=content_type, error=str(exc), exc_info=True)
         return text
 

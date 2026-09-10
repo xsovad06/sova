@@ -106,7 +106,7 @@ async def get_role_async(name: str, *, config: RolesConfig | None = None) -> Age
                 definition = result.scalar_one_or_none()
                 if definition is not None:
                     return CustomRole(definition)
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged then re-raised; the caller decides how to handle it)
         log.warning("dispatcher.custom_lookup_failed", name=name, exc_info=True)
         raise
 

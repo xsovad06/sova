@@ -50,7 +50,7 @@ class EnsureWorktreeStep(BaseStep):
                 ctx.worktree_dir = wt_path
                 log.info("step.ensure_worktree.found", branch=ctx.branch_name, path=str(wt_path))
                 return StepResult(success=True, summary=f"Found existing worktree at {wt_path}")
-        except Exception:
+        except (RuntimeError, OSError):
             log.debug("step.ensure_worktree.lookup_failed", branch=ctx.branch_name, exc_info=True)
 
         if ctx.has_issue:

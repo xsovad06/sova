@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.db.models import OversightFinding
 from sova.llm.provider import LLMProvider
@@ -234,7 +235,7 @@ async def _persist_findings(
                 session.add_all(findings)
                 await session.flush()
         return len(findings)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.error("oversight.analysis.persist_failed", run_id=run_id, count=len(findings), exc_info=True)
         return 0
 
@@ -281,7 +282,7 @@ async def analyze_snapshot(
         try:
             async with await get_session() as session:
                 recent_fps = await _load_recent_fingerprints(session, dedup_window_days)
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("oversight.analysis.dedup_query_failed", run_id=run_id, exc_info=True)
             recent_fps = set()
 
@@ -317,6 +318,6 @@ async def analyze_snapshot(
 
         return (new_findings, None)
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (analysis spans LLM, dedup and DB; partial failure is reported, not raised)
         log.error("oversight.analysis.failed", run_id=run_id, exc_info=True)
         return ([], f"partial: {exc}")

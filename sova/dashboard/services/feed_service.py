@@ -22,6 +22,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.feed")
@@ -115,7 +117,7 @@ class FeedService:
             if max_id:
                 current = next(self._id_counter)
                 self._id_counter = itertools.count(max(current, max_id + 1))
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.debug("feed.init_counter_failed", exc_info=True)
 
     def emit(
@@ -189,7 +191,7 @@ class FeedService:
                 )
                 session.add(record)
                 await session.commit()
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.debug("feed.persist_failed", event_id=event.id, exc_info=True)
 
     def subscribe(self) -> tuple[int, asyncio.Queue[FeedEvent]]:
@@ -242,7 +244,7 @@ class FeedService:
             # Return oldest-first for natural chat rendering.
             rows.reverse()
             return [_record_to_dict(r) for r in rows], has_more
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.debug("feed.history_page_failed", exc_info=True)
             return [], False
 
@@ -261,7 +263,7 @@ class FeedService:
                 result = await session.execute(delete(FeedEventRecord).where(FeedEventRecord.created_at < cutoff))
                 await session.commit()
                 return result.rowcount or 0
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.debug("feed.prune_failed", exc_info=True)
             return 0
 
@@ -302,5 +304,5 @@ def emit_safe(
             category=category,
             metadata=metadata,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 (feed emission must never break the caller that reports the event)
         log.debug("feed.emit_safe_failed", exc_info=True)

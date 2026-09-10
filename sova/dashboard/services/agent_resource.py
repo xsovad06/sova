@@ -32,7 +32,7 @@ async def _cancel_agent_io_tasks(agent: AgentState) -> list[asyncio.Task]:
     if agent.resource_collector is not None:
         try:
             await asyncio.wait_for(agent.resource_collector.stop(), timeout=3.0)
-        except Exception:
+        except Exception:  # noqa: BLE001 (collector shutdown is best-effort during agent teardown)
             log.warning("resource_collector.stop_failed", run_id=agent.run_id, exc_info=True)
     return cancelled
 
@@ -78,7 +78,7 @@ def _start_resource_monitoring(agent: AgentState, project_dir: Path, pid: int) -
         cfg = load_config(project_dir)
         if not cfg.monitoring.enabled:
             return
-    except Exception:
+    except Exception:  # noqa: BLE001 (monitoring is optional; any config failure disables it silently)
         log.debug("resource_monitoring.config_load_failed", exc_info=True)
         return
 
@@ -92,7 +92,7 @@ def _start_resource_monitoring(agent: AgentState, project_dir: Path, pid: int) -
         agent.resource_collector = collector
         agent.resource_writer = writer
         agent.resource_flush_task = asyncio.create_task(_resource_flush_loop(agent))
-    except Exception:
+    except Exception:  # noqa: BLE001 (monitoring is optional; the agent runs without it)
         log.debug("resource_monitoring.start_failed", run_id=agent.run_id, exc_info=True)
 
 
@@ -124,7 +124,7 @@ async def _finalize_resource_monitoring(agent: AgentState) -> None:
         await _compute_and_store_energy(agent.run_id, summary, agent.project_dir)
     except asyncio.CancelledError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 (monitoring teardown must not fail agent finalization)
         log.warning("resource_monitoring.finalize_failed", run_id=agent.run_id, exc_info=True)
 
 
@@ -158,7 +158,7 @@ async def _compute_and_store_energy(
                 cfg = load_config(project_dir)
                 tdp_override = cfg.monitoring.tdp_override
                 co2_grams_per_kwh = cfg.monitoring.co2_grams_per_kwh
-            except Exception:
+            except Exception:  # noqa: BLE001 (energy estimate falls back to defaults when config is unavailable)
                 log.debug("energy.config_load_failed", run_id=run_id, exc_info=True)
 
             estimate = estimate_energy(
@@ -188,7 +188,7 @@ async def _compute_and_store_energy(
                 energy_wh=estimate.energy_wh,
                 chip=estimate.chip_name,
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 (energy estimate is optional telemetry)
         log.debug("energy.compute_failed", run_id=run_id, exc_info=True)
 
 
@@ -207,5 +207,5 @@ async def _resource_flush_loop(agent: AgentState) -> None:
             await writer.flush()
     except asyncio.CancelledError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 (flush loop must not crash the agent it monitors)
         log.debug("resource_flush_loop.failed", run_id=agent.run_id, exc_info=True)

@@ -48,7 +48,7 @@ class RemindersProvider(AwarenessProvider):
 
         try:
             result = await run("osascript", "-l", "JavaScript", "-e", script)
-        except Exception:
+        except (RuntimeError, OSError):
             _log.warning("reminders.fetch_failed", exc_info=True)
             return []
 

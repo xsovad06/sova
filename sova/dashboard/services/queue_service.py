@@ -6,6 +6,8 @@ import re
 import time
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.adapters.base import TaskState
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
@@ -129,8 +131,8 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
 
     try:
         cfg = load_config(project_dir)
-    except Exception:
-        log.debug("No config found for queue, returning empty")
+    except Exception:  # noqa: BLE001 (queue is empty rather than broken when config cannot be loaded)
+        log.debug("queue.config_load_failed", exc_info=True)
         return []
 
     if cfg.task_source.type == "github" and not cfg.github_repo:
@@ -141,8 +143,8 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     try:
         adapter = create_adapter(cfg)
         tasks = await adapter.list_tasks(TaskFilters(paginate=True))
-    except Exception as e:
-        log.warning("Failed to fetch tasks for queue: %s", e)
+    except Exception as e:  # noqa: BLE001 (adapter construction and task listing each fail differently)
+        log.warning("queue.fetch_tasks_failed", error=str(e), exc_info=True)
         _queue_cache.pop(cache_key, None)
         return []
 
@@ -223,7 +225,7 @@ async def _enrich_spec_status(queue: list[dict], project_dir: Path | None) -> No
 
             try:
                 spec = read_spec(item["issue"], project_dir=project_dir)
-            except Exception:
+            except (OSError, ValueError):
                 log.warning("Failed to read spec for issue %s", item["issue"], exc_info=True)
                 item["spec_status"] = "missing"
                 item["action"] = "develop"
@@ -280,6 +282,6 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
             }
             for r in runs
         }
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("Failed to fetch last runs for queue enrichment", exc_info=True)
         return {}

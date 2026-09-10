@@ -483,6 +483,142 @@ class TestProjectCommands:
             with pytest.raises(Exit):
                 await _install(path=tmp_path, no_dashboard=True, update=False)
 
+    async def test_install_git_hooks_exception_is_non_fatal(self, tmp_path: Path) -> None:
+        """A raising _configure_git_hooks is caught and logged, install still completes."""
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+
+        with (
+            patch("sova.cli.commands.project._configure_git_hooks", new_callable=AsyncMock) as mock_hooks,
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_hooks.side_effect = RuntimeError("git not found")
+            mock_install_cmds.return_value = MagicMock(installed=1)
+            mock_install_guides.return_value = MagicMock(installed=0)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        mock_hooks.assert_awaited_once()
+
+    async def test_install_backfill_config_failure_is_logged(self, tmp_path: Path) -> None:
+        """If Stage 3's backfill save also fails, the narrower except still swallows it."""
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_begin = AsyncMock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
+        mock_session.begin = MagicMock(return_value=mock_begin)
+
+        with (
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=mock_session),
+            patch("sova.config.db_loader._try_load_from_db", return_value=None),
+            patch("sova.config.db_loader.save_config_to_db", side_effect=SQLAlchemyError("locked")),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_install_cmds.return_value = MagicMock(installed=1)
+            mock_install_guides.return_value = MagicMock(installed=0)
+            # Neither the early Stage 1 attempt nor the Stage 3 backfill raises past _install.
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+    async def test_install_agent_permissions_exception_is_non_fatal(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+
+        with (
+            patch("sova.cli.commands.project._configure_agent_permissions") as mock_perms,
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_perms.side_effect = OSError("settings.json locked")
+            mock_install_cmds.return_value = MagicMock(installed=1)
+            mock_install_guides.return_value = MagicMock(installed=0)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        mock_perms.assert_called_once()
+
+    async def test_install_rtk_exception_is_non_fatal(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+
+        with (
+            patch("sova.cli.commands.project._configure_rtk") as mock_rtk,
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_rtk.side_effect = RuntimeError("rtk hook injection failed")
+            mock_install_cmds.return_value = MagicMock(installed=1)
+            mock_install_guides.return_value = MagicMock(installed=0)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        mock_rtk.assert_called_once()
+
+    async def test_install_mcp_exception_is_non_fatal(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+
+        with (
+            patch("sova.cli.commands.project._configure_mcp_servers") as mock_mcp,
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_mcp.side_effect = RuntimeError("mcp config write failed")
+            mock_install_cmds.return_value = MagicMock(installed=1)
+            mock_install_guides.return_value = MagicMock(installed=0)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        mock_mcp.assert_called_once()
+
+    async def test_install_agent_memory_exception_is_non_fatal(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+
+        with (
+            patch("sova.cli.commands.project._create_agent_memory") as mock_memory,
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_memory.side_effect = OSError("disk full")
+            mock_install_cmds.return_value = MagicMock(installed=1)
+            mock_install_guides.return_value = MagicMock(installed=0)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        mock_memory.assert_called_once()
+
     async def test_install_creates_all_artifacts(self, tmp_path: Path) -> None:
         """Successful install creates commands dir, agent-memory, and saves config to DB."""
         from sova.cli.commands.project import _install
@@ -1045,6 +1181,34 @@ class TestUninstallCommand:
 
         assert any("registry" in f for f in failures)
 
+    async def test_uninstall_rtk_hook_failure_is_non_fatal(self, tmp_path: Path) -> None:
+        """A raising remove_rtk_hook is captured and reported, not propagated."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with (
+            patch("sova.config.registry.list_projects", return_value={}),
+            patch("sova.utils.rtk.remove_rtk_hook", side_effect=RuntimeError("settings.json corrupt")),
+        ):
+            failures = await _uninstall(path=tmp_path)
+
+        assert any("RTK hook" in f for f in failures)
+
+    async def test_uninstall_mcp_servers_failure_is_non_fatal(self, tmp_path: Path) -> None:
+        """A raising remove_mcp_server is captured and reported, not propagated."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with (
+            patch("sova.config.registry.list_projects", return_value={}),
+            patch("sova.utils.mcp_config.remove_mcp_server", side_effect=RuntimeError("settings.json corrupt")),
+        ):
+            failures = await _uninstall(path=tmp_path)
+
+        assert any("MCP servers" in f for f in failures)
+
     def test_remove_managed_commands_skips_path_traversal(self, tmp_path: Path) -> None:
         """Manifest entries that escape the managed directory are skipped."""
         import json
@@ -1455,6 +1619,38 @@ class TestHardenHelpers:
         ids = {t.id for t in result}
         assert ids == {"1", "2", "4"}
 
+    async def test_harden_list_tasks_failure_reports_and_returns(self, tmp_path: Path) -> None:
+        """A failing list_tasks call is reported and the command exits cleanly."""
+        from sova.cli.commands.harden import _harden
+
+        adapter = AsyncMock()
+        adapter.list_tasks.side_effect = RuntimeError("api unavailable")
+
+        with (
+            patch("sova.cli.commands.harden.load_config", return_value=MagicMock()),
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.cli.commands.harden.create_adapter", return_value=adapter),
+        ):
+            await _harden(issue=None, project_dir=tmp_path, dry_run=True, skip_triage=True)
+
+        adapter.list_tasks.assert_awaited_once()
+
+    async def test_retriage_task_exception_returns_none(self) -> None:
+        """A raising heuristic_assess is caught, logged, and yields no verdict."""
+        from sova.cli.commands.harden import _retriage_task
+        from sova.config.models import ProjectConfig
+
+        task = Task(id="10", title="Test", body="", state=TaskState.TRIAGED, labels=[])
+        config = ProjectConfig()
+
+        with patch(
+            "sova.roles.triage.TriageRole.heuristic_assess",
+            side_effect=RuntimeError("assessment blew up"),
+        ):
+            verdict = await _retriage_task(task, "enriched body", config, AsyncMock(), skip_triage=False)
+
+        assert verdict is None
+
 
 # ---------------------------------------------------------------------------
 # _detect_github_repo / _detect_github_user / _detect_test_command
@@ -1805,3 +2001,35 @@ class TestSetupFunction:
 
         assert saved_config.get("github_repo") == "owner/repo"
         assert saved_config.get("github_user") == "owner"
+
+    async def test_setup_exits_when_init_db_fails(self, tmp_path: Path) -> None:
+        """A failing init_db aborts the wizard with a clear error, not a traceback."""
+        from sqlalchemy.exc import SQLAlchemyError
+        from typer import Exit
+
+        from sova.cli.commands.project import _setup
+
+        with (
+            patch(f"{self._MOD}._detect_github_repo", new_callable=AsyncMock, return_value="owner/repo"),
+            patch(f"{self._MOD}._detect_github_user", new_callable=AsyncMock, return_value="owner"),
+            patch(f"{self._MOD}._detect_test_command", return_value="make test"),
+            patch("sova.db.session.init_db", new_callable=AsyncMock, side_effect=SQLAlchemyError("disk full")),
+        ):
+            with pytest.raises(Exit):
+                await _setup(path=tmp_path)
+
+    async def test_setup_exits_when_config_save_fails(self, tmp_path: Path) -> None:
+        """A failing save_config_to_db aborts the wizard with a clear error, not a traceback."""
+        from typer import Exit
+
+        from sova.cli.commands.project import _setup
+
+        with (
+            patch(f"{self._MOD}._detect_github_repo", new_callable=AsyncMock, return_value="owner/repo"),
+            patch(f"{self._MOD}._detect_github_user", new_callable=AsyncMock, return_value="owner"),
+            patch(f"{self._MOD}._detect_test_command", return_value="make test"),
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.db.session.get_session", side_effect=RuntimeError("session unavailable")),
+        ):
+            with pytest.raises(Exit):
+                await _setup(path=tmp_path)

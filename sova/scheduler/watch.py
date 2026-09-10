@@ -142,7 +142,7 @@ class WatchLoop:
             self._error_count += 1
             return False
 
-        except Exception:
+        except Exception:  # noqa: BLE001 (one task failure must not stop the watch loop)
             log.error("task.exception", task_id=task.id, exc_info=True)
             self._error_count += 1
             return False
@@ -175,7 +175,7 @@ class WatchLoop:
                         log.debug("watch.idle")
                         interval = self._config.watch.interval_idle
 
-                except Exception:
+                except Exception:  # noqa: BLE001 (watch loop must survive any single-cycle error)
                     log.error("watch.cycle_error", exc_info=True)
                     self._error_count += 1
                     interval = self._config.watch.interval_active

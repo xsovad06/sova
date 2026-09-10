@@ -176,7 +176,7 @@ async def _collect_all_projects(
             log.warning("oversight.observation.project_timeout", slug=project.slug)
             project.timed_out = True
             project.failure_reason = "timeout"
-        except Exception:
+        except Exception:  # noqa: BLE001 (one project must not abort fleet observation)
             log.warning("oversight.observation.project_error", slug=project.slug, exc_info=True)
             project.timed_out = True
             project.failure_reason = "error"
@@ -194,7 +194,7 @@ async def _collect_project(project: ProjectSnapshot, project_path: Path) -> None
     # GitHub data
     try:
         cfg = load_config(project_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 (one unloadable project is skipped, not fatal)
         log.debug("oversight.observation.config_load_failed", slug=project.slug, exc_info=True)
         return
 
@@ -243,7 +243,7 @@ async def _collect_db_data(project: ProjectSnapshot, db_path: Path) -> None:
         log.warning("oversight.observation.db_operational_error", slug=project.slug, exc_info=True)
         project.timed_out = True
         project.failure_reason = "db_error"
-    except Exception:
+    except Exception:  # noqa: BLE001 (one project's DB failure must not abort the collection cycle)
         log.warning("oversight.observation.db_error", slug=project.slug, exc_info=True)
         project.timed_out = True
         project.failure_reason = "error"
@@ -351,7 +351,7 @@ async def _collect_fleet_slots(registry: dict[str, str]) -> AgentSlotSummary:
                 if path:
                     cfg = load_config(Path(path))
                     total_slots += cfg.max_parallel_agents
-            except Exception:
+            except Exception:  # noqa: BLE001 (one unloadable project must not abort slot accounting)
                 log.debug("oversight.observation.fleet_slot_config_error", slug=slug, exc_info=True)
         return AgentSlotSummary(
             total_max_slots=total_slots,
@@ -360,6 +360,6 @@ async def _collect_fleet_slots(registry: dict[str, str]) -> AgentSlotSummary:
     except ImportError:
         log.debug("oversight.observation.fleet_service_unavailable")
         return AgentSlotSummary()
-    except Exception:
+    except Exception:  # noqa: BLE001 (slot summary is optional context; an empty summary is acceptable)
         log.debug("oversight.observation.fleet_slots_failed", exc_info=True)
         return AgentSlotSummary()

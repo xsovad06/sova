@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.dashboard.services.agent_validation import check_memory_pressure
 from sova.dashboard.services.feed_service import emit_safe
 from sova.supervisor.gates.utils import count_address_review_runs
@@ -68,7 +70,7 @@ async def _persist_completing_agent_handoff(run_id: int, handoff: "DashboardHand
                 if task_run is not None and not task_run.handoff_json and handoff.details:
                     task_run.handoff_json = handoff.details
                     log.info("auto_handoff.handoff_json_persisted", run_id=run_id, source=handoff.source)
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("auto_handoff.handoff_json_persist_failed", run_id=run_id, exc_info=True)
 
 
@@ -252,5 +254,5 @@ async def _process_auto_handoff(agent: AgentState) -> None:
 
             return  # only execute the first auto action
 
-    except Exception:
+    except Exception:  # noqa: BLE001 (auto-handoff is best-effort; a failure must not break finalization)
         log.warning("auto_handoff.failed", run_id=agent.run_id, exc_info=True)

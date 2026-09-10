@@ -167,7 +167,7 @@ async def _run_command(command: str, args: str, project_dir: str, *, allowed_roo
 
     try:
         config = load_config(resolved)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 (config boundary: any failure becomes a ValueError with context)
         raise ValueError(f"Failed to load SOVA config from {resolved}: {e}") from e
 
     log.info("mcp.run_command", command=command, args=args, project_dir=str(resolved))

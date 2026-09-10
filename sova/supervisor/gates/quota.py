@@ -36,7 +36,7 @@ async def check_quota_gate(
                     gate="quota",
                     detail=f"CodeRabbit quota exhausted{wait_msg}",
                 )
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("quota_gate.check_failed", exc_info=True)
 
     return None

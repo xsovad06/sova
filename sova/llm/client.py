@@ -617,7 +617,7 @@ def _try_load_config(cwd: Path | str | None = None) -> ProjectConfig | None:
         from sova.config.loader import load_config
 
         return load_config(_config_root(cwd))
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
         log.debug("llm.config_load_failed", exc_info=True)
         return None
 
@@ -798,7 +798,7 @@ def maybe_compress(
         from sova.llm.compression import compress
 
         return compress(prompt, content_type=classify_content_type(prompt), cwd=cwd)
-    except Exception:
+    except Exception:  # noqa: BLE001 (compression is optional; any failure returns the original prompt)
         log.warning("llm.compression_failed", exc_info=True)
         return prompt
 

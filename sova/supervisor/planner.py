@@ -178,7 +178,7 @@ class SupervisorPlanner:
                 deferred_count=len(result.deferred),
             )
             return result
-        except Exception:
+        except Exception:  # noqa: BLE001 (planning is optional; the supervisor falls back to deterministic mode)
             log.warning("planner.plan_error", exc_info=True)
             return None
 
@@ -239,7 +239,8 @@ class SupervisorPlanner:
                 f"hits_in_window={status.hits_in_window}, "
                 f"cooldown_remaining={status.cooldown_remaining_seconds:.0f}s"
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (prompt context is best-effort; a missing section must not abort planning)
+            log.warning("planner.github_quota_unavailable", exc_info=True)
             lines.append("- GitHub API: data unavailable")
 
         # CodeRabbit quota
@@ -253,7 +254,8 @@ class SupervisorPlanner:
                 f"can_create_pr={quota.can_create_pr}"
                 + (f", next_available_in={quota.next_available_minutes:.0f}m" if quota.next_available_minutes else "")
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (prompt context is best-effort; a missing section must not abort planning)
+            log.warning("planner.coderabbit_quota_unavailable", exc_info=True)
             lines.append("- CodeRabbit: data unavailable")
 
         # CI budget
@@ -266,7 +268,8 @@ class SupervisorPlanner:
                 f"- CI Budget: {budget.used}/{budget.total} minutes ({budget.pct_used:.0f}% used), "
                 f"remaining={budget.remaining}"
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (prompt context is best-effort; a missing section must not abort planning)
+            log.warning("planner.ci_budget_unavailable", exc_info=True)
             lines.append("- CI Budget: data unavailable")
 
         # Agent slots. Report occupancy, not just the ceiling: given only
@@ -285,7 +288,7 @@ class SupervisorPlanner:
             else:
                 free = max(0, self._config.max_parallel_agents - in_use)
                 lines.append(f"- Agent Slots: {in_use}/{self._config.max_parallel_agents} in use, {free} free")
-        except Exception:
+        except Exception:  # noqa: BLE001 (slot count is advisory context for the LLM prompt, not load-bearing)
             lines.append(f"- Agent Slots: max={self._config.max_parallel_agents}, in-use unavailable")
 
         return "\n".join(lines)
@@ -307,7 +310,7 @@ class SupervisorPlanner:
                     f"{pr.get('computed_state', 'unknown')} | {pr.get('author', '')} |"
                 )
             return "\n".join(lines)
-        except Exception:
+        except Exception:  # noqa: BLE001 (prompt context is best-effort; a missing section must not abort planning)
             log.warning("planner.open_prs_failed", exc_info=True)
             return "## Open PRs\nPR data unavailable"
 
@@ -323,7 +326,8 @@ class SupervisorPlanner:
             for state_val, count in sorted(counts.items()):
                 lines.append(f"- {state_val}: {count}")
             return "\n".join(lines) if len(lines) > 1 else "## Issue Counts by State\nNo issues found"
-        except Exception:
+        except Exception:  # noqa: BLE001 (prompt context is best-effort; a missing section must not abort planning)
+            log.warning("planner.issue_counts_unavailable", exc_info=True)
             return "## Issue Counts by State\nData unavailable"
 
     def _get_priority_queue(self) -> str:
@@ -361,7 +365,8 @@ class SupervisorPlanner:
                 error_summary = _sanitize_error(run.error_message)
                 lines.append(f"- Issue #{run.issue_number}, role={run.role}, error={error_summary}")
             return "\n".join(lines)
-        except Exception:
+        except Exception:  # noqa: BLE001 (prompt context is best-effort; a missing section must not abort planning)
+            log.warning("planner.recent_failures_unavailable", exc_info=True)
             return "## Recent Failures (24h)\nData unavailable"
 
     async def _get_issue_health(self) -> str:
@@ -440,7 +445,7 @@ class SupervisorPlanner:
                 succeeded = health["succeeded"]
                 lines.append(f"| #{issue_num} | {failed} failed | {succeeded} succeeded | ${cost:.2f} | {error} |")
             return "\n".join(lines)
-        except Exception:
+        except Exception:  # noqa: BLE001 (prompt context is best-effort; a missing section must not abort planning)
             log.warning("supervisor.planner.issue_health_failed", exc_info=True)
             return "## Issue Health\nData unavailable"
 
@@ -473,7 +478,7 @@ class SupervisorPlanner:
         except json.JSONDecodeError as exc:
             log.warning("planner.parse_error", raw_response=str(exc)[:200])
             return None
-        except Exception:
+        except Exception:  # noqa: BLE001 (LLM call and JSON parse both fail here; either falls back to deterministic mode)
             log.warning("planner.llm_call_error", exc_info=True)
             return None
 

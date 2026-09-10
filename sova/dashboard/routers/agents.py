@@ -10,6 +10,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
@@ -87,7 +88,8 @@ class _ConnectionManager:
         async def _send(ws: WebSocket) -> WebSocket | None:
             try:
                 await asyncio.wait_for(ws.send_json(data), timeout=2.0)
-            except Exception:
+            except Exception:  # noqa: BLE001 (any send failure means the socket is dead; caller drops it)
+                log.debug("agents.ws_send_failed", exc_info=True)
                 return ws
             return None
 
@@ -108,7 +110,7 @@ class _ConnectionManager:
                 try:
                     statuses = await get_all_agent_statuses(project_dir=project_dir)
                     message = format_status_update(statuses)
-                except Exception:
+                except Exception:  # noqa: BLE001 (a status fetch failure must not tear down the WebSocket)
                     log.warning("Failed to fetch agent statuses for WebSocket broadcast", exc_info=True)
                     message = {"type": "status_update", "runs": []}
                 await self._broadcast(message, project_dir)
@@ -201,7 +203,7 @@ async def create_planner_issues(req: CreateIssuesRequest) -> dict:
                     labels=task.labels,
                 )
             return {"ok": True, "number": result.id, "title": result.title}
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (one failed issue must not abort the rest of the batch)
             log.warning("planner.create_issue_failed", title=task.title, error=str(exc), exc_info=True)
             return {"ok": False, "title": task.title, "error": str(exc)}
 
@@ -254,7 +256,7 @@ async def get_issue_complexity(issue_number: str) -> dict:
                 labels=list(task.labels or []),
             )
             complexity_str = tier.value
-        except Exception:
+        except Exception:  # noqa: BLE001 (complexity assessment falls back to the moderate tier)
             log.debug("complexity.assess_fallback_failed", issue=issue_number, exc_info=True)
             complexity_str = ComplexityTier.MODERATE.value
 
@@ -389,7 +391,7 @@ async def _check_run_terminal(run_id: int) -> bool:
             row = await session.execute(select(TaskRun.status).where(TaskRun.id == run_id))
             status = row.scalar()
             return status in TASK_RUN_TERMINAL if status else True
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("output_stream.terminal_check_failed", run_id=run_id, exc_info=True)
         return False
 
@@ -491,7 +493,7 @@ async def ws_agent_status(websocket: WebSocket) -> None:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
-    except Exception:
+    except Exception:  # noqa: BLE001 (WebSocket teardown reports any transport failure and exits)
         log.exception("Unexpected error in WebSocket /ws/agents/status")
     finally:
         _ws_manager.disconnect(websocket, project_dir)

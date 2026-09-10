@@ -46,7 +46,7 @@ class ResearchStep(BaseStep):
         except FileNotFoundError as exc:
             log.error("step.research.command_missing", issue=ctx.issue_number, exc_info=True)
             return StepResult(success=False, summary="Research command not found", error=f"Missing command file: {exc}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (any LLM or transport failure becomes a failed StepResult)
             log.error("step.research.failed", issue=ctx.issue_number, error_type=type(exc).__name__, exc_info=True)
             return StepResult(success=False, summary="Research failed", error=f"{type(exc).__name__}: {exc}")
 
@@ -59,7 +59,7 @@ class ResearchStep(BaseStep):
             comments = await ctx.adapter.get_comments(ctx.issue_number)
             if any("## Research" in c for c in comments):
                 return GateCheckResult(passed=True)
-        except Exception:
+        except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning("step.research.comments_check_failed", issue=ctx.issue_number, exc_info=True)
         return GateCheckResult(
             passed=False,

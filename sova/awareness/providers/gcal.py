@@ -53,7 +53,7 @@ class CalendarProvider(AwarenessProvider):
         except (FileNotFoundError, ImportError):
             _log.debug("gcal.credentials_unavailable", exc_info=True)
             return False
-        except Exception:
+        except Exception:  # noqa: BLE001 (Google API client surfaces arbitrary transport and auth errors)
             _log.warning("gcal.auth_check_failed", exc_info=True)
             return False
 
@@ -72,13 +72,13 @@ class CalendarProvider(AwarenessProvider):
 
         try:
             creds = authenticate_google(self.config)
-        except Exception:
+        except Exception:  # noqa: BLE001 (Google API client surfaces arbitrary transport and auth errors)
             _log.warning("gcal.auth_failed", exc_info=True)
             return []
 
         try:
             service = build("calendar", "v3", credentials=creds)
-        except Exception:
+        except Exception:  # noqa: BLE001 (Google API client surfaces arbitrary transport and auth errors)
             _log.warning("gcal.service_build_failed", exc_info=True)
             return []
 
@@ -117,7 +117,7 @@ class CalendarProvider(AwarenessProvider):
                     if not page_token:
                         break
 
-            except Exception:
+            except Exception:  # noqa: BLE001 (Google API client surfaces arbitrary transport and auth errors)
                 _log.warning("gcal.calendar_fetch_failed", calendar=calendar_id, exc_info=True)
                 continue
 

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 import typer
 from rich.console import Console
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters import create_adapter
 from sova.config.loader import load_config
@@ -55,13 +56,14 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
                 async with session.begin():
                     await save_config_to_db(session, _default_config())
             console.print("[green]Default configuration saved to database.[/green]")
-        except Exception:
-            pass  # Stage 3 will retry
+        except Exception:  # noqa: BLE001 (best-effort early save; the setup wizard retries this in stage 3)
+            log.debug("setup.early_config_save_failed", project_dir=str(project_dir), exc_info=True)
 
     # Stage 2: Git hooks (non-fatal)
     try:
         await _configure_git_hooks(project_dir)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
+        log.warning("setup.git_hooks_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[yellow]Warning: git hooks configuration failed: {exc}[/yellow]")
 
     # Git identity check (non-fatal warning)
@@ -73,7 +75,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
                 f"[yellow]Warning: git identity incomplete (missing {_}). "
                 f"Agents need this to commit. Set with: git config user.name / user.email[/yellow]"
             )
-    except Exception:
+    except (RuntimeError, OSError):
         log.debug("install.git_identity_check_failed", exc_info=True)
 
     # Stage 3: Database
@@ -92,9 +94,10 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
                     async with session.begin():
                         await save_config_to_db(session, _default_config())
                 console.print("[green]Default configuration saved to database.[/green]")
-            except Exception:
+            except (OSError, RuntimeError, SQLAlchemyError):
                 log.warning("Failed to backfill default config after init_db", exc_info=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
+        log.warning("setup.database_init_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[red]Database initialization failed: {exc}[/red]")
         failed_stages.append("database")
 
@@ -104,7 +107,8 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     # Stage 3.5: Agent permissions (non-fatal)
     try:
         _configure_agent_permissions(claude_dir, update=update)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
+        log.warning("setup.agent_permissions_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[yellow]Warning: agent permission setup failed: {exc}[/yellow]")
 
     # Stage 4: Commands, guidelines, and skills
@@ -151,27 +155,31 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
             console.print(f"[green]Guidelines installed: {guide_result.installed}[/green]")
             sk_result = install_sk(skills_src_dir, skills_target, cfg)
             console.print(f"[green]Skills installed: {sk_result.installed}[/green]")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
+        log.warning("setup.command_install_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[red]Command installation failed: {exc}[/red]")
         failed_stages.append("commands")
 
     # Stage 5: RTK hook injection (non-fatal)
     try:
         _configure_rtk(cfg, claude_dir)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
+        log.warning("setup.rtk_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[yellow]Warning: RTK setup failed: {exc}[/yellow]")
 
     # Stage 6: MCP auto-configuration (non-fatal)
     try:
         _configure_mcp_servers(project_dir, claude_dir)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
+        log.warning("setup.mcp_config_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[yellow]Warning: MCP auto-configuration failed: {exc}[/yellow]")
 
     # Stage 7: Agent memory (non-fatal)
     if not update:
         try:
             _create_agent_memory(claude_dir)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
+            log.warning("setup.agent_memory_failed", project_dir=str(project_dir), exc_info=True)
             console.print(f"[yellow]Warning: agent memory setup failed: {exc}[/yellow]")
 
     # Verify and report
@@ -415,7 +423,8 @@ async def _uninstall(
 
         if remove_rtk_hook(claude_dir):
             removed.append("RTK hook from .claude/settings.json")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (uninstall continues past any single step; failures are reported to the user)
+        log.debug("uninstall.rtk_hook_failed", project_dir=str(project_dir), exc_info=True)
         failed.append(f"RTK hook: {exc}")
 
     # 6. MCP servers (always removed: SOVA-managed)
@@ -424,7 +433,8 @@ async def _uninstall(
 
         if remove_mcp_server(claude_dir, _PATTERNFLY_MCP_NAME):
             removed.append("PatternFly MCP server from .claude/settings.json")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (uninstall continues past any single step; failures are reported to the user)
+        log.debug("uninstall.mcp_servers_failed", project_dir=str(project_dir), exc_info=True)
         failed.append(f"MCP servers: {exc}")
 
     # 7. Agent memory (opt-in removal)
@@ -464,7 +474,8 @@ async def _uninstall(
                 unregister_project(slug)
                 removed.append(f"registry entry ({slug})")
                 break
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (uninstall continues past any single step; failures are reported to the user)
+        log.debug("uninstall.registry_failed", project_dir=str(project_dir), exc_info=True)
         failed.append(f"registry: {exc}")
 
     if removed:
@@ -578,7 +589,7 @@ async def _setup(*, path: Path | None) -> None:
         from sova.db.session import get_session, init_db
 
         await init_db(project_dir)
-    except Exception as exc:
+    except (OSError, SQLAlchemyError) as exc:
         console.print(f"[red]Database initialization failed: {exc}[/red]")
         raise typer.Exit(code=1)
 
@@ -590,7 +601,7 @@ async def _setup(*, path: Path | None) -> None:
             async with session.begin():
                 await save_config_to_db(session, config)
         console.print("\n[green]Configuration saved to database.[/green]")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (any save failure aborts the wizard with a clear message)
         console.print(f"[red]Failed to save configuration: {exc}[/red]")
         raise typer.Exit(code=1)
 

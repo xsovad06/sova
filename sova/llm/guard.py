@@ -310,7 +310,7 @@ def guard_prompt(prompt: str) -> None:
 
     try:
         config = load_config()
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons, guard is non-essential)
         log.debug("guard_prompt: config load failed, guard bypassed", exc_info=True)
         return
 

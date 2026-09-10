@@ -31,7 +31,7 @@ async def check_address_review_circuit_breaker_gate(
                 gate="circuit_breaker",
                 detail=f"Address-review circuit breaker: {count}/{max_cycles} cycles completed for PR #{pr_number}",
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 (gates fail open: an unevaluable gate must not block progression)
         log.debug("circuit_breaker_gate.check_failed", issue=issue, exc_info=True)
 
     return None

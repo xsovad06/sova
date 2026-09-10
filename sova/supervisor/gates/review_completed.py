@@ -97,7 +97,7 @@ async def _has_reviewer_run(
 
         verdict = await get_sova_review_verdict(str(issue_number), pr_number=pr_number, project_dir=project_dir)
         return verdict.get("has_sova_review", False) and verdict.get("run_status") == "done"
-    except Exception:
+    except Exception:  # noqa: BLE001 (one of three review sources; failure falls through to the others)
         log.debug("review_completed.db_check_failed", exc_info=True)
         return False
 

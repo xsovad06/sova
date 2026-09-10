@@ -631,7 +631,7 @@ class TestFleetManagerServiceCoverage:
     @pytest.mark.asyncio
     async def test_write_max_concurrent_to_db_error_returns_false(self) -> None:
         """_write_max_concurrent_to_db returns False on DB errors."""
-        mock_save = AsyncMock(side_effect=Exception("DB gone"))
+        mock_save = AsyncMock(side_effect=RuntimeError("DB gone"))
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)

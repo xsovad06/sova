@@ -81,7 +81,7 @@ def _resolve_targets(registry: dict[str, str]) -> list[tuple[str, str, str]]:
             if not cfg.github_repo:
                 continue
             targets.append((slug, cfg.github_repo, cfg.github_user))
-        except Exception:
+        except Exception:  # noqa: BLE001 (one unloadable project is skipped, not fatal)
             _log.warning("pr_status.config_load_failed", slug=slug, exc_info=True)
     return targets
 
@@ -109,7 +109,7 @@ async def _safe_fetch(
         except TimeoutError:
             _log.warning("pr_status.fetch_timeout", slug=slug, repo=repo)
             return []
-        except Exception:
+        except Exception:  # noqa: BLE001 (one unreachable project must not abort the fleet query)
             _log.warning("pr_status.fetch_failed", slug=slug, repo=repo, exc_info=True)
             return []
 

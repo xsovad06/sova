@@ -115,7 +115,8 @@ async def _check_cli_available(cli_name: str, install_hint: str) -> tuple[bool, 
             except ProcessLookupError:
                 pass
         return False, f"{cli_name} --version timed out"
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 (availability probe must never raise; any failure means "unavailable")
+        log.debug("runtime.version_probe_failed", cli=cli_name, exc_info=True)
         return False, f"error checking version: {exc}"
 
 
@@ -268,7 +269,8 @@ class ClaudeCodeRuntime(AgentRuntime):
             result_text = str(data.get("result", ""))
             try:
                 cost_usd = Decimal(str(data.get("total_cost_usd", 0)))
-            except Exception:
+            except (ArithmeticError, ValueError, TypeError):
+                log.debug("runtime.cost_parse_failed", raw=data.get("total_cost_usd"), exc_info=True)
                 cost_usd = Decimal(0)
             usage = data.get("usage", {})
             if not isinstance(usage, dict):

@@ -44,7 +44,7 @@ def _get_memory_guard_config() -> MemoryGuardConfig | None:
 
         cfg = load_config(get_project_dir())
         return cfg.memory_guard
-    except Exception:
+    except Exception:  # noqa: BLE001 (memory guard is optional; monitoring runs without it)
         log.warning("system_metrics.memory_guard_load_failed", exc_info=True)
         return None
 
@@ -294,7 +294,7 @@ async def get_total_energy(project_dir: Path | None = None) -> dict:
             "total_co2_grams": str(round(total_co2, 4)),
             "run_count": count,
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
         log.warning("total_energy.query_failed", exc_info=True)
         raise
 
@@ -309,7 +309,7 @@ async def get_capacity_recommendation(project_dir: Path | None = None) -> dict:
 
     try:
         cfg = load_config(project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
         log.warning("capacity.config_load_failed", exc_info=True)
         raise
 
@@ -339,7 +339,7 @@ async def get_capacity_recommendation(project_dir: Path | None = None) -> dict:
                 )
             if records:
                 latest_time = records[0].created_at
-    except Exception:
+    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
         log.warning("capacity.db_query_failed", exc_info=True)
         raise
 
@@ -348,7 +348,8 @@ async def get_capacity_recommendation(project_dir: Path | None = None) -> dict:
         cpu_count = psutil.cpu_count() or 1
         mem = psutil.virtual_memory()
         cpu_percent = psutil.cpu_percent(interval=None) or 0.0
-    except Exception:
+    except (psutil.Error, OSError, RuntimeError):
+        log.warning("capacity.system_metrics_failed", exc_info=True)
         cpu_count = 1
         mem = None
         cpu_percent = 0.0
@@ -363,7 +364,7 @@ async def get_capacity_recommendation(project_dir: Path | None = None) -> dict:
         cross = await asyncio.to_thread(get_cross_project_metrics, resolved)
         totals = cross.get("machine_totals", {})
         cross_cpu = totals.get("total_agent_cpu_percent", 0.0)
-    except Exception:
+    except Exception:  # noqa: BLE001 (cross-project totals are optional context for the recommendation)
         log.warning("capacity.cross_project_failed", exc_info=True)
 
     rec = recommend_capacity(

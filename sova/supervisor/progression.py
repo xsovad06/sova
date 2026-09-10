@@ -127,7 +127,7 @@ class TaskProgressionEngine:
             from sova.dashboard.services.pr_service import get_pr_mergeability_map
 
             return await get_pr_mergeability_map()
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: mergeability fetch spans GitHub API and git calls)
             log.debug("evaluate_all.mergeability_fetch_failed", exc_info=True)
             return {}
 
@@ -140,7 +140,7 @@ class TaskProgressionEngine:
                 self._session_factory,
                 self._config,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: file overlap fetch spans DB, git and GitHub API)
             log.debug("evaluate_all.file_overlap_fetch_failed", exc_info=True)
             return None
 
@@ -207,7 +207,7 @@ class TaskProgressionEngine:
 
         try:
             graph = await build_dependency_graph(self._adapter)
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: graph build spans adapter, GitHub API and DB calls)
             log.warning("evaluate_all.graph_build_failed", exc_info=True)
             return []
 
@@ -359,7 +359,7 @@ class TaskProgressionEngine:
 
         try:
             state = await self._adapter.get_state(str(issue_number))
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: adapter call must not crash the evaluation loop)
             log.warning("evaluate_task.get_state_failed", issue=issue_number, exc_info=True)
             return ProgressionDecision(
                 issue_number=issue_number,
@@ -384,7 +384,7 @@ class TaskProgressionEngine:
 
         try:
             graph = await build_dependency_graph(self._adapter)
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: graph build spans adapter, GitHub API and DB calls)
             log.warning("evaluate_task.graph_build_failed", issue=issue_number, exc_info=True)
             return ProgressionDecision(
                 issue_number=issue_number,
@@ -412,7 +412,7 @@ class TaskProgressionEngine:
                     self._config,
                     exclude_issue=str(issue_number),
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 (fail-open: file overlap fetch spans DB, git and GitHub API)
                 log.debug("evaluate_task.file_overlap_fetch_failed", issue=issue_number, exc_info=True)
 
         return await self._evaluate_single(
@@ -481,7 +481,7 @@ class TaskProgressionEngine:
                         issue=decision.issue_number,
                         user=self._adapter.github_user,
                     )
-            except Exception:
+            except Exception:  # noqa: BLE001 (fail-open: assignment must not block decision execution)
                 log.warning("ownership.claim_failed", issue=decision.issue_number, exc_info=True)
 
         log.info(
@@ -560,7 +560,7 @@ class TaskProgressionEngine:
             )
             log.info("stale_reset.completed", issue=issue_number, via=target_desc)
             return {"reset": True, "issue": issue_number}
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: stale reset spans DB and adapter transition calls)
             log.warning("stale_reset.failed", issue=issue_number, exc_info=True)
             return {"error": f"Failed to reset stale state for #{issue_number}"}
 
@@ -584,7 +584,7 @@ class TaskProgressionEngine:
                 children=sorted(children),
             )
             return {"issue": node_id, "title": title, "closed": True}
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: epic close spans adapter and DB calls)
             log.warning("auto_close_epics.transition_failed", issue=node_id, exc_info=True)
             return {"issue": node_id, "title": title, "closed": False}
 
@@ -611,7 +611,7 @@ class TaskProgressionEngine:
                 return []
             try:
                 graph = await build_dependency_graph(self._adapter)
-            except Exception:
+            except Exception:  # noqa: BLE001 (fail-open: graph build spans adapter, GitHub API and DB calls)
                 log.warning("auto_close_epics.graph_build_failed", exc_info=True)
                 return []
 
@@ -1017,7 +1017,7 @@ class TaskProgressionEngine:
             for pr in prs:
                 if pr.get("number") == pr_number:
                     return pr
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: PR enrichment lookup is best-effort)
             log.debug("fetch_enriched_pr.failed", pr=pr_number, exc_info=True)
         return None
 
@@ -1029,7 +1029,7 @@ class TaskProgressionEngine:
             if not self._adapter.repo:
                 return None
             return await find_pr_for_issue(str(issue), repo=self._adapter.repo, github_user=self._adapter.github_user)
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: PR lookup is best-effort)
             log.debug("find_pr.failed", issue=issue, exc_info=True)
             return None
 
@@ -1048,7 +1048,7 @@ class TaskProgressionEngine:
             verdict_data = await get_sova_review_verdict(
                 str(issue), pr_number=pr_info.number, project_dir=self._project_dir
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 (verdict lookup spans DB, tracker and PR review sources)
             log.debug("refine_in_review.verdict_failed", issue=issue, exc_info=True)
             return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 

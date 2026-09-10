@@ -116,7 +116,7 @@ class _FileLogProcessor:
                     exc_info=None,
                 )
                 self._handler.emit(record)
-            except Exception:
+            except Exception:  # noqa: BLE001 (logging from inside a log processor would recurse; drop the record)
                 pass
         return event_dict
 

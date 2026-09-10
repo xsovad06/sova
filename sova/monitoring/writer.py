@@ -13,6 +13,8 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.monitoring.models import ResourceSample, ResourceSummary
 from sova.utils.logging import get_logger
 
@@ -104,7 +106,7 @@ class ResourceWriter:
                 # of losing the batch silently.
                 insert_task.add_done_callback(self._make_detached_flush_failure_handler(samples_to_flush))
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 (fail-open: DB write failure must not lose buffered samples)
             log.warning("resource_writer.flush_failed", run_id=self._run_id, samples=len(records), exc_info=True)
             # Re-add to buffer for retry on next flush
             self._buffer = samples_to_flush + self._buffer
@@ -173,7 +175,7 @@ class ResourceWriter:
                 # instead of silently dropped.
                 summary_task.add_done_callback(self._make_detached_summary_failure_handler())
             raise
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("resource_writer.summary_failed", run_id=self._run_id, exc_info=True)
 
     def _make_detached_summary_failure_handler(self) -> Callable[[asyncio.Task], None]:
@@ -236,6 +238,6 @@ async def cleanup_old_resources(project_dir: Path | None, retention_days: int = 
                 deleted: int = samples_result.rowcount + summaries_result.rowcount
         log.info("resource.cleanup", deleted=deleted, retention_days=retention_days)
         return deleted
-    except Exception:
+    except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("resource.cleanup_failed", exc_info=True)
         return 0

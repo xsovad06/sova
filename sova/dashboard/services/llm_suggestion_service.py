@@ -84,7 +84,7 @@ async def _is_enabled() -> bool:
     """Check whether the llm_suggestions config toggle is on."""
     try:
         cfg = await asyncio.to_thread(load_config)
-    except Exception:
+    except Exception:  # noqa: BLE001 (suggestions are disabled when config cannot be loaded)
         log.warning("llm_suggestion.config_load_failed", exc_info=True)
         return True
     return cfg.dashboard.llm_suggestions
@@ -240,7 +240,7 @@ async def get_llm_suggestion(
             log.warning("llm_suggestion.no_json_found", pr=pr_number, response_preview=text[:200])
             return None
         parsed = json.loads(json_str)
-    except Exception:
+    except Exception:  # noqa: BLE001 (HTTP call, auth and JSON parse all fail here; suggestions are optional)
         log.warning("llm_suggestion.call_failed", pr=pr_number, exc_info=True)
         return None
 

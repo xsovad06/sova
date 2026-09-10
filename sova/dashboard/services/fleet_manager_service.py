@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import aiosqlite
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.registry import ProjectEntry, get_project_entries, list_projects
 from sova.dashboard.services.agent_pool import list_all_pools, read_max_parallel
@@ -173,7 +174,7 @@ class FleetManagerService:
             except (TimeoutError, asyncio.TimeoutError):
                 error = "DB query timed out"
                 log.warning("fleet_manager.db_timeout", slug=slug)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 (one unreachable project is reported inline, not fatal)
                 error = f"DB error: {exc}"
                 log.warning("fleet_manager.db_error", slug=slug, exc_info=True)
 
@@ -214,7 +215,7 @@ class FleetManagerService:
                 ) as cur:
                     row = await cur.fetchone()
                     result["queued"] = (row["cnt"] or 0) if row else 0
-            except Exception:
+            except (OSError, SQLAlchemyError, aiosqlite.Error):
                 log.debug("fleet_manager.queue_query_failed", db=str(db_path), exc_info=True)
 
             # CodeRabbit review IDs (for cross-project dedup)
@@ -229,7 +230,7 @@ class FleetManagerService:
                         cr_ids.add(row["review_id"])
                 result["cr_reviews"] = len(cr_ids)
                 result["cr_review_ids"] = cr_ids
-            except Exception:
+            except (OSError, SQLAlchemyError, aiosqlite.Error):
                 # coderabbit_events table may not exist in older DBs
                 log.debug("fleet_manager.cr_query_failed", db=str(db_path), exc_info=True)
 
@@ -243,7 +244,8 @@ class FleetManagerService:
 
             cfg = load_config(project_dir)
             return cfg.coderabbit_quota.reviews_per_hour or 0
-        except Exception:
+        except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+            log.warning("fleet_manager.coderabbit_limit_read_failed", project_dir=str(project_dir), exc_info=True)
             return 0
 
     @staticmethod
@@ -262,7 +264,7 @@ class FleetManagerService:
                 await save_setting(session, "max_parallel_agents", value)
                 await session.commit()
             return True
-        except Exception:
+        except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("fleet_manager.db_write_failed", exc_info=True)
             return False
 

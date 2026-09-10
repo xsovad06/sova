@@ -90,7 +90,11 @@ target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = ["E", "F", "I", "W", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test helpers legitimately catch broadly (fixtures, cleanup, failure injection).
+"tests/**" = ["BLE001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["sova", "app"]
