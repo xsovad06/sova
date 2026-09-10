@@ -23,6 +23,7 @@ from sova.llm.errors import (
     RateLimitError,
 )
 from sova.llm.models import LLMResult
+from sova.llm.provider import LLMProvider
 
 
 @pytest.fixture(autouse=True)
@@ -49,15 +50,22 @@ _IDENTITY = "claude-code:"
 
 
 class _Recorder:
-    """Attempt callable that records (model, next_hop, timeout, budget) per call."""
+    """Attempt callable that records (model, next_hop, timeout, budget) per call.
+
+    Also records the ``provider`` instance each call received (``self.providers``),
+    so tests can assert every attempt in one fallback walk observed the same
+    instance the walk's budget-cap gate checked.
+    """
 
     def __init__(self, *outcomes: object) -> None:
         self._outcomes = list(outcomes)
         self.calls: list[tuple[str | None, str | None, float, Decimal | None]] = []
+        self.providers: list[object] = []
 
     async def __call__(
-        self, model: str | None, next_hop: str | None, timeout: float, budget: Decimal | None
+        self, provider: object, model: str | None, next_hop: str | None, timeout: float, budget: Decimal | None
     ) -> LLMResult:
+        self.providers.append(provider)
         self.calls.append((model, next_hop, timeout, budget))
         outcome = self._outcomes[len(self.calls) - 1] if len(self.calls) <= len(self._outcomes) else _ok()
         if isinstance(outcome, BaseException):
@@ -273,7 +281,7 @@ class TestInvokeWithFallbackLoop:
             def __init__(self) -> None:
                 self.calls: list[float] = []
 
-            async def __call__(self, model, next_hop, timeout, budget):  # noqa: ANN001
+            async def __call__(self, provider, model, next_hop, timeout, budget):  # noqa: ANN001
                 self.calls.append(timeout)
                 if len(self.calls) == 1:
                     await asyncio.sleep(elapsed)
@@ -373,6 +381,98 @@ class TestInvokeWithFallbackLoop:
             attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=900.0
         )
         assert [c[3] for c in attempt.calls] == [None, None]
+
+    async def test_every_attempt_in_one_walk_shares_the_checked_provider(self) -> None:
+        """A single ``get_provider()`` call must serve the whole chain walk.
+
+        Fetching it again per attempt would let a mid-walk reload_provider()
+        swap in a different provider after the budget-cap gate already passed
+        against the first one (e.g. a cap-supporting provider at check time,
+        then a LiteLLM instance, which ignores max_budget_usd, for a later hop).
+        """
+        checked = client.get_provider()
+        attempt = _Recorder(RateLimitError("first"), RateLimitError("second"), _ok("haiku"))
+        await client._invoke_with_fallback(
+            attempt, primary="opus", cfg=_cfg("sonnet", "haiku"), caller_fallback=None, timeout=900.0
+        )
+        assert len(attempt.providers) == 3
+        assert all(p is checked for p in attempt.providers)
+
+
+class _NoCapProvider(LLMProvider):
+    """Minimal provider with the conservative all-False capability default."""
+
+    async def invoke(self, prompt: str, **kwargs: object) -> LLMResult:
+        raise AssertionError("should not be called: budget gate must raise first")
+
+    async def invoke_streaming(self, prompt: str, **kwargs: object):
+        raise AssertionError("should not be called: budget gate must raise first")
+        yield  # pragma: no cover (required for async generator typing)
+
+    async def check_available(self) -> tuple[bool, str]:
+        return True, "ok"
+
+
+class TestBudgetCapGate:
+    """A non-cap provider (all providers but claude-code today) cannot honour
+    ``max_budget_usd`` natively, so a non-positive remaining budget must raise
+    before the provider is ever called.
+    """
+
+    async def test_non_positive_budget_raises_for_provider_without_cap_support(self) -> None:
+        client.set_provider(_NoCapProvider())
+        attempt = _Recorder(_ok())
+        with pytest.raises(BillingError):
+            await client._invoke_with_fallback(
+                attempt,
+                primary="opus",
+                cfg=_cfg(),
+                caller_fallback=None,
+                timeout=900.0,
+                max_budget_usd=Decimal("0"),
+            )
+        assert attempt.calls == []
+
+    async def test_negative_budget_raises_for_provider_without_cap_support(self) -> None:
+        client.set_provider(_NoCapProvider())
+        attempt = _Recorder(_ok())
+        with pytest.raises(BillingError):
+            await client._invoke_with_fallback(
+                attempt,
+                primary="opus",
+                cfg=_cfg(),
+                caller_fallback=None,
+                timeout=900.0,
+                max_budget_usd=Decimal("-1"),
+            )
+        assert attempt.calls == []
+
+    async def test_non_positive_budget_passes_through_for_cap_supporting_provider(self) -> None:
+        """claude-code (the default provider) is unaffected: defaults parity."""
+        attempt = _Recorder(_ok())
+        result = await client._invoke_with_fallback(
+            attempt,
+            primary="opus",
+            cfg=_cfg(),
+            caller_fallback=None,
+            timeout=900.0,
+            max_budget_usd=Decimal("0"),
+        )
+        assert result.text == "ok"
+        assert attempt.calls[0][3] == Decimal("0")
+
+    async def test_positive_budget_never_gated(self) -> None:
+        client.set_provider(_NoCapProvider())
+        attempt = _Recorder(_ok())
+        result = await client._invoke_with_fallback(
+            attempt,
+            primary="opus",
+            cfg=_cfg(),
+            caller_fallback=None,
+            timeout=900.0,
+            max_budget_usd=Decimal("5"),
+        )
+        assert result.text == "ok"
 
 
 class TestUntypedProviderErrors:

@@ -66,11 +66,32 @@ that "resolves aliases via `normalize_model_name`" is dead code.
 
 ### R6: Budget guard goes blind on non-Anthropic / unknown models
 The rate card returns `Decimal("0")` for unknown models
-([models.py:78-119](sova/config/models.py#L78-L119)); the per-issue budget guard reads recorded
+([llm/models.py:82-161](sova/llm/models.py#L82-L161)); the per-issue budget guard reads recorded
 cost; `--max-budget-usd` is claude-code-only. Enabling Ollama/OpenAI without addressing this
 removes the primary runaway-loop stop for exactly the providers the migration adds.
 - Mitigation: a wall-clock/step-count runaway guard lands **before** any non-Anthropic provider
   (PR10); per-provider cost population and capability-gated budget enforcement follow (PR11).
+- Status (PR11, done): the Anthropic Batch cost gap is closed. `_parse_message_response()`
+  ([anthropic_batch.py](sova/llm/providers/anthropic_batch.py)) now computes real cost via
+  `compute_model_cost()` with the 50% batch discount instead of hardcoding `Decimal("0")`, and a
+  model the rate card does not price logs `batch.cost_unknown_model` rather than recording a
+  silent `$0`. LiteLLM already reports real cost for any model in its pricing database; a lookup
+  miss on a local model now logs at debug level. `_get_cost()` also checks a non-positive
+  `completion_cost()`/`cost_per_token()` return, not just a raised exception, so LiteLLM's
+  documented non-raising unpriced-model case (returning `0.0` instead of raising) no longer slips
+  through as a silent, unlogged `$0`: the remaining `llm.litellm.cost_unknown` warnings mark
+  genuine pricing gaps in both failure modes. `ProviderCapabilities` (`supports_cli_fallback`,
+  `supports_budget_cap`, `reports_cost`, `dynamic_models`) was introduced in this PR rather than
+  waiting on PR10 (#919, still unmerged) per the migration's "introduce it now, converge later"
+  contract; `LLMResult.cost_source` (`PRICED` / `FREE_LOCAL` / `UNKNOWN`) makes cost provenance a
+  queryable property instead of a log-level heuristic. `client.py`'s `_raise_if_budget_cap_unsupported()`
+  gates every `invoke()`/`invoke_command()`/`invoke_streaming()` call: when the caller's remaining
+  budget (`max_budget - ctx.cost_usd`) is non-positive and the active provider's
+  `capabilities.supports_budget_cap` is False, it raises `BillingError` before the provider is
+  ever called. `ClaudeCodeProvider.capabilities.supports_budget_cap = True` short-circuits this to
+  today's pass-through behavior, so defaults are unchanged for the default provider.
+- Still open: the mid-run wall-clock/step-count runaway guard (a provider can still overspend
+  *within* one already-authorized call) arrives with PR10.
 
 ### R7: Startup availability probing on every command and every subprocess
 `_init_llm_provider` runs on the Typer callback, so it fires for every `sova` subcommand, and

@@ -1613,6 +1613,29 @@ class TestInvokeStreaming:
         assert result_events[0].result.text == "Hello world"
         assert result_events[0].result.cost_usd == Decimal("0.03")
 
+    async def test_invoke_streaming_gates_budget_for_non_cap_provider(self) -> None:
+        """A provider that cannot enforce max_budget_usd natively must not be called
+        when the remaining budget is already exhausted."""
+        from sova.llm import client
+        from sova.llm.errors import BillingError
+        from sova.llm.provider import LLMProvider
+
+        class _NoCapProvider(LLMProvider):
+            async def invoke(self, prompt, **kwargs):
+                raise AssertionError("should not be called")
+
+            async def invoke_streaming(self, prompt, **kwargs):
+                raise AssertionError("should not be called")
+                yield  # pragma: no cover
+
+            async def check_available(self):
+                return True, "ok"
+
+        client.set_provider(_NoCapProvider())
+        with pytest.raises(BillingError):
+            async for _event in client.invoke_streaming("Say hello", max_budget_usd=Decimal("0")):
+                pass
+
 
 # ---------------------------------------------------------------------------
 # Provider abstraction
