@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -73,6 +74,21 @@ def _assert_command_exists(command: str, cwd: Path) -> None:
         raise RuntimeError(
             f"Command {command} not found at {cmd_path}. Run 'sova commands update --project {cwd}' to install it."
         )
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    """Declares what a provider can reliably guarantee.
+
+    Every field defaults to ``False`` so a provider subclass that does not
+    override :attr:`LLMProvider.capabilities` is never assumed more capable
+    than it has proven to be (fail toward "assume unreliable").
+    """
+
+    supports_cli_fallback: bool = False
+    supports_budget_cap: bool = False
+    reports_cost: bool = False
+    dynamic_models: bool = False
 
 
 class LLMProvider(ABC):
@@ -186,6 +202,17 @@ class LLMProvider(ABC):
             Tuple of (available, detail_message).
         """
         ...
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        """Declare what this provider can reliably guarantee.
+
+        Concrete default (not abstract) so existing and third-party provider
+        subclasses do not break. Providers override this to opt into stronger
+        guarantees as they earn them; the conservative default means an
+        unaudited provider is treated as unable to cap budget or report cost.
+        """
+        return ProviderCapabilities()
 
 
 def create_provider(cfg: LLMConfig) -> LLMProvider:

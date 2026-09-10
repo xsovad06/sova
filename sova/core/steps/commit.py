@@ -68,9 +68,9 @@ class CommitStep(BaseStep):
 
         message = self._build_commit_message(ctx)
 
-        no_verify = ctx.budget_remaining_fraction < BUDGET_SKIP_HOOKS_THRESHOLD
+        no_verify = ctx.resource_remaining_fraction < BUDGET_SKIP_HOOKS_THRESHOLD
         if no_verify:
-            log.warning("step.commit.budget_skip_hooks", fraction=ctx.budget_remaining_fraction)
+            log.warning("step.commit.budget_skip_hooks", fraction=ctx.resource_remaining_fraction)
 
         try:
             await git_ops.commit(message, cwd=ctx.working_dir, no_verify=no_verify)

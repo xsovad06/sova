@@ -586,6 +586,32 @@ class WatchdogConfig(BaseSettings):
         return self
 
 
+class RunawayConfig(BaseSettings):
+    """Cost-independent runaway guards (docs/model-selection-risk-assessment.md, R6).
+
+    Backstops the dollar-based agent.max_budget/max_issue_budget checks, which
+    go blind against a provider that always reports cost_usd=0. Each limit
+    disables independently at 0, unlike the budget fields (gt=0), because a
+    deployment that never enables a non-Anthropic provider should see no
+    behavior change. Wall clock is scaled by task complexity (see
+    WorkflowEngine._step_timeout's multiplier) so a legitimate EPIC-complexity
+    run is not paused by the flat default ceiling. max_llm_calls backstops
+    retry/fix loops that burn LLM calls inside a single step's execute()
+    without incrementing steps_completed (MonitorCIStep's CI-fix loop,
+    AddressReviewStep's consensus loop). max_step_attempts caps total attempts
+    at a single step across fallback-model switches, since each switch resets
+    the inner per-model retry counter and could otherwise multiply attempts
+    unbounded. See WorkflowEngine._check_runaway_guard.
+    """
+
+    max_run_wall_clock_seconds: int = Field(14400, ge=0)
+    max_run_steps: int = Field(100, ge=0)
+    max_llm_calls: int = Field(250, ge=0)
+    max_step_attempts: int = Field(80, ge=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_RUNAWAY_")
+
+
 class SupervisorConfig(BaseSettings):
     """Supervisor: dependency-aware task progression engine."""
 
@@ -777,6 +803,7 @@ class ProjectConfig(BaseSettings):
     coderabbit_quota: CodeRabbitQuotaConfig = Field(default_factory=CodeRabbitQuotaConfig)
     pr_monitor: PRMonitorConfig = Field(default_factory=PRMonitorConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
+    runaway: RunawayConfig = Field(default_factory=RunawayConfig)
     memory_guard: MemoryGuardConfig = Field(default_factory=MemoryGuardConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)

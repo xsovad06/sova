@@ -18,8 +18,8 @@ class SimplifyStep(BaseStep):
     async def can_skip(self, ctx: ExecutionContext) -> bool:
         if self.name in ctx.completed_steps:
             return True
-        if ctx.budget_remaining_fraction < BUDGET_SKIP_OPTIONAL_THRESHOLD:
-            log.warning("step.simplify.budget_skip", fraction=ctx.budget_remaining_fraction)
+        if ctx.resource_remaining_fraction < BUDGET_SKIP_OPTIONAL_THRESHOLD:
+            log.warning("step.simplify.budget_skip", fraction=ctx.resource_remaining_fraction)
             return True
         return False
 

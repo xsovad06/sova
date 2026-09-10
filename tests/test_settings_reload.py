@@ -700,7 +700,7 @@ class TestSingletonReload:
 
         cfg = ProjectConfig(llm=LLMConfig(model="test-model"))
 
-        with patch("sova.llm.provider.create_provider") as mock_create:
+        with patch("sova.llm.client.create_provider") as mock_create:
             mock_provider = MagicMock()
             mock_create.return_value = mock_provider
             reload_provider(cfg)
@@ -730,7 +730,7 @@ class TestSingletonReload:
         provider = MagicMock()
         provider.normalize_model_name = lambda m: m
         provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="ollama/llama3.1:70b"))
-        with patch("sova.llm.provider.create_provider", return_value=provider) as mock_create:
+        with patch("sova.llm.client.create_provider", return_value=provider) as mock_create:
             await _dispatch_config_reload("llm", cfg, {}, Path("/tmp"))
 
         assert mock_create.call_args.args[0].model_aliases == {"smart": "ollama/llama3.1:70b"}

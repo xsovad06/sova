@@ -319,19 +319,20 @@ class MonitorCIStep(BaseStep):
                     error=f"Budget exceeded. Remaining failures: {names}",
                 )
 
-            if ctx.budget_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
+            if ctx.resource_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
                 log.warning(
                     "step.monitor_ci.budget_fraction_stop_retry",
                     attempt=attempt,
-                    fraction=ctx.budget_remaining_fraction,
+                    fraction=ctx.resource_remaining_fraction,
                 )
                 names = ", ".join(c.name for c in failed_checks)
                 return StepResult(
-                    success=True,
+                    success=False,
                     summary=(
                         f"CI still failing after {attempt - 1} fix attempt(s); stopping retries at "
-                        f"{ctx.budget_remaining_fraction:.0%} budget remaining. Remaining failures: {names}"
+                        f"{ctx.resource_remaining_fraction:.0%} resource remaining. Remaining failures: {names}"
                     ),
+                    error=f"Failed checks: {names}",
                     cost_usd=total_fix_cost,
                 )
 

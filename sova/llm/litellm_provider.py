@@ -17,7 +17,7 @@ from pathlib import Path
 
 from sova.llm.errors import LLMError, ProviderUnavailableError, classify_exception
 from sova.llm.models import LLMResult, StreamEvent
-from sova.llm.provider import LLMProvider, _measure_ms
+from sova.llm.provider import LLMProvider, ProviderCapabilities, _measure_ms
 from sova.utils.logging import get_logger
 
 log = get_logger(component="llm.litellm")
@@ -250,6 +250,22 @@ class LiteLLMProvider(LLMProvider):
             return False, "litellm is not installed -- pip install sova[litellm]"
         version = getattr(litellm, "__version__", "unknown")
         return True, f"litellm {version}"
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        # cost_usd comes from LiteLLM's own pricing database (_get_cost() ->
+        # completion_cost/cost_per_token), which covers many providers but not
+        # all of them: a model missing from that database, a custom api_base
+        # proxy, or any lookup error yields Decimal("0"), indistinguishable
+        # from a genuine zero-cost call. A budget guard cannot tell those
+        # apart, so the reported cost is not a usable spend signal. No CLI
+        # --max-budget-usd equivalent exists for this path either.
+        return ProviderCapabilities(
+            supports_cli_fallback=False,
+            supports_budget_cap=False,
+            reports_cost=False,
+            dynamic_models=False,
+        )
 
     async def _call(
         self,

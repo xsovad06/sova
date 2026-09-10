@@ -22,6 +22,7 @@ GROUPS: dict[str, str] = {
     "project": "Project",
     "llm": "LLM Provider",
     "agent": "Agent",
+    "runaway": "Runaway Guards",
     "pipeline": "Pipeline",
     "task_source": "Task Source",
     "review": "Code Review",
@@ -53,6 +54,7 @@ GROUP_ORDER: list[str] = [
     "project",
     "llm",
     "agent",
+    "runaway",
     "pipeline",
     "spec",
     "roles",
@@ -267,6 +269,43 @@ _REGISTRY: list[SettingMeta] = [
         "Empty means SOVA scrubs all of them so the configured provider always wins",
         "agent",
         "list",
+    ),
+    # Runaway Guards (cost-independent backstops for R6)
+    SettingMeta(
+        "runaway.max_run_wall_clock_seconds",
+        "Max run wall clock (s)",
+        "Cost-independent runaway guard: pause a run after this many total seconds (scaled by "
+        "task complexity) regardless of reported cost (0 disables)",
+        "runaway",
+        "number",
+    ),
+    SettingMeta(
+        "runaway.max_run_steps",
+        "Max run steps",
+        "Cost-independent runaway guard: pause a run after this many completed steps regardless "
+        "of reported cost (0 disables). A single run cannot exceed its pipeline length "
+        "(16 steps for the developer pipeline), so this is a ceiling for future longer "
+        "pipelines, not an active limit today",
+        "runaway",
+        "number",
+    ),
+    SettingMeta(
+        "runaway.max_llm_calls",
+        "Max LLM calls",
+        "Cost-independent runaway guard: pause a run after this many LLM invocations regardless "
+        "of reported cost (0 disables). Catches retry/fix loops (CI-fix, address-review consensus) "
+        "that burn calls inside a single step without advancing steps_completed",
+        "runaway",
+        "number",
+    ),
+    SettingMeta(
+        "runaway.max_step_attempts",
+        "Max step attempts",
+        "Cap on total attempts at a single step across fallback-model switches (0 disables). "
+        "Prevents a fallback chain from resetting the per-model retry counter into unbounded "
+        "total attempts",
+        "runaway",
+        "number",
     ),
     # -- Pipeline --
     SettingMeta(

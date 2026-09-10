@@ -15,7 +15,7 @@ from sova.llm.cli_args import build_claude_cli_args as _build_args
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import LLMInvocationError, classify_error
 from sova.llm.models import LLMResult, StreamEvent
-from sova.llm.provider import LLMProvider
+from sova.llm.provider import LLMProvider, ProviderCapabilities
 from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run
@@ -187,6 +187,15 @@ class ClaudeCodeProvider(LLMProvider):
         if not authenticated:
             return False, f"{version} but {auth_detail}"
         return True, f"{version} ({auth_detail})"
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            supports_cli_fallback=True,
+            supports_budget_cap=True,
+            reports_cost=True,
+            dynamic_models=False,
+        )
 
 
 # ---------------------------------------------------------------------------

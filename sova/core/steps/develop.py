@@ -250,15 +250,15 @@ class DevelopStep(BaseStep):
             if budget_check is not None:
                 return False, budget_check
 
-            if ctx.budget_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
+            if ctx.resource_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
                 log.warning(
                     "step.develop.budget_fraction_stop_retry",
                     cycle=cycle,
-                    fraction=ctx.budget_remaining_fraction,
+                    fraction=ctx.resource_remaining_fraction,
                 )
                 return True, (
                     f"checks still failing after {cycle - 1} fix cycle(s); stopping retries at "
-                    f"{ctx.budget_remaining_fraction:.0%} budget remaining"
+                    f"{ctx.resource_remaining_fraction:.0%} budget remaining"
                 )
 
             log.info("step.develop.fix_cycle", cycle=cycle, max=max_cycles)

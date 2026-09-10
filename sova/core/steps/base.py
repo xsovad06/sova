@@ -33,6 +33,12 @@ class StepResult:
     partial_work: bool = False
     # Set by WorkflowEngine from the context delta, not by steps themselves.
     usage: TokenUsage | None = None
+    # Set by WorkflowEngine._run_step_with_timeout when a step is aborted
+    # because the runaway wall-clock deadline (not the step's own configured
+    # timeout) expired mid-execution. Routes the failure through the same
+    # PAUSED + failure_type="runaway_guard" path as the pre-step guard check,
+    # instead of the generic FAILED/step_hard_timeout path.
+    runaway_triggered: bool = False
 
 
 @dataclass

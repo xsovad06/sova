@@ -280,7 +280,7 @@ class TestCreateProviderTakesWholeConfig:
     def test_reload_provider_forwards_the_whole_llm_section(self) -> None:
         """Forwarding the object itself is what stops a new field from being dropped."""
         cfg = _cfg(_ALIASES)
-        with patch("sova.llm.provider.create_provider") as mock_create:
+        with patch("sova.llm.client.create_provider") as mock_create:
             client.reload_provider(cfg)
         assert mock_create.call_args.args[0] is cfg.llm
         assert mock_create.call_args.args[0].model_aliases == _ALIASES

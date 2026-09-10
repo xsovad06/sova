@@ -125,12 +125,35 @@ Jinja2's `{{ var }}` uses HTML escaping, not JavaScript string escaping. A value
 | Per-run budget | $10.00 | `agent.max_budget` |
 | Per-issue budget | $50.00 | `agent.max_issue_budget` |
 | Step timeout | 1800s | `agent.step_timeout` |
+| Max run wall clock | 14400s | `runaway.max_run_wall_clock_seconds` (0=disable) |
+| Max run steps | 100 | `runaway.max_run_steps` (0=disable) |
+| Max LLM calls | 250 | `runaway.max_llm_calls` (0=disable) |
+| Max step attempts | 80 | `runaway.max_step_attempts` (0=disable) |
 
-Per-issue budget is checked in `start_agent()` before spawning; `--force` bypasses it. Per-run budget is checked at step boundaries in `WorkflowEngine`.
+Per-issue budget is checked in `start_agent()` before spawning; only an explicit
+`budget_override` bypasses it (`--force` does not, so a force retry spawned for an unrelated
+reason still gets the hard budget stop). Per-run budget is checked at step boundaries in
+`WorkflowEngine`.
+
+The two dollar limits go blind against a provider that reports `cost_usd=0` for every call, so
+`WorkflowEngine._check_runaway_guard()` backstops them with cost-independent wall-clock,
+step-count, and LLM-call-count limits (`[runaway]` config section), also enforced at step
+boundaries. Wall clock is scaled by task complexity (same multiplier as `agent.step_timeout`,
+via `sova.llm.complexity.complexity_multiplier`), so a legitimate EPIC-complexity run is not
+paused by a limit sized for the default tier. `max_run_steps` counts completed steps within a
+single run, which is bounded by the pipeline length (16 for the developer pipeline), so it is a
+ceiling for future longer pipelines rather than an active guard today; `max_llm_calls` is the
+limit that catches retry/fix loops (CI-fix, address-review consensus) that burn LLM calls inside
+a single step without advancing the step count. `max_step_attempts` caps cumulative attempts at
+a single step across model-fallback switches, tracked via `sova.llm.client`'s ContextVar-based
+call counter (`start_call_counter`/`get_call_count`), incremented at the four `invoke*` entry
+points so a step calling the client indirectly cannot bypass it. `ExecutionContext.resource_remaining_fraction`
+composes the budget, wall-clock, and call-count signals into the single fraction that graceful
+degradation call sites (skip optional steps, stop retrying, skip hooks) read.
 
 ## Headless Agent Security
 
-`sova/ipc/control.py` spawns Claude CLI with `--permission-mode auto`. Mitigations:
+`sova/ipc/runtime.py` spawns Claude CLI with `--permission-mode bypassPermissions` (`auto` only auto-approves tools already in the settings.json allowlist, which is insufficient for headless agents that must edit arbitrary project files). Mitigations:
 - Per-run and per-issue budget caps
 - Step timeouts (default 1800s)
 - Suspicious file guard catches credential commits even from autonomous agents
