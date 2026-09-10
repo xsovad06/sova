@@ -48,7 +48,7 @@
       </a>
     </div>
     <div class="flex-1 py-2">
-      {% set nav_items = [
+      {% set nav_items = ([("briefing", prefix + "/briefing", "Briefing", "bell")] if awareness_enabled() else []) + [
         ("dashboard", prefix + "/dashboard", "Dashboard", "dashboard"),
         ("agents", prefix + "/agents", "Agents", "agents"),
         ("queue", prefix + "/queue", "Queue", "queue"),

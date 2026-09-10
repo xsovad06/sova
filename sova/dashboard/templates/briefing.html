@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+{% block title %}Briefing - SOVA{% endblock %}
+{% block content %}
+
+<div class="flex items-start justify-between mb-6 flex-wrap gap-3">
+  <div>
+    <h2 class="text-2xl font-semibold" id="briefing-greeting">Briefing</h2>
+    <p class="text-sm text-gray-500 mt-1" id="briefing-date"></p>
+  </div>
+  <div class="flex flex-col items-end gap-2">
+    <div class="flex items-center gap-2 flex-wrap justify-end" id="briefing-provider-badges"></div>
+    <p class="text-xs text-gray-600" id="briefing-updated">--</p>
+  </div>
+</div>
+
+<div id="briefing-empty-state" class="hidden bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center mb-6">
+  <p class="text-gray-400 mb-2">No awareness providers are configured yet.</p>
+  <a href="{{ prefix|default('') }}/settings" class="text-accent hover:text-blue-300 text-sm transition-colors">Configure providers in Settings</a>
+</div>
+
+<div id="briefing-all-failed-banner" class="hidden bg-accent-red/10 border border-accent-red/30 rounded-lg p-4 mb-6">
+  <p class="text-accent-red text-sm font-medium">All awareness providers failed to load. Check the status badges above for details.</p>
+</div>
+
+<div id="briefing-body">
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+    <!-- Left: needs attention + email highlights -->
+    <div class="lg:col-span-2 flex flex-col gap-6">
+      <div class="bg-surface-card rounded-lg border border-gray-700/50">
+        <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
+          <h3 class="text-sm font-medium text-gray-400">Needs Attention</h3>
+          <span class="text-xs text-gray-600" id="briefing-attention-count"></span>
+        </div>
+        <div class="p-4 flex flex-col gap-3" id="briefing-attention">
+          <p class="text-gray-500 text-sm">Loading...</p>
+        </div>
+      </div>
+
+      <div class="bg-surface-card rounded-lg border border-gray-700/50 hidden" id="briefing-email-section">
+        <div class="px-4 py-3 border-b border-gray-700/50">
+          <h3 class="text-sm font-medium text-gray-400">Email Highlights</h3>
+        </div>
+        <div class="p-4 flex flex-col gap-2" id="briefing-email"></div>
+      </div>
+    </div>
+
+    <!-- Right: schedule + project pulse -->
+    <div class="flex flex-col gap-6">
+      <div class="bg-surface-card rounded-lg border border-gray-700/50">
+        <div class="px-4 py-3 border-b border-gray-700/50">
+          <h3 class="text-sm font-medium text-gray-400">Today's Schedule</h3>
+        </div>
+        <div class="p-4" id="briefing-schedule">
+          <p class="text-gray-500 text-sm">Loading...</p>
+        </div>
+      </div>
+
+      <div class="bg-surface-card rounded-lg border border-gray-700/50">
+        <div class="px-4 py-3 border-b border-gray-700/50">
+          <h3 class="text-sm font-medium text-gray-400">Project Pulse</h3>
+        </div>
+        <div class="p-4 flex flex-col gap-2" id="briefing-pulses">
+          <p class="text-gray-500 text-sm">Loading...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <details class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+    <summary class="px-4 py-3 cursor-pointer flex items-center justify-between select-none">
+      <h3 class="text-sm font-medium text-gray-300">Recent Activity</h3>
+      <span class="text-xs text-gray-600" id="briefing-informational-count"></span>
+    </summary>
+    <div class="px-4 pb-4 flex flex-col gap-2" id="briefing-informational"></div>
+  </details>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var _briefingLastGeneratedAt = null;
+var _briefingFailed = false;
+
+function _briefingUrgencyBadge(urgency) {
+  if (urgency >= 2) return '<span class="text-accent-red">!!!</span>';
+  if (urgency === 1) return '<span class="text-accent-yellow">!!</span>';
+  return '<span class="text-gray-500">!</span>';
+}
+
+function _briefingTimeAgo(iso) {
+  if (!iso) return '';
+  var then = new Date(iso).getTime();
+  if (isNaN(then)) return '';
+  var seconds = Math.max(0, (Date.now() - then) / 1000);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+  return Math.floor(seconds / 86400) + 'd ago';
+}
+
+function _briefingRenderGreeting() {
+  var hour = new Date().getHours();
+  var greeting = hour < 12 ? 'Good morning' : (hour < 18 ? 'Good afternoon' : 'Good evening');
+  document.getElementById('briefing-greeting').textContent = greeting;
+  document.getElementById('briefing-date').textContent = new Date().toLocaleDateString(undefined, {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+  });
+}
+
+function _briefingItemCard(item, borderClass) {
+  var lines = '<div class="flex items-start justify-between gap-2">' +
+    '<p class="font-medium text-sm">' + _briefingUrgencyBadge(item.urgency) + ' ' + escapeHtml(item.title) + '</p>' +
+    '<button onclick="dismissBriefingItem(\'' + escapeHtml(escapeJsStr(item.id)) + '\')" class="text-xs text-gray-600 hover:text-gray-400 transition-colors shrink-0" aria-label="Dismiss">&times;</button>' +
+    '</div>';
+  if (item.body) {
+    lines += '<p class="text-xs text-gray-500 mt-1">' + escapeHtml(item.body.slice(0, 200)) + '</p>';
+  }
+  if (item.action_hint) {
+    lines += '<p class="text-xs text-accent mt-1">' + escapeHtml(item.action_hint) + '</p>';
+  }
+  var meta = item.provider + (item.timestamp ? ' • ' + _briefingTimeAgo(item.timestamp) : '');
+  lines += '<p class="text-xs text-gray-600 mt-2">' + escapeHtml(meta) + '</p>';
+  return '<div data-item-id="' + escapeHtml(item.id) + '" class="border ' + borderClass + ' rounded-lg p-3">' + lines + '</div>';
+}
+
+function _briefingRemoveItem(itemId) {
+  var nodes = document.querySelectorAll('#briefing-body [data-item-id]');
+  for (var i = 0; i < nodes.length; i++) {
+    if (nodes[i].getAttribute('data-item-id') === itemId) nodes[i].remove();
+  }
+  var attention = document.getElementById('briefing-attention');
+  var remaining = attention.querySelectorAll('[data-item-id]').length;
+  document.getElementById('briefing-attention-count').textContent =
+    remaining ? (remaining + (remaining === 1 ? ' item' : ' items')) : '';
+  if (remaining === 0) {
+    attention.innerHTML = '<p class="text-gray-500 text-sm">Nothing needs your attention right now.</p>';
+  }
+  if (document.getElementById('briefing-email').querySelectorAll('[data-item-id]').length === 0) {
+    document.getElementById('briefing-email-section').classList.add('hidden');
+  }
+}
+
+async function dismissBriefingItem(itemId) {
+  try {
+    await fetchAPI(apiUrl('/briefing/' + encodeURIComponent(itemId) + '/dismiss'), { method: 'POST' });
+    // Drop the card locally: reloading would refetch every provider (network + API quota)
+    // just to render one card fewer. The next poll reconciles, since the server filters
+    // dismissed ids out of the payload.
+    _briefingRemoveItem(itemId);
+  } catch (err) {
+    console.error('Failed to dismiss briefing item:', err);
+    showToast('Failed to dismiss item', 'error');
+  }
+}
+
+function _briefingRenderAttention(items) {
+  var container = document.getElementById('briefing-attention');
+  var countEl = document.getElementById('briefing-attention-count');
+  countEl.textContent = items.length ? (items.length + (items.length === 1 ? ' item' : ' items')) : '';
+  container.innerHTML = items.length === 0
+    ? '<p class="text-gray-500 text-sm">Nothing needs your attention right now.</p>'
+    : items.map(function(i) { return _briefingItemCard(i, 'border-accent-yellow/30'); }).join('');
+}
+
+function _briefingRenderEmail(items) {
+  var section = document.getElementById('briefing-email-section');
+  var container = document.getElementById('briefing-email');
+  if (items.length === 0) {
+    section.classList.add('hidden');
+    return;
+  }
+  section.classList.remove('hidden');
+  container.innerHTML = items.map(function(i) { return _briefingItemCard(i, 'border-gray-700/50'); }).join('');
+}
+
+function _briefingRenderSchedule(items) {
+  var container = document.getElementById('briefing-schedule');
+  if (items.length === 0) {
+    container.innerHTML = '<p class="text-gray-500 text-sm">Nothing scheduled.</p>';
+    return;
+  }
+  container.innerHTML = '<div class="flex flex-col gap-2">' + items.map(function(i) {
+    var time = i.timestamp ? new Date(i.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '--:--';
+    return '<div class="flex items-start gap-3 text-sm">' +
+      '<span class="text-accent font-mono text-xs mt-0.5 shrink-0">' + time + '</span>' +
+      '<span class="text-gray-300">' + escapeHtml(i.title) + '</span>' +
+      '</div>';
+  }).join('') + '</div>';
+}
+
+function _briefingRenderPulses(pulses) {
+  var container = document.getElementById('briefing-pulses');
+  if (pulses.length === 0) {
+    container.innerHTML = '<p class="text-gray-500 text-sm">No registered projects.</p>';
+    return;
+  }
+  container.innerHTML = pulses.map(function(p) {
+    var ciClass = p.last_ci === 'passing' ? 'text-accent-green' : (p.last_ci === 'failing' ? 'text-accent-red' : 'text-gray-500');
+    return '<div class="flex items-center justify-between text-sm border-t border-gray-700/30 pt-2 first:border-0 first:pt-0">' +
+      '<span class="text-gray-300">' + escapeHtml(p.project_slug) + '</span>' +
+      '<span class="text-xs text-gray-500">' + p.open_prs + ' PR' + (p.open_prs === 1 ? '' : 's') + ' · ' + escapeHtml(p.agent_status) + ' · <span class="' + ciClass + '">' + escapeHtml(p.last_ci) + '</span></span>' +
+      '</div>';
+  }).join('');
+}
+
+function _briefingRenderInformational(items) {
+  var container = document.getElementById('briefing-informational');
+  var countEl = document.getElementById('briefing-informational-count');
+  countEl.textContent = items.length ? String(items.length) : '';
+  container.innerHTML = items.length === 0
+    ? '<p class="text-gray-500 text-sm">No recent activity.</p>'
+    : items.map(function(i) {
+        return '<p class="text-sm text-gray-400">• ' + escapeHtml(i.title) +
+          (i.timestamp ? ' <span class="text-xs text-gray-600">(' + _briefingTimeAgo(i.timestamp) + ')</span>' : '') + '</p>';
+      }).join('');
+}
+
+function _briefingIsNotConfigured(status) {
+  return (status.message || '').toLowerCase().indexOf('not configured') !== -1;
+}
+
+function _briefingBadgeColor(status) {
+  if (status.ok) return { dot: 'bg-accent-green', text: 'text-accent-green' };
+  if (_briefingIsNotConfigured(status)) {
+    return { dot: 'bg-accent-yellow', text: 'text-accent-yellow' };
+  }
+  return { dot: 'bg-accent-red', text: 'text-accent-red' };
+}
+
+function _briefingRenderProviderBadges(statuses) {
+  var container = document.getElementById('briefing-provider-badges');
+  container.innerHTML = statuses.map(function(s) {
+    var color = _briefingBadgeColor(s);
+    var label = (s.display_name !== undefined && s.display_name !== null && s.display_name !== '') ? s.display_name : s.name;
+    return '<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-surface-card border border-gray-700/50 text-xs ' + color.text + '" title="' + escapeHtml(s.message) + '">' +
+      '<span class="w-1.5 h-1.5 rounded-full ' + color.dot + '"></span>' + escapeHtml(label) + '</span>';
+  }).join('');
+}
+
+function _briefingRenderUpdated() {
+  var el = document.getElementById('briefing-updated');
+  el.textContent = _briefingLastGeneratedAt ? 'Last updated ' + _briefingTimeAgo(_briefingLastGeneratedAt) : '';
+}
+
+function _briefingRenderError() {
+  var msg = '<p class="text-accent-red text-sm">Could not load the briefing. Retrying...</p>';
+  ['briefing-attention', 'briefing-schedule', 'briefing-pulses'].forEach(function(id) {
+    document.getElementById(id).innerHTML = msg;
+  });
+  document.getElementById('briefing-attention-count').textContent = '';
+  document.getElementById('briefing-informational-count').textContent = '';
+  document.getElementById('briefing-informational').innerHTML = '';
+  document.getElementById('briefing-provider-badges').innerHTML = '';
+  document.getElementById('briefing-email-section').classList.add('hidden');
+  document.getElementById('briefing-empty-state').classList.add('hidden');
+  document.getElementById('briefing-all-failed-banner').classList.add('hidden');
+  document.getElementById('briefing-body').classList.remove('hidden');
+}
+
+async function loadBriefing() {
+  try {
+    var data = await fetchAPI(apiUrl('/briefing'));
+    var statuses = data.provider_statuses || [];
+    // A provider without credentials reports ok=false with a "not configured"
+    // message; that's the empty state, not a failure. Only providers that are
+    // actually configured (i.e. attempted a real fetch) count toward "configured"
+    // and the all-failed banner below.
+    var configuredStatuses = statuses.filter(function(s) { return !_briefingIsNotConfigured(s); });
+    var configured = configuredStatuses.length > 0;
+    document.getElementById('briefing-empty-state').classList.toggle('hidden', configured);
+    document.getElementById('briefing-body').classList.toggle('hidden', !configured);
+
+    // Distinct from _briefingRenderError() (network/fetch failure): this is a
+    // successful response where every configured provider itself failed.
+    var allFailed = configured && configuredStatuses.every(function(s) { return !s.ok; });
+    document.getElementById('briefing-all-failed-banner').classList.toggle('hidden', !allFailed);
+
+    _briefingRenderProviderBadges(statuses);
+    _briefingLastGeneratedAt = data.generated_at;
+    _briefingRenderUpdated();
+
+    var informational = data.informational_items || [];
+    var emailItems = informational.filter(function(i) { return i.provider === 'gmail'; });
+    var otherInformational = informational.filter(function(i) { return i.provider !== 'gmail'; });
+
+    _briefingRenderAttention(data.attention_items || []);
+    _briefingRenderEmail(emailItems);
+    _briefingRenderSchedule(data.schedule || []);
+    _briefingRenderPulses(data.project_pulses || []);
+    _briefingRenderInformational(otherInformational);
+    _briefingFailed = false;
+  } catch (err) {
+    console.error('Failed to load briefing:', err);
+    // Poll runs every 90s; toast only on the transition into a failing state.
+    if (!_briefingFailed) showToast('Failed to load briefing', 'error');
+    _briefingFailed = true;
+    _briefingRenderError();
+  }
+}
+
+_briefingRenderGreeting();
+visibilityAwarePoll(loadBriefing, 90000);
+visibilityAwarePoll(_briefingRenderUpdated, 30000);
+</script>
+{% endblock %}

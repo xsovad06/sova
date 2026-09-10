@@ -45,8 +45,8 @@ sova/
     scheduler/                     # Watch loop, parallel executor, server daemon
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
-      routers/                     # 28 API routers (overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp)
-      services/                    # 45 services (run, cost, memory, control, feed, handoff, lifecycle, queue, batch, work, work_item, work_state, work_verdict, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, output, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service)
+      routers/                     # 29 API routers (overview, runs, costs, briefing, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp)
+      services/                    # 46 services (run, cost, memory, control, feed, handoff, lifecycle, queue, batch, work, work_item, work_state, work_verdict, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, output, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     a2a/                           # A2A (Agent-to-Agent) protocol: agent card generation, task state mapping

@@ -41,6 +41,7 @@ from slowapi.util import get_remote_address
 from sova.config.registry import has_projects, list_projects
 from sova.dashboard.routers import (
     agents,
+    briefing,
     control,
     costs,
     dependencies,
@@ -66,7 +67,7 @@ from sova.dashboard.routers import (
     tasks,
     work,
 )
-from sova.dashboard.services import control_service, handoff_service
+from sova.dashboard.services import awareness_service, control_service, handoff_service
 from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
 from sova.db.session import close_db, init_db, init_db_for_project
@@ -847,6 +848,20 @@ def create_app(
 
     templates = Jinja2Templates(directory=BASE / "templates")
 
+    def _awareness_nav_enabled() -> bool:
+        """Jinja global: gate the Briefing nav item on `awareness.enabled`.
+
+        Reads the request-scoped project (set by ProjectContextMiddleware in
+        multi-project mode, or the single-project default otherwise) so the
+        nav link only appears for a project that actually has awareness
+        configured, rather than always showing a page that renders empty.
+        """
+        from sova.config.context import get_project_dir as _get_ctx_project_dir
+
+        return awareness_service.is_awareness_enabled(_get_ctx_project_dir())
+
+    templates.env.globals["awareness_enabled"] = _awareness_nav_enabled
+
     if is_multi:
         _setup_multi_project(app, templates)
     else:
@@ -951,6 +966,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/p/{slug}")
     async def project_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/dashboard")
+
+    @app.get("/p/{slug}/briefing")
+    async def project_briefing(request: Request, slug: str) -> Response:
+        return _project_page(request, templates, slug, "briefing.html", "briefing")
 
     @app.get("/p/{slug}/dashboard")
     async def project_dashboard(request: Request, slug: str) -> Response:
@@ -1098,6 +1117,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     """Register non-prefixed page routes (single-project mode)."""
 
     # -- New pages --
+    @app.get("/briefing")
+    async def briefing_page(request: Request) -> Response:
+        return templates.TemplateResponse(request, "briefing.html", {"page": "briefing"})
+
     @app.get("/dashboard")
     async def dashboard_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "dashboard.html", {"page": "dashboard"})
@@ -1218,6 +1241,7 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(overview.router, prefix=prefix)
     app.include_router(runs.router, prefix=prefix)
     app.include_router(costs.router, prefix=prefix)
+    app.include_router(briefing.router, prefix=prefix)
     app.include_router(control.router, prefix=prefix)
     app.include_router(handoff.router, prefix=prefix)
     app.include_router(memory.router, prefix=prefix)
