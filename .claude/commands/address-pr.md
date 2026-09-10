@@ -170,9 +170,9 @@ This command runs as a headless agent. You MUST execute every step below through
     ```
     Filter to unresolved, non-outdated threads. Match each thread to a finding using the thread's `path` and `line` fields. Use `author.__typename` to classify thread authors: `Bot` for automated reviewers, `User` for humans. If `__typename` is absent, fall back to checking whether `login` ends with `[bot]`.
 
-12. **Reply to each thread, then conditionally resolve** (MANDATORY: this is what unblocks the PR):
+12. **Reply to each thread, then resolve all of them** (MANDATORY: this is what unblocks the PR):
 
-    For each unresolved thread, post an inline reply explaining the disposition. Then resolve conditionally: resolve all bot threads (both Fixed and Acknowledged), and human threads only when the finding was Fixed. Leave Acknowledged human threads unresolved so the reviewer can confirm. Replying is always required; skipping replies leaves reviewers unclear on what was done.
+    For each unresolved thread, post an inline reply explaining the disposition, then resolve it, regardless of author (bot or human) or disposition (Fixed or Acknowledged). Replying is always required; skipping replies leaves reviewers unclear on what was done. The PR must end with zero unresolved conversations so it reads as ready to merge.
 
     a. **Reply** with a short, direct explanation:
        ```bash
@@ -188,9 +188,7 @@ This command runs as a headless agent. You MUST execute every step below through
        gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'
        ```
 
-    Thread resolution depends on who posted it:
-    - **Bot reviewers** (CodeRabbit, Sourcery, etc.): reply + resolve threads for both Fixed AND Acknowledged findings. Bot threads do not require human confirmation.
-    - **Human reviewers**: reply to all threads. Resolve only Fixed threads. Leave Acknowledged threads unresolved so the reviewer can confirm the justification.
+    Reply to every thread, then resolve every thread: bot and human reviewers alike, Fixed and Acknowledged findings alike. A PR must show zero unresolved conversations before merge; leaving "Acknowledged" human threads open only creates unnecessary back-and-forth for the reviewer.
 
 13. **Post a summary comment** on the PR with all dispositions in one table:
 

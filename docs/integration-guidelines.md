@@ -35,6 +35,7 @@ The GitHub adapter centralizes this in a private `_gh()` method so every call in
 - **`GH_TOKEN` env var overrides `gh auth switch`**: unset it before switching accounts
 - **`gh auth switch` does not persist across subprocesses**: use `resolve_gh_env()` per-call
 - **`gh pr create` returns plain text (URL), not JSON**: parse PR number from the URL path
+- **`gh pr edit --title/--body` requires `read:org` scope**: fails with "missing required scopes [read:org]" when the token only has `repo` access. Use the REST API instead: `gh api -X PATCH repos/<owner>/<repo>/pulls/<number> -f title="..." -f body="..."` (needs only `repo` scope). Pass `-f` values as separate flags rather than combining inline text with a body read via process substitution in one call: do title and body as two calls if one is inline and the other multi-line. For a multi-line markdown body alone, `gh api -X PATCH .../pulls/<number> --input file.json` (`file.json` = `{"body": "..."}`) avoids the quoting problem entirely.
 
 ### PR Reviews vs Comments
 

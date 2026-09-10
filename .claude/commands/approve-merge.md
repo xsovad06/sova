@@ -37,7 +37,16 @@ Verify:
 - PR state is `OPEN`
 - PR is mergeable (no conflicts)
 
-Note: formal GitHub review approval is NOT required. The user triggering this command from the dashboard is the approval. Log the review status for the record, but proceed regardless.
+Note: formal GitHub *approval* is NOT required. The user triggering this command from the dashboard is the approval.
+
+However, never merge while a bot review (CodeRabbit, Sourcery, etc.) is still pending or in `CHANGES_REQUESTED` state. Check for one before proceeding:
+
+```bash
+gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews \
+  --jq '[.[] | select(.user.type == "Bot")] | sort_by(.submitted_at) | group_by(.user.login) | map(last) | .[] | select(.state == "CHANGES_REQUESTED")'
+```
+
+If this returns a pending or unaddressed bot review, stop: write a handoff pointing at `/address-pr <PR_NUMBER>` and do not merge. Human review state is still logged for the record but never blocks the merge (per the note above).
 
 If CI checks are still pending, poll in a loop. Replace `<PR_NUMBER>` with the actual PR number from context before executing the loop as a single Bash tool call. Requires gh CLI v2.32+ (for the `bucket` field).
 
