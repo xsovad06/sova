@@ -4,10 +4,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from enum import StrEnum
 
 
 class BatchTimeoutError(Exception):
     """Raised when a batch does not complete within the timeout."""
+
+
+class CostSource(StrEnum):
+    """Provenance of an ``LLMResult.cost_usd`` figure.
+
+    ``UNKNOWN`` is the conservative default: a hand-built ``LLMResult`` (a test
+    fixture, a third-party call site) is treated as unpriced rather than
+    silently claiming a trusted cost. ``FREE_LOCAL`` is distinct from
+    ``UNKNOWN``: local inference has no USD line item, so treating it as
+    unpriced would fire spurious budget-blind-spot warnings on exactly the
+    low-cost configurations it targets.
+    """
+
+    PRICED = "priced"
+    FREE_LOCAL = "free_local"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -17,6 +34,7 @@ class LLMResult:
     text: str
     model: str
     cost_usd: Decimal = Decimal("0")
+    cost_source: CostSource = CostSource.UNKNOWN
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -159,3 +177,45 @@ def _lookup_rates(model: str) -> tuple[Decimal, Decimal] | None:
         if model.startswith(prefix):
             return rates
     return None
+
+
+# Local/self-hosted backends LiteLLM can route to are never in its hosted
+# pricing database, so a cost lookup miss for one of these is expected and
+# harmless, not a genuine pricing gap (R6, docs/model-selection-risk-assessment.md).
+LOCAL_MODEL_PREFIXES: tuple[str, ...] = (
+    "ollama/",
+    "vllm/",
+    "huggingface/",
+    "text-generation-inference/",
+)
+
+
+def is_local_model_id(model: str) -> bool:
+    """Return True if *model* is routed to a local/self-hosted backend."""
+    return model.startswith(LOCAL_MODEL_PREFIXES)
+
+
+def compute_model_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> tuple[Decimal, CostSource]:
+    """Compute USD cost and its provenance for *model*.
+
+    A wider entry point than ``compute_anthropic_cost()``, which stays
+    Anthropic-only and pinned to its existing zero-for-unknown contract
+    (``compute_anthropic_cost("gpt-4o", ...) == 0`` and
+    ``input_rate_per_mtok("gpt-4o") == 0`` are load-bearing test contracts).
+    Local/self-hosted models are trusted-but-zero (``FREE_LOCAL``) rather than
+    unpriced, and any model the rate card does not recognize is ``UNKNOWN``
+    rather than a silent ``$0`` indistinguishable from a genuinely free result.
+    """
+    if is_local_model_id(model):
+        return Decimal("0"), CostSource.FREE_LOCAL
+    resolved = resolve_model_alias(model)
+    if _lookup_rates(resolved) is None:
+        return Decimal("0"), CostSource.UNKNOWN
+    cost = compute_anthropic_cost(resolved, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+    return cost, CostSource.PRICED

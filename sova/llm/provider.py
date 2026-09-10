@@ -78,11 +78,15 @@ def _assert_command_exists(command: str, cwd: Path) -> None:
 
 @dataclass(frozen=True)
 class ProviderCapabilities:
-    """Declares what a provider can reliably guarantee.
+    """Feature flags a caller can introspect instead of assuming Claude-CLI behavior.
 
     Every field defaults to ``False`` so a provider subclass that does not
     override :attr:`LLMProvider.capabilities` is never assumed more capable
-    than it has proven to be (fail toward "assume unreliable").
+    than it has proven to be (fail toward "assume unreliable"), rather than the
+    fallback and budget layers assuming CLI-only features (native
+    ``--fallback-model``, native ``--max-budget-usd`` enforcement, trustworthy
+    cost reporting, open-ended model enumeration) are universal across
+    providers.
     """
 
     supports_cli_fallback: bool = False
