@@ -88,6 +88,9 @@ from sova.git.pr import (
     get_ci_failure_logs as get_ci_failure_logs,
 )
 from sova.git.pr import (
+    get_pr_body as get_pr_body,
+)
+from sova.git.pr import (
     get_pr_branch as get_pr_branch,
 )
 from sova.git.pr import (
@@ -98,6 +101,9 @@ from sova.git.pr import (
 )
 from sova.git.pr import (
     get_pr_status as get_pr_status,
+)
+from sova.git.pr import (
+    update_pr_body as update_pr_body,
 )
 from sova.git.rebase import (
     RebaseResult as RebaseResult,

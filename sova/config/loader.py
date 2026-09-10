@@ -71,6 +71,7 @@ _NESTED_SECTIONS = (
     "develop",
     "validation",
     "ci",
+    "confidence",
     "watch",
     "worktree",
     "commit",
@@ -204,6 +205,21 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
         [
             ("enabled", "SOVA_COMPRESSION_ENABLED"),
             ("min_chars", "SOVA_COMPRESSION_MIN_CHARS"),
+        ],
+    )
+
+    _apply_nested_env_overrides(
+        merged,
+        "confidence",
+        "SOVA_CONFIDENCE_",
+        [
+            ("enabled", "SOVA_CONFIDENCE_ENABLED"),
+            ("gate_enabled", "SOVA_CONFIDENCE_GATE_ENABLED"),
+            ("auto_merge_threshold", "SOVA_CONFIDENCE_AUTO_MERGE_THRESHOLD"),
+            ("review_threshold", "SOVA_CONFIDENCE_REVIEW_THRESHOLD"),
+            ("critical_threshold", "SOVA_CONFIDENCE_CRITICAL_THRESHOLD"),
+            ("model", "SOVA_CONFIDENCE_MODEL"),
+            ("max_budget_usd", "SOVA_CONFIDENCE_MAX_BUDGET_USD"),
         ],
     )
 

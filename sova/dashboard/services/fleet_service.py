@@ -597,6 +597,7 @@ STEP_AREA_MAP: dict[str, str] = {
     "capture_baseline": "core",
     "extract_memory": "core",
     "monitor_ci": "core",
+    "confidence_score": "core",
     "scan_project": "core",
     "generate_tasks": "core",
     "validate_tasks": "core",

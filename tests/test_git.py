@@ -24,6 +24,7 @@ from sova.git.operations import (
     get_ci_checks,
     get_ci_failure_logs,
     get_current_branch,
+    get_pr_body,
     get_pr_diff,
     get_pr_files,
     get_pr_status,
@@ -31,6 +32,7 @@ from sova.git.operations import (
     rebase,
     rebase_with_conflict_resolution,
     sync_branch,
+    update_pr_body,
 )
 from sova.git.pr import _parse_run_id
 from sova.git.worktree import (
@@ -830,6 +832,50 @@ class TestGetPRStatus:
 
             with pytest.raises(RuntimeError, match="Failed to get PR"):
                 await get_pr_status(999, repo="user/repo")
+
+
+class TestGetPRBody:
+    async def test_returns_body(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps({"body": "Original body"}))
+
+            body = await get_pr_body(42, repo="user/repo")
+
+            assert body == "Original body"
+
+    async def test_returns_empty_string_when_body_null(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps({"body": None}))
+
+            body = await get_pr_body(42, repo="user/repo")
+
+            assert body == ""
+
+    async def test_raises_on_failure(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail()
+
+            with pytest.raises(RuntimeError, match="Failed to get body"):
+                await get_pr_body(42, repo="user/repo")
+
+
+class TestUpdatePRBody:
+    async def test_calls_gh_pr_edit(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await update_pr_body(42, body="New body", repo="user/repo")
+
+            args = mock_run.call_args[0]
+            assert args[:5] == ("gh", "pr", "edit", "42", "--repo")
+            assert "New body" in args
+
+    async def test_raises_on_failure(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail()
+
+            with pytest.raises(RuntimeError, match="Failed to update PR"):
+                await update_pr_body(42, body="New body", repo="user/repo")
 
 
 class TestGetCIChecks:

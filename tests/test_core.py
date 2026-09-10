@@ -2927,6 +2927,69 @@ class TestHandoffToReviewerStep:
         step = HandoffToReviewerStep()
         assert await step.can_skip(ctx)
 
+    @staticmethod
+    async def _handoff_with_score(score: int, *, gate_enabled: bool = True):
+        """Run the step with a confidence score set and return the written handoff."""
+        from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
+
+        config = ProjectConfig(confidence={"enabled": True, "gate_enabled": gate_enabled})
+        ctx = _make_ctx(adapter=_mock_adapter(), pr_number=42, config=config)
+        ctx.project_dir = Path("/tmp/test-handoff")
+        ctx.confidence_score = score
+
+        with (
+            patch("sova.core.steps._handoff_helpers.write_handoff", new_callable=AsyncMock),
+            patch("sova.core.steps._handoff_helpers.write_handoff_file") as mock_file,
+            patch("sova.core.steps._handoff_helpers.notify"),
+        ):
+            await HandoffToReviewerStep().execute(ctx)
+
+        return mock_file.call_args[0][1]
+
+    async def test_critical_score_forces_manual_review_when_gate_enabled(self) -> None:
+        handoff = await self._handoff_with_score(40)
+
+        assert len(handoff.next_actions) == 1
+        review_action = handoff.next_actions[0]
+        assert review_action.auto_execute is False
+        assert "40/100" in review_action.description
+        assert "critical risk" in review_action.description
+
+    async def test_low_score_forces_manual_review_when_gate_enabled(self) -> None:
+        handoff = await self._handoff_with_score(55)
+
+        assert len(handoff.next_actions) == 1
+        review_action = handoff.next_actions[0]
+        assert review_action.auto_execute is False
+        assert "55/100" in review_action.description
+        assert "below review threshold" in review_action.description
+
+    async def test_high_score_adds_integrate_action_when_gate_enabled(self) -> None:
+        handoff = await self._handoff_with_score(90)
+
+        assert {a.id for a in handoff.next_actions} == {"review", "integrate"}
+        integrate_action = next(a for a in handoff.next_actions if a.id == "integrate")
+        assert integrate_action.auto_execute is False
+        # Review must not auto-spawn: it would clear the handoff file before the
+        # integrate action the score just earned ever reaches the dashboard.
+        review_action = next(a for a in handoff.next_actions if a.id == "review")
+        assert review_action.auto_execute is False
+        assert "90/100" in review_action.description
+
+    async def test_mid_score_leaves_routing_unaffected_when_gate_enabled(self) -> None:
+        handoff = await self._handoff_with_score(70)
+
+        assert len(handoff.next_actions) == 1
+        review_action = handoff.next_actions[0]
+        assert review_action.auto_execute is True
+        assert "70/100" in review_action.description
+
+    async def test_score_ignored_when_gate_disabled(self) -> None:
+        handoff = await self._handoff_with_score(10, gate_enabled=False)
+
+        assert len(handoff.next_actions) == 1
+        assert handoff.next_actions[0].auto_execute is True
+
 
 class TestHandoffToUserStep:
     async def test_writes_handoff_with_integrate_actions(self) -> None:
@@ -3169,6 +3232,7 @@ class TestStepRegistry:
             "wait_for_external_reviews",
             "address_external_findings",
             "monitor_ci",
+            "confidence_score",
             "extract_memory",
             "handoff_to_reviewer",
         ]
@@ -6547,6 +6611,278 @@ class TestSelfReviewStep:
 
 
 # ---------------------------------------------------------------------------
+# ConfidenceScoreStep: execute, diff truncation, PR body, can_skip
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceScoreStep:
+    @staticmethod
+    def _git_results() -> list[MagicMock]:
+        """Mock results for the step's three git calls: name-only, --stat, grouped diff."""
+        return [
+            MagicMock(success=True, stdout="src/app.py\n"),
+            MagicMock(success=True, stdout=" src/app.py | 5 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+
+    @classmethod
+    async def _execute(cls, ctx, llm=None, *, git_results=None, pr_body=""):
+        """Run the step with git, LLM, and PR body calls mocked.
+
+        *llm* is an LLMResult to return, an exception to raise, or None when no
+        LLM call is expected. Returns (result, mock_invoke, mock_update_body).
+        """
+        from sova.core.steps.confidence_score import ConfidenceScoreStep
+
+        with (
+            patch("sova.core.steps.confidence_score.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.core.steps.confidence_score.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.confidence_score.get_pr_body", new_callable=AsyncMock) as mock_get_body,
+            patch("sova.core.steps.confidence_score.update_pr_body", new_callable=AsyncMock) as mock_update_body,
+        ):
+            mock_run.side_effect = cls._git_results() if git_results is None else git_results
+            if isinstance(llm, Exception):
+                mock_invoke.side_effect = llm
+            elif llm is not None:
+                mock_invoke.return_value = llm
+            mock_get_body.return_value = pr_body
+            result = await ConfidenceScoreStep().execute(ctx)
+
+        return result, mock_invoke, mock_update_body
+
+    @staticmethod
+    def _llm_result(payload: dict):
+        from sova.llm.models import LLMResult
+
+        return LLMResult(text=json.dumps(payload), model="sonnet", cost_usd=Decimal("0.01"))
+
+    async def test_no_changes_scores_100_without_llm_call(self) -> None:
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, mock_invoke, _ = await self._execute(ctx, git_results=[MagicMock(success=True, stdout="")])
+
+        assert result.success
+        assert ctx.confidence_score == 100
+        mock_invoke.assert_not_called()
+
+    async def test_execute_parses_score_and_updates_pr_body(self) -> None:
+        ctx = _make_ctx(
+            config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"), pr_number=7
+        )
+        risks = [{"category": "api", "severity": "important", "description": "Contract change"}]
+
+        result, _, mock_update_body = await self._execute(
+            ctx,
+            self._llm_result({"score": 82, "risks": risks, "summary": "Looks safe overall."}),
+            pr_body="Original body",
+        )
+
+        assert result.success
+        assert ctx.confidence_score == 82
+        assert ctx.confidence_details == {"risks": risks, "summary": "Looks safe overall."}
+        assert ctx.cost_usd == Decimal("0.01")
+
+        mock_update_body.assert_awaited_once()
+        new_body = mock_update_body.call_args.kwargs["body"]
+        assert "Original body" in new_body
+        assert "sova-confidence: 82" in new_body
+        assert "82/100" in new_body
+
+    async def test_execute_clamps_out_of_range_score(self) -> None:
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, _, _ = await self._execute(ctx, self._llm_result({"score": 150, "risks": [], "summary": "x"}))
+
+        assert result.success
+        assert ctx.confidence_score == 100
+
+    async def test_execute_handles_llm_failure_gracefully(self) -> None:
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, _, _ = await self._execute(ctx, RuntimeError("LLM unavailable"))
+
+        assert result.success
+        assert ctx.confidence_score is None
+        assert "skipped" in result.summary.lower()
+
+    async def test_execute_handles_unparseable_response_gracefully(self) -> None:
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, _, _ = await self._execute(
+            ctx, LLMResult(text="not json at all", model="sonnet", cost_usd=Decimal("0.01"))
+        )
+
+        assert result.success
+        assert ctx.confidence_score is None
+        assert "could not parse" in result.summary.lower()
+
+    async def test_execute_handles_non_object_json_gracefully(self) -> None:
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, _, _ = await self._execute(ctx, LLMResult(text="[1, 2]", model="sonnet", cost_usd=Decimal("0.01")))
+
+        assert result.success
+        assert ctx.confidence_score is None
+        assert "could not parse" in result.summary.lower()
+
+    async def test_execute_skips_llm_call_when_budget_exhausted(self) -> None:
+        config = ProjectConfig(confidence={"enabled": True}, agent={"max_budget": Decimal("1.00")})
+        ctx = _make_ctx(config=config, worktree_dir=Path("/tmp/worktree"))
+        ctx.add_cost(Decimal("1.00"))
+
+        result, mock_invoke, _ = await self._execute(ctx)
+
+        assert result.success
+        assert ctx.confidence_score is None
+        mock_invoke.assert_not_called()
+
+    async def test_execute_skips_when_diff_names_command_fails(self) -> None:
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, mock_invoke, _ = await self._execute(
+            ctx, git_results=[MagicMock(success=False, stdout="", stderr="git error")]
+        )
+
+        assert result.success
+        assert ctx.confidence_score is None
+        assert "skipped" in result.summary.lower()
+        mock_invoke.assert_not_called()
+
+    async def test_execute_skips_when_diff_content_command_fails(self) -> None:
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, mock_invoke, _ = await self._execute(
+            ctx,
+            git_results=[
+                MagicMock(success=True, stdout="src/app.py\n"),
+                MagicMock(success=True, stdout=" src/app.py | 5 +\n"),
+                MagicMock(success=False, stdout="", stderr="git error"),
+            ],
+        )
+
+        assert result.success
+        assert ctx.confidence_score is None
+        assert "skipped" in result.summary.lower()
+        mock_invoke.assert_not_called()
+
+    async def test_execute_skips_when_score_missing(self) -> None:
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, _, _ = await self._execute(ctx, self._llm_result({"risks": [], "summary": "x"}))
+
+        assert result.success
+        assert ctx.confidence_score is None
+        assert "skipped" in result.summary.lower()
+
+    async def test_execute_skips_when_score_non_numeric(self) -> None:
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, _, _ = await self._execute(ctx, self._llm_result({"score": "high", "risks": [], "summary": "x"}))
+
+        assert result.success
+        assert ctx.confidence_score is None
+        assert "skipped" in result.summary.lower()
+
+    async def test_execute_skips_when_score_is_boolean(self) -> None:
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+
+        result, _, _ = await self._execute(ctx, self._llm_result({"score": True, "risks": [], "summary": "x"}))
+
+        assert result.success
+        assert ctx.confidence_score is None
+        assert "skipped" in result.summary.lower()
+
+    def test_prioritizes_critical_paths_over_tests_and_docs(self) -> None:
+        from sova.core.steps.confidence_score import _file_priority
+
+        assert _file_priority("sova/db/migrations/versions/001_init.py") == 0
+        assert _file_priority("sova/auth/login.py") == 0
+        assert _file_priority(".github/workflows/ci.yml") == 0
+        assert _file_priority("tests/test_thing.py") == 2
+        assert _file_priority("docs/guide.md") == 2
+        assert _file_priority("sova/core/steps/develop.py") == 1
+
+    def test_deprioritizes_docs_and_tests_by_suffix_not_only_by_directory(self) -> None:
+        from sova.core.steps.confidence_score import _file_priority
+
+        # Suffix-anchored patterns must not require a leading "/" or start-of-string.
+        assert _file_priority("README.md") == 2
+        assert _file_priority("sova/core/notes.md") == 2
+        assert _file_priority("sova/core/steps/develop_test.py") == 2
+        # A test or doc that merely mentions a critical keyword is still low risk.
+        assert _file_priority("tests/test_migrations.py") == 2
+        assert _file_priority("docs/security-guidelines.md") == 2
+        # Directory names that only start with "test" are not test directories.
+        assert _file_priority("testsuite/runner.py") == 1
+
+    def test_sanitizes_llm_prose_before_embedding_in_pr_body(self) -> None:
+        from sova.core.steps.confidence_score import _sanitize_for_pr_body
+
+        # A "## " line would become a section boundary and orphan content on the
+        # next upsert_section call; an issue reference would close a real issue.
+        out = _sanitize_for_pr_body("Risky.\n## Notes\nCloses #999")
+        assert "\n## Notes" not in out
+        assert "\\## Notes" in out
+        assert "`#999`" in out
+
+    async def test_pr_body_stays_idempotent_when_summary_contains_a_heading(self) -> None:
+        from sova.core.steps.confidence_score import ConfidenceScoreStep
+        from sova.utils.markdown import upsert_section
+
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), pr_number=9)
+        ctx.confidence_score = 82
+        ctx.confidence_details = {"risks": [], "summary": "Fine.\n## Notes\nmore"}
+        first = upsert_section("## Summary\nx\n", "Confidence Score", ConfidenceScoreStep._render_pr_section(ctx))
+
+        ctx.confidence_score = 90
+        ctx.confidence_details = {"risks": [], "summary": "Fine."}
+        second = upsert_section(first, "Confidence Score", ConfidenceScoreStep._render_pr_section(ctx))
+
+        assert "82" not in second
+        assert "more" not in second
+        assert second.count("## Confidence Score") == 1
+
+    async def test_validate_output_always_passes(self) -> None:
+        from sova.core.steps.confidence_score import ConfidenceScoreStep
+
+        gate = await ConfidenceScoreStep().validate_output(_make_ctx())
+        assert gate.passed
+
+    async def test_can_skip_when_disabled(self) -> None:
+        from sova.core.steps.confidence_score import ConfidenceScoreStep
+
+        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": False}))
+        assert await ConfidenceScoreStep().can_skip(ctx)
+
+    async def test_can_skip_when_completed(self) -> None:
+        from sova.core.steps.confidence_score import ConfidenceScoreStep
+
+        ctx = _make_ctx(
+            config=ProjectConfig(confidence={"enabled": True}), completed_steps=frozenset({"confidence_score"})
+        )
+        assert await ConfidenceScoreStep().can_skip(ctx)
+
+    async def test_can_skip_when_budget_low(self) -> None:
+        from sova.core.steps.confidence_score import ConfidenceScoreStep
+
+        config = ProjectConfig(confidence={"enabled": True}, agent={"max_budget": Decimal("10.00")})
+        ctx = _make_ctx(config=config)
+        ctx.add_cost(Decimal("7.00"))  # 30% remaining, below 40% threshold
+        assert await ConfidenceScoreStep().can_skip(ctx)
+
+    async def test_does_not_skip_when_enabled_and_budget_sufficient(self) -> None:
+        from sova.core.steps.confidence_score import ConfidenceScoreStep
+
+        config = ProjectConfig(confidence={"enabled": True}, agent={"max_budget": Decimal("10.00")})
+        ctx = _make_ctx(config=config)
+        assert not await ConfidenceScoreStep().can_skip(ctx)
+
+
+# ---------------------------------------------------------------------------
 # DevelopStep -- execute path
 # ---------------------------------------------------------------------------
 
@@ -7856,6 +8192,45 @@ class TestResumeValidation:
         result = await _load_checkpoint(run_id, "")
         assert "error" not in result
         assert result["role"] == "planner"
+
+    async def test_resume_restores_confidence_score_from_assessment_json(self) -> None:
+        """A completed confidence_score step's persisted score survives resume."""
+        from sova.cli.commands.run import _load_checkpoint
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="42",
+                    role="developer",
+                    status="paused",
+                    assessment_json={
+                        "confidence_score": 82,
+                        "confidence_details": {"risks": [], "summary": "Looks safe."},
+                    },
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        result = await _load_checkpoint(run_id, "42")
+        assert "error" not in result
+        assert result["confidence_score"] == 82
+        assert result["confidence_details"] == {"risks": [], "summary": "Looks safe."}
+
+    async def test_resume_confidence_score_absent_when_never_scored(self) -> None:
+        from sova.cli.commands.run import _load_checkpoint
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="42", role="developer", status="paused")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        result = await _load_checkpoint(run_id, "42")
+        assert "error" not in result
+        assert result["confidence_score"] is None
+        assert result["confidence_details"] is None
 
 
 # ---------------------------------------------------------------------------

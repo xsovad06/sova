@@ -119,6 +119,73 @@ class TestExtractSection:
         assert "echo hello" in result
 
 
+class TestUpsertSection:
+    def test_appends_when_heading_missing(self) -> None:
+        from sova.utils.markdown import upsert_section
+
+        text = "## Intro\nHello."
+        result = upsert_section(text, "Confidence Score", "**80/100**")
+        assert "## Intro\nHello." in result
+        assert result.endswith("## Confidence Score\n\n**80/100**\n")
+
+    def test_replaces_existing_section_in_place(self) -> None:
+        from sova.utils.markdown import upsert_section
+
+        text = "## Intro\nHello.\n\n## Confidence Score\n\nOld: 40/100\n\n## Footer\nBye."
+        result = upsert_section(text, "Confidence Score", "New: 90/100")
+        assert "Old: 40/100" not in result
+        assert "New: 90/100" in result
+        assert "## Intro" in result
+        assert "## Footer\nBye." in result
+
+    def test_idempotent_on_repeated_calls(self) -> None:
+        from sova.utils.markdown import upsert_section
+
+        text = "## Summary\nStuff."
+        once = upsert_section(text, "Confidence Score", "**50/100**")
+        twice = upsert_section(once, "Confidence Score", "**50/100**")
+        assert once == twice
+        assert twice.count("## Confidence Score") == 1
+
+    def test_ignores_heading_inside_code_fence(self) -> None:
+        from sova.utils.markdown import upsert_section
+
+        text = "## Confidence Score\n\n```markdown\n## Confidence Score\nfake\n```\n\nreal content\n"
+        result = upsert_section(text, "Confidence Score", "updated")
+        assert "fake" not in result
+        assert "updated" in result
+
+    def test_ignores_heading_inside_longer_backtick_fence(self) -> None:
+        from sova.utils.markdown import upsert_section
+
+        # A real heading precedes a fence opened with four backticks that nests
+        # a triple-backtick block; the inner "## Confidence Score" line must not
+        # be treated as closing the fence early (which would unmask it as a
+        # false section boundary and leave the fenced "fake" content behind).
+        text = (
+            "## Confidence Score\n\nOld: 40/100\n\n"
+            "````markdown\n"
+            "```\n"
+            "## Confidence Score\nfake\n"
+            "```\n"
+            "````\n\n"
+            "real content\n"
+        )
+        result = upsert_section(text, "Confidence Score", "updated")
+        assert "fake" not in result
+        assert "Old: 40/100" not in result
+        assert "updated" in result
+        assert result.count("## Confidence Score") == 1
+
+    def test_ignores_heading_inside_tilde_fence(self) -> None:
+        from sova.utils.markdown import upsert_section
+
+        text = "## Confidence Score\n\n~~~markdown\n## Confidence Score\nfake\n~~~\n\nreal content\n"
+        result = upsert_section(text, "Confidence Score", "updated")
+        assert "fake" not in result
+        assert "updated" in result
+
+
 class TestStripFencedBlocks:
     def test_replaces_fence_content(self) -> None:
         from sova.utils.markdown import _strip_fenced_blocks
@@ -142,6 +209,36 @@ class TestStripFencedBlocks:
 
         text = "just plain text\nwith lines"
         assert _strip_fenced_blocks(text) == text
+
+    def test_masks_tilde_fences(self) -> None:
+        from sova.utils.markdown import _strip_fenced_blocks
+
+        text = "before\n~~~\n## Heading\ncode\n~~~\nafter"
+        result = _strip_fenced_blocks(text)
+        assert "## Heading" not in result
+        assert "before" in result
+        assert "after" in result
+
+    def test_longer_backtick_fence_containing_triple_backticks(self) -> None:
+        from sova.utils.markdown import _strip_fenced_blocks
+
+        text = "before\n````\n## Heading\n```\nstill inside\n````\nafter"
+        result = _strip_fenced_blocks(text)
+        assert "## Heading" not in result
+        assert "still inside" not in result
+        assert "before" in result
+        assert "after" in result
+
+    def test_closing_fence_must_match_opening_type(self) -> None:
+        from sova.utils.markdown import _strip_fenced_blocks
+
+        # A tilde line cannot close a backtick fence -- content stays masked
+        # through EOF since no valid closer appears.
+        text = "before\n```\n## Heading\n~~~\nafter"
+        result = _strip_fenced_blocks(text)
+        assert "## Heading" not in result
+        assert "after" not in result
+        assert "before" in result
 
 
 # ---------------------------------------------------------------------------

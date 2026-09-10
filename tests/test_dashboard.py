@@ -5476,7 +5476,7 @@ class TestWorkServiceDirect:
         result = await get_work_history(session)
         tasks_by_issue = {t["issue_number"]: t for t in result["tasks"]}
         assert tasks_by_issue["50"]["total_steps_possible"] is None
-        assert tasks_by_issue["51"]["total_steps_possible"] == 16
+        assert tasks_by_issue["51"]["total_steps_possible"] == 17
 
     async def test_work_history_endpoint_pagination(self, client: AsyncClient) -> None:
         resp = await client.get("/api/work/history?limit=15&offset=0")
@@ -9931,7 +9931,7 @@ class TestStepProgress:
         result = get_step_progress("capture_baseline")
         assert result["pipeline_variant"] == "developer"
         assert result["step_index"] == 3
-        assert result["total_steps"] == 16
+        assert result["total_steps"] == 17
 
     def test_ensure_worktree_step_in_address_review_pipeline(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress

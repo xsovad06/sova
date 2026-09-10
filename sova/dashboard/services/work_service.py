@@ -396,6 +396,9 @@ def _run_to_dict(run: TaskRun) -> dict:
         "started_at": iso_utc(run.started_at),
         "ended_at": iso_utc(run.ended_at),
     }
+    if run.assessment_json and "confidence_score" in run.assessment_json:
+        result["confidence_score"] = run.assessment_json["confidence_score"]
+        result["confidence_details"] = run.assessment_json.get("confidence_details")
     # Include resource summary if eagerly loaded
     try:
         summary = run.resource_summary

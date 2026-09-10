@@ -52,6 +52,7 @@ TASK_TYPE_KEYS: frozenset[str] = frozenset(
         "self_review",
         "validate",
         "monitor_ci",
+        "confidence_score",
         "rebase",
         "address_review",
         "rearrange_commits",

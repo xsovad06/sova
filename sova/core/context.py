@@ -121,6 +121,10 @@ class ExecutionContext:
     commits: list[str] = field(default_factory=list)
     addressed_external_findings: list[dict] = field(default_factory=list)
 
+    # Set by ConfidenceScoreStep, read by HandoffToReviewerStep for score-based routing.
+    confidence_score: int | None = None
+    confidence_details: dict | None = None
+
     # Complexity-based routing (set by AssessStep, used by all LLM-invoking steps)
     complexity: ComplexityTier | None = None
     # Only WorkflowEngine._advance_fallback (llm.engine_owned_fallback=True) ever
