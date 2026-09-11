@@ -479,6 +479,16 @@ class FeedConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_FEED_")
 
 
+class DependencyHealthConfig(BaseSettings):
+    """Dependency health scanning: manifest detection, registry lookups, urgency scoring."""
+
+    enabled: bool = False
+    cache_ttl_minutes: int = Field(30, gt=0)
+    registry_timeout_seconds: int = Field(10, gt=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DEPENDENCY_HEALTH_")
+
+
 class TestingConfig(BaseSettings):
     """Test baseline and regression detection configuration."""
 
@@ -857,6 +867,7 @@ class ProjectConfig(BaseSettings):
     oversight: OversightConfig = Field(default_factory=OversightConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
     conflict_resolution: ConflictResolutionConfig = Field(default_factory=ConflictResolutionConfig)
+    dependency_health: DependencyHealthConfig = Field(default_factory=DependencyHealthConfig)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_")
 

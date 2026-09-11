@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block title %}Dependency Health - SOVA{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-semibold">Dependency Health</h2>
+  <button type="button" onclick="refreshSnapshot()" id="refresh-btn"
+          class="px-3 py-1 text-xs rounded bg-surface-card border border-gray-700/50 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
+    Rescan
+  </button>
+</div>
+
+<!-- Disabled state -->
+<div id="disabled-state" class="hidden mb-6">
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">
+    <p class="text-gray-400 mb-1">Dependency health scanning is disabled.</p>
+    <p class="text-xs text-gray-600">Enable <code class="text-gray-400">dependency_health.enabled</code> in Settings to scan this project.</p>
+  </div>
+</div>
+
+<!-- Empty state -->
+<div id="empty-state" class="hidden mb-6">
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">
+    <p class="text-gray-400 mb-1">No package manifests detected.</p>
+    <p class="text-xs text-gray-600">Supported: <code>package.json</code> / <code>package-lock.json</code> (npm), <code>requirements.txt</code> / <code>pyproject.toml</code> (Python).</p>
+  </div>
+</div>
+
+<div id="content-section" class="hidden">
+  <!-- Truncation warning -->
+  <div id="truncated-warning" class="hidden mb-4 px-4 py-2 rounded-lg border border-accent-yellow/40 bg-accent-yellow/10 text-xs text-accent-yellow"></div>
+
+  <!-- Summary cards -->
+  <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+    <div class="sova-stat"><p class="sova-stat-label">Total Deps</p><p class="sova-stat-value" id="stat-total">--</p></div>
+    <div class="sova-stat"><p class="sova-stat-label">Up To Date</p><p class="sova-stat-value text-accent-green" id="stat-up-to-date">--</p></div>
+    <div class="sova-stat"><p class="sova-stat-label">Major Behind</p><p class="sova-stat-value text-accent-yellow" id="stat-major-behind">--</p></div>
+    <div class="sova-stat"><p class="sova-stat-label">Deprecated</p><p class="sova-stat-value text-accent-red" id="stat-deprecated">--</p></div>
+    <div class="sova-stat"><p class="sova-stat-label">Vulnerable</p><p class="sova-stat-value text-accent-red" id="stat-vulnerable">--</p></div>
+    <div class="sova-stat"><p class="sova-stat-label">Stale (1yr+)</p><p class="sova-stat-value text-accent-yellow" id="stat-stale">--</p></div>
+  </div>
+
+  <!-- Health bar -->
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-6">
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="text-sm font-medium text-gray-400">Overall Health</h3>
+      <span class="text-sm font-semibold" id="health-percent-label">--%</span>
+    </div>
+    <div class="w-full h-2.5 rounded-full bg-gray-700/50 overflow-hidden">
+      <div id="health-bar-fill" class="h-full rounded-full transition-all" style="width: 0%"></div>
+    </div>
+  </div>
+
+  <!-- Package table -->
+  <div class="bg-surface-card rounded-lg border border-gray-700/50">
+    <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
+      <h3 class="text-sm font-medium text-gray-400">Packages</h3>
+      <span class="text-xs text-gray-600" id="generated-at-label"></span>
+    </div>
+    <div class="p-4 overflow-x-auto" id="package-table">
+      <p class="text-gray-500 text-sm">Loading...</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var _packages = [];
+var _sortColumn = 'urgency';
+var _sortDesc = true;
+
+function urgencyClass(urgency) {
+  if (urgency >= 60) return 'bg-accent-red/20 text-accent-red';
+  if (urgency >= 25) return 'bg-accent-yellow/20 text-accent-yellow';
+  return 'bg-accent-green/20 text-accent-green';
+}
+
+// The three page states are mutually exclusive: show one, hide the rest.
+function showState(id) {
+  ['disabled-state', 'empty-state', 'content-section'].forEach(function(state) {
+    document.getElementById(state).classList.toggle('hidden', state !== id);
+  });
+}
+
+function lagLabel(pkg) {
+  if (pkg.lag_category === 'unknown') return 'unknown';
+  if (pkg.lag_category === 'up_to_date') return 'current';
+  return pkg.lag_category + ' behind';
+}
+
+function fmtDate(iso) {
+  if (!iso) return '--';
+  var d = new Date(iso);
+  return isNaN(d.getTime()) ? '--' : d.toLocaleDateString();
+}
+
+function sortPackages() {
+  var col = _sortColumn;
+  var desc = _sortDesc;
+  _packages.sort(function(a, b) {
+    var av = a[col];
+    var bv = b[col];
+    if (av === null || av === undefined) av = '';
+    if (bv === null || bv === undefined) bv = '';
+    if (av < bv) return desc ? 1 : -1;
+    if (av > bv) return desc ? -1 : 1;
+    return 0;
+  });
+}
+
+function setSortColumn(col) {
+  if (_sortColumn === col) {
+    _sortDesc = !_sortDesc;
+  } else {
+    _sortColumn = col;
+    _sortDesc = true;
+  }
+  renderPackageTable();
+}
+
+function renderPackageTable() {
+  var container = document.getElementById('package-table');
+  if (_packages.length === 0) {
+    container.innerHTML = '<p class="text-gray-500 text-sm">No dependencies declared</p>';
+    return;
+  }
+  sortPackages();
+
+  var columns = [
+    ['name', 'Name'], ['current_version', 'Current'], ['latest_version', 'Latest'],
+    ['lag_category', 'Lag'], ['urgency', 'Urgency'], ['license', 'License'],
+    ['last_published', 'Last Published'], ['ecosystem', 'Ecosystem'],
+  ];
+  var headHtml = columns.map(function(c) {
+    var arrow = _sortColumn === c[0] ? (_sortDesc ? ' ↓' : ' ↑') : '';
+    return '<th class="text-left pb-2 cursor-pointer select-none hover:text-gray-300" onclick="setSortColumn(\'' + c[0] + '\')">' + c[1] + arrow + '</th>';
+  }).join('');
+
+  var rowsHtml = _packages.map(function(p) {
+    var flags = [];
+    if (p.deprecated) flags.push('<span class="text-accent-red text-xs">deprecated</span>');
+    if (p.vulnerable) flags.push('<span class="text-accent-red text-xs">vulnerable</span>');
+    return '<tr class="border-t border-gray-700/30">' +
+      '<td class="py-1.5 text-gray-200">' + escapeHtml(p.name) + (flags.length ? ' <span class="ml-1">' + flags.join(' ') + '</span>' : '') + '</td>' +
+      '<td class="py-1.5 text-gray-400">' + escapeHtml(p.current_version || '--') + '</td>' +
+      '<td class="py-1.5 text-gray-400">' + escapeHtml(p.latest_version || '--') + '</td>' +
+      '<td class="py-1.5 text-gray-400">' + lagLabel(p) + '</td>' +
+      '<td class="py-1.5"><span class="px-2 py-0.5 rounded text-xs font-medium ' + urgencyClass(p.urgency) + '">' + p.urgency + '</span></td>' +
+      '<td class="py-1.5 text-gray-400">' + escapeHtml(p.license || '--') + '</td>' +
+      '<td class="py-1.5 text-gray-400">' + fmtDate(p.last_published) + '</td>' +
+      '<td class="py-1.5 text-gray-500 text-xs">' + escapeHtml(p.ecosystem) + '</td>' +
+    '</tr>';
+  }).join('');
+
+  container.innerHTML = '<table class="w-full text-sm">' +
+    '<thead><tr class="text-gray-500 text-xs uppercase">' + headHtml + '</tr></thead>' +
+    '<tbody>' + rowsHtml + '</tbody></table>';
+}
+
+function renderSummary(snapshot) {
+  document.getElementById('stat-total').textContent = snapshot.total;
+  document.getElementById('stat-up-to-date').textContent = snapshot.up_to_date;
+  document.getElementById('stat-major-behind').textContent = snapshot.major_behind;
+  document.getElementById('stat-deprecated').textContent = snapshot.deprecated;
+  document.getElementById('stat-vulnerable').textContent = snapshot.vulnerable;
+  document.getElementById('stat-stale').textContent = snapshot.stale;
+
+  var pct = snapshot.health_percent;
+  document.getElementById('health-percent-label').textContent = pct + '%';
+  var fill = document.getElementById('health-bar-fill');
+  fill.style.width = pct + '%';
+  fill.className = 'h-full rounded-full transition-all ' + (pct >= 80 ? 'bg-accent-green' : pct >= 50 ? 'bg-accent-yellow' : 'bg-accent-red');
+
+  var generated = snapshot.generated_at ? new Date(snapshot.generated_at).toLocaleString() : '';
+  document.getElementById('generated-at-label').textContent = generated ? 'Scanned ' + generated : '';
+
+  var warning = document.getElementById('truncated-warning');
+  if (snapshot.truncated) {
+    warning.textContent = 'Scan truncated: ' + snapshot.truncated_count + ' package(s) were not scanned (per-ecosystem limit reached).';
+    warning.classList.remove('hidden');
+  } else {
+    warning.classList.add('hidden');
+  }
+}
+
+async function loadAll() {
+  try {
+    var snapshot = await fetchAPI(apiUrl('/dependency-health/snapshot'));
+    if (!snapshot.enabled) {
+      showState('disabled-state');
+      return;
+    }
+    if (snapshot.total === 0 && snapshot.ecosystems.length === 0) {
+      showState('empty-state');
+      return;
+    }
+    showState('content-section');
+    renderSummary(snapshot);
+
+    var pkgData = await fetchAPI(apiUrl('/dependency-health/packages'));
+    _packages = pkgData.packages || [];
+    renderPackageTable();
+  } catch (err) {
+    console.error('Failed to load dependency health:', err);
+    document.getElementById('package-table').innerHTML = '<p class="text-red-400 text-sm">Failed to load dependency health data</p>';
+  }
+}
+
+async function refreshSnapshot() {
+  var btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  btn.textContent = 'Scanning...';
+  try {
+    await fetchAPI(apiUrl('/dependency-health/refresh'), {method: 'POST'});
+    await loadAll();
+  } catch (err) {
+    console.error('Failed to refresh dependency health:', err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Rescan';
+  }
+}
+
+loadAll();
+</script>
+{% endblock %}
