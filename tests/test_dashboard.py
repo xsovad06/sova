@@ -9901,135 +9901,161 @@ class TestCheckIncompletePr:
 class TestStepProgress:
     """Tests for get_step_progress pipeline variant detection."""
 
-    def test_developer_pipeline_default(self) -> None:
+    async def test_developer_pipeline_default(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress("develop")
+        result = await get_step_progress("develop")
         assert result["pipeline_variant"] == "developer"
         assert result["step_index"] == 4
 
-    def test_address_review_from_step(self) -> None:
+    async def test_address_review_from_step(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress("rebase")
+        result = await get_step_progress("rebase")
         assert result["pipeline_variant"] == "address_review"
         assert result["step_index"] == 1
 
-    def test_none_step_defaults_to_developer(self) -> None:
+    async def test_none_step_defaults_to_developer(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress(None)
+        result = await get_step_progress(None)
         assert result["pipeline_variant"] == "developer"
         assert result["step_index"] == 0
 
-    def test_none_step_with_pr_number_is_address_review(self) -> None:
+    async def test_none_step_with_pr_number_is_address_review(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress(None, role="developer", pr_number=147)
+        result = await get_step_progress(None, role="developer", pr_number=147)
         assert result["pipeline_variant"] == "address_review"
         assert result["step_index"] == 0
         assert result["total_steps"] == 10
 
-    def test_agent_step_with_pr_number_is_address_review(self) -> None:
+    async def test_agent_step_with_pr_number_is_address_review(self) -> None:
         """Dashboard outer TaskRun (current_step='agent') with pr_number -> address_review."""
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress("agent", role="developer", pr_number=147)
+        result = await get_step_progress("agent", role="developer", pr_number=147)
         assert result["pipeline_variant"] == "address_review"
         assert result["step_index"] == 0
 
-    def test_shared_step_with_pr_number_is_developer(self) -> None:
+    async def test_configured_pipeline_overrides_builtin(self, tmp_path: Path) -> None:
+        """A [pipelines] override in sova.toml drives the progress bar, not the built-in list."""
+        from sova.dashboard.services import agent_progress
+
+        (tmp_path / "sova.toml").write_text('[pipelines]\ndeveloper = ["sync", "develop", "commit", "push"]\n')
+        agent_progress._pipeline_cache.clear()
+        try:
+            result = await agent_progress.get_step_progress("commit", role="developer", project_dir=tmp_path)
+            assert result["steps"] == ["sync", "develop", "commit", "push"]
+            assert result["step_index"] == 2
+            assert result["total_steps"] == 4
+        finally:
+            agent_progress._pipeline_cache.clear()
+
+    async def test_unreadable_config_falls_back_to_builtin_pipeline(self, tmp_path: Path) -> None:
+        """A broken sova.toml must not break the run listing."""
+        from sova.dashboard.services import agent_progress
+
+        (tmp_path / "sova.toml").write_text("[pipelines\nnot valid toml")
+        agent_progress._pipeline_cache.clear()
+        try:
+            result = await agent_progress.get_step_progress("develop", role="developer", project_dir=tmp_path)
+            assert result["steps"] == agent_progress.DEVELOPER_PIPELINE
+        finally:
+            agent_progress._pipeline_cache.clear()
+
+    async def test_shared_step_with_pr_number_is_developer(self) -> None:
         """WorkflowEngine TaskRun on shared step with pr_number acquired mid-pipeline."""
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress("commit", role="developer", pr_number=147)
+        result = await get_step_progress("commit", role="developer", pr_number=147)
         assert result["pipeline_variant"] == "developer"
         assert result["step_index"] == 7
 
-    def test_shared_step_without_pr_number_is_developer(self) -> None:
+    async def test_shared_step_without_pr_number_is_developer(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress("commit")
+        result = await get_step_progress("commit")
         assert result["pipeline_variant"] == "developer"
         assert result["step_index"] == 7
 
-    def test_workflow_engine_post_create_pr_is_developer(self) -> None:
+    async def test_workflow_engine_post_create_pr_is_developer(self) -> None:
         """WorkflowEngine TaskRun after CreatePRStep must not be mislabeled."""
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
         for step in ("monitor_ci", "extract_memory", "handoff_to_reviewer"):
-            result = get_step_progress(step, role="developer", pr_number=147)
+            result = await get_step_progress(step, role="developer", pr_number=147)
             assert result["pipeline_variant"] == "developer", f"step={step} should be developer"
 
-    def test_reviewer_role_with_pr_number_is_command(self) -> None:
+    async def test_reviewer_role_with_pr_number_is_command(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress("commit", role="reviewer", pr_number=147)
+        result = await get_step_progress("commit", role="reviewer", pr_number=147)
         assert result["pipeline_variant"] == "command"
 
-    def test_command_role_returns_command_variant(self) -> None:
+    async def test_command_role_returns_command_variant(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress(None, role="command:integrate-pr")
+        result = await get_step_progress(None, role="command:integrate-pr")
         assert result["pipeline_variant"] == "command"
         assert result["step_index"] == 0
         assert result["total_steps"] == 1
 
-    def test_command_role_with_agent_step(self) -> None:
+    async def test_command_role_with_agent_step(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress("agent", role="command:review-pr")
+        result = await get_step_progress("agent", role="command:review-pr")
         assert result["pipeline_variant"] == "command"
         assert result["step_index"] == 0
 
-    def test_command_role_approve_merge(self) -> None:
+    async def test_command_role_approve_merge(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress(None, role="command:approve-merge")
+        result = await get_step_progress(None, role="command:approve-merge")
         assert result["pipeline_variant"] == "command"
 
-    def test_researcher_role_unaffected_by_command_check(self) -> None:
+    async def test_researcher_role_unaffected_by_command_check(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress(None, role="researcher")
+        result = await get_step_progress(None, role="researcher")
         assert result["pipeline_variant"] == "researcher"
 
-    def test_reviewer_role_returns_command_variant(self) -> None:
+    async def test_reviewer_role_returns_command_variant(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress(None, role="reviewer")
+        result = await get_step_progress(None, role="reviewer")
         assert result["pipeline_variant"] == "command"
         assert result["step_index"] == 0
         assert result["total_steps"] == 1
 
-    def test_capture_baseline_step_in_developer_pipeline(self) -> None:
+    async def test_capture_baseline_step_in_developer_pipeline(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress("capture_baseline")
+        result = await get_step_progress("capture_baseline")
         assert result["pipeline_variant"] == "developer"
         assert result["step_index"] == 3
         assert result["total_steps"] == 17
 
-    def test_ensure_worktree_step_in_address_review_pipeline(self) -> None:
+    async def test_ensure_worktree_step_in_address_review_pipeline(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress("ensure_worktree")
+        result = await get_step_progress("ensure_worktree")
         assert result["pipeline_variant"] == "address_review"
         assert result["step_index"] == 0
         assert result["total_steps"] == 10
 
-    def test_planner_role_returns_planner_variant(self) -> None:
+    async def test_planner_role_returns_planner_variant(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress(None, role="planner")
+        result = await get_step_progress(None, role="planner")
         assert result["pipeline_variant"] == "planner"
         assert result["total_steps"] == 4
 
-    def test_planner_step_detected_by_step_name(self) -> None:
+    async def test_planner_step_detected_by_step_name(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
         for step, expected_idx in (("scan_project", 0), ("generate_tasks", 1), ("validate_tasks", 2)):
-            result = get_step_progress(step)
+            result = await get_step_progress(step)
             assert result["pipeline_variant"] == "planner", f"step={step} should be planner"
             assert result["step_index"] == expected_idx
 

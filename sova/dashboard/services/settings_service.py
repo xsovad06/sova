@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -96,7 +97,7 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
     if validation_error:
         return {"error": validation_error}
 
-    cast = _cast_value(value)
+    cast = _cast_value(value, meta.value_type)
 
     async with _get_update_lock(project_dir):
         consistency_error = _validate_config_consistency(project_dir, key, cast)
@@ -228,7 +229,7 @@ def _validate_config_consistency(project_dir: Path | None, key: str, value: obje
 
     try:
         data = load_config(project_dir).model_dump()
-    except Exception:  # noqa: BLE001 (fails open: any load error skips consistency check)
+    except Exception:  # noqa: BLE001 (fails open; an unloadable base config is not this save's fault)
         return None
 
     section, _, field = key.partition(".")
@@ -252,13 +253,20 @@ def _validate_config_consistency(project_dir: Path | None, key: str, value: obje
         ]
         if related:
             return f"'{key}' rejected: {'; '.join(related)}"
-    except Exception:  # noqa: BLE001 (fails open: any construction error skips consistency check)
+    except Exception:  # noqa: BLE001 (unrelated validation failure must not block this save)
         return None
     return None
 
 
-def _cast_value(value: str) -> object:
-    """Try to cast a string value to the appropriate type."""
+def _cast_value(value: str, value_type: str = "string") -> object:
+    """Try to cast a string value to the appropriate type.
+
+    List-typed settings must never be stored as a bare string: the config
+    models declare them as list[str], so a string value makes load_config()
+    raise a ValidationError and every command for that project fails.
+    """
+    if value_type == "list":
+        return _cast_list(value)
     if value.lower() in ("true", "false"):
         return value.lower() == "true"
     try:
@@ -270,6 +278,21 @@ def _cast_value(value: str) -> object:
     except ValueError:
         pass
     return value
+
+
+def _cast_list(value: str) -> list[str]:
+    """Parse a list-typed setting from a JSON array or a comma-separated string."""
+    stripped = value.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    return [item.strip() for item in stripped.split(",") if item.strip()]
 
 
 def list_invariants(project_dir: Path | None = None) -> list[dict]:

@@ -139,7 +139,9 @@ async def get_run_status(run_id: int, project_dir: Path | None = None) -> dict:
                 ended = datetime.now(timezone.utc)
             elapsed = (ended - started).total_seconds()
 
-        progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
+        progress = await get_step_progress(
+            run.current_step, role=run.role, pr_number=run.pr_number, project_dir=project_dir
+        )
         variant = progress.get("pipeline_variant", "develop")
 
         return {

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy import func, select
@@ -22,6 +23,7 @@ from sova.dashboard.services.agent_progress import (
     ADDRESS_REVIEW_PIPELINE,
     DEVELOPER_PIPELINE,
     RESEARCHER_PIPELINE,
+    _resolve_pipelines,
     get_step_progress,
 )
 from sova.db.models import StepExecution, TaskRun
@@ -41,7 +43,7 @@ _PIPELINE_LENGTHS: dict[str, int] = {
 _PIPELINE_ROLES = frozenset({"developer", "researcher"})
 
 
-def _init_step_positions() -> dict[tuple[str, str], tuple[str, int]]:
+def _init_step_positions(pipelines: dict[str, list[str]]) -> dict[tuple[str, str], tuple[str, int]]:
     """Map (step_name, variant) tuples to (pipeline_name, position).
 
     Steps shared across pipelines (e.g., 'commit' in developer and
@@ -50,32 +52,45 @@ def _init_step_positions() -> dict[tuple[str, str], tuple[str, int]]:
     """
     positions: dict[tuple[str, str], tuple[str, int]] = {}
     offset = 0
-    for pipeline_name, steps in [
-        ("developer", DEVELOPER_PIPELINE),
-        ("address_review", ADDRESS_REVIEW_PIPELINE),
-        ("researcher", RESEARCHER_PIPELINE),
-    ]:
+    for pipeline_name in ("developer", "address_review", "researcher"):
+        steps = pipelines.get(pipeline_name, [])
         for i, step in enumerate(steps):
             positions[(step, pipeline_name)] = (pipeline_name, offset + i)
         offset += len(steps)
+    positions[("pending", "pending")] = ("pending", -1)
     return positions
 
 
-# Unified step ordering across all pipelines (computed once at import).
-# "pending" is a synthetic column for runs with no step yet (None/"agent").
-_STEP_POSITIONS: dict[tuple[str, str], tuple[str, int]] = {
-    **_init_step_positions(),
-    ("pending", "pending"): ("pending", -1),
-}
+# Built-in step ordering across all pipelines, used as a fallback when no
+# project config is available. Kanban columns resolve project-specific
+# positions via _resolve_step_positions() to honour [pipelines] overrides.
+_STEP_POSITIONS: dict[tuple[str, str], tuple[str, int]] = _init_step_positions(
+    {
+        "developer": DEVELOPER_PIPELINE,
+        "address_review": ADDRESS_REVIEW_PIPELINE,
+        "researcher": RESEARCHER_PIPELINE,
+    }
+)
 
 
-def _build_run_summary(r: TaskRun, now: datetime) -> dict[str, Any]:
+async def _resolve_step_positions(project_dir: Path | None) -> dict[tuple[str, str], tuple[str, int]]:
+    """Resolve kanban step positions honouring a project's [pipelines] config.
+
+    Falls back to the built-in positions when no project is known.
+    """
+    if project_dir is None:
+        return _STEP_POSITIONS
+    pipelines = await _resolve_pipelines(project_dir)
+    return _init_step_positions(pipelines)
+
+
+async def _build_run_summary(r: TaskRun, now: datetime, project_dir: Path | None = None) -> dict[str, Any]:
     """Build a summary dict for an active (non-terminal) TaskRun."""
     started = r.started_at or now
     if started.tzinfo is None:
         started = started.replace(tzinfo=timezone.utc)
     elapsed = now - started
-    progress = get_step_progress(r.current_step, role=r.role, pr_number=r.pr_number)
+    progress = await get_step_progress(r.current_step, role=r.role, pr_number=r.pr_number, project_dir=project_dir)
     return {
         "id": r.id,
         "issue_number": r.issue_number,
@@ -93,7 +108,7 @@ def _build_run_summary(r: TaskRun, now: datetime) -> dict[str, Any]:
     }
 
 
-async def get_active_work(session: AsyncSession) -> list[dict]:
+async def get_active_work(session: AsyncSession, project_dir: Path | None = None) -> list[dict]:
     """Get non-terminal task runs with step progress info."""
     stmt = select(TaskRun).where(TaskRun.status.notin_(_TERMINAL)).order_by(TaskRun.started_at.desc())
     result = await session.execute(stmt)
@@ -102,7 +117,7 @@ async def get_active_work(session: AsyncSession) -> list[dict]:
     now = datetime.now(timezone.utc)
     items = []
     for r in runs:
-        d = _build_run_summary(r, now)
+        d = await _build_run_summary(r, now, project_dir)
         d["branch_name"] = r.branch_name
         d["pr_number"] = r.pr_number
         items.append(d)
@@ -213,7 +228,7 @@ def _build_history_item(
     }
 
 
-async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
+async def get_work_detail(session: AsyncSession, run_id: int, project_dir: Path | None = None) -> dict | None:
     """Get a single run with its step executions and pipeline progress."""
     run = await session.get(TaskRun, run_id, options=[selectinload(TaskRun.resource_summary)])
     if run is None:
@@ -223,7 +238,9 @@ async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
     deduped = _dedupe_steps(all_steps)
 
     variant_from_steps = _detect_variant_from_steps(deduped, run.current_step, role=run.role)
-    progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
+    progress = await get_step_progress(
+        run.current_step, role=run.role, pr_number=run.pr_number, project_dir=project_dir
+    )
     is_specific = variant_from_steps in ("address_review", "researcher", "command")
     variant = variant_from_steps if is_specific else progress["pipeline_variant"]
     progress["pipeline_variant"] = variant
@@ -238,18 +255,18 @@ async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
     }
 
 
-async def get_work_summary(session: AsyncSession) -> dict:
+async def get_work_summary(session: AsyncSession, project_dir: Path | None = None) -> dict:
     """Aggregate counts for overview cards."""
     total = await session.scalar(select(func.count(TaskRun.id))) or 0
     done = await session.scalar(select(func.count(TaskRun.id)).where(TaskRun.status == "done")) or 0
     failed = await session.scalar(select(func.count(TaskRun.id)).where(TaskRun.status == "failed")) or 0
-    active_groups = await get_active_work_grouped(session)
+    active_groups = await get_active_work_grouped(session, project_dir)
     active = len(active_groups)
 
     return {"total": total, "done": done, "failed": failed, "active": active}
 
 
-async def get_active_work_grouped(session: AsyncSession) -> list[dict]:
+async def get_active_work_grouped(session: AsyncSession, project_dir: Path | None = None) -> list[dict]:
     """Get non-terminal runs grouped by issue, with latest run first.
 
     Excludes issues whose most recent run (by ID) is already terminal --
@@ -258,7 +275,7 @@ async def get_active_work_grouped(session: AsyncSession) -> list[dict]:
     Returns a list of issue groups:
       [{"issue_number": "42", "latest_run": {...}, "previous_runs": [...], "run_count": 3}]
     """
-    items = await get_active_work(session)
+    items = await get_active_work(session, project_dir)
     if not items:
         return []
 
@@ -527,6 +544,7 @@ def _classify_run_role_based(run: TaskRun, variant: str) -> str:
 
 async def _fetch_active_runs_with_variants(
     session: AsyncSession,
+    project_dir: Path | None = None,
 ) -> list[tuple[TaskRun, dict, str]]:
     """Fetch non-terminal runs with summaries and resolved variants.
 
@@ -545,7 +563,7 @@ async def _fetch_active_runs_with_variants(
 
     items: list[tuple[TaskRun, dict, str]] = []
     for r in runs:
-        summary = _build_run_summary(r, now)
+        summary = await _build_run_summary(r, now, project_dir)
         step_names = steps_by_run.get(r.id, set())
         if step_names & _RESEARCHER_ONLY:
             variant = "researcher"
@@ -563,6 +581,7 @@ async def get_kanban_columns(
     *,
     per_column: int = 10,
     mode: Literal["step_based", "role_based"] = "step_based",
+    project_dir: Path | None = None,
 ) -> list[dict]:
     """Get non-terminal TaskRuns grouped into Kanban columns.
 
@@ -575,16 +594,21 @@ async def get_kanban_columns(
     currently at that step. Columns are ordered by position. Empty
     columns are omitted.
     """
-    items = await _fetch_active_runs_with_variants(session)
+    items = await _fetch_active_runs_with_variants(session, project_dir)
     if not items:
         return []
 
     if mode == "role_based":
         return _group_role_based(items, per_column)
-    return _group_step_based(items, per_column)
+    positions = await _resolve_step_positions(project_dir)
+    return _group_step_based(items, per_column, positions)
 
 
-def _group_step_based(items: list[tuple[TaskRun, dict, str]], per_column: int) -> list[dict]:
+def _group_step_based(
+    items: list[tuple[TaskRun, dict, str]],
+    per_column: int,
+    positions: dict[tuple[str, str], tuple[str, int]] = _STEP_POSITIONS,
+) -> list[dict]:
     """Group runs by (step, variant) for step-based kanban columns."""
     columns: dict[tuple[str, str], list[dict]] = {}
     for r, summary, variant in items:
@@ -599,7 +623,7 @@ def _group_step_based(items: list[tuple[TaskRun, dict, str]], per_column: int) -
 
     result_columns = []
     for (col_step, col_variant), col_runs in columns.items():
-        pipeline_name, position = _STEP_POSITIONS.get((col_step, col_variant), ("unknown", 999))
+        pipeline_name, position = positions.get((col_step, col_variant), ("unknown", 999))
         limited_runs = col_runs[:per_column]
         result_columns.append(
             {

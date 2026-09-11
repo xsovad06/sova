@@ -95,6 +95,7 @@ _NESTED_SECTIONS = (
     "triage",
     "roles",
     "pipeline",
+    "pipelines",
     "spec",
     "notification",
     "server",

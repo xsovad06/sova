@@ -382,6 +382,64 @@ class PipelineConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_PIPELINE_")
 
 
+class PipelineDefinitions(BaseSettings):
+    """User-overridable step pipeline definitions.
+
+    Step names must match sova.core.steps.STEP_REGISTRY keys. An empty list
+    falls back to the built-in hardcoded pipeline (defaults below mirror
+    sova/core/steps/__init__.py; this module cannot import from sova.core to
+    avoid a circular import, since sova.core.context imports this module).
+
+    validate_pipeline() only checks explicit ordering constraints (e.g.
+    'commit' before 'push') and build_pipeline() only rejects unknown or
+    duplicated step names. Neither models implicit dependencies between
+    steps: removing a step whose output a later step relies on (e.g.
+    dropping 'create_worktree' while keeping 'develop', which needs a
+    worktree to edit) is not caught at config-load time and will fail at
+    runtime instead, inside whichever downstream step first needs the
+    missing state.
+    """
+
+    developer: list[str] = Field(
+        default_factory=lambda: [
+            "sync",
+            "assess",
+            "create_worktree",
+            "capture_baseline",
+            "develop",
+            "simplify",
+            "self_review",
+            "commit",
+            "validate",
+            "push",
+            "create_pr",
+            "wait_for_external_reviews",
+            "address_external_findings",
+            "monitor_ci",
+            "confidence_score",
+            "extract_memory",
+            "handoff_to_reviewer",
+        ]
+    )
+    address_review: list[str] = Field(
+        default_factory=lambda: [
+            "ensure_worktree",
+            "rebase",
+            "address_review",
+            "rearrange_commits",
+            "validate",
+            "push",
+            "monitor_ci",
+            "resolve_external_reviews",
+            "extract_memory",
+            "handoff_to_user",
+        ]
+    )
+    researcher: list[str] = Field(default_factory=lambda: ["fetch_task", "research", "spec", "extract_memory"])
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_PIPELINES_")
+
+
 class SonarCloudConfig(BaseSettings):
     """SonarCloud-specific configuration."""
 
@@ -828,6 +886,7 @@ class ProjectConfig(BaseSettings):
     triage: TriageConfig = Field(default_factory=TriageConfig)
     roles: RolesConfig = Field(default_factory=RolesConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    pipelines: PipelineDefinitions = Field(default_factory=PipelineDefinitions)
     spec: SpecConfig = Field(default_factory=SpecConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)

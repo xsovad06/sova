@@ -14,7 +14,12 @@ from pathlib import Path
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
-from sova.core.steps import get_address_review_steps, get_developer_steps
+from sova.core.steps import (
+    build_configured_pipeline,
+    get_address_review_step_names,
+    get_developer_step_names,
+    get_developer_steps,
+)
 from sova.core.steps.base import BaseStep
 from sova.core.workflow import WorkflowEngine
 from sova.git.operations import get_pr_branch
@@ -23,6 +28,12 @@ from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
 log = get_logger(component="role.developer")
+
+
+def _pipeline_config_error(exc: ValueError) -> RoleResult:
+    """Turn an invalid [pipelines] config into a failed run instead of a crash."""
+    log.error("developer.pipeline_config_invalid", error=str(exc), exc_info=True)
+    return RoleResult(success=False, summary="Invalid pipeline configuration", error=str(exc))
 
 
 class DeveloperRole(AgentRole):
@@ -41,6 +52,11 @@ class DeveloperRole(AgentRole):
         )
 
     def get_steps(self) -> list[BaseStep]:
+        """Return the built-in pipeline.
+
+        execute() builds from ctx.config.pipelines instead, so this reflects
+        the default only and is not the pipeline a configured run executes.
+        """
         return get_developer_steps()
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
@@ -67,10 +83,16 @@ class DeveloperRole(AgentRole):
     async def _execute_development(self, ctx: ExecutionContext) -> RoleResult:
         log.info("developer.start", label=ctx.display_label)
 
+        # Build before the state transition: a misconfigured [pipelines] section
+        # must not leave the issue stuck in IN_PROGRESS with no agent running.
+        try:
+            steps = build_configured_pipeline(get_developer_step_names(), ctx.config.pipelines.developer)
+        except ValueError as exc:
+            return _pipeline_config_error(exc)
+
         if ctx.has_issue:
             await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_PROGRESS)
 
-        steps = get_developer_steps()
         engine = WorkflowEngine(steps=steps, ctx=ctx)
         workflow_result = await engine.run()
 
@@ -99,7 +121,11 @@ class DeveloperRole(AgentRole):
             worktree=ctx.worktree_dir,
         )
 
-        steps = get_address_review_steps()
+        try:
+            steps = build_configured_pipeline(get_address_review_step_names(), ctx.config.pipelines.address_review)
+        except ValueError as exc:
+            return _pipeline_config_error(exc)
+
         engine = WorkflowEngine(steps=steps, ctx=ctx)
         workflow_result = await engine.run()
 
