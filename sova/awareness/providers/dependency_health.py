@@ -63,7 +63,7 @@ def _project_enabled(project_dir: Path) -> bool:
 
         cfg = load_config(project_dir)
         return cfg.dependency_health.enabled
-    except Exception:
+    except Exception:  # noqa: BLE001 (config may fail for many reasons; fail closed to not-enabled)
         _log.debug("dependency_health.config_load_failed", project_dir=str(project_dir), exc_info=True)
         return False
 
@@ -75,7 +75,7 @@ async def _safe_project_items(slug: str, project_dir: Path, sem: asyncio.Semapho
         except TimeoutError:
             _log.warning("dependency_health.query_timeout", slug=slug, exc_info=True)
             return []
-        except Exception:
+        except Exception:  # noqa: BLE001 (per-project isolation: one project's failure must not sink the briefing)
             _log.warning("dependency_health.query_failed", slug=slug, exc_info=True)
             return []
 
