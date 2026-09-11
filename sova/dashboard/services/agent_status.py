@@ -71,7 +71,12 @@ async def get_agent_status(
             if task_run is None:
                 return None
 
-            progress = get_step_progress(task_run.current_step, role=task_run.role, pr_number=task_run.pr_number)
+            progress = await get_step_progress(
+                task_run.current_step,
+                role=task_run.role,
+                pr_number=task_run.pr_number,
+                project_dir=project_dir,
+            )
 
             # Fetch step executions for this run
             result = await session.execute(
@@ -159,7 +164,9 @@ async def get_all_agent_statuses(
         statuses: list[AgentStatus] = []
         for run in runs:
             try:
-                progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
+                progress = await get_step_progress(
+                    run.current_step, role=run.role, pr_number=run.pr_number, project_dir=project_dir
+                )
                 run_steps = steps_by_run.get(run.id, [])
                 completed = [s.step_name for s in run_steps if s.status in STEP_DONE_STATUSES]
 

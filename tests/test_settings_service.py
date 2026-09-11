@@ -47,6 +47,22 @@ class TestCastValue:
     def test_empty_string(self) -> None:
         assert _cast_value("") == ""
 
+    def test_list_from_comma_separated(self) -> None:
+        assert _cast_value("sync, assess, develop", "list") == ["sync", "assess", "develop"]
+
+    def test_list_from_json_array(self) -> None:
+        assert _cast_value('["sync", "assess"]', "list") == ["sync", "assess"]
+
+    def test_list_empty_is_empty_list(self) -> None:
+        """Empty means 'use the default'; a bare string would break load_config()."""
+        assert _cast_value("  ", "list") == []
+
+    def test_list_single_value_is_wrapped(self) -> None:
+        assert _cast_value("sync", "list") == ["sync"]
+
+    def test_list_malformed_json_falls_back_to_split(self) -> None:
+        assert _cast_value("[sync, assess", "list") == ["[sync", "assess"]
+
 
 class TestValidateValueType:
     def test_number_accepts_int(self) -> None:

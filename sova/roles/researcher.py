@@ -10,7 +10,7 @@ from __future__ import annotations
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
 from sova.core.state import TaskStatus
-from sova.core.steps import get_researcher_steps
+from sova.core.steps import build_configured_pipeline, get_researcher_step_names, get_researcher_steps
 from sova.core.steps.base import BaseStep
 from sova.core.workflow import WorkflowEngine
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
@@ -72,6 +72,11 @@ class ResearcherRole(AgentRole):
         )
 
     def get_steps(self) -> list[BaseStep]:
+        """Return the built-in pipeline.
+
+        execute() builds from ctx.config.pipelines instead, so this reflects
+        the default only and is not the pipeline a configured run executes.
+        """
         return get_researcher_steps()
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
@@ -79,7 +84,12 @@ class ResearcherRole(AgentRole):
 
         log.info("researcher.start", issue=ctx.issue_number)
 
-        steps = self.get_steps()
+        try:
+            steps = build_configured_pipeline(get_researcher_step_names(), ctx.config.pipelines.researcher)
+        except ValueError as exc:
+            log.error("researcher.pipeline_config_invalid", error=str(exc), exc_info=True)
+            return RoleResult(success=False, summary="Invalid pipeline configuration", error=str(exc))
+
         engine = WorkflowEngine(steps=steps, ctx=ctx)
         workflow_result = await engine.run()
 
