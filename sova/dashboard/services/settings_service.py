@@ -228,7 +228,7 @@ def _validate_config_consistency(project_dir: Path | None, key: str, value: obje
 
     try:
         data = load_config(project_dir).model_dump()
-    except Exception:
+    except Exception:  # noqa: BLE001 (fails open: config may be unloadable for many reasons)
         return None
 
     section, _, field = key.partition(".")
@@ -252,7 +252,7 @@ def _validate_config_consistency(project_dir: Path | None, key: str, value: obje
         ]
         if related:
             return f"'{key}' rejected: {'; '.join(related)}"
-    except Exception:
+    except Exception:  # noqa: BLE001 (fails open: reconstructing the config may raise for many reasons)
         return None
     return None
 
