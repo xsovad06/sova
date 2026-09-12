@@ -45,6 +45,7 @@ from sova.dashboard.routers import (
     control,
     costs,
     dependencies,
+    dependency_health,
     feed,
     fleet_insights,
     handoff,
@@ -1082,6 +1083,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_style_guide(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "style_guide.html", "style-guide")
 
+    @app.get("/p/{slug}/dependency-health")
+    async def project_dependency_health(request: Request, slug: str) -> Response:
+        return _project_page(request, templates, slug, "dependency_health.html", "dependency-health")
+
     # -- Project-scoped API --
     _register_api_routers(app, prefix="/p/{slug}/api")
 
@@ -1223,6 +1228,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             request, "supervisor.html", {"page": "supervisor", "github_repo": github_repo}
         )
 
+    @app.get("/dependency-health")
+    async def dependency_health_page(request: Request) -> Response:
+        return templates.TemplateResponse(request, "dependency_health.html", {"page": "dependency-health"})
+
     @app.get("/fleet")
     async def fleet_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "fleet.html", {"page": "fleet"})
@@ -1258,6 +1267,7 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(prs.router, prefix=prefix)
     app.include_router(quota.router, prefix=prefix)
     app.include_router(dependencies.router, prefix=prefix)
+    app.include_router(dependency_health.router, prefix=prefix)
     app.include_router(resources.router, prefix=prefix)
     app.include_router(supervisor.router, prefix=prefix)
     app.include_router(oversight.router, prefix=prefix)

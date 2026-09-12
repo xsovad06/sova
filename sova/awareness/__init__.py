@@ -55,6 +55,7 @@ def _auto_register() -> None:
         "sova.awareness.providers.reminders",
         "sova.awareness.providers.pr_status",
         "sova.awareness.providers.agent_runs",
+        "sova.awareness.providers.dependency_health",
     )
     for module_name in _BUILTIN_PROVIDERS:
         try:
