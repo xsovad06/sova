@@ -1,26 +1,34 @@
-"""Tests for the docs-only CI optimization (issue #857).
+"""Tests for the documentation-only CI optimization (issues #857, #1005).
 
-These tests guard the structural contract that keeps a documentation-only
-change from re-running the expensive CI suite while still satisfying the
-required status checks in the main-protection ruleset. They assert on the
-raw workflow/command text (no YAML dependency) so they run under the plain
-dev extras.
+These tests guard the contract that keeps a documentation change from
+re-running the expensive CI suite while still satisfying the required status
+checks in the main-protection ruleset. They assert on the raw workflow/script
+text (no YAML dependency for the structural checks) so they run under the
+plain dev extras.
+
+The optimization has two layers, and the second is what makes it useful:
+
+1. whole-pull-request: every file the PR touches is markdown. This alone never
+   fires on a code-carrying PR, because the PR diff still holds the code that
+   was pushed earlier.
+2. delta-since-last-green: every file changed since the most recent successful
+   run of this workflow on this branch is markdown. This is what makes a
+   documentation push on top of already-green code free.
 
 Two invariants are protected:
 
-1. Workflow gate job: the CI and SonarCloud workflows must detect whether
-   non-doc code changed and gate their expensive steps on that signal, while
-   the required jobs still run and report success on docs-only changes.
-2. integrate-pr command: Phase 3 must only amend/force-push when something
-   changed, and Phase 4 must skip the CI poll when nothing was re-pushed.
+* the detector classifies paths correctly and fails open on every bad input
+* both workflows use the shared detector and gate only their expensive steps,
+  so required jobs still run and report success
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 from pathlib import Path
-from shlex import quote as shlex_quote
 
 import pytest
 
@@ -28,8 +36,9 @@ REPO_ROOT = Path(__file__).parent.parent
 
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 SONAR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sonarcloud.yml"
-INTEGRATE_SOVA = REPO_ROOT / ".claude" / "commands" / "integrate-pr.md"
-INTEGRATE_DIST = REPO_ROOT / "commands" / "integrate-pr.md"
+DETECTOR = REPO_ROOT / ".github" / "scripts" / "detect-code-changes.sh"
+
+_JOB_KEY_RE = re.compile(r"^ {2}[A-Za-z0-9_-]+:")
 
 # Jobs that are REQUIRED status checks in the main-protection ruleset. They
 # must always run (never be skipped wholesale) so the required check reports.
@@ -40,6 +49,14 @@ REQUIRED_CI_JOB_NAMES = {
     "Static Checks",
 }
 
+# Jobs whose expensive work is gated on the detector's verdict.
+GATED_CI_JOBS = ("python-lint", "python-test", "integration")
+
+# Jobs that must run their real work unconditionally. Markdown can carry a
+# leaked credential, a banned em-dash, or a broken command frontmatter, so
+# these stay ungated.
+UNGATED_CI_JOBS = ("lint-static", "secrets-scan", "invariants")
+
 
 @pytest.fixture(scope="module")
 def ci_text() -> str:
@@ -49,301 +66,6 @@ def ci_text() -> str:
 @pytest.fixture(scope="module")
 def sonar_text() -> str:
     return SONAR_WORKFLOW.read_text()
-
-
-@pytest.fixture(scope="module")
-def integrate_sova_text() -> str:
-    return INTEGRATE_SOVA.read_text()
-
-
-@pytest.fixture(scope="module")
-def integrate_dist_text() -> str:
-    return INTEGRATE_DIST.read_text()
-
-
-# ---------------------------------------------------------------------------
-# Lever 2: CI workflow gate job
-# ---------------------------------------------------------------------------
-
-
-class TestCIWorkflowGate:
-    def test_changes_job_exists(self, ci_text: str) -> None:
-        """A `changes` job must exist to detect code vs docs-only changes."""
-        assert "\n  changes:" in ci_text
-        assert "Detect Changed Paths" in ci_text
-
-    def test_changes_job_exposes_code_output(self, ci_text: str) -> None:
-        """The gate job must expose a `code` output for downstream jobs."""
-        assert "outputs:" in ci_text
-        assert "code: ${{ steps.decide.outputs.code }}" in ci_text
-
-    def test_filter_uses_inverse_code_detection(self, ci_text: str) -> None:
-        """The filter must detect the code inverse, not an all-docs quantifier.
-
-        paths-filter answers "did ANY file match" (an OR model). Expressing
-        "every changed file is a doc" requires the inverse: a `code` filter
-        with `some-with-excludes` that matches any non-doc file. The naive
-        `predicate-quantifier: 'every'` over doc globs is a known trap
-        (it ANDs patterns per file, so it is effectively always false).
-        """
-        assert "predicate-quantifier: 'some-with-excludes'" in ci_text
-        assert "predicate-quantifier: 'every'" not in ci_text
-        # Positive catch-all plus the single markdown exclusion.
-        assert "- '**'" in ci_text
-        assert "- '!**/*.md'" in ci_text
-
-    def test_paths_filter_is_v4(self, ci_text: str) -> None:
-        """some-with-excludes only exists in dorny/paths-filter v4.
-
-        v3 supports only 'some' and 'every'; pinning @v3 with this quantifier
-        fails the step at runtime with an unknown-value error.
-        """
-        assert "dorny/paths-filter@v4" in ci_text
-        assert "dorny/paths-filter@v3" not in ci_text
-
-    def test_only_markdown_is_excluded(self, ci_text: str) -> None:
-        """Only *.md is documentation; docs/ and .claude/ subtrees contain code.
-
-        Excluding whole subtrees (docs/**, .claude/**) would misclassify the
-        .claude/benchmark/*.sh hooks, .claude/commands/.sova-manifest.json, and
-        docs/pipeline-determinism.html as docs and skip the test suite for a
-        real code change. The filter must exclude markdown only.
-        """
-        assert "- '!docs/**'" not in ci_text
-        assert "- '!.claude/**'" not in ci_text
-
-    def test_decide_step_fails_open(self, ci_text: str) -> None:
-        """A non-'false' filter output (empty/malformed) must run the full suite.
-
-        Only an explicit `code=false` from the filter (a genuine docs-only PR)
-        may skip. An empty output from a partial action failure must not be
-        read as docs-only, which would merge real code untested.
-        """
-        assert 'elif [ "${{ steps.filter.outputs.code }}" = "false" ]; then' in ci_text
-
-    def test_push_events_always_run_full_suite(self, ci_text: str) -> None:
-        """Push to main must never be treated as docs-only (no PR diff base)."""
-        # The decide step forces code=true for non-pull_request events.
-        assert 'if [ "${{ github.event_name }}" != "pull_request" ]; then' in ci_text
-        assert 'echo "code=true"' in ci_text
-
-    def test_expensive_jobs_depend_on_changes(self, ci_text: str) -> None:
-        """Python Tests and Integration Test must gate on the changes job."""
-        # Assert the declaration per job block (a bare file-wide count would be
-        # satisfied by prose comments or an unrelated third job).
-        for job in ("python-test", "integration"):
-            decls = [ln.strip() for ln in _job_block(ci_text, job).splitlines()]
-            assert "needs: changes" in decls, f"{job} must gate on changes"
-
-    def test_expensive_jobs_gate_steps_on_code(self, ci_text: str) -> None:
-        """Expensive steps run unless the change is explicitly docs-only.
-
-        Steps guard on `code != 'false'` (run) and the skip step on
-        `code == 'false'`. This is the fail-open direction: an empty/missing
-        gate output (skipped or failed `changes` job) is not 'false', so the
-        real steps run rather than falsely reporting docs-only success.
-        """
-        assert "needs.changes.outputs.code != 'false'" in ci_text
-        # A docs-only branch must have an explicit success-reporting step.
-        assert "needs.changes.outputs.code == 'false'" in ci_text
-
-    def test_expensive_jobs_fail_open_when_gate_fails(self, ci_text: str) -> None:
-        """A failed/skipped `changes` gate must not strand the required checks.
-
-        With `needs: changes`, a failed gate would skip the dependent job by
-        default, leaving the required status check pending forever. `always()`
-        on the job-level `if` forces the job to run and report regardless.
-        """
-        test_block = _job_block(ci_text, "python-test")
-        integ_block = _job_block(ci_text, "integration")
-        assert "if: always()" in test_block
-        assert "if: always()" in integ_block
-
-    def test_required_jobs_not_skipped_wholesale(self, ci_text: str) -> None:
-        """Required jobs must never carry a job-level paths-based skip that
-        would leave the required check pending forever."""
-        # A blanket paths-ignore on the workflow triggers would strand the
-        # required checks. Ensure it is absent.
-        assert "paths-ignore:" not in ci_text
-        # Every required job name is still declared in the workflow.
-        for name in REQUIRED_CI_JOB_NAMES:
-            assert f"name: {name}" in ci_text
-
-    def test_lint_and_static_always_run(self, ci_text: str) -> None:
-        """Fast jobs that also cover markdown must not gate on code changes."""
-        # Locate the lint-static and python-lint job blocks and confirm they
-        # do not declare `needs: changes` (they run unconditionally). Match a
-        # declaration LINE (stripped), not any substring, so prose comments
-        # mentioning "needs: changes" do not trip the assertion.
-        for job in ("lint-static", "python-lint"):
-            decls = [ln.strip() for ln in _job_block(ci_text, job).splitlines()]
-            assert "needs: changes" not in decls, f"{job} must not gate on changes"
-
-
-class TestSonarCloudWorkflowGate:
-    def test_detects_code_changes(self, sonar_text: str) -> None:
-        """SonarCloud must detect code changes via the API (pull_request_target-safe)."""
-        assert "Detect code changes" in sonar_text
-        assert "id: changes" in sonar_text
-        # Uses the GitHub API for changed files, not a working-tree diff.
-        assert "pulls/${{ github.event.pull_request.number }}/files" in sonar_text
-
-    def test_push_always_runs(self, sonar_text: str) -> None:
-        """Push events must always run the full analysis."""
-        assert 'if [ "${{ github.event_name }}" != "pull_request_target" ]; then' in sonar_text
-
-    def test_expensive_steps_gated_on_code(self, sonar_text: str) -> None:
-        """Coverage and scan steps must be gated on code having changed."""
-        assert "steps.changes.outputs.code == 'true'" in sonar_text
-        assert "steps.changes.outputs.code != 'true'" in sonar_text
-
-    def test_only_markdown_classified_as_docs(self, sonar_text: str) -> None:
-        """The classifier must treat only *.md as docs, not whole subtrees.
-
-        docs/ and .claude/ hold non-md code, so a subtree glob would skip the
-        scan for a real code change.
-        """
-        assert "*.md) ;;" in sonar_text
-        assert "docs/*" not in sonar_text
-        assert ".claude/*" not in sonar_text
-
-    def test_no_blanket_paths_ignore(self, sonar_text: str) -> None:
-        """A blanket paths-ignore would strand the required SonarCloud check."""
-        assert "paths-ignore:" not in sonar_text
-
-    def test_empty_file_list_fails_safe_to_run(self, sonar_text: str) -> None:
-        """An empty/failed changed-file list must run the full analysis, not skip.
-
-        Guards against the vacuous-truth hazard: an API hiccup or empty diff
-        must not be misread as docs-only and skip the required scan.
-        """
-        assert 'if [ -z "$files" ]; then' in sonar_text
-        # The empty branch forces code=true (run everything).
-        empty_branch = sonar_text.split('if [ -z "$files" ]; then', 1)[1][:120]
-        assert 'echo "code=true"' in empty_branch
-
-
-# ---------------------------------------------------------------------------
-# Lever 1: integrate-pr command logic
-# ---------------------------------------------------------------------------
-
-
-class TestIntegratePRDocsOnly:
-    @pytest.mark.parametrize("fixture", ["integrate_sova_text", "integrate_dist_text"])
-    def test_phase3_guards_no_op_amend(self, fixture: str, request: pytest.FixtureRequest) -> None:
-        """Phase 3 must not amend/push when nothing staged (avoids no-op CI cycle)."""
-        text = request.getfixturevalue(fixture)
-        assert "git diff --cached --quiet" in text
-
-    @pytest.mark.parametrize("fixture", ["integrate_sova_text", "integrate_dist_text"])
-    def test_pushed_flag_persisted_to_state_file(self, fixture: str, request: pytest.FixtureRequest) -> None:
-        """The push flag must be written to a state file, not a shell variable.
-
-        Phases 2 through 4 run as separate command invocations, and shell
-        variables do not persist across them. The flag lives in
-        .claude/agent-control/integrate-pushed (a gitignored control dir) so
-        Phase 4 can read what Phases 2 and 3 wrote.
-        """
-        text = request.getfixturevalue(fixture)
-        assert "echo 0 > .claude/agent-control/integrate-pushed" in text
-        assert "echo 1 > .claude/agent-control/integrate-pushed" in text
-        # No reliance on an in-memory shell variable across blocks.
-        assert "PUSHED=1" not in text
-
-    @pytest.mark.parametrize("fixture", ["integrate_sova_text", "integrate_dist_text"])
-    def test_phase4_fast_path(self, fixture: str, request: pytest.FixtureRequest) -> None:
-        """Phase 4 must skip the poll when nothing was re-pushed and CI is green."""
-        text = request.getfixturevalue(fixture)
-        # Reads the persisted flag, defaulting to 0 when the file is absent.
-        assert "PUSHED=$(cat .claude/agent-control/integrate-pushed 2>/dev/null || echo 0)" in text
-        assert 'if [ "$PUSHED" -eq 0 ]; then' in text
-        assert "Skipping the poll" in text
-
-    @pytest.mark.parametrize("fixture", ["integrate_sova_text", "integrate_dist_text"])
-    def test_still_polls_when_pushed(self, fixture: str, request: pytest.FixtureRequest) -> None:
-        """The full poll loop must remain for the pushed / not-green path."""
-        text = request.getfixturevalue(fixture)
-        assert "CI poll attempt" in text
-        assert "fall through to the poll" in text
-
-
-# ---------------------------------------------------------------------------
-# Behavioral: run the actual sonar classifier logic against real paths
-# ---------------------------------------------------------------------------
-
-
-def _extract_sonar_classifier() -> str:
-    """Extract the changed-file classifier body verbatim from sonarcloud.yml.
-
-    Pulls the shell lines from the `code="false"` assignment through the
-    `echo "code=$code"` output line out of the workflow's run block. Executing
-    this extracted text (rather than a hand-copied duplicate) is what makes the
-    behavioral test a real regression guard: if someone broadens the doc
-    exclusion in the workflow, the extracted logic changes and the test catches
-    it. Fails loudly if the anchors move so the extraction cannot silently
-    degrade to matching nothing.
-    """
-    lines = SONAR_WORKFLOW.read_text().splitlines()
-    start = end = None
-    for i, line in enumerate(lines):
-        if start is None and line.strip() == 'code="false"':
-            start = i
-        elif start is not None and line.strip().startswith('echo "code=$code"'):
-            end = i
-            break
-    assert start is not None and end is not None, "sonar classifier anchors not found in sonarcloud.yml"
-    # Strip the workflow's YAML indentation so the block is a valid script.
-    body = [ln.strip() for ln in lines[start : end + 1]]
-    # The workflow writes to $GITHUB_OUTPUT; redirect that to stdout for the test.
-    body[-1] = 'echo "$code"'
-    return "\n".join(body)
-
-
-def _classify_sonar(files: list[str]) -> str:
-    """Run the real sonarcloud.yml changed-file classifier in a shell.
-
-    Feeds representative paths through the classifier body extracted from the
-    workflow so the test exercises the same globbing the CI does, not a string
-    match. Guards against a regression that broadens the doc exclusion and skips
-    the scan for real code.
-    """
-    joined = "\n".join(files)
-    classifier = _extract_sonar_classifier()
-    script = f"""
-    files={shlex_quote(joined)}
-    if [ -z "$files" ]; then echo "true"; exit 0; fi
-    {classifier}
-    """
-    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
-    return out.stdout.strip()
-
-
-class TestSonarClassifierBehavior:
-    @pytest.mark.parametrize(
-        "files,expected",
-        [
-            (["README.md"], "false"),
-            (["docs/VISION.md", "AGENTS.md"], "false"),
-            ([".claude/rules/architecture.md"], "false"),
-            (["sova/foo.py"], "true"),
-            ([".claude/benchmark/log.sh"], "true"),
-            ([".claude/commands/.sova-manifest.json"], "true"),
-            (["docs/pipeline-determinism.html"], "true"),
-            ([".github/workflows/ci.yml"], "true"),
-            (["README.md", "sova/foo.py"], "true"),  # mixed -> code
-            ([], "true"),  # empty -> fail-safe to run
-        ],
-    )
-    def test_classifier(self, files: list[str], expected: str) -> None:
-        assert _classify_sonar(files) == expected
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-_JOB_KEY_RE = re.compile(r"^  [A-Za-z0-9_-]+:")
 
 
 def _job_block(workflow_text: str, job_key: str) -> str:
@@ -363,8 +85,386 @@ def _job_block(workflow_text: str, job_key: str) -> str:
     assert start is not None, f"job {job_key!r} not found"
     block: list[str] = [lines[start]]
     for line in lines[start + 1 :]:
-        # Next job at the same 2-space indent ends this block.
         if _JOB_KEY_RE.match(line):
             break
         block.append(line)
     return "\n".join(block)
+
+
+def _run_detector(*args: str, stdin: str = "", **env: str) -> subprocess.CompletedProcess[str]:
+    """Run the detector script with a controlled environment."""
+    child_env = {**os.environ, **env}
+    return subprocess.run(
+        [str(DETECTOR), *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        env=child_env,
+        check=False,
+    )
+
+
+def _parse_output(stdout: str) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in stdout.strip().splitlines() if "=" in line)
+
+
+class TestDetectorScript:
+    def test_exists_and_is_executable(self) -> None:
+        assert DETECTOR.is_file()
+        assert os.access(DETECTOR, os.X_OK), f"{DETECTOR} must stay executable"
+
+    def test_help_exits_zero(self) -> None:
+        result = _run_detector("--help")
+        assert result.returncode == 0
+        assert "detect-code-changes.sh" in result.stdout
+
+    def test_unknown_mode_is_usage_error(self) -> None:
+        assert _run_detector("nonsense").returncode == 2
+
+    @pytest.mark.parametrize(
+        ("files", "expected"),
+        [
+            # Documentation: only markdown, anywhere in the tree.
+            (["AGENTS.md"], "false"),
+            (["README.md", "docs/VISION.md"], "false"),
+            ([".claude/agent-memory/cookbook.md", ".claude/rules/architecture.md"], "false"),
+            (["docs/nested/deep/guide.md"], "false"),
+            # Code: anything that is not markdown, including non-md files
+            # living under docs/ and .claude/.
+            (["sova/core/steps/develop.py"], "true"),
+            (["AGENTS.md", "sova/core/steps/develop.py"], "true"),
+            (["docs/pipeline-determinism.html"], "true"),
+            ([".claude/benchmark/log.sh"], "true"),
+            ([".claude/commands/.sova-manifest.json"], "true"),
+            (["tests/test_ci_docs_only.py"], "true"),
+            ([".github/workflows/ci.yml"], "true"),
+            (["Makefile"], "true"),
+            (["sova.toml"], "true"),
+        ],
+    )
+    def test_classify(self, files: list[str], expected: str) -> None:
+        result = _run_detector("classify", stdin="\n".join(files) + "\n")
+        assert result.returncode == 0, result.stderr
+        assert _parse_output(result.stdout)["code"] == expected
+
+    def test_classify_empty_list_fails_open(self) -> None:
+        """An empty list proves nothing, so it must not grant a skip."""
+        result = _run_detector("classify", stdin="")
+        assert _parse_output(result.stdout)["code"] == "true"
+
+    def test_classify_ignores_blank_lines(self) -> None:
+        result = _run_detector("classify", stdin="AGENTS.md\n\n\nREADME.md\n")
+        assert _parse_output(result.stdout)["code"] == "false"
+
+    def test_push_event_always_runs_full_suite(self) -> None:
+        """A push to main has no pull request diff base."""
+        out = _parse_output(_run_detector("detect", EVENT_NAME="push").stdout)
+        assert out == {"code": "true", "reason": "non-pr"}
+
+    def test_pagination_failure_discards_partial_page_list(self, tmp_path: Path) -> None:
+        """A page printed before pagination fails must not count as the full list.
+
+        `gh api --paginate` can print a complete first page and then fail on a
+        later one (rate limit, network blip). If that partial output survived,
+        a docs-only first page would mask a code-carrying page the failed
+        request never reached, wrongly granting a skip.
+        """
+        fake_gh = tmp_path / "gh"
+        fake_gh.write_text("#!/bin/sh\necho README.md\nexit 1\n")
+        fake_gh.chmod(0o755)
+        env = {
+            "EVENT_NAME": "pull_request",
+            "REPO": "owner/name",
+            "PR_NUMBER": "1",
+            "HEAD_SHA": "deadbeef",
+            "HEAD_BRANCH": "feat/x",
+            "WORKFLOW_FILE": "ci.yml",
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        }
+        out = _parse_output(_run_detector("detect", **env).stdout)
+        assert out == {"code": "true", "reason": "no-files"}
+
+    def test_mode_only_change_is_not_identical(self, tmp_path: Path) -> None:
+        """A permission-only change must not be masked by a matching blob sha.
+
+        A path whose content is byte-identical between the baseline and head
+        trees but whose file mode changed (e.g. `chmod +x` on a `.sh` file) is
+        a real change. Comparing on (path, blob sha) alone cannot see it, since
+        both trees report the same sha for that path; the mode has to be part
+        of the compared identity.
+        """
+        script_path = ".github/scripts/detect-code-changes.sh"
+        baseline_tree = json.dumps(
+            {"truncated": False, "tree": [{"path": script_path, "mode": "100644", "type": "blob", "sha": "blobsha1"}]}
+        )
+        head_tree = json.dumps(
+            {"truncated": False, "tree": [{"path": script_path, "mode": "100755", "type": "blob", "sha": "blobsha1"}]}
+        )
+        fake_gh = tmp_path / "gh"
+        fake_gh.write_text(
+            "#!/bin/sh\n"
+            'case "$*" in\n'
+            f'  *"pulls/1/files"*) printf \'%s\\n\' "{script_path}" ;;\n'
+            '  *"actions/workflows/ci.yml/runs"*) printf \'%s\\n\' "baselinesha" ;;\n'
+            f"  *\"git/trees/baselinesha?recursive=1\"*) printf '%s' '{baseline_tree}' ;;\n"
+            f"  *\"git/trees/deadbeef?recursive=1\"*) printf '%s' '{head_tree}' ;;\n"
+            "  *) exit 1 ;;\n"
+            "esac\n"
+        )
+        fake_gh.chmod(0o755)
+        env = {
+            "EVENT_NAME": "pull_request",
+            "REPO": "owner/name",
+            "PR_NUMBER": "1",
+            "HEAD_SHA": "deadbeef",
+            "HEAD_BRANCH": "feat/x",
+            "WORKFLOW_FILE": "ci.yml",
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        }
+        out = _parse_output(_run_detector("detect", **env).stdout)
+        assert out == {"code": "true", "reason": "code-changed"}
+
+    @pytest.mark.parametrize("missing", ["REPO", "PR_NUMBER", "HEAD_SHA", "HEAD_BRANCH", "WORKFLOW_FILE"])
+    def test_missing_configuration_fails_open(self, missing: str) -> None:
+        """A missing variable must run the suite, never skip it."""
+        env = {
+            "EVENT_NAME": "pull_request",
+            "REPO": "owner/name",
+            "PR_NUMBER": "1",
+            "HEAD_SHA": "deadbeef",
+            "HEAD_BRANCH": "feat/x",
+            "WORKFLOW_FILE": "ci.yml",
+        }
+        env[missing] = ""
+        out = _parse_output(_run_detector("detect", **env).stdout)
+        assert out == {"code": "true", "reason": "bad-input"}
+
+    def test_only_documented_reasons_can_skip(self) -> None:
+        """code=false must be reachable from exactly three reason tokens.
+
+        Anything else silently skipping the suite would be a correctness hole,
+        so the script's emit sites are pinned here.
+        """
+        text = DETECTOR.read_text()
+        skipping = set(re.findall(r"emit false (\S+)", text))
+        assert skipping == {"docs-only-pr", "docs-only-delta", "identical"}
+
+    def test_delta_compares_trees_not_commit_topology(self) -> None:
+        """Documentation reaches a branch as an amend, which is a SIBLING.
+
+        `git commit --amend` plus a force-push produces a commit with the same
+        parent as the one that was tested, not a descendant. Every
+        commit-topology test therefore reports "diverged" on exactly the case
+        this optimization exists to catch, and the compare API (always
+        three-dot, so it walks back to the merge base) reports the whole
+        amended commit rather than what the amend changed. Only a tree
+        comparison answers the real question.
+        """
+        text = DETECTOR.read_text()
+        assert "git/trees/${sha}?recursive=1" in text
+        # The commit-topology primitives must not creep back in.
+        assert "/compare/" not in text
+        assert "diverged" not in text.split("usage()")[-1].split("EOF\n}")[-1]
+
+    def test_truncated_tree_fails_open(self) -> None:
+        """A truncated listing cannot prove that nothing else changed."""
+        text = DETECTOR.read_text()
+        assert "truncated" in text
+        assert 'if [ "$truncated" != "false" ]; then' in text
+
+    def test_unreadable_tree_fails_open(self) -> None:
+        text = DETECTOR.read_text()
+        assert 'if ! baseline_tree="$(fetch_tree "$baseline")" || [ -z "$baseline_tree" ]; then' in text
+        assert 'if ! head_tree="$(fetch_tree "$HEAD_SHA")" || [ -z "$head_tree" ]; then' in text
+
+    def test_delta_is_a_symmetric_difference_of_path_and_blob(self) -> None:
+        """A path is changed iff its (path, blob sha) pair appears in one tree.
+
+        This catches additions, removals and content changes in one pass.
+        """
+        text = DETECTOR.read_text()
+        assert "sort | uniq -u | cut -f1 | sort -u" in text
+
+    def test_uses_api_not_local_git(self) -> None:
+        """The script must not read a working tree.
+
+        It is invoked from a pull_request_target workflow, where the checkout
+        in the workspace is fork-controlled content.
+        """
+        text = DETECTOR.read_text()
+        assert "git diff" not in text
+        assert "git log" not in text
+        assert "git rev-" not in text
+
+    def test_json_is_never_passed_through_echo(self) -> None:
+        """`echo` expands backslash escapes in some shells.
+
+        The tree payload is full of them, and an expanded \\n turns valid JSON
+        into a parse error. Every JSON hop must use printf.
+        """
+        text = DETECTOR.read_text()
+        assert 'echo "$json"' not in text
+        assert "printf '%s' \"$json\"" in text
+
+    def test_documents_why_the_ruleset_keeps_it_sound(self) -> None:
+        """A skip re-uses a green result produced against an older base tree.
+
+        That stays sound only because main-protection requires branches to be
+        up to date before merge: any later base-branch change must reach this
+        branch, with its own real diff, before merge is allowed. The script
+        must say so, and must say what breaks if that policy is ever reverted.
+        """
+        text = DETECTOR.read_text()
+        assert "strict_required_status_checks_policy to true" in text
+        assert "becomes unsound" in text
+
+
+# ---------------------------------------------------------------------------
+# CI workflow wiring
+# ---------------------------------------------------------------------------
+
+
+class TestCIWorkflowGate:
+    def test_changes_job_uses_shared_detector(self, ci_text: str) -> None:
+        block = _job_block(ci_text, "changes")
+        assert '"$DETECTOR" detect >> "$GITHUB_OUTPUT"' in block
+        assert "WORKFLOW_FILE: ci.yml" in block
+        assert "code: ${{ steps.decide.outputs.code }}" in block
+
+    def test_changes_job_fetches_detector_from_base_not_head(self, ci_text: str) -> None:
+        """A fork must not be able to edit the script that gates its own tests.
+
+        The script is fetched from the base branch through the contents API
+        into RUNNER_TEMP, not read from a checkout of the PR itself, and not
+        from a full working-tree checkout either (the script only ever calls
+        gh api, so a checkout would buy nothing beyond the one file).
+        """
+        block = _job_block(ci_text, "changes")
+        assert "contents/.github/scripts/detect-code-changes.sh?ref=${BASE_SHA}" in block
+        assert "BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}" in block
+        assert "${RUNNER_TEMP}/detect-code-changes.sh" in block
+        assert "actions/checkout" not in block
+
+    def test_changes_job_fetch_failure_falls_back_to_full_suite(self, ci_text: str) -> None:
+        """A fetch failure (e.g. this script's own introducing PR, before it
+        exists on the base branch) must degrade to running the suite, not
+        fail the job outright."""
+        block = _job_block(ci_text, "changes")
+        assert "reason=detector-unavailable" in block
+        assert 'echo "code=true" >> "$GITHUB_OUTPUT"' in block
+
+    def test_changes_job_can_read_workflow_runs(self, ci_text: str) -> None:
+        """The baseline lookup needs actions:read."""
+        block = _job_block(ci_text, "changes")
+        assert "actions: read" in block
+
+    @pytest.mark.parametrize("job", GATED_CI_JOBS)
+    def test_gated_jobs_run_but_skip_their_work(self, ci_text: str, job: str) -> None:
+        """The job itself must always run so the required check reports.
+
+        A blanket job-level skip would leave the required check pending forever
+        and strand the PR, which is the exact trap a paths-ignore would set.
+        """
+        block = _job_block(ci_text, job)
+        assert "needs: changes" in block
+        assert "if: always()" in block
+        # Real work is skipped only on an explicit 'false'.
+        assert "needs.changes.outputs.code != 'false'" in block
+        assert "needs.changes.outputs.code == 'false'" in block
+
+    @pytest.mark.parametrize("job", GATED_CI_JOBS)
+    def test_gated_jobs_fail_open(self, ci_text: str, job: str) -> None:
+        """Gating must never be expressed as `== 'true'` across jobs.
+
+        If the `changes` job is skipped or fails, its output is the empty
+        string, not 'false'. A `== 'true'` test would then skip the real work;
+        a `!= 'false'` test runs it.
+        """
+        block = _job_block(ci_text, job)
+        assert "needs.changes.outputs.code == 'true'" not in block
+
+    @pytest.mark.parametrize("job", UNGATED_CI_JOBS)
+    def test_ungated_jobs_never_consult_the_detector(self, ci_text: str, job: str) -> None:
+        block = _job_block(ci_text, job)
+        assert "needs.changes" not in block
+
+    def test_required_jobs_have_no_skipping_job_level_condition(self, ci_text: str) -> None:
+        """Every required check must report on every PR."""
+        for job in GATED_CI_JOBS:
+            block = _job_block(ci_text, job)
+            job_level_ifs = [line.strip() for line in block.splitlines() if line.startswith("    if:")]
+            for condition in job_level_ifs:
+                assert "always()" in condition, f"{job}: job-level condition may skip the check: {condition}"
+
+    def test_required_job_names_are_present(self, ci_text: str) -> None:
+        for name in REQUIRED_CI_JOB_NAMES:
+            assert f"name: {name}" in ci_text
+
+
+# ---------------------------------------------------------------------------
+# SonarCloud workflow wiring
+# ---------------------------------------------------------------------------
+
+
+class TestSonarCloudWorkflowGate:
+    def test_fetches_detector_from_base_branch(self, sonar_text: str) -> None:
+        """Under pull_request_target the workspace holds fork content.
+
+        The detector must come from the base branch through the API and land
+        in RUNNER_TEMP, outside the workspace.
+        """
+        assert "contents/.github/scripts/detect-code-changes.sh?ref=${BASE_SHA}" in sonar_text
+        assert "${RUNNER_TEMP}/detect-code-changes.sh" in sonar_text
+        assert "BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}" in sonar_text
+
+    def test_fetch_is_skipped_on_push_events(self, sonar_text: str) -> None:
+        """A push event has no PR diff base, so detect() always returns non-pr.
+
+        Fetching the detector anyway would spend an API call and a
+        RUNNER_TEMP write on a result that is discarded unused.
+        """
+        fetch_step = sonar_text[
+            sonar_text.index("- name: Fetch the detector from the base branch") : sonar_text.index(
+                "- name: Detect code changes"
+            )
+        ]
+        assert "if: github.event_name == 'pull_request_target'" in fetch_step
+
+    def test_push_events_get_accurate_reason_not_detector_unavailable(self, sonar_text: str) -> None:
+        """A push event must report reason=non-pr, not a misleading
+
+        'detector-unavailable': the detector was never needed, not missing.
+        """
+        detect_step = sonar_text[
+            sonar_text.index("- name: Detect code changes") : sonar_text.index("- name: Documentation-only change")
+        ]
+        assert 'if [ "$EVENT_NAME" != "pull_request_target" ]; then' in detect_step
+        assert "reason=non-pr" in detect_step
+
+    def test_missing_detector_runs_full_analysis(self, sonar_text: str) -> None:
+        assert "reason=detector-unavailable" in sonar_text
+        assert 'echo "code=true" >> "$GITHUB_OUTPUT"' in sonar_text
+
+    def test_uses_its_own_workflow_as_baseline(self, sonar_text: str) -> None:
+        """A SonarCloud skip must be justified by a green SonarCloud run."""
+        assert "WORKFLOW_FILE: sonarcloud.yml" in sonar_text
+
+    def test_can_read_workflow_runs(self, sonar_text: str) -> None:
+        assert "actions: read" in sonar_text
+
+    def test_expensive_steps_are_gated(self, sonar_text: str) -> None:
+        """Coverage and the scan are the expensive halves."""
+        assert "steps.changes.outputs.code == 'true' && steps.check-token.outputs.available == 'true'" in sonar_text
+        assert sonar_text.count("steps.changes.outputs.code == 'true'") >= 5
+
+    def test_job_still_reports_on_documentation_change(self, sonar_text: str) -> None:
+        """The required check must be satisfied without the 15-minute run."""
+        assert "Documentation-only change (skipping SonarCloud)" in sonar_text
+        assert "steps.changes.outputs.code != 'true'" in sonar_text
+        # No job-level condition that would skip the whole job.
+        assert "\n    if:" not in sonar_text
+
+
+# ---------------------------------------------------------------------------
+# integrate-pr: never push on its own account
+# ---------------------------------------------------------------------------
