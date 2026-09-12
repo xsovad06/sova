@@ -356,6 +356,15 @@ Agents are **ephemeral**: each one spawns, does its job, writes a handoff file, 
 | Jira Cloud | Supported ([configuration guide](docs/jira-configuration-guide.md)) |
 | Linear | Planned |
 
+## Marketplace
+
+A subset of SOVA's distributable commands (`develop`, `spec`, `review`, `pr`, `debug`, `test`) is packaged as a standalone Claude Code plugin in [`plugins/sova/`](plugins/sova/), adapted to run in any project without installing SOVA itself. This plugin is intended for publication to the [Claude AI Helpers Marketplace](https://github.com/openshift-eng/ai-helpers); until that PR is submitted and merged, install it directly from this repository:
+
+```bash
+/plugin marketplace add xsovad06/sova
+/plugin install sova@sova
+```
+
 ## Awareness Briefing
 
 SOVA's awareness subsystem aggregates information from Gmail, Google Calendar, GitHub PRs, Apple Reminders, and agent runs into a unified morning briefing. Run `sova briefing` to see everything that needs your attention in one place.

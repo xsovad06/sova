@@ -1,0 +1,8 @@
+{
+  "name": "sova",
+  "description": "Autonomous AI-assisted development workflow commands: TDD development, spec-first planning, pre-push review, PR creation, and systematic debugging",
+  "version": "1.0.0",
+  "author": {
+    "name": "SOVA"
+  }
+}

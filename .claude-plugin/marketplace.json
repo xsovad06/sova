@@ -1,0 +1,23 @@
+{
+  "name": "sova",
+  "owner": {
+    "name": "xsovad06"
+  },
+  "plugins": [
+    {
+      "name": "sova",
+      "source": "./plugins/sova",
+      "description": "Autonomous AI-assisted development workflow commands: TDD development, spec-first planning, pre-push review, PR creation, and systematic debugging",
+      "version": "1.0.0",
+      "category": "development",
+      "keywords": [
+        "tdd",
+        "code-review",
+        "pull-request",
+        "debugging",
+        "spec",
+        "autonomous-agent"
+      ]
+    }
+  ]
+}

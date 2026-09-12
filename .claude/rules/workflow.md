@@ -27,6 +27,7 @@ When the user asks to "start the next task", "what should we work on", or simila
 ## Command Maintenance
 
 - **Mirror changes across SOVA/distributable command pairs**: when a command exists in both `.claude/commands/` (SOVA-specific) and `commands/` (distributable), changes to shared sections must be applied to both files. CodeRabbit only reviews `commands/` (`.claude/` is excluded via path filters), so inconsistencies in the SOVA variant go undetected. After editing one, always diff the pair.
+- **`plugins/sova/commands/` is a third, deliberately divergent variant**: it packages a subset of `commands/` (develop, spec, review, pr, debug, test) as a standalone Claude Code plugin for the AI Helpers Marketplace, adapted to run without SOVA installed. It must not byte-match `commands/`: no `{{ template_vars }}`, no `sova.toml`/`sova install`/"SOVA pipeline" references (enforced by `tests/test_marketplace_plugin.py`), and its own frontmatter shape (`description`, `argument-hint`, required `## Name`/`## Synopsis`/`## Description`/`## Implementation` sections). When a `commands/*.md` behavioral change is significant enough to matter standalone, port the *intent* into the matching `plugins/sova/commands/*.md` file rather than the literal diff.
 
 ## Push/PR Approval Precedence
 
