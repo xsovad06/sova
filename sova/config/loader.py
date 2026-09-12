@@ -100,6 +100,7 @@ _NESTED_SECTIONS = (
     "notification",
     "server",
     "external_reviews",
+    "ldap",
     "egress",
     "security",
     "dashboard",

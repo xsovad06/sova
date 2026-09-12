@@ -288,6 +288,45 @@ class JiraAdapter(TaskAdapter):
         await self.add_label(task_id, f"role:{agent_role}")
         return True
 
+    async def assign_to_user(self, task_id: str, username: str) -> None:
+        issue_key = self._resolve_key(task_id)
+        account_id = await self._resolve_account_id(username)
+        if account_id is None:
+            log.warning("assign_to_user.user_not_found", issue=issue_key, user=username)
+            return
+        response = await self._http.put(
+            self._issue_path(issue_key),
+            json={"fields": {"assignee": {"accountId": account_id}}},
+        )
+        if response.status_code not in (200, 204):
+            log.warning("assign_to_user.failed", issue=issue_key, user=username, status=response.status_code)
+
+    async def _resolve_account_id(self, query: str) -> str | None:
+        """Resolve a Jira Cloud accountId from a username, display name, or email.
+
+        Jira Cloud's REST API v3 identifies users by ``accountId`` only (the
+        legacy ``name`` field was removed as part of the GDPR-driven user
+        privacy API migration), so the assignee field must be set via a
+        resolved accountId rather than the raw identifier passed in.
+        """
+        try:
+            response = await self._http.get("/user/search", params={"query": query, "maxResults": 1})
+        except httpx.HTTPError:
+            log.warning("resolve_account_id.request_failed", query=query, exc_info=True)
+            return None
+        if response.status_code != 200:
+            log.warning("resolve_account_id.failed", query=query, status=response.status_code)
+            return None
+        try:
+            results = response.json()
+        except ValueError:
+            return None
+        return results[0]["accountId"] if results else None
+
+    async def add_reviewer(self, task_id: str, pr_number: int, username: str) -> None:
+        # Jira has no native concept of a GitHub PR reviewer; this is a GitHub-specific operation.
+        log.info("add_reviewer.no_op_for_jira", pr=pr_number, user=username)
+
     async def add_label(self, task_id: str, label: str) -> None:
         issue_key = self._resolve_key(task_id)
         response = await self._http.put(

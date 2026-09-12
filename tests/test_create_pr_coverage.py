@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -542,3 +542,113 @@ class TestCreatePRStepCodeRabbitTrigger:
 
         assert result.success
         assert ctx.pr_number == 10
+
+
+class TestCreatePRStepLdapReviewerSuggestion:
+    """Test LDAP-based reviewer suggestion after PR creation."""
+
+    async def test_disabled_by_default_skips_lookup(self) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, pr_number=None)
+
+        await CreatePRStep()._suggest_reviewers(ctx, 10)
+
+        adapter.add_reviewer.assert_not_called()
+
+    async def test_no_github_user_configured_skips_lookup(self) -> None:
+        from sova.config.models import LdapConfig
+        from sova.core.steps.create_pr import CreatePRStep
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, pr_number=None)
+        ctx.config = ProjectConfig(github_user="", ldap=LdapConfig(enabled=True))
+
+        mock_client = AsyncMock()
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            await CreatePRStep()._suggest_reviewers(ctx, 10)
+
+        mock_client.check_connectivity.assert_not_called()
+        adapter.add_reviewer.assert_not_called()
+
+    async def test_vpn_unavailable_skips_lookup(self) -> None:
+        from sova.config.models import LdapConfig
+        from sova.core.steps.create_pr import CreatePRStep
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, pr_number=None)
+        ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
+
+        mock_client = AsyncMock()
+        mock_client.check_connectivity.return_value = False
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            await CreatePRStep()._suggest_reviewers(ctx, 10)
+
+        mock_client.find_manager_chain.assert_not_called()
+        adapter.add_reviewer.assert_not_called()
+
+    async def test_no_manager_found_skips_lookup(self) -> None:
+        from sova.config.models import LdapConfig
+        from sova.core.steps.create_pr import CreatePRStep
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, pr_number=None)
+        ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
+
+        mock_client = AsyncMock()
+        mock_client.check_connectivity.return_value = True
+        mock_client.find_manager_chain.return_value = []
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            await CreatePRStep()._suggest_reviewers(ctx, 10)
+
+        mock_client.get_org_chart.assert_not_called()
+        adapter.add_reviewer.assert_not_called()
+
+    async def test_adds_up_to_two_teammates_excluding_author(self) -> None:
+        from sova.adapters.ldap_client import Person
+        from sova.config.models import LdapConfig
+        from sova.core.steps.create_pr import CreatePRStep
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, pr_number=None, issue_number="42")
+        ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
+
+        manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=redhat,dc=com")
+        mock_client = AsyncMock()
+        mock_client.check_connectivity.return_value = True
+        mock_client.find_manager_chain.return_value = [manager]
+        mock_client.get_org_chart.return_value = [
+            Person(uid="octocat"),  # the author themself: must be excluded
+            Person(uid="alice"),
+            Person(uid="bob"),
+            Person(uid="carol"),  # beyond the cap of 2
+        ]
+
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            await CreatePRStep()._suggest_reviewers(ctx, 10)
+
+        mock_client.get_org_chart.assert_awaited_once_with("mgr", depth=1)
+        assert adapter.add_reviewer.await_args_list == [
+            call("42", 10, "alice"),
+            call("42", 10, "bob"),
+        ]
+
+    async def test_add_reviewer_failure_is_non_fatal(self) -> None:
+        from sova.adapters.ldap_client import Person
+        from sova.config.models import LdapConfig
+        from sova.core.steps.create_pr import CreatePRStep
+
+        adapter = _mock_adapter()
+        adapter.add_reviewer.side_effect = RuntimeError("API error")
+        ctx = _make_ctx(adapter=adapter, pr_number=None, issue_number="42")
+        ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
+
+        manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=redhat,dc=com")
+        mock_client = AsyncMock()
+        mock_client.check_connectivity.return_value = True
+        mock_client.find_manager_chain.return_value = [manager]
+        mock_client.get_org_chart.return_value = [Person(uid="alice")]
+
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            await CreatePRStep()._suggest_reviewers(ctx, 10)  # should not raise

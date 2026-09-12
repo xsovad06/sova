@@ -39,6 +39,7 @@ GROUPS: dict[str, str] = {
     "spec": "Specification",
     "server": "Server & Notifications",
     "external_reviews": "External Reviews",
+    "ldap": "LDAP Directory",
     "security": "Security",
     "dashboard": "Dashboard",
     "mcp": "MCP Endpoint",
@@ -73,6 +74,7 @@ GROUP_ORDER: list[str] = [
     "worktree",
     "server",
     "external_reviews",
+    "ldap",
     "security",
     "dashboard",
     "mcp",
@@ -969,6 +971,46 @@ _REGISTRY: list[SettingMeta] = [
         "Post @coderabbitai review comment after PR creation to trigger reviews on repos with <10 stars",
         "external_reviews",
         "boolean",
+    ),
+    # LDAP Directory
+    SettingMeta(
+        "ldap.enabled",
+        "Enabled",
+        "Enable LDAP-based issue routing and reviewer suggestions",
+        "ldap",
+        "boolean",
+    ),
+    SettingMeta(
+        "ldap.server",
+        "LDAP server",
+        "LDAP server URI (e.g. ldaps://ldap.corp.redhat.com)",
+        "ldap",
+    ),
+    SettingMeta(
+        "ldap.base_dn",
+        "Base DN",
+        "Search base for people entries (e.g. ou=users,dc=redhat,dc=com)",
+        "ldap",
+    ),
+    SettingMeta(
+        "ldap.group_base_dn",
+        "Group base DN",
+        "Search base for group entries",
+        "ldap",
+    ),
+    SettingMeta(
+        "ldap.timeout_seconds",
+        "Timeout (s)",
+        "Seconds to wait for LDAP connectivity and queries before failing open",
+        "ldap",
+        "number",
+    ),
+    SettingMeta(
+        "ldap.cache_ttl_seconds",
+        "Cache TTL (s)",
+        "Seconds to cache LDAP query results to avoid repeated queries during batch triage",
+        "ldap",
+        "number",
     ),
     # -- Security --
     SettingMeta(
