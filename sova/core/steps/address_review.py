@@ -244,8 +244,20 @@ def _load_spec_for_context(ctx: ExecutionContext) -> str:
         return ""
 
 
-def _format_findings_prompt(findings: list[dict], *, spec_context: str = "") -> str:
-    """Format findings into a prompt for the LLM to address."""
+def _format_findings_prompt(
+    findings: list[dict],
+    *,
+    spec_context: str = "",
+    pending_docs_path: Path | None = None,
+) -> str:
+    """Format findings into a prompt for the LLM to address.
+
+    ``pending_docs_path`` points at a queue of documentation and knowledge that
+    a previous integrate run found missing and deliberately did not push. It is
+    drained here, on a branch that is about to be pushed anyway, because a
+    documentation push onto an otherwise-ready PR costs a full CI cycle and
+    delays the merge by the length of the suite.
+    """
     lines = []
     if spec_context:
         lines.extend(
@@ -256,28 +268,57 @@ def _format_findings_prompt(findings: list[dict], *, spec_context: str = "") -> 
                 "",
             ]
         )
-    lines.extend(
-        [
-            "Address ALL of the following code review findings. For each finding:",
-            "- DEFAULT: Fix the issue in the code.",
-            "- EXCEPTION: If a finding is a false positive, not applicable in context,",
-            "  or requires a human decision, state the reason instead of fixing.",
-            "  Do NOT skip findings without justification.\n",
-        ]
-    )
-    for i, f in enumerate(findings, 1):
-        loc = f.get("file", "unknown")
-        if f.get("line"):
-            loc += f":{f['line']}"
-        source_tag = f" [from {f['source']}]" if f.get("source") else ""
-        lines.append(f"{i}. [{f.get('severity', '?')}/10] [{f.get('category', 'other')}] `{loc}`{source_tag}")
-        lines.append(f"   {f.get('description', '')}")
-        if f.get("suggestion"):
-            lines.append(f"   Fix: {f['suggestion']}")
+    if findings:
+        lines.extend(
+            [
+                "Address ALL of the following code review findings. For each finding:",
+                "- DEFAULT: Fix the issue in the code.",
+                "- EXCEPTION: If a finding is a false positive, not applicable in context,",
+                "  or requires a human decision, state the reason instead of fixing.",
+                "  Do NOT skip findings without justification.\n",
+            ]
+        )
+        for i, f in enumerate(findings, 1):
+            loc = f.get("file", "unknown")
+            if f.get("line"):
+                loc += f":{f['line']}"
+            source_tag = f" [from {f['source']}]" if f.get("source") else ""
+            lines.append(f"{i}. [{f.get('severity', '?')}/10] [{f.get('category', 'other')}] `{loc}`{source_tag}")
+            lines.append(f"   {f.get('description', '')}")
+            if f.get("suggestion"):
+                lines.append(f"   Fix: {f['suggestion']}")
+            lines.append("")
+        lines.append("After fixing all issues, make sure all tests still pass.")
         lines.append("")
+        lines.extend(
+            [
+                "Then fold in any documentation work, so it rides this branch's existing",
+                "push rather than forcing a separate CI cycle at integration time:",
+                "- Update any project documentation the changes here made stale.",
+            ]
+        )
+    else:
+        # No review findings, but a pending-docs queue is non-empty (the only
+        # reason this function is called with an empty findings list). Fold in
+        # the queue on its own, so it still rides whatever push comes next
+        # instead of sitting deferred indefinitely.
+        lines.extend(
+            [
+                "There are no code review findings to address. Fold in the",
+                "following documentation work instead, so it rides this branch's",
+                "existing push rather than forcing a separate CI cycle later:",
+            ]
+        )
+    if pending_docs_path is not None:
+        lines.extend(
+            [
+                f"- Apply every entry in {pending_docs_path} to its destination file,",
+                "  then delete that queue file. It holds knowledge a previous run",
+                "  deferred rather than pushing.",
+            ]
+        )
     lines.extend(
         [
-            "After fixing all issues, make sure all tests still pass.",
             "",
             "IMPORTANT: Do NOT commit your changes. Fix the code, run tests, then stop.",
             "Leave all changes staged or unstaged. A commit reorganization step runs",
@@ -320,11 +361,27 @@ class AddressReviewStep(BaseStep):
         if cr_findings:
             findings.extend(cr_findings)
 
-        if not findings:
+        # A pending-docs queue is checked even with zero findings: /integrate-pr
+        # defers documentation here specifically so it rides the next push, and
+        # a clean review (no findings) must not leave it stranded indefinitely.
+        pending_docs = ctx.project_dir / ".claude" / "agent-control" / "pending-docs.md"
+        try:
+            has_pending_docs = pending_docs.exists() and pending_docs.read_text().strip() != ""
+        except (OSError, UnicodeDecodeError):
+            # An unreadable queue file must not crash the step; fall back to
+            # the pre-existing safe behavior of treating it as absent.
+            log.warning("step.address_review.pending_docs_read_failed", exc_info=True)
+            has_pending_docs = False
+
+        if not findings and not has_pending_docs:
             log.info("step.address_review.no_findings")
             return StepResult(success=True, summary="No review findings to address")
 
-        log.info("step.address_review.findings_loaded", count=len(findings))
+        log.info(
+            "step.address_review.findings_loaded",
+            count=len(findings),
+            has_pending_docs=has_pending_docs,
+        )
 
         spec_context = _load_spec_for_context(ctx)
         if spec_context:
@@ -333,7 +390,11 @@ class AddressReviewStep(BaseStep):
                 spec_context_chars=len(spec_context),
                 findings_count=len(findings),
             )
-        prompt = _format_findings_prompt(findings, spec_context=spec_context)
+        prompt = _format_findings_prompt(
+            findings,
+            spec_context=spec_context,
+            pending_docs_path=pending_docs if has_pending_docs else None,
+        )
         try:
             result = await invoke_command(
                 prompt,
@@ -345,9 +406,13 @@ class AddressReviewStep(BaseStep):
                 timeout=ctx.config.agent.step_timeout,
             )
             ctx.add_usage(result)
+            if findings:
+                summary = f"Addressed {len(findings)} review findings"
+            else:
+                summary = "No review findings; drained pending documentation queue"
             return StepResult(
                 success=True,
-                summary=f"Addressed {len(findings)} review findings",
+                summary=summary,
                 cost_usd=result.cost_usd,
             )
         except RuntimeError as exc:

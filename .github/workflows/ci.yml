@@ -11,9 +11,16 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
-  # Detect whether any non-documentation code changed. Expensive jobs
-  # (Python Tests, Integration Test) gate their real work on this so a
-  # docs-only push does not burn CI minutes re-running the full suite.
+  # Decide whether this run needs the expensive suite. Expensive jobs
+  # (Python Lint, Python Tests, Integration Test) gate their real work on
+  # this so a documentation push does not burn CI minutes.
+  #
+  # Detection is DELTA-AWARE: it is not enough to ask whether the whole pull
+  # request is documentation (on a code-carrying PR it never is, so that
+  # question alone made every docs amend re-run the full suite). The detector
+  # also compares against the last successful run of this workflow on this
+  # branch, so a markdown-only push on top of already-green code is free.
+  # See .github/scripts/detect-code-changes.sh for the full contract.
   #
   # These jobs are REQUIRED status checks in the main-protection ruleset,
   # so they must always run and report success. On a docs-only change the
@@ -24,57 +31,72 @@ jobs:
   changes:
     name: Detect Changed Paths
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
     outputs:
-      # "true" when the change includes any non-documentation file, or when
-      # the event is a push to main (no PR diff base). Docs-only PRs yield
-      # "false" so downstream jobs can skip their expensive work.
+      # "true" when this run needs the expensive suite. "false" only on
+      # positive evidence that nothing but markdown is at stake, either
+      # across the whole pull request or since the last successful run of
+      # this workflow on this branch. Every failure path yields "true".
       code: ${{ steps.decide.outputs.code }}
+      reason: ${{ steps.decide.outputs.reason }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Filter changed paths
-        id: filter
-        if: github.event_name == 'pull_request'
-        # v4 is required: the `some-with-excludes` predicate-quantifier below
-        # only exists in v4 (v3 supports only 'some' and 'every').
-        uses: dorny/paths-filter@v4
-        with:
-          # paths-filter answers "did ANY changed file match this filter".
-          # There is no native "every changed file is a doc" quantifier, so
-          # detect the inverse directly: the `code` filter matches any file
-          # that is NOT documentation. `some-with-excludes` includes a file
-          # when it matches a positive pattern (`**`, i.e. anything) AND no
-          # negated pattern (the doc globs). So `code` is 'true' iff at least
-          # one non-doc file changed, and 'false' on a docs-only PR.
-          #
-          # Only markdown is treated as documentation. `docs/` and `.claude/`
-          # contain non-md code (docs/pipeline-determinism.html, the
-          # .claude/benchmark/*.sh hooks, .claude/commands/.sova-manifest.json),
-          # so excluding those trees wholesale would let a broken script or
-          # manifest merge with the test suite skipped. Excluding only *.md
-          # keeps those code paths classified as code.
-          predicate-quantifier: 'some-with-excludes'
-          filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-
-      - name: Decide whether code changed
-        id: decide
+      # Fetch the detector script itself from the BASE branch via the
+      # contents API, rather than a full checkout at the base SHA. Two
+      # reasons: the script only ever calls `gh api` (see its own header
+      # comment), so a full working-tree checkout buys nothing; and this
+      # matches sonarcloud.yml's identical fetch step, so both workflows
+      # trust the same script the same way instead of two different
+      # mechanisms. This trigger is `pull_request`, not `pull_request_target`,
+      # so unlike sonarcloud.yml this is defense-in-depth against a narrower
+      # tampering vector (a fork PR quietly editing only the script), not full
+      # immunity: under `pull_request`, GitHub already resolves this entire
+      # workflow file from the fork's own head ref, so a fork PR can edit any
+      # part of this job, including the `if:` gates below. That is the
+      # existing security model for every `pull_request`-triggered job in
+      # this file (none of them touch secrets or gain write access), not a
+      # gap introduced here.
+      #
+      # A fetch failure (this script's own introducing PR, before it exists
+      # on the base branch; a future PR that renames or deletes it) falls
+      # back to the full suite rather than failing the job outright.
+      - name: Fetch the detector from the base branch
+        id: fetch-detector
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
         run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            # push to main (or any non-PR event): no PR diff base, always
-            # run the full suite.
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          elif [ "${{ steps.filter.outputs.code }}" = "false" ]; then
-            # Only an explicit 'false' from the filter (a genuine docs-only PR)
-            # skips the expensive jobs. Anything else (empty output from a
-            # partial action failure, output-name drift, an unexpected event)
-            # fails safe to running the full suite.
-            echo "code=false" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          dest="${RUNNER_TEMP}/detect-code-changes.sh"
+          if gh api               "repos/${{ github.repository }}/contents/.github/scripts/detect-code-changes.sh?ref=${BASE_SHA}"               --jq '.content' | base64 -d > "$dest"; then
+            chmod +x "$dest"
+            echo "path=$dest" >> "$GITHUB_OUTPUT"
           else
-            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::detector unavailable, running the full suite"
+            echo "path=" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Detect code changes
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          WORKFLOW_FILE: ci.yml
+          DETECTOR: ${{ steps.fetch-detector.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DETECTOR" ] || [ ! -x "$DETECTOR" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "reason=detector-unavailable" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          "$DETECTOR" detect >> "$GITHUB_OUTPUT"
 
   lint-static:
     name: Static Checks
@@ -135,21 +157,32 @@ jobs:
 
   python-lint:
     name: Python Lint
+    needs: changes
+    if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Documentation-only change (skipping lint)
+        if: needs.changes.outputs.code == 'false'
+        run: echo "No Python touched (${{ needs.changes.outputs.reason }}). Reporting success without re-running Ruff."
+
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.code != 'false'
 
       - uses: actions/setup-python@v5
+        if: needs.changes.outputs.code != 'false'
         with:
           python-version: "3.12"
 
       - name: Install Ruff
+        if: needs.changes.outputs.code != 'false'
         run: pip install ruff
 
       - name: Ruff check
+        if: needs.changes.outputs.code != 'false'
         run: ruff check sova/ tests/
 
       - name: Ruff format check
+        if: needs.changes.outputs.code != 'false'
         run: ruff format --check sova/ tests/
 
   # Real work is skipped ONLY on an explicit docs-only signal
@@ -163,9 +196,9 @@ jobs:
     if: always() && github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: Docs-only change (skipping tests)
+      - name: Documentation-only change (skipping tests)
         if: needs.changes.outputs.code == 'false'
-        run: echo "Docs-only change detected. No code touched, reporting success without re-running tests."
+        run: echo "Documentation-only change (${{ needs.changes.outputs.reason }}). Reporting success without re-running tests."
 
       - uses: actions/checkout@v4
         if: needs.changes.outputs.code != 'false'
@@ -198,9 +231,9 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Docs-only change (skipping integration test)
+      - name: Documentation-only change (skipping integration test)
         if: needs.changes.outputs.code == 'false'
-        run: echo "Docs-only change detected. No code touched, reporting success without re-running integration."
+        run: echo "Documentation-only change (${{ needs.changes.outputs.reason }}). Reporting success without re-running integration."
 
       - uses: actions/checkout@v4
         if: needs.changes.outputs.code != 'false'
