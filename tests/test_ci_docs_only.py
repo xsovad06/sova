@@ -2,9 +2,9 @@
 
 These tests guard the contract that keeps a documentation change from
 re-running the expensive CI suite while still satisfying the required status
-checks in the main-protection ruleset. They assert on the raw workflow/script
-text (no YAML dependency for the structural checks) so they run under the
-plain dev extras.
+checks in the main-protection ruleset. They assert on the raw
+workflow/command/script text (no YAML dependency for the structural checks) so
+they run under the plain dev extras.
 
 The optimization has two layers, and the second is what makes it useful:
 
@@ -15,11 +15,15 @@ The optimization has two layers, and the second is what makes it useful:
    run of this workflow on this branch is markdown. This is what makes a
    documentation push on top of already-green code free.
 
-Two invariants are protected:
+Four invariants are protected:
 
 * the detector classifies paths correctly and fails open on every bad input
 * both workflows use the shared detector and gate only their expensive steps,
   so required jobs still run and report success
+* `/integrate-pr` never pushes on its own account (a push there spends a CI
+  cycle on an otherwise-ready PR and delays the merge by the length of the suite)
+* `/address-pr` captures documentation and knowledge BEFORE its squash, so the
+  content rides the push that branch makes anyway
 """
 
 from __future__ import annotations
@@ -37,6 +41,10 @@ REPO_ROOT = Path(__file__).parent.parent
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 SONAR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sonarcloud.yml"
 DETECTOR = REPO_ROOT / ".github" / "scripts" / "detect-code-changes.sh"
+INTEGRATE_SOVA = REPO_ROOT / ".claude" / "commands" / "integrate-pr.md"
+INTEGRATE_DIST = REPO_ROOT / "commands" / "integrate-pr.md"
+ADDRESS_SOVA = REPO_ROOT / ".claude" / "commands" / "address-pr.md"
+ADDRESS_DIST = REPO_ROOT / "commands" / "address-pr.md"
 
 _JOB_KEY_RE = re.compile(r"^ {2}[A-Za-z0-9_-]+:")
 
@@ -66,6 +74,26 @@ def ci_text() -> str:
 @pytest.fixture(scope="module")
 def sonar_text() -> str:
     return SONAR_WORKFLOW.read_text()
+
+
+@pytest.fixture(scope="module")
+def integrate_sova_text() -> str:
+    return INTEGRATE_SOVA.read_text()
+
+
+@pytest.fixture(scope="module")
+def integrate_dist_text() -> str:
+    return INTEGRATE_DIST.read_text()
+
+
+@pytest.fixture(scope="module")
+def address_sova_text() -> str:
+    return ADDRESS_SOVA.read_text()
+
+
+@pytest.fixture(scope="module")
+def address_dist_text() -> str:
+    return ADDRESS_DIST.read_text()
 
 
 def _job_block(workflow_text: str, job_key: str) -> str:
@@ -106,6 +134,11 @@ def _run_detector(*args: str, stdin: str = "", **env: str) -> subprocess.Complet
 
 def _parse_output(stdout: str) -> dict[str, str]:
     return dict(line.split("=", 1) for line in stdout.strip().splitlines() if "=" in line)
+
+
+# ---------------------------------------------------------------------------
+# The detector script
+# ---------------------------------------------------------------------------
 
 
 class TestDetectorScript:
@@ -468,3 +501,240 @@ class TestSonarCloudWorkflowGate:
 # ---------------------------------------------------------------------------
 # integrate-pr: never push on its own account
 # ---------------------------------------------------------------------------
+
+
+INTEGRATE_FIXTURES = ["integrate_sova_text", "integrate_dist_text"]
+
+
+class TestIntegratePRDoesNotPush:
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_states_the_no_push_default(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "**This command does not push by default.**" in text
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_rebase_is_conditional_not_unconditional(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A clean, up-to-date PR must never be rebased.
+
+        The main-protection ruleset sets strict_required_status_checks_policy
+        to true, so a branch DOES need to be up to date to merge, but that is
+        a distinct question from whether it merely has conflicts. A rebase
+        must only fire on `mergeable: CONFLICTING` or `mergeStateStatus:
+        BEHIND`, never unconditionally on every run.
+        """
+        text = request.getfixturevalue(fixture)
+        assert "mergeable,mergeStateStatus" in text
+        assert "strict_required_status_checks_policy: true" in text
+        assert "`mergeable: MERGEABLE` and anything else" in text
+        assert "Do NOT rebase, do NOT push" in text
+        assert "`mergeable: CONFLICTING`" in text
+        assert "`mergeStateStatus: BEHIND`" in text
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_behind_state_is_a_push_justification(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A clean-but-stale branch must be updated, not left to fail at merge.
+
+        Under the strict policy, GitHub refuses to merge a BEHIND branch no
+        matter how green its existing checks are, so this is a real,
+        unavoidable cost distinct from routine hygiene.
+        """
+        text = request.getfixturevalue(fixture)
+        assert "#### Update subroutine" in text
+        assert "Handles both a real conflict" in text
+        assert "clean-but-stale" in text
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_documentation_check_runs_before_phase2_push_not_after(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        """The documentation check must run BEFORE Phase 2's own push, not after it.
+
+        The first version of this fix put the fold-in in Phase 3, timed as
+        "before the Phase 2 push", but Phase 3 textually and procedurally
+        runs AFTER Phase 2, so that push has already gone out by the time
+        Phase 3 could act. Amending afterward only rewrote the local commit
+        and never reached the remote PR head that Phase 5 actually merges.
+        The fix moves the check into the Update subroutine's own step 7,
+        immediately before ITS push, so folding in is actually free rather
+        than impossible.
+        """
+        text = request.getfixturevalue(fixture)
+        step7 = text[text.index("7. **Before pushing") : text.index("### Phase 3:")]
+        assert "fold in any stale documentation for free" in step7
+        assert "run the Phase 3 check" in step7 or "Phase 3 documentation" in step7 or "Phase 3 check" in step7
+        assert "git add -A .claude/agent-memory/" in step7
+        assert "git commit --amend --no-edit" in step7
+        assert 'git push --force-with-lease && echo 1 > "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed"' in step7
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_phase3_is_a_no_op_when_phase2_already_pushed(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """Phase 3 must skip entirely once Phase 2's push has already happened.
+
+        Running the check a second time here would find nothing new (Phase 2's
+        step 7 already folded it in) and risks a confusing, unjustified second
+        amend after the push has already gone out.
+        """
+        text = request.getfixturevalue(fixture)
+        phase3 = text[text.index("### Phase 3:") : text.index("### Phase 4:")]
+        assert "Skip this phase entirely if Phase 2 already pushed" in phase3
+        assert 'PUSHED=$(cat "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed" 2>/dev/null || echo 0)' in phase3
+        assert "pending-docs.md" in phase3
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_pending_docs_queue_resolves_primary_checkout_explicitly(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        """The queue write must not assume CWD is the primary checkout.
+
+        Worktree isolation means CWD is usually a per-issue worktree, not the
+        primary checkout, and .claude/agent-control/ is not mirrored into
+        worktrees, so a bare relative path silently writes to (or reads from)
+        the wrong directory's queue file.
+        """
+        text = request.getfixturevalue(fixture)
+        assert "git rev-parse --git-common-dir" in text
+        assert 'PRIMARY_ROOT="${COMMON_DIR%/.git}"' in text
+        assert "PRIMARY_ROOT/.claude/agent-control/pending-docs.md" in text
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_pushed_flag_persisted_to_state_file(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """The push flag must be a file, not a shell variable.
+
+        Phases 2 through 4 run as separate command invocations, and shell
+        variables do not persist across them.
+        """
+        text = request.getfixturevalue(fixture)
+        assert 'echo 0 > "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed"' in text
+        assert 'echo 1 > "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed"' in text
+        assert "PUSHED=1" not in text
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_state_file_path_is_absolute_everywhere(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """No phase may read or write the state file with a bare relative path.
+
+        The Update subroutine can leave the agent's CWD in a per-issue
+        worktree, and .claude/agent-control/ is not mirrored into worktrees,
+        so any relative reference to integrate-pushed reads or writes a
+        different file than the one the other phases use.
+        """
+        text = request.getfixturevalue(fixture)
+        assert "> .claude/agent-control/integrate-pushed" not in text
+        assert "cat .claude/agent-control/integrate-pushed" not in text
+        assert text.count('PRIMARY_ROOT/.claude/agent-control/integrate-pushed"') >= 4
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_update_subroutine_returns_to_primary_checkout(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """Later phases must not inherit the Update subroutine's worktree cwd.
+
+        Phase 6 checks out the base branch, which is normally already checked
+        out in the primary checkout; running that command from a worktree the
+        Update subroutine cd'd into fails and stops cleanup before it starts.
+        """
+        text = request.getfixturevalue(fixture)
+        step8 = text[text.index("8. **Return to the primary checkout") : text.index("### Phase 3:")]
+        assert 'cd "$PRIMARY_ROOT"' in step8
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_phase6_returns_to_primary_before_checkout(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """Phase 6 must not assume Phase 2 left it in the primary checkout."""
+        text = request.getfixturevalue(fixture)
+        phase6 = text[text.index("### Phase 6:") : text.index("### Phase 7:")]
+        # rindex: the phase's own prose mentions "git checkout <BASE_BRANCH>"
+        # once before the code block; the actual command is the last match.
+        checkout_idx = phase6.rindex("git checkout <BASE_BRANCH>")
+        common_dir_idx = phase6.index("git rev-parse --git-common-dir")
+        assert common_dir_idx < checkout_idx
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_fork_head_branch_deletion_is_skipped(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A fork PR's HEAD_BRANCH name must never be deleted from `origin`.
+
+        HEAD_BRANCH names a branch, not a repository; `origin` is the base
+        repository, so an unconditional delete could remove an unrelated
+        upstream branch that happens to share the fork contributor's branch
+        name.
+        """
+        text = request.getfixturevalue(fixture)
+        phase6 = text[text.index("### Phase 6:") : text.index("### Phase 7:")]
+        assert "isCrossRepository" in phase6
+        delete_idx = phase6.index("git push origin --delete <HEAD_BRANCH>")
+        guard_idx = phase6.index('if [ "$IS_FORK" != "true" ]; then')
+        assert guard_idx < delete_idx
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_phase4_fast_path(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """Phase 4 must skip the poll when nothing was re-pushed and CI is green."""
+        text = request.getfixturevalue(fixture)
+        assert 'PUSHED=$(cat "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed" 2>/dev/null || echo 0)' in text
+        assert 'if [ "$PUSHED" -eq 0 ]; then' in text
+        assert "Skipping the poll" in text
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_still_polls_when_pushed(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """The full poll loop must remain for the conflict-resolved path."""
+        text = request.getfixturevalue(fixture)
+        assert "CI poll attempt" in text
+        assert "fall through to the poll" in text
+
+    @pytest.mark.parametrize("fixture", INTEGRATE_FIXTURES)
+    def test_rule_forbids_gratuitous_push(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "Never push unless GitHub refuses to merge the PR as it stands." in text
+
+    def test_variants_stay_in_sync(self, integrate_sova_text: str, integrate_dist_text: str) -> None:
+        """Both copies must be byte-identical, matching the address-pr precedent.
+
+        A substring-only check previously let real drift through: the SOVA
+        variant (the one that actually drives this repo's own pipeline) and
+        the distributable variant disagreed on CI-failure wording, JSON field
+        quoting, and the distributable variant was missing an entire
+        post-merge cleanup block (remote branch delete fallback, sova cleanup
+        --all). None of that is content that should differ between the two
+        copies. CodeRabbit reviews only commands/, so drift in the .claude/
+        variant goes undetected by human review too.
+        """
+        assert integrate_sova_text == integrate_dist_text
+
+
+# ---------------------------------------------------------------------------
+# address-pr: capture documentation before the squash
+# ---------------------------------------------------------------------------
+
+
+ADDRESS_FIXTURES = ["address_sova_text", "address_dist_text"]
+
+
+class TestAddressPRCapturesEarly:
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_capture_step_precedes_the_squash(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """Knowledge written after the push cannot ride it.
+
+        The old ordering wrote the cookbook in the last step, long after the
+        push, leaving the edits dirty in the worktree for /integrate-pr to
+        sweep up into an amend that cost a full CI cycle.
+        """
+        text = request.getfixturevalue(fixture)
+        capture = text.index("**Capture knowledge and documentation updates NOW, before the squash**")
+        squash = text.index("**Squash fixes into original commits**")
+        push = text.index("**Push and wait for CI**")
+        assert capture < squash < push
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_capture_step_drains_the_pending_queue(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert ".claude/agent-control/pending-docs.md" in text
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_no_trailing_memory_step(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """The old step 16 must be gone, not duplicated."""
+        text = request.getfixturevalue(fixture)
+        assert "**Update memory**" not in text
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_steps_are_numbered_contiguously(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        numbers = [int(m) for m in re.findall(r"^(\d+)\. ", text, re.MULTILINE)]
+        assert numbers == list(range(1, len(numbers) + 1)), numbers
+
+    def test_variants_stay_in_sync(self, address_sova_text: str, address_dist_text: str) -> None:
+        assert address_sova_text == address_dist_text

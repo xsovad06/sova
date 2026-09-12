@@ -16,7 +16,7 @@ Score each review comment, address all of them (fix or acknowledge with justific
 
 ## CRITICAL: Complete ALL Steps
 
-This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately, so NEVER output a final summary without having completed steps 8-17 first (squash, rebase, push, reply, resolve, dismiss). If you discover that all findings are already addressed, you MUST still complete steps 9-10 (rebase and push) to resolve any merge conflicts, then skip to step 11 to handle thread resolution before the summary.
+This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately, so NEVER output a final summary without having completed steps 8-17 first (capture knowledge, squash, rebase, push, reply, resolve, dismiss). If you discover that all findings are already addressed, you MUST still complete steps 8-11 (capture knowledge, squash, rebase and push) to fold in pending documentation and resolve any merge conflicts, then skip to step 12 to handle thread resolution before the summary.
 
 **Incomplete execution is worse than failure**: a run that fixes code but never commits/pushes wastes the cost and leaves the PR unchanged.
 
@@ -76,7 +76,51 @@ This command runs as a headless agent. You MUST execute every step below through
 
 7. **Scout check**: while fixing findings, scan each touched file for pre-existing issues -- failing tests, lint warnings, dead imports, obvious bugs adjacent to your changes. Fix them alongside the review findings. Keep scout fixes small and low-risk.
 
-8. **Squash fixes into original commits** (MANDATORY -- no fix-on-fix commits):
+8. **Capture knowledge and documentation updates NOW, before the squash** (MANDATORY):
+
+   This is the only place in the PR lifecycle where documentation and knowledge
+   can be written for free. The branch is about to be squashed and pushed
+   anyway, so anything folded in here rides that push. Anything left until
+   `/integrate-pr` would need a push of its own on an otherwise-ready PR, which
+   costs a full CI cycle and delays the merge by the length of the suite.
+
+   a. **Drain the pending queue**: `.claude/agent-control/pending-docs.md` in
+      the PRIMARY checkout, if it exists, holds documentation and knowledge
+      that a previous `/integrate-pr` run found missing and deferred rather
+      than pushing. This step usually runs inside a per-issue worktree (per
+      step 3 above), not the main checkout, and `.claude/agent-control/` is
+      not mirrored into worktrees, so resolve the primary checkout explicitly
+      rather than checking a bare relative path:
+      ```bash
+      COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+      case "$COMMON_DIR" in
+        /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;;   # linked worktree
+        *)  PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;;  # already primary
+      esac
+      QUEUE="$PRIMARY_ROOT/.claude/agent-control/pending-docs.md"
+      ```
+      If `$QUEUE` exists, apply each entry to its destination file, then clear
+      the queue:
+      ```bash
+      rm -f "$QUEUE"
+      ```
+
+   b. **Record this round's learnings**: append actionable lessons from the
+      review findings to `.claude/agent-memory/cookbook.md` under the matching
+      domain section. Enumerate every review thread from the whole PR history,
+      resolved and unresolved, not only what came up in this round. Skip
+      duplicates and generic advice. Promote a pattern confirmed in 2 or more
+      PRs to `.claude/rules/*.md`.
+
+   c. **Fix documentation drift**: run the project's verification commands
+      (test count, service count, router count) and correct any drifted values
+      in `AGENTS.md`, `README.md`, and `docs/VISION.md`. Update any docs the
+      code changes in this PR made stale.
+
+   These edits are part of the change, not a separate concern: fold them into
+   the relevant commit in the next step. Never create a standalone docs commit.
+
+9. **Squash fixes into original commits** (MANDATORY, no fix-on-fix commits):
 
    The PR must read as clean feature development. Do NOT create a separate "address review findings" commit -- fold each fix into the commit that introduced the code being fixed. The final history should look as if the code was written correctly from the start.
 
@@ -113,7 +157,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
    g. Clean up: `git branch -D backup-pre-squash`
 
-9. **Rebase onto base branch** to ensure the PR is mergeable after fixes:
+10. **Rebase onto base branch** to ensure the PR is mergeable after fixes:
     ```bash
     BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq '.baseRefName')
     git fetch origin
@@ -133,7 +177,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
     If rebase was a no-op (already up to date), continue to the next step.
 
-10. **Push and wait for CI** (MANDATORY -- do not skip):
+11. **Push and wait for CI** (MANDATORY, do not skip):
    ```bash
    git push --force-with-lease
    ```
@@ -149,9 +193,9 @@ This command runs as a headless agent. You MUST execute every step below through
    ```
    Common CI failures: commit-format invariant (wrong scope/type), test timeouts, lint errors, SonarCloud coverage.
 
-   **Only continue to step 11 when all required checks pass.** If checks are still failing after 2 retries, report the specific failures and stop -- do not proceed to reply/resolve steps with a red CI.
+   **Only continue to step 12 when all required checks pass.** If checks are still failing after 2 retries, report the specific failures and stop. Do not proceed to reply/resolve steps with a red CI.
 
-11. **Fetch all unresolved review threads** using GraphQL:
+12. **Fetch all unresolved review threads** using GraphQL:
     ```bash
     gh api graphql -f query='{
       repository(owner: "<OWNER>", name: "<REPO>") {
@@ -170,7 +214,7 @@ This command runs as a headless agent. You MUST execute every step below through
     ```
     Filter to unresolved, non-outdated threads. Match each thread to a finding using the thread's `path` and `line` fields. Use `author.__typename` to classify thread authors: `Bot` for automated reviewers, `User` for humans. If `__typename` is absent, fall back to checking whether `login` ends with `[bot]`.
 
-12. **Reply to each thread, then resolve all of them** (MANDATORY: this is what unblocks the PR):
+13. **Reply to each thread, then resolve all of them** (MANDATORY: this is what unblocks the PR):
 
     For each unresolved thread, post an inline reply explaining the disposition, then resolve it, regardless of author (bot or human) or disposition (Fixed or Acknowledged). Replying is always required; skipping replies leaves reviewers unclear on what was done. The PR must end with zero unresolved conversations so it reads as ready to merge.
 
@@ -190,7 +234,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
     Reply to every thread, then resolve every thread: bot and human reviewers alike, Fixed and Acknowledged findings alike. A PR must show zero unresolved conversations before merge; leaving "Acknowledged" human threads open only creates unnecessary back-and-forth for the reviewer.
 
-13. **Post a summary comment** on the PR with all dispositions in one table:
+14. **Post a summary comment** on the PR with all dispositions in one table:
 
     ```markdown
     ## Address Review: Round N
@@ -203,7 +247,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
     Keep the Action column SHORT and DIRECT. No filler words, no emojis.
 
-14. **Dismiss bot CHANGES_REQUESTED reviews** (mandatory when any bot review is in CHANGES_REQUESTED state after addressing findings):
+15. **Dismiss bot CHANGES_REQUESTED reviews** (mandatory when any bot review is in CHANGES_REQUESTED state after addressing findings):
 
     Fetch bot reviews that are still CHANGES_REQUESTED:
     ```bash
@@ -218,7 +262,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
     **Never dismiss human reviews**: only bot reviews (`user.type == "Bot"`) whose findings have been addressed.
 
-15. **Request bot re-review** (if bot comments were addressed):
+16. **Request bot re-review** (if bot comments were addressed):
     ```bash
     # Sourcery AI
     gh pr comment <PR_NUMBER> --body "@sourcery-ai review"
@@ -226,8 +270,6 @@ This command runs as a headless agent. You MUST execute every step below through
     gh pr comment <PR_NUMBER> --body "@coderabbitai review"
     ```
     Only request re-review for bots whose comments were actually addressed.
-
-16. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
 
 17. **Print summary**:
     - Table: | Comment | Source | Score | Action |
