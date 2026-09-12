@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
+from sova.config.context import get_project_dir
+from sova.dashboard.services import awareness_service
 from sova.dashboard.services.feed_service import FeedService, get_feed_service
 from sova.utils.logging import get_logger
 
@@ -100,70 +103,9 @@ async def feed_briefing() -> dict[str, Any]:
     providers are configured, or all providers fail, so the client can always
     render the briefing card gracefully.
     """
-    empty: dict[str, Any] = {
-        "generated_at": None,
-        "attention_items": [],
-        "informational_items": [],
-        "schedule": [],
-        "provider_statuses": [],
-    }
     try:
-        from datetime import datetime, timezone
-
-        from sova.awareness import create_providers
-        from sova.awareness.briefing import BriefingService
-        from sova.config.context import get_project_dir
-        from sova.config.loader import load_config
-        from sova.dashboard.services.agent_pool import get_default_project_dir
-
-        project_dir = get_project_dir() or get_default_project_dir()
-        cfg = load_config(project_dir)
-        if not cfg.awareness.enabled or not cfg.awareness.providers:
-            return empty
-
-        providers = create_providers(cfg.awareness)
-        if not providers:
-            return empty
-
         start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        briefing = await BriefingService(providers).generate_briefing(since=start_of_day)
-        return _serialize_briefing(briefing)
+        return await awareness_service.get_briefing(get_project_dir(), since=start_of_day)
     except Exception:  # noqa: BLE001 (briefing aggregates many providers; an empty briefing beats a 500)
         log.debug("feed.briefing_failed", exc_info=True)
-        return empty
-
-
-def _serialize_item(item: Any) -> dict[str, Any]:
-    result = {
-        "id": item.id,
-        "provider": item.provider,
-        "category": item.category.value if hasattr(item.category, "value") else str(item.category),
-        "title": item.title,
-        "body": item.body,
-        "source_url": item.source_url,
-        "timestamp": item.timestamp.isoformat() if item.timestamp else None,
-        "urgency": item.urgency,
-        "action_hint": item.action_hint,
-    }
-    occurrence_count = getattr(item, "occurrence_count", 0)
-    if occurrence_count:
-        result["occurrence_count"] = occurrence_count
-    metadata = getattr(item, "metadata", {})
-    if metadata.get("is_recurring_exception"):
-        result["is_recurring_exception"] = True
-    if metadata.get("recurring_event_id"):
-        result["recurring_event_id"] = metadata["recurring_event_id"]
-    return result
-
-
-def _serialize_briefing(briefing: Any) -> dict[str, Any]:
-    return {
-        "generated_at": briefing.generated_at.isoformat() if briefing.generated_at else None,
-        "attention_items": [_serialize_item(i) for i in briefing.attention_items],
-        "informational_items": [_serialize_item(i) for i in briefing.informational_items],
-        "schedule": [_serialize_item(i) for i in briefing.schedule],
-        "provider_statuses": [
-            {"name": s.name, "ok": s.ok, "message": s.message, "items_fetched": s.items_fetched}
-            for s in briefing.provider_statuses
-        ],
-    }
+        return awareness_service.empty_briefing()

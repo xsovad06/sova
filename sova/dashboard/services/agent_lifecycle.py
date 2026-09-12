@@ -206,7 +206,9 @@ async def get_all_agents(slug: str | None = None) -> dict:
         elapsed = now - agent.started_at
         db = db_states.get(agent.run_id, {})
         current_step = db.get("current_step", "agent")
-        progress = get_step_progress(current_step, role=agent.role, pr_number=db.get("pr_number"))
+        progress = await get_step_progress(
+            current_step, role=agent.role, pr_number=db.get("pr_number"), project_dir=agent.project_dir
+        )
         cpu_pct = None
         mem_rss = None
         collector = agent.resource_collector
@@ -290,7 +292,9 @@ async def get_unified_agents(slug: str | None = None) -> dict:
                 continue
             if not _is_process_alive(run.pid):
                 continue
-            progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
+            progress = await get_step_progress(
+                run.current_step, role=run.role, pr_number=run.pr_number, project_dir=pa.project_dir
+            )
             started = run.started_at or now
             if started.tzinfo is None:
                 started = started.replace(tzinfo=timezone.utc)

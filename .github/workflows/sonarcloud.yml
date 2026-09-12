@@ -19,11 +19,14 @@ jobs:
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: read
       statuses: write
+      # Required by the detector to read this workflow's own past runs and
+      # find the last successful one to compare against.
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,50 +35,74 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || '' }}
           persist-credentials: false
 
-      # Detect whether any non-documentation file changed. Computed via the
-      # GitHub API (base-repo context, pull_request_target-safe -- same
-      # pattern as fork-pr-gate.yml) rather than a working-tree diff. On a
-      # docs-only PR the coverage run and Sonar scan are skipped, but the
-      # job still completes and reports success so the required
-      # "SonarCloud Analysis" check is satisfied without a redundant 15-min run.
+      # Decide whether this run needs the coverage run and the scan.
+      #
+      # Detection is DELTA-AWARE: asking only "is the whole pull request
+      # documentation" can never be true on a code-carrying PR, so that
+      # question alone made every documentation amend re-run the full
+      # 15-minute analysis. The detector also compares against the last
+      # successful run of this workflow on this branch, so a markdown-only
+      # push on top of already-green code is free.
+      #
+      # The script is fetched from the BASE branch through the API into
+      # RUNNER_TEMP, never read from the head checkout in the workspace:
+      # under pull_request_target a fork must not be able to edit the script
+      # that decides whether its own code gets scanned. Every failure path
+      # inside the script fails open (code=true).
+      # A push event has no PR diff base, so detect() always returns
+      # code=true/non-pr regardless of what the fetch below would find.
+      # Skip the fetch entirely for push, rather than spending an API call
+      # and a RUNNER_TEMP write on a result that is thrown away unused.
+      - name: Fetch the detector from the base branch
+        id: fetch-detector
+        if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          dest="${RUNNER_TEMP}/detect-code-changes.sh"
+          if gh api \
+              "repos/${{ github.repository }}/contents/.github/scripts/detect-code-changes.sh?ref=${BASE_SHA}" \
+              --jq '.content' | base64 -d > "$dest"; then
+            chmod +x "$dest"
+            echo "path=$dest" >> "$GITHUB_OUTPUT"
+          else
+            # Could not fetch the trusted copy: fall through to the full run.
+            echo "::warning::detector unavailable, running the full analysis"
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Detect code changes
         id: changes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          WORKFLOW_FILE: sonarcloud.yml
+          DETECTOR: ${{ steps.fetch-detector.outputs.path }}
         run: |
-          if [ "${{ github.event_name }}" != "pull_request_target" ]; then
-            # push to main: always run the full analysis
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request_target" ]; then
+            # Matches detect()'s own non-pr outcome; the fetch step above was
+            # skipped for exactly this case, so DETECTOR is empty here too.
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "reason=non-pr" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          files=$(gh api --paginate \
-            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
-            --jq '.[].filename') || files=""
-          # Fail safe: if the file list is empty (API hiccup, pagination
-          # failure, or a genuinely empty diff) treat it as code so the full
-          # analysis runs. Only an explicit, non-empty, all-docs list skips.
-          if [ -z "$files" ]; then
+          if [ -z "$DETECTOR" ] || [ ! -x "$DETECTOR" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "reason=detector-unavailable" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Only markdown is documentation. docs/ and .claude/ contain non-md
-          # code (docs/pipeline-determinism.html, .claude/benchmark/*.sh hooks,
-          # .claude/commands/.sova-manifest.json), so a non-md file under those
-          # trees must classify as code -- otherwise a broken script could merge
-          # with the scan skipped.
-          code="false"
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            case "$f" in
-              *.md) ;;                                    # documentation, ignore
-              *) code="true" ;;                          # anything else is code
-            esac
-          done <<< "$files"
-          echo "code=$code" >> "$GITHUB_OUTPUT"
+          "$DETECTOR" detect >> "$GITHUB_OUTPUT"
 
-      - name: Docs-only change (skipping SonarCloud)
+      - name: Documentation-only change (skipping SonarCloud)
         if: steps.changes.outputs.code != 'true'
-        run: echo "Docs-only change detected. No code touched, reporting success without re-running coverage or scan."
+        run: echo "Documentation-only change (${{ steps.changes.outputs.reason }}). Reporting success without re-running coverage or scan."
 
       # Coverage for push and pull_request_target events, only when code changed.
       # pull_request_target uses the workflow from main (tamper-proof)

@@ -11,7 +11,9 @@ outputs:
 
 # Integrate PR
 
-Full integration pipeline for a PR. Rebases onto the base branch, waits for CI, merges, cleans up branches/worktrees/stashes, closes the linked issue, captures review learnings, promotes confirmed patterns to project knowledge, and updates agent memory. Replaces the need to run `/after-merge` and `/extract-knowledge` separately. Works for both manual invocation and autonomous agent use.
+Merge a PR that is already ready, then clean up. Verifies mergeability, merges, cleans up branches/worktrees/stashes, closes the linked issue, and runs post-merge cleanup. Replaces the need to run `/after-merge` separately. Works for both manual invocation and autonomous agent use.
+
+**This command does not push by default.** A push creates a new head SHA and spends a full CI cycle, which on a ready PR is pure waste and delays the merge by the length of the suite. The PR is expected to arrive here mergeable, with review learnings and documentation already folded in by `/address-pr`. Two things justify a push, both meaning another PR merged into the base branch since this one was last pushed: a real conflict (`mergeable: CONFLICTING`), or, under this repository's strict status-check policy, the branch simply being behind (`mergeStateStatus: BEHIND`) even with no conflicting lines. Phase 2 resolves either case and is explicit about the cost.
 
 PR: $ARGUMENTS
 
@@ -48,74 +50,274 @@ Extract the linked issue number from the PR body (patterns: `Closes #N`, `Fixes 
 
 Log the review decision status (APPROVED, CHANGES_REQUESTED, etc.) but do NOT require formal approval to proceed. The user invoking this command is the approval.
 
-### Phase 2: Rebase and Push
+### Phase 2: Assess Mergeability (push only when the PR cannot merge as it stands)
 
-Ensure you are on the PR's head branch:
+The default path through this command is: do not touch the branch, do not push,
+do not re-run CI. Every push here creates a new head SHA and costs a full CI
+cycle, so a push must be justified by GitHub refusing to merge, never by
+routine hygiene.
+
+Reset the push-tracking state file first. It is a file rather than a shell
+variable because Phases 2 through 4 run as separate command invocations, and
+it lives in the PRIMARY checkout specifically: the Update subroutine below may
+`cd` into a per-issue worktree, and `.claude/agent-control/` is not mirrored
+into worktrees, so a bare relative path would read and write a different file
+depending on which directory happens to be current when each phase runs.
+Resolve the primary checkout explicitly rather than assuming the current
+directory is it:
 
 ```bash
-git fetch origin
-git worktree prune
-git checkout <HEAD_BRANCH>
-git rebase origin/<BASE_BRANCH>
+COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+case "$COMMON_DIR" in
+  /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;;   # linked worktree
+  *)  PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;;  # already primary
+esac
+mkdir -p "$PRIMARY_ROOT/.claude/agent-control"
+echo 0 > "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed"
 ```
 
-If checkout fails with "already checked out", `sync_branch()` auto-resolves the conflict via `resolve_worktree_conflict()`. This handles stale worktree cleanup with PID liveness checks.
-
-**Stop on merge conflicts** -- report which files conflict and stop. Do not attempt auto-resolution.
-
-If the rebase changed nothing (already up to date), skip the push. Track whether a push happened so Phase 4 can decide whether CI must re-run. The flag is written to a state file (not a shell variable) so it survives across the separate command invocations of Phases 2 through 4:
+Ask GitHub whether the PR can merge:
 
 ```bash
-# Reset the push-tracking state file at the start of the run.
-mkdir -p .claude/agent-control
-echo 0 > .claude/agent-control/integrate-pushed
-# ... only if the rebase rewrote history:
-git push --force-with-lease && echo 1 > .claude/agent-control/integrate-pushed
+gh pr view <PR_NUMBER> --json mergeable,mergeStateStatus,baseRefName,headRefName
 ```
 
-**Stop if push fails** (branch protection, permissions) -- report the error.
+Act on `mergeable` first, then, when it is clean, on `mergeStateStatus`:
 
-### Phase 3: Pre-Merge Documentation Updates
+- **`mergeable: CONFLICTING`**: a PR merged into the base branch since this one
+  was last pushed and the two diverge on the same lines. Run the update
+  subroutine below; expect it to hit real conflicts.
 
-Run this phase on the feature branch BEFORE merge to avoid post-merge commits on main (which branch protection would block).
+- **`mergeable: UNKNOWN`**: GitHub is still computing mergeability. Re-query up
+  to 5 times, 5 seconds apart. If it is still `UNKNOWN`, treat it as
+  `MERGEABLE` and let the merge attempt in Phase 5 surface the real answer. Do
+  not rebase speculatively.
 
-Only run if `.claude/agent-memory/` exists in the project.
+- **`mergeable: MERGEABLE` and `mergeStateStatus: BEHIND`**: no conflicting
+  lines, but the branch has not incorporated everything merged into the base
+  branch since it was last pushed. This repository's `main-protection` ruleset
+  sets `strict_required_status_checks_policy: true`, so GitHub will refuse to
+  merge until the branch is updated, regardless of how green its existing
+  checks are. Run the update subroutine below; expect it to complete cleanly
+  with no conflicts, since `mergeable` already ruled those out.
 
-1. **Capture review learnings**: fetch review data from the PR (`gh pr view`, `gh api repos/.../pulls/<N>/comments`, `gh api repos/.../pulls/<N>/reviews`). Enumerate every unresolved AND resolved review thread from the whole PR history, not just what came up during this session's CI/merge back-and-forth: score each for actionable content and update `.claude/agent-memory/cookbook.md` (no duplicates). Promote patterns confirmed in 2+ PRs to `.claude/rules/*.md`. A later `/ingest-review` run on the same PR should find nothing new; if it would, this step was too shallow.
+  This is a real, unavoidable CI cost, not a routine-hygiene push: skipping it
+  would leave the branch permanently unmergeable under this ruleset. Confirm
+  the policy before assuming it applies in another project:
+  ```bash
+  gh api repos/<OWNER>/<REPO>/rulesets --jq '.[] | select(.target == "branch") | .id'
+  gh api repos/<OWNER>/<REPO>/rulesets/<ID> \
+    --jq '.rules[] | select(.type == "required_status_checks")
+          | .parameters.strict_required_status_checks_policy'
+  ```
+  If that returns `false`, a `BEHIND` state is not a merge blocker there and
+  this step may be skipped, matching the `MERGEABLE`/not-`BEHIND` case below.
 
-2. **Update documentation counts**: run verification commands (test count, service count, router count) and fix any drifted values in `AGENTS.md`, `README.md`, or `docs/VISION.md`.
+- **`mergeable: MERGEABLE` and anything else** (typically `CLEAN`): nothing to
+  do. Do NOT rebase, do NOT push. Go to Phase 3.
 
-3. **Amend into the last commit and push** if any files changed (never create a standalone docs commit):
+#### Update subroutine
+
+Handles both a real conflict (`mergeable: CONFLICTING`) and a clean-but-stale
+branch (`mergeStateStatus: BEHIND`). The rebase step is identical either way;
+only step 3 (conflict resolution) has anything to do when there are no
+conflicts to resolve.
+
+1. **Get onto the PR branch safely.** Never run `git checkout <HEAD_BRANCH>` in
+   the primary checkout: if a worktree already holds the branch, the checkout
+   fails or, worse, leaves uncommitted work that bleeds onto the base branch
+   later. Resolve the worktree first:
    ```bash
-   git add -A .claude/agent-memory/ AGENTS.md README.md docs/VISION.md .claude/rules/
-   # Only amend and push when something actually changed. An amend rewrites
-   # the head SHA and re-triggers CI, so a no-op amend wastes a full CI cycle.
-   if ! git diff --cached --quiet; then
-     git commit --amend --no-edit
-     git push --force-with-lease && echo 1 > .claude/agent-control/integrate-pushed
-   fi
+   git fetch origin
+   git worktree prune
+   HEAD_BRANCH_REF="branch refs/heads/<HEAD_BRANCH>"
+   WORKTREE_PATH=$(git worktree list --porcelain | grep -F -B2 "$HEAD_BRANCH_REF" \
+     | grep "^worktree " | head -1 | sed 's/^worktree //')
+   ```
+   If `WORKTREE_PATH` is non-empty, `cd` into it and verify
+   `git branch --show-current` equals `<HEAD_BRANCH>`. If it is empty and the
+   current branch already matches `<HEAD_BRANCH>`, you are in the right place.
+   If neither holds, STOP and report: there is no safe place to rebase.
+
+2. **Rebase**. Save the pre-rebase commit first: once the rebase completes,
+   `git rebase --abort` reports no rebase is in progress and cannot undo it,
+   so a validation failure discovered afterward (step 6) needs this to restore
+   the branch.
+   ```bash
+   ORIGINAL_HEAD=$(git rev-parse HEAD)
+   git rebase origin/<BASE_BRANCH>
    ```
 
-   **CI-cost note**: the files staged here are Markdown only (`AGENTS.md`,
-   `README.md`, `docs/**/*.md`, `.claude/rules/*.md`, `.claude/agent-memory/*.md`).
-   CI classifies a change as docs-only iff every changed path matches `*.md`, so a
-   markdown-only push does NOT re-run the expensive test/scan jobs (they report
-   success immediately), and this amend no longer blocks the merge on a
-   15-minute re-run. Note that `docs/` and `.claude/` also hold non-md code
-   (scripts, manifests, HTML), so staging a non-md file here would re-run the full
-   suite. The push-tracking state file still lets Phase 4 skip polling entirely
-   when nothing was re-pushed at all.
+3. **Resolve only conflicts you fully understand.** Bounded: at most 5
+   conflicting commits, at most 3 attempts each.
+
+   Safe to resolve autonomously:
+   - both sides added entries to the same list, import block, or registry
+   - both sides edited the same file in non-overlapping places
+   - the base branch renamed or moved something this PR also touches, where the
+     intent of each side is unambiguous
+   - a lockfile or generated file that can be regenerated
+
+   STOP and hand off instead of guessing:
+   - both sides changed the same function's behaviour or signature
+   - the conflict spans a semantic decision (which of two implementations wins)
+   - resolving would silently drop a change from either side
+
+4. After each resolution, `git add <file>` and `git rebase --continue`, then
+   verify nothing is left behind:
+   ```bash
+   grep -rn "<<<<<<<\|>>>>>>>" <resolved_files>
+   ```
+   This must produce no output. `git add` clears a file's unmerged index entry
+   whether or not the markers were removed, so the index alone does not prove
+   the conflict was resolved.
+
+5. When all commits are replayed, run the project's linter and tests (see
+   CLAUDE.md). The rebase pulled in new base-branch code, so a green result
+   from before the rebase means nothing.
+
+6. **On any failure**:
+   - **Unresolvable conflict or attempt budget exhausted** (rebase still in
+     progress):
+     ```bash
+     git rebase --abort
+     ```
+   - **Tests failing after the rebase completed** (step 5, no rebase in
+     progress: `git rebase --abort` here reports nothing to abort and leaves
+     the rebased commits in place):
+     ```bash
+     git reset --hard "$ORIGINAL_HEAD"
+     ```
+   Stop and report the conflicting files, pointing the user at
+   `/address-pr <PR_NUMBER>`. Never leave the worktree mid-rebase.
+
+7. **Before pushing, fold in any stale documentation for free.** This push is
+   already required (a real conflict or a stale branch), so capturing
+   documentation now costs nothing extra: run the Phase 3 check (steps 1-2
+   below) right here, before this push goes out. Doing it after the push, as a
+   separate step, is too late: the push has already happened by the time a
+   later phase runs, so amending afterward only rewrites the local commit and
+   silently never reaches the remote PR head that Phase 5 actually merges.
+
+   If the check finds nothing stale, skip straight to the push. If it finds
+   something stale, stage it now (do not commit or push it separately):
+   ```bash
+   git add -A .claude/agent-memory/ AGENTS.md README.md docs/ .claude/rules/
+   ```
+
+   Then amend anything staged into this commit and push once:
+   ```bash
+   if ! git diff --cached --quiet; then
+     git commit --amend --no-edit
+   fi
+   git push --force-with-lease && echo 1 > "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed"
+   ```
+   **Stop if the push fails** (branch protection, permissions) and report.
+
+   **Phase 3 is then a no-op**: its state-file check below sees `1` and skips
+   entirely, since the check already ran here, before this push.
+
+8. **Return to the primary checkout** before continuing, whether or not step 1
+   `cd`'d into a worktree. Every later phase (post-merge cleanup checks out the
+   base branch) assumes it is running from the primary checkout, and normally
+   is; the Update subroutine is the one place in this command that changes
+   that:
+   ```bash
+   cd "$PRIMARY_ROOT"
+   ```
+
+### Phase 3: Documentation and Knowledge (verify; do not push on its own)
+
+Knowledge capture and documentation freshness belong to `/address-pr` and
+`/review`, which run while the branch is already being pushed. This phase only
+verifies that they did their job. It must never create a head SHA of its own:
+a documentation amend on an otherwise-ready PR buys nothing and costs a full
+CI cycle plus the wait before the merge.
+
+**Skip this phase entirely if Phase 2 already pushed** (the state file reads
+`1`): the Update subroutine's step 7 already ran this exact check, before that
+push, and folded in anything it found. Running it again here would find
+nothing new (the branch already carries the fix) and risks a confusing second
+amend after the push has already gone out. This is a separate command
+invocation from Phase 2, so resolve the primary checkout again rather than
+assuming it carried over, then read the state file from there:
+```bash
+COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+case "$COMMON_DIR" in
+  /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;;   # linked worktree
+  *)  PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;;  # already primary
+esac
+PUSHED=$(cat "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed" 2>/dev/null || echo 0)
+```
+
+Only run the rest of this phase if `.claude/agent-memory/` exists in the
+project AND `PUSHED` is `0`.
+
+1. **Check for uncaptured review learnings**: fetch review data from the PR
+   (`gh pr view`, `gh api repos/.../pulls/<N>/comments`,
+   `gh api repos/.../pulls/<N>/reviews`). Enumerate every review thread from
+   the whole PR history, resolved and unresolved, and check whether the
+   actionable ones are already reflected in `.claude/agent-memory/cookbook.md`.
+
+2. **Check documentation counts**: run the verification commands (test count,
+   service count, router count) and compare against `AGENTS.md`, `README.md`,
+   and `docs/VISION.md`.
+
+3. **Act on the result**:
+
+   - **Nothing stale**: continue to Phase 4. This is the expected outcome when
+     `/address-pr` ran properly.
+
+   - **Stale**: Phase 2 did not push, so there is no push to ride for free and
+     amending here would be a pure-waste push on an otherwise-ready PR. Do NOT
+     amend and do NOT push. Queue the content for the next branch instead, in
+     the PRIMARY checkout so it survives this PR's worktree cleanup, using the
+     `$PRIMARY_ROOT` already resolved above:
+     ```bash
+     mkdir -p "$PRIMARY_ROOT/.claude/agent-control"
+     ```
+     Append the following block to
+     `$PRIMARY_ROOT/.claude/agent-control/pending-docs.md` using a file-editing
+     tool, not a shell heredoc: the queued content is agent-generated and may
+     itself contain a line that reads exactly `EOF`, which would close a
+     heredoc early and let the remainder of the block execute as shell input.
+     ```
+     ## From PR #<PR_NUMBER> (<DATE>)
+     <the cookbook entries, rule promotions and count corrections, verbatim>
+     ```
+     `/address-pr` drains this queue at the start of its next run, resolving
+     the primary checkout the same way, and folds the content into that
+     branch's own commits, which are pushed anyway. Report the queued items in
+     Phase 7.
+
+   - **Override**: if `$ARGUMENTS` contains `--with-docs`, the user has
+     explicitly accepted the extra CI cycle. Amend and push directly:
+     ```bash
+     git add -A .claude/agent-memory/ AGENTS.md README.md docs/ .claude/rules/
+     if ! git diff --cached --quiet; then
+       git commit --amend --no-edit
+       git push --force-with-lease && echo 1 > "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed"
+     fi
+     ```
 
 ### Phase 4: Wait for CI
 
-**Fast path (skip the wait entirely).** If neither Phase 2 (rebase) nor Phase 3
-(docs amend) pushed anything (the push-tracking state file still reads `0`), the
-PR head SHA is unchanged, so any CI that already ran is still valid. Confirm the
-existing checks are green and, if so, proceed straight to Phase 5 without polling:
+**Fast path (skip the wait entirely).** This is the expected path. Nothing was
+pushed unless Phase 2 had to resolve a conflict, so the PR head SHA is unchanged
+and any CI that already ran is still valid. When the push-tracking state file
+still reads `0`, confirm the existing checks are green and proceed straight to
+Phase 5 without polling:
 
 ```bash
+# A separate command invocation from Phases 2 and 3: resolve the primary
+# checkout again rather than assuming it carried over.
+COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+case "$COMMON_DIR" in
+  /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;;   # linked worktree
+  *)  PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;;  # already primary
+esac
 # Default to 0 if the state file is missing (defensive: never assume a push).
-PUSHED=$(cat .claude/agent-control/integrate-pushed 2>/dev/null || echo 0)
+PUSHED=$(cat "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed" 2>/dev/null || echo 0)
 if [ "$PUSHED" -eq 0 ]; then
   # Capture the JSON and exit status separately. `gh pr checks` returns a
   # non-zero status (exit 8) when checks are pending while still writing valid
@@ -197,7 +399,7 @@ done
 
 Act on the result:
 - **CI PASSED**: also verify that no blocking `CHANGES_REQUESTED` review remains (`gh pr view <PR_NUMBER> --json reviewDecision`; `gh pr checks` monitors CI status only, not review decisions).
-  - If `reviewDecision` is `CHANGES_REQUESTED`: stop. Never merge while a review (bot or human) is requesting changes, treat it as a real reviewer with its own address-review cycle. Write a handoff pointing at `/address-pr <PR_NUMBER>` and report that integration is blocked on unaddressed review feedback.
+  - If `reviewDecision` is `CHANGES_REQUESTED`: stop. Never merge while a review (bot or human, including CodeRabbit) is requesting changes, treat it as a real reviewer with its own address-review cycle. Write a handoff pointing at `/address-pr <PR_NUMBER>` and report that integration is blocked on unaddressed review feedback.
   - Otherwise, proceed to Phase 5.
 - **NO_CHECKS** (no CI checks configured): proceed to Phase 5. No checks means nothing to wait for.
 - **CI FAILED**: analyze the failure output briefly.
@@ -247,12 +449,35 @@ If `merge_method` is "auto", omit strategy flags to use the GitHub repo default.
 
 ### Phase 6: Post-Merge Cleanup (incorporates `/after-merge`)
 
+Return to the primary checkout first: the Update subroutine in Phase 2 may
+have `cd`'d into a per-issue worktree, and `git checkout <BASE_BRANCH>` below
+fails there (the base branch is normally already checked out in the primary
+checkout, and git refuses to check out a branch that is checked out
+elsewhere), stopping this phase before any cleanup runs.
+
 ```bash
+COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+case "$COMMON_DIR" in
+  /*) cd "${COMMON_DIR%/.git}" ;;   # linked worktree: return to primary checkout
+  *)  ;;                            # already primary
+esac
+
 git checkout <BASE_BRANCH>
 git pull origin <BASE_BRANCH>
 
 # Delete local branch if it still exists
 git branch -d <HEAD_BRANCH> 2>/dev/null || true
+
+# Delete remote branch if delete_branch = true (fallback -- Phase 5 may have
+# already handled this via --delete-branch, but covers merge-queue path and
+# already-merged PRs where Phase 5 is skipped). Skip for a fork PR: HEAD_BRANCH
+# names a branch, not a repository, and `origin` is the base repository, so
+# deleting <HEAD_BRANCH> there could remove an unrelated branch that happens
+# to share the fork contributor's branch name.
+IS_FORK=$(gh pr view <PR_NUMBER> --json isCrossRepository --jq '.isCrossRepository')
+if [ "$IS_FORK" != "true" ]; then
+  git push origin --delete <HEAD_BRANCH> 2>/dev/null || true
+fi
 ```
 
 Clean up any worktrees associated with this PR or issue:
@@ -288,19 +513,31 @@ git stash list
 
 If any stash entries reference the merged branch name, report them to the user (do not drop without confirmation).
 
+Run the full issue-aware GC to clean up any remaining stale worktrees and branches across the project:
+
+```bash
+sova cleanup --all --project <PROJECT_DIR>
+```
+
+`sova cleanup --all` only removes a worktree once its own issue is confirmed closed on GitHub, no agent is actively using it, and its working tree is clean, so it will not touch other issues' in-progress work.
+
 ### Phase 7: Report
 
-Note: review learnings and doc count updates were captured in Phase 3 (pre-merge). No post-merge git commits are needed.
+Note: this command makes no post-merge commits. Documentation and knowledge are
+captured by `/address-pr` on the branch; anything Phase 3 found missing was
+queued for the next branch rather than pushed.
 
 Output a concise summary covering:
 
 - PR number, title, and base branch it was merged into
-- Whether rebase was needed
-- CI status (passed, retried, or skipped)
+- Whether a rebase was needed, and if so which conflicts were resolved
+- Whether anything was pushed, and why (state the reason explicitly: a push
+  means a CI cycle was spent, so it must be accounted for)
+- CI status (passed, retried, or skipped because nothing was re-pushed)
 - Branches cleaned up (local + remote)
 - Issue closed (or no linked issue)
-- Learnings captured (count, or "skipped" if no agent memory)
-- Patterns promoted to project knowledge (count, or "none")
+- Documentation and knowledge: "already captured" or the items queued to
+  `.claude/agent-control/pending-docs.md` for the next branch
 - Stale stashes found (if any)
 
 ## Error Recovery
@@ -315,13 +552,19 @@ The user can fix the issue and re-run `/integrate-pr <PR_NUMBER>` to resume. The
 
 ## Cross-References
 
-- **Replaces**: `/after-merge` (cleanup) + `/extract-knowledge` (learning) -- both are now built into this pipeline
+- **Replaces**: `/after-merge` (cleanup), built into Phase 6
+- **Knowledge capture happens upstream**: `/address-pr` folds review learnings and documentation into the branch's own commits. This command only verifies and, if something was missed, queues it for the next branch.
 - **Before this**: `/review-full` or `/address-pr` to prepare the PR
 - **Next**: `/find-task` or `/standup` to pick up the next task
 
 ## Rules
 
 - Never stop between phases unless there is a hard failure
+- **Never push unless GitHub refuses to merge the PR as it stands.** A push
+  creates a new head SHA and spends a full CI cycle. The only justification is
+  `mergeable: CONFLICTING` (or a `BEHIND` state under a strict status-check
+  policy). Documentation, knowledge, and doc-count drift are never a reason to
+  push from this command: queue them for the next branch instead.
 - Never background the CI-poll loop and stop to wait for a notification (see the Phase 4 note above for why and how to pass an extended timeout instead)
 - Use the merge method from `[integration]` config (default: auto, uses GitHub repo default)
 - Handle merge queue when detected or configured

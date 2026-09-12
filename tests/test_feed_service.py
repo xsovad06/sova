@@ -459,7 +459,7 @@ async def test_feed_drain_persist(feed_service: FeedService) -> None:
 @pytest.mark.asyncio
 async def test_feed_briefing_exception_returns_empty(client: AsyncClient) -> None:
     """Briefing endpoint catches exceptions and returns empty briefing."""
-    with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+    with patch("sova.dashboard.services.awareness_service.load_config", side_effect=RuntimeError("boom")):
         resp = await client.get("/api/feed/briefing")
         assert resp.status_code == 200
         data = resp.json()
@@ -489,22 +489,24 @@ async def test_feed_briefing_with_providers(client: AsyncClient) -> None:
         urgency=5,
         action_hint="Review",
     )
-    mock_status = SimpleNamespace(name="github", ok=True, message="OK", items_fetched=1)
+    mock_status = SimpleNamespace(name="github", ok=True, message="OK", items_fetched=1, fetch_time_ms=10)
     mock_briefing = SimpleNamespace(
         generated_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
         attention_items=[mock_item],
         informational_items=[],
         schedule=[],
+        project_pulses=[],
         provider_statuses=[mock_status],
+        since=None,
     )
 
     mock_service = AsyncMock()
     mock_service.generate_briefing = AsyncMock(return_value=mock_briefing)
 
     with (
-        patch("sova.config.loader.load_config", return_value=mock_cfg),
-        patch("sova.awareness.create_providers", return_value=[MagicMock()]),
-        patch("sova.awareness.briefing.BriefingService", return_value=mock_service),
+        patch("sova.dashboard.services.awareness_service.load_config", return_value=mock_cfg),
+        patch("sova.dashboard.services.awareness_service.create_providers", return_value=[MagicMock()]),
+        patch("sova.dashboard.services.awareness_service.BriefingService", return_value=mock_service),
     ):
         resp = await client.get("/api/feed/briefing")
         assert resp.status_code == 200
@@ -520,7 +522,7 @@ def test_serialize_item_and_briefing() -> None:
     from datetime import datetime, timezone
     from types import SimpleNamespace
 
-    from sova.dashboard.routers.feed import _serialize_briefing, _serialize_item
+    from sova.dashboard.services.awareness_service import serialize_briefing, serialize_item
 
     item = SimpleNamespace(
         id="item-1",
@@ -533,7 +535,7 @@ def test_serialize_item_and_briefing() -> None:
         urgency=3,
         action_hint="Review it",
     )
-    serialized = _serialize_item(item)
+    serialized = serialize_item(item)
     assert serialized["id"] == "item-1"
     assert serialized["provider"] == "github"
     assert serialized["category"] == "pr"
@@ -541,15 +543,17 @@ def test_serialize_item_and_briefing() -> None:
     assert serialized["urgency"] == 3
     assert serialized["source_url"] == "https://github.com/pr/1"
 
-    status = SimpleNamespace(name="github", ok=True, message="OK", items_fetched=5)
+    status = SimpleNamespace(name="github", ok=True, message="OK", items_fetched=5, fetch_time_ms=10)
     briefing = SimpleNamespace(
         generated_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
         attention_items=[item],
         informational_items=[],
         schedule=[],
+        project_pulses=[],
         provider_statuses=[status],
+        since=None,
     )
-    result = _serialize_briefing(briefing)
+    result = serialize_briefing(briefing)
     assert result["generated_at"] == "2026-01-01T12:00:00+00:00"
     assert len(result["attention_items"]) == 1
     assert result["provider_statuses"][0]["name"] == "github"
@@ -566,7 +570,7 @@ def test_serialize_item_and_briefing() -> None:
         urgency=0,
         action_hint=None,
     )
-    s2 = _serialize_item(none_ts_item)
+    s2 = serialize_item(none_ts_item)
     assert s2["timestamp"] is None
     assert s2["category"] == "raw_string"
 
@@ -575,18 +579,20 @@ def test_serialize_item_and_briefing() -> None:
         attention_items=[],
         informational_items=[],
         schedule=[],
+        project_pulses=[],
         provider_statuses=[],
+        since=None,
     )
-    r2 = _serialize_briefing(none_briefing)
+    r2 = serialize_briefing(none_briefing)
     assert r2["generated_at"] is None
 
 
 def test_serialize_item_with_occurrence_count() -> None:
-    """_serialize_item includes occurrence_count when non-zero."""
+    """serialize_item includes occurrence_count when non-zero."""
     from datetime import datetime, timezone
     from types import SimpleNamespace
 
-    from sova.dashboard.routers.feed import _serialize_item
+    from sova.dashboard.services.awareness_service import serialize_item
 
     item = SimpleNamespace(
         id="gcal:standup",
@@ -601,18 +607,18 @@ def test_serialize_item_with_occurrence_count() -> None:
         occurrence_count=3,
         metadata={"recurring_event_id": "base123"},
     )
-    result = _serialize_item(item)
+    result = serialize_item(item)
     assert result["occurrence_count"] == 3
     assert result["recurring_event_id"] == "base123"
     assert "is_recurring_exception" not in result
 
 
 def test_serialize_item_with_recurring_exception() -> None:
-    """_serialize_item includes is_recurring_exception when set in metadata."""
+    """serialize_item includes is_recurring_exception when set in metadata."""
     from datetime import datetime, timezone
     from types import SimpleNamespace
 
-    from sova.dashboard.routers.feed import _serialize_item
+    from sova.dashboard.services.awareness_service import serialize_item
 
     item = SimpleNamespace(
         id="gcal:standup-exc",
@@ -627,18 +633,18 @@ def test_serialize_item_with_recurring_exception() -> None:
         occurrence_count=0,
         metadata={"is_recurring_exception": True, "recurring_event_id": "base123"},
     )
-    result = _serialize_item(item)
+    result = serialize_item(item)
     assert result["is_recurring_exception"] is True
     assert result["recurring_event_id"] == "base123"
     assert "occurrence_count" not in result
 
 
 def test_serialize_item_without_recurring_fields() -> None:
-    """_serialize_item omits recurring fields when not present."""
+    """serialize_item omits recurring fields when not present."""
     from datetime import datetime, timezone
     from types import SimpleNamespace
 
-    from sova.dashboard.routers.feed import _serialize_item
+    from sova.dashboard.services.awareness_service import serialize_item
 
     item = SimpleNamespace(
         id="gcal:one-off",
@@ -653,7 +659,7 @@ def test_serialize_item_without_recurring_fields() -> None:
         occurrence_count=0,
         metadata={},
     )
-    result = _serialize_item(item)
+    result = serialize_item(item)
     assert "occurrence_count" not in result
     assert "is_recurring_exception" not in result
     assert "recurring_event_id" not in result
