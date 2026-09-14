@@ -11,6 +11,7 @@ from sova.dashboard.security import (
     CSRF_HEADER_NAME,
     build_allowed_origins,
     is_loopback_host,
+    is_wildcard_host,
     issue_csrf_cookie,
     require_same_origin_csrf,
     validate_origin,
@@ -44,6 +45,26 @@ class TestIsLoopbackHost:
 
     def test_unparseable_host_is_not_loopback(self) -> None:
         assert is_loopback_host("not-an-ip") is False
+
+
+class TestIsWildcardHost:
+    def test_ipv4_wildcard_is_wildcard(self) -> None:
+        assert is_wildcard_host("0.0.0.0") is True
+
+    def test_ipv6_wildcard_is_wildcard(self) -> None:
+        assert is_wildcard_host("::") is True
+
+    def test_bracketed_ipv6_wildcard_is_wildcard(self) -> None:
+        assert is_wildcard_host("[::]") is True
+
+    def test_loopback_is_not_wildcard(self) -> None:
+        assert is_wildcard_host("127.0.0.1") is False
+
+    def test_remote_host_is_not_wildcard(self) -> None:
+        assert is_wildcard_host("192.168.1.5") is False
+
+    def test_unparseable_host_is_not_wildcard(self) -> None:
+        assert is_wildcard_host("not-an-ip") is False
 
 
 class TestBuildAllowedOrigins:
@@ -136,8 +157,8 @@ def guarded_app() -> FastAPI:
         return {"ok": True}
 
     @test_app.get("/issue-cookie")
-    def issue_cookie(response: Response) -> dict:
-        token = issue_csrf_cookie(response)
+    def issue_cookie(response: Response, request: Request) -> dict:
+        token = issue_csrf_cookie(response, request)
         return {"token": token}
 
     return test_app
@@ -207,3 +228,21 @@ class TestRequireSameOriginCsrf:
         response = client.get("/issue-cookie")
         assert response.status_code == 200
         assert client.cookies.get(CSRF_COOKIE_NAME) == response.json()["token"]
+
+    def test_issue_csrf_cookie_omits_secure_flag_over_http(self, guarded_app: FastAPI) -> None:
+        """Loopback HTTP is the default bind: a Secure cookie would never be returned."""
+        client = TestClient(guarded_app, base_url="http://127.0.0.1:8111")
+        set_cookie = client.get("/issue-cookie").headers["set-cookie"]
+        assert "Secure" not in set_cookie
+
+    def test_issue_csrf_cookie_sets_secure_flag_over_https(self, guarded_app: FastAPI) -> None:
+        client = TestClient(guarded_app, base_url="https://127.0.0.1:8111")
+        set_cookie = client.get("/issue-cookie").headers["set-cookie"]
+        assert "Secure" in set_cookie
+
+    def test_issue_csrf_cookie_is_not_httponly_and_is_samesite_strict(self, guarded_app: FastAPI) -> None:
+        """HttpOnly must stay off so the dashboard's own JS can echo the token back."""
+        client = TestClient(guarded_app)
+        set_cookie = client.get("/issue-cookie").headers["set-cookie"]
+        assert "HttpOnly" not in set_cookie
+        assert "SameSite=strict" in set_cookie

@@ -68,7 +68,7 @@ from sova.dashboard.routers import (
     tasks,
     work,
 )
-from sova.dashboard.security import build_allowed_origins, is_loopback_host
+from sova.dashboard.security import build_allowed_origins, is_loopback_host, is_wildcard_host
 from sova.dashboard.services import awareness_service, control_service, handoff_service
 from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
@@ -809,9 +809,14 @@ def create_app(
             port = cfg.dashboard.port
     app.state.is_loopback_bind = is_loopback_host(host)
     app.state.allowed_origins = build_allowed_origins(host, port)
-    app.state.csrf_fail_closed = not app.state.is_loopback_bind and not cfg.dashboard.csrf_secret
+    # A wildcard bind (0.0.0.0, ::) has no computable allowed-origin entry a real
+    # browser could ever send, so it fails closed even with a secret configured
+    # (see is_wildcard_host docstring in sova/dashboard/security.py).
+    app.state.csrf_fail_closed = not app.state.is_loopback_bind and (
+        is_wildcard_host(host) or not cfg.dashboard.csrf_secret
+    )
     if app.state.csrf_fail_closed:
-        log.warning("dashboard.nonloopback_no_secret", host=host, port=port)
+        log.warning("dashboard.nonloopback_no_secret", host=host, port=port, wildcard=is_wildcard_host(host))
 
     if rate_limit > 0:
 

@@ -14674,9 +14674,27 @@ class TestDashboardCsrfGuard:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
-        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
+        app = create_app(project_dir=tmp_path, host="192.168.1.5", port=8111)
         assert app.state.is_loopback_bind is False
         assert app.state.csrf_fail_closed is False
+
+    async def test_wildcard_bind_with_secret_is_still_fail_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wildcard bind has no origin a real browser could ever send, so a
+        configured secret must not unlock it (issue #1020 review)."""
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
+        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
+        assert app.state.is_loopback_bind is False
+        assert app.state.csrf_fail_closed is True
+
+    async def test_ipv6_wildcard_bind_with_secret_is_still_fail_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
+        app = create_app(project_dir=tmp_path, host="::", port=8111)
+        assert app.state.is_loopback_bind is False
+        assert app.state.csrf_fail_closed is True
 
     async def test_invalid_port_env_falls_back_to_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A non-numeric SOVA_DASHBOARD_PORT must not take app creation down.
@@ -14729,6 +14747,24 @@ class TestDashboardCsrfGuard:
             assert response.json() == {"ok": True}
 
     async def test_guarded_route_nonloopback_without_secret_always_rejects(self, tmp_path: Path) -> None:
+        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
+        self._mount_guarded_route(app)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            ac.cookies.set(CSRF_COOKIE_NAME, "matching-token")
+            response = await ac.post(
+                "/__test/guarded",
+                headers={"Origin": "http://0.0.0.0:8111", CSRF_HEADER_NAME: "matching-token"},
+            )
+            assert response.status_code == 403
+
+    async def test_guarded_route_wildcard_bind_with_secret_still_rejects(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Even with a matching cookie/header and a configured secret, a wildcard
+        bind must reject: there is no real origin it could ever match (issue
+        #1020 review)."""
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
         app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
         self._mount_guarded_route(app)
         transport = ASGITransport(app=app)

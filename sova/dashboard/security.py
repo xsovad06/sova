@@ -80,6 +80,26 @@ def _format_host(host: str) -> str:
     return f"[{bare}]" if ":" in bare else bare
 
 
+def is_wildcard_host(host: str) -> bool:
+    """Return True when `host` binds every interface (`0.0.0.0`, `::`).
+
+    A wildcard bind does not identify the origin a remote browser will present:
+    the browser sends the server's real address (its LAN IP or hostname), never
+    the literal wildcard. `build_allowed_origins` therefore builds an allowlist
+    entry that can never match a real request for a wildcard host, so callers
+    must fail closed for one regardless of whether `dashboard.csrf_secret` is
+    configured, otherwise the guard looks "unlocked" while silently rejecting
+    every legitimate remote request. A value that is neither a wildcard address
+    nor a parseable IP is treated as not wildcard (the fail-open direction for
+    this specific check, matched by fail-closed elsewhere in the guard).
+    """
+    bare = _strip_brackets(host)
+    try:
+        return ipaddress.ip_address(bare).is_unspecified
+    except ValueError:
+        return False
+
+
 def build_allowed_origins(host: str, port: int) -> frozenset[str]:
     """Build the set of `Origin` header values considered same-origin as the dashboard.
 
@@ -110,18 +130,31 @@ def validate_origin(request: Request, allowed_origins: frozenset[str]) -> bool:
     return False
 
 
-def issue_csrf_cookie(response: Response) -> str:
+def issue_csrf_cookie(response: Response, request: Request) -> str:
     """Set a fresh double-submit CSRF cookie on `response` and return its value.
 
-    Not `HttpOnly`: the dashboard's own frontend JS must be able to read the cookie
-    to echo it back as the `X-CSRF-Token` header. This is the standard double-submit
-    pattern, not an oversight.
+    Two flags are deliberately not hardcoded on:
+
+    `HttpOnly` is off because the dashboard's own frontend JS must read the cookie to
+    echo it back as the `X-CSRF-Token` header. That readability *is* the double-submit
+    pattern: the defense rests on a cross-origin page being unable to read a cookie
+    scoped to another origin, not on the cookie being hidden from same-origin script.
+
+    `Secure` is derived from the scheme the request actually arrived on rather than
+    forced to True, because the default deployment is loopback HTTP. A browser never
+    returns a `Secure` cookie over plain HTTP, so forcing it would leave the cookie
+    permanently absent and every state-changing request rejected. `request.url.scheme`
+    already reflects `X-Forwarded-Proto` when uvicorn runs with `--proxy-headers`, so
+    an HTTPS deployment behind a proxy gets the flag without this function having to
+    trust a client-supplied header itself.
     """
+    # Rationale for the two suppressed lines below lives in the docstring above.
     token = secrets.token_urlsafe(32)
-    response.set_cookie(
+    response.set_cookie(  # NOSONAR
         key=CSRF_COOKIE_NAME,
         value=token,
-        httponly=False,
+        httponly=False,  # NOSONAR
+        secure=request.url.scheme == "https",  # NOSONAR
         samesite="strict",
         path="/",
     )
@@ -142,6 +175,11 @@ def require_same_origin_csrf(request: Request) -> None:
     if not validate_origin(request, allowed_origins):
         raise HTTPException(status_code=403, detail="Origin check failed")
 
+    # Double-submit only: this proves the two values match, not that either is
+    # trustworthy. A direct (non-browser) client can set an identical arbitrary
+    # value in both places and pass. That is deliberate for this PR (see the
+    # module docstring's "Scope limit worth stating plainly" paragraph) and is
+    # closed by a future issue that signs the token with `dashboard.csrf_secret`.
     cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
     header_token = request.headers.get(CSRF_HEADER_NAME)
     if not cookie_token or not header_token or not hmac.compare_digest(cookie_token, header_token):
