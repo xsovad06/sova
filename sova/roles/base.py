@@ -39,6 +39,7 @@ class RoleResult:
     error: str | None = None
     output_state: TaskState | None = None
     findings: list[str] = field(default_factory=list)
+    awaiting_approval: bool = False
 
 
 class AgentRole(ABC):

@@ -111,6 +111,7 @@ class ResearcherRole(AgentRole):
             return RoleResult(
                 success=False,
                 summary=f"Spec for #{ctx.issue_number} awaiting human approval",
+                awaiting_approval=True,
             )
 
         log.error("researcher.failed", issue=ctx.issue_number, error=workflow_result.error)
