@@ -68,6 +68,7 @@ from sova.dashboard.routers import (
     tasks,
     work,
 )
+from sova.dashboard.security import build_allowed_origins, is_loopback_host
 from sova.dashboard.services import awareness_service, control_service, handoff_service
 from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
@@ -501,12 +502,19 @@ def create_app(
     *,
     project_dir: Path | None = None,
     multi_project: bool | None = None,
+    host: str | None = None,
+    port: int | None = None,
 ) -> FastAPI:
     """Create and configure the SOVA dashboard FastAPI app.
 
     Args:
         project_dir: Explicit project directory (forces single-project mode).
         multi_project: Force multi-project mode. None = auto-detect.
+        host: Bind host, used to scope the CSRF/origin guard (see `sova.dashboard.security`).
+            Falls back to `SOVA_DASHBOARD_HOST` (set by the `--reload` uvicorn factory-string
+            path, which cannot receive direct kwargs), then "127.0.0.1".
+        port: Bind port, used the same way. Falls back to `SOVA_DASHBOARD_PORT`, then
+            `dashboard.port` from config.
     """
     if project_dir is None:
         env_project = os.environ.get("SOVA_DASHBOARD_PROJECT")
@@ -783,6 +791,27 @@ def create_app(
     # Rate limiting middleware
     cfg = _load_config_or_fail(resolved)
     rate_limit = cfg.dashboard.rate_limit_per_minute
+
+    # CSRF/origin guard state for state-changing auth endpoints (sova/dashboard/security.py).
+    # Computed here (not inside the guard dependency) so it reflects the actual bind
+    # host/port rather than being re-derived per-request.
+    if host is None:
+        host = os.environ.get("SOVA_DASHBOARD_HOST", "127.0.0.1")
+    if port is None:
+        env_port = os.environ.get("SOVA_DASHBOARD_PORT")
+        try:
+            port = int(env_port) if env_port else cfg.dashboard.port
+        except ValueError:
+            # A non-numeric override must not take the whole dashboard down. Pydantic
+            # does not catch it first: a [dashboard] port in sova.toml is passed as an
+            # init kwarg, which outranks the env var, so the bad value reaches here.
+            log.warning("dashboard.invalid_port_env", value=env_port)
+            port = cfg.dashboard.port
+    app.state.is_loopback_bind = is_loopback_host(host)
+    app.state.allowed_origins = build_allowed_origins(host, port)
+    app.state.csrf_fail_closed = not app.state.is_loopback_bind and not cfg.dashboard.csrf_secret
+    if app.state.csrf_fail_closed:
+        log.warning("dashboard.nonloopback_no_secret", host=host, port=port)
 
     if rate_limit > 0:
 

@@ -181,6 +181,8 @@ def dashboard(
 
         if project:
             os.environ["SOVA_DASHBOARD_PROJECT"] = str(project.resolve())
+        os.environ["SOVA_DASHBOARD_HOST"] = host
+        os.environ["SOVA_DASHBOARD_PORT"] = str(port)
         sova_root = Path(__file__).resolve().parent.parent
         # Watch only dashboard and CLI modules to avoid triggering reloads on core logic changes.
         # Core modules (ipc, core, roles) require full restart to maintain agent state integrity.
@@ -202,5 +204,5 @@ def dashboard(
     else:
         from sova.dashboard.app import create_app
 
-        app = create_app(project_dir=project)
+        app = create_app(project_dir=project, host=host, port=port)
         uvicorn.run(app, host=host, port=port, log_level="info")

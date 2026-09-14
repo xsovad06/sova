@@ -169,10 +169,12 @@ When adding LLM-facing code:
 
 ## Dashboard Security Model
 
-- Binds to `127.0.0.1:8111` by default (localhost only)
-- No authentication layer (access implies machine access)
-- No CORS middleware (not needed for localhost)
-- If ever exposed to a network, authentication and CORS must be added first
+- Single-user, loopback-only deployment model: no user accounts, sessions, or login page. Binds to `127.0.0.1:8111` by default; access to the machine implies access to the dashboard.
+- No CORS middleware (not needed for localhost); instead, state-changing endpoints depend on `sova.dashboard.security.require_same_origin_csrf`, which checks the request's Origin/Referer against the dashboard's own scheme+host+port and a double-submit CSRF cookie/header pair. This defends against a different threat than CORS: any web page the browser visits (not just the dashboard's own origin) can otherwise issue cross-origin `fetch()` calls at the local port, and DNS rebinding makes same-origin policy alone incomplete (a rebound page's `Origin` header still reflects where it was loaded from, which the guard checks against).
+- When bound to a non-loopback host (`--host 0.0.0.0` or similar), the guard fails closed on every dependent route unless `dashboard.csrf_secret` is configured; the server logs a warning at startup in that case.
+- `dashboard.csrf_secret` is an opt-in switch, not a credential: only its presence is checked, never its value. Neither the origin check nor the double-submit pair authenticates a caller; both stop a *browser* driven cross-origin request, while a direct client (curl) can set all of them itself. A non-loopback bind stays reachable by anyone who can reach the port, so treat it as unauthenticated until the auth router adds real token validation (see `sova/dashboard/services/mcp_service.py` for the HMAC precedent).
+- Read-only status endpoints do not need the guard, provided they leak no secret material.
+- See `.claude/rules/architecture.md` for the guard's implementation details.
 
 ## Contributor Checklist
 
