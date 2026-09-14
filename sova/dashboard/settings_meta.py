@@ -41,6 +41,7 @@ GROUPS: dict[str, str] = {
     "external_reviews": "External Reviews",
     "security": "Security",
     "dashboard": "Dashboard",
+    "dependency_health": "Dependency Health",
     "mcp": "MCP Endpoint",
     "integration": "Integration",
     "supervisor": "Supervisor",
@@ -75,6 +76,7 @@ GROUP_ORDER: list[str] = [
     "external_reviews",
     "security",
     "dashboard",
+    "dependency_health",
     "mcp",
     "integration",
     "supervisor",
@@ -1101,6 +1103,28 @@ _REGISTRY: list[SettingMeta] = [
         "dashboard",
         "number",
     ),
+    # Dependency Health
+    SettingMeta(
+        "dependency_health.enabled",
+        "Dependency health scanning",
+        "Scan the target project's manifests for outdated, deprecated, and vulnerable dependencies",
+        "dependency_health",
+        "boolean",
+    ),
+    SettingMeta(
+        "dependency_health.cache_ttl_minutes",
+        "Cache TTL (minutes)",
+        "How long a dependency scan snapshot is cached before a rescan is triggered",
+        "dependency_health",
+        "number",
+    ),
+    SettingMeta(
+        "dependency_health.registry_timeout_seconds",
+        "Registry timeout (s)",
+        "Per-request timeout when querying package registries for latest version info",
+        "dependency_health",
+        "number",
+    ),
     # -- Resource Monitoring (in Agent Health group) --
     SettingMeta(
         "monitoring.enabled",
@@ -1636,7 +1660,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "awareness.providers",
         "Providers",
-        "List of enabled provider names (gmail, gcal, reminders, pr_status, agent_runs)",
+        "List of enabled provider names (gmail, gcal, reminders, pr_status, agent_runs, dependency_health)",
         "awareness",
         "list",
     ),

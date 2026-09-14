@@ -28,6 +28,7 @@ Replace `/Users/<username>` with your actual home directory path, or use the def
 | `reminders` | Apple Reminders tasks | macOS with Reminders app |
 | `pr_status` | Open PRs across all your projects | `gh` CLI auth |
 | `agent_runs` | Recent SOVA agent activity | SOVA database |
+| `dependency_health` | Vulnerable, deprecated, and badly outdated packages | `dependency_health.enabled` per project, plus a scan from the Dependencies page (this provider reads the cache, it never scans) |
 
 ## Google OAuth2 Setup (Gmail + Calendar)
 

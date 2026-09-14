@@ -125,6 +125,7 @@ _NESTED_SECTIONS = (
     "oversight",
     "a2a",
     "conflict_resolution",
+    "dependency_health",
 )
 
 
