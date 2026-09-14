@@ -12448,12 +12448,16 @@ class TestLivenessSweepMergeCheck:
             refreshed = await session.get(TaskRun, run_id)
             assert refreshed.status == "paused", "paused run should not be reclassified by sweep"
 
-    async def test_sweep_marks_dead_pid_awaiting_approval_as_interrupted(self) -> None:
-        """Regression test for #935: a dead-PID awaiting_approval run must be swept to
-        interrupted outside of startup. awaiting_approval is itself a member of
-        TASK_RUN_TERMINAL, so it's invisible to the sweep's ordinary notin_(_TERMINAL)
-        query and would otherwise block re-evaluation of its issue forever via
-        check_already_running(), even after the process holding the PID is long dead.
+    async def test_sweep_does_not_touch_dead_pid_awaiting_approval(self) -> None:
+        """A dead-PID awaiting_approval run must NOT be reclassified by the sweep.
+
+        The researcher's ephemeral process always exits within moments of writing
+        its spec and setting awaiting_approval, so a dead PID here is the expected
+        steady state, not a crash. check_already_running() already blocks
+        re-research on awaiting_approval unconditionally regardless of PID
+        liveness, and the slot gate excludes it from occupancy either way, so
+        nothing depends on the sweep touching it, and reclassifying it as
+        "interrupted" mislabels a successful spec completion as a crash.
         """
         async with await get_session() as session:
             async with session.begin():
@@ -12475,7 +12479,7 @@ class TestLivenessSweepMergeCheck:
 
         async with await get_session() as session:
             refreshed = await session.get(TaskRun, run_id)
-            assert refreshed.status == "interrupted"
+            assert refreshed.status == "awaiting_approval", "dead-PID awaiting_approval run should not be touched"
 
     async def test_sweep_skips_live_pid_awaiting_approval(self) -> None:
         """A live-PID awaiting_approval run (spec genuinely pending human review) is
