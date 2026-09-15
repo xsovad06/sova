@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 from typing import ClassVar, Literal
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -471,6 +472,53 @@ class ExternalReviewsConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_EXTERNAL_REVIEWS_")
 
 
+class LdapConfig(BaseSettings):
+    """LDAP directory configuration for issue routing and reviewer suggestions.
+
+    Opt-in and organization-specific (default server targets Red Hat's
+    corporate LDAP). Queries require VPN connectivity; callers must degrade
+    gracefully to ``github_user`` when the directory is unreachable.
+    """
+
+    enabled: bool = False
+    server: str = "ldaps://ldap.corp.redhat.com"
+    base_dn: str = "ou=users,dc=redhat,dc=com"
+    group_base_dn: str = "ou=adhoc,ou=managedGroups,dc=redhat,dc=com"
+    timeout_seconds: int = Field(5, gt=0)
+    cache_ttl_seconds: int = Field(300, ge=0)
+    # Directory-specific naming attribute for a person's unique id. Red Hat's LDAP (and most
+    # OpenLDAP-derived directories) use "uid"; Active Directory-derived servers commonly use
+    # "sAMAccountName" instead. Used for person-search filters, requested attributes, and
+    # parsing uids out of group-member DNs.
+    uid_attribute: str = "uid"
+    # Cleartext (non-ldaps://) servers are rejected by default (CWE-319). Set True only for a
+    # local development directory that has no TLS listener.
+    allow_insecure: bool = False
+    # Optional PEM CA bundle path for validating the server certificate. Empty string uses the
+    # system trust store.
+    ca_cert_file: str = ""
+    # Maps a technical area/component label (e.g. "auth", "dashboard") to an LDAP group cn.
+    # Assignment suggestions only auto-assign when a label resolves through this mapping to
+    # exactly one group member; otherwise the match is a suggestion only.
+    team_mapping: dict[str, str] = Field(default_factory=dict)
+    # Maps a github_user to its corresponding LDAP uid, since the two identifiers are frequently
+    # different (e.g. GitHub username vs. Kerberos id). Unmapped users fall back to using
+    # github_user as the LDAP uid directly (a best-effort assumption, not a guarantee).
+    uid_mapping: dict[str, str] = Field(default_factory=dict)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_LDAP_")
+
+    @model_validator(mode="after")
+    def _require_secure_scheme(self) -> LdapConfig:
+        if not self.allow_insecure and urlparse(self.server).scheme != "ldaps":
+            msg = (
+                f"ldap.server must use the ldaps:// scheme (got {self.server!r}). "
+                "Set ldap.allow_insecure = true for a development-only cleartext directory."
+            )
+            raise ValueError(msg)
+        return self
+
+
 class EgressConfig(BaseSettings):
     """Egress filter configuration for outbound text scanning."""
 
@@ -923,6 +971,7 @@ class ProjectConfig(BaseSettings):
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     external_reviews: ExternalReviewsConfig = Field(default_factory=ExternalReviewsConfig)
+    ldap: LdapConfig = Field(default_factory=LdapConfig)
     egress: EgressConfig = Field(default_factory=EgressConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)

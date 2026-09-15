@@ -138,6 +138,14 @@ class TaskAdapter(ABC):
         """Assign the task to an agent role."""
 
     @abstractmethod
+    async def assign_to_user(self, task_id: str, username: str) -> None:
+        """Assign the task to a specific person (distinct from role-labeling via ``assign``)."""
+
+    @abstractmethod
+    async def add_reviewer(self, task_id: str, pr_number: int, username: str) -> None:
+        """Request a specific person as a reviewer on the task's pull request."""
+
+    @abstractmethod
     async def add_label(self, task_id: str, label: str) -> None:
         """Add a label to the task."""
 

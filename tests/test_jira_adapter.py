@@ -617,6 +617,92 @@ class TestLabels:
         assert b"remove" in body
 
 
+class TestAssignToUser:
+    @respx.mock
+    async def test_assign_to_user_success(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/user/search").mock(
+            return_value=Response(
+                200, json=[{"accountId": "acc-123", "emailAddress": "jdoe@example.com", "displayName": "Jane Doe"}]
+            ),
+        )
+        route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        await adapter.assign_to_user("1", "jdoe")
+        assert route.called
+        body = route.calls[0].request.content
+        assert b"acc-123" in body
+        assert b"jdoe" not in body
+
+    @respx.mock
+    async def test_assign_to_user_failure_is_non_fatal(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/user/search").mock(
+            return_value=Response(
+                200, json=[{"accountId": "acc-123", "emailAddress": "jdoe@example.com", "displayName": "Jane Doe"}]
+            ),
+        )
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(400, text="Bad request"),
+        )
+        await adapter.assign_to_user("1", "jdoe")  # should not raise
+
+    @respx.mock
+    async def test_assign_to_user_unresolvable_account_is_non_fatal(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/user/search").mock(
+            return_value=Response(200, json=[]),
+        )
+        route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1")
+        await adapter.assign_to_user("1", "ghost")  # should not raise
+        assert not route.called
+
+    @respx.mock
+    async def test_assign_to_user_ambiguous_prefix_match_is_non_fatal(self) -> None:
+        """A prefix-matched query with no exact identity match must not assign anyone.
+
+        /user/search matches on a prefix basis, so a query like "jdoe" can return
+        an unrelated "jdoe2" or "jdoerner" account. Only an exact match on email,
+        email local-part, or display name is trusted.
+        """
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/user/search").mock(
+            return_value=Response(
+                200,
+                json=[
+                    {"accountId": "acc-collision", "emailAddress": "jdoerner@example.com", "displayName": "J Doerner"}
+                ],
+            ),
+        )
+        route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1")
+        await adapter.assign_to_user("1", "jdoe")  # should not raise
+        assert not route.called
+
+    @respx.mock
+    async def test_assign_to_user_multiple_exact_matches_is_non_fatal(self) -> None:
+        """Two exact matches for the same query is a collision: reject, do not guess."""
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/user/search").mock(
+            return_value=Response(
+                200,
+                json=[
+                    {"accountId": "acc-1", "emailAddress": "jdoe@example.com", "displayName": "Jane Doe"},
+                    {"accountId": "acc-2", "emailAddress": "other@example.com", "displayName": "jdoe"},
+                ],
+            ),
+        )
+        route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1")
+        await adapter.assign_to_user("1", "jdoe")  # should not raise
+        assert not route.called
+
+
+class TestAddReviewer:
+    async def test_add_reviewer_is_noop_for_jira(self) -> None:
+        adapter = _adapter()
+        await adapter.add_reviewer("1", 42, "jdoe")  # should not raise, no HTTP call
+
+
 class TestPostComment:
     @respx.mock
     async def test_post_comment(self) -> None:

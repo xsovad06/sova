@@ -6,13 +6,13 @@ import json
 import os
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import ProjectConfig, RolesConfig
+from sova.config.models import LdapConfig, ProjectConfig, RolesConfig
 from sova.core.context import ExecutionContext
 from sova.core.dag import DAGExecutor
 from sova.core.state import TaskStatus
@@ -177,6 +177,178 @@ class TestTriageRole:
         adapter.edit_body.assert_awaited_once()
         updated_body = adapter.edit_body.call_args[0][1]
         assert "triage" in updated_body.lower() or "assessment" in updated_body.lower()
+
+
+class TestTriageRoleLdapAssigneeSuggestion:
+    def _ready_task(self, **kwargs: object) -> Task:
+        defaults: dict[str, object] = {
+            "id": "42",
+            "title": "Fix login bug",
+            "body": "## Acceptance Criteria\n- [ ] Fix it\n\nSee `sova/auth.py`",
+            "state": TaskState.BACKLOG,
+            "components": ["auth"],
+        }
+        defaults.update(kwargs)
+        return Task(**defaults)
+
+    async def test_disabled_by_default_skips_ldap(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = self._ready_task()
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        role = TriageRole()
+
+        with patch("sova.adapters.ldap_client.create_ldap_client") as mock_create:
+            await role.execute(ctx)
+
+        mock_create.assert_not_called()
+        adapter.assign_to_user.assert_not_called()
+
+    async def test_fuzzy_match_annotates_without_assigning(self) -> None:
+        """A fuzzy name/uid/email match is a suggestion only, never auto-assigned.
+
+        Result ordering from search_people() does not establish component or
+        cost-center ownership, so only an unambiguous ldap.team_mapping match
+        (see test_assigns_on_unambiguous_team_mapping_match) is auto-assigned.
+        """
+        from sova.adapters.ldap_client import Person
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = self._ready_task()
+        config = ProjectConfig(ldap=LdapConfig(enabled=True))
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        role = TriageRole()
+
+        mock_client = AsyncMock()
+        mock_client.check_connectivity.return_value = True
+        mock_client.search_people.return_value = [Person(uid="jdoe", display_name="Jane Doe")]
+
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            result = await role.execute(ctx)
+
+        assert result.success
+        mock_client.search_people.assert_awaited_once_with("auth")
+        adapter.assign_to_user.assert_not_called()
+        updated_body = adapter.edit_body.call_args[0][1]
+        assert "Suggested assignee" in updated_body
+        assert "jdoe" in updated_body
+
+    async def test_assigns_on_unambiguous_team_mapping_match(self) -> None:
+        from sova.adapters.ldap_client import Person
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = self._ready_task()
+        config = ProjectConfig(ldap=LdapConfig(enabled=True, team_mapping={"auth": "team-auth"}))
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        role = TriageRole()
+
+        mock_client = AsyncMock()
+        mock_client.check_connectivity.return_value = True
+        mock_client.get_group_members.return_value = ["jdoe"]
+        mock_client.get_person.return_value = Person(uid="jdoe", display_name="Jane Doe")
+
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            result = await role.execute(ctx)
+
+        assert result.success
+        mock_client.get_group_members.assert_awaited_once_with("team-auth")
+        mock_client.search_people.assert_not_called()
+        adapter.assign_to_user.assert_awaited_once_with("42", "jdoe")
+
+    async def test_ambiguous_team_mapping_falls_back_to_suggestion_only(self) -> None:
+        from sova.adapters.ldap_client import Person
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = self._ready_task()
+        config = ProjectConfig(ldap=LdapConfig(enabled=True, team_mapping={"auth": "team-auth"}))
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        role = TriageRole()
+
+        mock_client = AsyncMock()
+        mock_client.check_connectivity.return_value = True
+        mock_client.get_group_members.return_value = ["jdoe", "asmith"]
+        mock_client.search_people.return_value = [Person(uid="asmith", display_name="Alice Smith")]
+
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            result = await role.execute(ctx)
+
+        assert result.success
+        mock_client.search_people.assert_awaited_once_with("auth")
+        adapter.assign_to_user.assert_not_called()
+
+    async def test_no_component_or_area_label_skips_suggestion(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = self._ready_task(components=[])
+        config = ProjectConfig(ldap=LdapConfig(enabled=True))
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        role = TriageRole()
+
+        mock_client = AsyncMock()
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            await role.execute(ctx)
+
+        mock_client.check_connectivity.assert_not_called()
+        adapter.assign_to_user.assert_not_called()
+
+    async def test_vpn_unavailable_skips_assignment(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = self._ready_task()
+        config = ProjectConfig(ldap=LdapConfig(enabled=True))
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        role = TriageRole()
+
+        mock_client = AsyncMock()
+        mock_client.check_connectivity.return_value = False
+
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            result = await role.execute(ctx)
+
+        assert result.success
+        mock_client.search_people.assert_not_called()
+        adapter.assign_to_user.assert_not_called()
+
+    async def test_no_match_skips_assignment(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = self._ready_task()
+        config = ProjectConfig(ldap=LdapConfig(enabled=True))
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        role = TriageRole()
+
+        mock_client = AsyncMock()
+        mock_client.check_connectivity.return_value = True
+        mock_client.search_people.return_value = []
+
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
+            result = await role.execute(ctx)
+
+        assert result.success
+        adapter.assign_to_user.assert_not_called()
+
+    async def test_ldap_unavailable_falls_back_gracefully(self) -> None:
+        """create_ldap_client() returning None (package missing/disabled) never raises."""
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = self._ready_task()
+        config = ProjectConfig(ldap=LdapConfig(enabled=True))
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        role = TriageRole()
+
+        with patch("sova.adapters.ldap_client.create_ldap_client", return_value=None):
+            result = await role.execute(ctx)
+
+        assert result.success
+        adapter.assign_to_user.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
