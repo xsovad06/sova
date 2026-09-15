@@ -300,6 +300,22 @@ def _extract_latest_approval_at(latest_reviews: list[dict] | None) -> str | None
     return best
 
 
+def _extract_pr_labels(raw: dict) -> list[str]:
+    """Extract label names from raw PR data."""
+    return [lbl.get("name", "") for lbl in (raw.get("labels") or [])]
+
+
+def _extract_pr_assignees(raw: dict) -> list[str]:
+    """Extract non-empty assignee logins from raw PR data."""
+    return [a.get("login", "") for a in (raw.get("assignees") or []) if a.get("login")]
+
+
+def _count_pr_commits(raw: dict) -> int:
+    """Count commits on the PR, tolerating a non-list `commits` field."""
+    commits_node = raw.get("commits") or []
+    return len(commits_node) if isinstance(commits_node, list) else 0
+
+
 def _enrich_pr(raw: dict, now: float) -> dict:
     """Transform a raw gh pr list entry into a PR tracker dict."""
     ci_status = _summarize_ci(raw.get("statusCheckRollup"))
@@ -320,11 +336,9 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     )
 
     author = raw.get("author") or {}
-    labels = [lbl.get("name", "") for lbl in (raw.get("labels") or [])]
-    assignee_nodes = raw.get("assignees") or []
-    pr_assignees = [a.get("login", "") for a in assignee_nodes if a.get("login")]
-    commits_node = raw.get("commits") or []
-    commit_count = len(commits_node) if isinstance(commits_node, list) else 0
+    labels = _extract_pr_labels(raw)
+    pr_assignees = _extract_pr_assignees(raw)
+    commit_count = _count_pr_commits(raw)
 
     return {
         "number": raw["number"],
