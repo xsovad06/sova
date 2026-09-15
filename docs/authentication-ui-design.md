@@ -410,7 +410,6 @@ CREATE TABLE auth_events (
   event_type TEXT NOT NULL, : "login", "logout", "reauth", "failure"
   status TEXT, : "success", "failed"
   error_message TEXT,
-  ip_address TEXT, : for multi-user audit
   created_at TIMESTAMP DEFAULT NOW()
 );
 ```
