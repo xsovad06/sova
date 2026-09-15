@@ -201,19 +201,21 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
 
     Three-phase approach to prevent GitHub API calls from blocking DB write locks:
 
-      1. Read-only query per directory (no write lock). Two branches: ordinary
-         non-terminal runs, plus a dedicated branch for dead-PID "awaiting_approval"
-         runs. The latter is itself a member of TASK_RUN_TERMINAL (it's a deliberate
-         paused state so check_already_running() blocks re-research unconditionally),
-         so it is invisible to the first branch's notin_(_TERMINAL) filter and would
-         otherwise never be swept outside of startup, permanently blocking re-evaluation
-         of its issue once the process holding the PID exits. Note: this does not cover
-         PID recycling (the OS reassigning the same PID to a new, unrelated live
-         process) since _is_process_alive() would still report the run as alive.
+      1. Read-only query per directory (no write lock) for ordinary non-terminal
+         runs with a PID. "awaiting_approval" is deliberately excluded (it is a
+         member of TASK_RUN_TERMINAL): a researcher legitimately exits after
+         writing its spec and setting this status, so a dead PID there is the
+         expected steady state, not a crash. check_already_running() already
+         blocks re-research on awaiting_approval unconditionally regardless of
+         PID liveness, and the slot gate (get_alive_count) already excludes it
+         from occupancy: neither needs this sweep to touch it. A prior version
+         of this sweep also reclassified dead-PID awaiting_approval rows to
+         "interrupted", but since the researcher's ephemeral process always
+         exits within moments of reaching that status, it mislabeled every
+         successful spec completion as a crash.
       2. Concurrent GitHub merge checks outside any session, bounded by a total timeout.
          Mirrors the pattern used in recover_stale_runs() in agent_recovery.py.
-      3. Write transaction per directory with a was_status re-check (not a _TERMINAL
-         membership check, which would always skip awaiting_approval rows) to handle
+      3. Write transaction per directory with a was_status re-check to handle
          concurrent finalizations (e.g. _wait_and_finalize completing between phases).
     """
     from datetime import datetime, timezone
@@ -241,14 +243,7 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
                 TaskRun.pid.isnot(None),
             )
             result = await session.execute(stmt)
-            runs = list(result.scalars().all())
-
-            awaiting_stmt = select(TaskRun).where(
-                TaskRun.status == "awaiting_approval",
-                TaskRun.pid.isnot(None),
-            )
-            awaiting_result = await session.execute(awaiting_stmt)
-            runs.extend(awaiting_result.scalars().all())
+            runs = result.scalars().all()
 
         dead_runs: list[_DeadRunRecord] = []
         for run in runs:

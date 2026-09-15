@@ -125,6 +125,8 @@ async def _run_workflow(
 
     if result.success:
         console.print(f"[green]Workflow completed ({role.name}): {result.summary}[/green]")
+    elif result.awaiting_approval:
+        console.print(f"[yellow]Workflow paused ({role.name}): {result.summary}[/yellow]")
     else:
         console.print(f"[red]Workflow failed ({role.name}): {result.error}[/red]")
         raise typer.Exit(code=1)

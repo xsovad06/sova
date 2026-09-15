@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
@@ -8231,6 +8232,84 @@ class TestResumeValidation:
         assert "error" not in result
         assert result["confidence_score"] is None
         assert result["confidence_details"] is None
+
+
+# ---------------------------------------------------------------------------
+# _run_workflow: outcome reporting (success / awaiting_approval / failure)
+# ---------------------------------------------------------------------------
+
+
+class TestRunWorkflowOutcome:
+    """Verify _run_workflow reports each RoleResult outcome distinctly."""
+
+    @contextmanager
+    def _patch_run_deps(self, role_result):
+        # MagicMock's `name=` constructor kwarg sets the mock's own repr, not a
+        # `.name` attribute, so it's assigned separately here.
+        role = MagicMock()
+        role.name = "researcher"
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.db.session.init_db", new=AsyncMock()),
+            patch("sova.utils.logging.setup_logging"),
+            patch("sova.roles.dispatcher.dispatch", new=AsyncMock(return_value=(role, role_result))),
+        ):
+            yield
+
+    async def test_awaiting_approval_prints_paused_and_does_not_raise(self, tmp_path: Path) -> None:
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        result = RoleResult(success=False, summary="Spec for #1 awaiting human approval", awaiting_approval=True)
+        with self._patch_run_deps(result):
+            with patch("sova.cli.commands.run.console.print") as mock_print:
+                await _run_workflow(
+                    "1",
+                    project_dir=tmp_path,
+                    role_name="researcher",
+                    force=False,
+                )
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any("Workflow paused (researcher)" in m for m in messages)
+
+    async def test_success_prints_completed(self, tmp_path: Path) -> None:
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        result = RoleResult(success=True, summary="Issue #1 researched")
+        with self._patch_run_deps(result):
+            with patch("sova.cli.commands.run.console.print") as mock_print:
+                await _run_workflow(
+                    "1",
+                    project_dir=tmp_path,
+                    role_name="researcher",
+                    force=False,
+                )
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any("Workflow completed (researcher)" in m for m in messages)
+
+    async def test_failure_prints_failed_and_raises_exit(self, tmp_path: Path) -> None:
+        import typer
+
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        result = RoleResult(success=False, summary="Research failed", error="boom")
+        with self._patch_run_deps(result):
+            with patch("sova.cli.commands.run.console.print") as mock_print:
+                with pytest.raises(typer.Exit):
+                    await _run_workflow(
+                        "1",
+                        project_dir=tmp_path,
+                        role_name="researcher",
+                        force=False,
+                    )
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any("Workflow failed (researcher)" in m for m in messages)
 
 
 # ---------------------------------------------------------------------------
