@@ -112,9 +112,11 @@ class SOVAServer:
 
         # Build the dashboard app
         if self._multi_project:
-            dashboard_app = create_dashboard_app(project_dir=None, multi_project=True)
+            dashboard_app = create_dashboard_app(project_dir=None, multi_project=True, host=self.host, port=self.port)
         else:
-            dashboard_app = create_dashboard_app(project_dir=self._project_dir, multi_project=False)
+            dashboard_app = create_dashboard_app(
+                project_dir=self._project_dir, multi_project=False, host=self.host, port=self.port
+            )
 
         # Replace lifespan to add scheduler startup/shutdown
         dashboard_app.router.lifespan_context = self._create_combined_lifespan(dashboard_app.router.lifespan_context)

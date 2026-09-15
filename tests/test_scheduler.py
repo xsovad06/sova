@@ -405,6 +405,17 @@ class TestSOVAServer:
         assert app is not None
         assert app.title == "SOVA Dashboard"
 
+    async def test_multi_project_server_scopes_csrf_guard_to_bind_address(self) -> None:
+        """The multi-project branch must thread host/port into the dashboard's origin guard."""
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config()
+        server = SOVAServer(config=config, host="127.0.0.1", port=9123, multi_project=True)
+        app = server.create_app()
+
+        assert app.state.is_loopback_bind is True
+        assert "http://127.0.0.1:9123" in app.state.allowed_origins
+
     async def test_server_health_endpoint_returns_metrics(self) -> None:
         import httpx
         from httpx import ASGITransport

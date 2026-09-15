@@ -506,6 +506,7 @@ class DashboardConfig(BaseSettings):
     port: int = 8111
     llm_suggestions: bool = True
     rate_limit_per_minute: int = 60
+    csrf_secret: str = Field("", repr=False)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
 

@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.dashboard.app import create_app
+from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_same_origin_csrf
 from sova.db.models import CostRecord, Memory, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
 
@@ -14651,3 +14652,126 @@ class TestRateLimiting:
                     assert response.status_code == 200
         finally:
             os.environ.pop("SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE", None)
+
+
+# ---------------------------------------------------------------------------
+# CSRF/origin guard (sova/dashboard/security.py, issue #931)
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardCsrfGuard:
+    async def test_loopback_bind_is_not_fail_closed(self, tmp_path: Path) -> None:
+        app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
+        assert app.state.is_loopback_bind is True
+        assert app.state.csrf_fail_closed is False
+
+    async def test_nonloopback_bind_without_secret_is_fail_closed(self, tmp_path: Path) -> None:
+        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
+        assert app.state.is_loopback_bind is False
+        assert app.state.csrf_fail_closed is True
+
+    async def test_nonloopback_bind_with_secret_is_not_fail_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
+        app = create_app(project_dir=tmp_path, host="192.168.1.5", port=8111)
+        assert app.state.is_loopback_bind is False
+        assert app.state.csrf_fail_closed is False
+
+    async def test_wildcard_bind_with_secret_is_still_fail_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wildcard bind has no origin a real browser could ever send, so a
+        configured secret must not unlock it (issue #1020 review)."""
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
+        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
+        assert app.state.is_loopback_bind is False
+        assert app.state.csrf_fail_closed is True
+
+    async def test_ipv6_wildcard_bind_with_secret_is_still_fail_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
+        app = create_app(project_dir=tmp_path, host="::", port=8111)
+        assert app.state.is_loopback_bind is False
+        assert app.state.csrf_fail_closed is True
+
+    async def test_invalid_port_env_falls_back_to_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-numeric SOVA_DASHBOARD_PORT must not take app creation down.
+
+        Only reachable when sova.toml sets [dashboard] port: that TOML value is passed
+        as an init kwarg, which outranks the env var, so Pydantic never rejects the bad
+        value and it reaches create_app's own int() parse.
+        """
+        (tmp_path / "sova.toml").write_text("[dashboard]\nport = 8111\n")
+        monkeypatch.setenv("SOVA_DASHBOARD_PORT", "not-a-port")
+        app = create_app(project_dir=tmp_path, host="127.0.0.1")
+        assert "http://127.0.0.1:8111" in app.state.allowed_origins
+
+    async def test_default_bind_matches_127_0_0_1_and_localhost_origins(self, tmp_path: Path) -> None:
+        app = create_app(project_dir=tmp_path, port=8111)
+        assert "http://127.0.0.1:8111" in app.state.allowed_origins
+        assert "http://localhost:8111" in app.state.allowed_origins
+
+    @staticmethod
+    def _mount_guarded_route(app) -> None:
+        from fastapi import Depends
+
+        @app.post("/__test/guarded", dependencies=[Depends(require_same_origin_csrf)])
+        async def _guarded() -> dict:
+            return {"ok": True}
+
+    async def test_guarded_route_rejects_cross_origin_request(self, tmp_path: Path) -> None:
+        app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
+        self._mount_guarded_route(app)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            ac.cookies.set(CSRF_COOKIE_NAME, "token")
+            response = await ac.post(
+                "/__test/guarded",
+                headers={"Origin": "http://evil.example.com", CSRF_HEADER_NAME: "token"},
+            )
+            assert response.status_code == 403
+
+    async def test_guarded_route_accepts_valid_same_origin_request(self, tmp_path: Path) -> None:
+        app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
+        self._mount_guarded_route(app)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            ac.cookies.set(CSRF_COOKIE_NAME, "matching-token")
+            response = await ac.post(
+                "/__test/guarded",
+                headers={"Origin": "http://127.0.0.1:8111", CSRF_HEADER_NAME: "matching-token"},
+            )
+            assert response.status_code == 200
+            assert response.json() == {"ok": True}
+
+    async def test_guarded_route_nonloopback_without_secret_always_rejects(self, tmp_path: Path) -> None:
+        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
+        self._mount_guarded_route(app)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            ac.cookies.set(CSRF_COOKIE_NAME, "matching-token")
+            response = await ac.post(
+                "/__test/guarded",
+                headers={"Origin": "http://0.0.0.0:8111", CSRF_HEADER_NAME: "matching-token"},
+            )
+            assert response.status_code == 403
+
+    async def test_guarded_route_wildcard_bind_with_secret_still_rejects(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Even with a matching cookie/header and a configured secret, a wildcard
+        bind must reject: there is no real origin it could ever match (issue
+        #1020 review)."""
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
+        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
+        self._mount_guarded_route(app)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            ac.cookies.set(CSRF_COOKIE_NAME, "matching-token")
+            response = await ac.post(
+                "/__test/guarded",
+                headers={"Origin": "http://0.0.0.0:8111", CSRF_HEADER_NAME: "matching-token"},
+            )
+            assert response.status_code == 403

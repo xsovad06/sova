@@ -1043,6 +1043,14 @@ _REGISTRY: list[SettingMeta] = [
         "dashboard",
         "number",
     ),
+    SettingMeta(
+        "dashboard.csrf_secret",
+        "CSRF secret",
+        "Unblocks state-changing auth endpoints on a non-loopback bind. Only its "
+        "presence is checked, never its value: an explicit opt-in, not a credential",
+        "dashboard",
+        "secret",
+    ),
     # -- MCP --
     SettingMeta(
         "mcp.enabled",
