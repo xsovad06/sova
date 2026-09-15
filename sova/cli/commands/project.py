@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Optional
 
 if TYPE_CHECKING:
-    from sova.config.models import ProjectConfig
+    from sova.config.models import AtlassianMCPConfig, ProjectConfig
 
 import typer
 from rich.console import Console
@@ -169,7 +169,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
 
     # Stage 6: MCP auto-configuration (non-fatal)
     try:
-        _configure_mcp_servers(project_dir, claude_dir)
+        _configure_mcp_servers(project_dir, claude_dir, cfg)
     except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
         log.warning("setup.mcp_config_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[yellow]Warning: MCP auto-configuration failed: {exc}[/yellow]")
@@ -263,16 +263,84 @@ _PATTERNFLY_MCP_CONFIG = {
 }
 
 
-def _configure_mcp_servers(project_dir: Path, claude_dir: Path) -> None:
-    """Auto-detect tech stack and inject relevant MCP server configs."""
-    from sova.utils.mcp_config import inject_mcp_server
+def _configure_mcp_servers(project_dir: Path, claude_dir: Path, cfg: ProjectConfig) -> None:
+    """Auto-detect tech stack and inject relevant MCP server configs into .mcp.json."""
+    from sova.utils.mcp_config import MCPWriteResult, inject_mcp_server, set_project_mcp_approval
     from sova.utils.package_json import has_dependency
 
     if has_dependency(project_dir, "@patternfly/react-core"):
-        if inject_mcp_server(claude_dir, _PATTERNFLY_MCP_NAME, _PATTERNFLY_MCP_CONFIG):
+        result = inject_mcp_server(project_dir, _PATTERNFLY_MCP_NAME, _PATTERNFLY_MCP_CONFIG)
+        if result is MCPWriteResult.CHANGED:
             console.print("[green]PatternFly MCP server configured.[/green]")
-        else:
+        elif result is MCPWriteResult.UNCHANGED:
             console.print("[dim]PatternFly MCP server already configured.[/dim]")
+        else:
+            console.print("[red]Failed to configure PatternFly MCP server; see logs.[/red]")
+        if result is not MCPWriteResult.ERROR:
+            approval = set_project_mcp_approval(claude_dir, _PATTERNFLY_MCP_NAME, approved=True)
+            if approval is MCPWriteResult.ERROR:
+                console.print("[red]Failed to approve PatternFly MCP server in settings.json; see logs.[/red]")
+
+    if cfg.mcp.atlassian.enabled:
+        _configure_atlassian_mcp(project_dir, claude_dir, cfg.mcp.atlassian)
+    else:
+        _remove_atlassian_mcp(project_dir, claude_dir)
+
+
+def _remove_atlassian_mcp(project_dir: Path, claude_dir: Path) -> None:
+    """Remove a previously configured Atlassian MCP sidecar entry and its approval, if any.
+
+    Without this, disabling ``mcp.atlassian.enabled`` (or letting its config
+    drift into an invalid state) leaves a stale, still-approved sidecar entry
+    (including any embedded token) available to agents.
+    """
+    from sova.utils.mcp_config import ATLASSIAN_MCP_NAME, remove_mcp_server, set_project_mcp_approval
+
+    remove_mcp_server(project_dir, ATLASSIAN_MCP_NAME)
+    set_project_mcp_approval(claude_dir, ATLASSIAN_MCP_NAME, approved=False)
+
+
+def _configure_atlassian_mcp(project_dir: Path, claude_dir: Path, atlassian: AtlassianMCPConfig) -> None:
+    """Inject the mcp-atlassian sidecar, removing any stale entry when the config is incomplete."""
+    from sova.utils.mcp_config import (
+        ATLASSIAN_MCP_NAME,
+        MCPWriteResult,
+        atlassian_config_problems,
+        atlassian_token_inlined,
+        build_atlassian_mcp_server_config,
+        inject_mcp_server,
+        set_project_mcp_approval,
+    )
+
+    problems = atlassian_config_problems(atlassian)
+    if problems:
+        console.print("[yellow]Atlassian MCP sidecar skipped (incomplete config):[/yellow]")
+        for problem in problems:
+            console.print(f"  [yellow]- {problem}[/yellow]")
+        _remove_atlassian_mcp(project_dir, claude_dir)
+        return
+
+    server_config = build_atlassian_mcp_server_config(atlassian)
+    embeds_token = atlassian_token_inlined(atlassian)
+    result = inject_mcp_server(project_dir, ATLASSIAN_MCP_NAME, server_config, private=embeds_token)
+    if result is MCPWriteResult.CHANGED:
+        console.print("[green]Atlassian MCP sidecar configured in .mcp.json.[/green]")
+        if embeds_token:
+            console.print(
+                "[yellow]Note: .mcp.json holds the Atlassian token in plaintext (file mode 600). "
+                "Keep it out of version control, or clear mcp.atlassian.token and export "
+                "SOVA_MCP_ATLASSIAN_TOKEN instead.[/yellow]"
+            )
+    elif result is MCPWriteResult.UNCHANGED:
+        console.print("[dim]Atlassian MCP sidecar already up to date.[/dim]")
+    else:
+        console.print("[red]Failed to configure Atlassian MCP sidecar; see logs.[/red]")
+        return
+    approval = set_project_mcp_approval(claude_dir, ATLASSIAN_MCP_NAME, approved=True)
+    if approval is MCPWriteResult.ERROR:
+        console.print("[red]Failed to approve Atlassian MCP sidecar in settings.json; see logs.[/red]")
+    if shutil.which("uvx") is None:
+        console.print("[yellow]Note: 'uvx' not found on PATH; install uv for the sidecar to start.[/yellow]")
 
 
 def _create_agent_memory(claude_dir: Path) -> None:
@@ -429,10 +497,20 @@ async def _uninstall(
 
     # 6. MCP servers (always removed: SOVA-managed)
     try:
-        from sova.utils.mcp_config import remove_mcp_server
+        from sova.utils.mcp_config import (
+            ATLASSIAN_MCP_NAME,
+            remove_mcp_server,
+            remove_settings_mcp_server,
+            set_project_mcp_approval,
+        )
 
-        if remove_mcp_server(claude_dir, _PATTERNFLY_MCP_NAME):
-            removed.append("PatternFly MCP server from .claude/settings.json")
+        labels = {_PATTERNFLY_MCP_NAME: "PatternFly MCP server", ATLASSIAN_MCP_NAME: "Atlassian MCP sidecar"}
+        for name, label in labels.items():
+            if remove_mcp_server(project_dir, name):
+                removed.append(f"{label} from .mcp.json")
+            if remove_settings_mcp_server(claude_dir, name):
+                removed.append(f"{label} from .claude/settings.json (legacy)")
+            set_project_mcp_approval(claude_dir, name, approved=False)
     except Exception as exc:  # noqa: BLE001 (uninstall continues past any single step; failures are reported to the user)
         log.debug("uninstall.mcp_servers_failed", project_dir=str(project_dir), exc_info=True)
         failed.append(f"MCP servers: {exc}")
