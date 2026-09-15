@@ -681,9 +681,12 @@ async def get_sova_review_verdict(
     When issue_number is None, pr_number must be provided; the lookup queries
     solely by PR number (for unlinked standalone PRs with no associated issue).
 
-    When a completed `command:address-pr` run exists for the same issue/PR
-    with a timestamp newer than the selected reviewer run, returns "approve"
-    immediately, superseding any verdict from the review run.
+    When a completed address cycle exists for the same issue/PR with a
+    timestamp newer than the selected reviewer run, returns "addressed"
+    immediately, superseding any verdict from the review run. An address
+    cycle is either a completed `command:address-pr` run, or a completed
+    `developer` run whose pipeline included a completed `address_review`
+    step (the address-review pipeline path).
 
     When handoff_json is present, the verdict is derived from it (authoritative).
     When a review run completed successfully but has no handoff_json (e.g.
@@ -693,9 +696,9 @@ async def get_sova_review_verdict(
     the agent's output lines.  Falls back to "revise" if the output contains no
     recognizable verdict pattern.
     """
-    from sqlalchemy import func, select
+    from sqlalchemy import and_, exists, func, or_, select
 
-    from sova.db.models import TaskRun
+    from sova.db.models import StepExecution, TaskRun
     from sova.db.session import get_session
 
     no_review: dict = {
@@ -762,23 +765,48 @@ async def get_sova_review_verdict(
             if not run:
                 return no_review
 
-            # If address-pr completed after this review, the review cycle is done: return
-            # "approve" so GitHub state (APPROVED) drives the display rather than the stale verdict.
+            # If an address cycle completed after this review, the review cycle is
+            # done: return "addressed" so a fresh review drives the display rather
+            # than the stale pre-fix verdict. Two shapes count as a completed
+            # address cycle: a `/address-pr` command run, or a `developer` run
+            # whose pipeline included a completed `address_review` step.
             run_ts = run.ended_at or run.started_at
-            addr_filters = [
+            addr_conditions = [
                 TaskRun.role == "command:address-pr",
                 TaskRun.status == "done",
                 func.coalesce(TaskRun.ended_at, TaskRun.started_at) >= run_ts,
             ]
             if issue_num_clean is not None:
-                addr_filters.append(TaskRun.issue_number == issue_num_clean)
+                addr_conditions.append(TaskRun.issue_number == issue_num_clean)
             if pr_number is not None:
-                addr_filters.append(TaskRun.pr_number == pr_number)
-            addr_result = await session.execute(select(func.count()).select_from(TaskRun).where(*addr_filters))
-            if addr_result.scalar_one() > 0:
+                addr_conditions.append(TaskRun.pr_number == pr_number)
+
+            pipeline_conditions = [
+                TaskRun.role == "developer",
+                TaskRun.status == "done",
+                func.coalesce(TaskRun.ended_at, TaskRun.started_at) >= run_ts,
+                exists(
+                    select(1).where(
+                        StepExecution.task_run_id == TaskRun.id,
+                        StepExecution.step_name == "address_review",
+                        StepExecution.status == "done",
+                    )
+                ),
+            ]
+            if issue_num_clean is not None:
+                pipeline_conditions.append(TaskRun.issue_number == issue_num_clean)
+            if pr_number is not None:
+                pipeline_conditions.append(TaskRun.pr_number == pr_number)
+
+            superseded_result = await session.execute(
+                select(func.count()).select_from(TaskRun).where(or_(and_(*addr_conditions), and_(*pipeline_conditions)))
+            )
+            superseded = superseded_result.scalar_one() > 0
+
+            if superseded:
                 return {
                     "has_sova_review": True,
-                    "verdict": "approve",
+                    "verdict": "addressed",
                     "finding_count": 0,
                     "reviewed_at": run_ts.isoformat() if run_ts else None,
                     "run_status": "done",

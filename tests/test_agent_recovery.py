@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from sova.db.models import TaskRun
+from sova.db.models import StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
 
 # agent_recovery.py resolves `get_session` via a function-local `from sova.db.session
@@ -578,8 +578,8 @@ class TestAgentRecoveryDirect:
         assert result["finding_count"] == 0
         assert result["reviewed_at"] is not None
 
-    async def test_sova_review_verdict_address_pr_after_review_resets_to_approve(self) -> None:
-        """When command:address-pr completed after the reviewer, verdict resets to approve."""
+    async def test_sova_review_verdict_address_pr_after_review_resets_to_addressed(self) -> None:
+        """When command:address-pr completed after the reviewer, verdict resets to addressed."""
         from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 
         session = await get_session()
@@ -608,7 +608,7 @@ class TestAgentRecoveryDirect:
 
         result = await get_sova_review_verdict("108", pr_number=900)
         assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
+        assert result["verdict"] == "addressed"
         assert result["finding_count"] == 0
 
     async def test_sova_review_verdict_older_address_pr_does_not_reset(self) -> None:
@@ -676,7 +676,7 @@ class TestAgentRecoveryDirect:
 
         result = await get_sova_review_verdict("110", pr_number=902)
         assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
+        assert result["verdict"] == "addressed"
         assert result["finding_count"] == 0
 
     async def test_sova_review_verdict_failed_address_pr_does_not_supersede(self) -> None:
@@ -2195,7 +2195,7 @@ class TestGetSynthesizedHandoff:
 
 class TestReviewVerdictAddressPrSupersede:
     async def test_address_pr_supersedes_review_verdict(self) -> None:
-        """When address-pr completed after the review run, verdict should be 'approve'."""
+        """When address-pr completed after the review run, verdict should be 'addressed'."""
         from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 
         now = datetime.now(timezone.utc)
@@ -2228,7 +2228,7 @@ class TestReviewVerdictAddressPrSupersede:
         result = await get_sova_review_verdict(issue_number="50", pr_number=200, project_dir=Path("/tmp"))
 
         assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
+        assert result["verdict"] == "addressed"
         assert result["finding_count"] == 0
 
     async def test_no_address_pr_preserves_review_verdict(self) -> None:
@@ -2290,6 +2290,137 @@ class TestReviewVerdictAddressPrSupersede:
 
         assert result["has_sova_review"] is True
         assert result["verdict"] == "block"  # severity 8 >= 7
+
+    async def test_address_review_pipeline_supersedes_review_verdict(self) -> None:
+        """A completed developer run with a done address_review step supersedes too."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+
+        session = await get_session()
+        async with session.begin():
+            review_run = TaskRun(
+                issue_number="53",
+                role="reviewer",
+                status="done",
+                pr_number=203,
+                handoff_json={"next_action": "revise", "pending_findings": [{"severity": 5}]},
+                started_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=1),
+            )
+            session.add(review_run)
+
+            # address-review pipeline run completed AFTER the review
+            addr_run = TaskRun(
+                issue_number="53",
+                role="developer",
+                status="done",
+                pr_number=203,
+                started_at=now - timedelta(minutes=30),
+                ended_at=now - timedelta(minutes=10),
+            )
+            session.add(addr_run)
+            await session.flush()
+
+            session.add(
+                StepExecution(
+                    task_run_id=addr_run.id,
+                    step_name="address_review",
+                    status="done",
+                )
+            )
+
+        result = await get_sova_review_verdict(issue_number="53", pr_number=203, project_dir=Path("/tmp"))
+
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "addressed"
+        assert result["finding_count"] == 0
+
+    async def test_address_review_step_not_done_does_not_supersede(self) -> None:
+        """A developer run whose address_review StepExecution is not done must not supersede."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+
+        session = await get_session()
+        async with session.begin():
+            review_run = TaskRun(
+                issue_number="54",
+                role="reviewer",
+                status="done",
+                pr_number=204,
+                handoff_json={"next_action": "revise", "pending_findings": [{"severity": 5}]},
+                started_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=1),
+            )
+            session.add(review_run)
+
+            addr_run = TaskRun(
+                issue_number="54",
+                role="developer",
+                status="done",
+                pr_number=204,
+                started_at=now - timedelta(minutes=30),
+                ended_at=now - timedelta(minutes=10),
+            )
+            session.add(addr_run)
+            await session.flush()
+
+            session.add(
+                StepExecution(
+                    task_run_id=addr_run.id,
+                    step_name="address_review",
+                    status="failed",
+                )
+            )
+
+        result = await get_sova_review_verdict(issue_number="54", pr_number=204, project_dir=Path("/tmp"))
+
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+
+    async def test_interrupted_developer_run_does_not_supersede(self) -> None:
+        """A developer TaskRun that is not done must not supersede even with a done step."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+
+        session = await get_session()
+        async with session.begin():
+            review_run = TaskRun(
+                issue_number="55",
+                role="reviewer",
+                status="done",
+                pr_number=205,
+                handoff_json={"next_action": "block", "pending_findings": [{"severity": 8}]},
+                started_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=1),
+            )
+            session.add(review_run)
+
+            addr_run = TaskRun(
+                issue_number="55",
+                role="developer",
+                status="interrupted",
+                pr_number=205,
+                started_at=now - timedelta(minutes=30),
+                ended_at=now - timedelta(minutes=10),
+            )
+            session.add(addr_run)
+            await session.flush()
+
+            session.add(
+                StepExecution(
+                    task_run_id=addr_run.id,
+                    step_name="address_review",
+                    status="done",
+                )
+            )
+
+        result = await get_sova_review_verdict(issue_number="55", pr_number=205, project_dir=Path("/tmp"))
+
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "block"
 
 
 class TestGetRecoveryConfig:

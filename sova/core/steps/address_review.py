@@ -335,6 +335,7 @@ class AddressReviewStep(BaseStep):
     def __init__(self) -> None:
         super().__init__()
         self._head_before_llm: str | None = None
+        self._had_findings: bool = False
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.address_review", pr=ctx.pr_number)
@@ -406,6 +407,7 @@ class AddressReviewStep(BaseStep):
                 timeout=ctx.config.agent.step_timeout,
             )
             ctx.add_usage(result)
+            self._had_findings = bool(findings)
             if findings:
                 summary = f"Addressed {len(findings)} review findings"
             else:
@@ -417,6 +419,25 @@ class AddressReviewStep(BaseStep):
             )
         except RuntimeError as exc:
             return StepResult(success=False, summary="Failed to address review findings", error=str(exc))
+
+    async def _clear_stale_verdict_label(self, ctx: ExecutionContext) -> None:
+        """Remove a stale sova:revise/sova:block label after findings are addressed.
+
+        Non-fatal: a label API failure must not fail the step. Never writes a
+        replacement label; only ReviewerRole._write_verdict_label() may assert
+        approval. Imported lazily to avoid a circular import (sova.roles imports
+        sova.core.steps at package init time).
+        """
+        issue = ctx.issue_number
+        if not issue or ctx.adapter is None:
+            return
+        from sova.roles.reviewer import _VERDICT_TO_LABEL
+
+        for label in (_VERDICT_TO_LABEL["REVISE"], _VERDICT_TO_LABEL["BLOCK"]):
+            try:
+                await ctx.adapter.remove_label(issue, label)
+            except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
+                log.warning("address_review.verdict_label_clear_failed", issue=issue, label=label, exc_info=True)
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: the LLM must have produced new changes, commits, or confirmed prior fixes.
@@ -437,11 +458,19 @@ class AddressReviewStep(BaseStep):
         head_moved = self._head_before_llm is not None and head_after != self._head_before_llm
 
         if has_uncommitted or head_moved:
+            if self._had_findings:
+                await self._clear_stale_verdict_label(ctx)
             return GateCheckResult(passed=True)
 
         log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         has_prior_commits = bool(log_result.success and log_result.stdout.strip())
         if has_prior_commits:
+            # NOT treated as evidence for label clearing: on the address-review
+            # pipeline the branch is a PR branch, so base..HEAD is populated by
+            # the feature's own pre-existing commits before this run ever
+            # starts. That makes this condition trivially true regardless of
+            # whether this specific cycle fixed anything, so it cannot be used
+            # to justify clearing a stale sova:revise/sova:block label.
             log.info("step.address_review.findings_already_fixed")
             return GateCheckResult(passed=True)
 

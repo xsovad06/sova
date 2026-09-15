@@ -722,6 +722,23 @@ class TestApplySovaVerdict:
         verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
         assert _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict) == WorkItemState.PR_APPROVED
 
+    # "addressed" verdict (an address cycle superseded the prior review): the
+    # if/elif chain has no branch for it, so it must pass through unchanged,
+    # exactly like an unrecognized verdict string. Locks in the pass-through
+    # contract get_sova_review_verdict()'s "addressed" verdict relies on.
+
+    def test_addressed_verdict_leaves_ready_to_merge_unchanged(self) -> None:
+        verdict = self._review("addressed")
+        assert _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, verdict) == WorkItemState.PR_READY_TO_MERGE
+
+    def test_addressed_verdict_leaves_awaiting_review_unchanged(self) -> None:
+        verdict = self._review("addressed")
+        assert _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict) == WorkItemState.PR_AWAITING_REVIEW
+
+    def test_addressed_verdict_leaves_external_changes_unchanged(self) -> None:
+        verdict = self._review("addressed")
+        assert _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, verdict) == WorkItemState.PR_EXTERNAL_CHANGES
+
 
 class TestIsVerdictStale:
     def test_no_approval(self) -> None:
