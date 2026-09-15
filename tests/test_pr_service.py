@@ -126,6 +126,7 @@ class TestComputePrState:
             all_threads_resolved=True,
             ci_status="passed",
             mergeable="MERGEABLE",
+            superseded_by_new_commit=True,
         )
         assert result == ComputedPRState.APPROVED_CI_GREEN
 
@@ -136,8 +137,22 @@ class TestComputePrState:
             latest_reviews=reviews,
             all_threads_resolved=True,
             ci_status="none",
+            superseded_by_new_commit=True,
         )
         assert result == ComputedPRState.APPROVED
+
+    def test_bot_changes_requested_threads_resolved_no_new_commit_stays_blocked(self) -> None:
+        """New commits do not auto-dismiss a bot review: without one, stays blocked."""
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+            superseded_by_new_commit=False,
+        )
+        assert result == ComputedPRState.CHANGES_REQUESTED
 
     def test_bot_changes_requested_zero_threads_stays_blocked(self) -> None:
         reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
@@ -184,6 +199,7 @@ class TestComputePrState:
             all_threads_resolved=True,
             ci_status="passed",
             mergeable="MERGEABLE",
+            superseded_by_new_commit=True,
         )
         assert result == ComputedPRState.APPROVED_CI_GREEN
 
@@ -204,6 +220,7 @@ class TestComputePrState:
             all_threads_resolved=True,
             ci_status="passed",
             mergeable="MERGEABLE",
+            superseded_by_new_commit=True,
         )
         assert result == ComputedPRState.APPROVED_CI_GREEN
 
@@ -218,6 +235,7 @@ class TestComputePrState:
             all_threads_resolved=True,
             ci_status="passed",
             mergeable="MERGEABLE",
+            superseded_by_new_commit=True,
         )
         assert result == ComputedPRState.APPROVED_CI_GREEN
 
@@ -229,6 +247,32 @@ class TestComputePrState:
             all_threads_resolved=True,
             ci_status="passed",
             mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.CHANGES_REQUESTED
+
+    def test_human_changes_requested_never_superseded_by_new_commit(self) -> None:
+        """Human CHANGES_REQUESTED reviews are never auto-superseded, unlike bot reviews."""
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+            superseded_by_new_commit=True,
+        )
+        assert result == ComputedPRState.CHANGES_REQUESTED
+
+    def test_unknown_threads_never_unblocks_bot_review(self) -> None:
+        """all_threads_resolved=None (unknown) must never authorize unblocking."""
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=None,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+            superseded_by_new_commit=True,
         )
         assert result == ComputedPRState.CHANGES_REQUESTED
 
@@ -619,6 +663,47 @@ class TestEnrichPr:
         result = _enrich_pr(raw, time.time())
         assert result["computed_state"] == ComputedPRState.REVIEW_ADDRESSED
 
+    def test_zero_threads_bot_cr_review_unblocks_when_superseded(self) -> None:
+        """A body-only bot review (zero threads) is vacuously resolved, and unblocks
+        once a new commit supersedes it."""
+        raw = self._raw_pr(
+            reviewDecision="CHANGES_REQUESTED",
+            latestReviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}],
+            statusCheckRollup=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+            _thread_counts=(0, 0),
+            _superseded_by_new_commit=True,
+        )
+        result = _enrich_pr(raw, time.time())
+        assert result["computed_state"] == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_zero_threads_bot_cr_review_stays_blocked_without_new_commit(self) -> None:
+        """Regression guard: zero threads alone must not unblock a bot review that
+        has not been superseded by a new commit."""
+        raw = self._raw_pr(
+            reviewDecision="CHANGES_REQUESTED",
+            latestReviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}],
+            statusCheckRollup=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+            _thread_counts=(0, 0),
+        )
+        result = _enrich_pr(raw, time.time())
+        assert result["computed_state"] == ComputedPRState.CHANGES_REQUESTED
+
+    def test_unknown_thread_counts_stays_blocked_and_reports_none(self) -> None:
+        """When thread counts could not be retrieved, thread_total/thread_resolved
+        surface as None (unknown) rather than a silent zero, and the PR stays
+        blocked rather than being treated as vacuously resolved."""
+        raw = self._raw_pr(
+            reviewDecision="CHANGES_REQUESTED",
+            latestReviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}],
+            statusCheckRollup=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+            _thread_counts=None,
+            _superseded_by_new_commit=True,
+        )
+        result = _enrich_pr(raw, time.time())
+        assert result["computed_state"] == ComputedPRState.CHANGES_REQUESTED
+        assert result["thread_total"] is None
+        assert result["thread_resolved"] is None
+
     def test_latest_approval_at_populated(self) -> None:
         raw = self._raw_pr(
             latestReviews=[
@@ -728,7 +813,7 @@ class TestGetReviewThreadCounts:
         assert result[20] == (1, 0)
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_failure(self, monkeypatch) -> None:
+    async def test_returns_none_per_pr_on_failure(self, monkeypatch) -> None:
         from sova.git.pr import get_review_thread_counts
 
         mock_run = AsyncMock()
@@ -738,10 +823,10 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
         result = await get_review_thread_counts([10], repo="owner/repo")
-        assert result == {}
+        assert result == {10: None}
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_bad_json(self, monkeypatch) -> None:
+    async def test_returns_none_per_pr_on_bad_json(self, monkeypatch) -> None:
         from sova.git.pr import get_review_thread_counts
 
         mock_run = AsyncMock()
@@ -751,10 +836,11 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
         result = await get_review_thread_counts([10], repo="owner/repo")
-        assert result == {}
+        assert result == {10: None}
 
     @pytest.mark.asyncio
     async def test_handles_missing_pr_data(self, monkeypatch) -> None:
+        """A PR alias missing entirely from the GraphQL response is unknown, not (0, 0)."""
         from sova.git.pr import get_review_thread_counts
 
         graphql_response = {"data": {"repository": {}}}
@@ -765,10 +851,26 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
         result = await get_review_thread_counts([10], repo="owner/repo")
-        assert result[10] == (0, 0)
+        assert result[10] is None
+
+    @pytest.mark.asyncio
+    async def test_handles_null_aliased_pr_data(self, monkeypatch) -> None:
+        """A PR alias present but null (e.g. force-deleted mid-query) is unknown, not (0, 0)."""
+        from sova.git.pr import get_review_thread_counts
+
+        graphql_response = {"data": {"repository": {"pr10": None}}}
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_review_thread_counts([10], repo="owner/repo")
+        assert result[10] is None
 
     @pytest.mark.asyncio
     async def test_handles_data_null_response(self, monkeypatch) -> None:
+        """A full-response GraphQL error (data: null) is unknown for every requested PR."""
         from sova.git.pr import get_review_thread_counts
 
         graphql_response = {"data": None, "errors": [{"message": "something went wrong"}]}
@@ -779,7 +881,226 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
         result = await get_review_thread_counts([10], repo="owner/repo")
-        assert result[10] == (0, 0)
+        assert result[10] is None
+
+    @pytest.mark.asyncio
+    async def test_detects_bot_review_superseded_by_new_commit(self, monkeypatch) -> None:
+        """get_pr_review_data surfaces head SHA and the bot CR review's commit SHA."""
+        from sova.git.pr import get_pr_review_data
+
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pr10": {
+                        "headRefOid": "new-sha",
+                        "reviewThreads": {"totalCount": 0, "nodes": []},
+                        "reviews": {
+                            "nodes": [
+                                {
+                                    "state": "CHANGES_REQUESTED",
+                                    "commit": {"oid": "old-sha"},
+                                    "author": {"login": "coderabbitai[bot]"},
+                                    "submittedAt": "2026-01-01T00:00:00Z",
+                                }
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_pr_review_data([10], repo="owner/repo")
+        assert result[10].head_sha == "new-sha"
+        assert result[10].bot_cr_commit_sha == "old-sha"
+        assert result[10].thread_total == 0
+
+    @pytest.mark.asyncio
+    async def test_ignores_human_cr_review_commit_sha(self, monkeypatch) -> None:
+        """Only bot CHANGES_REQUESTED reviews populate bot_cr_commit_sha."""
+        from sova.git.pr import get_pr_review_data
+
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pr10": {
+                        "headRefOid": "new-sha",
+                        "reviewThreads": {"totalCount": 0, "nodes": []},
+                        "reviews": {
+                            "nodes": [
+                                {
+                                    "state": "CHANGES_REQUESTED",
+                                    "commit": {"oid": "old-sha"},
+                                    "author": {"login": "alice"},
+                                    "submittedAt": "2026-01-01T00:00:00Z",
+                                }
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_pr_review_data([10], repo="owner/repo")
+        assert result[10].bot_cr_commit_sha == ""
+
+    @pytest.mark.asyncio
+    async def test_detects_classic_coderabbit_login_without_bot_suffix(self, monkeypatch) -> None:
+        """CodeRabbit's classic login ('coderabbitai', no [bot] suffix) must still
+        populate bot_cr_commit_sha, matching DEFAULT_CODERABBIT_AUTHORS."""
+        from sova.git.pr import get_pr_review_data
+
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pr10": {
+                        "headRefOid": "new-sha",
+                        "reviewThreads": {"totalCount": 0, "nodes": []},
+                        "reviews": {
+                            "nodes": [
+                                {
+                                    "state": "CHANGES_REQUESTED",
+                                    "commit": {"oid": "old-sha"},
+                                    "author": {"login": "coderabbitai"},
+                                    "submittedAt": "2026-01-01T00:00:00Z",
+                                }
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_pr_review_data([10], repo="owner/repo")
+        assert result[10].bot_cr_commit_sha == "old-sha"
+
+    @pytest.mark.asyncio
+    async def test_truncated_threads_page_is_unknown(self, monkeypatch) -> None:
+        """More than 100 threads (hasNextPage=True) makes the whole PR unknown,
+        since totalCount minus the fetched-nodes resolved count could be wrong."""
+        from sova.git.pr import get_pr_review_data
+
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pr10": {
+                        "headRefOid": "new-sha",
+                        "reviewThreads": {
+                            "totalCount": 101,
+                            "pageInfo": {"hasNextPage": True},
+                            "nodes": [{"isResolved": True}] * 100,
+                        },
+                        "reviews": {"nodes": []},
+                    }
+                }
+            }
+        }
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_pr_review_data([10], repo="owner/repo")
+        assert result[10] is None
+
+    @pytest.mark.asyncio
+    async def test_truncated_reviews_page_blocks_supersession(self, monkeypatch) -> None:
+        """A truncated reviews window (hasPreviousPage=True) may have pushed an
+        older bot's outstanding CR review out of the last-10 slice, so
+        supersession cannot be confirmed even when the visible bot's SHA differs
+        from head."""
+        from sova.git.pr import get_pr_review_data
+
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pr10": {
+                        "headRefOid": "new-sha",
+                        "reviewThreads": {"totalCount": 0, "nodes": []},
+                        "reviews": {
+                            "pageInfo": {"hasPreviousPage": True},
+                            "nodes": [
+                                {
+                                    "state": "CHANGES_REQUESTED",
+                                    "commit": {"oid": "old-sha"},
+                                    "author": {"login": "coderabbitai[bot]"},
+                                    "submittedAt": "2026-01-01T00:00:00Z",
+                                }
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_pr_review_data([10], repo="owner/repo")
+        assert result[10].bot_cr_superseded is False
+
+    @pytest.mark.asyncio
+    async def test_stale_cr_superseded_by_approval_does_not_block(self, monkeypatch) -> None:
+        """A bot whose latest opinionated review is now APPROVED must not have
+        that review counted as an outstanding CR. Without client-side state
+        filtering, coderabbitai's approval (submitted at head) would be
+        misread as an unresolved CR whose SHA matches head, forcing
+        bot_cr_superseded to False and blocking the PR even though only
+        sourcery-ai's older, genuinely-stale CR remains."""
+        from sova.git.pr import get_pr_review_data
+
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pr10": {
+                        "headRefOid": "new-sha",
+                        "reviewThreads": {"totalCount": 0, "nodes": []},
+                        "reviews": {
+                            "nodes": [
+                                {
+                                    "state": "APPROVED",
+                                    "commit": {"oid": "new-sha"},
+                                    "author": {"login": "coderabbitai[bot]"},
+                                    "submittedAt": "2026-01-02T00:00:00Z",
+                                },
+                                {
+                                    "state": "CHANGES_REQUESTED",
+                                    "commit": {"oid": "old-sha"},
+                                    "author": {"login": "sourcery-ai[bot]"},
+                                    "submittedAt": "2026-01-01T00:00:00Z",
+                                },
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_pr_review_data([10], repo="owner/repo")
+        assert result[10].bot_cr_commit_sha == "old-sha"
+        assert result[10].bot_cr_superseded is True
 
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1477,20 @@ class TestCheckThreadsFromPrData:
         gate = _check_threads_from_pr_data({"thread_total": 0, "thread_resolved": 0})
         assert gate["passed"] is True
 
+    def test_missing_keys_treated_as_no_threads(self) -> None:
+        """Absent thread-count keys (e.g. a synthetic test dict) are treated as zero,
+        not unknown, so they are not reclassified into a fail-closed state."""
+        gate = _check_threads_from_pr_data({})
+        assert gate["passed"] is True
+
+    def test_unknown_thread_state(self) -> None:
+        """Thread-count keys explicitly present but None must not be conflated with
+        'no threads unresolved'."""
+        gate = _check_threads_from_pr_data({"thread_total": None, "thread_resolved": None})
+        assert gate["passed"] is False
+        assert "unknown" in gate["reason"].lower()
+        assert "0" not in gate["reason"]
+
 
 class TestGetUnresolvedThreadCount:
     def test_some_unresolved(self) -> None:
@@ -1168,7 +1503,13 @@ class TestGetUnresolvedThreadCount:
         assert get_unresolved_thread_count({"thread_total": 0, "thread_resolved": 0}) == 0
 
     def test_missing_keys(self) -> None:
+        """Absent thread-count keys are treated as zero, not unknown, so a synthetic
+        dict without them is never reclassified as an unknown state."""
         assert get_unresolved_thread_count({}) == 0
+
+    def test_explicit_none_is_unknown(self) -> None:
+        """Thread-count keys explicitly set to None are genuinely unknown."""
+        assert get_unresolved_thread_count({"thread_total": None, "thread_resolved": None}) is None
 
     def test_resolved_exceeds_total(self) -> None:
         assert get_unresolved_thread_count({"thread_total": 3, "thread_resolved": 5}) == 0
@@ -1380,13 +1721,50 @@ class TestShouldUnblockBotReviews:
         )
         assert result is None
 
-    def test_returns_approved_ci_green_when_all_conditions_met(self) -> None:
-        """Test successful unblock when all bot reviews, threads resolved, CI passed."""
+    def test_returns_none_when_unresolved_unknown(self) -> None:
+        """all_threads_resolved=None (unknown) must never unblock."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
+            all_threads_resolved=None,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+            superseded_by_new_commit=True,
+        )
+        assert result is None
+
+    def test_returns_none_when_not_superseded_by_new_commit(self) -> None:
+        """Threads resolved is not enough on its own: needs a new commit too."""
         result = _should_unblock_bot_reviews(
             cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
             all_threads_resolved=True,
             ci_status="passed",
             mergeable="MERGEABLE",
+            superseded_by_new_commit=False,
+        )
+        assert result is None
+
+    def test_returns_approved_ci_green_when_all_conditions_met(self) -> None:
+        """Test successful unblock when all bot reviews, threads resolved, CI passed,
+        and the review has been superseded by a new commit."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+            superseded_by_new_commit=True,
+        )
+        assert result == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_recognizes_classic_coderabbit_login_without_bot_suffix(self) -> None:
+        """CodeRabbit's classic login ('coderabbitai', no [bot] suffix) must still be
+        recognized as a bot, matching the DEFAULT_CODERABBIT_AUTHORS convention used
+        by review_completed.py's _has_human_approval()."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai"}}],
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+            superseded_by_new_commit=True,
         )
         assert result == ComputedPRState.APPROVED_CI_GREEN
 
@@ -1467,8 +1845,8 @@ class TestListOpenPrsWithState:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_uses_empty_thread_counts_on_exception(self, monkeypatch, tmp_path) -> None:
-        """Test lines 490-492: thread counts exception handling returns empty dict."""
+    async def test_uses_unknown_thread_counts_on_exception(self, monkeypatch, tmp_path) -> None:
+        """Thread/review-data fetch exceptions leave counts unknown (None), not (0, 0)."""
         from unittest.mock import MagicMock
 
         monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
@@ -1480,7 +1858,7 @@ class TestListOpenPrsWithState:
         raw_prs = [{"number": 10, "title": "Test"}]
         monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
         monkeypatch.setattr(
-            "sova.git.pr.get_review_thread_counts",
+            "sova.git.pr.get_pr_review_data",
             AsyncMock(side_effect=RuntimeError("thread count error")),
         )
         monkeypatch.setattr(
@@ -1490,7 +1868,7 @@ class TestListOpenPrsWithState:
 
         result = await list_open_prs_with_state()
         assert len(result) == 1
-        assert result[0]["_thread_counts"] == (0, 0)
+        assert result[0]["_thread_counts"] is None
 
     @pytest.mark.asyncio
     async def test_executes_without_exception_when_enriching_prs(self, monkeypatch, tmp_path) -> None:
@@ -1505,7 +1883,7 @@ class TestListOpenPrsWithState:
 
         raw_prs = [{"number": 10}]
         monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
-        monkeypatch.setattr("sova.git.pr.get_review_thread_counts", AsyncMock(return_value={}))
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", AsyncMock(return_value={}))
         monkeypatch.setattr(
             "sova.dashboard.services.pr_service._enrich_pr",
             lambda pr, now: {**pr, "computed_state": "test"},

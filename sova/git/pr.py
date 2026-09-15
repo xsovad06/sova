@@ -362,16 +362,42 @@ async def list_open_prs(*, repo: str, github_user: str = "", author: str | None 
         return []
 
 
-async def get_review_thread_counts(
+@dataclass
+class PRReviewData:
+    """Per-PR review signals batched from a single GraphQL call.
+
+    ``bot_cr_commit_sha`` is the commit SHA of the most recently submitted bot
+    CHANGES_REQUESTED review with a known commit oid (empty if none). Kept for
+    backward compatibility / display purposes; it is NOT sufficient on its own
+    to decide supersession when multiple bots have outstanding CR reviews.
+
+    ``bot_cr_superseded`` is the authoritative signal: True only when every
+    distinct bot with a currently-outstanding CHANGES_REQUESTED review has a
+    known (non-empty) commit oid that differs from ``head_sha``. If any bot's
+    latest CR review has an unknown/empty oid, this is False regardless of the
+    other bots (fail closed on the unknown one), since GitHub does not
+    auto-dismiss bot reviews on push and an unresolvable bot's status relative
+    to head cannot be determined.
+    """
+
+    thread_total: int
+    thread_resolved: int
+    head_sha: str
+    bot_cr_commit_sha: str = ""
+    bot_cr_superseded: bool = False
+
+
+async def _fetch_pr_review_data(
     pr_numbers: list[int],
     *,
     repo: str,
     github_user: str = "",
-) -> dict[int, tuple[int, int]]:
-    """Batch-fetch review thread counts (total, resolved) for multiple PRs.
+) -> dict[int, PRReviewData | None] | None:
+    """Single batched GraphQL call for review threads, head SHA, and bot CR reviews.
 
-    Returns {pr_number: (total_threads, resolved_threads)}.
-    Uses a single GraphQL call for efficiency.
+    Returns None on total API/parse failure (every PR unknown). A per-PR value
+    of None means that PR's alias was missing or null in the response (e.g. a
+    PR force-deleted mid-query), distinct from a genuinely-empty result.
     """
     if not pr_numbers:
         return {}
@@ -381,7 +407,11 @@ async def get_review_thread_counts(
     for pr_num in pr_numbers:
         aliases.append(
             f"pr{pr_num}: pullRequest(number:{pr_num}) {{"
-            f" reviewThreads(first:100) {{ totalCount nodes {{ isResolved }} }} }}"
+            f" headRefOid"
+            f" reviewThreads(first:100) {{ totalCount pageInfo {{ hasNextPage }} nodes {{ isResolved }} }}"
+            f" reviews: latestOpinionatedReviews(last:10) {{"
+            f" pageInfo {{ hasPreviousPage }}"
+            f" nodes {{ state commit {{ oid }} author {{ login }} submittedAt }} }} }}"
         )
 
     query = f'{{ repository(owner:"{owner}", name:"{name}") {{ {" ".join(aliases)} }} }}'
@@ -390,24 +420,123 @@ async def get_review_thread_counts(
     _track_gh_rate_limit(result, github_user)
 
     if not result.success:
-        log.warning("git.review_threads.failed", stderr=result.stderr[:200])
-        return {}
+        log.warning("git.review_data.failed", stderr=result.stderr[:200])
+        return None
 
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
-        log.warning("git.review_threads.parse_failed", exc_info=True)
-        return {}
+        log.warning("git.review_data.parse_failed", exc_info=True)
+        return None
 
-    counts: dict[int, tuple[int, int]] = {}
+    from sova.adapters.external_reviews import DEFAULT_CODERABBIT_AUTHORS
+
     repo_data = (data.get("data") or {}).get("repository") or {}
+    out: dict[int, PRReviewData | None] = {}
     for pr_num in pr_numbers:
-        pr_data = repo_data.get(f"pr{pr_num}", {})
-        threads = pr_data.get("reviewThreads", {})
+        pr_data = repo_data.get(f"pr{pr_num}")
+        if pr_data is None:
+            out[pr_num] = None
+            continue
+        threads = pr_data.get("reviewThreads") or {}
+        if (threads.get("pageInfo") or {}).get("hasNextPage", False):
+            # totalCount covers the full connection but nodes are capped at 100,
+            # so a resolved-count diffed against totalCount would silently
+            # miscount past that point. Fail closed: treat the whole PR as
+            # undetermined rather than report a number that may be wrong.
+            log.warning("git.review_data.threads_truncated", pr_number=pr_num)
+            out[pr_num] = None
+            continue
         total = threads.get("totalCount", 0)
         resolved = sum(1 for n in threads.get("nodes", []) if n.get("isResolved"))
-        counts[pr_num] = (total, resolved)
-    return counts
+        head_sha = pr_data.get("headRefOid") or ""
+
+        reviews_conn = pr_data.get("reviews") or {}
+        reviews_truncated = (reviews_conn.get("pageInfo") or {}).get("hasPreviousPage", False)
+        if reviews_truncated:
+            log.warning("git.review_data.reviews_truncated", pr_number=pr_num)
+
+        # latestOpinionatedReviews already yields at most one node per author
+        # (their latest APPROVED/CHANGES_REQUESTED review), so this grouping
+        # is defense-in-depth rather than a dedup necessity.
+        bot_latest_by_login: dict[str, tuple[str, str]] = {}
+        for rev in reviews_conn.get("nodes", []) or []:
+            # latestOpinionatedReviews returns each author's latest APPROVED or
+            # CHANGES_REQUESTED review; a bot whose latest opinion is now an
+            # approval must not be treated as still requesting changes.
+            if rev.get("state") != "CHANGES_REQUESTED":
+                continue
+            login = ((rev.get("author") or {}).get("login") or "").lower()
+            # [bot] suffix, or a known non-suffixed bot account (e.g. CodeRabbit's classic login).
+            if not (login.endswith("[bot]") or login in DEFAULT_CODERABBIT_AUTHORS):
+                continue
+            sha = (rev.get("commit") or {}).get("oid") or ""
+            ts = rev.get("submittedAt") or ""
+            prev = bot_latest_by_login.get(login)
+            if prev is None or ts > prev[0]:
+                bot_latest_by_login[login] = (ts, sha)
+
+        bot_cr_shas = [sha for _, sha in bot_latest_by_login.values()]
+        bot_cr_sha = ""
+        latest_ts = ""
+        for ts, sha in bot_latest_by_login.values():
+            if sha and (not bot_cr_sha or ts > latest_ts):
+                bot_cr_sha = sha
+                latest_ts = ts
+
+        # Superseded only if EVERY bot with an outstanding CR review has a
+        # known oid and it differs from head; any unknown oid fails closed.
+        # A truncated reviews window (hasPreviousPage) means an older bot CR
+        # review may have been pushed out of the last-10 slice while it is
+        # still outstanding, so supersession cannot be confirmed either.
+        all_known = bool(bot_cr_shas) and all(bool(sha) for sha in bot_cr_shas)
+        bot_cr_superseded = not reviews_truncated and all_known and all(sha != head_sha for sha in bot_cr_shas)
+
+        out[pr_num] = PRReviewData(
+            thread_total=total,
+            thread_resolved=resolved,
+            head_sha=head_sha,
+            bot_cr_commit_sha=bot_cr_sha,
+            bot_cr_superseded=bot_cr_superseded,
+        )
+    return out
+
+
+async def get_pr_review_data(
+    pr_numbers: list[int],
+    *,
+    repo: str,
+    github_user: str = "",
+) -> dict[int, PRReviewData | None]:
+    """Batch-fetch review threads, head SHA, and bot CR review SHA for multiple PRs.
+
+    Returns {pr_number: PRReviewData}, with None for any PR whose data could
+    not be determined (missing from the response, or the whole call failed).
+    """
+    if not pr_numbers:
+        return {}
+    data = await _fetch_pr_review_data(pr_numbers, repo=repo, github_user=github_user)
+    if data is None:
+        return dict.fromkeys(pr_numbers)
+    return data
+
+
+async def get_review_thread_counts(
+    pr_numbers: list[int],
+    *,
+    repo: str,
+    github_user: str = "",
+) -> dict[int, tuple[int, int] | None]:
+    """Batch-fetch review thread counts (total, resolved) for multiple PRs.
+
+    Returns {pr_number: (total_threads, resolved_threads)}, or None for any PR
+    whose count could not be determined (missing from the response, or the
+    whole call failed): never a silent (0, 0). Uses a single GraphQL call.
+    """
+    if not pr_numbers:
+        return {}
+    data = await get_pr_review_data(pr_numbers, repo=repo, github_user=github_user)
+    return {n: (v.thread_total, v.thread_resolved) if v is not None else None for n, v in data.items()}
 
 
 async def get_pr_branch(pr_number: int, *, repo: str, github_user: str = "") -> str:
