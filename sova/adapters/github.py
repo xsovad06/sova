@@ -178,6 +178,34 @@ class GitHubAdapter(TaskAdapter):
         log.info("assign.completed", issue=task_id, user=self.github_user, role=agent_role, repo=self.repo)
         return True
 
+    async def assign_to_user(self, task_id: str, username: str) -> None:
+        log.info("assign_to_user", issue=task_id, user=username, repo=self.repo)
+        result = await self._gh(
+            "issue",
+            "edit",
+            task_id,
+            "--repo",
+            self.repo,
+            "--add-assignee",
+            username,
+        )
+        if not result.success:
+            log.warning("assign_to_user.failed", issue=task_id, user=username, stderr=result.stderr[:200])
+
+    async def add_reviewer(self, task_id: str, pr_number: int, username: str) -> None:
+        log.info("add_reviewer", issue=task_id, pr=pr_number, user=username, repo=self.repo)
+        result = await self._gh(
+            "pr",
+            "edit",
+            str(pr_number),
+            "--repo",
+            self.repo,
+            "--add-reviewer",
+            username,
+        )
+        if not result.success:
+            log.warning("add_reviewer.failed", pr=pr_number, user=username, stderr=result.stderr[:200])
+
     async def add_label(self, task_id: str, label: str) -> None:
         await self._add_label(task_id, label)
 

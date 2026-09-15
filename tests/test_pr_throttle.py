@@ -865,6 +865,57 @@ class TestRunPostCreateSideEffects:
             )
         mock_assign.assert_not_called()
 
+    async def test_ldap_reviewer_suggestion_runs_for_queued_prs(self) -> None:
+        """Queued PRs (throttled behind CodeRabbit quota) get the same LDAP reviewer
+        suggestion as directly-created ones, even when the PR has no linked issue."""
+        from sova.config.models import LdapConfig, ProjectConfig
+        from sova.supervisor.pr_throttle import run_post_create_side_effects
+
+        cfg = ProjectConfig(ldap=LdapConfig(enabled=True))
+        mock_adapter = AsyncMock()
+
+        with (
+            patch("sova.git.operations.assign_pr", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch("sova.core.steps.create_pr.suggest_ldap_reviewers", new_callable=AsyncMock) as mock_suggest,
+        ):
+            await run_post_create_side_effects(
+                pr_number=1,
+                issue_number=None,
+                repo="owner/repo",
+                github_user="octocat",
+            )
+
+        mock_suggest.assert_awaited_once_with(
+            cfg.ldap,
+            mock_adapter,
+            github_user="octocat",
+            issue_number=None,
+            pr_number=1,
+        )
+
+    async def test_ldap_disabled_skips_reviewer_suggestion(self) -> None:
+        from sova.config.models import ProjectConfig
+        from sova.supervisor.pr_throttle import run_post_create_side_effects
+
+        cfg = ProjectConfig()
+        assert cfg.ldap.enabled is False
+
+        with (
+            patch("sova.git.operations.assign_pr", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.core.steps.create_pr.suggest_ldap_reviewers", new_callable=AsyncMock) as mock_suggest,
+        ):
+            await run_post_create_side_effects(
+                pr_number=1,
+                issue_number=None,
+                repo="owner/repo",
+                github_user="octocat",
+            )
+
+        mock_suggest.assert_not_called()
+
 
 class TestTriggerCodeRabbitReview:
     """Test the _trigger_coderabbit_review function in pr_throttle."""

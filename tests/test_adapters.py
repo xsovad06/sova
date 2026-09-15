@@ -142,6 +142,8 @@ class TestTaskAdapterInterface:
             "get_task",
             "transition_state",
             "assign",
+            "assign_to_user",
+            "add_reviewer",
             "add_label",
             "remove_label",
             "post_comment",
@@ -388,6 +390,41 @@ class TestGitHubAdapter:
         call_args = mock_run.call_args[0]
         assert "issue" in call_args
         assert "edit" in call_args
+
+    # assign_to_user / add_reviewer
+
+    async def test_assign_to_user(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result()
+
+        await self.adapter.assign_to_user("42", "jdoe")
+
+        call_args = mock_run.call_args[0]
+        assert "issue" in call_args
+        assert "edit" in call_args
+        assert "--add-assignee" in call_args
+        assert "jdoe" in call_args
+
+    async def test_assign_to_user_failure_is_non_fatal(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="not found")
+
+        await self.adapter.assign_to_user("42", "jdoe")  # should not raise
+
+    async def test_add_reviewer(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result()
+
+        await self.adapter.add_reviewer("42", 7, "jdoe")
+
+        call_args = mock_run.call_args[0]
+        assert "pr" in call_args
+        assert "edit" in call_args
+        assert "7" in call_args
+        assert "--add-reviewer" in call_args
+        assert "jdoe" in call_args
+
+    async def test_add_reviewer_failure_is_non_fatal(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="not found")
+
+        await self.adapter.add_reviewer("42", 7, "jdoe")  # should not raise
 
     # -- add_label / remove_label --
 
