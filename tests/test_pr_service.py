@@ -15,10 +15,13 @@ from sova.dashboard.services.pr_service import (
     _age_seconds,
     _check_coderabbit_from_pr_data,
     _check_threads_from_pr_data,
+    _count_pr_commits,
     _enrich_pr,
     _extract_all_linked_issues,
     _extract_latest_approval_at,
     _extract_linked_issue,
+    _extract_pr_assignees,
+    _extract_pr_labels,
     _extract_review_logins,
     _is_bot_review,
     _should_unblock_bot_reviews,
@@ -529,6 +532,14 @@ class TestEnrichPr:
         assert result["mergeable"] == "MERGEABLE"
         assert result["is_draft"] is False
 
+    def test_head_sha_populated(self) -> None:
+        result = _enrich_pr(self._raw_pr(headRefOid="abc1234"), time.time())
+        assert result["head_sha"] == "abc1234"
+
+    def test_head_sha_missing_defaults_empty(self) -> None:
+        result = _enrich_pr(self._raw_pr(), time.time())
+        assert result["head_sha"] == ""
+
     def test_diff_stats_enrichment(self) -> None:
         result = _enrich_pr(self._raw_pr(), time.time())
         assert result["additions"] == 50
@@ -620,6 +631,49 @@ class TestEnrichPr:
     def test_latest_approval_at_none_without_approvals(self) -> None:
         result = _enrich_pr(self._raw_pr(), time.time())
         assert result["latest_approval_at"] is None
+
+
+class TestExtractPrLabels:
+    def test_extracts_label_names(self) -> None:
+        raw = {"labels": [{"name": "bug"}, {"name": "priority: high"}]}
+        assert _extract_pr_labels(raw) == ["bug", "priority: high"]
+
+    def test_missing_labels_returns_empty_list(self) -> None:
+        assert _extract_pr_labels({}) == []
+
+    def test_none_labels_returns_empty_list(self) -> None:
+        assert _extract_pr_labels({"labels": None}) == []
+
+
+class TestExtractPrAssignees:
+    def test_extracts_logins(self) -> None:
+        raw = {"assignees": [{"login": "alice"}, {"login": "bob"}]}
+        assert _extract_pr_assignees(raw) == ["alice", "bob"]
+
+    def test_filters_out_entries_without_login(self) -> None:
+        raw = {"assignees": [{"login": "alice"}, {}, {"login": ""}]}
+        assert _extract_pr_assignees(raw) == ["alice"]
+
+    def test_missing_assignees_returns_empty_list(self) -> None:
+        assert _extract_pr_assignees({}) == []
+
+    def test_none_assignees_returns_empty_list(self) -> None:
+        assert _extract_pr_assignees({"assignees": None}) == []
+
+
+class TestCountPrCommits:
+    def test_counts_commit_list(self) -> None:
+        raw = {"commits": [{"oid": "a"}, {"oid": "b"}, {"oid": "c"}]}
+        assert _count_pr_commits(raw) == 3
+
+    def test_missing_commits_returns_zero(self) -> None:
+        assert _count_pr_commits({}) == 0
+
+    def test_none_commits_returns_zero(self) -> None:
+        assert _count_pr_commits({"commits": None}) == 0
+
+    def test_non_list_commits_returns_zero(self) -> None:
+        assert _count_pr_commits({"commits": "not-a-list"}) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1047,6 +1101,23 @@ class TestExtractLatestApprovalAt:
     def test_missing_submitted_at(self) -> None:
         reviews = [{"state": "APPROVED"}]
         assert _extract_latest_approval_at(reviews) is None
+
+    def test_excludes_bot_suffix_approval(self) -> None:
+        """A bot approval (e.g. dependabot) must never count as a human sign-off."""
+        reviews = [{"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z", "author": {"login": "dependabot[bot]"}}]
+        assert _extract_latest_approval_at(reviews) is None
+
+    def test_excludes_coderabbit_classic_login_approval(self) -> None:
+        """CodeRabbit's classic-bot login has no [bot] suffix; must still be excluded."""
+        reviews = [{"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z", "author": {"login": "coderabbitai"}}]
+        assert _extract_latest_approval_at(reviews) is None
+
+    def test_human_approval_after_bot_approval_still_counted(self) -> None:
+        reviews = [
+            {"state": "APPROVED", "submittedAt": "2026-07-21T12:00:00Z", "author": {"login": "coderabbitai"}},
+            {"state": "APPROVED", "submittedAt": "2026-07-20T10:00:00Z", "author": {"login": "alice"}},
+        ]
+        assert _extract_latest_approval_at(reviews) == "2026-07-20T10:00:00Z"
 
 
 # ---------------------------------------------------------------------------
