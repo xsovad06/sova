@@ -1148,6 +1148,61 @@ _REGISTRY: list[SettingMeta] = [
         "mcp",
         "number",
     ),
+    # MCP: Atlassian sidecar (mcp-atlassian)
+    SettingMeta(
+        "mcp.atlassian.enabled",
+        "Atlassian sidecar enabled",
+        "Give agents Confluence and enhanced Jira access via the mcp-atlassian MCP server",
+        "mcp",
+        "boolean",
+    ),
+    SettingMeta(
+        "mcp.atlassian.jira_url",
+        "Jira URL",
+        "Base URL of the Jira instance for the Atlassian MCP sidecar (Cloud or on-prem)",
+        "mcp",
+    ),
+    SettingMeta(
+        "mcp.atlassian.confluence_url",
+        "Confluence URL",
+        "Base URL of the Confluence instance for the Atlassian MCP sidecar",
+        "mcp",
+    ),
+    SettingMeta(
+        "mcp.atlassian.auth_type",
+        "Auth type",
+        "Authentication method: personal access token (on-prem) or API token (Cloud)",
+        "mcp",
+        "select",
+        options=("pat", "api_token"),
+    ),
+    SettingMeta(
+        "mcp.atlassian.email",
+        "Email",
+        "Account email for API token authentication (Cloud only, not needed for PAT)",
+        "mcp",
+    ),
+    SettingMeta(
+        "mcp.atlassian.token",
+        "Token",
+        "Personal access token or API token for the Atlassian MCP sidecar",
+        "mcp",
+        "secret",
+    ),
+    SettingMeta(
+        "mcp.atlassian.read_only",
+        "Read-only mode",
+        "Restrict the Atlassian MCP sidecar to read-only operations (recommended)",
+        "mcp",
+        "boolean",
+    ),
+    SettingMeta(
+        "mcp.atlassian.toolsets",
+        "Toolsets",
+        "mcp-atlassian toolsets exposed to agents (e.g. default, all, jira_agile)",
+        "mcp",
+        "list",
+    ),
     # -- Testing (in Development group) --
     SettingMeta(
         "testing.baseline_enabled",

@@ -451,6 +451,7 @@ def test_inject_idempotent_after_upgrade(tmp_path: Path) -> None:
 def test_configure_mcp_injects_patternfly(tmp_path: Path) -> None:
     """_configure_mcp_servers injects PatternFly MCP when PF detected."""
     from sova.cli.commands.project import _configure_mcp_servers
+    from sova.config.models import ProjectConfig
 
     project_dir = tmp_path / "project"
     project_dir.mkdir()
@@ -459,16 +460,18 @@ def test_configure_mcp_injects_patternfly(tmp_path: Path) -> None:
     pkg = {"name": "test", "dependencies": {"@patternfly/react-core": "^5.0.0"}}
     (project_dir / "package.json").write_text(json.dumps(pkg))
 
-    _configure_mcp_servers(project_dir, claude_dir)
+    _configure_mcp_servers(project_dir, claude_dir, ProjectConfig())
 
+    mcp_json = json.loads((project_dir / ".mcp.json").read_text())
+    assert mcp_json["mcpServers"]["patternfly-mcp"]["command"] == "npx"
     settings = json.loads((claude_dir / "settings.json").read_text())
-    assert "patternfly-mcp" in settings["mcpServers"]
-    assert settings["mcpServers"]["patternfly-mcp"]["command"] == "npx"
+    assert settings["enabledMcpjsonServers"] == ["patternfly-mcp"]
 
 
 def test_configure_mcp_skips_without_patternfly(tmp_path: Path) -> None:
     """_configure_mcp_servers does nothing when no PatternFly detected."""
     from sova.cli.commands.project import _configure_mcp_servers
+    from sova.config.models import ProjectConfig
 
     project_dir = tmp_path / "project"
     project_dir.mkdir()
@@ -477,29 +480,161 @@ def test_configure_mcp_skips_without_patternfly(tmp_path: Path) -> None:
     pkg = {"name": "test", "dependencies": {"react": "^18.0.0"}}
     (project_dir / "package.json").write_text(json.dumps(pkg))
 
-    _configure_mcp_servers(project_dir, claude_dir)
+    _configure_mcp_servers(project_dir, claude_dir, ProjectConfig())
 
+    assert not (project_dir / ".mcp.json").exists()
     assert not (claude_dir / "settings.json").exists()
 
 
-def test_remove_mcp_server_cleans_settings(tmp_path: Path) -> None:
-    """remove_mcp_server removes a named MCP entry from settings.json."""
+def test_configure_mcp_injects_atlassian_when_enabled(tmp_path: Path) -> None:
+    """_configure_mcp_servers injects the Atlassian sidecar when mcp.atlassian.enabled."""
+    from sova.cli.commands.project import _configure_mcp_servers
+    from sova.config.models import ProjectConfig
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+
+    cfg = ProjectConfig()
+    cfg.mcp.atlassian.enabled = True
+    cfg.mcp.atlassian.jira_url = "https://issues.redhat.com"
+    cfg.mcp.atlassian.auth_type = "pat"
+    cfg.mcp.atlassian.token = "onprem-pat"
+
+    _configure_mcp_servers(project_dir, claude_dir, cfg)
+
+    mcp_json = json.loads((project_dir / ".mcp.json").read_text())
+    assert mcp_json["mcpServers"]["atlassian-mcp"]["env"]["JIRA_PERSONAL_TOKEN"] == "onprem-pat"
+    settings = json.loads((claude_dir / "settings.json").read_text())
+    assert settings["enabledMcpjsonServers"] == ["atlassian-mcp"]
+
+
+def test_configure_mcp_reports_atlassian_approval_failure(tmp_path: Path, capsys) -> None:
+    """A failed settings.json approval write is surfaced, not silently swallowed."""
+    from sova.cli.commands.project import _configure_mcp_servers
+    from sova.config.models import ProjectConfig
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text(json.dumps({"enabledMcpjsonServers": "not-a-list"}))
+
+    cfg = ProjectConfig()
+    cfg.mcp.atlassian.enabled = True
+    cfg.mcp.atlassian.jira_url = "https://issues.redhat.com"
+    cfg.mcp.atlassian.auth_type = "pat"
+    cfg.mcp.atlassian.token = "onprem-pat"
+
+    _configure_mcp_servers(project_dir, claude_dir, cfg)
+
+    assert "Failed to approve Atlassian MCP sidecar" in capsys.readouterr().err
+    mcp_json = json.loads((project_dir / ".mcp.json").read_text())
+    assert "atlassian-mcp" in mcp_json["mcpServers"]
+
+
+def test_configure_mcp_skips_atlassian_with_incomplete_config(tmp_path: Path) -> None:
+    """An enabled sidecar with no URL or token is skipped instead of written half-configured."""
+    from sova.cli.commands.project import _configure_mcp_servers
+    from sova.config.models import ProjectConfig
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+
+    cfg = ProjectConfig()
+    cfg.mcp.atlassian.enabled = True
+
+    _configure_mcp_servers(project_dir, claude_dir, cfg)
+
+    assert not (project_dir / ".mcp.json").exists()
+
+
+def test_configure_mcp_skips_atlassian_when_disabled(tmp_path: Path) -> None:
+    """_configure_mcp_servers does nothing when mcp.atlassian.enabled is False (default)."""
+    from sova.cli.commands.project import _configure_mcp_servers
+    from sova.config.models import ProjectConfig
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+
+    _configure_mcp_servers(project_dir, claude_dir, ProjectConfig())
+
+    assert not (project_dir / ".mcp.json").exists()
+    assert not (claude_dir / "settings.json").exists()
+
+
+def test_configure_mcp_removes_stale_atlassian_entry_on_opt_out(tmp_path: Path) -> None:
+    """Disabling the sidecar after it was configured removes the .mcp.json entry and approval."""
+    from sova.cli.commands.project import _configure_mcp_servers
+    from sova.config.models import ProjectConfig
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+
+    cfg = ProjectConfig()
+    cfg.mcp.atlassian.enabled = True
+    cfg.mcp.atlassian.jira_url = "https://issues.redhat.com"
+    cfg.mcp.atlassian.auth_type = "pat"
+    cfg.mcp.atlassian.token = "onprem-pat"
+    _configure_mcp_servers(project_dir, claude_dir, cfg)
+    assert "atlassian-mcp" in json.loads((project_dir / ".mcp.json").read_text())["mcpServers"]
+
+    cfg.mcp.atlassian.enabled = False
+    _configure_mcp_servers(project_dir, claude_dir, cfg)
+
+    assert not (project_dir / ".mcp.json").exists()
+    settings = json.loads((claude_dir / "settings.json").read_text())
+    assert "atlassian-mcp" not in settings.get("enabledMcpjsonServers", [])
+
+
+def test_configure_mcp_removes_stale_atlassian_entry_when_config_becomes_invalid(tmp_path: Path) -> None:
+    """A sidecar left enabled but drifting into an invalid config is torn down, not left stale."""
+    from sova.cli.commands.project import _configure_mcp_servers
+    from sova.config.models import ProjectConfig
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+
+    cfg = ProjectConfig()
+    cfg.mcp.atlassian.enabled = True
+    cfg.mcp.atlassian.jira_url = "https://issues.redhat.com"
+    cfg.mcp.atlassian.auth_type = "pat"
+    cfg.mcp.atlassian.token = "onprem-pat"
+    _configure_mcp_servers(project_dir, claude_dir, cfg)
+    assert (project_dir / ".mcp.json").exists()
+
+    cfg.mcp.atlassian.jira_url = ""
+    cfg.mcp.atlassian.token = ""
+    _configure_mcp_servers(project_dir, claude_dir, cfg)
+
+    assert not (project_dir / ".mcp.json").exists()
+    settings = json.loads((claude_dir / "settings.json").read_text())
+    assert "atlassian-mcp" not in settings.get("enabledMcpjsonServers", [])
+
+
+def test_remove_mcp_server_cleans_mcp_json(tmp_path: Path) -> None:
+    """remove_mcp_server removes a named MCP entry from .mcp.json."""
     from sova.utils.mcp_config import remove_mcp_server
 
-    claude_dir = tmp_path / ".claude"
-    claude_dir.mkdir()
     pf_config = {"command": "npx", "args": ["-y", "@patternfly/patternfly-mcp@latest"]}
-    settings = {"mcpServers": {"patternfly-mcp": pf_config}}
-    (claude_dir / "settings.json").write_text(json.dumps(settings))
+    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"patternfly-mcp": pf_config}}))
 
-    result = remove_mcp_server(claude_dir, "patternfly-mcp")
+    result = remove_mcp_server(tmp_path, "patternfly-mcp")
     assert result is True
-    data = json.loads((claude_dir / "settings.json").read_text())
-    assert "mcpServers" not in data
+    assert not (tmp_path / ".mcp.json").exists()
 
 
 def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
-    """_uninstall removes PatternFly MCP server from settings.json."""
+    """_uninstall removes PatternFly MCP from .mcp.json and drops its approval."""
     import asyncio
 
     from sova.cli.commands.project import _uninstall
@@ -509,13 +644,51 @@ def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir()
     pf_config = {"command": "npx", "args": ["-y", "@patternfly/patternfly-mcp@latest"]}
-    settings = {"mcpServers": {"patternfly-mcp": pf_config}}
-    (claude_dir / "settings.json").write_text(json.dumps(settings))
+    (project_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"patternfly-mcp": pf_config}}))
+    (claude_dir / "settings.json").write_text(json.dumps({"enabledMcpjsonServers": ["patternfly-mcp"]}))
+
+    asyncio.run(_uninstall(path=project_dir, remove_config=False, remove_memory=False))
+
+    assert not (project_dir / ".mcp.json").exists()
+    data = json.loads((claude_dir / "settings.json").read_text())
+    assert "enabledMcpjsonServers" not in data
+
+
+def test_uninstall_removes_legacy_settings_mcp_entry(tmp_path: Path) -> None:
+    """Entries written by pre-.mcp.json installs are cleaned out of settings.json."""
+    import asyncio
+
+    from sova.cli.commands.project import _uninstall
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+    pf_config = {"command": "npx", "args": ["-y", "@patternfly/patternfly-mcp@latest"]}
+    (claude_dir / "settings.json").write_text(json.dumps({"mcpServers": {"patternfly-mcp": pf_config}}))
 
     asyncio.run(_uninstall(path=project_dir, remove_config=False, remove_memory=False))
 
     data = json.loads((claude_dir / "settings.json").read_text())
     assert "patternfly-mcp" not in data.get("mcpServers", {})
+
+
+def test_uninstall_removes_atlassian_mcp(tmp_path: Path) -> None:
+    """_uninstall removes the Atlassian MCP sidecar from .mcp.json."""
+    import asyncio
+
+    from sova.cli.commands.project import _uninstall
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+    atlassian_config = {"command": "uvx", "args": ["mcp-atlassian"], "env": {}}
+    (project_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"atlassian-mcp": atlassian_config}}))
+
+    asyncio.run(_uninstall(path=project_dir, remove_config=False, remove_memory=False))
+
+    assert not (project_dir / ".mcp.json").exists()
 
 
 # -- _detect_tech_stack PatternFly detection --
