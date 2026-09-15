@@ -22,6 +22,7 @@ router = APIRouter(prefix="/dependencies", tags=["dependencies"])
 _PR_STATE_MAP: dict[str, str] = {
     ComputedPRState.APPROVED_CI_GREEN: "approved_ci_green",
     ComputedPRState.APPROVED: "approved_ci_green",
+    ComputedPRState.CONFLICTED: "conflicted",
     ComputedPRState.CHANGES_REQUESTED: "changes_requested",
     ComputedPRState.REVIEW_ADDRESSED: "awaiting_review",
     ComputedPRState.CI_RUNNING: "ci_running",
@@ -31,9 +32,17 @@ _PR_STATE_MAP: dict[str, str] = {
 }
 
 # PR-state-aware actions for IN_REVIEW nodes.  Overrides _STATE_ACTIONS when
-# a PR is linked and its state is known.
+# a PR is linked and its state is known.  An action's "url" may contain an
+# "{issue}" placeholder, substituted with the node's issue id when the graph
+# is serialized (see DependencyGraph.to_dict in sova/supervisor/dependency_graph.py).
+#
+# "conflicted" routes to the same rebase endpoint used by the agents-page
+# Rebase action (POST /work/issue/{issue}/rebase -> attempt_auto_rebase()),
+# not to address-pr: that command addresses review findings and CI failures,
+# it never resolves merge conflicts.
 _PR_STATE_ACTIONS: dict[str, list[dict]] = {
     "approved_ci_green": [{"id": "integrate-pr", "label": "Integrate PR", "role": "integrate-pr"}],
+    "conflicted": [{"id": "trigger-rebase", "label": "Rebase", "type": "api", "url": "/work/issue/{issue}/rebase"}],
     "changes_requested": [{"id": "address-pr", "label": "Address PR", "role": "address-pr"}],
     "ci_failed": [{"id": "address-pr", "label": "Fix CI", "role": "address-pr"}],
     "ci_running": [],

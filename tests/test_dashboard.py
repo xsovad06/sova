@@ -4646,6 +4646,22 @@ class TestWorkAPI:
         assert data["status"] == "failed"
         mock_stop.assert_awaited_once_with(run_id=run_id)
 
+    async def test_work_issue_rebase_endpoint(self, client: AsyncClient) -> None:
+        """The rebase-trigger endpoint delegates to attempt_auto_rebase and returns its result."""
+        from unittest.mock import AsyncMock, patch
+
+        expected = {"status": "success", "pr_number": 123, "conflicts_resolved": 2}
+        with patch(
+            "sova.supervisor.rebase.attempt_auto_rebase", new_callable=AsyncMock, return_value=expected
+        ) as mock_rebase:
+            resp = await client.post("/api/work/issue/42/rebase")
+
+        assert resp.status_code == 200
+        assert resp.json() == expected
+        mock_rebase.assert_awaited_once()
+        call_args = mock_rebase.call_args
+        assert call_args.args[0] == 42
+
     async def test_active_grouped_excludes_superseded_paused_runs(
         self, client: AsyncClient, session: AsyncSession
     ) -> None:

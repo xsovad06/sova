@@ -247,6 +247,7 @@ function stateColor(state) {
 function prStateColor(prState) {
   const s = (prState || '');
   if (s === 'approved_ci_green') return '#a6e3a1';
+  if (s === 'conflicted')        return '#f38ba8';
   if (s === 'changes_requested') return '#fab387';
   if (s === 'ci_failed')         return '#f38ba8';
   if (s === 'ci_running')        return '#f9e2af';

@@ -26,6 +26,7 @@ class WorkItemState(StrEnum):
 
     # PR lifecycle
     PR_DRAFT = "pr_draft"
+    PR_CONFLICTED = "pr_conflicted"
     PR_CI_RUNNING = "pr_ci_running"
     PR_CI_FAILED = "pr_ci_failed"
     PR_AWAITING_REVIEW = "pr_awaiting_review"
@@ -57,6 +58,7 @@ _STATE_LABELS: dict[WorkItemState, str] = {
     WorkItemState.IN_PROGRESS: "In Progress",
     WorkItemState.AGENT_RUNNING: "Agent Running",
     WorkItemState.PR_DRAFT: "Draft PR",
+    WorkItemState.PR_CONFLICTED: "Conflicts",
     WorkItemState.PR_CI_RUNNING: "CI Running",
     WorkItemState.PR_CI_FAILED: "CI Failed",
     WorkItemState.PR_AWAITING_REVIEW: "Awaiting Review",
@@ -87,6 +89,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
     WorkItemState.IN_PROGRESS: "bg-accent/20 text-accent",
     WorkItemState.AGENT_RUNNING: _CLR_YELLOW,
     WorkItemState.PR_DRAFT: _CLR_GRAY,
+    WorkItemState.PR_CONFLICTED: "bg-accent-red/20 text-accent-red",
     WorkItemState.PR_CI_RUNNING: _CLR_YELLOW,
     WorkItemState.PR_CI_FAILED: "bg-accent-red/20 text-accent-red",
     WorkItemState.PR_AWAITING_REVIEW: "bg-accent/20 text-accent",
@@ -120,6 +123,7 @@ _ROLE_LABELS: dict[str, str] = {
 
 _PR_STATE_MAP: dict[str, WorkItemState] = {
     "draft": WorkItemState.PR_DRAFT,
+    "conflicted": WorkItemState.PR_CONFLICTED,
     "ci_running": WorkItemState.PR_CI_RUNNING,
     "ci_failed": WorkItemState.PR_CI_FAILED,
     "awaiting_review": WorkItemState.PR_AWAITING_REVIEW,
@@ -188,6 +192,11 @@ def _get_actions(
     address = cmd("address_pr", "Address PR", "neutral", "address-pr")
     integrate = cmd("integrate", "Integrate PR", "neutral", "integrate-pr")
 
+    def rebase() -> dict | None:
+        if not i:
+            return None
+        return _build_action("rebase", "Rebase", "danger", "trigger_rebase", {"issue": i})
+
     actions: dict[WorkItemState, tuple[dict | None, list[dict]]] = {
         S.BACKLOG: (agent("triage", "Triage", "warning", "triage"), []),
         S.NEEDS_SPEC: (agent("research", "Research", "purple", "researcher"), []),
@@ -195,6 +204,7 @@ def _get_actions(
         S.RESEARCHED: (agent("develop", "Develop", "primary", "developer"), []),
         S.IN_PROGRESS: (agent("resume", "Resume", "primary", "developer"), []),
         S.PR_DRAFT: (cmd("review_pr", "Review", "neutral", "review-pr"), [address]),
+        S.PR_CONFLICTED: (rebase(), [review, address]),
         S.PR_CI_RUNNING: (cmd("review_pr", "Review", "neutral", "review-pr"), [address]),
         S.PR_CI_FAILED: (cmd("address_pr", "Address PR", "danger", "address-pr"), [review]),
         S.PR_AWAITING_REVIEW: (cmd("review_pr", "Review", "success", "review-pr"), [address, integrate]),
@@ -341,6 +351,7 @@ _STATE_SORT_ORDER: dict[str, int] = {
     WorkItemState.PR_READY_TO_MERGE: 2,
     WorkItemState.PR_APPROVED: 2,
     WorkItemState.PR_CI_FAILED: 3,
+    WorkItemState.PR_CONFLICTED: 3,
     WorkItemState.PR_CHANGES_REQUESTED: 3,
     WorkItemState.PR_SOVA_CHANGES: 3,
     WorkItemState.PR_EXTERNAL_CHANGES: 3,

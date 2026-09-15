@@ -75,6 +75,17 @@ async def get_detail(run_id: int) -> dict:
         return detail
 
 
+@router.post("/work/issue/{issue_number}/rebase")
+async def trigger_rebase(issue_number: int) -> dict:
+    """Trigger an auto-rebase attempt for the PR linked to an issue."""
+    from sova.db.session import get_session_factory
+    from sova.supervisor.rebase import attempt_auto_rebase
+
+    project_dir = get_project_dir()
+    session_factory = await get_session_factory(project_dir)
+    return await attempt_auto_rebase(issue_number, project_dir, session_factory)
+
+
 @router.post("/work/{run_id}/mark-failed", responses={404: {"description": "Run not found"}})
 async def mark_failed(run_id: int) -> dict:
     """Mark a non-terminal run as failed and kill the agent process."""

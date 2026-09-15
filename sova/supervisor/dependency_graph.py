@@ -366,7 +366,12 @@ class DependencyGraph:
             if pr_info and task.state == TaskState.IN_REVIEW and pr_state_actions:
                 pr_state = pr_info.get("pr_state", "")
                 if pr_state in pr_state_actions:
-                    actions = list(pr_state_actions[pr_state])
+                    # Actions may carry an "{issue}" placeholder in "url" (e.g. the
+                    # rebase endpoint), substituted with this node's issue id.
+                    actions = [
+                        {**a, "url": a["url"].format(issue=tid)} if "url" in a else dict(a)
+                        for a in pr_state_actions[pr_state]
+                    ]
 
             # Enrich RESEARCHED nodes with spec metadata and spec-aware actions
             spec_meta: dict | None = None
