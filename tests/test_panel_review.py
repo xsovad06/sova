@@ -874,9 +874,14 @@ class TestReviewerPanelIntegration:
         llm_result = LLMResult(text=_llm_response(findings), model="sonnet", cost_usd=Decimal("0.01"))
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/issue-42"),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", "abc123"),
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.panel_review.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file"),
@@ -907,9 +912,14 @@ class TestReviewerPanelIntegration:
         llm_result = LLMResult(text=_llm_response([], "Clean"), model="sonnet", cost_usd=Decimal("0.005"))
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/issue-42"),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", "abc123"),
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke,
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file"),

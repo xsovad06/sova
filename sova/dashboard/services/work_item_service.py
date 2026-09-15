@@ -54,10 +54,7 @@ from sova.dashboard.services.work_state import (
     _get_actions as _get_actions,
 )
 from sova.dashboard.services.work_state import (
-    _is_verdict_stale as _is_verdict_stale,
-)
-from sova.dashboard.services.work_state import (
-    _normalize_iso as _normalize_iso,
+    _is_verdict_stale_by_sha as _is_verdict_stale_by_sha,
 )
 from sova.dashboard.services.work_state import (
     _sort_items as _sort_items,

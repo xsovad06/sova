@@ -50,17 +50,20 @@ def _extract_sova_verdict_from_labels(labels: list[str]) -> dict | None:
     for label in labels:
         verdict = _SOVA_VERDICT_LABEL_MAP.get(label)
         if verdict is not None:
-            # Epoch sentinel: _is_verdict_stale() treats any real human approval as newer.
+            # Labels carry no commit SHA: unanchored, not stale.
             return {
                 "has_sova_review": True,
                 "verdict": verdict,
                 "finding_count": 0,
-                "reviewed_at": "1970-01-01T00:00:00Z",
+                "reviewed_at": None,
+                "review_head_sha": None,
             }
     return None
 
 
-_SOVA_MARKER_RE = re.compile(r"<!--\s*sova-review:\s*(approve|revise|block)\s*-->", re.IGNORECASE)
+_SOVA_MARKER_RE = re.compile(
+    r"<!--\s*sova-review:\s*(approve|revise|block)(?:\s+sha=([0-9a-f]{7,40}))?\s*-->", re.IGNORECASE
+)
 # Matches the natural-language verdict line from /review-pr command output and older pipeline output.
 _SOVA_VERDICT_LINE_RE = re.compile(
     r"^\*\*(Approve|Request changes|Block|Comment only)\b",
@@ -85,8 +88,14 @@ def _parse_sova_review_from_github(reviews: list[PRReview]) -> dict | None:
     Returns a verdict dict matching get_sova_review_verdict()'s shape, or None.
     """
 
-    def _verdict_dict(verdict: str, submitted_at: str) -> dict:
-        return {"has_sova_review": True, "verdict": verdict, "finding_count": 0, "reviewed_at": submitted_at}
+    def _verdict_dict(verdict: str, submitted_at: str, review_head_sha: str | None) -> dict:
+        return {
+            "has_sova_review": True,
+            "verdict": verdict,
+            "finding_count": 0,
+            "reviewed_at": submitted_at,
+            "review_head_sha": review_head_sha,
+        }
 
     for review in sorted(reviews, key=lambda r: r.submitted_at, reverse=True):
         if review.state == "DISMISSED":
@@ -96,7 +105,7 @@ def _parse_sova_review_from_github(reviews: list[PRReview]) -> dict | None:
         # Marker path: explicit machine-readable tag emitted by _format_findings_body.
         m = _SOVA_MARKER_RE.search(body)
         if m:
-            return _verdict_dict(m.group(1).lower(), review.submitted_at)
+            return _verdict_dict(m.group(1).lower(), review.submitted_at, m.group(2))
 
         # Heuristic fallback: detect SOVA's characteristic review body structure.
         # Matches reviews from the /review-pr command before the marker was added.
@@ -106,7 +115,7 @@ def _parse_sova_review_from_github(reviews: list[PRReview]) -> dict | None:
             verdict_match = _SOVA_VERDICT_LINE_RE.search(verdict_section)
             if verdict_match:
                 verdict = _VERDICT_NORMALIZE.get(verdict_match.group(1).lower(), "revise")
-                return _verdict_dict(verdict, review.submitted_at)
+                return _verdict_dict(verdict, review.submitted_at, None)
 
     return None
 

@@ -176,11 +176,18 @@ def _summarize_ci(rollup: list[dict] | None) -> str:
     return "none"
 
 
+def _is_bot_login(login: str) -> bool:
+    """Check if a login belongs to a bot account: [bot] suffix or a known CodeRabbit alias."""
+    from sova.adapters.external_reviews import DEFAULT_CODERABBIT_AUTHORS
+
+    login = login.lower()
+    return login.endswith("[bot]") or login in DEFAULT_CODERABBIT_AUTHORS
+
+
 def _is_bot_review(review: dict) -> bool:
-    """Check if a review is from a bot based on [bot] login suffix."""
+    """Check if a review is from a bot account."""
     author = review.get("author") or {}
-    login = author.get("login") or ""
-    return login.endswith("[bot]")
+    return _is_bot_login(author.get("login") or "")
 
 
 def _extract_cr_reviews(latest_reviews: list[dict]) -> list[dict]:
@@ -277,13 +284,19 @@ def _extract_review_logins(latest_reviews: list[dict] | None) -> list[str]:
 
 
 def _extract_latest_approval_at(latest_reviews: list[dict] | None) -> str | None:
-    """Return the most recent APPROVED review's submittedAt timestamp, or None."""
+    """Return the most recent human-approved review's submittedAt timestamp, or None.
+
+    Excludes bot approvals (CodeRabbit or any other bot): a bot's approval must
+    never be mistaken for a human sign-off. Mirrors the login-based bot check
+    in sova/supervisor/gates/review_completed.py:_has_human_approval().
+    """
     best: str | None = None
     for rev in latest_reviews or []:
-        if rev.get("state") == "APPROVED":
-            ts = rev.get("submittedAt") or ""
-            if ts and (best is None or ts > best):
-                best = ts
+        if rev.get("state") != "APPROVED" or _is_bot_review(rev):
+            continue
+        ts = rev.get("submittedAt") or ""
+        if ts and (best is None or ts > best):
+            best = ts
     return best
 
 
@@ -317,6 +330,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "number": raw["number"],
         "title": raw.get("title", ""),
         "branch": raw.get("headRefName", ""),
+        "head_sha": raw.get("headRefOid", "") or "",
         "url": raw.get("url", ""),
         "state": raw.get("state", "OPEN"),
         "computed_state": computed,

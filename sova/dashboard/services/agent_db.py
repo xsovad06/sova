@@ -441,7 +441,9 @@ async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
 
 _PUSH_KEYWORDS = ("git push", "force-with-lease", "force-push", "pushed to", "pushed commit")
 
-_SOVA_REVIEW_MARKER_RE = re.compile(r"<!--\s*sova-review:\s*(approve|revise|block)\s*-->", re.IGNORECASE)
+_SOVA_REVIEW_MARKER_RE = re.compile(
+    r"<!--\s*sova-review:\s*(approve|revise|block)(?:\s+sha=([0-9a-f]{7,40}))?\s*-->", re.IGNORECASE
+)
 
 _VERDICT_TO_NEXT_ACTION = {
     "approve": "approve",
@@ -450,19 +452,21 @@ _VERDICT_TO_NEXT_ACTION = {
 }
 
 
-def _extract_review_verdict_marker(lines: list[str]) -> str | None:
-    """Extract verdict from <!-- sova-review: X --> marker in output lines.
+def _extract_review_verdict_marker(lines: list[str]) -> tuple[str, str | None] | None:
+    """Extract verdict and SHA from <!-- sova-review: X sha=Y --> marker in output lines.
 
-    Scans lines in reverse so the last marker wins (per spec).
+    Scans lines in reverse so the last marker wins (per spec). Returns
+    (verdict, sha) where sha is None if the marker predates SHA-anchoring.
     """
     for line in reversed(lines):
         matches = _SOVA_REVIEW_MARKER_RE.findall(line)
         if matches:
-            return matches[-1].lower()
+            verdict, sha = matches[-1]
+            return verdict.lower(), (sha or None)
     return None
 
 
-async def _persist_review_verdict(run_id: int, verdict: str, project_dir: Path | None) -> None:
+async def _persist_review_verdict(run_id: int, verdict: str, project_dir: Path | None, sha: str | None = None) -> None:
     """Write structured handoff_json to a review-pr TaskRun."""
     from sova.db.models import TaskRun
     from sova.db.session import get_session
@@ -471,6 +475,7 @@ async def _persist_review_verdict(run_id: int, verdict: str, project_dir: Path |
     handoff_data = {
         "next_action": next_action,
         "pending_findings": [],
+        "metadata": {"review_head_sha": sha},
     }
 
     try:
@@ -508,14 +513,15 @@ async def _validate_review_pr(run_id: int, agent: AgentState) -> str | None:
     if not has_post_evidence:
         return "review-pr completed without posting a review on GitHub"
 
-    verdict = _extract_review_verdict_marker(lines)
-    if not verdict:
+    marker = _extract_review_verdict_marker(lines)
+    if marker:
+        verdict, sha = marker
+    else:
         from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
 
-        verdict = _parse_verdict_from_output(lines)
-    if not verdict:
-        verdict = "revise"
-    await _persist_review_verdict(run_id, verdict, agent.project_dir)
+        verdict = _parse_verdict_from_output(lines) or "revise"
+        sha = None
+    await _persist_review_verdict(run_id, verdict, agent.project_dir, sha=sha)
 
     return None
 

@@ -23,7 +23,7 @@ from sova.dashboard.services.work_item_service import (
     _index_handoffs,
     _index_prs_by_issue,
     _index_running_agents,
-    _is_verdict_stale,
+    _is_verdict_stale_by_sha,
     _sort_items,
     clear_verdict_cache,
     compute_work_item_state,
@@ -82,15 +82,45 @@ class TestComputeWorkItemState:
         )
 
     def test_stale_sova_verdict_returns_pr_state(self) -> None:
-        """If a human approved after the SOVA review, the PR state wins."""
+        """If the PR has advanced past the reviewed commit, the PR state wins."""
         assert (
             _state(
                 pr_data={
                     "computed_state": "approved_ci_green",
                     "state": "OPEN",
-                    "latest_approval_at": "2026-07-24T12:00:00Z",
+                    "head_sha": "def456",
                 },
-                sova_verdict={"verdict": "block", "has_sova_review": True, "reviewed_at": "2026-07-24T10:00:00Z"},
+                sova_verdict={"verdict": "block", "has_sova_review": True, "review_head_sha": "abc123"},
+            )
+            == WorkItemState.PR_READY_TO_MERGE
+        )
+
+    def test_bot_approval_does_not_erase_anchored_revise_verdict(self) -> None:
+        """Reproduces the original bug: a revise verdict anchored to SHA X, followed by a
+        bot approval, with the PR head SHA still X, must remain revise (not discarded)."""
+        assert (
+            _state(
+                pr_data={
+                    "computed_state": "approved_ci_green",
+                    "state": "OPEN",
+                    "head_sha": "abc123",
+                    "latest_approval_at": None,  # bot approvals are excluded upstream
+                },
+                sova_verdict={"verdict": "revise", "has_sova_review": True, "review_head_sha": "abc123"},
+            )
+            == WorkItemState.PR_SOVA_CHANGES
+        )
+
+    def test_anchored_verdict_stale_once_pr_head_advances(self) -> None:
+        """A verdict anchored to an old SHA is reported stale once new commits are pushed."""
+        assert (
+            _state(
+                pr_data={
+                    "computed_state": "approved_ci_green",
+                    "state": "OPEN",
+                    "head_sha": "new_sha_after_push",
+                },
+                sova_verdict={"verdict": "revise", "has_sova_review": True, "review_head_sha": "old_sha"},
             )
             == WorkItemState.PR_READY_TO_MERGE
         )
@@ -536,10 +566,10 @@ class TestApplySovaVerdict:
     """Unit tests for _apply_sova_verdict() covering all override paths."""
 
     def _no_review(self) -> dict:
-        return {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+        return {"has_sova_review": False, "verdict": None, "finding_count": 0, "review_head_sha": None}
 
-    def _review(self, verdict: str, reviewed_at: str | None = None) -> dict:
-        return {"has_sova_review": True, "verdict": verdict, "finding_count": 1, "reviewed_at": reviewed_at}
+    def _review(self, verdict: str, review_head_sha: str | None = None) -> dict:
+        return {"has_sova_review": True, "verdict": verdict, "finding_count": 1, "review_head_sha": review_head_sha}
 
     # sova_verdict=None: pass-through
 
@@ -628,41 +658,41 @@ class TestApplySovaVerdict:
         """CI failure takes priority; SOVA approve should not change the state."""
         assert _apply_sova_verdict(WorkItemState.PR_CI_FAILED, self._review("approve")) == WorkItemState.PR_CI_FAILED
 
-    # Staleness: human approval after SOVA review invalidates revise/block
+    # Staleness: verdict's reviewed commit SHA no longer matches the PR's current head
 
     def test_stale_revise_verdict_skips_downgrade(self) -> None:
-        """If a human approved on GitHub after the SOVA review, the revise verdict is stale."""
-        verdict = self._review("revise", reviewed_at="2026-07-19T10:00:00Z")
+        """If the PR has advanced past the reviewed commit, the revise verdict is stale."""
+        verdict = self._review("revise", review_head_sha="abc123")
         result = _apply_sova_verdict(
             WorkItemState.PR_READY_TO_MERGE,
             verdict,
-            latest_approval_at="2026-07-20T12:00:00Z",
+            pr_head_sha="def456",
         )
         assert result == WorkItemState.PR_READY_TO_MERGE
 
     def test_fresh_revise_verdict_still_downgrades(self) -> None:
-        """If the SOVA review is newer than the last GitHub approval, it still downgrades."""
-        verdict = self._review("block", reviewed_at="2026-07-20T14:00:00Z")
+        """If the PR head SHA still matches the reviewed commit, it still downgrades."""
+        verdict = self._review("block", review_head_sha="abc123")
         result = _apply_sova_verdict(
             WorkItemState.PR_APPROVED,
             verdict,
-            latest_approval_at="2026-07-19T08:00:00Z",
+            pr_head_sha="abc123",
         )
         assert result == WorkItemState.PR_SOVA_CHANGES
 
-    def test_revise_verdict_without_approval_timestamp_still_downgrades(self) -> None:
-        """Backward compat: no latest_approval_at means no staleness check."""
-        verdict = self._review("revise", reviewed_at="2026-07-19T10:00:00Z")
+    def test_revise_verdict_without_pr_head_sha_still_downgrades(self) -> None:
+        """No pr_head_sha available means no staleness check can be performed."""
+        verdict = self._review("revise", review_head_sha="abc123")
         result = _apply_sova_verdict(WorkItemState.PR_APPROVED, verdict)
         assert result == WorkItemState.PR_SOVA_CHANGES
 
-    def test_revise_verdict_without_reviewed_at_still_downgrades(self) -> None:
-        """If the SOVA verdict has no timestamp, staleness check is skipped."""
+    def test_revise_verdict_without_review_head_sha_still_downgrades(self) -> None:
+        """An unanchored verdict (no review_head_sha) is treated as fresh, not stale."""
         verdict = self._review("revise")
         result = _apply_sova_verdict(
             WorkItemState.PR_APPROVED,
             verdict,
-            latest_approval_at="2026-07-20T12:00:00Z",
+            pr_head_sha="def456",
         )
         assert result == WorkItemState.PR_SOVA_CHANGES
 
@@ -740,23 +770,23 @@ class TestApplySovaVerdict:
         assert _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, verdict) == WorkItemState.PR_EXTERNAL_CHANGES
 
 
-class TestIsVerdictStale:
-    def test_no_approval(self) -> None:
-        assert not _is_verdict_stale({"reviewed_at": "2026-07-19T10:00:00Z"}, None)
+class TestIsVerdictStaleBySha:
+    def test_no_pr_head_sha(self) -> None:
+        assert not _is_verdict_stale_by_sha({"review_head_sha": "abc123"}, None)
 
-    def test_no_reviewed_at(self) -> None:
-        assert not _is_verdict_stale({"reviewed_at": None}, "2026-07-20T12:00:00Z")
+    def test_no_review_head_sha(self) -> None:
+        """Unanchored verdict (no review_head_sha): never stale."""
+        assert not _is_verdict_stale_by_sha({"review_head_sha": None}, "abc123")
 
-    def test_approval_after_review(self) -> None:
-        assert _is_verdict_stale({"reviewed_at": "2026-07-19T10:00:00Z"}, "2026-07-20T12:00:00Z")
+    def test_sha_mismatch_is_stale(self) -> None:
+        assert _is_verdict_stale_by_sha({"review_head_sha": "abc123"}, "def456")
 
-    def test_approval_before_review(self) -> None:
-        assert not _is_verdict_stale({"reviewed_at": "2026-07-20T14:00:00Z"}, "2026-07-19T08:00:00Z")
+    def test_sha_match_is_fresh(self) -> None:
+        assert not _is_verdict_stale_by_sha({"review_head_sha": "abc123"}, "abc123")
 
-    def test_mixed_timezone_formats(self) -> None:
-        """GitHub uses 'Z', Python isoformat uses '+00:00'; comparison must still work."""
-        assert _is_verdict_stale({"reviewed_at": "2026-07-19T10:00:00+00:00"}, "2026-07-20T12:00:00Z")
-        assert not _is_verdict_stale({"reviewed_at": "2026-07-20T14:00:00Z"}, "2026-07-19T08:00:00+00:00")
+    def test_missing_review_head_sha_key(self) -> None:
+        """Verdict dicts predating this field default to unanchored via .get()."""
+        assert not _is_verdict_stale_by_sha({}, "abc123")
 
 
 class TestBuildTaskItem:
@@ -1344,19 +1374,19 @@ class TestExtractSovaVerdictFromLabels:
         assert result is not None
         assert result["has_sova_review"] is True
         assert result["verdict"] == "approve"
-        assert result["reviewed_at"] == "1970-01-01T00:00:00Z"
+        assert result["review_head_sha"] is None
 
     def test_revise_label(self) -> None:
         result = _extract_sova_verdict_from_labels(["sova:revise", "type:feature"])
         assert result is not None
         assert result["verdict"] == "revise"
-        assert result["reviewed_at"] == "1970-01-01T00:00:00Z"
+        assert result["review_head_sha"] is None
 
     def test_block_label(self) -> None:
         result = _extract_sova_verdict_from_labels(["sova:block"])
         assert result is not None
         assert result["verdict"] == "block"
-        assert result["reviewed_at"] == "1970-01-01T00:00:00Z"
+        assert result["review_head_sha"] is None
 
     def test_no_verdict_label(self) -> None:
         result = _extract_sova_verdict_from_labels(["agent:in-review", "type:feature"])
@@ -1375,32 +1405,31 @@ class TestExtractSovaVerdictFromLabels:
         assert result is not None
         assert result["verdict"] == "approve"
 
-    def test_label_verdict_stale_relative_to_any_human_approval(self) -> None:
-        """Label-derived verdicts use epoch sentinel, so any real human approval wins."""
+    def test_label_verdict_never_stale_unanchored(self) -> None:
+        """Label-derived verdicts carry no SHA, so they are never reported stale."""
         verdict = _extract_sova_verdict_from_labels(["sova:block"])
         assert verdict is not None
-        # Any real timestamp is newer than the epoch sentinel.
-        assert _is_verdict_stale(verdict, "2026-01-01T00:00:00Z") is True
+        assert _is_verdict_stale_by_sha(verdict, "abc123") is False
 
-    def test_label_verdict_not_stale_without_approval(self) -> None:
-        """Without a human approval, the label verdict stands."""
+    def test_label_verdict_not_stale_without_pr_head_sha(self) -> None:
         verdict = _extract_sova_verdict_from_labels(["sova:revise"])
         assert verdict is not None
-        assert _is_verdict_stale(verdict, None) is False
+        assert _is_verdict_stale_by_sha(verdict, None) is False
 
-    def test_label_verdict_staleness_overrides_state(self) -> None:
-        """A stale label-derived block verdict lets the PR state through."""
+    def test_label_verdict_overrides_state_despite_pr_advancing(self) -> None:
+        """A label-derived block verdict is unanchored, so it still downgrades the state
+        even though the PR head has moved on since the verdict was recorded."""
         label_verdict = _extract_sova_verdict_from_labels(["sova:block"])
         assert (
             _state(
                 pr_data={
                     "computed_state": "approved_ci_green",
                     "state": "OPEN",
-                    "latest_approval_at": "2026-07-24T12:00:00Z",
+                    "head_sha": "def456",
                 },
                 sova_verdict=label_verdict,
             )
-            == WorkItemState.PR_READY_TO_MERGE
+            == WorkItemState.PR_SOVA_CHANGES
         )
 
 
@@ -1617,6 +1646,32 @@ class TestParseSovaReviewFromGithub:
         result = _parse_sova_review_from_github([review])
         assert result is not None
         assert result["verdict"] == "approve"
+
+    def test_detects_marker_with_sha(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        review = self._review("<!-- sova-review: revise sha=abc1234 -->\n\n## Review: REVISE")
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["verdict"] == "revise"
+        assert result["review_head_sha"] == "abc1234"
+
+    def test_marker_without_sha_is_unanchored(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        review = self._review("<!-- sova-review: approve -->")
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["review_head_sha"] is None
+
+    def test_heuristic_fallback_is_unanchored(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        body = "## PR Summary\nX.\n\n## Verdict\n\n**Approve.** Clean.\n"
+        review = self._review(body)
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["review_head_sha"] is None
 
     def test_skips_dismissed_reviews(self) -> None:
         from sova.dashboard.services.work_item_service import _parse_sova_review_from_github

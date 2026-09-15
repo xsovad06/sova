@@ -437,6 +437,53 @@ class TestAgentRecoveryDirect:
         assert result["finding_count"] == 0
         assert result["reviewed_at"] is not None
 
+    async def test_sova_review_verdict_no_run_review_head_sha_none(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        result = await get_sova_review_verdict("998")
+        assert result["review_head_sha"] is None
+
+    async def test_sova_review_verdict_exposes_review_head_sha_from_metadata(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="105",
+                    role="reviewer",
+                    status="done",
+                    handoff_json={
+                        "next_action": "address_review",
+                        "pending_findings": [{"file": "a.py", "severity": 8, "description": "bug"}],
+                        "metadata": {"review_head_sha": "abc1234"},
+                    },
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("105")
+        assert result["review_head_sha"] == "abc1234"
+
+    async def test_sova_review_verdict_missing_review_head_sha_defaults_none(self) -> None:
+        """A handoff written before this anchoring existed has no metadata.review_head_sha."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="106",
+                    role="reviewer",
+                    status="done",
+                    handoff_json={"next_action": "approve", "pending_findings": []},
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("106")
+        assert result["review_head_sha"] is None
+
     async def test_sova_review_verdict_block(self) -> None:
         from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 

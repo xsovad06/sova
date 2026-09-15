@@ -56,6 +56,16 @@ class TestFormatFindingsBody:
         body = _format_findings_body([], "")
         assert "## Review: APPROVE" in body
 
+    def test_marker_includes_sha_when_provided(self) -> None:
+        body = _format_findings_body([], "", sha="abc1234")
+        first_line = body.split("\n")[0]
+        assert first_line == "<!-- sova-review: approve sha=abc1234 -->"
+
+    def test_marker_omits_sha_when_not_provided(self) -> None:
+        body = _format_findings_body([], "", sha=None)
+        first_line = body.split("\n")[0]
+        assert first_line == "<!-- sova-review: approve -->"
+
 
 class TestFormatReviewBody:
     """_format_review_body delegates to _format_findings_body and includes the marker."""
@@ -67,6 +77,10 @@ class TestFormatReviewBody:
     def test_block_verdict_marker(self) -> None:
         body = _format_review_body([_finding(severity=8)], "")
         assert "<!-- sova-review: block -->" in body
+
+    def test_includes_sha_in_marker(self) -> None:
+        body = _format_review_body([], "", sha="def5678")
+        assert "<!-- sova-review: approve sha=def5678 -->" in body
 
 
 class TestFormatFindingsComment:

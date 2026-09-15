@@ -340,7 +340,7 @@ async def list_open_prs(*, repo: str, github_user: str = "", author: str | None 
         "--state",
         "open",
         "--json",
-        "number,title,headRefName,url,reviewDecision,isDraft,author,"
+        "number,title,headRefName,headRefOid,url,reviewDecision,isDraft,author,"
         "labels,createdAt,updatedAt,body,state,statusCheckRollup,mergeable,"
         "latestReviews,closingIssuesReferences,"
         "additions,deletions,changedFiles,assignees",
@@ -432,6 +432,57 @@ async def get_pr_branch(pr_number: int, *, repo: str, github_user: str = "") -> 
     except json.JSONDecodeError:
         return ""
     return data.get("headRefName", "") or ""
+
+
+async def get_pr_head_sha(pr_number: int, *, repo: str, github_user: str = "") -> str:
+    """Get the current head commit SHA of a PR. Returns empty string on failure."""
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "pr",
+        "view",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid",
+        env=env,
+    )
+    _track_gh_rate_limit(result, github_user)
+    if not result.success:
+        return ""
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return ""
+    return data.get("headRefOid", "") or ""
+
+
+async def get_pr_branch_and_head_sha(pr_number: int, *, repo: str, github_user: str = "") -> tuple[str, str]:
+    """Get the head branch name and head commit SHA of a PR in a single API call.
+
+    Returns (branch, head_sha), each an empty string on failure or a missing field.
+    """
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "pr",
+        "view",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--json",
+        "headRefName,headRefOid",
+        env=env,
+    )
+    _track_gh_rate_limit(result, github_user)
+    if not result.success:
+        return "", ""
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return "", ""
+    return data.get("headRefName", "") or "", data.get("headRefOid", "") or ""
 
 
 async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> PRStatus:

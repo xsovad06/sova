@@ -238,7 +238,7 @@ def compute_work_item_state(
             return _apply_sova_verdict(
                 mapped,
                 sova_verdict,
-                latest_approval_at=pr_data.get("latest_approval_at"),
+                pr_head_sha=pr_data.get("head_sha"),
                 external_reviews_enabled=external_reviews_enabled,
                 unresolved_thread_count=_unresolved_thread_count(pr_data),
             )
@@ -279,26 +279,24 @@ _VERDICT_OVERRIDEABLE = frozenset(
 )
 
 
-def _normalize_iso(ts: str) -> str:
-    """Normalize ISO 8601 timestamps so string comparison works across formats."""
-    return ts.replace("Z", "+00:00")
+def _is_verdict_stale_by_sha(sova_verdict: dict, pr_head_sha: str | None) -> bool:
+    """Return True if the verdict's reviewed commit no longer matches the PR's current head.
 
-
-def _is_verdict_stale(sova_verdict: dict, latest_approval_at: str | None) -> bool:
-    """Return True if a GitHub approval was submitted after the SOVA review."""
-    if not latest_approval_at:
+    A verdict with an unknown ``review_head_sha`` (e.g. label-only, or a marker
+    posted before this anchoring existed) is unanchored: it is reported as
+    fresh, not stale, since there is nothing to compare against.
+    """
+    review_head_sha = sova_verdict.get("review_head_sha")
+    if not review_head_sha or not pr_head_sha:
         return False
-    reviewed_at = sova_verdict.get("reviewed_at") or ""
-    if not reviewed_at:
-        return False
-    return _normalize_iso(latest_approval_at) > _normalize_iso(reviewed_at)
+    return review_head_sha != pr_head_sha
 
 
 def _apply_sova_verdict(
     mapped: WorkItemState,
     sova_verdict: dict | None,
     *,
-    latest_approval_at: str | None = None,
+    pr_head_sha: str | None = None,
     external_reviews_enabled: bool = True,
     unresolved_thread_count: int = 0,
 ) -> WorkItemState:
@@ -316,7 +314,7 @@ def _apply_sova_verdict(
         return WorkItemState.PR_AWAITING_REVIEW
 
     if has_review and verdict in ("revise", "block") and mapped in _VERDICT_OVERRIDEABLE:
-        if _is_verdict_stale(sova_verdict, latest_approval_at):
+        if _is_verdict_stale_by_sha(sova_verdict, pr_head_sha):
             return mapped
         return WorkItemState.PR_SOVA_CHANGES
 
