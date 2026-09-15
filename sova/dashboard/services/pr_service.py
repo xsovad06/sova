@@ -44,6 +44,7 @@ _COMPUTED_TO_EVENT: dict[str, str] = {
 
 class ComputedPRState(StrEnum):
     DRAFT = "draft"
+    CONFLICTED = "conflicted"
     CI_RUNNING = "ci_running"
     CI_FAILED = "ci_failed"
     CHANGES_REQUESTED = "changes_requested"
@@ -55,6 +56,7 @@ class ComputedPRState(StrEnum):
 
 _STATE_LABELS: dict[str, str] = {
     "draft": "Draft",
+    "conflicted": "Conflicts",
     "ci_running": "CI Running",
     "ci_failed": "CI Failed",
     "changes_requested": "Changes Requested",
@@ -237,6 +239,8 @@ def compute_pr_state(
     """Derive a single computed state from PR signals."""
     if is_draft:
         return ComputedPRState.DRAFT
+    if mergeable == "CONFLICTING":
+        return ComputedPRState.CONFLICTED
     if ci_status == "pending":
         return ComputedPRState.CI_RUNNING
     if ci_status == "failed":

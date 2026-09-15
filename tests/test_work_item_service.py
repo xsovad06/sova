@@ -151,6 +151,25 @@ class TestComputeWorkItemState:
             == WorkItemState.PR_CI_FAILED
         )
 
+    def test_pr_conflicted(self) -> None:
+        assert (
+            _state(
+                pr_data={"computed_state": "conflicted", "state": "OPEN"},
+            )
+            == WorkItemState.PR_CONFLICTED
+        )
+
+    def test_pr_conflicted_survives_sova_approved_verdict(self) -> None:
+        """Conflicted PRs must not be promoted to approved states even with a clean SOVA verdict."""
+        verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
+        assert (
+            _state(
+                pr_data={"computed_state": "conflicted", "state": "OPEN", "thread_total": 2, "thread_resolved": 2},
+                sova_verdict=verdict,
+            )
+            == WorkItemState.PR_CONFLICTED
+        )
+
     def test_pr_changes_requested(self) -> None:
         """GitHub-sourced changes_requested maps to PR_EXTERNAL_CHANGES (command path)."""
         assert (
@@ -358,6 +377,23 @@ class TestGetActions:
     def test_pr_draft_has_review(self) -> None:
         primary, _ = _get_actions(WorkItemState.PR_DRAFT, issue_number=None, pr_number=99)
         assert primary["id"] == "review_pr"
+
+    def test_pr_conflicted_has_rebase_primary_no_integrate(self) -> None:
+        primary, secondary = _get_actions(WorkItemState.PR_CONFLICTED, issue_number="42", pr_number=123)
+        assert primary is not None
+        assert primary["id"] == "rebase"
+        assert primary["handler"] == "trigger_rebase"
+        secondary_ids = [a["id"] for a in secondary]
+        assert "review_pr" in secondary_ids
+        assert "address_pr" in secondary_ids
+        all_ids = ([primary["id"]] if primary else []) + secondary_ids
+        assert "integrate" not in all_ids
+        assert all(a["handler_args"].get("command") != "integrate-pr" for a in secondary)
+
+    def test_pr_conflicted_without_issue_has_no_primary(self) -> None:
+        """attempt_auto_rebase() resolves via issue number; no issue means no rebase action."""
+        primary, _ = _get_actions(WorkItemState.PR_CONFLICTED, issue_number=None, pr_number=99)
+        assert primary is None
 
     def test_pr_awaiting_review_has_review(self) -> None:
         primary, _ = _get_actions(WorkItemState.PR_AWAITING_REVIEW, issue_number="42", pr_number=123)

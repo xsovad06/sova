@@ -300,7 +300,7 @@ var _taskStateFilter = localStorage.getItem('sova-task-state-filter') || '';
 
 var _STATE_FILTER_GROUPS = {
   running: ['agent_running'],
-  pr_stage: ['pr_draft', 'pr_ci_running', 'pr_ci_failed', 'pr_awaiting_review', 'pr_sova_pending',
+  pr_stage: ['pr_draft', 'pr_conflicted', 'pr_ci_running', 'pr_ci_failed', 'pr_awaiting_review', 'pr_sova_pending',
     'pr_changes_requested', 'pr_sova_changes', 'pr_external_changes',
     'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge'],
   ci_failed: ['pr_ci_failed'],
@@ -318,7 +318,7 @@ var _flaggedWrong = new Map();  // issueKey -> state that was flagged
 var _llmSuggestionFetching = new Set();
 
 var _PR_STAGE_STATES = new Set([
-  'pr_draft', 'pr_ci_running', 'pr_ci_failed',
+  'pr_draft', 'pr_conflicted', 'pr_ci_running', 'pr_ci_failed',
   'pr_awaiting_review', 'pr_sova_pending',
   'pr_changes_requested', 'pr_sova_changes', 'pr_external_changes',
   'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge'
@@ -529,6 +529,8 @@ function _renderActionBtn(action, issueKey) {
     onclick = "resumeFromApproval(" + Number(args.run_id) + ")";
   } else if (action.handler === 'handoff_execute') {
     onclick = "executeHandoffAction('" + escapeJsStr(action.id) + "', '" + escapeJsStr(issueKey) + "')";
+  } else if (action.handler === 'trigger_rebase') {
+    onclick = "triggerRebase(this, '" + escapeJsStr(String(args.issue || '')) + "')";
   } else {
     return '';
   }
@@ -1882,6 +1884,36 @@ async function resumeFromApproval(runId) {
     loadTaskCards();
   } catch (e) {
     showToast('Failed to resume: ' + e.message, 'error');
+  }
+}
+
+var _rebaseInFlight = new Set();
+
+async function triggerRebase(btnEl, issue) {
+  if (_rebaseInFlight.has(issue)) return;
+  _rebaseInFlight.add(issue);
+  if (btnEl) btnEl.disabled = true;
+  try {
+    var res = await fetch(apiUrl('/work/issue/' + encodeURIComponent(issue) + '/rebase'), { method: 'POST' });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to trigger rebase'), 'error');
+      return;
+    }
+    var result = await res.json();
+    if (result.status === 'failed') {
+      showToast(result.error || 'Rebase failed', 'error');
+    } else if (result.status === 'skipped') {
+      showToast(result.reason || 'Rebase skipped', 'warning');
+    } else {
+      showToast('Rebase succeeded', 'success');
+    }
+    loadAgents();
+    loadTaskCards();
+  } catch (e) {
+    showToast('Failed to trigger rebase: ' + e.message, 'error');
+  } finally {
+    _rebaseInFlight.delete(issue);
+    if (btnEl) btnEl.disabled = false;
   }
 }
 

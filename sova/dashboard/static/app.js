@@ -1221,6 +1221,7 @@ function issueStateColor(state) {
 
 var PR_STATE_COLORS = {
   draft:             'bg-gray-600/30 text-gray-400',
+  conflicted:        'bg-accent-red/20 text-accent-red',
   ci_running:        'bg-accent-yellow/20 text-accent-yellow',
   ci_failed:         'bg-accent-red/20 text-accent-red',
   changes_requested: 'bg-accent-peach/20 text-accent-peach',

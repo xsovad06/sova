@@ -459,6 +459,20 @@ class TestDependencyGraph:
         assert len(node["available_actions"]) == 1
         assert node["available_actions"][0]["role"] == "integrate-pr"
 
+    def test_to_dict_pr_state_action_url_substitutes_issue_id(self) -> None:
+        """An action's "{issue}" URL placeholder is filled with the node's own
+        issue id, so the rebase button posts to the right issue's endpoint."""
+        tasks = [_task(30, state=TaskState.IN_REVIEW)]
+        pr_map = {30: {"pr_number": 7, "pr_url": "", "pr_state": "conflicted", "pr_state_label": ""}}
+        pr_actions = {
+            "conflicted": [
+                {"id": "trigger-rebase", "label": "Rebase", "type": "api", "url": "/work/issue/{issue}/rebase"}
+            ],
+        }
+        d = DependencyGraph(tasks).to_dict(pr_map=pr_map, pr_state_actions=pr_actions)
+        node = d["nodes"][0]
+        assert node["available_actions"][0]["url"] == "/work/issue/30/rebase"
+
     def test_to_dict_pr_state_no_override_for_non_in_review(self) -> None:
         """Nodes not IN_REVIEW keep state-based actions even if PR is linked."""
         tasks = [_task(1, state=TaskState.IN_PROGRESS)]
@@ -1030,6 +1044,35 @@ class TestFetchPrMap:
         assert result[10]["pr_state"] == "approved_ci_green"
         assert 20 in result
         assert result[20]["pr_state"] == "ci_running"
+
+    @pytest.mark.asyncio
+    async def test_conflicted_state_maps_through(self) -> None:
+        """A merge-conflicted PR must not fall back to 'awaiting_review': that
+        silently drops its red graph color and its Address PR action (issue #990)."""
+        from sova.dashboard.routers.dependencies import _fetch_pr_map
+
+        mock_prs = [
+            {"number": 7, "url": "", "computed_state": "conflicted", "state_label": "Conflicts", "linked_issues": [30]},
+        ]
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", return_value=mock_prs):
+            result = await _fetch_pr_map()
+
+        assert result[30]["pr_state"] == "conflicted"
+
+    def test_conflicted_has_a_real_graph_action(self) -> None:
+        """The router's actual action table (not a test-local stand-in) must
+        surface something actionable for a conflicted PR, not the [] used for
+        merely-informational states like ci_running/draft. It must route to the
+        rebase endpoint (attempt_auto_rebase), not address-pr: that command
+        addresses review findings and CI failures, never merge conflicts."""
+        from sova.dashboard.routers.dependencies import _PR_STATE_ACTIONS, _PR_STATE_MAP
+        from sova.dashboard.services.pr_service import ComputedPRState
+
+        assert _PR_STATE_MAP[ComputedPRState.CONFLICTED] == "conflicted"
+        actions = _PR_STATE_ACTIONS["conflicted"]
+        assert actions != []
+        assert actions[0]["type"] == "api"
+        assert actions[0]["url"] == "/work/issue/{issue}/rebase"
 
     @pytest.mark.asyncio
     async def test_multiple_prs_per_issue_keeps_highest_number(self) -> None:

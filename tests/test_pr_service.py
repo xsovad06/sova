@@ -73,7 +73,7 @@ class TestComputePrState:
 
     def test_approved_not_mergeable(self) -> None:
         result = _state(review_decision="APPROVED", ci_status="passed", mergeable="CONFLICTING")
-        assert result == ComputedPRState.APPROVED
+        assert result == ComputedPRState.CONFLICTED
 
     def test_awaiting_review_default(self) -> None:
         assert _state(ci_status="none", mergeable="MERGEABLE") == ComputedPRState.AWAITING_REVIEW
@@ -114,9 +114,9 @@ class TestComputePrState:
         result = _state(ci_status="passed", mergeable="MERGEABLE", latest_reviews=None)
         assert result == ComputedPRState.APPROVED_CI_GREEN
 
-    def test_no_reviews_ci_green_not_mergeable_stays_awaiting(self) -> None:
+    def test_no_reviews_ci_green_not_mergeable_is_conflicted(self) -> None:
         result = _state(ci_status="passed", mergeable="CONFLICTING", latest_reviews=None)
-        assert result == ComputedPRState.AWAITING_REVIEW
+        assert result == ComputedPRState.CONFLICTED
 
     def test_bot_changes_requested_threads_resolved_ci_green(self) -> None:
         reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
@@ -275,6 +275,38 @@ class TestComputePrState:
             superseded_by_new_commit=True,
         )
         assert result == ComputedPRState.CHANGES_REQUESTED
+
+
+class TestConflictedState:
+    """mergeable == CONFLICTING must short-circuit compute_pr_state() to CONFLICTED."""
+
+    def test_conflicting_outranks_approved(self) -> None:
+        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="CONFLICTING")
+        assert result == ComputedPRState.CONFLICTED
+
+    def test_conflicting_outranks_ci_green(self) -> None:
+        result = _state(ci_status="passed", mergeable="CONFLICTING", latest_reviews=None)
+        assert result == ComputedPRState.CONFLICTED
+
+    def test_conflicting_outranks_changes_requested(self) -> None:
+        result = _state(review_decision="CHANGES_REQUESTED", ci_status="passed", mergeable="CONFLICTING")
+        assert result == ComputedPRState.CONFLICTED
+
+    def test_conflicting_outranks_ci_failed(self) -> None:
+        result = _state(ci_status="failed", mergeable="CONFLICTING")
+        assert result == ComputedPRState.CONFLICTED
+
+    def test_conflicting_outranks_awaiting_review(self) -> None:
+        result = _state(mergeable="CONFLICTING")
+        assert result == ComputedPRState.CONFLICTED
+
+    def test_unknown_mergeable_is_not_conflicted(self) -> None:
+        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="UNKNOWN")
+        assert result == ComputedPRState.APPROVED
+
+    def test_draft_precedence_unchanged(self) -> None:
+        result = _state(is_draft=True, mergeable="CONFLICTING")
+        assert result == ComputedPRState.DRAFT
 
 
 class TestParseLinkedIssue:
