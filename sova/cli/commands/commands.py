@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import difflib
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Callable, Optional
 
 import typer
 from rich.console import Console
@@ -13,6 +13,7 @@ from rich.table import Table
 from sova.commands.catalog import get_canonical_dir, get_guidelines_dir, get_skills_dir
 from sova.commands.distribution import (
     ReverseDiffResult,
+    UpdateResult,
     diff_commands,
     diff_skills,
     list_commands,
@@ -24,6 +25,7 @@ from sova.commands.distribution import (
 )
 from sova.commands.templates import build_variables, reverse_render
 from sova.config.loader import load_config
+from sova.config.models import ProjectConfig
 from sova.config.registry import list_projects
 from sova.utils.logging import get_logger
 
@@ -120,18 +122,13 @@ def update_cmd(
         console.print("[dim]Use --force to overwrite, or manually merge.[/dim]")
 
 
-@app.command(name="sync")
-def sync_cmd(
-    include_autonomous: Annotated[bool, typer.Option("--autonomous", help="Include autonomous agent commands.")] = True,
-    force: Annotated[bool, typer.Option("--force", help="Overwrite customized commands.")] = False,
-) -> None:
-    """Sync commands across all registered projects."""
+def _sync_across_projects(subdir: Path, run_update: Callable[[Path, ProjectConfig], UpdateResult]) -> None:
+    """Apply run_update to subdir in every registered project, printing a per-project and summary report."""
     projects = list_projects()
     if not projects:
         console.print("[yellow]No projects registered. Run 'sova install' first.[/yellow]")
         return
 
-    canonical_dir = get_canonical_dir()
     total_updated = 0
     total_skipped = 0
     all_conflicts: list[tuple[str, str]] = []
@@ -142,7 +139,7 @@ def sync_cmd(
             console.print(f"  [red]{slug}[/red]: directory not found ({path_str})")
             continue
 
-        target_dir = project_dir / _COMMANDS_SUBDIR
+        target_dir = project_dir / subdir
         try:
             cfg = load_config(project_dir)
         except Exception:  # noqa: BLE001 (one project must not abort the sync loop)
@@ -151,13 +148,7 @@ def sync_cmd(
             continue
 
         target_dir.mkdir(parents=True, exist_ok=True)
-        result = update_commands(
-            canonical_dir,
-            target_dir,
-            cfg,
-            include_autonomous=include_autonomous,
-            force=force,
-        )
+        result = run_update(target_dir, cfg)
 
         total_updated += result.updated
         total_skipped += result.skipped
@@ -174,6 +165,21 @@ def sync_cmd(
         console.print(f"[yellow]Conflicts ({len(all_conflicts)}):[/yellow]")
         for slug, name in all_conflicts:
             console.print(f"  ! {slug}/{name}")
+
+
+@app.command(name="sync")
+def sync_cmd(
+    include_autonomous: Annotated[bool, typer.Option("--autonomous", help="Include autonomous agent commands.")] = True,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite customized commands.")] = False,
+) -> None:
+    """Sync commands across all registered projects."""
+    canonical_dir = get_canonical_dir()
+    _sync_across_projects(
+        _COMMANDS_SUBDIR,
+        lambda target_dir, cfg: update_commands(
+            canonical_dir, target_dir, cfg, include_autonomous=include_autonomous, force=force
+        ),
+    )
 
 
 _SKILLS_SUBDIR = Path(".claude") / "skills"
@@ -249,6 +255,17 @@ def skills_update_cmd(
         for name in result.conflicts:
             console.print(f"  ! {name} -- locally modified, source also changed")
         console.print("[dim]Use --force to overwrite, or manually merge.[/dim]")
+
+
+@app.command(name="skills-sync")
+def skills_sync_cmd(
+    force: Annotated[bool, typer.Option("--force", help="Overwrite customized skills.")] = False,
+) -> None:
+    """Sync skills across all registered projects."""
+    skills_dir = get_skills_dir()
+    _sync_across_projects(
+        _SKILLS_SUBDIR, lambda target_dir, cfg: update_skills(skills_dir, target_dir, cfg, force=force)
+    )
 
 
 _RULES_SUBDIR = Path(".claude") / "rules"

@@ -1966,6 +1966,79 @@ class TestSkillsCLICommands:
         assert "testing-patterns" in result.output
         assert "--force" in result.output
 
+    def test_skills_sync_no_projects(self) -> None:
+        """skills-sync tells the user to install first when no projects are registered."""
+        from sova.cli.app import app
+
+        with patch(f"{self._MOD}.list_projects", return_value={}):
+            result = runner.invoke(app, ["commands", "skills-sync"])
+        assert result.exit_code == 0
+        assert "No projects registered" in result.output
+
+    def test_skills_sync_across_projects(self, tmp_path: Path) -> None:
+        """skills-sync updates each registered project and prints a summary."""
+        from sova.cli.app import app
+        from sova.commands.distribution import UpdateResult
+
+        proj_a = tmp_path / "a"
+        proj_a.mkdir()
+        proj_b = tmp_path / "b"
+        proj_b.mkdir()
+
+        with (
+            patch(f"{self._MOD}.list_projects", return_value={"a": str(proj_a), "b": str(proj_b)}),
+            patch(f"{self._MOD}.load_config"),
+            patch(f"{self._MOD}.get_skills_dir", return_value=tmp_path),
+            patch(f"{self._MOD}.update_skills", return_value=UpdateResult(updated=1, skipped=2)),
+        ):
+            result = runner.invoke(app, ["commands", "skills-sync"])
+        assert result.exit_code == 0
+        assert "a: " in result.output
+        assert "b: " in result.output
+        assert "2 updated, 4 unchanged across 2 project(s)" in result.output
+
+    def test_skills_sync_missing_project_dir(self, tmp_path: Path) -> None:
+        """skills-sync skips a registered project whose directory no longer exists."""
+        from sova.cli.app import app
+
+        missing = tmp_path / "gone"
+        with patch(f"{self._MOD}.list_projects", return_value={"gone": str(missing)}):
+            result = runner.invoke(app, ["commands", "skills-sync"])
+        assert result.exit_code == 0
+        assert "directory not found" in result.output
+
+    def test_skills_sync_load_config_failure(self, tmp_path: Path) -> None:
+        """skills-sync skips a project whose config fails to load, without aborting the loop."""
+        from sova.cli.app import app
+
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        with (
+            patch(f"{self._MOD}.list_projects", return_value={"broken": str(broken)}),
+            patch(f"{self._MOD}.load_config", side_effect=RuntimeError("bad config")),
+        ):
+            result = runner.invoke(app, ["commands", "skills-sync"])
+        assert result.exit_code == 0
+        assert "failed to load config" in result.output
+
+    def test_skills_sync_zero_updates(self, tmp_path: Path) -> None:
+        """skills-sync renders the dim '+0' status when a project has nothing to update."""
+        from sova.cli.app import app
+        from sova.commands.distribution import UpdateResult
+
+        proj = tmp_path / "up-to-date"
+        proj.mkdir()
+        with (
+            patch(f"{self._MOD}.list_projects", return_value={"up-to-date": str(proj)}),
+            patch(f"{self._MOD}.load_config"),
+            patch(f"{self._MOD}.get_skills_dir", return_value=tmp_path),
+            patch(f"{self._MOD}.update_skills", return_value=UpdateResult(updated=0, skipped=3)),
+        ):
+            result = runner.invoke(app, ["commands", "skills-sync"])
+        assert result.exit_code == 0
+        assert "+0" in result.output
+        assert "0 updated, 3 unchanged across 1 project(s)" in result.output
+
 
 class TestSetupFunction:
     _MOD = "sova.cli.commands.project"
