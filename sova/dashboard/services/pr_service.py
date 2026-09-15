@@ -176,11 +176,18 @@ def _summarize_ci(rollup: list[dict] | None) -> str:
     return "none"
 
 
+def _is_bot_login(login: str) -> bool:
+    """Check if a login belongs to a bot account: [bot] suffix or a known CodeRabbit alias."""
+    from sova.adapters.external_reviews import DEFAULT_CODERABBIT_AUTHORS
+
+    login = login.lower()
+    return login.endswith("[bot]") or login in DEFAULT_CODERABBIT_AUTHORS
+
+
 def _is_bot_review(review: dict) -> bool:
-    """Check if a review is from a bot based on [bot] login suffix."""
+    """Check if a review is from a bot account."""
     author = review.get("author") or {}
-    login = author.get("login") or ""
-    return login.endswith("[bot]")
+    return _is_bot_login(author.get("login") or "")
 
 
 def _extract_cr_reviews(latest_reviews: list[dict]) -> list[dict]:
@@ -277,14 +284,36 @@ def _extract_review_logins(latest_reviews: list[dict] | None) -> list[str]:
 
 
 def _extract_latest_approval_at(latest_reviews: list[dict] | None) -> str | None:
-    """Return the most recent APPROVED review's submittedAt timestamp, or None."""
+    """Return the most recent human-approved review's submittedAt timestamp, or None.
+
+    Excludes bot approvals (CodeRabbit or any other bot): a bot's approval must
+    never be mistaken for a human sign-off. Mirrors the login-based bot check
+    in sova/supervisor/gates/review_completed.py:_has_human_approval().
+    """
     best: str | None = None
     for rev in latest_reviews or []:
-        if rev.get("state") == "APPROVED":
-            ts = rev.get("submittedAt") or ""
-            if ts and (best is None or ts > best):
-                best = ts
+        if rev.get("state") != "APPROVED" or _is_bot_review(rev):
+            continue
+        ts = rev.get("submittedAt") or ""
+        if ts and (best is None or ts > best):
+            best = ts
     return best
+
+
+def _extract_pr_labels(raw: dict) -> list[str]:
+    """Extract label names from raw PR data."""
+    return [lbl.get("name", "") for lbl in (raw.get("labels") or [])]
+
+
+def _extract_pr_assignees(raw: dict) -> list[str]:
+    """Extract non-empty assignee logins from raw PR data."""
+    return [a.get("login", "") for a in (raw.get("assignees") or []) if a.get("login")]
+
+
+def _count_pr_commits(raw: dict) -> int:
+    """Count commits on the PR, tolerating a non-list `commits` field."""
+    commits_node = raw.get("commits") or []
+    return len(commits_node) if isinstance(commits_node, list) else 0
 
 
 def _enrich_pr(raw: dict, now: float) -> dict:
@@ -307,16 +336,15 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     )
 
     author = raw.get("author") or {}
-    labels = [lbl.get("name", "") for lbl in (raw.get("labels") or [])]
-    assignee_nodes = raw.get("assignees") or []
-    pr_assignees = [a.get("login", "") for a in assignee_nodes if a.get("login")]
-    commits_node = raw.get("commits") or []
-    commit_count = len(commits_node) if isinstance(commits_node, list) else 0
+    labels = _extract_pr_labels(raw)
+    pr_assignees = _extract_pr_assignees(raw)
+    commit_count = _count_pr_commits(raw)
 
     return {
         "number": raw["number"],
         "title": raw.get("title", ""),
         "branch": raw.get("headRefName", ""),
+        "head_sha": raw.get("headRefOid", "") or "",
         "url": raw.get("url", ""),
         "state": raw.get("state", "OPEN"),
         "computed_state": computed,

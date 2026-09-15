@@ -368,7 +368,7 @@ def _make_protected_path_finding(matched_files: list[str]) -> ReviewFinding:
     )
 
 
-def _format_findings_body(findings: list[ReviewFinding], summary: str) -> str:
+def _format_findings_body(findings: list[ReviewFinding], summary: str, sha: str | None = None) -> str:
     """Build the shared review body used by both review API and comment fallback."""
     finding_dicts = [
         {
@@ -381,12 +381,12 @@ def _format_findings_body(findings: list[ReviewFinding], summary: str) -> str:
         }
         for f in findings
     ]
-    return format_review_body(finding_dicts, summary)
+    return format_review_body(finding_dicts, summary, sha=sha)
 
 
-def _format_findings_comment(findings: list[ReviewFinding], summary: str) -> str:
+def _format_findings_comment(findings: list[ReviewFinding], summary: str, sha: str | None = None) -> str:
     """Format findings into a GitHub PR comment (fallback path)."""
-    return _format_findings_body(findings, summary)
+    return _format_findings_body(findings, summary, sha=sha)
 
 
 def _format_inline_comment(finding: ReviewFinding) -> str:
@@ -401,9 +401,10 @@ def _format_inline_comment(finding: ReviewFinding) -> str:
 def _format_review_body(
     findings: list[ReviewFinding],
     summary: str,
+    sha: str | None = None,
 ) -> str:
     """Format the review body for the PR review API (with inline comments)."""
-    return _format_findings_body(findings, summary)
+    return _format_findings_body(findings, summary, sha=sha)
 
 
 def _build_review_comments(

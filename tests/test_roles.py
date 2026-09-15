@@ -956,9 +956,14 @@ class TestReviewerRole:
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/issue-42"),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", "abc123"),
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -990,6 +995,7 @@ class TestReviewerRole:
             ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1018,12 +1024,13 @@ class TestReviewerRole:
 
         with (
             patch(
-                "sova.roles.reviewer.get_pr_branch",
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
                 new_callable=AsyncMock,
-                return_value="feat/issue-42",
+                return_value=("feat/issue-42", "abc123"),
             ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1060,6 +1067,7 @@ class TestReviewerRole:
             ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
@@ -1109,12 +1117,13 @@ class TestReviewerRole:
 
         with (
             patch(
-                "sova.roles.reviewer.get_pr_branch",
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("gh failed"),
             ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1139,9 +1148,14 @@ class TestReviewerRole:
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/x"),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("feat/x", "abc123"),
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1172,9 +1186,14 @@ class TestReviewerRole:
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/x"),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("feat/x", "abc123"),
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch(
                 "sova.roles.reviewer.write_handoff",
@@ -1203,9 +1222,14 @@ class TestReviewerRole:
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/x"),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("feat/x", "abc123"),
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch(
@@ -1234,9 +1258,14 @@ class TestReviewerRole:
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/x"),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("feat/x", "abc123"),
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1288,9 +1317,12 @@ class TestReviewerRole:
         )
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value=""),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha", new_callable=AsyncMock, return_value=("", "abc123")
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=real_diff),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1324,9 +1356,12 @@ class TestReviewerRole:
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value=""),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha", new_callable=AsyncMock, return_value=("", "abc123")
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1375,9 +1410,12 @@ class TestReviewerRole:
         )
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value=""),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha", new_callable=AsyncMock, return_value=("", "abc123")
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=real_diff),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1421,9 +1459,12 @@ class TestReviewerRole:
         )
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value=""),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha", new_callable=AsyncMock, return_value=("", "abc123")
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=real_diff),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1486,9 +1527,14 @@ class TestReviewerRole:
 
         try:
             with (
-                patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/issue-42"),
+                patch(
+                    "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                    new_callable=AsyncMock,
+                    return_value=("feat/issue-42", "abc123"),
+                ),
                 patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
                 patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+                patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
                 patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=_capture_invoke),
                 patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
                 patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -1529,9 +1575,14 @@ class TestReviewerRole:
             return llm_result
 
         with (
-            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/issue-42"),
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", "abc123"),
+            ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=_capture_invoke),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -4065,6 +4116,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff content"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py", "bar.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -4094,6 +4146,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -4119,6 +4172,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=RuntimeError("LLM unavailable")),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -4162,6 +4216,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=large_diff),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py", "b.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=side) as mock_invoke,
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -4191,6 +4246,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
@@ -4225,6 +4281,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
@@ -4260,6 +4317,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
@@ -4288,6 +4346,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
@@ -4361,6 +4420,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -4401,6 +4461,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -4447,6 +4508,7 @@ class TestReviewerLLMReview:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
@@ -4871,7 +4933,7 @@ class TestReviewerExceptionPaths:
     """Cover except-Exception branches in ReviewerRole methods."""
 
     async def test_discover_pr_branch_exception_non_fatal(self) -> None:
-        """_discover_pr handles get_pr_branch failure gracefully (lines 534-535)."""
+        """_discover_pr handles get_pr_branch_and_head_sha failure gracefully (lines 534-535)."""
         from unittest.mock import patch
 
         from sova.roles.reviewer import ReviewerRole
@@ -4882,15 +4944,16 @@ class TestReviewerExceptionPaths:
         role = ReviewerRole()
 
         with patch(
-            "sova.roles.reviewer.get_pr_branch",
+            "sova.roles.reviewer.get_pr_branch_and_head_sha",
             new_callable=AsyncMock,
             side_effect=RuntimeError("API down"),
         ):
-            result = await role._discover_pr(ctx)
+            error_msg, head_sha = await role._discover_pr(ctx)
 
-        # Should succeed (return None) but branch_name remains unset
-        assert result is None
+        # Should succeed (return None) but branch_name and head_sha remain unset
+        assert error_msg is None
         assert ctx.branch_name is None
+        assert head_sha == ""
 
     async def test_extract_review_memories_exception_non_fatal(self) -> None:
         """_extract_review_memories handles extraction failure gracefully (lines 564-565)."""
@@ -5058,6 +5121,7 @@ class TestReviewerExceptionPaths:
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,

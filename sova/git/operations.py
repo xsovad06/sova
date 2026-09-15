@@ -94,10 +94,16 @@ from sova.git.pr import (
     get_pr_branch as get_pr_branch,
 )
 from sova.git.pr import (
+    get_pr_branch_and_head_sha as get_pr_branch_and_head_sha,
+)
+from sova.git.pr import (
     get_pr_diff as get_pr_diff,
 )
 from sova.git.pr import (
     get_pr_files as get_pr_files,
+)
+from sova.git.pr import (
+    get_pr_head_sha as get_pr_head_sha,
 )
 from sova.git.pr import (
     get_pr_status as get_pr_status,

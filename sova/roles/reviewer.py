@@ -25,7 +25,13 @@ from sova.core.spec_utils import find_spec_file
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.git.diff import parse_diff_lines
-from sova.git.operations import find_pr_for_issue, get_pr_branch, get_pr_diff, get_pr_files
+from sova.git.operations import (
+    find_pr_for_issue,
+    get_pr_branch_and_head_sha,
+    get_pr_diff,
+    get_pr_files,
+    get_pr_head_sha,
+)
 from sova.ipc.handoff import (
     AgentHandoff,
     DashboardHandoff,
@@ -162,10 +168,18 @@ class ReviewerRole(AgentRole):
                 f"expected one of {', '.join(self.allowed_input_states)}",
             )
 
-        if error_msg := await self._discover_pr(ctx):
+        error_msg, head_sha = await self._discover_pr(ctx)
+        if error_msg:
             return RoleResult(success=False, summary=error_msg, error=error_msg)
 
         log.info("reviewer.start", issue=ctx.issue_number, pr=ctx.pr_number, branch=ctx.branch_name)
+
+        if not head_sha:
+            try:
+                head_sha = await get_pr_head_sha(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+            except (RuntimeError, OSError):
+                log.warning("reviewer.head_sha_fetch_failed", pr=ctx.pr_number, exc_info=True)
+                head_sha = ""
 
         try:
             diff = await get_pr_diff(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
@@ -191,14 +205,14 @@ class ReviewerRole(AgentRole):
 
         self._append_review_rationale(ctx, review)
 
-        post_succeeded = await self._post_review(ctx, review, diff)
+        post_succeeded = await self._post_review(ctx, review, diff, sha=head_sha or None)
         if not post_succeeded:
             review.post_failed = True
 
         if not review.post_failed:
             await self._write_verdict_label(ctx, review)
 
-        await self._write_handoff(ctx, review)
+        await self._write_handoff(ctx, review, review_head_sha=head_sha or None)
 
         await self._extract_review_memories(ctx, task, review)
 
@@ -212,11 +226,13 @@ class ReviewerRole(AgentRole):
             findings=[f.description for f in review.findings],
         )
 
-    async def _discover_pr(self, ctx: ExecutionContext) -> str | None:
+    async def _discover_pr(self, ctx: ExecutionContext) -> tuple[str | None, str]:
         """Discover PR number and branch for the issue.
 
-        Returns an error message string if discovery fails, or ``None`` on
-        success (PR number and branch populated on *ctx*).
+        Returns (error_msg, head_sha). error_msg is ``None`` on success (PR
+        number and branch populated on *ctx*). head_sha is populated only when
+        branch discovery incidentally fetched it (combined API call), sparing
+        the caller a duplicate ``gh pr view`` round-trip; otherwise empty.
         """
         if not ctx.pr_number:
             log.info("reviewer.discovering_pr", issue=ctx.issue_number)
@@ -232,19 +248,21 @@ class ReviewerRole(AgentRole):
                     ctx.branch_name = pr_info.branch
                 log.info("reviewer.pr_discovered", pr=pr_info.number, branch=ctx.branch_name)
             else:
-                return f"Issue #{ctx.issue_number} has no linked PR"
+                return f"Issue #{ctx.issue_number} has no linked PR", ""
 
         if ctx.pr_number and not ctx.branch_name:
             try:
-                ctx.branch_name = await get_pr_branch(
+                branch, head_sha = await get_pr_branch_and_head_sha(
                     ctx.pr_number,
                     repo=ctx.repo,
                     github_user=ctx.config.github_user,
                 )
+                ctx.branch_name = branch
+                return None, head_sha
             except (RuntimeError, OSError):
                 log.warning("reviewer.branch_discovery_failed", exc_info=True)
 
-        return None
+        return None, ""
 
     async def _load_addressed_findings(self, ctx: ExecutionContext) -> list[dict]:
         """Load addressed external findings from the developer's handoff.
@@ -330,8 +348,13 @@ class ReviewerRole(AgentRole):
         except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("reviewer.clear_step_failed", exc_info=True)
 
-    async def _post_review(self, ctx: ExecutionContext, review: ReviewResult, diff: str) -> bool:
+    async def _post_review(
+        self, ctx: ExecutionContext, review: ReviewResult, diff: str, *, sha: str | None = None
+    ) -> bool:
         """Post review findings as inline PR review comments, with fallback.
+
+        ``sha`` is the reviewed PR head commit, embedded in the machine-readable
+        marker so the verdict can be anchored to the commit it reviewed.
 
         Returns True if the review was posted successfully via any method,
         False if all posting attempts failed. Never raises: callers must check
@@ -342,7 +365,7 @@ class ReviewerRole(AgentRole):
         diff_lines = parse_diff_lines(diff)
         inline_comments, body_only = _build_review_comments(review.findings, diff_lines)
 
-        body = _format_review_body(review.findings, review.summary)
+        body = _format_review_body(review.findings, review.summary, sha)
 
         try:
             await ctx.adapter.post_pr_review(
@@ -370,7 +393,7 @@ class ReviewerRole(AgentRole):
             else:
                 log.warning("reviewer.review_api_failed", exc_info=True)
 
-        fallback = _format_findings_comment(review.findings, review.summary)
+        fallback = _format_findings_comment(review.findings, review.summary, sha)
         try:
             await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
             log.info("reviewer.posted_comment_fallback", finding_count=len(review.findings))
@@ -626,7 +649,9 @@ class ReviewerRole(AgentRole):
         except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning("reviewer.verdict_label_failed", issue=issue, label=label, exc_info=True)
 
-    async def _write_handoff(self, ctx: ExecutionContext, review: ReviewResult) -> None:
+    async def _write_handoff(
+        self, ctx: ExecutionContext, review: ReviewResult, *, review_head_sha: str | None = None
+    ) -> None:
         """Write both DB-backed and file-based handoffs.
 
         When ``review.post_failed`` is True (all posting attempts failed), the
@@ -634,6 +659,10 @@ class ReviewerRole(AgentRole):
         Re-run Review action with ``auto_execute=False``. This prevents
         ``_process_auto_handoff()`` from spawning a spurious address-review cycle
         and prevents ``get_sova_review_verdict()`` from defaulting to "revise".
+
+        ``review_head_sha`` is the PR head commit this review was performed
+        against, recorded in handoff metadata so the verdict can be anchored
+        to the reviewed commit rather than a timestamp.
         """
         actionable = review.actionable
 
@@ -663,7 +692,7 @@ class ReviewerRole(AgentRole):
                 key_decisions=[],
                 next_action=next_action,
                 pending_findings=findings_data,
-                metadata={"finding_summary": finding_summary},
+                metadata={"finding_summary": finding_summary, "review_head_sha": review_head_sha},
                 pr_number=ctx.pr_number,
                 branch_name=ctx.branch_name,
             )
@@ -713,7 +742,7 @@ class ReviewerRole(AgentRole):
                 key_decisions=[],
                 next_action=next_action,
                 pending_findings=findings_data,
-                metadata={"finding_summary": finding_summary},
+                metadata={"finding_summary": finding_summary, "review_head_sha": review_head_sha},
                 pr_number=ctx.pr_number,
                 branch_name=ctx.branch_name,
             )

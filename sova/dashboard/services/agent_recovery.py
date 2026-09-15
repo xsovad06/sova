@@ -707,6 +707,7 @@ async def get_sova_review_verdict(
         "finding_count": 0,
         "reviewed_at": None,
         "run_status": None,
+        "review_head_sha": None,
     }
 
     if issue_number is None and pr_number is None:
@@ -810,6 +811,7 @@ async def get_sova_review_verdict(
                     "finding_count": 0,
                     "reviewed_at": run_ts.isoformat() if run_ts else None,
                     "run_status": "done",
+                    "review_head_sha": None,
                 }
 
             handoff = run.handoff_json
@@ -842,6 +844,7 @@ async def get_sova_review_verdict(
                     "finding_summary": metadata.get("finding_summary"),
                     "reviewed_at": ts.isoformat() if (ts := run.ended_at or run.started_at) else None,
                     "run_status": run.status,
+                    "review_head_sha": metadata.get("review_head_sha"),
                 }
 
             # No handoff_json -- parse verdict from the agent's output lines.
@@ -862,6 +865,7 @@ async def get_sova_review_verdict(
                 "finding_count": 0,
                 "reviewed_at": ts.isoformat() if (ts := run.ended_at or run.started_at) else None,
                 "run_status": run.status,
+                "review_head_sha": None,
             }
     except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("sova_review_verdict.query_failed", issue=issue_number, exc_info=True)

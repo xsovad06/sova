@@ -7627,37 +7627,37 @@ class TestReviewPrVerdictPersistence:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
 
         lines = ["some output", "<!-- sova-review: approve -->", "more output"]
-        assert _extract_review_verdict_marker(lines) == "approve"
+        assert _extract_review_verdict_marker(lines) == ("approve", None)
 
     async def test_extract_marker_revise(self) -> None:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
 
         lines = ["<!-- sova-review: revise -->"]
-        assert _extract_review_verdict_marker(lines) == "revise"
+        assert _extract_review_verdict_marker(lines) == ("revise", None)
 
     async def test_extract_marker_block(self) -> None:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
 
         lines = ["<!-- sova-review: block -->"]
-        assert _extract_review_verdict_marker(lines) == "block"
+        assert _extract_review_verdict_marker(lines) == ("block", None)
 
     async def test_extract_marker_case_insensitive(self) -> None:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
 
         lines = ["<!-- sova-review: APPROVE -->"]
-        assert _extract_review_verdict_marker(lines) == "approve"
+        assert _extract_review_verdict_marker(lines) == ("approve", None)
 
     async def test_extract_marker_last_wins(self) -> None:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
 
         lines = ["<!-- sova-review: approve -->", "<!-- sova-review: revise -->"]
-        assert _extract_review_verdict_marker(lines) == "revise"
+        assert _extract_review_verdict_marker(lines) == ("revise", None)
 
     async def test_extract_marker_same_line_last_wins(self) -> None:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
 
         lines = ["<!-- sova-review: approve --> <!-- sova-review: revise -->"]
-        assert _extract_review_verdict_marker(lines) == "revise"
+        assert _extract_review_verdict_marker(lines) == ("revise", None)
 
     async def test_extract_marker_none_when_absent(self) -> None:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
@@ -7669,7 +7669,13 @@ class TestReviewPrVerdictPersistence:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
 
         lines = ["<!--  sova-review:  approve  -->"]
-        assert _extract_review_verdict_marker(lines) == "approve"
+        assert _extract_review_verdict_marker(lines) == ("approve", None)
+
+    async def test_extract_marker_captures_sha(self) -> None:
+        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
+
+        lines = ["<!-- sova-review: revise sha=abc1234 -->"]
+        assert _extract_review_verdict_marker(lines) == ("revise", "abc1234")
 
     async def test_persist_writes_handoff_json_approve(self) -> None:
         from sova.dashboard.services.agent_db import _persist_review_verdict
@@ -7722,6 +7728,22 @@ class TestReviewPrVerdictPersistence:
             run = await session.get(TaskRun, run_id)
             assert run.handoff_json["next_action"] == "address_review"
 
+    async def test_persist_writes_review_head_sha_metadata(self) -> None:
+        from sova.dashboard.services.agent_db import _persist_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="359", role="command:review-pr", status="done", pr_number=209)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        await _persist_review_verdict(run_id, "revise", None, sha="abc1234")
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.handoff_json["metadata"]["review_head_sha"] == "abc1234"
+
     async def test_persist_skips_when_handoff_already_set(self) -> None:
         from sova.dashboard.services.agent_db import _persist_review_verdict
 
@@ -7759,7 +7781,7 @@ class TestReviewPrVerdictPersistence:
             await session.flush()
             run_id = run.id
 
-            session.add(OutputLine(task_run_id=run_id, line_number=1, text="<!-- sova-review: revise -->"))
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="<!-- sova-review: revise sha=deadbeef -->"))
             session.add(
                 OutputLine(
                     task_run_id=run_id,
@@ -7780,6 +7802,7 @@ class TestReviewPrVerdictPersistence:
             run = await session.get(TaskRun, run_id)
             assert run.handoff_json is not None
             assert run.handoff_json["next_action"] == "address_review"
+            assert run.handoff_json["metadata"]["review_head_sha"] == "deadbeef"
 
     async def test_validate_review_pr_falls_back_to_prose_verdict(self) -> None:
         from unittest.mock import MagicMock

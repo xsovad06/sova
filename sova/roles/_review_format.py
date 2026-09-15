@@ -90,6 +90,7 @@ def format_review_body(
     findings: list[dict],
     summary: str = "",
     positives: list[str] | None = None,
+    sha: str | None = None,
 ) -> str:
     """Format a complete review body in markdown.
 
@@ -98,9 +99,12 @@ def format_review_body(
             category, description, suggestion.
         summary: Overall review summary text.
         positives: Positive observations. Section omitted when empty/None.
+        sha: Full SHA of the reviewed PR head commit. When known, embedded in
+            the marker so the verdict can be anchored to the reviewed commit.
     """
     verdict = verdict_from_findings(findings)
-    lines = [f"<!-- sova-review: {verdict.lower()} -->", "", f"## Review: {verdict}", ""]
+    sha_suffix = f" sha={sha}" if sha else ""
+    lines = [f"<!-- sova-review: {verdict.lower()}{sha_suffix} -->", "", f"## Review: {verdict}", ""]
 
     effective_summary = (summary or "").strip() or "Review of changes."
     lines.extend([effective_summary, ""])

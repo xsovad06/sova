@@ -25,8 +25,10 @@ from sova.git.operations import (
     get_ci_failure_logs,
     get_current_branch,
     get_pr_body,
+    get_pr_branch_and_head_sha,
     get_pr_diff,
     get_pr_files,
+    get_pr_head_sha,
     get_pr_status,
     push,
     rebase,
@@ -2101,6 +2103,56 @@ class TestGetPrFiles:
             mock_run.return_value = _shell_fail(stderr="not found")
             with pytest.raises(RuntimeError, match="Failed to get files"):
                 await get_pr_files(42, repo="user/repo")
+
+
+class TestGetPrHeadSha:
+    async def test_returns_sha(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout='{"headRefOid": "abc1234567"}')
+            result = await get_pr_head_sha(42, repo="user/repo")
+
+        assert result == "abc1234567"
+
+    async def test_returns_empty_on_failure(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="not found")
+            result = await get_pr_head_sha(42, repo="user/repo")
+
+        assert result == ""
+
+    async def test_returns_empty_on_malformed_json(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="not json")
+            result = await get_pr_head_sha(42, repo="user/repo")
+
+        assert result == ""
+
+
+class TestGetPrBranchAndHeadSha:
+    async def test_returns_branch_and_sha_in_one_call(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout='{"headRefName": "feat/x", "headRefOid": "abc1234567"}')
+            branch, sha = await get_pr_branch_and_head_sha(42, repo="user/repo")
+
+        assert branch == "feat/x"
+        assert sha == "abc1234567"
+        assert mock_run.call_count == 1
+
+    async def test_returns_empty_tuple_on_failure(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="not found")
+            branch, sha = await get_pr_branch_and_head_sha(42, repo="user/repo")
+
+        assert branch == ""
+        assert sha == ""
+
+    async def test_returns_empty_tuple_on_malformed_json(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="not json")
+            branch, sha = await get_pr_branch_and_head_sha(42, repo="user/repo")
+
+        assert branch == ""
+        assert sha == ""
 
 
 # ---------------------------------------------------------------------------
