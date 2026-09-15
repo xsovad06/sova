@@ -22,12 +22,16 @@ from sova.utils.shell import run
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from sova.adapters.base import TaskAdapter
+    from sova.config.models import LdapConfig
+
 log = get_logger(component="step.create_pr")
 
 _UNAVAILABLE = "(unavailable)"
 
 _ISSUE_BODY_EXCERPT_LIMIT = 500
 _DIFF_CONTENT_LIMIT = 8000
+_MAX_SUGGESTED_REVIEWERS = 2
 
 _CONVENTIONAL_RE = re.compile(
     r"^(feat|fix|refactor|test|docs|chore|ci)"
@@ -144,6 +148,72 @@ def _title_from_branch(branch: str) -> str:
     raw = _JIRA_KEY_PREFIX_RE.sub("", raw)
     title = raw.replace("-", " ").strip()
     return title if title else "update"
+
+
+async def suggest_ldap_reviewers(
+    ldap_config: LdapConfig,
+    adapter: TaskAdapter,
+    *,
+    github_user: str,
+    issue_number: str | None,
+    pr_number: int,
+) -> None:
+    """Suggest teammates of the PR author as reviewers via LDAP org data.
+
+    Shared between ``CreatePRStep`` (direct PR creation) and the CodeRabbit
+    throttle queue processor (``sova.supervisor.pr_throttle``), so queued PRs
+    get the same reviewer suggestion as directly-created ones.
+
+    ``github_user`` is not necessarily the author's LDAP uid: the two
+    identifiers are frequently different (e.g. GitHub username vs. Kerberos
+    id). ``ldap_config.uid_mapping`` maps one to the other explicitly; when a
+    user has no mapping entry, ``github_user`` is used as the LDAP uid
+    directly (a best-effort assumption, not a guarantee), and a lookup miss
+    is logged distinguishably from a genuine directory miss so the identity
+    mismatch is diagnosable.
+
+    Best-effort: any missing precondition (LDAP unavailable, no VPN, author
+    not found, no manager/teammates) is a silent no-op so PR creation is
+    never blocked on a directory lookup.
+    """
+    from sova.adapters.ldap_client import create_ldap_client
+
+    client = create_ldap_client(ldap_config)
+    if client is None:
+        return
+
+    if not github_user:
+        return
+
+    identity_mapped = github_user in ldap_config.uid_mapping
+    author_uid = ldap_config.uid_mapping.get(github_user, github_user)
+
+    if not await client.check_connectivity():
+        log.warning("ldap_reviewers.vpn_unavailable", pr=pr_number)
+        return
+
+    try:
+        manager_chain = await client.find_manager_chain(author_uid, max_depth=1)
+        if not manager_chain:
+            if not identity_mapped:
+                log.info(
+                    "ldap_reviewers.identity_unmapped",
+                    pr=pr_number,
+                    github_user=github_user,
+                    reason="no ldap.uid_mapping entry; assumed github_user equals LDAP uid",
+                )
+            return
+        teammates = await client.get_org_chart(manager_chain[0].uid, depth=1)
+    except Exception:  # noqa: BLE001 (LDAP lookup is best-effort; PR creation must never block on it)
+        log.warning("ldap_reviewers.lookup_failed", pr=pr_number, exc_info=True)
+        return
+
+    candidates = [p for p in teammates if p.uid and p.uid != author_uid][:_MAX_SUGGESTED_REVIEWERS]
+    for person in candidates:
+        try:
+            await adapter.add_reviewer(issue_number or "", pr_number, person.uid)
+        except Exception:  # noqa: BLE001 (adapter-specific reviewer API failures vary; non-fatal)
+            log.warning("ldap_reviewers.add_reviewer_failed", pr=pr_number, user=person.uid, exc_info=True)
 
 
 class CreatePRStep(BaseStep):
@@ -303,6 +373,18 @@ class CreatePRStep(BaseStep):
             except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                 log.warning("step.create_pr.tracker_update_failed", exc_info=True)
         await self._trigger_coderabbit_review(ctx, pr_number)
+        if ctx.config.ldap.enabled:
+            await self._suggest_reviewers(ctx, pr_number)
+
+    async def _suggest_reviewers(self, ctx: ExecutionContext, pr_number: int) -> None:
+        """Thin wrapper around the shared ``suggest_ldap_reviewers()`` helper."""
+        await suggest_ldap_reviewers(
+            ctx.config.ldap,
+            ctx.adapter,
+            github_user=ctx.config.github_user,
+            issue_number=ctx.issue_number if ctx.has_issue else None,
+            pr_number=pr_number,
+        )
 
     @staticmethod
     async def _trigger_coderabbit_review(ctx: ExecutionContext, pr_number: int) -> None:

@@ -26,6 +26,7 @@ from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from sova.adapters.ldap_client import LdapClient, Person
     from sova.llm.models import LLMResult
 
 log = get_logger(component="role.triage")
@@ -796,7 +797,9 @@ class TriageRole(AgentRole):
             if label:
                 await ctx.adapter.add_label(ctx.issue_number, label)
 
-        assessment_section = self._build_assessment_comment(task, assessment, quality)
+        suggested_assignee = await self._resolve_assignee_suggestion(ctx, task, assessment)
+
+        assessment_section = self._build_assessment_comment(task, assessment, quality, suggested_assignee)
         if triage_cfg.mode == "comment":
             await ctx.adapter.post_comment(ctx.issue_number, assessment_section)
         elif triage_cfg.write_body:
@@ -946,8 +949,92 @@ class TriageRole(AgentRole):
 
         return None
 
+    async def _resolve_assignee_suggestion(
+        self, ctx: ExecutionContext, task: Task, assessment: TaskAssessment
+    ) -> Person | None:
+        """LDAP-based assignee suggestion; auto-assigns only on an unambiguous match.
+
+        Returns the candidate (for display in the assessment comment) regardless of
+        whether it was confirmed. Only a confirmed candidate is actually assigned.
+        """
+        if assessment.suitability != "ready" or not ctx.config.ldap.enabled:
+            return None
+        candidate, confirmed = await self._suggest_assignee(ctx, task)
+        if candidate and confirmed:
+            await ctx.adapter.assign_to_user(ctx.issue_number, candidate.uid)
+        return candidate
+
+    async def _suggest_assignee(self, ctx: ExecutionContext, task: Task) -> tuple[Person | None, bool]:
+        """Query LDAP for a candidate assignee based on the issue's declared component.
+
+        Returns ``(candidate, confirmed)``. ``confirmed`` is only True when the
+        component/area label resolves through ``ldap.team_mapping`` to exactly one
+        group member: a fuzzy name/uid/email match is never auto-assigned, since
+        result ordering does not establish component or cost-center ownership.
+
+        Best-effort: any missing precondition (LDAP disabled, unavailable, no
+        VPN, no component to search on) returns ``(None, False)`` so triage
+        proceeds without an assignee suggestion.
+        """
+        from sova.adapters.ldap_client import create_ldap_client
+
+        client = create_ldap_client(ctx.config.ldap)
+        if client is None:
+            return None, False
+
+        query = task.components[0] if task.components else None
+        if not query:
+            area_labels = [lbl.split(":", 1)[1] for lbl in task.labels if lbl.startswith("area:")]
+            query = area_labels[0] if area_labels else None
+        if not query:
+            return None, False
+
+        if not await client.check_connectivity():
+            log.warning("triage.ldap_vpn_unavailable", issue=ctx.issue_number)
+            return None, False
+
+        group_cn = ctx.config.ldap.team_mapping.get(query)
+        if group_cn:
+            confirmed = await self._resolve_via_team_mapping(ctx, client, group_cn)
+            if confirmed:
+                return confirmed, True
+
+        try:
+            people = await client.search_people(query)
+        except Exception:  # noqa: BLE001 (LDAP lookup is best-effort; triage must never block on it)
+            log.warning("triage.ldap_search_failed", issue=ctx.issue_number, exc_info=True)
+            return None, False
+
+        return (people[0], False) if people else (None, False)
+
+    async def _resolve_via_team_mapping(
+        self, ctx: ExecutionContext, client: LdapClient, group_cn: str
+    ) -> Person | None:
+        """Resolve a single unambiguous owner from a configured component-to-group mapping."""
+        try:
+            member_uids = await client.get_group_members(group_cn)
+        except Exception:  # noqa: BLE001 (LDAP lookup is best-effort; triage must never block on it)
+            log.warning("triage.ldap_group_lookup_failed", issue=ctx.issue_number, group=group_cn, exc_info=True)
+            return None
+
+        if len(member_uids) != 1:
+            if member_uids:
+                log.info(
+                    "triage.ldap_team_mapping_ambiguous",
+                    issue=ctx.issue_number,
+                    group=group_cn,
+                    member_count=len(member_uids),
+                )
+            return None
+
+        return await client.get_person(member_uids[0])
+
     def _build_assessment_comment(
-        self, task: Task, assessment: TaskAssessment, quality: QualityScore | None = None
+        self,
+        task: Task,
+        assessment: TaskAssessment,
+        quality: QualityScore | None = None,
+        suggested_assignee: Person | None = None,
     ) -> str:
         """Build a triage assessment section to append to the issue body."""
         has_body = bool(task.body and task.body.strip())
@@ -981,4 +1068,17 @@ class TriageRole(AgentRole):
             for sub in assessment.sub_tasks:
                 parts.append(f"- {sub}")
 
+        if suggested_assignee:
+            parts.extend(self._format_suggested_assignee(suggested_assignee))
+
         return "\n".join(parts)
+
+    @staticmethod
+    def _format_suggested_assignee(person: Person) -> list[str]:
+        """Render the 'Suggested assignee (LDAP)' section for the assessment comment."""
+        name = person.display_name or person.uid
+        details = ", ".join(d for d in (person.job_title, person.cost_center_desc) if d)
+        line = f"**{name}** (`{person.uid}`)"
+        if details:
+            line += f": {details}"
+        return ["\n### Suggested assignee (LDAP)\n", line]

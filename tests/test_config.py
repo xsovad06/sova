@@ -1386,3 +1386,21 @@ def test_feed_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     cfg = load_config(tmp_path)
     assert cfg.feed.retention_days == 7
     assert cfg.feed.page_size == 25
+
+
+def test_ldap_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SOVA_LDAP_* env vars override TOML/database ldap settings.
+
+    Previously the merged TOML dict was passed straight to ProjectConfig
+    without going through _apply_nested_env_overrides(), so SOVA_LDAP_ENABLED
+    (and other SOVA_LDAP_* vars) had no effect once [ldap] was present in
+    sova.toml.
+    """
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text('[ldap]\nenabled = false\nserver = "ldaps://ldap.corp.redhat.com"\n')
+    monkeypatch.setenv("SOVA_LDAP_ENABLED", "true")
+    monkeypatch.setenv("SOVA_LDAP_SERVER", "ldaps://ldap.override.example.com")
+
+    cfg = load_config(tmp_path)
+    assert cfg.ldap.enabled is True
+    assert cfg.ldap.server == "ldaps://ldap.override.example.com"

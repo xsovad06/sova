@@ -271,16 +271,19 @@ async def run_post_create_side_effects(
     github_user: str,
     project_dir: Path | None = None,
 ) -> None:
-    """Run PR assignment and issue state transition after creation.
+    """Run PR assignment, issue state transition, and LDAP reviewer suggestion after creation.
 
     Extracted from CreatePRStep._post_create_side_effects for reuse
-    by process_queue without needing an ExecutionContext.
+    by process_queue without needing an ExecutionContext. Runs the same LDAP
+    reviewer suggestion as the direct-creation path so queued PRs (throttled
+    behind CodeRabbit quota) are not silently missing it.
 
     ``project_dir`` is required for adapter creation (config loading).
     Callers in background tasks must pass it explicitly since the
     per-request context variable is not set outside request handlers.
     """
     from sova.adapters.base import TaskState
+    from sova.config.loader import load_config
     from sova.git import operations as git_ops
 
     if github_user:
@@ -294,16 +297,35 @@ async def run_post_create_side_effects(
         except (RuntimeError, OSError):
             log.warning("pr_throttle.assign_failed", pr=pr_number, exc_info=True)
 
+    cfg = load_config(project_dir)
+    adapter = None
     if issue_number:
         try:
             from sova.adapters import create_adapter
-            from sova.config.loader import load_config
 
-            cfg = load_config(project_dir)
             adapter = create_adapter(cfg)
             await adapter.transition_state(issue_number, TaskState.IN_REVIEW)
         except Exception:  # noqa: BLE001 (config load, adapter construction and tracker call each fail differently)
             log.warning("pr_throttle.tracker_update_failed", pr=pr_number, exc_info=True)
+
+    if cfg.ldap.enabled:
+        if adapter is None:
+            try:
+                from sova.adapters import create_adapter
+
+                adapter = create_adapter(cfg)
+            except Exception:  # noqa: BLE001 (adapter construction fails differently per task source)
+                log.warning("pr_throttle.ldap_adapter_create_failed", pr=pr_number, exc_info=True)
+        if adapter is not None:
+            from sova.core.steps.create_pr import suggest_ldap_reviewers
+
+            await suggest_ldap_reviewers(
+                cfg.ldap,
+                adapter,
+                github_user=github_user,
+                issue_number=issue_number,
+                pr_number=pr_number,
+            )
 
     await _trigger_coderabbit_review(pr_number=pr_number, repo=repo, github_user=github_user, project_dir=project_dir)
 

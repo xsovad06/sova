@@ -100,6 +100,7 @@ _NESTED_SECTIONS = (
     "notification",
     "server",
     "external_reviews",
+    "ldap",
     "egress",
     "security",
     "dashboard",
@@ -239,6 +240,23 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
             ("critical_threshold", "SOVA_CONFIDENCE_CRITICAL_THRESHOLD"),
             ("model", "SOVA_CONFIDENCE_MODEL"),
             ("max_budget_usd", "SOVA_CONFIDENCE_MAX_BUDGET_USD"),
+        ],
+    )
+
+    _apply_nested_env_overrides(
+        merged,
+        "ldap",
+        "SOVA_LDAP_",
+        [
+            ("enabled", "SOVA_LDAP_ENABLED"),
+            ("server", "SOVA_LDAP_SERVER"),
+            ("base_dn", "SOVA_LDAP_BASE_DN"),
+            ("group_base_dn", "SOVA_LDAP_GROUP_BASE_DN"),
+            ("timeout_seconds", "SOVA_LDAP_TIMEOUT_SECONDS"),
+            ("cache_ttl_seconds", "SOVA_LDAP_CACHE_TTL_SECONDS"),
+            ("uid_attribute", "SOVA_LDAP_UID_ATTRIBUTE"),
+            ("allow_insecure", "SOVA_LDAP_ALLOW_INSECURE"),
+            ("ca_cert_file", "SOVA_LDAP_CA_CERT_FILE"),
         ],
     )
 
