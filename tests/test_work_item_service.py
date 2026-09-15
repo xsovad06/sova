@@ -769,6 +769,20 @@ class TestApplySovaVerdict:
         verdict = self._review("addressed")
         assert _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, verdict) == WorkItemState.PR_EXTERNAL_CHANGES
 
+    def test_approved_unknown_unresolved_threads_holds_state_awaiting_review(self) -> None:
+        """unresolved_thread_count=None (unknown) holds the pre-verdict state: no
+        promotion to PR_APPROVED, and it must not raise."""
+        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
+        result = _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict, unresolved_thread_count=None)
+        assert result == WorkItemState.PR_AWAITING_REVIEW
+
+    def test_approved_unknown_unresolved_threads_holds_state_approved(self) -> None:
+        """unresolved_thread_count=None on an already-integrate-bound state must not
+        demote to PR_EXTERNAL_CHANGES either."""
+        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
+        result = _apply_sova_verdict(WorkItemState.PR_APPROVED, verdict, unresolved_thread_count=None)
+        assert result == WorkItemState.PR_APPROVED
+
 
 class TestIsVerdictStaleBySha:
     def test_no_pr_head_sha(self) -> None:

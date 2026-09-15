@@ -249,7 +249,7 @@ def compute_work_item_state(
     return WorkItemState.BACKLOG
 
 
-def _unresolved_thread_count(pr_data: dict) -> int:
+def _unresolved_thread_count(pr_data: dict) -> int | None:
     """Return the unresolved review thread count from enriched PR data.
 
     Lazy import avoids pulling pr_service's git/asyncio dependencies into this
@@ -298,7 +298,7 @@ def _apply_sova_verdict(
     *,
     pr_head_sha: str | None = None,
     external_reviews_enabled: bool = True,
-    unresolved_thread_count: int = 0,
+    unresolved_thread_count: int | None = 0,
 ) -> WorkItemState:
     """Adjust a GitHub-derived PR state using the SOVA reviewer verdict."""
     if sova_verdict is None:
@@ -320,10 +320,15 @@ def _apply_sova_verdict(
 
     if has_review and verdict == "approve":
         integrate_bound = mapped in _INTEGRATE_STATES or mapped == WorkItemState.PR_AWAITING_REVIEW
-        if integrate_bound and unresolved_thread_count > 0:
-            # SOVA approved, but unresolved review threads (from any reviewer) remain:
-            # do not surface Integrate until they're resolved via /address-pr.
-            return WorkItemState.PR_EXTERNAL_CHANGES
+        if integrate_bound:
+            if unresolved_thread_count is None:
+                # Thread resolution state is unknown: hold the pre-verdict state rather
+                # than guessing (no promotion to Integrate, no demotion to Address PR).
+                return mapped
+            if unresolved_thread_count > 0:
+                # SOVA approved, but unresolved review threads (from any reviewer) remain:
+                # do not surface Integrate until they're resolved via /address-pr.
+                return WorkItemState.PR_EXTERNAL_CHANGES
         if mapped == WorkItemState.PR_AWAITING_REVIEW:
             return WorkItemState.PR_APPROVED
 

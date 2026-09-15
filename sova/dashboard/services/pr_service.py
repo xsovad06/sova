@@ -197,21 +197,27 @@ def _extract_cr_reviews(latest_reviews: list[dict]) -> list[dict]:
 
 def _should_unblock_bot_reviews(
     cr_reviews: list[dict],
-    all_threads_resolved: bool,
+    all_threads_resolved: bool | None,
     ci_status: str,
     mergeable: str,
+    superseded_by_new_commit: bool = False,
 ) -> str | None:
     """Check if bot CHANGES_REQUESTED reviews with resolved threads should unblock the PR.
 
     Returns APPROVED_CI_GREEN if all conditions are met and CI is green + mergeable,
     APPROVED if conditions are met but CI is not green or not mergeable,
-    None if any condition fails (no CR reviews, threads unresolved, or human CR present).
+    None if any condition fails: no CR reviews, threads unresolved or unknown, human
+    CR present, or the bot review has not been superseded by a newer commit (new
+    commits do not auto-dismiss a bot review on GitHub, so this is required in
+    addition to, not instead of, resolved/vacuous-zero threads).
     """
     if not cr_reviews:
         return None
     if not all_threads_resolved:
         return None
     if not all(_is_bot_review(r) for r in cr_reviews):
+        return None
+    if not superseded_by_new_commit:
         return None
     if ci_status == "passed" and mergeable == "MERGEABLE":
         return ComputedPRState.APPROVED_CI_GREEN
@@ -225,7 +231,8 @@ def compute_pr_state(
     ci_status: str,
     mergeable: str,
     latest_reviews: list[dict] | None = None,
-    all_threads_resolved: bool = False,
+    all_threads_resolved: bool | None = False,
+    superseded_by_new_commit: bool = False,
 ) -> str:
     """Derive a single computed state from PR signals."""
     if is_draft:
@@ -237,7 +244,9 @@ def compute_pr_state(
     if review_decision == "CHANGES_REQUESTED":
         if latest_reviews:
             cr_reviews = _extract_cr_reviews(latest_reviews)
-            unblock_state = _should_unblock_bot_reviews(cr_reviews, all_threads_resolved, ci_status, mergeable)
+            unblock_state = _should_unblock_bot_reviews(
+                cr_reviews, all_threads_resolved, ci_status, mergeable, superseded_by_new_commit
+            )
             if unblock_state:
                 return unblock_state
         return ComputedPRState.CHANGES_REQUESTED
@@ -248,7 +257,9 @@ def compute_pr_state(
     if latest_reviews:
         cr_reviews = _extract_cr_reviews(latest_reviews)
         if cr_reviews:
-            unblock_state = _should_unblock_bot_reviews(cr_reviews, all_threads_resolved, ci_status, mergeable)
+            unblock_state = _should_unblock_bot_reviews(
+                cr_reviews, all_threads_resolved, ci_status, mergeable, superseded_by_new_commit
+            )
             if unblock_state:
                 return unblock_state
             return ComputedPRState.CHANGES_REQUESTED
@@ -323,8 +334,15 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     is_draft = bool(raw.get("isDraft"))
     mergeable = raw.get("mergeable") or ""
     latest_reviews = raw.get("latestReviews") or None
-    thread_total, thread_resolved = raw.get("_thread_counts", (0, 0))
-    all_threads_resolved = thread_total > 0 and thread_resolved >= thread_total
+    thread_counts = raw.get("_thread_counts")
+    if thread_counts is None:
+        thread_total: int | None = None
+        thread_resolved: int | None = None
+        all_threads_resolved: bool | None = None
+    else:
+        thread_total, thread_resolved = thread_counts
+        all_threads_resolved = thread_total == 0 or thread_resolved >= thread_total
+    superseded_by_new_commit = bool(raw.get("_superseded_by_new_commit", False))
 
     computed = compute_pr_state(
         is_draft=is_draft,
@@ -333,6 +351,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         mergeable=mergeable,
         latest_reviews=latest_reviews,
         all_threads_resolved=all_threads_resolved,
+        superseded_by_new_commit=superseded_by_new_commit,
     )
 
     author = raw.get("author") or {}
@@ -391,20 +410,35 @@ def _check_coderabbit_from_pr_data(pr_data: dict) -> bool:
     return bool(review_logins & DEFAULT_CODERABBIT_AUTHORS)
 
 
-def get_unresolved_thread_count(pr_data: dict) -> int:
+def get_unresolved_thread_count(pr_data: dict) -> int | None:
     """Return the number of unresolved review threads from enriched PR data.
 
     Extracts from the cached PR data (thread_total, thread_resolved) without
-    making additional API calls. Returns 0 when no threads exist.
+    making additional API calls. Returns 0 when no threads exist or the keys
+    are simply absent (e.g. a synthetic test dict or an older cache shape),
+    and None only when a key is explicitly present with value None (fetch
+    succeeded but the count is genuinely unknown), so unknown is never
+    conflated with zero and vice versa.
     """
-    total = pr_data.get("thread_total", 0)
-    resolved = pr_data.get("thread_resolved", 0)
+    if "thread_total" not in pr_data or "thread_resolved" not in pr_data:
+        return 0
+    total = pr_data.get("thread_total")
+    resolved = pr_data.get("thread_resolved")
+    if total is None or resolved is None:
+        return None
     return max(0, total - resolved)
 
 
 def _check_threads_from_pr_data(pr_data: dict) -> dict:
     """Check thread resolution using pre-fetched thread counts from enriched PR data."""
     unresolved = get_unresolved_thread_count(pr_data)
+    if unresolved is None:
+        return _gate(
+            "threads_resolved",
+            enabled=True,
+            passed=False,
+            reason="thread resolution state unknown, cannot verify",
+        )
     total = pr_data.get("thread_total", 0)
     if unresolved == 0:
         return _gate("threads_resolved", enabled=True, passed=True)
@@ -516,7 +550,7 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     """
     from sova.config.loader import load_config
     from sova.dashboard.project_context import get_project_dir
-    from sova.git.pr import get_review_thread_counts, list_open_prs
+    from sova.git.pr import get_pr_review_data, list_open_prs
 
     if project_dir is None:
         project_dir = get_project_dir() or Path.cwd()
@@ -542,12 +576,18 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
 
     pr_numbers = [p["number"] for p in raw_prs]
     try:
-        thread_counts = await get_review_thread_counts(pr_numbers, repo=repo, github_user=cfg.github_user)
+        review_data = await get_pr_review_data(pr_numbers, repo=repo, github_user=cfg.github_user)
     except (RuntimeError, OSError):
         log.warning("pr_service.thread_counts_failed", exc_info=True)
-        thread_counts = {}
+        review_data = {}
     for pr in raw_prs:
-        pr["_thread_counts"] = thread_counts.get(pr["number"], (0, 0))
+        rd = review_data.get(pr["number"])
+        if rd is None:
+            pr["_thread_counts"] = None
+            pr["_superseded_by_new_commit"] = False
+        else:
+            pr["_thread_counts"] = (rd.thread_total, rd.thread_resolved)
+            pr["_superseded_by_new_commit"] = rd.bot_cr_superseded
 
     wall_now = time.time()
     result = [_enrich_pr(pr, wall_now) for pr in raw_prs]

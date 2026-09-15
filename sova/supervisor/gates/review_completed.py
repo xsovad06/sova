@@ -6,8 +6,10 @@ Three-source check (defense in depth):
   3. PR review_decision: non-bot GitHub approval (from cached PR data)
 
 Additionally blocks regardless of the above when the PR has unresolved review
-threads (from any reviewer): a stale "reviewed" signal must not authorize
-integration while open conversations remain.
+threads (from any reviewer), or when thread resolution state could not be
+determined at all (unknown fails closed, same as unresolved): a stale
+"reviewed" signal must not authorize integration while open conversations
+remain, or might remain undetected.
 
 Only blocks supervisor autonomy; dashboard "Integrate" button remains available
 for human-initiated integration (explicit user choice).
@@ -41,6 +43,11 @@ async def check_review_completed_gate(
     Returns BlockReason if no review found, None if review exists.
     """
     unresolved = _unresolved_thread_count(pr_data)
+    if unresolved is None:
+        return BlockReason(
+            gate="review_completed",
+            detail=f"PR #{pr_number} thread resolution state is unknown: cannot verify before integration",
+        )
     if unresolved > 0:
         return BlockReason(
             gate="review_completed",
@@ -69,8 +76,16 @@ def _has_sova_label(labels: list[str]) -> bool:
     return bool(_SOVA_VERDICT_LABELS.intersection(labels))
 
 
-def _unresolved_thread_count(pr_data: dict | None) -> int:
-    """Return the unresolved review thread count from enriched PR data."""
+def _unresolved_thread_count(pr_data: dict | None) -> int | None:
+    """Return the unresolved review thread count from enriched PR data.
+
+    ``pr_data is None`` means no PR data was fetched at all (e.g. a transient
+    GraphQL failure in the best-effort enrichment step): this is a distinct,
+    pre-existing case from "fetched but unusable" and is treated as zero so
+    the gate falls through to its other review sources, matching prior
+    behavior. Only a ``pr_data`` dict whose thread keys are explicitly
+    ``None`` (fetch succeeded but data is unusable) is genuinely unknown.
+    """
     if pr_data is None:
         return 0
 

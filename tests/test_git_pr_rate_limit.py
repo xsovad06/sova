@@ -126,6 +126,6 @@ class TestGetReviewThreadCountsTracking:
             with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
                 result = await get_review_thread_counts([1, 2], repo="owner/repo", github_user="testuser")
 
-        assert result == {}
+        assert result == {1: None, 2: None}
         tracker = get_github_quota_tracker("testuser")
         assert tracker.should_skip()

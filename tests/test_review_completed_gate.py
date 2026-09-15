@@ -108,6 +108,7 @@ class TestCheckReviewCompletedGate:
             labels=["sova:approved"],
             pr_number=100,
             project_dir=Path("/tmp/test"),
+            pr_data={"thread_total": 0, "thread_resolved": 0},
         )
         assert result is None
 
@@ -130,6 +131,7 @@ class TestCheckReviewCompletedGate:
                 labels=[],
                 pr_number=100,
                 project_dir=Path("/tmp/test"),
+                pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is None
 
@@ -153,6 +155,7 @@ class TestCheckReviewCompletedGate:
                 labels=[],
                 pr_number=100,
                 project_dir=Path("/tmp/test"),
+                pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is not None
         assert result.gate == "review_completed"
@@ -176,6 +179,7 @@ class TestCheckReviewCompletedGate:
                 labels=[],
                 pr_number=100,
                 project_dir=Path("/tmp/test"),
+                pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is not None
         assert result.gate == "review_completed"
@@ -213,6 +217,8 @@ class TestCheckReviewCompletedGate:
         pr_data = {
             "review_decision": "APPROVED",
             "latest_reviews": [{"state": "APPROVED", "author": {"type": "User"}}],
+            "thread_total": 0,
+            "thread_resolved": 0,
         }
         with patch(
             "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
@@ -241,6 +247,7 @@ class TestCheckReviewCompletedGate:
                 labels=[],
                 pr_number=100,
                 project_dir=Path("/tmp/test"),
+                pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is not None
         assert result.gate == "review_completed"
@@ -252,6 +259,8 @@ class TestCheckReviewCompletedGate:
         pr_data = {
             "review_decision": "APPROVED",
             "latest_reviews": [{"state": "APPROVED", "author": {"type": "Bot"}}],
+            "thread_total": 0,
+            "thread_resolved": 0,
         }
         with patch(
             "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
@@ -280,6 +289,50 @@ class TestCheckReviewCompletedGate:
                 labels=[],
                 pr_number=100,
                 project_dir=Path("/tmp/test"),
+                pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is not None
         assert result.gate == "review_completed"
+
+    @pytest.mark.asyncio
+    async def test_passes_with_no_pr_data_fetched(self) -> None:
+        """No pr_data at all (e.g. a transient enrichment failure) is treated as
+        zero unresolved threads and falls through to the other review sources,
+        rather than blocking outright."""
+        result = await check_review_completed_gate(
+            42,
+            labels=["sova:approved"],
+            pr_number=100,
+            project_dir=Path("/tmp/test"),
+            pr_data=None,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_passes_with_missing_thread_keys(self) -> None:
+        """pr_data present but missing thread_total/thread_resolved keys (e.g. a
+        synthetic dict) is treated as zero unresolved threads, not unknown."""
+        result = await check_review_completed_gate(
+            42,
+            labels=["sova:approved"],
+            pr_number=100,
+            project_dir=Path("/tmp/test"),
+            pr_data={},
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_blocks_with_unresolvable_thread_counts(self) -> None:
+        """pr_data present but thread_total/thread_resolved explicitly None (API
+        fetch succeeded but data is unusable) is genuinely unknown and must fail
+        closed, distinctly from a genuine zero-unresolved-threads result."""
+        result = await check_review_completed_gate(
+            42,
+            labels=["sova:approved"],
+            pr_number=100,
+            project_dir=Path("/tmp/test"),
+            pr_data={"thread_total": None, "thread_resolved": None},
+        )
+        assert result is not None
+        assert result.gate == "review_completed"
+        assert "unknown" in result.detail.lower()
