@@ -46,6 +46,7 @@ def mock_adapter() -> AsyncMock:
     adapter.get_task = AsyncMock()
     adapter.get_state = AsyncMock(return_value=TaskState.IN_REVIEW)
     adapter.get_pr_reviews = AsyncMock(return_value=[])
+    adapter.remove_label = AsyncMock()
     return adapter
 
 
@@ -245,3 +246,284 @@ class TestAddressReviewStepPendingDocsQueue:
 
         assert result.success is True
         assert "Addressed 1 review finding" in result.summary
+
+
+class TestAddressReviewStepClearsStaleVerdictLabel:
+    """Findings-addressed success clears sova:revise/sova:block; other paths leave labels alone."""
+
+    @pytest.mark.asyncio
+    async def test_findings_addressed_success_removes_stale_labels(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        step = AddressReviewStep()
+        findings = [{"file": "a.py", "line": 1, "description": "bug", "severity": 8, "category": "correctness"}]
+        fake_result = LLMResult(
+            text="done",
+            model="claude-opus-5",
+            cost_usd=Decimal("0.02"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        with (
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(return_value=MagicMock(success=True, stdout="abc123")),
+            ),
+            patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
+            patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+        ):
+            result = await step.execute(execution_context)
+            assert result.success is True
+            mock_adapter.remove_label.assert_not_called()
+
+            gate = await step.validate_output(execution_context)
+
+        assert gate.passed is True
+        mock_adapter.remove_label.assert_any_call(execution_context.issue_number, "sova:revise")
+        mock_adapter.remove_label.assert_any_call(execution_context.issue_number, "sova:block")
+        assert mock_adapter.remove_label.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_findings_no_op_does_not_touch_labels(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        step = AddressReviewStep()
+        with (
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(return_value=MagicMock(success=True, stdout="abc123")),
+            ),
+            patch("sova.core.steps.address_review._load_review_findings", return_value=[]),
+            patch("sova.core.steps.address_review._load_review_findings_from_db", new=AsyncMock(return_value=[])),
+            patch("sova.core.steps.address_review._load_review_findings_by_issue", new=AsyncMock(return_value=[])),
+            patch("sova.core.steps.address_review._load_findings_from_github_reviews", new=AsyncMock(return_value=[])),
+            patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock()),
+        ):
+            result = await step.execute(execution_context)
+
+        assert result.success is True
+        mock_adapter.remove_label.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pending_docs_only_no_op_does_not_touch_labels(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        """Drained pending docs with zero review findings must not clear the label."""
+        pending_docs = execution_context.project_dir / ".claude" / "agent-control" / "pending-docs.md"
+        pending_docs.parent.mkdir(parents=True)
+        pending_docs.write_text("## From PR #41\nUpdate docs.\n")
+
+        step = AddressReviewStep()
+        fake_result = LLMResult(
+            text="done",
+            model="claude-opus-5",
+            cost_usd=Decimal("0.01"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        with (
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(return_value=MagicMock(success=True, stdout="abc123")),
+            ),
+            patch("sova.core.steps.address_review._load_review_findings", return_value=[]),
+            patch("sova.core.steps.address_review._load_review_findings_from_db", new=AsyncMock(return_value=[])),
+            patch("sova.core.steps.address_review._load_review_findings_by_issue", new=AsyncMock(return_value=[])),
+            patch("sova.core.steps.address_review._load_findings_from_github_reviews", new=AsyncMock(return_value=[])),
+            patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+        ):
+            result = await step.execute(execution_context)
+
+        assert result.success is True
+        mock_adapter.remove_label.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_llm_invocation_does_not_touch_labels(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        step = AddressReviewStep()
+        findings = [{"file": "a.py", "line": 1, "description": "bug", "severity": 8, "category": "correctness"}]
+        with (
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(return_value=MagicMock(success=True, stdout="abc123")),
+            ),
+            patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
+            patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch(
+                "sova.core.steps.address_review.invoke_command",
+                new=AsyncMock(side_effect=RuntimeError("llm failed")),
+            ),
+        ):
+            result = await step.execute(execution_context)
+
+        assert result.success is False
+        mock_adapter.remove_label.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_llm_reports_success_but_no_changes_does_not_clear_labels(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        """LLM reports success with no diff, no new commit, and no prior fix must not clear labels.
+
+        Regression guard for the case where the LLM hallucinates a fix, or
+        performs a no-op edit: `validate_output()` is the real correctness
+        gate, and it must fail (empty diff, HEAD unchanged, no prior commits),
+        so the stale sova:revise/sova:block label stays in place.
+        """
+        step = AddressReviewStep()
+        findings = [{"file": "a.py", "line": 1, "description": "bug", "severity": 8, "category": "correctness"}]
+        fake_result = LLMResult(
+            text="done",
+            model="claude-opus-5",
+            cost_usd=Decimal("0.02"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        empty_result = MagicMock(success=True, stdout="")
+        same_head_result = MagicMock(success=True, stdout="abc123")
+        with (
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(
+                    side_effect=[
+                        same_head_result,  # rev-parse HEAD (before LLM, in execute())
+                        empty_result,  # diff --stat HEAD (validate_output)
+                        empty_result,  # diff --cached --stat (validate_output)
+                        same_head_result,  # rev-parse HEAD (validate_output, unchanged)
+                        empty_result,  # log base..HEAD (validate_output, no prior commits)
+                    ]
+                ),
+            ),
+            patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
+            patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+        ):
+            result = await step.execute(execution_context)
+            assert result.success is True
+
+            gate = await step.validate_output(execution_context)
+
+        assert gate.passed is False
+        mock_adapter.remove_label.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prior_commits_already_ahead_of_base_does_not_clear_labels(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        """A no-op run on a branch already ahead of base must not clear labels.
+
+        On the address-review pipeline, base..HEAD is populated by the
+        feature's own pre-existing commits before this run even starts, so
+        `has_prior_commits` is trivially true regardless of what this cycle
+        did. The gate may still pass (existing "already fixed" tolerance),
+        but that alone is not evidence this run addressed anything, so the
+        stale sova:revise/sova:block label must stay in place.
+        """
+        step = AddressReviewStep()
+        findings = [{"file": "a.py", "line": 1, "description": "bug", "severity": 8, "category": "correctness"}]
+        fake_result = LLMResult(
+            text="done",
+            model="claude-opus-5",
+            cost_usd=Decimal("0.02"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        empty_result = MagicMock(success=True, stdout="")
+        same_head_result = MagicMock(success=True, stdout="abc123")
+        prior_commits_result = MagicMock(success=True, stdout="deadbee fix: something\n")
+        with (
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(
+                    side_effect=[
+                        same_head_result,  # rev-parse HEAD (before LLM, in execute())
+                        empty_result,  # diff --stat HEAD (validate_output)
+                        empty_result,  # diff --cached --stat (validate_output)
+                        same_head_result,  # rev-parse HEAD (validate_output, unchanged)
+                        prior_commits_result,  # log base..HEAD (validate_output, already ahead)
+                    ]
+                ),
+            ),
+            patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
+            patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+        ):
+            result = await step.execute(execution_context)
+            assert result.success is True
+
+            gate = await step.validate_output(execution_context)
+
+        assert gate.passed is True
+        mock_adapter.remove_label.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clear_stale_verdict_label_no_issue_number_skips_removal(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        """Without an issue number there is nothing to un-label; the adapter must not be called."""
+        execution_context.issue_number = ""
+        step = AddressReviewStep()
+
+        await step._clear_stale_verdict_label(execution_context)
+
+        mock_adapter.remove_label.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clear_stale_verdict_label_no_adapter_skips_removal(
+        self, execution_context: ExecutionContext
+    ) -> None:
+        """Without an adapter there is nothing to call the removal API on."""
+        execution_context.adapter = None
+        step = AddressReviewStep()
+
+        # Must not raise AttributeError from a None adapter.
+        await step._clear_stale_verdict_label(execution_context)
+
+    @pytest.mark.asyncio
+    async def test_label_removal_failure_is_non_fatal(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        """A label API failure must not fail an otherwise-successful gate check."""
+        mock_adapter.remove_label = AsyncMock(side_effect=RuntimeError("github api error"))
+        step = AddressReviewStep()
+        findings = [{"file": "a.py", "line": 1, "description": "bug", "severity": 8, "category": "correctness"}]
+        fake_result = LLMResult(
+            text="done",
+            model="claude-opus-5",
+            cost_usd=Decimal("0.02"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        with (
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(return_value=MagicMock(success=True, stdout="abc123")),
+            ),
+            patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
+            patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+        ):
+            result = await step.execute(execution_context)
+            assert result.success is True
+
+            gate = await step.validate_output(execution_context)
+
+        assert gate.passed is True
+
+    @pytest.mark.asyncio
+    async def test_first_label_failure_does_not_block_second_removal_attempt(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        """A failure removing sova:revise must not prevent an attempt to remove sova:block."""
+        mock_adapter.remove_label = AsyncMock(side_effect=[RuntimeError("github api error"), None])
+        step = AddressReviewStep()
+
+        await step._clear_stale_verdict_label(execution_context)
+
+        mock_adapter.remove_label.assert_any_call(execution_context.issue_number, "sova:revise")
+        mock_adapter.remove_label.assert_any_call(execution_context.issue_number, "sova:block")
+        assert mock_adapter.remove_label.call_count == 2
