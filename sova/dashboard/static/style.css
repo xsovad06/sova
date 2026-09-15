@@ -1102,7 +1102,6 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   width: 40px;
   height: 40px;
   border-radius: 9999px;
-  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
