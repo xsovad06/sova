@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "source_hashes": {
+    "commands/develop.md": "1c85a5be090423d2562cf6f40a5b57f3d22fcb4ca95ee6aacb47bde4ea07a638",
+    "commands/spec.md": "aee08a4cd3ee7f2aa9b0087cd5a368e7f1d424f352ce0447a137a9883dd5d42b",
+    "commands/review.md": "9cd18b715c7583e701dc38c9ea52043876eb81896ea3e0ce4ec91fb1f4ec80ef",
+    "commands/pr.md": "1c136a8c2076f77a2bac4ddee14a9f080c565440f87a03c41092ac0f9385018f",
+    "commands/debug.md": "81b35a811a196444c0ba6618961a6b3052621d73ec70d22036437021a6b52b2c",
+    "commands/test.md": "d9d3fe94e7ab5c408754f052d2094c86995858d1c7f473d6379f35166c6136db"
+  }
+}

@@ -1,4 +1,4 @@
-.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help css css-watch
+.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help css css-watch marketplace
 
 SHELL := /bin/bash
 
@@ -65,6 +65,11 @@ css: ## Rebuild Tailwind CSS (run after changing template classes)
 
 css-watch: ## Watch and rebuild Tailwind CSS on template changes
 	npx tailwindcss@3 -o sova/dashboard/static/tailwind.min.css --minify --watch
+
+# ── Marketplace ───────────────────────────────────────────────
+
+marketplace: ## Regenerate plugins/sova/ from commands/ (run after editing a published command)
+	python3 -m sova.commands.marketplace_export
 
 # ── Setup ─────────────────────────────────────────────────────
 

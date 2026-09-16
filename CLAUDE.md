@@ -33,6 +33,7 @@ make check                          # Run all linters + tests (CI-equivalent)
 make test                           # Run bash + python tests
 make lint                           # ShellCheck + Ruff
 make format                         # Auto-format Python code
+make marketplace                    # Regenerate plugins/sova/ from commands/ (run after editing a published command)
 
 # Git hooks (after fresh clone)
 git config core.hooksPath .githooks
