@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,12 @@ log = get_logger(component="dashboard.service.supervisor")
 _pending_plan: dict[str, list["ProgressionDecision"]] = {}
 _plan_reasoning: dict[str, str | None] = {}
 _plan_deferred: dict[str, list[dict]] = {}
+
+# In-memory planner health counters, keyed by project slug (same key space as
+# ``_pending_plan``). Deliberately not persisted: this is a diagnostic
+# counter, not authoritative state, and is rebuilt from scratch on the next
+# poll cycle after a restart.
+_planner_health: dict[str, dict[str, int | str | None]] = {}
 
 
 def resolve_project_slug(github_repo: str, project_dir: Path | None = None) -> str:
@@ -126,3 +133,52 @@ async def get_decision_counts(project_dir: Path, *, project_slug: str | None = N
         stmt = stmt.group_by(SupervisorDecision.component)
         result = await session.execute(stmt)
         return dict(result.all())
+
+
+def _empty_planner_health() -> dict:
+    return {
+        "success_count": 0,
+        "failure_count": 0,
+        "last_success_at": None,
+        "last_failure_at": None,
+    }
+
+
+def record_planner_outcome(project_slug: str, event_type: str) -> None:
+    """Record a planner success/failure outcome in memory for the dashboard health widget.
+
+    Ephemeral, like ``_pending_plan``: rebuilt from scratch on daemon restart
+    since this is a diagnostic counter, not authoritative state.
+    """
+    health = _planner_health.setdefault(project_slug, _empty_planner_health())
+    now = datetime.now(timezone.utc).isoformat()
+    if event_type == "success":
+        health["success_count"] = int(health["success_count"]) + 1
+        health["last_success_at"] = now
+    elif event_type == "failure":
+        health["failure_count"] = int(health["failure_count"]) + 1
+        health["last_failure_at"] = now
+
+
+def get_planner_health(project_slug: str | None = None) -> dict:
+    """Return planner success/failure counts and last-seen timestamps for the dashboard health widget.
+
+    In-memory only, keyed by project slug. When *project_slug* is None,
+    aggregates across every project tracked in this process (mirrors the
+    previous DB behaviour of applying no ``WHERE`` filter).
+    """
+    if project_slug is not None:
+        health = _planner_health.get(project_slug)
+        return dict(health) if health is not None else _empty_planner_health()
+
+    if not _planner_health:
+        return _empty_planner_health()
+
+    success_at = [h["last_success_at"] for h in _planner_health.values() if h["last_success_at"]]
+    failure_at = [h["last_failure_at"] for h in _planner_health.values() if h["last_failure_at"]]
+    return {
+        "success_count": sum(int(h["success_count"]) for h in _planner_health.values()),
+        "failure_count": sum(int(h["failure_count"]) for h in _planner_health.values()),
+        "last_success_at": max(success_at) if success_at else None,
+        "last_failure_at": max(failure_at) if failure_at else None,
+    }

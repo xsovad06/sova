@@ -12,6 +12,7 @@ warning spam).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -20,8 +21,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.dashboard.services.pr_service import list_open_prs_with_state
+from sova.dashboard.services.supervisor_service import resolve_project_slug
 from sova.llm.client import invoke, resolve_model
+from sova.llm.errors import LLMTimeoutError
 from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
 
@@ -341,18 +345,27 @@ class SupervisorPlanner:
         try:
             from datetime import datetime, timedelta, timezone
 
-            from sqlalchemy import select
+            from sqlalchemy import func, select
 
             from sova.db.models import TaskRun
 
+            cap = self._config.supervisor.planner_max_failures_in_context
             cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
             async with self._session_factory() as session:
+                count_stmt = (
+                    select(func.count())
+                    .select_from(TaskRun)
+                    .where(TaskRun.status == "failed")
+                    .where(TaskRun.started_at >= cutoff)
+                )
+                total = (await session.execute(count_stmt)).scalar_one()
+
                 stmt = (
                     select(TaskRun)
                     .where(TaskRun.status == "failed")
                     .where(TaskRun.started_at >= cutoff)
                     .order_by(TaskRun.started_at.desc())
-                    .limit(10)
+                    .limit(cap)
                 )
                 result = await session.execute(stmt)
                 runs = result.scalars().all()
@@ -360,11 +373,16 @@ class SupervisorPlanner:
             if not runs:
                 return "## Recent Failures (24h)\nNo failures in the last 24 hours"
 
+            suffix = ""
+            if total > len(runs):
+                log.info("planner.recent_failures_truncated", cap=cap, total=total)
+                suffix = f"\n\n_Showing {len(runs)} of {total} failures._"
+
             lines = ["## Recent Failures (24h)"]
             for run in runs:
                 error_summary = _sanitize_error(run.error_message)
                 lines.append(f"- Issue #{run.issue_number}, role={run.role}, error={error_summary}")
-            return "\n".join(lines)
+            return "\n".join(lines) + suffix
         except Exception:  # noqa: BLE001 (prompt context is best-effort; a missing section must not abort planning)
             log.warning("planner.recent_failures_unavailable", exc_info=True)
             return "## Recent Failures (24h)\nData unavailable"
@@ -380,6 +398,19 @@ class SupervisorPlanner:
         queue = self._config.supervisor.task_queue
         if not queue:
             return "## Issue Health\nNo task queue configured"
+
+        cap = self._config.supervisor.planner_issue_health_max_rows
+        total_queue_size = len(queue)
+        suffix = ""
+        if total_queue_size > cap:
+            log.info(
+                "planner.issue_health_truncated",
+                queue_size=total_queue_size,
+                cap=cap,
+                dropped=total_queue_size - cap,
+            )
+            queue = queue[:cap]
+            suffix = f"\n\n_Showing {len(queue)} of {total_queue_size} queued issues._"
 
         try:
             from collections import defaultdict
@@ -417,7 +448,7 @@ class SupervisorPlanner:
                 cost_by_issue: dict[str, Decimal] = {row[0]: Decimal(str(row[1] or 0)) for row in cost_result.all()}
 
             if not runs:
-                return "## Issue Health\nNo developer runs for queued issues"
+                return "## Issue Health\nNo developer runs for queued issues" + suffix
 
             health_by_issue: dict[str, dict] = defaultdict(lambda: {"failed": 0, "succeeded": 0, "last_error": None})
             issues_with_runs = set()
@@ -444,7 +475,7 @@ class SupervisorPlanner:
                 failed = health["failed"]
                 succeeded = health["succeeded"]
                 lines.append(f"| #{issue_num} | {failed} failed | {succeeded} succeeded | ${cost:.2f} | {error} |")
-            return "\n".join(lines)
+            return "\n".join(lines) + suffix
         except Exception:  # noqa: BLE001 (prompt context is best-effort; a missing section must not abort planning)
             log.warning("supervisor.planner.issue_health_failed", exc_info=True)
             return "## Issue Health\nData unavailable"
@@ -460,27 +491,75 @@ class SupervisorPlanner:
         return resolved[0] if resolved else _DEFAULT_MODEL
 
     async def _call_llm(self, system_prompt: str, user_prompt: str, model: str) -> dict | None:
-        try:
-            result = await invoke(
-                user_prompt,
-                model=model,
-                task_type="planner",
-                system_prompt=system_prompt,
-                max_tokens=_MAX_TOKENS,
-                timeout=self._config.supervisor.planner_timeout_seconds,
-                cwd=self._project_dir,
-            )
-            json_str = extract_json(result.text)
-            if not json_str:
-                log.warning("planner.no_json_found", response_preview=result.text[:200])
+        max_attempts = self._config.supervisor.planner_max_attempts
+        backoff = self._config.supervisor.planner_retry_backoff_seconds
+
+        for attempt in range(max_attempts):
+            try:
+                result = await invoke(
+                    user_prompt,
+                    model=model,
+                    task_type="planner",
+                    system_prompt=system_prompt,
+                    max_tokens=_MAX_TOKENS,
+                    timeout=self._config.supervisor.planner_timeout_seconds,
+                    cwd=self._project_dir,
+                )
+                json_str = extract_json(result.text)
+                if not json_str:
+                    log.warning("planner.no_json_found", response_preview=result.text[:200])
+                    return None
+                parsed = json.loads(json_str)
+                self._record_outcome("success")
+                return parsed
+            except json.JSONDecodeError as exc:
+                log.warning("planner.parse_error", raw_response=str(exc)[:200])
                 return None
-            return json.loads(json_str)
-        except json.JSONDecodeError as exc:
-            log.warning("planner.parse_error", raw_response=str(exc)[:200])
-            return None
-        except Exception:  # noqa: BLE001 (LLM call and JSON parse both fail here; either falls back to deterministic mode)
-            log.warning("planner.llm_call_error", exc_info=True)
-            return None
+            except LLMTimeoutError as exc:
+                final_error = _sanitize_error(str(exc))
+                attempt_number = attempt + 1
+                if attempt_number < max_attempts:
+                    delay = backoff * (2**attempt)
+                    log.warning(
+                        "planner.llm_timeout_retry",
+                        attempt=attempt_number,
+                        max_attempts=max_attempts,
+                        delay_s=delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                log.warning("planner.llm_call_exhausted", attempts=max_attempts, final_error=final_error)
+                self._record_outcome("failure")
+                emit_safe(
+                    "Supervisor planner failed after retries",
+                    severity=FeedEventSeverity.warning,
+                    detail=f"Planner LLM timed out after {max_attempts} attempts: {final_error}",
+                    category="planner",
+                    metadata={"attempts": max_attempts, "final_error": final_error},
+                )
+                return None
+            except Exception:  # noqa: BLE001 (LLM call and JSON parse both fail here; either falls back to deterministic mode)
+                log.warning("planner.llm_call_error", exc_info=True)
+                return None
+        return None
+
+    def _record_outcome(self, event_type: str) -> None:
+        """Record a planner success/failure outcome for the dashboard health widget.
+
+        In-memory only (``supervisor_service._planner_health``), mirroring the
+        existing ephemeral ``_pending_plan`` pattern: rebuilt on the next poll
+        cycle, never persisted to the database. Best-effort: never raises,
+        since this is diagnostics, not load-bearing. Full detail (attempt
+        count, timeout, error) is already captured by the caller's own log
+        line and feed event; this only tallies success/failure counts.
+        """
+        try:
+            from sova.dashboard.services.supervisor_service import record_planner_outcome
+
+            project_slug = resolve_project_slug(self._config.github_repo, self._project_dir)
+            record_planner_outcome(project_slug, event_type)
+        except Exception:  # noqa: BLE001 (outcome logging is a diagnostics side effect, never load-bearing)
+            log.debug("planner.record_outcome_failed", exc_info=True)
 
     def _parse_response(self, raw: dict) -> PlanResult | None:
         reasoning = raw.get("reasoning")

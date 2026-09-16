@@ -27,12 +27,30 @@ def config() -> ProjectConfig:
     )
 
 
+def _mock_session_factory() -> MagicMock:
+    """A session_factory whose ``async with factory() as session`` round-trip works.
+
+    Several prompt-assembly methods (``_get_resource_snapshot``,
+    ``_get_recent_failures``, ``_get_issue_health``) open a real
+    session/transaction, so a bare ``MagicMock()`` here leaves an unawaited
+    coroutine behind on every test that exercises those paths. ``_record_outcome()``
+    itself is in-memory only (``supervisor_service.record_planner_outcome``) and
+    does not touch the session factory. Matches the pattern already used in
+    ``TestGetResourceSnapshot``.
+    """
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=mock_session)
+    return MagicMock(return_value=mock_session)
+
+
 @pytest.fixture
 def planner(config: ProjectConfig) -> SupervisorPlanner:
     return SupervisorPlanner(
         config=config,
         project_dir=Path("/tmp/test"),
-        session_factory=MagicMock(),
+        session_factory=_mock_session_factory(),
     )
 
 
@@ -194,7 +212,7 @@ class TestCallLLM:
             supervisor=SupervisorConfig(enabled=True, llm_planning=True, planner_timeout_seconds=90),
             github_repo="test/repo",
         )
-        p = SupervisorPlanner(config=cfg, project_dir=Path("/tmp/test"), session_factory=MagicMock())
+        p = SupervisorPlanner(config=cfg, project_dir=Path("/tmp/test"), session_factory=_mock_session_factory())
         mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model=_DEFAULT_MODEL)
         with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result) as mock_invoke:
             await p._call_llm("system", "user", _DEFAULT_MODEL)
@@ -207,6 +225,107 @@ class TestCallLLM:
         with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result) as mock_invoke:
             await planner._call_llm("system", "user", _DEFAULT_MODEL)
         assert mock_invoke.call_args[1]["timeout"] == 180
+
+
+class TestCallLLMRetry:
+    async def test_planner_call_llm_retries_on_timeout(self, planner: SupervisorPlanner) -> None:
+        from sova.llm.errors import LLMTimeoutError
+        from sova.llm.models import LLMResult
+
+        mock_result = LLMResult(text='{"reasoning": "ok", "actions": []}', model=_DEFAULT_MODEL)
+        with (
+            patch(
+                "sova.supervisor.planner.invoke",
+                new_callable=AsyncMock,
+                side_effect=[LLMTimeoutError("timed out"), LLMTimeoutError("timed out"), mock_result],
+            ) as mock_invoke,
+            patch("sova.supervisor.planner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            result = await planner._call_llm("system", "user", _DEFAULT_MODEL)
+
+        assert result == {"reasoning": "ok", "actions": []}
+        assert mock_invoke.call_count == 3
+        assert mock_sleep.call_count == 2
+        assert mock_sleep.call_args_list[0].args[0] == 1.0
+        assert mock_sleep.call_args_list[1].args[0] == 2.0
+
+    async def test_planner_call_llm_no_retry_on_parse_failure(self, planner: SupervisorPlanner) -> None:
+        from sova.llm.errors import LLMInvocationError
+
+        with patch(
+            "sova.supervisor.planner.invoke",
+            new_callable=AsyncMock,
+            side_effect=LLMInvocationError("bad response"),
+        ) as mock_invoke:
+            result = await planner._call_llm("system", "user", _DEFAULT_MODEL)
+
+        assert result is None
+        assert mock_invoke.call_count == 1
+
+    async def test_exhausts_all_attempts_then_returns_none(self, planner: SupervisorPlanner) -> None:
+        from sova.llm.errors import LLMTimeoutError
+
+        with (
+            patch(
+                "sova.supervisor.planner.invoke",
+                new_callable=AsyncMock,
+                side_effect=LLMTimeoutError("timed out"),
+            ) as mock_invoke,
+            patch("sova.supervisor.planner.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = await planner._call_llm("system", "user", _DEFAULT_MODEL)
+
+        assert result is None
+        assert mock_invoke.call_count == planner._config.supervisor.planner_max_attempts
+
+    async def test_planner_failure_emits_feed_event(self, planner: SupervisorPlanner) -> None:
+        from sova.llm.errors import LLMTimeoutError
+
+        with (
+            patch(
+                "sova.supervisor.planner.invoke",
+                new_callable=AsyncMock,
+                side_effect=LLMTimeoutError("timed out"),
+            ),
+            patch("sova.supervisor.planner.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.supervisor.planner.emit_safe") as mock_emit,
+        ):
+            result = await planner._call_llm("system", "user", _DEFAULT_MODEL)
+
+        assert result is None
+        mock_emit.assert_called_once()
+        _, kwargs = mock_emit.call_args
+        assert kwargs["category"] == "planner"
+        assert kwargs["metadata"]["attempts"] == planner._config.supervisor.planner_max_attempts
+        assert "final_error" in kwargs["metadata"]
+
+    async def test_records_success_outcome(self, planner: SupervisorPlanner) -> None:
+        from sova.llm.models import LLMResult
+
+        mock_result = LLMResult(text='{"reasoning": "ok", "actions": []}', model=_DEFAULT_MODEL)
+        with (
+            patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result),
+            patch.object(planner, "_record_outcome") as mock_record,
+        ):
+            await planner._call_llm("system", "user", _DEFAULT_MODEL)
+
+        mock_record.assert_called_once_with("success")
+
+    async def test_records_failure_outcome_after_exhausted_retries(self, planner: SupervisorPlanner) -> None:
+        from sova.llm.errors import LLMTimeoutError
+
+        with (
+            patch(
+                "sova.supervisor.planner.invoke",
+                new_callable=AsyncMock,
+                side_effect=LLMTimeoutError("timed out"),
+            ),
+            patch("sova.supervisor.planner.asyncio.sleep", new_callable=AsyncMock),
+            patch.object(planner, "_record_outcome") as mock_record,
+        ):
+            await planner._call_llm("system", "user", _DEFAULT_MODEL)
+
+        mock_record.assert_called_once_with("failure")
 
 
 class TestParseResponse:
@@ -763,6 +882,156 @@ class TestGetIssueHealth:
 
         result = await p._get_issue_health()
         assert "Data unavailable" in result
+
+
+class TestPromptSizeCaps:
+    @pytest.fixture
+    async def db_planner(self, monkeypatch: pytest.MonkeyPatch) -> SupervisorPlanner:
+        """Planner with a real in-memory SQLite session factory and a 100-item queue."""
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        project_dir = Path("/tmp/test-planner-caps")
+        project_dir.mkdir(exist_ok=True)
+        await init_db(project_dir)
+        sf = await get_session_factory(project_dir)
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(
+                enabled=True,
+                llm_planning=True,
+                task_queue=list(range(1, 101)),
+                planner_issue_health_max_rows=5,
+            ),
+            github_repo="test/repo",
+        )
+        p = SupervisorPlanner(config=cfg, project_dir=project_dir, session_factory=sf)
+        yield p
+        await close_db()
+
+    async def test_planner_prompt_assembly_respects_caps(self, db_planner: SupervisorPlanner) -> None:
+        from datetime import datetime, timezone
+
+        from sova.db.models import TaskRun
+
+        async with db_planner._session_factory() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        TaskRun(
+                            issue_number="3",
+                            role="developer",
+                            status="failed",
+                            error_message="in cap",
+                            started_at=datetime.now(timezone.utc),
+                        ),
+                        TaskRun(
+                            issue_number="80",
+                            role="developer",
+                            status="failed",
+                            error_message="beyond cap",
+                            started_at=datetime.now(timezone.utc),
+                        ),
+                    ]
+                )
+
+        result = await db_planner._get_issue_health()
+
+        assert "#3" in result
+        assert "#80" not in result
+        assert "_Showing 5 of 100 queued issues._" in result
+
+    async def test_recent_failures_respects_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+        from datetime import datetime, timezone
+
+        from sova.db.models import TaskRun
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        project_dir = Path("/tmp/test-planner-failure-cap")
+        project_dir.mkdir(exist_ok=True)
+        await init_db(project_dir)
+        sf = await get_session_factory(project_dir)
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, llm_planning=True, planner_max_failures_in_context=2),
+            github_repo="test/repo",
+        )
+        p = SupervisorPlanner(config=cfg, project_dir=project_dir, session_factory=sf)
+
+        async with sf() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        TaskRun(
+                            issue_number=str(n),
+                            role="developer",
+                            status="failed",
+                            error_message=f"err{n}",
+                            started_at=datetime.now(timezone.utc),
+                        )
+                        for n in range(1, 4)
+                    ]
+                )
+
+        result = await p._get_recent_failures()
+        assert result.count("- Issue #") == 2
+        assert "_Showing 2 of 3 failures._" in result
+        await close_db()
+
+    async def test_recent_failures_no_truncation_note_when_exactly_at_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A query capped with .limit(cap) always returns <= cap rows, so ``len(runs) == cap``
+
+        alone cannot distinguish "truncated" from "exactly cap rows exist". Regression test
+        for a false-positive truncation note when the true total equals the cap.
+        """
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+        from datetime import datetime, timezone
+
+        from sova.db.models import TaskRun
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        project_dir = Path("/tmp/test-planner-failure-cap-exact")
+        project_dir.mkdir(exist_ok=True)
+        await init_db(project_dir)
+        sf = await get_session_factory(project_dir)
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, llm_planning=True, planner_max_failures_in_context=3),
+            github_repo="test/repo",
+        )
+        p = SupervisorPlanner(config=cfg, project_dir=project_dir, session_factory=sf)
+
+        async with sf() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        TaskRun(
+                            issue_number=str(n),
+                            role="developer",
+                            status="failed",
+                            error_message=f"err{n}",
+                            started_at=datetime.now(timezone.utc),
+                        )
+                        for n in range(1, 4)
+                    ]
+                )
+
+        result = await p._get_recent_failures()
+        assert result.count("- Issue #") == 3
+        assert "_Showing" not in result
+        await close_db()
+
+
+class TestPlannerRetryBackoffConfig:
+    """``planner_retry_backoff_seconds = 0`` is a documented edge case: retry immediately, no sleep."""
+
+    def test_zero_backoff_is_valid(self) -> None:
+        cfg = SupervisorConfig(enabled=True, llm_planning=True, planner_retry_backoff_seconds=0)
+        assert cfg.planner_retry_backoff_seconds == 0
+
+    def test_negative_backoff_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="planner_retry_backoff_seconds"):
+            SupervisorConfig(enabled=True, llm_planning=True, planner_retry_backoff_seconds=-1)
 
 
 class TestParseResponseEdgeCases:

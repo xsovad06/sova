@@ -127,8 +127,8 @@
   <ol id="queue-list" class="space-y-1"></ol>
 </div>
 
-<!-- Compact row: Rate Limits + Daemon Status -->
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+<!-- Compact row: Rate Limits + Daemon Status + Planner Health -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
   <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
     <h3 class="text-sm font-medium text-gray-300 mb-3">Rate Limits</h3>
     <div id="quota-panel" class="space-y-2">
@@ -141,6 +141,12 @@
   <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
     <h3 class="text-sm font-medium text-gray-300 mb-3">Daemon Status</h3>
     <div id="status-panel" class="space-y-2 text-xs text-gray-400">
+      <p>Loading...</p>
+    </div>
+  </div>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <h3 class="text-sm font-medium text-gray-300 mb-3">Planner Health</h3>
+    <div id="planner-health-panel" class="space-y-2 text-xs text-gray-400">
       <p>Loading...</p>
     </div>
   </div>
@@ -483,6 +489,52 @@ async function loadCIBudget() {
     `;
   } catch (e) {
     document.getElementById('ci-budget-panel').innerHTML = '<p class="text-xs text-gray-500">Failed to load CI budget</p>';
+  }
+}
+
+// Planner Health
+function _fmtPlannerTimestamp(iso) {
+  if (!iso) return 'never';
+  return new Date(iso.endsWith('Z') ? iso : iso + 'Z').toLocaleString();
+}
+
+let _plannerHealthAutoPolled = false;
+
+async function loadPlannerHealth() {
+  const panel = document.getElementById('planner-health-panel');
+  try {
+    const res = await fetch(`${apiBase}/supervisor/planner-health`);
+    if (!res.ok) {
+      panel.innerHTML = '<p class="text-xs text-gray-500">Planner health data unavailable</p>';
+      return;
+    }
+    const data = await res.json();
+
+    if (!data.success_count && !data.failure_count) {
+      panel.innerHTML = '<p class="text-xs text-gray-500">No planner activity yet (LLM planning may be disabled)</p>';
+      // Health counters are in-memory and reset on server restart, so a
+      // fresh dashboard load always sees this until the next poll cycle.
+      // Trigger one immediately, once per page load, so first-visit doesn't
+      // sit empty for a full poll_interval_seconds; a project with LLM
+      // planning genuinely disabled just gets one harmless extra poll call.
+      if (!_plannerHealthAutoPolled) {
+        _plannerHealthAutoPolled = true;
+        fetch(`${apiBase}/supervisor/poll`, { method: 'POST' })
+          .then(() => setTimeout(loadPlannerHealth, 3000))
+          .catch(() => {});
+      }
+      return;
+    }
+
+    const failureColor = data.failure_count > 0 ? 'text-accent-red' : 'text-gray-300';
+    panel.innerHTML = `
+      <div class="flex justify-between"><span>Successes</span><span class="text-accent-green">${data.success_count}</span></div>
+      <div class="flex justify-between"><span>Failures</span><span class="${failureColor}">${data.failure_count}</span></div>
+      <div class="flex justify-between"><span>Last success</span><span class="text-gray-300">${esc(_fmtPlannerTimestamp(data.last_success_at))}</span></div>
+      <div class="flex justify-between"><span>Last failure</span><span class="text-gray-300">${esc(_fmtPlannerTimestamp(data.last_failure_at))}</span></div>
+    `;
+  } catch (e) {
+    panel.innerHTML = '<p class="text-xs text-gray-500">Failed to load planner health</p>';
   }
 }
 
@@ -1876,10 +1928,10 @@ async function openSupervisorPersona() {
 
 // -- Init --
 _updateHideDoneBtn();
-loadStatus(); loadQuota(); loadCIBudget(); loadGraph(); loadDecisions(); loadPlan(); loadQueue(); loadSupervisorPersona();
+loadStatus(); loadQuota(); loadCIBudget(); loadPlannerHealth(); loadGraph(); loadDecisions(); loadPlan(); loadQueue(); loadSupervisorPersona();
 
 // Poll every 30s as fallback; loadGraph re-renders only when data changes
-setInterval(() => { loadStatus(); loadQuota(); loadCIBudget(); loadDecisions(); loadGraph(); loadPlan(); loadQueue(); loadSupervisorPersona(); }, 30000);
+setInterval(() => { loadStatus(); loadQuota(); loadCIBudget(); loadPlannerHealth(); loadDecisions(); loadGraph(); loadPlan(); loadQueue(); loadSupervisorPersona(); }, 30000);
 
 window.addEventListener('beforeunload', () => {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }

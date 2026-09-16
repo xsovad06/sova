@@ -1631,8 +1631,40 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "supervisor.planner_timeout_seconds",
         "Planner timeout (seconds)",
-        "Maximum time to wait for the LLM planner response. Scales with queue size "
-        "(typically 10-50s for 1-20 queued issues). Increase if you see frequent planner.llm_call_error warnings.",
+        "Timeout for the planner LLM call. Prompt size is bounded by planner_issue_health_max_rows and "
+        "planner_max_failures_in_context regardless of queue length, so latency no longer scales with queue size. "
+        "Minimum 10s.",
+        "supervisor",
+        "integer",
+    ),
+    SettingMeta(
+        "supervisor.planner_max_attempts",
+        "Planner max attempts",
+        "Number of times to retry a timed-out planner LLM call, with exponential backoff "
+        "(parse failures are never retried)",
+        "supervisor",
+        "integer",
+    ),
+    SettingMeta(
+        "supervisor.planner_retry_backoff_seconds",
+        "Planner retry backoff (seconds)",
+        "Base delay between planner retry attempts; doubles after each attempt (backoff_seconds * 2^attempt). "
+        "0 retries immediately with no delay.",
+        "supervisor",
+        "number",
+    ),
+    SettingMeta(
+        "supervisor.planner_issue_health_max_rows",
+        "Planner issue health max rows",
+        "Maximum number of queued issues rendered in the planner's Issue Health prompt section (bounds prompt size). "
+        "Distinct from the dashboard's Planner Health widget, which tracks LLM call success/failure, not issue rows.",
+        "supervisor",
+        "integer",
+    ),
+    SettingMeta(
+        "supervisor.planner_max_failures_in_context",
+        "Planner max failures in context",
+        "Maximum number of recent failure records rendered in the planner's Recent Failures prompt section",
         "supervisor",
         "integer",
     ),
