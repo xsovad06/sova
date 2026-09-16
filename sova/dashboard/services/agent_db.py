@@ -6,6 +6,7 @@ Separated from agent_lifecycle to keep DB logic focused and testable.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +19,45 @@ from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.agent_db")
+
+_ERROR_MESSAGE_MAX_LENGTH = 2000
+_OUTPUT_TAIL_MAX_LINES = 20
+_OUTPUT_TAIL_MAX_CHARS = 500
+_OUTPUT_LINE_MAX_CHARS = 2000
+
+
+def _build_exit_failure_message(exit_code: int, output_lines: Iterable[str], current_step: str | None) -> str:
+    """Build an enriched failure message for a process that exited nonzero with no structured LLM error.
+
+    Includes a bounded tail of captured output and the last recorded step name instead of
+    just the bare exit code. The fully assembled message is a single line (readable in table
+    cells and log lines) and length-bounded, so concatenating an already-truncated output tail
+    with the step name can never bloat the row. The output tail is raw agent stdout/stderr, so
+    it is redacted before truncation (a secret could otherwise straddle the truncation boundary
+    and survive redaction as a mangled fragment): this field is displayed on the dashboard and
+    pushed to an external telemetry hub (see telemetry_push.py), unlike the full per-line output
+    which never leaves the local DB/log viewer. Each raw line is bounded before joining so a
+    single oversized line (e.g. a large stream-json text block) cannot make the redaction scan
+    arbitrarily expensive while this function runs inside _finalize_task_run()'s DB transaction.
+    """
+    import itertools
+
+    from sova.llm.egress import scan_and_redact
+
+    tail = list(itertools.islice(reversed(output_lines), _OUTPUT_TAIL_MAX_LINES))[::-1]
+    tail = [line[:_OUTPUT_LINE_MAX_CHARS] for line in tail]
+    tail_text = ""
+    if tail:
+        tail_text = scan_and_redact("\n".join(tail)).redacted_text[-_OUTPUT_TAIL_MAX_CHARS:]
+
+    message = f"Process exited with code {exit_code}"
+    if current_step and current_step != "agent":
+        message += f" (step={current_step})"
+    if tail_text:
+        tail_line = " | ".join(tail_text.splitlines())
+        message += f"; last output: {tail_line}"
+
+    return message[:_ERROR_MESSAGE_MAX_LENGTH]
 
 
 async def _create_task_run(
@@ -216,7 +256,9 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                 task_run.status = status
                 task_run.ended_at = datetime.now(timezone.utc)
                 if exit_code != 0:
-                    task_run.error_message = f"Process exited with code {exit_code}"
+                    task_run.error_message = _build_exit_failure_message(
+                        exit_code, agent.output_lines, task_run.current_step
+                    )
 
                 await _record_cost(task_run, run_id, cost, agent, session)
 
