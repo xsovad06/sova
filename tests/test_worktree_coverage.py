@@ -306,7 +306,7 @@ class TestCopyWorktreeFilesDirConflict:
 
 class TestCheckActiveAgentImportError:
     async def test_import_error_returns_none(self) -> None:
-        from sova.git.worktree import _check_worktree_active_agent
+        from sova.git.worktree import check_worktree_active_agent
 
         original_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
@@ -316,7 +316,7 @@ class TestCheckActiveAgentImportError:
             return original_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", side_effect=fake_import):
-            result = await _check_worktree_active_agent(Path("/fake/wt"))
+            result = await check_worktree_active_agent(Path("/fake/wt"))
         assert result is None
 
 
