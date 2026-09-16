@@ -361,6 +361,27 @@ for t in data.get('transitions', []):
 
 Note: available transitions depend on the issue's current status. Run this for issues in each status to build a complete picture.
 
+### State labels are authoritative; workflow transitions are best-effort
+
+`triaged`, `researched`, `needs_spec`, and `human_only` have no entry in the
+default transition table above and are not meant to gain one: they are SOVA's
+own lifecycle labels, with no corresponding Jira workflow status on most
+boards. A board like RBAC's, for example, has no "Researched" status between
+"Backlog" and "In Progress", and should not be forced to invent one just to
+satisfy SOVA.
+
+SOVA always writes the `agent:*` label for the target state, whether or not a
+matching Jira transition exists. The label is what `get_state()` reads back
+(see Resolution precedence above: a matched `agent:` label wins outright over
+status mapping), so it is the authoritative record of agent lifecycle state.
+The workflow transition, when a matching one exists for the target state
+(`in_progress`, `in_review`, `done`, or a status you've mapped via
+`jira_state_transitions`), is a secondary, best-effort mirror for human
+visibility on the Jira board: moving the ticket to "In Progress" is a nice
+signal for a teammate glancing at the board, but SOVA's own gates never depend
+on it. This also means SOVA never needs Jira workflow-administration
+permission to track its own state correctly.
+
 ## Reference Configuration
 
 Complete working example based on a real Jira Cloud project:
