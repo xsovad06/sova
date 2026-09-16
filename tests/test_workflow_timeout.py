@@ -231,6 +231,139 @@ class TestPartialWorkPreservation:
         assert "wip:" in log_result.stdout
 
 
+class TestStepDeadlineWiring:
+    """Test that _run_step_with_timeout exposes the step's own deadline via ctx
+    (issue #977: lets an inner fix loop stop cleanly before the outer hard
+    timeout kills the step)."""
+
+    @pytest.fixture
+    def mock_adapter(self) -> MagicMock:
+        adapter = MagicMock()
+        adapter.repo = "test/repo"
+        return adapter
+
+    @pytest.fixture
+    def ctx(self, tmp_path: Path, mock_adapter: MagicMock) -> ExecutionContext:
+        from sova.config.loader import load_config
+
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
+        cfg = load_config(tmp_path)
+        return ExecutionContext(
+            project_dir=tmp_path,
+            config=cfg,
+            adapter=mock_adapter,
+            issue_number="123",
+            role="developer",
+        )
+
+    async def test_step_deadline_is_set_before_execute(self, ctx: ExecutionContext) -> None:
+        """ctx.step_time_remaining must be a sane positive number while the step runs."""
+        from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+
+        observed: dict[str, float | None] = {}
+
+        class ObservingStep(BaseStep):
+            name = "observing_step"
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                observed["remaining"] = ctx.step_time_remaining
+                return StepResult(success=True, summary="ok")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        step = ObservingStep()
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        with patch.object(WorkflowEngine, "_step_timeout", return_value=100):
+            result = await engine._run_step_with_timeout(step)
+
+        assert result.success
+        assert observed["remaining"] is not None
+        assert 0 < observed["remaining"] <= 100
+
+    async def test_step_time_remaining_is_none_outside_workflow_engine(self, ctx: ExecutionContext) -> None:
+        """A freshly constructed context (no WorkflowEngine involved) reports no deadline."""
+        assert ctx.step_time_remaining is None
+
+
+class TestStepDeadlineRunawayInteraction:
+    """A step-deadline bail-out must not swallow the runaway guard's PAUSED
+    semantics when the step's deadline was itself capped by the run-wide
+    wall-clock guard (issue #977 review finding).
+
+    Drives a real WorkflowEngine + DevelopStep so the fix loop's own budget
+    check (DevelopStep._check_loop_budget) participates for real: prior to
+    the fix, that check would bail out with a plain failed StepResult before
+    ever reaching the fix LLM, because it only compared step_time_remaining
+    against a worst-case cycle estimate without knowing whether the deadline
+    was runaway-capped. The regression this guards against is losing the
+    resumable PAUSED/"runaway" classification in favor of a terminal FAILED
+    one whenever the develop fix loop is what's running as the overall run
+    deadline approaches.
+    """
+
+    @pytest.fixture
+    def mock_adapter(self) -> MagicMock:
+        adapter = MagicMock()
+        adapter.repo = "test/repo"
+        return adapter
+
+    async def test_runaway_capped_deadline_pauses_not_fails(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        import asyncio
+        import time
+
+        from sova.config.loader import load_config
+        from sova.core.state import TaskStatus
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        (tmp_path / "Makefile").write_text("check:\n\tfalse\n")
+        (tmp_path / "sova.toml").write_text(
+            "github_repo = 'test/repo'\n\n"
+            "[runaway]\n"
+            "max_run_wall_clock_seconds = 5\n"
+            "max_run_steps = 0\n"
+            "max_llm_calls = 0\n"
+        )
+        cfg = load_config(tmp_path)
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=cfg,
+            adapter=mock_adapter,
+            issue_number="977",
+            role="developer",
+        )
+
+        step = DevelopStep()
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        # 3.5s elapsed of a 5s runaway budget: the pre-step guard (3.5s < 5s)
+        # passes, but _effective_step_timeout caps develop's own (much
+        # larger) step_timeout down to ~1.5s of remaining budget.
+        engine._run_started_at = time.monotonic() - 3.5
+
+        async def _hanging_fix_invoke(*args, **kwargs):
+            await asyncio.sleep(30)
+            raise AssertionError("fix LLM invoke should have been cancelled by the runaway deadline")
+
+        with (
+            patch(
+                "sova.core.steps.develop.invoke_command",
+                new=AsyncMock(
+                    return_value=LLMResult(
+                        text="done", model="opus", cost_usd=Decimal("0.60"), session_id="test-session"
+                    )
+                ),
+            ),
+            patch("sova.core.steps.develop.invoke", side_effect=_hanging_fix_invoke),
+        ):
+            result = await engine.run()
+
+        assert not result.success
+        assert result.final_status == TaskStatus.PAUSED
+        assert result.step_records
+        assert result.step_records[-1].status == "runaway"
+
+
 class TestValidateStepConfig:
     """Test that ValidateStep uses config values for timeouts and max attempts."""
 
