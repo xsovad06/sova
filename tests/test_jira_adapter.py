@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 import respx
@@ -907,7 +908,13 @@ class TestTransitionState:
         assert b'"50"' in body
 
     @respx.mock
-    async def test_transition_no_match_skips_labels(self) -> None:
+    async def test_transition_no_match_still_updates_labels(self) -> None:
+        """The agent:* label is SOVA's own state record, independent of Jira's
+        workflow status. Several TaskState values (TRIAGED, RESEARCHED,
+        NEEDS_SPEC, HUMAN_ONLY) have no corresponding Jira status by design, so
+        the transition lookup legitimately finds no match for them, and that
+        must not block the label update, or those states can never be recorded.
+        """
         adapter = _adapter()
         respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
             return_value=Response(200, json=_issue_json(key="TEST-1", labels=["agent:triaged"])),
@@ -919,7 +926,10 @@ class TestTransitionState:
             return_value=Response(200, json={"transitions": [{"id": "99", "name": "Unrelated Step"}]}),
         )
         await adapter.transition_state("1", TaskState.ON_QA)
-        assert not put_issue.called
+        assert put_issue.called
+        bodies = [json.loads(call.request.content) for call in put_issue.calls]
+        assert any({"remove": "agent:triaged"} in b.get("update", {}).get("labels", []) for b in bodies)
+        assert any({"add": "agent:on-qa"} in b.get("update", {}).get("labels", []) for b in bodies)
 
 
 class TestTriggerTransitionEdgeCases:
@@ -946,6 +956,39 @@ class TestTriggerTransitionEdgeCases:
         )
         await adapter._trigger_transition("TEST-1", TaskState.IN_PROGRESS)
         assert not post_route.called
+
+    @respx.mock
+    async def test_no_match_logs_warning_when_candidates_existed(self) -> None:
+        """IN_PROGRESS has real _DEFAULT_TRANSITIONS candidates, so a board that
+        offers none of them is a genuine miss worth a warning, not an expected
+        no-op. Issue #1040 acceptance criteria.
+        """
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(200, json={"transitions": [{"id": "99", "name": "Unrelated Action"}]}),
+        )
+        with patch("sova.adapters.jira.log") as mock_log:
+            await adapter._trigger_transition("TEST-1", TaskState.IN_PROGRESS)
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args[0][0] == "transition.no_match"
+        mock_log.info.assert_not_called()
+
+    @respx.mock
+    async def test_no_match_logs_info_when_no_candidates_by_design(self) -> None:
+        """TRIAGED has no _DEFAULT_TRANSITIONS entry and no config override, so
+        finding nothing to match is the expected outcome on every Jira project,
+        not a misconfiguration, and it must not warn. Issue #1040 acceptance
+        criteria.
+        """
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(200, json={"transitions": [{"id": "99", "name": "Unrelated Action"}]}),
+        )
+        with patch("sova.adapters.jira.log") as mock_log:
+            await adapter._trigger_transition("TEST-1", TaskState.TRIAGED)
+        mock_log.info.assert_called_once()
+        assert mock_log.info.call_args[0][0] == "transition.no_match"
+        mock_log.warning.assert_not_called()
 
     @respx.mock
     async def test_transition_post_failure(self) -> None:

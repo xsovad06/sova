@@ -292,11 +292,23 @@ class JiraAdapter(TaskAdapter):
         )
 
     async def transition_state(self, task_id: str, new_state: TaskState) -> None:
+        """Move the issue to *new_state* on both tracks SOVA reads state from.
+
+        The ``agent:*`` label is SOVA's own state record and is independent of
+        Jira's workflow status: several ``TaskState`` values (``TRIAGED``,
+        ``RESEARCHED``, ``NEEDS_SPEC``, ``HUMAN_ONLY``) have no corresponding
+        Jira status by design, so ``_trigger_transition`` legitimately finds no
+        match for them and returns ``False``. Gating the label update on that
+        result meant those states could never be recorded at all: the
+        researcher-approves-spec handoff silently left the issue's label at
+        its previous state, and the next Gate 3 check on the developer read
+        the stale label and refused a legitimately-ready issue. The label
+        update is therefore always attempted, and the Jira status transition
+        is a best-effort addition layered on top when a matching status exists.
+        """
         issue_key = self._resolve_key(task_id)
 
-        transitioned = await self._trigger_transition(issue_key, new_state)
-        if not transitioned:
-            return
+        await self._trigger_transition(issue_key, new_state)
 
         await self._clear_state_labels(issue_key)
         if new_state != TaskState.DONE:
@@ -723,7 +735,17 @@ class JiraAdapter(TaskAdapter):
                 log.info("transition.triggered", issue=issue_key, transition=transition_name)
                 return True
 
-        log.warning(
+        # Several TaskState values (TRIAGED, RESEARCHED, NEEDS_SPEC, HUMAN_ONLY)
+        # have no entry in _DEFAULT_TRANSITIONS by design: they are SOVA label
+        # states with no Jira workflow status counterpart, so finding no match
+        # for them is the expected, correct outcome, not a misconfiguration.
+        # Logging that at warning would page on every such transition on every
+        # Jira project. It is only a genuine warning-worthy miss when the
+        # target had real candidates (a default list or an explicit config
+        # override) and none of them matched what the board actually offers.
+        has_candidates = bool(_DEFAULT_TRANSITIONS.get(target_state)) or bool(config_name)
+        log_fn = log.warning if has_candidates else log.info
+        log_fn(
             "transition.no_match",
             issue=issue_key,
             state=str(target_state),
