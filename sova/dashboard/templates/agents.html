@@ -686,10 +686,22 @@ function renderTaskCard(item) {
     ? '<span class="flex items-center gap-1.5 shrink-0">' + assigneeHtml + ageHtml + diffHtml + draftHtml + threadHtml + conflictHtml + '</span>'
     : '';
 
+  var reasonChain = item.reason_chain || [];
+  var reasonHtml = '';
+  if (reasonChain.length) {
+    // The tooltip host must not be the truncating element: `truncate` sets
+    // overflow:hidden, which clips the absolutely-positioned ::after tooltip.
+    reasonHtml = '<span class="max-w-[200px] min-w-0" ' +
+      'data-tooltip="' + escapeHtml(reasonChain.join(' → ')) + '" data-tooltip-wide>' +
+      '<span class="block text-[10px] text-gray-500 truncate">' +
+      escapeHtml(item.matched_reason || reasonChain[reasonChain.length - 1]) + '</span></span>';
+  }
+
   var mainRow = '<div class="flex items-center gap-3 px-4 py-2.5">' +
     (needsAttention ? attentionDot : priorityIcon) +
     issueRef +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(item.title) + '</span>' +
+    reasonHtml +
     metaStrip +
     failedDot +
     '<div class="flex items-center gap-2 shrink-0" style="width:340px">' +
@@ -2751,7 +2763,8 @@ function _insertPlaceholder(targetCard, clientY) {
 
 function _buildLabelHtml(runLabel) {
   if (!runLabel) return '';
-  return '<div class="text-xs text-gray-400 truncate mb-1" style="max-width:12rem" data-tooltip="' + escapeHtml(runLabel) + '">' + escapeHtml(runLabel) + '</div>';
+  return '<div class="mb-1" style="max-width:12rem" data-tooltip="' + escapeHtml(runLabel) + '">' +
+    '<div class="text-xs text-gray-400 truncate">' + escapeHtml(runLabel) + '</div></div>';
 }
 
 async function loadKanban() {
@@ -2832,7 +2845,8 @@ async function loadKanban() {
             : '';
 
           var errorHtml = run.error_message
-            ? '<div class="text-xs text-accent-red/70 truncate mt-1" style="max-width:12rem" data-tooltip="' + escapeHtml(run.error_message) + '">' + escapeHtml(run.error_message) + '</div>'
+            ? '<div class="mt-1" style="max-width:12rem" data-tooltip="' + escapeHtml(run.error_message) + '">' +
+              '<div class="text-xs text-accent-red/70 truncate">' + escapeHtml(run.error_message) + '</div></div>'
             : '';
 
           return '<a href="' + prefix + '/work/' + run.id + '" class="kanban-card block border-accent-red/30">' +

@@ -6,7 +6,8 @@ dashboard state from GitHub labels, PR status, running agents, and SOVA verdicts
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from sova.core.state import TaskStatus
@@ -241,6 +242,51 @@ class Resolution:
     reason_chain: tuple[str, ...]  # every rule name evaluated, last entry is the match
 
 
+def _verdict_is_stale(facts: PRFacts) -> bool:
+    """True when the verdict is anchored to an older commit than the current head.
+
+    A verdict anchored to an older commit has been superseded by new pushes and
+    not yet re-reviewed: resolve_next_action() treats it as "no current review"
+    rather than acting on stale findings. An unanchored verdict (either sha
+    unknown) is reported as fresh, not stale, since there is nothing to compare.
+    """
+    return (
+        facts.sova_verdict is not None
+        and bool(facts.sova_verdict_sha)
+        and bool(facts.head_sha)
+        and facts.sova_verdict_sha != facts.head_sha
+    )
+
+
+def _has_standing_sova_changes(facts: PRFacts) -> bool:
+    """True when a SOVA revise/block verdict still stands against the current head.
+
+    Shared by the ladder's "sova_standing_changes" rule and its renderer so the
+    two cannot describe different conditions.
+    """
+    return (
+        facts.sova_verdict in ("revise", "block") and not facts.sova_verdict_addressed and not _verdict_is_stale(facts)
+    )
+
+
+def _unmet_merge_conditions(facts: PRFacts) -> list[str]:
+    """Every merge precondition the PR currently fails, phrased for the reason chain.
+
+    Empty means the PR satisfies all of them. Shared by the ladder's
+    "ready_to_merge" rule and its renderer so the two cannot diverge.
+    """
+    unmet: list[str] = []
+    if facts.sova_verdict != "approve":
+        unmet.append(f"verdict is {facts.sova_verdict or 'none'}, not approve")
+    if facts.thread_signal != "clear":
+        unmet.append(f"threads are {facts.thread_signal}")
+    if facts.ci_status != "passed":
+        unmet.append(f"CI status is {facts.ci_status or 'unknown'}")
+    if facts.mergeable != "MERGEABLE":
+        unmet.append(f"mergeable status is {facts.mergeable}")
+    return unmet
+
+
 def resolve_next_action(facts: PRFacts) -> Resolution:
     """Pure, ordered, first-match-wins resolver for a PR's next action.
 
@@ -274,20 +320,11 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     if facts.ci_status in ("pending", "running"):
         return Resolution(WorkItemState.PR_CI_RUNNING, None, tuple(chain))
 
-    # A verdict anchored to an older commit than the current head has been
-    # superseded by new pushes and not yet re-reviewed: treat it as "no
-    # current review" (rule 10) rather than acting on stale findings. An
-    # unanchored verdict (either sha unknown) is reported as fresh, not
-    # stale, since there is nothing to compare against.
-    verdict_stale = (
-        facts.sova_verdict is not None
-        and bool(facts.sova_verdict_sha)
-        and bool(facts.head_sha)
-        and facts.sova_verdict_sha != facts.head_sha
-    )
+    # A stale verdict falls through to "no current review" (rule 10).
+    verdict_stale = _verdict_is_stale(facts)
 
     chain.append("sova_standing_changes")
-    if facts.sova_verdict in ("revise", "block") and not facts.sova_verdict_addressed and not verdict_stale:
+    if _has_standing_sova_changes(facts):
         return Resolution(WorkItemState.PR_SOVA_CHANGES, "address_review", tuple(chain))
 
     chain.append("sova_verdict_stale")
@@ -307,16 +344,137 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
         return Resolution(WorkItemState.PR_EXTERNAL_CHANGES, "address_pr", tuple(chain))
 
     chain.append("ready_to_merge")
-    if (
-        facts.sova_verdict == "approve"
-        and facts.thread_signal == "clear"
-        and facts.ci_status == "passed"
-        and facts.mergeable == "MERGEABLE"
-    ):
+    if not _unmet_merge_conditions(facts):
         return Resolution(WorkItemState.PR_READY_TO_MERGE, "integrate", tuple(chain))
 
     chain.append("awaiting_review")
     return Resolution(WorkItemState.PR_AWAITING_REVIEW, "review_pr", tuple(chain))
+
+
+def _short_sha(sha: str | None) -> str:
+    """First 7 characters of a commit SHA, or 'unknown' when empty/None."""
+    return sha[:7] if sha else "unknown"
+
+
+def _fact_agent_running(facts: PRFacts) -> str:
+    return "an agent is currently running" if facts.running_agent else "no agent is currently running"
+
+
+def _fact_merged(facts: PRFacts) -> str:
+    return f"PR state is {facts.pr_state}"
+
+
+def _fact_conflicting(facts: PRFacts) -> str:
+    if facts.mergeable == "UNKNOWN":
+        return "mergeable status is unknown"
+    if facts.mergeable == "CONFLICTING":
+        return "PR has merge conflicts"
+    return f"PR mergeable status is {facts.mergeable}"
+
+
+def _fact_draft(facts: PRFacts) -> str:
+    return "PR is a draft" if facts.is_draft else "PR is not a draft"
+
+
+def _fact_ci_failed(facts: PRFacts) -> str:
+    if not facts.ci_status:
+        return "CI status is unknown"
+    if facts.ci_status == "failed":
+        return "CI failed"
+    return f"CI status is {facts.ci_status}"
+
+
+def _fact_ci_running(facts: PRFacts) -> str:
+    if not facts.ci_status:
+        return "CI status is unknown"
+    if facts.ci_status in ("pending", "running"):
+        return f"CI is {facts.ci_status}"
+    return f"CI is not pending or running (status: {facts.ci_status})"
+
+
+def _fact_sova_standing_changes(facts: PRFacts) -> str:
+    if _has_standing_sova_changes(facts):
+        return f"SOVA has a standing '{facts.sova_verdict}' verdict on the current head"
+    return "no standing SOVA revise/block verdict on the current head"
+
+
+def _fact_sova_verdict_stale(facts: PRFacts) -> str:
+    if facts.sova_verdict is None:
+        return "no SOVA verdict to compare against head"
+    if not facts.sova_verdict_sha or not facts.head_sha:
+        return "verdict anchor is unknown"
+    if facts.sova_verdict_sha != facts.head_sha:
+        return f"SOVA reviewed {_short_sha(facts.sova_verdict_sha)}, head is now {_short_sha(facts.head_sha)} (stale)"
+    return f"verdict is anchored to the current head ({_short_sha(facts.head_sha)})"
+
+
+def _fact_sova_verdict_addressed(facts: PRFacts) -> str:
+    if facts.sova_verdict_addressed:
+        return "an address cycle has superseded the review"
+    return "no address cycle has run since the review"
+
+
+def _fact_no_sova_review(facts: PRFacts) -> str:
+    if facts.sova_verdict is None:
+        return "no SOVA review exists yet"
+    if _verdict_is_stale(facts):
+        return "the standing SOVA verdict is stale and treated as no current review"
+    return f"a current SOVA verdict exists ({facts.sova_verdict})"
+
+
+def _fact_external_changes_or_unresolved_threads(facts: PRFacts) -> str:
+    if facts.external_changes_requested:
+        return "an external reviewer has requested changes"
+    if facts.thread_signal == "unknown":
+        return "review thread status is unknown"
+    if facts.thread_signal == "pending":
+        return "review threads are still unresolved"
+    return "no external changes requested and review threads are clear"
+
+
+def _fact_ready_to_merge(facts: PRFacts) -> str:
+    unmet = _unmet_merge_conditions(facts)
+    if not unmet:
+        return "approved, threads clear, CI passed, and mergeable: ready to merge"
+    return "not ready to merge (" + "; ".join(unmet) + ")"
+
+
+def _fact_awaiting_review(facts: PRFacts) -> str:
+    return "no earlier rule matched; defaulting to awaiting review"
+
+
+_RULE_RENDERERS: dict[str, Callable[[PRFacts], str]] = {
+    "agent_running": _fact_agent_running,
+    "merged": _fact_merged,
+    "conflicting": _fact_conflicting,
+    "draft": _fact_draft,
+    "ci_failed": _fact_ci_failed,
+    "ci_running": _fact_ci_running,
+    "sova_standing_changes": _fact_sova_standing_changes,
+    "sova_verdict_stale": _fact_sova_verdict_stale,
+    "sova_verdict_addressed": _fact_sova_verdict_addressed,
+    "no_sova_review": _fact_no_sova_review,
+    "external_changes_or_unresolved_threads": _fact_external_changes_or_unresolved_threads,
+    "ready_to_merge": _fact_ready_to_merge,
+    "awaiting_review": _fact_awaiting_review,
+}
+
+
+def describe_reason_chain(reason_chain: tuple[str, ...], facts: PRFacts) -> list[str]:
+    """Render each rule identifier in reason_chain to one fact-phrased sentence.
+
+    Every renderer states the PRFacts value the rule inspects, not the rule's
+    pass/fail outcome, so the same renderer serves both a matching (final) entry
+    and a non-matching (earlier) entry: the chain reads as an audit trail, not a
+    list of negations. A rule identifier with no renderer (a future ladder rule
+    added without updating this map) renders as the identifier itself, so the
+    payload and template never crash on an unrecognised entry.
+    """
+    sentences: list[str] = []
+    for rule_id in reason_chain:
+        renderer = _RULE_RENDERERS.get(rule_id)
+        sentences.append(renderer(facts) if renderer else rule_id)
+    return sentences
 
 
 def _thread_signal(pr_data: dict) -> str:
@@ -361,6 +519,45 @@ def _build_pr_facts(
     )
 
 
+def compute_work_item_resolution(
+    *,
+    task_state: str | None,
+    pr_data: dict | None,
+    running_agent: dict | None,
+    sova_verdict: dict | None = None,
+    external_reviews_enabled: bool = True,
+) -> tuple[Resolution, PRFacts | None]:
+    """Compute the full Resolution plus the PRFacts it was built from (#992).
+
+    Same priority cascade and inputs as compute_work_item_state(), but returns
+    the intermediate Resolution (state, action_id, reason_chain) and PRFacts
+    instead of discarding everything but the state, so callers can render the
+    reason chain. Returns (Resolution(state, None, ()), None) when the ladder
+    never ran (label-only item, no PR): there is no PR-routing decision to explain.
+
+    The running-agent path builds PRFacts from pr_data (or {} when no PR is
+    linked yet) and flips running_agent=True via dataclasses.replace, then calls
+    resolve_next_action() normally, so the "agent_running" entry comes from the
+    ladder itself rather than a second, potentially-divergent code path.
+    """
+    if running_agent is not None:
+        facts = replace(
+            _build_pr_facts(pr_data or {}, sova_verdict, external_reviews_enabled=external_reviews_enabled),
+            running_agent=True,
+        )
+        return resolve_next_action(facts), facts
+
+    if pr_data is not None:
+        facts = _build_pr_facts(pr_data, sova_verdict, external_reviews_enabled=external_reviews_enabled)
+        return resolve_next_action(facts), facts
+
+    if task_state is not None:
+        state = _LABEL_STATE_MAP.get(task_state, WorkItemState.BACKLOG)
+        return Resolution(state, None, ()), None
+
+    return Resolution(WorkItemState.BACKLOG, None, ()), None
+
+
 def compute_work_item_state(
     *,
     task_state: str | None,
@@ -373,17 +570,14 @@ def compute_work_item_state(
 
     Priority: running agent > PR state (via resolve_next_action()) > GitHub label.
     """
-    if running_agent is not None:
-        return WorkItemState.AGENT_RUNNING
-
-    if pr_data is not None:
-        facts = _build_pr_facts(pr_data, sova_verdict, external_reviews_enabled=external_reviews_enabled)
-        return resolve_next_action(facts).state
-
-    if task_state is not None:
-        return _LABEL_STATE_MAP.get(task_state, WorkItemState.BACKLOG)
-
-    return WorkItemState.BACKLOG
+    resolution, _facts = compute_work_item_resolution(
+        task_state=task_state,
+        pr_data=pr_data,
+        running_agent=running_agent,
+        sova_verdict=sova_verdict,
+        external_reviews_enabled=external_reviews_enabled,
+    )
+    return resolution.state
 
 
 _STATE_SORT_ORDER: dict[str, int] = {

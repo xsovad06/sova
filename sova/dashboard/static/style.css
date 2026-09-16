@@ -555,6 +555,14 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   display: none;
 }
 
+/* Wide variant: wraps long content (e.g. a joined reason chain) instead of
+   a single unbounded nowrap line */
+[data-tooltip][data-tooltip-wide]::after {
+  white-space: normal;
+  max-width: 320px;
+  text-align: left;
+}
+
 /* Position: bottom */
 [data-tooltip][data-tooltip-pos="bottom"]::after {
   bottom: auto;

@@ -14814,3 +14814,77 @@ class TestDashboardCsrfGuard:
                 headers={"Origin": "http://0.0.0.0:8111", CSRF_HEADER_NAME: "matching-token"},
             )
             assert response.status_code == 403
+
+
+class TestWorkItemReasonChainPayload:
+    """Every work item payload carries the resolver's rendered reason chain (#992)."""
+
+    @staticmethod
+    def _task(state: str = "in_review") -> dict:
+        return {"issue": 992, "state": state, "title": "Reason chain", "url": "", "labels": []}
+
+    @staticmethod
+    def _pr(**overrides: object) -> dict:
+        pr = {
+            "number": 1030,
+            "state": "OPEN",
+            "mergeable": "MERGEABLE",
+            "ci_status": "passed",
+            "head_sha": "sha-head",
+            "thread_total": 0,
+            "thread_resolved": 0,
+        }
+        pr.update(overrides)
+        return pr
+
+    def _build(self, **kwargs: object) -> dict:
+        from sova.dashboard.services.work_item_service import _build_task_item
+
+        return _build_task_item(self._task(), **kwargs)  # type: ignore[arg-type]
+
+    def test_agent_running_item_explains_the_running_agent(self) -> None:
+        item = self._build(pr_data=self._pr(), running={"role": "developer", "run_id": 7}, handoff=None)
+        assert item["state"] == "agent_running"
+        assert item["matched_reason"] == item["reason_chain"][-1]
+        assert "agent" in item["matched_reason"]
+
+    def test_standing_sova_revise_verdict_is_named(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "revise", "review_head_sha": "sha-head"}
+        item = self._build(pr_data=self._pr(), running=None, handoff=None, sova_verdict=verdict)
+        assert item["state"] == "pr_sova_changes"
+        assert "revise" in item["matched_reason"]
+        assert item["reason_chain"][0] == "no agent is currently running"
+
+    def test_external_changes_requested_is_named(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "sha-head"}
+        item = self._build(
+            pr_data=self._pr(computed_state="changes_requested"),
+            running=None,
+            handoff=None,
+            sova_verdict=verdict,
+        )
+        assert item["state"] == "pr_external_changes"
+        assert "external reviewer" in item["matched_reason"]
+
+    def test_unknown_thread_signal_says_unknown(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "sha-head"}
+        item = self._build(
+            pr_data=self._pr(thread_total=None, thread_resolved=None),
+            running=None,
+            handoff=None,
+            sova_verdict=verdict,
+        )
+        assert item["state"] == "pr_external_changes"
+        assert "unknown" in item["matched_reason"]
+
+    def test_integrate_ready_item_explains_readiness(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "sha-head"}
+        item = self._build(pr_data=self._pr(), running=None, handoff=None, sova_verdict=verdict)
+        assert item["state"] == "pr_ready_to_merge"
+        assert "ready to merge" in item["matched_reason"]
+        assert "not ready" not in item["matched_reason"]
+
+    def test_label_only_item_has_empty_chain_and_reason(self) -> None:
+        item = self._build(pr_data=None, running=None, handoff=None)
+        assert item["reason_chain"] == []
+        assert item["matched_reason"] == ""

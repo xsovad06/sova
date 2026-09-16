@@ -57,7 +57,13 @@ from sova.dashboard.services.work_state import (
     _sort_items as _sort_items,
 )
 from sova.dashboard.services.work_state import (
+    compute_work_item_resolution as compute_work_item_resolution,
+)
+from sova.dashboard.services.work_state import (
     compute_work_item_state as compute_work_item_state,
+)
+from sova.dashboard.services.work_state import (
+    describe_reason_chain as describe_reason_chain,
 )
 from sova.dashboard.services.work_state import (
     resolve_next_action as resolve_next_action,
@@ -117,6 +123,18 @@ def _extract_handoff_summary(handoff: dict | None, state: WorkItemState) -> str:
     return ""
 
 
+def _reason_chain_payload(resolution: Resolution, facts: PRFacts | None) -> list[str]:
+    """Render a Resolution's reason_chain to one sentence per rule, for the item payload.
+
+    The last sentence is the rule that matched; the client displays it and shows
+    the full chain on hover. Empty when facts is None (label-only item, spec-review
+    override: the ladder never ran, so there is no PR-routing decision to explain).
+    """
+    if facts is None:
+        return []
+    return describe_reason_chain(resolution.reason_chain, facts)
+
+
 def _synthesize_spec_actions(issue_number: str) -> list[dict]:
     """Reconstruct spec handoff actions when the handoff file is missing."""
     return [
@@ -142,6 +160,33 @@ def _synthesize_spec_actions(issue_number: str) -> list[dict]:
 # Item builders ---------------------------------------------------------------
 
 
+def _resolve_spec_review_override(
+    *,
+    state: WorkItemState,
+    running: dict | None,
+    pr_data: dict | None,
+    last_run: dict | None,
+    last_run_status: str | None,
+    handoff: dict | None,
+    issue_num: str,
+    pr_number: str | None,
+) -> tuple[WorkItemState, dict, list, list]:
+    """Override to SPEC_REVIEW when a spec run awaits approval; otherwise resolve normal actions."""
+    if running or pr_data is not None or not last_run or last_run_status != _AWAITING_APPROVAL:
+        primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr_number)
+        return state, primary, secondary, []
+
+    primary = _build_action(
+        "resume-approval",
+        "Approve & Resume",
+        "success",
+        "resume_from_approval",
+        {"run_id": last_run["id"]},
+    )
+    spec_handoff_actions = _synthesize_spec_actions(issue_num) if not handoff else []
+    return WorkItemState.SPEC_REVIEW, primary, [], spec_handoff_actions
+
+
 def _build_task_item(
     task: dict,
     pr_data: dict | None,
@@ -159,31 +204,29 @@ def _build_task_item(
     elif task.get("last_run") and task["last_run"].get("pr_number"):
         pr_number = task["last_run"]["pr_number"]
 
-    state = compute_work_item_state(
+    resolution, facts = compute_work_item_resolution(
         task_state=task.get("state"),
         pr_data=pr_data,
         running_agent=running,
         sova_verdict=sova_verdict if pr_data else None,
         external_reviews_enabled=external_reviews_enabled,
     )
+    state = resolution.state
+    reason_chain = _reason_chain_payload(resolution, facts)
+    matched_reason = reason_chain[-1] if reason_chain else ""
 
     last_run = task.get("last_run")
     last_run_status = last_run.get("status") if last_run else None
-    spec_handoff_actions: list[dict] = []
-    if not running and pr_data is None and last_run and last_run_status == _AWAITING_APPROVAL:
-        state = WorkItemState.SPEC_REVIEW
-        primary = _build_action(
-            "resume-approval",
-            "Approve & Resume",
-            "success",
-            "resume_from_approval",
-            {"run_id": last_run["id"]},
-        )
-        secondary = []
-        if not handoff:
-            spec_handoff_actions = _synthesize_spec_actions(issue_num)
-    else:
-        primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr_number)
+    state, primary, secondary, spec_handoff_actions = _resolve_spec_review_override(
+        state=state,
+        running=running,
+        pr_data=pr_data,
+        last_run=last_run,
+        last_run_status=last_run_status,
+        handoff=handoff,
+        issue_num=issue_num,
+        pr_number=pr_number,
+    )
 
     return _build_item(
         issue_number=issue_num,
@@ -198,6 +241,8 @@ def _build_task_item(
         running_agent=_format_running_agent(running) if running else None,
         pr_details=_format_pr_details(pr_data) if pr_data else None,
         sova_context=_format_sova_context(sova_verdict if pr_data else None),
+        reason_chain=reason_chain,
+        matched_reason=matched_reason,
         labels=task.get("labels", []),
         priority=task.get("priority", 99),
         priority_label=task.get("priority_label", ""),
@@ -226,13 +271,16 @@ def _build_pr_item(
     external_reviews_enabled: bool = True,
 ) -> dict:
     """Build a work item from a standalone or unlinked PR."""
-    state = compute_work_item_state(
+    resolution, facts = compute_work_item_resolution(
         task_state=None,
         pr_data=pr,
         running_agent=running,
         sova_verdict=sova_verdict,
         external_reviews_enabled=external_reviews_enabled,
     )
+    state = resolution.state
+    reason_chain = _reason_chain_payload(resolution, facts)
+    matched_reason = reason_chain[-1] if reason_chain else ""
     primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr["number"])
 
     return _build_item(
@@ -248,6 +296,8 @@ def _build_pr_item(
         running_agent=_format_running_agent(running) if running else None,
         pr_details=_format_pr_details(pr),
         sova_context=_format_sova_context(sova_verdict),
+        reason_chain=reason_chain,
+        matched_reason=matched_reason,
         labels=pr.get("labels", []),
         priority=-2,
         priority_label="",
@@ -632,6 +682,8 @@ def _build_item(**kwargs: object) -> dict:
         "running_agent": kwargs["running_agent"],
         "pr_details": kwargs["pr_details"],
         "sova_context": kwargs.get("sova_context") or {"has_sova_review": False, "verdict": None},
+        "reason_chain": kwargs.get("reason_chain") or [],
+        "matched_reason": kwargs.get("matched_reason") or "",
         "labels": kwargs["labels"],
         "priority": kwargs["priority"],
         "priority_label": kwargs["priority_label"],

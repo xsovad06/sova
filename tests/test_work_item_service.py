@@ -25,7 +25,9 @@ from sova.dashboard.services.work_item_service import (
     _index_running_agents,
     _sort_items,
     clear_verdict_cache,
+    compute_work_item_resolution,
     compute_work_item_state,
+    describe_reason_chain,
     get_work_items,
     resolve_next_action,
 )
@@ -828,6 +830,146 @@ class TestResolveNextAction:
         resolution = resolve_next_action(_facts())
         with pytest.raises(AttributeError):
             resolution.state = WorkItemState.MERGED  # type: ignore[misc]
+
+
+class TestDescribeReasonChain:
+    """Renders resolve_next_action()'s reason_chain identifiers to sentences (#992)."""
+
+    def test_every_ladder_rule_has_a_renderer(self) -> None:
+        """Every identifier resolve_next_action() can emit produces a non-identifier sentence."""
+        all_rule_ids = (
+            "agent_running",
+            "merged",
+            "conflicting",
+            "draft",
+            "ci_failed",
+            "ci_running",
+            "sova_standing_changes",
+            "sova_verdict_stale",
+            "sova_verdict_addressed",
+            "no_sova_review",
+            "external_changes_or_unresolved_threads",
+            "ready_to_merge",
+            "awaiting_review",
+        )
+        sentences = describe_reason_chain(all_rule_ids, _facts())
+        assert len(sentences) == len(all_rule_ids)
+        for rule_id, sentence in zip(all_rule_ids, sentences, strict=True):
+            assert sentence != rule_id
+            assert sentence
+
+    def test_unrecognised_rule_id_renders_as_itself(self) -> None:
+        """A future ladder rule with no renderer must not crash; it falls back to the identifier."""
+        sentences = describe_reason_chain(("some_future_rule",), _facts())
+        assert sentences == ["some_future_rule"]
+
+    def test_thread_signal_unknown_never_reads_like_clear(self) -> None:
+        clear_sentence = describe_reason_chain(
+            ("external_changes_or_unresolved_threads",), _facts(thread_signal="clear")
+        )[0]
+        unknown_sentence = describe_reason_chain(
+            ("external_changes_or_unresolved_threads",), _facts(thread_signal="unknown")
+        )[0]
+        pending_sentence = describe_reason_chain(
+            ("external_changes_or_unresolved_threads",), _facts(thread_signal="pending")
+        )[0]
+        assert clear_sentence != unknown_sentence
+        assert clear_sentence != pending_sentence
+        assert unknown_sentence != pending_sentence
+        assert "unknown" in unknown_sentence
+
+    def test_stale_comparison_with_missing_sha_reports_unknown_anchor(self) -> None:
+        no_verdict_sha = describe_reason_chain(
+            ("sova_verdict_stale",), _facts(sova_verdict="revise", sova_verdict_sha=None, head_sha="sha-head")
+        )[0]
+        no_head_sha = describe_reason_chain(
+            ("sova_verdict_stale",), _facts(sova_verdict="revise", sova_verdict_sha="sha-x", head_sha="")
+        )[0]
+        assert "unknown" in no_verdict_sha
+        assert "unknown" in no_head_sha
+
+    def test_stale_comparison_reports_current_vs_stale(self) -> None:
+        current = describe_reason_chain(
+            ("sova_verdict_stale",), _facts(sova_verdict="revise", sova_verdict_sha="sha-head", head_sha="sha-head")
+        )[0]
+        stale = describe_reason_chain(
+            ("sova_verdict_stale",),
+            _facts(sova_verdict="revise", sova_verdict_sha="abc1234full", head_sha="def5678full"),
+        )[0]
+        no_review = describe_reason_chain(("sova_verdict_stale",), _facts(sova_verdict=None, sova_verdict_sha=None))[0]
+        assert "stale" in stale
+        assert "abc1234" in stale
+        assert "def5678" in stale
+        assert "stale" not in current
+        assert no_review != current
+        assert no_review != stale
+
+    def test_mergeable_unknown_and_ci_status_empty_render_as_unknown(self) -> None:
+        conflicting_sentence = describe_reason_chain(("conflicting",), _facts(mergeable="UNKNOWN"))[0]
+        ci_failed_sentence = describe_reason_chain(("ci_failed",), _facts(ci_status=""))[0]
+        ci_running_sentence = describe_reason_chain(("ci_running",), _facts(ci_status=""))[0]
+        assert "unknown" in conflicting_sentence
+        assert "unknown" in ci_failed_sentence
+        assert "unknown" in ci_running_sentence
+
+    def test_ready_to_merge_non_match_describes_unmet_conditions(self) -> None:
+        sentence = describe_reason_chain(("ready_to_merge",), _facts(sova_verdict="revise", ci_status="failed"))[0]
+        assert "not ready to merge" in sentence
+        assert "verdict" in sentence
+        assert "CI status" in sentence
+
+    def test_ready_to_merge_match_describes_ready_state(self) -> None:
+        sentence = describe_reason_chain(("ready_to_merge",), _facts())[0]
+        assert "ready to merge" in sentence
+        assert "not ready" not in sentence
+
+
+class TestComputeWorkItemResolution:
+    """compute_work_item_resolution() returns the full Resolution plus PRFacts (#992)."""
+
+    def test_label_only_item_has_empty_chain_and_no_facts(self) -> None:
+        resolution, facts = compute_work_item_resolution(task_state="triaged", pr_data=None, running_agent=None)
+        assert resolution.state == WorkItemState.TRIAGED
+        assert resolution.reason_chain == ()
+        assert facts is None
+
+    def test_no_state_at_all_falls_back_to_backlog_with_empty_chain(self) -> None:
+        resolution, facts = compute_work_item_resolution(task_state=None, pr_data=None, running_agent=None)
+        assert resolution.state == WorkItemState.BACKLOG
+        assert resolution.reason_chain == ()
+        assert facts is None
+
+    def test_running_agent_without_pr_data_still_builds_facts_and_matches_state(self) -> None:
+        resolution, facts = compute_work_item_resolution(
+            task_state="in_progress", pr_data=None, running_agent={"role": "developer"}
+        )
+        assert resolution.state == WorkItemState.AGENT_RUNNING
+        assert resolution.reason_chain == ("agent_running",)
+        assert facts is not None
+        assert facts.running_agent is True
+
+    def test_running_agent_with_pr_data_flips_running_agent_flag(self) -> None:
+        pr_data = {"state": "OPEN", "mergeable": "MERGEABLE", "ci_status": "passed", "head_sha": "x"}
+        resolution, facts = compute_work_item_resolution(
+            task_state=None, pr_data=pr_data, running_agent={"role": "developer"}
+        )
+        assert resolution.state == WorkItemState.AGENT_RUNNING
+        assert facts is not None
+        assert facts.running_agent is True
+        assert facts.mergeable == "MERGEABLE"
+
+    def test_pr_data_without_running_agent_matches_resolve_next_action_directly(self) -> None:
+        pr_data = {"state": "MERGED"}
+        resolution, facts = compute_work_item_resolution(task_state=None, pr_data=pr_data, running_agent=None)
+        assert resolution.state == WorkItemState.MERGED
+        assert facts is not None
+        assert facts.running_agent is False
+
+    def test_matches_compute_work_item_state_for_same_inputs(self) -> None:
+        pr_data = {"state": "OPEN", "mergeable": "CONFLICTING"}
+        resolution, _facts_result = compute_work_item_resolution(task_state=None, pr_data=pr_data, running_agent=None)
+        state_only = compute_work_item_state(task_state=None, pr_data=pr_data, running_agent=None)
+        assert resolution.state == state_only
 
 
 class TestBuildTaskItem:
