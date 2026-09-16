@@ -71,7 +71,7 @@ class TestCleanupByIssueState:
             ]
             with (
                 patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock) as mock_cw,
-                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree.check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
             ):
@@ -119,7 +119,7 @@ class TestCleanupByIssueState:
             ]
             with (
                 patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock),
-                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree.check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
             ):
@@ -156,7 +156,7 @@ class TestCleanupByIssueState:
             ]
             with (
                 patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock) as mock_cw,
-                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree.check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.worktree._has_gone_upstream", new_callable=AsyncMock, return_value=True),
                 patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
@@ -223,7 +223,7 @@ class TestCleanupByIssueState:
                 _ok(stdout=""),
             ]
             with (
-                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree.check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
             ):
@@ -258,7 +258,7 @@ class TestCleanupByIssueState:
             ]
             with (
                 patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock, side_effect=RuntimeError("locked")),
-                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree.check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
             ):
@@ -277,7 +277,7 @@ class TestCleanupByIssueState:
             ]
             with (
                 patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock) as mock_cw,
-                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree.check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock) as mock_branches,
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
             ):
@@ -318,7 +318,7 @@ class TestGCSafetyChecks:
                 _ok(stdout=""),
             ]
             with (
-                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=12345),
+                patch("sova.git.worktree.check_worktree_active_agent", new_callable=AsyncMock, return_value=12345),
                 patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
             ):
@@ -334,7 +334,7 @@ class TestGCSafetyChecks:
                 _ok(stdout="M  sova/cli/app.py\n"),
             ]
             with (
-                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree.check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
             ):
@@ -350,7 +350,7 @@ class TestGCSafetyChecks:
                 _fail(stderr="index.lock contention"),
             ]
             with (
-                patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.worktree.check_worktree_active_agent", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.worktree._list_local_branches", new_callable=AsyncMock, return_value=[]),
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
             ):

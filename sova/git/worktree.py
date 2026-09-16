@@ -224,7 +224,7 @@ async def resolve_worktree_conflict(
         return wt_path
 
     # Guard: check if an agent is actively using this worktree
-    active_pid = await _check_worktree_active_agent(wt_path, project_dir=repo_root)
+    active_pid = await check_worktree_active_agent(wt_path, project_dir=repo_root)
     if active_pid is not None:
         msg = f"Cannot remove worktree {wt_path}: agent with PID {active_pid} is actively using it"
         log.error("worktree.conflict_active_agent", path=str(wt_path), pid=active_pid)
@@ -235,7 +235,7 @@ async def resolve_worktree_conflict(
     return wt_path
 
 
-async def _check_worktree_active_agent(worktree_path: Path, *, project_dir: Path | None = None) -> int | None:
+async def check_worktree_active_agent(worktree_path: Path, *, project_dir: Path | None = None) -> int | None:
     """Check if an agent is actively using a worktree.
 
     Queries the TaskRun DB table for non-terminal runs whose worktree_path
@@ -591,7 +591,7 @@ async def cleanup_by_issue_state(
     Uses a batch query to GitHub to find closed issues, then removes
     worktrees and local branches that reference those issues. Every
     worktree removal is gated on two safety checks: no active agent PID
-    is using it (``_check_worktree_active_agent``) and its working tree
+    is using it (``check_worktree_active_agent``) and its working tree
     is clean (``git status --porcelain``). A worktree for a closed issue
     can still have a pipeline actively running in it, or hold in-progress
     uncommitted work, and force-removing either destroys it silently. JIRA
@@ -624,7 +624,7 @@ async def cleanup_by_issue_state(
                 branch = branch_result.stdout.strip() if branch_result.success else ""
                 eligible = bool(branch) and await _has_gone_upstream(branch, project_dir)
             if eligible:
-                active_pid = await _check_worktree_active_agent(entry, project_dir=project_dir)
+                active_pid = await check_worktree_active_agent(entry, project_dir=project_dir)
                 if active_pid is not None:
                     log.info("gc.worktree_skipped_active", path=str(entry), pid=active_pid)
                     continue
