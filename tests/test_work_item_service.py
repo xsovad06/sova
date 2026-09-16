@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.dashboard.services.work_item_service import (
+    PRFacts,
     WorkItemState,
     _append_standalone_pr_items,
-    _apply_sova_verdict,
     _attach_integration_gates,
     _build_pr_item,
     _build_task_item,
@@ -23,11 +23,11 @@ from sova.dashboard.services.work_item_service import (
     _index_handoffs,
     _index_prs_by_issue,
     _index_running_agents,
-    _is_verdict_stale_by_sha,
     _sort_items,
     clear_verdict_cache,
     compute_work_item_state,
     get_work_items,
+    resolve_next_action,
 )
 
 
@@ -42,7 +42,13 @@ def _state(**kwargs: object) -> WorkItemState:
 
 
 class TestComputeWorkItemState:
-    """Priority cascade: running > PR (SOVA-adjusted) > label."""
+    """Priority cascade: running > PR (via resolve_next_action(), #991) > label.
+
+    compute_work_item_state() is now a thin adapter over resolve_next_action():
+    it no longer trusts pr_data["computed_state"] for CI/draft/mergeable, only for
+    deriving external_changes_requested. See TestResolveNextAction for the full
+    golden table over the ladder itself.
+    """
 
     # Priority 1: Running agent
 
@@ -81,8 +87,9 @@ class TestComputeWorkItemState:
             == WorkItemState.PR_SOVA_CHANGES
         )
 
-    def test_stale_sova_verdict_returns_pr_state(self) -> None:
-        """If the PR has advanced past the reviewed commit, the PR state wins."""
+    def test_stale_sova_verdict_falls_to_sova_pending(self) -> None:
+        """A verdict anchored to an older commit than the current head is treated as no current
+        review (resolve_next_action() rule 8/10), not as a pass-through of the raw PR state."""
         assert (
             _state(
                 pr_data={
@@ -92,7 +99,7 @@ class TestComputeWorkItemState:
                 },
                 sova_verdict={"verdict": "block", "has_sova_review": True, "review_head_sha": "abc123"},
             )
-            == WorkItemState.PR_READY_TO_MERGE
+            == WorkItemState.PR_SOVA_PENDING
         )
 
     def test_bot_approval_does_not_erase_anchored_revise_verdict(self) -> None:
@@ -122,15 +129,25 @@ class TestComputeWorkItemState:
                 },
                 sova_verdict={"verdict": "revise", "has_sova_review": True, "review_head_sha": "old_sha"},
             )
-            == WorkItemState.PR_READY_TO_MERGE
+            == WorkItemState.PR_SOVA_PENDING
         )
 
     # Priority 3: PR state
 
     def test_pr_ready_to_merge(self) -> None:
+        """Reaching PR_READY_TO_MERGE now requires the full rule-12 fact set: an approve verdict
+        plus green CI plus a mergeable PR, not just an "approved_ci_green" computed_state."""
         assert (
             _state(
-                pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
+                pr_data={
+                    "computed_state": "approved_ci_green",
+                    "state": "OPEN",
+                    "is_draft": False,
+                    "mergeable": "MERGEABLE",
+                    "ci_status": "passed",
+                    "head_sha": "abc123",
+                },
+                sova_verdict={"has_sova_review": True, "verdict": "approve", "review_head_sha": None},
             )
             == WorkItemState.PR_READY_TO_MERGE
         )
@@ -138,7 +155,7 @@ class TestComputeWorkItemState:
     def test_pr_ci_running(self) -> None:
         assert (
             _state(
-                pr_data={"computed_state": "ci_running", "state": "OPEN"},
+                pr_data={"computed_state": "ci_running", "state": "OPEN", "ci_status": "pending"},
             )
             == WorkItemState.PR_CI_RUNNING
         )
@@ -146,15 +163,22 @@ class TestComputeWorkItemState:
     def test_pr_ci_failed(self) -> None:
         assert (
             _state(
-                pr_data={"computed_state": "ci_failed", "state": "OPEN"},
+                pr_data={"computed_state": "ci_failed", "state": "OPEN", "ci_status": "failed"},
             )
             == WorkItemState.PR_CI_FAILED
         )
 
     def test_pr_conflicted(self) -> None:
+        """mergeable == CONFLICTING routes to PR_CONFLICTED regardless of computed_state (rule 3).
+
+        _build_pr_facts() reads mergeable directly and ignores computed_state="conflicted"
+        for this purpose (see TestResolveNextAction for the full golden table); real PR
+        data always sets both consistently since compute_pr_state() derives computed_state
+        from mergeable in the first place (pr_service.py).
+        """
         assert (
             _state(
-                pr_data={"computed_state": "conflicted", "state": "OPEN"},
+                pr_data={"computed_state": "conflicted", "state": "OPEN", "mergeable": "CONFLICTING"},
             )
             == WorkItemState.PR_CONFLICTED
         )
@@ -164,17 +188,40 @@ class TestComputeWorkItemState:
         verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
         assert (
             _state(
-                pr_data={"computed_state": "conflicted", "state": "OPEN", "thread_total": 2, "thread_resolved": 2},
+                pr_data={
+                    "computed_state": "conflicted",
+                    "state": "OPEN",
+                    "mergeable": "CONFLICTING",
+                    "thread_total": 2,
+                    "thread_resolved": 2,
+                },
                 sova_verdict=verdict,
             )
             == WorkItemState.PR_CONFLICTED
         )
 
+    def test_pr_conflicting_never_integrates(self) -> None:
+        """mergeable == CONFLICTING routes to PR_CONFLICTED regardless of verdict/CI (rule 3)."""
+        assert (
+            _state(
+                pr_data={
+                    "computed_state": "approved_ci_green",
+                    "state": "OPEN",
+                    "mergeable": "CONFLICTING",
+                    "ci_status": "passed",
+                },
+                sova_verdict={"has_sova_review": True, "verdict": "approve", "review_head_sha": None},
+            )
+            == WorkItemState.PR_CONFLICTED
+        )
+
     def test_pr_changes_requested(self) -> None:
-        """GitHub-sourced changes_requested maps to PR_EXTERNAL_CHANGES (command path)."""
+        """Standing external CHANGES_REQUESTED (with a SOVA approval already on record)
+        maps to PR_EXTERNAL_CHANGES (rule 11); without any SOVA verdict, rule 10 fires first."""
         assert (
             _state(
                 pr_data={"computed_state": "changes_requested", "state": "OPEN"},
+                sova_verdict={"has_sova_review": True, "verdict": "approve", "review_head_sha": None},
             )
             == WorkItemState.PR_EXTERNAL_CHANGES
         )
@@ -191,7 +238,7 @@ class TestComputeWorkItemState:
         )
 
     def test_pr_sova_changes_overrides_external_changes(self) -> None:
-        """SOVA revise verdict upgrades PR_EXTERNAL_CHANGES to PR_SOVA_CHANGES."""
+        """SOVA revise verdict wins over a standing external changes_requested (rule 7 precedes rule 11)."""
         verdict = {"has_sova_review": True, "verdict": "revise", "finding_count": 1, "reviewed_at": None}
         assert (
             _state(
@@ -202,7 +249,7 @@ class TestComputeWorkItemState:
         )
 
     def test_external_reviews_disabled_no_sova_pending(self) -> None:
-        """With external_reviews_enabled=False, integrate-bound state + no SOVA review → PR_AWAITING_REVIEW."""
+        """With external_reviews_enabled=False, no SOVA review → PR_AWAITING_REVIEW, not PR_SOVA_PENDING."""
         verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
         assert (
             _state(
@@ -225,34 +272,51 @@ class TestComputeWorkItemState:
             == WorkItemState.PR_SOVA_PENDING
         )
 
-    def test_pr_awaiting_review(self) -> None:
+    def test_pr_awaiting_review_without_verdict_yields_sova_pending(self) -> None:
+        """No SOVA verdict supplied at all defaults to PR_SOVA_PENDING (rule 10)."""
         assert (
             _state(
                 pr_data={"computed_state": "awaiting_review", "state": "OPEN"},
             )
-            == WorkItemState.PR_AWAITING_REVIEW
+            == WorkItemState.PR_SOVA_PENDING
         )
 
-    def test_pr_review_addressed(self) -> None:
+    def test_pr_review_addressed_needs_completed_address_cycle(self) -> None:
+        """PR_REVIEW_ADDRESSED is now driven solely by sova_verdict_addressed (#988, rule 9), not
+        GitHub's computed_state: a plain 'review_addressed' with no SOVA verdict at all falls to
+        PR_SOVA_PENDING like any other unreviewed PR."""
         assert (
             _state(
                 pr_data={"computed_state": "review_addressed", "state": "OPEN"},
             )
+            == WorkItemState.PR_SOVA_PENDING
+        )
+
+    def test_pr_review_addressed_from_completed_address_cycle(self) -> None:
+        """A completed address cycle (verdict == "addressed") routes to PR_REVIEW_ADDRESSED
+        regardless of the superseded prior verdict (rule 9)."""
+        assert (
+            _state(
+                pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
+                sova_verdict={"has_sova_review": True, "verdict": "addressed", "review_head_sha": None},
+            )
             == WorkItemState.PR_REVIEW_ADDRESSED
         )
 
-    def test_pr_approved(self) -> None:
+    def test_pr_approved_without_ci_confirmation_yields_sova_pending(self) -> None:
+        """PR_APPROVED is superseded by PR_READY_TO_MERGE as the sole integrate-bound state
+        (rule 12): a PR with no verdict data falls to PR_SOVA_PENDING."""
         assert (
             _state(
                 pr_data={"computed_state": "approved", "state": "OPEN"},
             )
-            == WorkItemState.PR_APPROVED
+            == WorkItemState.PR_SOVA_PENDING
         )
 
     def test_pr_draft(self) -> None:
         assert (
             _state(
-                pr_data={"computed_state": "draft", "state": "OPEN"},
+                pr_data={"computed_state": "draft", "state": "OPEN", "is_draft": True},
             )
             == WorkItemState.PR_DRAFT
         )
@@ -271,7 +335,7 @@ class TestComputeWorkItemState:
                 task_state="in_review",
                 pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
             )
-            == WorkItemState.PR_READY_TO_MERGE
+            == WorkItemState.PR_SOVA_PENDING
         )
 
     # Priority 4: GitHub label state
@@ -315,14 +379,21 @@ class TestComputeWorkItemState:
             == WorkItemState.PR_SOVA_PENDING
         )
 
-    def test_pr_approved_with_sova_approve_stays_approved(self) -> None:
+    def test_pr_approved_with_sova_approve_reaches_ready_to_merge(self) -> None:
+        """A SOVA approve verdict plus green CI and mergeable state reaches PR_READY_TO_MERGE
+        (rule 12); PR_APPROVED is superseded as the integrate-bound state (#991)."""
         verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
         assert (
             _state(
-                pr_data={"computed_state": "approved", "state": "OPEN"},
+                pr_data={
+                    "computed_state": "approved",
+                    "state": "OPEN",
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                },
                 sova_verdict=verdict,
             )
-            == WorkItemState.PR_APPROVED
+            == WorkItemState.PR_READY_TO_MERGE
         )
 
     def test_pr_approved_with_sova_revise_yields_sova_changes(self) -> None:
@@ -598,245 +669,165 @@ class TestSortItems:
         assert items[0]["state"] == "pr_external_changes"
 
 
-class TestApplySovaVerdict:
-    """Unit tests for _apply_sova_verdict() covering all override paths."""
+def _facts(**overrides: object) -> PRFacts:
+    """A fully mergeable, green, approved, thread-clear PRFacts snapshot (rule 12 default).
 
-    def _no_review(self) -> dict:
-        return {"has_sova_review": False, "verdict": None, "finding_count": 0, "review_head_sha": None}
-
-    def _review(self, verdict: str, review_head_sha: str | None = None) -> dict:
-        return {"has_sova_review": True, "verdict": verdict, "finding_count": 1, "review_head_sha": review_head_sha}
-
-    # sova_verdict=None: pass-through
-
-    def test_none_verdict_leaves_state_unchanged(self) -> None:
-        assert _apply_sova_verdict(WorkItemState.PR_APPROVED, None) == WorkItemState.PR_APPROVED
-
-    def test_none_verdict_leaves_awaiting_unchanged(self) -> None:
-        assert _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, None) == WorkItemState.PR_AWAITING_REVIEW
-
-    # No SOVA review, integrate-bound states → PR_SOVA_PENDING
-
-    def test_no_review_approved_yields_sova_pending(self) -> None:
-        assert _apply_sova_verdict(WorkItemState.PR_APPROVED, self._no_review()) == WorkItemState.PR_SOVA_PENDING
-
-    def test_no_review_ready_to_merge_yields_sova_pending(self) -> None:
-        assert _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._no_review()) == WorkItemState.PR_SOVA_PENDING
-
-    def test_no_review_awaiting_review_unchanged(self) -> None:
-        """PR_AWAITING_REVIEW is not in _INTEGRATE_STATES, so no downgrade."""
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, self._no_review()) == WorkItemState.PR_AWAITING_REVIEW
-        )
-
-    def test_no_review_external_changes_unchanged(self) -> None:
-        """Existing PR_EXTERNAL_CHANGES is already actionable; SOVA pending doesn't override it."""
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, self._no_review())
-            == WorkItemState.PR_EXTERNAL_CHANGES
-        )
-
-    # SOVA reviewed with approve: pass-through
-
-    def test_approved_verdict_leaves_approved_unchanged(self) -> None:
-        assert _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("approve")) == WorkItemState.PR_APPROVED
-
-    def test_approved_verdict_leaves_ready_to_merge_unchanged(self) -> None:
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._review("approve"))
-            == WorkItemState.PR_READY_TO_MERGE
-        )
-
-    # SOVA reviewed with revise/block: downgrade overrideable states
-
-    def test_revise_verdict_on_approved_yields_sova_changes(self) -> None:
-        assert _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("revise")) == WorkItemState.PR_SOVA_CHANGES
-
-    def test_block_verdict_on_ready_to_merge_yields_sova_changes(self) -> None:
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._review("block")) == WorkItemState.PR_SOVA_CHANGES
-        )
-
-    def test_revise_verdict_on_awaiting_review_yields_sova_changes(self) -> None:
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, self._review("revise"))
-            == WorkItemState.PR_SOVA_CHANGES
-        )
-
-    def test_revise_verdict_on_external_changes_yields_sova_changes(self) -> None:
-        """SOVA revise overrides external-reviewer-caused PR_EXTERNAL_CHANGES → PR_SOVA_CHANGES."""
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, self._review("revise"))
-            == WorkItemState.PR_SOVA_CHANGES
-        )
-
-    def test_revise_verdict_leaves_ci_failed_unchanged(self) -> None:
-        """CI_FAILED is not in _VERDICT_OVERRIDEABLE; existing fix action should not be clobbered."""
-        assert _apply_sova_verdict(WorkItemState.PR_CI_FAILED, self._review("revise")) == WorkItemState.PR_CI_FAILED
-
-    # SOVA approved but GitHub has no formal approval (self-review posted as COMMENT)
-
-    def test_approved_verdict_on_awaiting_review_upgrades_to_approved(self) -> None:
-        """SOVA approves but GitHub reviewDecision is empty (owner self-review posts as COMMENT).
-        The state should upgrade so "Integrate PR" is shown instead of "Review"."""
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, self._review("approve")) == WorkItemState.PR_APPROVED
-        )
-
-    def test_approved_verdict_does_not_affect_external_changes(self) -> None:
-        """If an external reviewer requested changes, SOVA approve should not override it."""
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, self._review("approve"))
-            == WorkItemState.PR_EXTERNAL_CHANGES
-        )
-
-    def test_approved_verdict_does_not_affect_ci_failed(self) -> None:
-        """CI failure takes priority; SOVA approve should not change the state."""
-        assert _apply_sova_verdict(WorkItemState.PR_CI_FAILED, self._review("approve")) == WorkItemState.PR_CI_FAILED
-
-    # Staleness: verdict's reviewed commit SHA no longer matches the PR's current head
-
-    def test_stale_revise_verdict_skips_downgrade(self) -> None:
-        """If the PR has advanced past the reviewed commit, the revise verdict is stale."""
-        verdict = self._review("revise", review_head_sha="abc123")
-        result = _apply_sova_verdict(
-            WorkItemState.PR_READY_TO_MERGE,
-            verdict,
-            pr_head_sha="def456",
-        )
-        assert result == WorkItemState.PR_READY_TO_MERGE
-
-    def test_fresh_revise_verdict_still_downgrades(self) -> None:
-        """If the PR head SHA still matches the reviewed commit, it still downgrades."""
-        verdict = self._review("block", review_head_sha="abc123")
-        result = _apply_sova_verdict(
-            WorkItemState.PR_APPROVED,
-            verdict,
-            pr_head_sha="abc123",
-        )
-        assert result == WorkItemState.PR_SOVA_CHANGES
-
-    def test_revise_verdict_without_pr_head_sha_still_downgrades(self) -> None:
-        """No pr_head_sha available means no staleness check can be performed."""
-        verdict = self._review("revise", review_head_sha="abc123")
-        result = _apply_sova_verdict(WorkItemState.PR_APPROVED, verdict)
-        assert result == WorkItemState.PR_SOVA_CHANGES
-
-    def test_revise_verdict_without_review_head_sha_still_downgrades(self) -> None:
-        """An unanchored verdict (no review_head_sha) is treated as fresh, not stale."""
-        verdict = self._review("revise")
-        result = _apply_sova_verdict(
-            WorkItemState.PR_APPROVED,
-            verdict,
-            pr_head_sha="def456",
-        )
-        assert result == WorkItemState.PR_SOVA_CHANGES
-
-    # external_reviews_enabled=False: skip PR_SOVA_PENDING for projects without bot review
-
-    def test_external_reviews_disabled_approved_yields_awaiting_review(self) -> None:
-        """No external reviewers: integrate-bound + no SOVA review → PR_AWAITING_REVIEW (not PR_SOVA_PENDING)."""
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_APPROVED, self._no_review(), external_reviews_enabled=False)
-            == WorkItemState.PR_AWAITING_REVIEW
-        )
-
-    def test_external_reviews_disabled_ready_to_merge_yields_awaiting_review(self) -> None:
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._no_review(), external_reviews_enabled=False)
-            == WorkItemState.PR_AWAITING_REVIEW
-        )
-
-    def test_external_reviews_enabled_approved_yields_sova_pending(self) -> None:
-        """External reviewers enabled: integrate-bound + no SOVA review → PR_SOVA_PENDING."""
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_APPROVED, self._no_review(), external_reviews_enabled=True)
-            == WorkItemState.PR_SOVA_PENDING
-        )
-
-    def test_external_reviews_disabled_does_not_affect_revise_verdict(self) -> None:
-        """external_reviews_enabled=False has no effect when SOVA has reviewed with revise."""
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("revise"), external_reviews_enabled=False)
-            == WorkItemState.PR_SOVA_CHANGES
-        )
-
-    # SOVA approved but unresolved review threads remain: PR_EXTERNAL_CHANGES
-
-    def test_approved_with_unresolved_threads_on_awaiting_review(self) -> None:
-        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
-        result = _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict, unresolved_thread_count=2)
-        assert result == WorkItemState.PR_EXTERNAL_CHANGES
-
-    def test_approved_with_unresolved_threads_on_approved_state(self) -> None:
-        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
-        result = _apply_sova_verdict(WorkItemState.PR_APPROVED, verdict, unresolved_thread_count=1)
-        assert result == WorkItemState.PR_EXTERNAL_CHANGES
-
-    def test_approved_with_unresolved_threads_on_ready_to_merge(self) -> None:
-        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
-        result = _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, verdict, unresolved_thread_count=3)
-        assert result == WorkItemState.PR_EXTERNAL_CHANGES
-
-    def test_approved_zero_unresolved_threads_stays_approved(self) -> None:
-        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
-        result = _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict, unresolved_thread_count=0)
-        assert result == WorkItemState.PR_APPROVED
-
-    def test_approved_default_unresolved_threads_stays_approved(self) -> None:
-        """unresolved_thread_count defaults to 0 when the caller omits it."""
-        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
-        assert _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict) == WorkItemState.PR_APPROVED
-
-    # "addressed" verdict (an address cycle superseded the prior review): the
-    # if/elif chain has no branch for it, so it must pass through unchanged,
-    # exactly like an unrecognized verdict string. Locks in the pass-through
-    # contract get_sova_review_verdict()'s "addressed" verdict relies on.
-
-    def test_addressed_verdict_leaves_ready_to_merge_unchanged(self) -> None:
-        verdict = self._review("addressed")
-        assert _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, verdict) == WorkItemState.PR_READY_TO_MERGE
-
-    def test_addressed_verdict_leaves_awaiting_review_unchanged(self) -> None:
-        verdict = self._review("addressed")
-        assert _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict) == WorkItemState.PR_AWAITING_REVIEW
-
-    def test_addressed_verdict_leaves_external_changes_unchanged(self) -> None:
-        verdict = self._review("addressed")
-        assert _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, verdict) == WorkItemState.PR_EXTERNAL_CHANGES
-
-    def test_approved_unknown_unresolved_threads_holds_state_awaiting_review(self) -> None:
-        """unresolved_thread_count=None (unknown) holds the pre-verdict state: no
-        promotion to PR_APPROVED, and it must not raise."""
-        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
-        result = _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, verdict, unresolved_thread_count=None)
-        assert result == WorkItemState.PR_AWAITING_REVIEW
-
-    def test_approved_unknown_unresolved_threads_holds_state_approved(self) -> None:
-        """unresolved_thread_count=None on an already-integrate-bound state must not
-        demote to PR_EXTERNAL_CHANGES either."""
-        verdict = {"has_sova_review": True, "verdict": "approve", "reviewed_at": None}
-        result = _apply_sova_verdict(WorkItemState.PR_APPROVED, verdict, unresolved_thread_count=None)
-        assert result == WorkItemState.PR_APPROVED
+    Each golden-table row overrides only the fields relevant to the rule it exercises,
+    isolating that rule from every other one.
+    """
+    defaults: dict = {
+        "running_agent": False,
+        "pr_state": "OPEN",
+        "is_draft": False,
+        "mergeable": "MERGEABLE",
+        "ci_status": "passed",
+        "head_sha": "sha-head",
+        "sova_verdict": "approve",
+        "sova_verdict_sha": "sha-head",
+        "sova_verdict_addressed": False,
+        "external_changes_requested": False,
+        "thread_signal": "clear",
+        "external_reviews_enabled": True,
+    }
+    defaults.update(overrides)
+    return PRFacts(**defaults)
 
 
-class TestIsVerdictStaleBySha:
-    def test_no_pr_head_sha(self) -> None:
-        assert not _is_verdict_stale_by_sha({"review_head_sha": "abc123"}, None)
+class TestResolveNextAction:
+    """Golden table for resolve_next_action()'s 13-rule, first-match-wins ladder (#991)."""
 
-    def test_no_review_head_sha(self) -> None:
-        """Unanchored verdict (no review_head_sha): never stale."""
-        assert not _is_verdict_stale_by_sha({"review_head_sha": None}, "abc123")
+    @pytest.mark.parametrize(
+        ("scenario", "facts", "expected_state", "expected_action_id"),
+        [
+            ("agent_running", _facts(running_agent=True), WorkItemState.AGENT_RUNNING, None),
+            ("merged", _facts(pr_state="MERGED"), WorkItemState.MERGED, None),
+            ("conflicting", _facts(mergeable="CONFLICTING"), WorkItemState.PR_CONFLICTED, "rebase"),
+            (
+                "conflicting_beats_approve_verdict",
+                _facts(mergeable="CONFLICTING", sova_verdict="approve", thread_signal="clear", ci_status="passed"),
+                WorkItemState.PR_CONFLICTED,
+                "rebase",
+            ),
+            ("draft", _facts(is_draft=True), WorkItemState.PR_DRAFT, None),
+            ("ci_failed", _facts(ci_status="failed"), WorkItemState.PR_CI_FAILED, "address_pr"),
+            ("ci_pending", _facts(ci_status="pending"), WorkItemState.PR_CI_RUNNING, None),
+            ("ci_running", _facts(ci_status="running"), WorkItemState.PR_CI_RUNNING, None),
+            (
+                "standing_revise_on_current_head",
+                _facts(sova_verdict="revise", sova_verdict_sha="sha-head"),
+                WorkItemState.PR_SOVA_CHANGES,
+                "address_review",
+            ),
+            (
+                "standing_block_on_current_head",
+                _facts(sova_verdict="block", sova_verdict_sha="sha-head"),
+                WorkItemState.PR_SOVA_CHANGES,
+                "address_review",
+            ),
+            (
+                "verdict_anchored_to_stale_sha",
+                _facts(sova_verdict="revise", sova_verdict_sha="old-sha", head_sha="sha-head"),
+                WorkItemState.PR_SOVA_PENDING,
+                "review_pr",
+            ),
+            (
+                "address_cycle_completed_after_review",
+                _facts(sova_verdict="revise", sova_verdict_addressed=True),
+                WorkItemState.PR_REVIEW_ADDRESSED,
+                "review_pr",
+            ),
+            (
+                "no_sova_review_at_all",
+                _facts(sova_verdict=None, sova_verdict_sha=None),
+                WorkItemState.PR_SOVA_PENDING,
+                "review_pr",
+            ),
+            (
+                "no_sova_review_external_reviews_disabled",
+                _facts(sova_verdict=None, sova_verdict_sha=None, external_reviews_enabled=False),
+                WorkItemState.PR_AWAITING_REVIEW,
+                "review_pr",
+            ),
+            (
+                "standing_external_changes_requested",
+                _facts(external_changes_requested=True),
+                WorkItemState.PR_EXTERNAL_CHANGES,
+                "address_pr",
+            ),
+            (
+                "unresolved_threads_pending",
+                _facts(thread_signal="pending"),
+                WorkItemState.PR_EXTERNAL_CHANGES,
+                "address_pr",
+            ),
+            (
+                "unresolved_threads_unknown",
+                _facts(thread_signal="unknown"),
+                WorkItemState.PR_EXTERNAL_CHANGES,
+                "address_pr",
+            ),
+            (
+                "approve_clear_green_mergeable_is_the_only_integrate_path",
+                _facts(),
+                WorkItemState.PR_READY_TO_MERGE,
+                "integrate",
+            ),
+            (
+                "approve_but_mergeability_not_yet_computed_is_not_integrate",
+                _facts(mergeable="UNKNOWN"),
+                WorkItemState.PR_AWAITING_REVIEW,
+                "review_pr",
+            ),
+            (
+                "approve_but_no_ci_checks_configured_is_not_integrate",
+                _facts(ci_status="none"),
+                WorkItemState.PR_AWAITING_REVIEW,
+                "review_pr",
+            ),
+            (
+                "post_failed_verdict_falls_to_awaiting_review",
+                _facts(sova_verdict="post_failed", sova_verdict_sha=None),
+                WorkItemState.PR_AWAITING_REVIEW,
+                "review_pr",
+            ),
+        ],
+    )
+    def test_golden_table(
+        self,
+        scenario: str,
+        facts: PRFacts,
+        expected_state: WorkItemState,
+        expected_action_id: str | None,
+    ) -> None:
+        resolution = resolve_next_action(facts)
+        assert resolution.state == expected_state, scenario
+        assert resolution.action_id == expected_action_id, scenario
 
-    def test_sha_mismatch_is_stale(self) -> None:
-        assert _is_verdict_stale_by_sha({"review_head_sha": "abc123"}, "def456")
+    def test_unknown_thread_signal_never_resolves_like_clear(self) -> None:
+        """thread_signal == 'unknown' must never resolve the same way as 'clear' (fail closed)."""
+        clear = resolve_next_action(_facts(thread_signal="clear"))
+        unknown = resolve_next_action(_facts(thread_signal="unknown"))
+        assert clear.state == WorkItemState.PR_READY_TO_MERGE
+        assert unknown.state == WorkItemState.PR_EXTERNAL_CHANGES
+        assert clear.state != unknown.state
 
-    def test_sha_match_is_fresh(self) -> None:
-        assert not _is_verdict_stale_by_sha({"review_head_sha": "abc123"}, "abc123")
+    def test_reason_chain_truncates_at_match(self) -> None:
+        """reason_chain lists every rule evaluated up to and including the match, no further."""
+        resolution = resolve_next_action(_facts(mergeable="CONFLICTING"))
+        assert resolution.reason_chain == ("agent_running", "merged", "conflicting")
+        assert resolution.reason_chain[-1] == "conflicting"
 
-    def test_missing_review_head_sha_key(self) -> None:
-        """Verdict dicts predating this field default to unanchored via .get()."""
-        assert not _is_verdict_stale_by_sha({}, "abc123")
+    def test_reason_chain_covers_full_ladder_on_default_match(self) -> None:
+        """The all-green default only matches the final rule, so every earlier rule is listed."""
+        resolution = resolve_next_action(_facts())
+        assert resolution.state == WorkItemState.PR_READY_TO_MERGE
+        assert resolution.reason_chain[-1] == "ready_to_merge"
+        assert len(resolution.reason_chain) == 12
+
+    def test_resolution_is_frozen(self) -> None:
+        resolution = resolve_next_action(_facts())
+        with pytest.raises(AttributeError):
+            resolution.state = WorkItemState.MERGED  # type: ignore[misc]
 
 
 class TestBuildTaskItem:
@@ -849,8 +840,15 @@ class TestBuildTaskItem:
 
     def test_task_with_pr(self) -> None:
         task = {"issue": "42", "title": "Fix bug", "state": "in_review", "labels": [], "priority": -1}
-        pr = {"number": 100, "computed_state": "approved_ci_green", "state": "OPEN"}
-        item = _build_task_item(task, pr_data=pr, running=None, handoff=None)
+        pr = {
+            "number": 100,
+            "computed_state": "approved_ci_green",
+            "state": "OPEN",
+            "mergeable": "MERGEABLE",
+            "ci_status": "passed",
+        }
+        verdict = {"has_sova_review": True, "verdict": "approve", "review_head_sha": None}
+        item = _build_task_item(task, pr_data=pr, running=None, handoff=None, sova_verdict=verdict)
         assert item["state"] == "pr_ready_to_merge"
         assert item["pr_details"]["number"] == 100
         assert item["pr_number"] == 100
@@ -869,7 +867,8 @@ class TestBuildTaskItem:
         pr = {"number": 99, "computed_state": "awaiting_review", "state": "OPEN"}
         item = _build_task_item(task, pr_data=pr, running=None, handoff=None)
         assert item["state"] != "spec_review", "PR state must win over stale awaiting_approval run"
-        assert item["state"] == "pr_awaiting_review"
+        # No SOVA verdict supplied at all: falls to PR_SOVA_PENDING (resolve_next_action() rule 10).
+        assert item["state"] == "pr_sova_pending"
         assert item["pr_details"]["number"] == 99
 
     def test_task_with_running_agent(self) -> None:
@@ -954,11 +953,18 @@ class TestBuildPrItem:
         item = _build_pr_item(pr, running=None, handoff=None, issue_num=None)
         assert item["issue_number"] is None
         assert item["pr_number"] == 200
-        assert item["state"] == "pr_awaiting_review"
+        # No SOVA verdict supplied at all: falls to PR_SOVA_PENDING (resolve_next_action() rule 10).
+        assert item["state"] == "pr_sova_pending"
         assert item["pr_details"]["number"] == 200
 
     def test_pr_with_linked_issue(self) -> None:
-        pr = {"number": 200, "title": "Quick fix", "computed_state": "ci_failed", "state": "OPEN"}
+        pr = {
+            "number": 200,
+            "title": "Quick fix",
+            "computed_state": "ci_failed",
+            "state": "OPEN",
+            "ci_status": "failed",
+        }
         item = _build_pr_item(pr, running=None, handoff=None, issue_num="10")
         assert item["issue_number"] == "10"
         assert item["state"] == "pr_ci_failed"
@@ -973,8 +979,8 @@ class TestBuildPrItem:
             "next_actions": [{"id": "integrate", "label": "Integrate PR"}],
         }
         item = _build_pr_item(pr, running=None, handoff=handoff, issue_num=None)
-        # State derived from PR computed_state, not from handoff
-        assert item["state"] == "pr_awaiting_review"
+        # State derived from PR facts, not from handoff; no verdict supplied → PR_SOVA_PENDING.
+        assert item["state"] == "pr_sova_pending"
 
     def test_merged_pr(self) -> None:
         pr = {"number": 200, "title": "Done", "computed_state": "approved_ci_green", "state": "MERGED"}
@@ -1147,7 +1153,17 @@ class TestGetWorkItems:
     async def test_task_with_linked_pr_deduplication(self, _mock_sources) -> None:
         mock_fetch, _, mock_verdicts = _mock_sources
         queue = [{"issue": "42", "title": "Bug", "state": "in_review", "labels": [], "priority": -1}]
-        prs = [{"number": 100, "linked_issue": 42, "computed_state": "approved", "state": "OPEN", "title": "Fix"}]
+        prs = [
+            {
+                "number": 100,
+                "linked_issue": 42,
+                "computed_state": "approved",
+                "state": "OPEN",
+                "title": "Fix",
+                "mergeable": "MERGEABLE",
+                "ci_status": "passed",
+            }
+        ]
         mock_fetch.return_value = (queue, prs, [], {"agents": [], "completed": []})
         mock_verdicts.side_effect = None
         mock_verdicts.return_value = {
@@ -1159,12 +1175,22 @@ class TestGetWorkItems:
         # PR should be merged into the task item, not duplicated
         assert len(result["items"]) == 1
         assert result["items"][0]["pr_number"] == 100
-        assert result["items"][0]["state"] == "pr_approved"
+        # PR_APPROVED is superseded by PR_READY_TO_MERGE as the sole integrate-bound state (#991).
+        assert result["items"][0]["state"] == "pr_ready_to_merge"
 
     @pytest.mark.asyncio()
     async def test_standalone_pr_appears(self, _mock_sources) -> None:
         mock_fetch, *_ = _mock_sources
-        prs = [{"number": 200, "linked_issue": None, "computed_state": "ci_running", "state": "OPEN", "title": "Quick"}]
+        prs = [
+            {
+                "number": 200,
+                "linked_issue": None,
+                "computed_state": "ci_running",
+                "state": "OPEN",
+                "title": "Quick",
+                "ci_status": "pending",
+            }
+        ]
         mock_fetch.return_value = ([], prs, [], {"agents": [], "completed": []})
 
         result = await get_work_items()
@@ -1231,7 +1257,15 @@ class TestGetWorkItems:
         """PR linked to issue that's NOT in queue: appears as PR item with issue context."""
         mock_fetch, _, mock_verdicts = _mock_sources
         prs = [
-            {"number": 300, "linked_issue": 99, "computed_state": "approved_ci_green", "state": "OPEN", "title": "Fix"},
+            {
+                "number": 300,
+                "linked_issue": 99,
+                "computed_state": "approved_ci_green",
+                "state": "OPEN",
+                "title": "Fix",
+                "mergeable": "MERGEABLE",
+                "ci_status": "passed",
+            },
         ]
         mock_fetch.return_value = ([], prs, [], {"agents": [], "completed": []})
         mock_verdicts.side_effect = None
@@ -1287,11 +1321,21 @@ class TestAppendStandalonePrItems:
     def test_unlinked_pr_uses_pr_number_key_for_verdict(self) -> None:
         """Unlinked PRs look up verdict by 'pr:{number}' key, not by issue."""
         items: list[dict] = []
-        prs = [{"number": 200, "linked_issue": None, "computed_state": "approved", "state": "OPEN"}]
+        prs = [
+            {
+                "number": 200,
+                "linked_issue": None,
+                "computed_state": "approved",
+                "state": "OPEN",
+                "mergeable": "MERGEABLE",
+                "ci_status": "passed",
+            }
+        ]
         verdicts = {"pr:200": {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}}
         _append_standalone_pr_items(items, prs, set(), {}, {}, verdicts_by_issue=verdicts)
         assert len(items) == 1
-        assert items[0]["state"] == "pr_approved"
+        # PR_APPROVED is superseded by PR_READY_TO_MERGE as the sole integrate-bound state (#991).
+        assert items[0]["state"] == "pr_ready_to_merge"
 
     def test_unlinked_pr_with_no_review_verdict_shows_sova_pending(self) -> None:
         """Unlinked approved PR with has_sova_review=False shows pr_sova_pending when external reviews enabled."""
@@ -1456,15 +1500,29 @@ class TestExtractSovaVerdictFromLabels:
         assert result["verdict"] == "approve"
 
     def test_label_verdict_never_stale_unanchored(self) -> None:
-        """Label-derived verdicts carry no SHA, so they are never reported stale."""
+        """Label-derived verdicts carry no SHA, so they are never reported stale: the verdict
+        is still applied even though the PR head has since advanced."""
         verdict = _extract_sova_verdict_from_labels(["sova:block"])
         assert verdict is not None
-        assert _is_verdict_stale_by_sha(verdict, "abc123") is False
+        assert verdict["review_head_sha"] is None
+        assert (
+            _state(
+                pr_data={"computed_state": "approved_ci_green", "state": "OPEN", "head_sha": "abc123"},
+                sova_verdict=verdict,
+            )
+            == WorkItemState.PR_SOVA_CHANGES
+        )
 
     def test_label_verdict_not_stale_without_pr_head_sha(self) -> None:
         verdict = _extract_sova_verdict_from_labels(["sova:revise"])
         assert verdict is not None
-        assert _is_verdict_stale_by_sha(verdict, None) is False
+        assert (
+            _state(
+                pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
+                sova_verdict=verdict,
+            )
+            == WorkItemState.PR_SOVA_CHANGES
+        )
 
     def test_label_verdict_overrides_state_despite_pr_advancing(self) -> None:
         """A label-derived block verdict is unanchored, so it still downgrades the state
@@ -1545,17 +1603,25 @@ class TestFetchSovaVerdicts:
         mock_verdict.assert_not_called()
 
     @pytest.mark.asyncio()
-    async def test_labels_short_circuit_db_lookup(self) -> None:
-        """When sova:* label is present, DB/GitHub fallback is skipped."""
+    async def test_label_used_when_db_has_no_review(self) -> None:
+        """A sova:* label supplies the verdict when this machine's DB knows nothing."""
         from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
 
         clear_verdict_cache()
         labels_by_issue = {"42": ["agent:in-review", "sova:approved"]}
 
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-        ) as mock_verdict:
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value={"has_sova_review": False, "verdict": None},
+            ),
+            patch(
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
             result = await _fetch_sova_verdicts(
                 {"42": {"number": 100}},
                 labels_by_issue=labels_by_issue,
@@ -1563,7 +1629,7 @@ class TestFetchSovaVerdicts:
 
         assert result["42"]["has_sova_review"] is True
         assert result["42"]["verdict"] == "approve"
-        mock_verdict.assert_not_called()
+        assert result["42"]["review_head_sha"] is None
 
     @pytest.mark.asyncio()
     async def test_labels_absent_falls_through_to_db(self) -> None:
@@ -1614,6 +1680,7 @@ class TestFetchSovaVerdicts:
         with patch(
             "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
             new_callable=AsyncMock,
+            return_value={"has_sova_review": False, "verdict": None},
         ):
             result = await _fetch_sova_verdicts(
                 {"42": {"number": 9999}},
@@ -1639,6 +1706,7 @@ class TestFetchSovaVerdicts:
         with patch(
             "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
             new_callable=AsyncMock,
+            return_value={"has_sova_review": False, "verdict": None},
         ):
             result = await _fetch_sova_verdicts(
                 {"42": {"number": None}},
@@ -1647,6 +1715,136 @@ class TestFetchSovaVerdicts:
 
         assert result["42"]["verdict"] == "approve"
         assert len(_sova_verdict_cache) == 0
+
+
+class TestMergeLabelVerdict:
+    """_merge_label_verdict reconciles the local DB record with the sova:* label."""
+
+    def test_no_label_keeps_db_verdict(self) -> None:
+        from sova.dashboard.services.work_verdict import _merge_label_verdict
+
+        db = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc"}
+        assert _merge_label_verdict(db, None) is db
+
+    def test_label_used_when_db_empty(self) -> None:
+        from sova.dashboard.services.work_verdict import _merge_label_verdict
+
+        db = {"has_sova_review": False, "verdict": None}
+        label = _extract_sova_verdict_from_labels(["sova:revise"])
+        assert _merge_label_verdict(db, label)["verdict"] == "revise"
+
+    def test_addressed_supersedes_stale_label(self) -> None:
+        """The address cycle never clears the reviewer's label, so the DB must win here."""
+        from sova.dashboard.services.work_verdict import _merge_label_verdict
+
+        db = {"has_sova_review": True, "verdict": "addressed", "review_head_sha": None}
+        label = _extract_sova_verdict_from_labels(["sova:revise"])
+        assert _merge_label_verdict(db, label)["verdict"] == "addressed"
+
+    def test_agreeing_db_wins_to_keep_the_commit_anchor(self) -> None:
+        from sova.dashboard.services.work_verdict import _merge_label_verdict
+
+        db = {"has_sova_review": True, "verdict": "revise", "review_head_sha": "abc123"}
+        label = _extract_sova_verdict_from_labels(["sova:revise"])
+        assert _merge_label_verdict(db, label)["review_head_sha"] == "abc123"
+
+    def test_disagreeing_label_wins_as_cross_machine_source(self) -> None:
+        from sova.dashboard.services.work_verdict import _merge_label_verdict
+
+        db = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc123"}
+        label = _extract_sova_verdict_from_labels(["sova:block"])
+        merged = _merge_label_verdict(db, label)
+        assert merged["verdict"] == "block"
+        assert merged["review_head_sha"] is None
+
+
+class TestCanonicalVerdictPath:
+    """resolve_sova_verdict() is the one assembly path the dashboard and supervisor share."""
+
+    @pytest.mark.asyncio()
+    async def test_addressed_db_verdict_beats_label_for_both_callers(self) -> None:
+        """Regression: a stale sova:revise label used to route the dashboard to
+        address_review while the supervisor saw "addressed" and routed to review_pr."""
+        from sova.dashboard.services.work_state import _build_pr_facts
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        clear_verdict_cache()
+        db_verdict = {
+            "has_sova_review": True,
+            "verdict": "addressed",
+            "finding_count": 0,
+            "reviewed_at": None,
+            "run_status": "done",
+            "review_head_sha": None,
+        }
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=db_verdict,
+        ):
+            verdict = await resolve_sova_verdict("42", pr_number=100, issue_labels=["sova:revise"])
+
+        assert verdict["verdict"] == "addressed"
+        facts = _build_pr_facts(
+            {"state": "OPEN", "ci_status": "passed", "head_sha": "abc", "mergeable": "MERGEABLE"},
+            verdict,
+            external_reviews_enabled=False,
+        )
+        assert resolve_next_action(facts).action_id == "review_pr"
+
+    @pytest.mark.asyncio()
+    async def test_db_lookup_failure_degrades_to_label(self) -> None:
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        clear_verdict_cache()
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ):
+            verdict = await resolve_sova_verdict("42", pr_number=101, issue_labels=["sova:block"])
+
+        assert verdict["verdict"] == "block"
+
+    @pytest.mark.asyncio()
+    async def test_db_lookup_failure_without_label_yields_no_review(self) -> None:
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        clear_verdict_cache()
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("db down"),
+            ),
+            patch(
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            verdict = await resolve_sova_verdict("42", pr_number=102, issue_labels=[])
+
+        assert verdict["has_sova_review"] is False
+
+    @pytest.mark.asyncio()
+    async def test_cached_result_is_reused_by_a_second_caller(self) -> None:
+        """The dashboard and supervisor share one cache, so a PR cannot flip
+        verdicts between the two within a poll cycle."""
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        clear_verdict_cache()
+        db_verdict = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc"}
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=db_verdict,
+        ) as mock_db:
+            first = await resolve_sova_verdict("42", pr_number=103, issue_labels=[])
+            second = await resolve_sova_verdict("42", pr_number=103, issue_labels=[])
+
+        assert first == second
+        assert mock_db.call_count == 1
 
 
 class TestParseSovaReviewFromGithub:

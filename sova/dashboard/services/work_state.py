@@ -6,6 +6,7 @@ dashboard state from GitHub labels, PR status, running agents, and SOVA verdicts
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 from sova.core.state import TaskStatus
@@ -121,18 +122,6 @@ _ROLE_LABELS: dict[str, str] = {
     "command:spec": "Writing Spec",
 }
 
-_PR_STATE_MAP: dict[str, WorkItemState] = {
-    "draft": WorkItemState.PR_DRAFT,
-    "conflicted": WorkItemState.PR_CONFLICTED,
-    "ci_running": WorkItemState.PR_CI_RUNNING,
-    "ci_failed": WorkItemState.PR_CI_FAILED,
-    "awaiting_review": WorkItemState.PR_AWAITING_REVIEW,
-    "changes_requested": WorkItemState.PR_EXTERNAL_CHANGES,
-    "review_addressed": WorkItemState.PR_REVIEW_ADDRESSED,
-    "approved": WorkItemState.PR_APPROVED,
-    "approved_ci_green": WorkItemState.PR_READY_TO_MERGE,
-}
-
 _LABEL_STATE_MAP: dict[str, WorkItemState] = {
     "backlog": WorkItemState.BACKLOG,
     "triaged": WorkItemState.TRIAGED,
@@ -223,6 +212,155 @@ def _get_actions(
     return actions.get(state, (None, []))
 
 
+@dataclass(frozen=True)
+class PRFacts:
+    """Pure snapshot of everything resolve_next_action() needs to decide a PR's next action.
+
+    Built by the caller (dashboard or supervisor) from already-fetched data;
+    resolve_next_action() itself performs no I/O.
+    """
+
+    running_agent: bool
+    pr_state: str  # "OPEN" | "MERGED" | "CLOSED"
+    is_draft: bool
+    mergeable: str  # "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
+    ci_status: str  # "" | "pending" | "running" | "passed" | "failed"
+    head_sha: str
+    sova_verdict: str | None  # "approve" | "revise" | "block" | "post_failed" | None
+    sova_verdict_sha: str | None  # commit SHA the verdict was anchored to (#987)
+    sova_verdict_addressed: bool  # True once an address cycle superseded this verdict (#988)
+    external_changes_requested: bool  # standing CHANGES_REQUESTED from a bot/human, not dismissed
+    thread_signal: str  # "clear" | "pending" | "unknown" (#989, three-valued)
+    external_reviews_enabled: bool
+
+
+@dataclass(frozen=True)
+class Resolution:
+    state: WorkItemState
+    action_id: str | None  # e.g. "integrate", "address_review", "review_pr", "rebase"
+    reason_chain: tuple[str, ...]  # every rule name evaluated, last entry is the match
+
+
+def resolve_next_action(facts: PRFacts) -> Resolution:
+    """Pure, ordered, first-match-wins resolver for a PR's next action.
+
+    Both the dashboard (compute_work_item_state()) and the supervisor
+    (_refine_in_review_action()) delegate to this single function so they
+    cannot disagree about what a work item should do next. No I/O.
+    """
+    chain: list[str] = []
+
+    chain.append("agent_running")
+    if facts.running_agent:
+        return Resolution(WorkItemState.AGENT_RUNNING, None, tuple(chain))
+
+    chain.append("merged")
+    if facts.pr_state == "MERGED":
+        return Resolution(WorkItemState.MERGED, None, tuple(chain))
+
+    chain.append("conflicting")
+    if facts.mergeable == "CONFLICTING":
+        return Resolution(WorkItemState.PR_CONFLICTED, "rebase", tuple(chain))
+
+    chain.append("draft")
+    if facts.is_draft:
+        return Resolution(WorkItemState.PR_DRAFT, None, tuple(chain))
+
+    chain.append("ci_failed")
+    if facts.ci_status == "failed":
+        return Resolution(WorkItemState.PR_CI_FAILED, "address_pr", tuple(chain))
+
+    chain.append("ci_running")
+    if facts.ci_status in ("pending", "running"):
+        return Resolution(WorkItemState.PR_CI_RUNNING, None, tuple(chain))
+
+    # A verdict anchored to an older commit than the current head has been
+    # superseded by new pushes and not yet re-reviewed: treat it as "no
+    # current review" (rule 10) rather than acting on stale findings. An
+    # unanchored verdict (either sha unknown) is reported as fresh, not
+    # stale, since there is nothing to compare against.
+    verdict_stale = (
+        facts.sova_verdict is not None
+        and bool(facts.sova_verdict_sha)
+        and bool(facts.head_sha)
+        and facts.sova_verdict_sha != facts.head_sha
+    )
+
+    chain.append("sova_standing_changes")
+    if facts.sova_verdict in ("revise", "block") and not facts.sova_verdict_addressed and not verdict_stale:
+        return Resolution(WorkItemState.PR_SOVA_CHANGES, "address_review", tuple(chain))
+
+    chain.append("sova_verdict_stale")
+    # No direct match: a stale verdict falls through to "no current review" (below).
+
+    chain.append("sova_verdict_addressed")
+    if facts.sova_verdict_addressed:
+        return Resolution(WorkItemState.PR_REVIEW_ADDRESSED, "review_pr", tuple(chain))
+
+    chain.append("no_sova_review")
+    if facts.sova_verdict is None or verdict_stale:
+        state = WorkItemState.PR_SOVA_PENDING if facts.external_reviews_enabled else WorkItemState.PR_AWAITING_REVIEW
+        return Resolution(state, "review_pr", tuple(chain))
+
+    chain.append("external_changes_or_unresolved_threads")
+    if facts.external_changes_requested or facts.thread_signal in ("pending", "unknown"):
+        return Resolution(WorkItemState.PR_EXTERNAL_CHANGES, "address_pr", tuple(chain))
+
+    chain.append("ready_to_merge")
+    if (
+        facts.sova_verdict == "approve"
+        and facts.thread_signal == "clear"
+        and facts.ci_status == "passed"
+        and facts.mergeable == "MERGEABLE"
+    ):
+        return Resolution(WorkItemState.PR_READY_TO_MERGE, "integrate", tuple(chain))
+
+    chain.append("awaiting_review")
+    return Resolution(WorkItemState.PR_AWAITING_REVIEW, "review_pr", tuple(chain))
+
+
+def _thread_signal(pr_data: dict) -> str:
+    """Classify review thread resolution as clear/pending/unknown (#989).
+
+    Lazy import avoids pulling pr_service's git/asyncio dependencies into this
+    pure-logic module at import time.
+    """
+    from sova.dashboard.services.pr_service import get_unresolved_thread_count
+
+    unresolved = get_unresolved_thread_count(pr_data)
+    if unresolved is None:
+        return "unknown"
+    return "pending" if unresolved > 0 else "clear"
+
+
+def _build_pr_facts(
+    pr_data: dict,
+    sova_verdict: dict | None,
+    *,
+    external_reviews_enabled: bool,
+) -> PRFacts:
+    """Translate raw pr_data/sova_verdict dicts into a PRFacts snapshot."""
+    verdict = sova_verdict or {}
+    has_review = verdict.get("has_sova_review", False)
+    raw_verdict = verdict.get("verdict") if has_review else None
+    sova_verdict_addressed = raw_verdict == "addressed"
+
+    return PRFacts(
+        running_agent=False,
+        pr_state=pr_data.get("state", "OPEN"),
+        is_draft=bool(pr_data.get("is_draft", False)),
+        mergeable=pr_data.get("mergeable") or "UNKNOWN",
+        ci_status=pr_data.get("ci_status", ""),
+        head_sha=pr_data.get("head_sha", ""),
+        sova_verdict=None if sova_verdict_addressed else raw_verdict,
+        sova_verdict_sha=verdict.get("review_head_sha") if has_review else None,
+        sova_verdict_addressed=sova_verdict_addressed,
+        external_changes_requested=pr_data.get("computed_state") == "changes_requested",
+        thread_signal=_thread_signal(pr_data),
+        external_reviews_enabled=external_reviews_enabled,
+    )
+
+
 def compute_work_item_state(
     *,
     task_state: str | None,
@@ -233,25 +371,14 @@ def compute_work_item_state(
 ) -> WorkItemState:
     """Compute the unified dashboard state for a work item.
 
-    Priority: running agent > PR state (adjusted by SOVA verdict) > GitHub label.
+    Priority: running agent > PR state (via resolve_next_action()) > GitHub label.
     """
     if running_agent is not None:
         return WorkItemState.AGENT_RUNNING
 
     if pr_data is not None:
-        pr_state_raw = pr_data.get("state", "OPEN")
-        if pr_state_raw == "MERGED":
-            return WorkItemState.MERGED
-        computed = pr_data.get("computed_state", "")
-        mapped = _PR_STATE_MAP.get(computed)
-        if mapped is not None:
-            return _apply_sova_verdict(
-                mapped,
-                sova_verdict,
-                pr_head_sha=pr_data.get("head_sha"),
-                external_reviews_enabled=external_reviews_enabled,
-                unresolved_thread_count=_unresolved_thread_count(pr_data),
-            )
+        facts = _build_pr_facts(pr_data, sova_verdict, external_reviews_enabled=external_reviews_enabled)
+        return resolve_next_action(facts).state
 
     if task_state is not None:
         return _LABEL_STATE_MAP.get(task_state, WorkItemState.BACKLOG)
@@ -259,99 +386,13 @@ def compute_work_item_state(
     return WorkItemState.BACKLOG
 
 
-def _unresolved_thread_count(pr_data: dict) -> int | None:
-    """Return the unresolved review thread count from enriched PR data.
-
-    Lazy import avoids pulling pr_service's git/asyncio dependencies into this
-    pure-logic module at import time.
-    """
-    from sova.dashboard.services.pr_service import get_unresolved_thread_count
-
-    return get_unresolved_thread_count(pr_data)
-
-
-# States where an Integrate button would be the primary action without SOVA override.
-_INTEGRATE_STATES = frozenset(
-    {
-        WorkItemState.PR_APPROVED,
-        WorkItemState.PR_READY_TO_MERGE,
-    }
-)
-
-# States that SOVA verdict "revise"/"block" should downgrade to PR_SOVA_CHANGES.
-_VERDICT_OVERRIDEABLE = frozenset(
-    {
-        WorkItemState.PR_AWAITING_REVIEW,
-        WorkItemState.PR_APPROVED,
-        WorkItemState.PR_READY_TO_MERGE,
-        WorkItemState.PR_EXTERNAL_CHANGES,
-    }
-)
-
-
-def _is_verdict_stale_by_sha(sova_verdict: dict, pr_head_sha: str | None) -> bool:
-    """Return True if the verdict's reviewed commit no longer matches the PR's current head.
-
-    A verdict with an unknown ``review_head_sha`` (e.g. label-only, or a marker
-    posted before this anchoring existed) is unanchored: it is reported as
-    fresh, not stale, since there is nothing to compare against.
-    """
-    review_head_sha = sova_verdict.get("review_head_sha")
-    if not review_head_sha or not pr_head_sha:
-        return False
-    return review_head_sha != pr_head_sha
-
-
-def _apply_sova_verdict(
-    mapped: WorkItemState,
-    sova_verdict: dict | None,
-    *,
-    pr_head_sha: str | None = None,
-    external_reviews_enabled: bool = True,
-    unresolved_thread_count: int | None = 0,
-) -> WorkItemState:
-    """Adjust a GitHub-derived PR state using the SOVA reviewer verdict."""
-    if sova_verdict is None:
-        return mapped
-
-    has_review = sova_verdict.get("has_sova_review", False)
-    verdict = sova_verdict.get("verdict")
-
-    if not has_review and mapped in _INTEGRATE_STATES:
-        return WorkItemState.PR_SOVA_PENDING if external_reviews_enabled else WorkItemState.PR_AWAITING_REVIEW
-
-    if has_review and verdict == "post_failed" and mapped in _INTEGRATE_STATES:
-        return WorkItemState.PR_AWAITING_REVIEW
-
-    if has_review and verdict in ("revise", "block") and mapped in _VERDICT_OVERRIDEABLE:
-        if _is_verdict_stale_by_sha(sova_verdict, pr_head_sha):
-            return mapped
-        return WorkItemState.PR_SOVA_CHANGES
-
-    if has_review and verdict == "approve":
-        integrate_bound = mapped in _INTEGRATE_STATES or mapped == WorkItemState.PR_AWAITING_REVIEW
-        if integrate_bound:
-            if unresolved_thread_count is None:
-                # Thread resolution state is unknown: hold the pre-verdict state rather
-                # than guessing (no promotion to Integrate, no demotion to Address PR).
-                return mapped
-            if unresolved_thread_count > 0:
-                # SOVA approved, but unresolved review threads (from any reviewer) remain:
-                # do not surface Integrate until they're resolved via /address-pr.
-                return WorkItemState.PR_EXTERNAL_CHANGES
-        if mapped == WorkItemState.PR_AWAITING_REVIEW:
-            return WorkItemState.PR_APPROVED
-
-    return mapped
-
-
 _STATE_SORT_ORDER: dict[str, int] = {
     WorkItemState.AGENT_RUNNING: 0,
     WorkItemState.SPEC_REVIEW: 1,
     WorkItemState.PR_READY_TO_MERGE: 2,
     WorkItemState.PR_APPROVED: 2,
-    WorkItemState.PR_CI_FAILED: 3,
     WorkItemState.PR_CONFLICTED: 3,
+    WorkItemState.PR_CI_FAILED: 3,
     WorkItemState.PR_CHANGES_REQUESTED: 3,
     WorkItemState.PR_SOVA_CHANGES: 3,
     WorkItemState.PR_EXTERNAL_CHANGES: 3,

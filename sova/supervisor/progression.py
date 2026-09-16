@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sova.adapters.base import TaskAdapter, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.state import TASK_RUN_TERMINAL
-from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+from sova.dashboard.services.work_state import _build_pr_facts, resolve_next_action
+from sova.dashboard.services.work_verdict import resolve_sova_verdict
 from sova.git.pr import PRInfo
 from sova.supervisor.dependency_graph import (
     DependencyGraph,
@@ -83,6 +84,17 @@ _ACTION_TO_ROLE: dict[ProgressionAction, str] = {
     ProgressionAction.SPAWN_DEVELOPER: "developer",
     ProgressionAction.SPAWN_INTEGRATE: "command:integrate-pr",
     ProgressionAction.SPAWN_ADDRESS_REVIEW: "developer",
+}
+
+# Map resolve_next_action()'s Resolution.action_id to a ProgressionAction and the
+# SupervisorConfig flag gating it. Unmapped or None action_ids (review_pr,
+# address_pr, or no action at all) fall back to CHECKPOINT_NEEDED: the resolver
+# decides what the action would be, config decides whether the supervisor may
+# actually take it.
+_ACTION_ID_TO_PROGRESSION: dict[str, tuple[ProgressionAction, str]] = {
+    "integrate": (ProgressionAction.SPAWN_INTEGRATE, "auto_integrate"),
+    "address_review": (ProgressionAction.SPAWN_ADDRESS_REVIEW, "auto_address_review"),
+    "rebase": (ProgressionAction.SPAWN_REBASE, "auto_rebase"),
 }
 
 # Actions that should trigger issue assignment on spawn (development work, not post-work).
@@ -707,7 +719,7 @@ class TaskProgressionEngine:
 
         refined_pr_info: PRInfo | None = None
         if state == TaskState.IN_REVIEW and candidate == ProgressionAction.SPAWN_INTEGRATE:
-            candidate, refined_pr_info = await self._refine_in_review_action(issue_number)
+            candidate, refined_pr_info = await self._refine_in_review_action(issue_number, task_labels)
             if candidate == ProgressionAction.WAIT:
                 return ProgressionDecision(
                     issue_number=issue_number,
@@ -1033,33 +1045,51 @@ class TaskProgressionEngine:
             log.debug("find_pr.failed", issue=issue, exc_info=True)
             return None
 
-    async def _refine_in_review_action(self, issue: int) -> tuple[ProgressionAction, PRInfo | None]:
-        """Refine the IN_REVIEW placeholder into a specific action based on SOVA verdict.
+    async def _refine_in_review_action(
+        self, issue: int, task_labels: list[str] | None = None
+    ) -> tuple[ProgressionAction, PRInfo | None]:
+        """Refine the IN_REVIEW placeholder into a specific action via resolve_next_action().
 
-        Returns (action, pr_info). Only integrates when a SOVA review explicitly
-        approved. Revise/block triggers address-review. All other cases (no review,
-        post_failed, exception) return CHECKPOINT_NEEDED.
+        Returns (action, pr_info). Both the verdict and the facts are assembled
+        through the same shared helpers the dashboard uses
+        (resolve_sova_verdict() then _build_pr_facts()), so the supervisor and
+        dashboard cannot disagree about what a PR should do next. The resolver
+        decides *what* the action would be; the existing
+        auto_integrate/auto_address_review/auto_rebase config flags decide
+        whether the supervisor may actually take it.
         """
         pr_info = await self._find_pr_for_issue(issue)
         if pr_info is None:
             return ProgressionAction.WAIT, None
 
         try:
-            verdict_data = await get_sova_review_verdict(
-                str(issue), pr_number=pr_info.number, project_dir=self._project_dir
+            verdict_data = await resolve_sova_verdict(
+                str(issue),
+                pr_number=pr_info.number,
+                project_dir=self._project_dir,
+                issue_labels=task_labels or [],
+                fallback_adapter=self._adapter,
             )
         except Exception:  # noqa: BLE001 (verdict lookup spans DB, tracker and PR review sources)
             log.debug("refine_in_review.verdict_failed", issue=issue, exc_info=True)
             return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
-        verdict = verdict_data.get("verdict")
-        has_review = verdict_data.get("has_sova_review", False)
-
-        if has_review and verdict in ("revise", "block"):
-            if self._config.supervisor.auto_address_review:
-                return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_info
+        enriched_pr = await self._fetch_enriched_pr(pr_info.number)
+        if enriched_pr is None:
+            log.debug("refine_in_review.enrichment_failed", issue=issue, pr=pr_info.number)
             return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
-        if has_review and verdict == "approve" and self._config.supervisor.auto_integrate:
-            return ProgressionAction.SPAWN_INTEGRATE, pr_info
-        return ProgressionAction.CHECKPOINT_NEEDED, pr_info
+        facts = _build_pr_facts(
+            enriched_pr, verdict_data, external_reviews_enabled=self._config.external_reviews.enabled
+        )
+        resolution = resolve_next_action(facts)
+
+        mapped = _ACTION_ID_TO_PROGRESSION.get(resolution.action_id or "")
+        if mapped is None:
+            return ProgressionAction.CHECKPOINT_NEEDED, pr_info
+
+        action, auto_flag = mapped
+        if not getattr(self._config.supervisor, auto_flag):
+            return ProgressionAction.CHECKPOINT_NEEDED, pr_info
+
+        return action, pr_info

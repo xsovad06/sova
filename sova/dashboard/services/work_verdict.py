@@ -138,6 +138,108 @@ async def _fetch_github_review_fallback(pr_number: int, adapter: Any) -> dict | 
         return None
 
 
+_NO_REVIEW: dict = {
+    "has_sova_review": False,
+    "verdict": None,
+    "finding_count": 0,
+    "reviewed_at": None,
+    "run_status": None,
+    "review_head_sha": None,
+}
+
+
+def _cache_get(pr_number: int) -> dict | None:
+    """Return a live cached verdict for this PR, or None when absent or expired."""
+    entry = _sova_verdict_cache.get(pr_number)
+    if entry is None:
+        return None
+    ts, cached = entry
+    ttl = _VERDICT_CACHE_POSITIVE_TTL if cached.get("has_sova_review") else _VERDICT_CACHE_NEGATIVE_TTL
+    if time.monotonic() - ts >= ttl:
+        return None
+    return dict(cached)
+
+
+def _cache_put(pr_number: int, verdict: dict) -> None:
+    if len(_sova_verdict_cache) > 1000:
+        _sova_verdict_cache.clear()
+    _sova_verdict_cache[pr_number] = (time.monotonic(), dict(verdict))
+
+
+def _merge_label_verdict(db_verdict: dict, label_verdict: dict | None) -> dict:
+    """Reconcile the local DB verdict with the cross-machine sova:* issue label.
+
+    The two sources answer the same question with different strengths. The DB
+    record is strictly richer: it carries the reviewed commit SHA (#987), the
+    finding counts, and whether an address cycle has since superseded the
+    review (#988). The label is coarser (verdict value only, no anchor) but is
+    the only source that survives a review run on another machine.
+
+    So the label wins only where it actually adds information: when the local
+    DB has no record at all, or when it disagrees with the DB (which means some
+    other instance reviewed more recently than anything this machine knows
+    about). When the DB agrees, or reports "addressed", the DB wins, because a
+    completed address cycle never clears the reviewer's label and a label taken
+    at face value there would re-route an already-addressed PR back to
+    address-review.
+    """
+    if label_verdict is None:
+        return db_verdict
+    if not db_verdict.get("has_sova_review"):
+        return label_verdict
+    db_value = db_verdict.get("verdict")
+    if db_value in ("addressed", label_verdict.get("verdict")):
+        return db_verdict
+    return label_verdict
+
+
+async def resolve_sova_verdict(
+    issue_number: str | None,
+    *,
+    pr_number: int | None,
+    project_dir: Path | None = None,
+    issue_labels: list[str] | None = None,
+    fallback_adapter: Any = None,
+    use_cache: bool = True,
+) -> dict:
+    """Assemble a SOVA review verdict from every available source.
+
+    This is the single canonical assembly path: both the dashboard
+    (_fetch_sova_verdicts) and the supervisor (_refine_in_review_action) call
+    it so the same PR cannot yield two different verdict dicts, and therefore
+    cannot resolve to two different next actions via resolve_next_action().
+
+    Sources, in order: the PR-keyed verdict cache, the local DB
+    (get_sova_review_verdict), the issue's sova:* label reconciled against the
+    DB by _merge_label_verdict(), and finally a GitHub PR review marker scan
+    for reviews posted by an instance whose DB this machine cannot see.
+    """
+    from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+    if pr_number is not None and use_cache:
+        cached = _cache_get(pr_number)
+        if cached is not None:
+            return cached
+
+    try:
+        verdict = await get_sova_review_verdict(issue_number, pr_number=pr_number, project_dir=project_dir)
+    except Exception:  # noqa: BLE001 (verdict lookup spans DB and tracker; failure yields no verdict)
+        log.debug("work_items.db_verdict_failed", issue=issue_number, pr=pr_number, exc_info=True)
+        verdict = dict(_NO_REVIEW)
+
+    verdict = _merge_label_verdict(verdict, _extract_sova_verdict_from_labels(issue_labels or []))
+
+    if not verdict.get("has_sova_review") and pr_number is not None and fallback_adapter is not None:
+        gh_verdict = await _fetch_github_review_fallback(pr_number, fallback_adapter)
+        if gh_verdict is not None:
+            verdict = gh_verdict
+
+    if pr_number is not None and use_cache:
+        _cache_put(pr_number, verdict)
+
+    return verdict
+
+
 async def _fetch_sova_verdicts(
     prs_by_issue: dict[str, dict],
     unlinked_prs: list[dict] | None = None,
@@ -146,15 +248,13 @@ async def _fetch_sova_verdicts(
 ) -> dict[str, dict]:
     """Batch-fetch SOVA reviewer verdicts for all issues and unlinked PRs.
 
-    Checks issue labels first (sova:approved/revise/block) as the primary source,
-    then falls back to DB lookup and GitHub review marker scan.
+    Thin batching wrapper over resolve_sova_verdict(), the canonical assembly
+    path shared with the supervisor. Scoped to the current PR number so
+    verdicts from prior PR revisions are excluded.
 
-    Scoped to the current PR number so verdicts from prior PR revisions are excluded.
     Returns a dict of {issue_number: verdict_dict} for linked PRs and
     {"pr:{number}": verdict_dict} for unlinked standalone PRs.
     """
-    from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
     # Build the adapter once before the gather so blocking config/adapter construction
     # does not run per-PR inside asyncio.gather. Non-fatal: if this fails the fallback
     # is simply skipped for all PRs in this batch.
@@ -169,42 +269,19 @@ async def _fetch_sova_verdicts(
         log.debug("work_items.github_fallback_adapter_build_failed", exc_info=True)
 
     async def fetch_one(key: str, issue_num: str | None, pr_number: int | None) -> tuple[str, dict]:
+        labels = labels_by_issue.get(issue_num, []) if (issue_num and labels_by_issue) else []
         try:
-            # Primary source: sova:* label on the issue (zero-cost, already fetched).
-            if issue_num and labels_by_issue:
-                issue_labels = labels_by_issue.get(issue_num, [])
-                label_verdict = _extract_sova_verdict_from_labels(issue_labels)
-                if label_verdict is not None:
-                    if pr_number is not None:
-                        if len(_sova_verdict_cache) > 1000:
-                            _sova_verdict_cache.clear()
-                        _sova_verdict_cache[pr_number] = (time.monotonic(), label_verdict)
-                    return key, label_verdict
-
-            if pr_number is not None:
-                cached_entry = _sova_verdict_cache.get(pr_number)
-                if cached_entry is not None:
-                    ts, cached = cached_entry
-                    ttl = _VERDICT_CACHE_POSITIVE_TTL if cached.get("has_sova_review") else _VERDICT_CACHE_NEGATIVE_TTL
-                    if time.monotonic() - ts < ttl:
-                        return key, dict(cached)
-
-            # Fallback: DB lookup + GitHub review marker scan.
-            verdict = await get_sova_review_verdict(issue_num, pr_number=pr_number, project_dir=project_dir)
-            if not verdict.get("has_sova_review") and pr_number is not None and _fallback_adapter is not None:
-                gh_verdict = await _fetch_github_review_fallback(pr_number, _fallback_adapter)
-                if gh_verdict is not None:
-                    verdict = gh_verdict
-
-            if pr_number is not None:
-                if len(_sova_verdict_cache) > 1000:
-                    _sova_verdict_cache.clear()
-                _sova_verdict_cache[pr_number] = (time.monotonic(), verdict)
-
-            return key, verdict
+            verdict = await resolve_sova_verdict(
+                issue_num,
+                pr_number=pr_number,
+                project_dir=project_dir,
+                issue_labels=labels,
+                fallback_adapter=_fallback_adapter,
+            )
         except Exception:  # noqa: BLE001 (verdict lookup spans labels, DB and GitHub; failure yields no verdict)
             log.debug("work_items.verdict_fetch_failed", issue=issue_num, pr=pr_number, exc_info=True)
-            return key, {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+            return key, dict(_NO_REVIEW)
+        return key, verdict
 
     tasks = [fetch_one(issue, issue, pr.get("number")) for issue, pr in prs_by_issue.items()]
     for pr in unlinked_prs or []:

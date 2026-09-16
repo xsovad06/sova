@@ -1530,26 +1530,36 @@ class TestReviewerPostFailureVerdict:
         assert all(flag is False for flag in auto_flags), "no action must auto-execute on post failure"
 
     async def test_post_failed_verdict_does_not_trigger_pr_sova_changes_state(self) -> None:
-        """post_failed verdict on an integrate-bound state must return PR_AWAITING_REVIEW.
+        """post_failed verdict on an otherwise integrate-ready PR must return PR_AWAITING_REVIEW.
 
-        Without the post_failed guard, PR_APPROVED stays PR_APPROVED and shows "Integrate PR"
-        on the dashboard even though the review never posted.
+        Without this, a PR that would otherwise reach PR_READY_TO_MERGE (green CI, mergeable)
+        could still show "Integrate PR" on the dashboard even though the review never posted.
         """
-        from sova.dashboard.services.work_item_service import WorkItemState, _apply_sova_verdict
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
 
         sova_verdict = {
             "has_sova_review": True,
             "verdict": "post_failed",
             "finding_count": 0,
             "reviewed_at": "2026-07-26T12:00:00Z",
+            "review_head_sha": None,
         }
-        # PR_APPROVED is the critical case: without the guard it stays PR_APPROVED
-        # and the dashboard shows "Integrate PR" for a review that never posted.
-        mapped = WorkItemState.PR_APPROVED
-        result = _apply_sova_verdict(mapped, sova_verdict, external_reviews_enabled=True)
+        pr_data = {
+            "computed_state": "approved_ci_green",
+            "state": "OPEN",
+            "mergeable": "MERGEABLE",
+            "ci_status": "passed",
+        }
+        result = compute_work_item_state(
+            task_state=None,
+            pr_data=pr_data,
+            running_agent=None,
+            sova_verdict=sova_verdict,
+            external_reviews_enabled=True,
+        )
 
         assert result == WorkItemState.PR_AWAITING_REVIEW, (
-            f"post_failed verdict must demote integrate-bound state to PR_AWAITING_REVIEW, got {result}"
+            f"post_failed verdict must not surface an integrate action, got {result}"
         )
 
 

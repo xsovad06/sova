@@ -2911,8 +2911,26 @@ class TestOwnershipGate:
 
 
 # ---------------------------------------------------------------------------
-# SPAWN_ADDRESS_REVIEW: _refine_in_review_action
+# SPAWN_ADDRESS_REVIEW: _refine_in_review_action (delegates to resolve_next_action(), #991)
 # ---------------------------------------------------------------------------
+
+
+def _green_enriched_pr(**overrides: object) -> dict:
+    """A fully mergeable, green, thread-clear enriched PR dict (rule 12 of resolve_next_action())."""
+    base: dict = {
+        "state": "OPEN",
+        "is_draft": False,
+        "mergeable": "MERGEABLE",
+        "ci_status": "passed",
+        "head_sha": "abc123",
+        "computed_state": "approved_ci_green",
+        "thread_total": 0,
+        "thread_resolved": 0,
+        "latest_reviews": [],
+        "latest_approval_at": None,
+    }
+    base.update(overrides)
+    return base
 
 
 class TestRefineInReviewAction:
@@ -2920,14 +2938,16 @@ class TestRefineInReviewAction:
     async def test_verdict_revise_with_auto_enabled_spawns_address_review(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_address_review=True, auto_integrate=False))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value={
                 "has_sova_review": True,
                 "verdict": "revise",
                 "finding_count": 3,
                 "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
             },
         ):
             action, pr = await engine._refine_in_review_action(42)
@@ -2939,10 +2959,17 @@ class TestRefineInReviewAction:
     async def test_verdict_block_with_auto_enabled_spawns_address_review(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_address_review=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=10, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
-            return_value={"has_sova_review": True, "verdict": "block", "finding_count": 1, "reviewed_at": "2026-01-01"},
+            return_value={
+                "has_sova_review": True,
+                "verdict": "block",
+                "finding_count": 1,
+                "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
+            },
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.SPAWN_ADDRESS_REVIEW
@@ -2953,14 +2980,16 @@ class TestRefineInReviewAction:
     async def test_verdict_revise_with_auto_disabled_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_address_review=False, auto_integrate=False))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value={
                 "has_sova_review": True,
                 "verdict": "revise",
                 "finding_count": 3,
                 "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
             },
         ):
             action, pr = await engine._refine_in_review_action(42)
@@ -2972,14 +3001,16 @@ class TestRefineInReviewAction:
     async def test_verdict_approve_with_auto_integrate_spawns_integrate(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value={
                 "has_sova_review": True,
                 "verdict": "approve",
                 "finding_count": 0,
                 "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
             },
         ):
             action, pr = await engine._refine_in_review_action(42)
@@ -2988,11 +3019,56 @@ class TestRefineInReviewAction:
         assert pr.number == 55
 
     @pytest.mark.asyncio
+    async def test_verdict_approve_with_conflicting_pr_does_not_integrate(self) -> None:
+        """A conflicting PR never resolves to integrate, even with an approve verdict (#990/#991 rule 3)."""
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=False))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr(mergeable="CONFLICTING"))
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "approve",
+                "finding_count": 0,
+                "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
+            },
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
+        assert pr is not None
+        assert pr.number == 55
+
+    @pytest.mark.asyncio
+    async def test_conflicting_pr_with_auto_rebase_spawns_rebase(self) -> None:
+        """A conflicting PR resolves to action_id "rebase", which auto_rebase maps to SPAWN_REBASE."""
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr(mergeable="CONFLICTING"))
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "approve",
+                "finding_count": 0,
+                "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
+            },
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_REBASE
+        assert pr is not None
+        assert pr.number == 55
+
+    @pytest.mark.asyncio
     async def test_no_sova_review_with_auto_integrate_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
         ):
@@ -3005,8 +3081,9 @@ class TestRefineInReviewAction:
     async def test_no_sova_review_auto_integrate_disabled_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
         ):
@@ -3024,17 +3101,41 @@ class TestRefineInReviewAction:
         assert pr is None
 
     @pytest.mark.asyncio
+    async def test_enrichment_unavailable_returns_checkpoint(self) -> None:
+        """When PR enrichment cannot be fetched, facts cannot be built safely: hold for a human."""
+        engine = _make_engine(SupervisorConfig(auto_integrate=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=None)
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "approve",
+                "finding_count": 0,
+                "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
+            },
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
+        assert pr is not None
+        assert pr.number == 55
+
+    @pytest.mark.asyncio
     async def test_verdict_post_failed_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
             return_value={
                 "has_sova_review": True,
                 "verdict": "post_failed",
                 "finding_count": 0,
                 "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
             },
         ):
             action, pr = await engine._refine_in_review_action(42)
@@ -3046,10 +3147,17 @@ class TestRefineInReviewAction:
     async def test_verdict_none_with_review_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
-            return_value={"has_sova_review": True, "verdict": None, "finding_count": 0, "reviewed_at": "2026-01-01"},
+            return_value={
+                "has_sova_review": True,
+                "verdict": None,
+                "finding_count": 0,
+                "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
+            },
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.CHECKPOINT_NEEDED
@@ -3061,7 +3169,7 @@ class TestRefineInReviewAction:
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_address_review=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
             side_effect=Exception("DB error"),
         ):
@@ -3075,7 +3183,7 @@ class TestRefineInReviewAction:
         engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
-            "sova.supervisor.progression.get_sova_review_verdict",
+            "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
             side_effect=Exception("DB error"),
         ):
