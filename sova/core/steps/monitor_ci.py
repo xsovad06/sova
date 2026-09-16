@@ -17,6 +17,7 @@ from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.operations import CICheck, get_ci_checks, get_ci_failure_logs
 from sova.llm.egress import scan_and_redact
+from sova.llm.errors import format_fix_llm_failure
 from sova.utils.logging import get_logger
 
 _ShellRunner = Callable[..., Any]
@@ -342,7 +343,7 @@ class MonitorCIStep(BaseStep):
             total_fix_cost += fix_cost
             if error:
                 msg = f"CI fix LLM invocation failed on attempt {attempt}: {error}"
-                return StepResult(success=False, summary=msg, error=str(error))
+                return StepResult(success=False, summary=msg, error=format_fix_llm_failure(error, attempt))
 
             skip, result = await self._validate_fix(ctx, attempt, max_attempts, run)
             if result:

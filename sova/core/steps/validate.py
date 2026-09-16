@@ -17,6 +17,7 @@ from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.test_baseline import diff_results, load_baseline, run_test_suite
 from sova.git.branch import get_current_branch
 from sova.llm.client import invoke
+from sova.llm.errors import format_fix_llm_failure
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, run_checked
 
@@ -171,7 +172,7 @@ class ValidateStep(BaseStep):
                 return StepResult(
                     success=False,
                     summary=f"Pre-push hook failed and auto-fix failed: {exc}",
-                    error=str(exc),
+                    error=format_fix_llm_failure(exc, attempt),
                 )
 
             retry_stdin = await build_pre_push_stdin(cwd, ctx.branch_name)

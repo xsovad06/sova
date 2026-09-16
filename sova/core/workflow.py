@@ -579,6 +579,9 @@ class WorkflowEngine:
         timeout_seconds, runaway_deadline = self._effective_step_timeout(step.name)
         usage_before = self._ctx.usage_snapshot()
         cost_before = self._ctx.cost_usd
+        self._ctx.step_deadline_seconds = timeout_seconds
+        self._ctx.step_deadline_is_runaway = runaway_deadline
+        self._ctx.step_started_at = time.monotonic()
         try:
             async with asyncio.timeout(timeout_seconds):
                 result = await step.execute(self._ctx)

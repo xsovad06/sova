@@ -199,6 +199,23 @@ def is_fallback_eligible(exc: object) -> bool:
     return issubclass(resolve_error_category(exc), _FALLBACK_ELIGIBLE)
 
 
+def format_fix_llm_failure(exc: BaseException, cycle: int) -> str:
+    """Format a fix-loop LLM invocation failure with a distinguishable marker.
+
+    Every step-layer fix loop (develop, validate, monitor_ci) catches its LLM
+    invocation with a bare ``except RuntimeError`` and re-stringifies it,
+    discarding the exception's type, even though the provider boundary
+    already classifies it via classify_exception(). Prefixing "fix_llm_timeout"
+    for an LLMTimeoutError keeps a timed-out fix invocation distinguishable
+    from a non-timeout fix-LLM failure ("fix_llm_failed") and from the
+    unrelated "step_hard_timeout" string produced by the outer step deadline
+    (sova/core/workflow.py), so failure-taxonomy consumers can bucket them
+    without regex-guessing over free text.
+    """
+    marker = "fix_llm_timeout" if isinstance(exc, LLMTimeoutError) else "fix_llm_failed"
+    return f"{marker} on cycle {cycle}: {exc}"
+
+
 def is_billing_failure(detail: str | BaseException | None) -> bool:
     """Return True if the failure indicates a billing, rate-limit, or availability failure.
 

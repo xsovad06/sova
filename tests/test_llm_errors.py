@@ -14,6 +14,7 @@ from sova.llm.errors import (
     RateLimitError,
     classify_error,
     classify_exception,
+    format_fix_llm_failure,
     is_billing_failure,
     is_fallback_eligible,
     resolve_error_category,
@@ -317,3 +318,24 @@ class TestIsBillingFailureExceptions:
     )
     def test_non_billing_categories_excluded(self, exc: BaseException) -> None:
         assert not is_billing_failure(exc)
+
+
+class TestFormatFixLlmFailure:
+    def test_timeout_gets_distinct_marker(self) -> None:
+        result = format_fix_llm_failure(LLMTimeoutError("Command timed out after 180s"), cycle=1)
+        assert result.startswith("fix_llm_timeout on cycle 1:")
+        assert "Command timed out after 180s" in result
+
+    def test_generic_runtime_error_gets_generic_marker(self) -> None:
+        result = format_fix_llm_failure(RuntimeError("something else broke"), cycle=2)
+        assert result.startswith("fix_llm_failed on cycle 2:")
+        assert "fix_llm_timeout" not in result
+
+    def test_marker_is_distinguishable_from_step_hard_timeout(self) -> None:
+        timeout_marker = format_fix_llm_failure(LLMTimeoutError("timed out"), cycle=1)
+        assert timeout_marker != "step_hard_timeout"
+        assert "step_hard_timeout" not in timeout_marker
+
+    def test_cycle_number_is_embedded(self) -> None:
+        result = format_fix_llm_failure(RuntimeError("boom"), cycle=3)
+        assert "cycle 3" in result

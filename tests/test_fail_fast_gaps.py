@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from unittest.mock import Mock, patch
@@ -12,6 +13,7 @@ from sova.config.models import AgentConfig, DevelopConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps.develop import DevelopStep
 from sova.core.workflow import WorkflowEngine
+from sova.llm.errors import LLMTimeoutError
 from sova.utils.shell import ShellResult
 
 
@@ -81,6 +83,8 @@ def mock_ctx(tmp_path, mock_config):
     ctx.notification_group = "test"
     ctx.session_id = None
     ctx.output_writer = None
+    ctx.step_time_remaining = None
+    ctx.step_deadline_is_runaway = False
 
     def add_cost(amount):
         ctx.cost_usd += amount
@@ -267,6 +271,166 @@ class TestInnerCheckLoopTimeControl:
 
             assert mock_invoke.call_count == 1
             assert mock_invoke.call_args.kwargs["timeout"] == 180
+
+    @pytest.mark.asyncio
+    async def test_fix_llm_timeout_produces_distinct_marker(self, mock_ctx, tmp_path):
+        """A fix-loop LLM timeout must be tagged distinctly from a generic fix-LLM
+        failure and from the unrelated step_hard_timeout string (issue #977)."""
+        step = DevelopStep()
+
+        (tmp_path / "Makefile").write_text("check:\n\tfalse\n")
+        mock_ctx.config.check_cmd = "make check"
+
+        async def mock_run_func(*args, **kwargs):
+            if len(args) >= 3 and args[0] == "sh" and args[1] == "-c" and "command -v" in args[2]:
+                return ShellResult(returncode=0, stdout="/usr/bin/make", stderr="")
+            if len(args) >= 3 and args[0] == "sh" and args[1] == "-c" and "make check" in args[2]:
+                return ShellResult(returncode=1, stdout="", stderr="error")
+            return ShellResult(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sova.core.steps.develop.invoke_command") as mock_invoke_cmd,
+            patch(
+                "sova.core.steps.develop.invoke",
+                side_effect=LLMTimeoutError("Command timed out after 180s"),
+            ),
+            patch("sova.core.steps.develop.run", side_effect=mock_run_func),
+        ):
+            mock_invoke_cmd.return_value = MockLLMResult(
+                text="done",
+                cost_usd=Decimal("0.60"),
+                input_tokens=500,
+                output_tokens=500,
+                session_id="test-session",
+            )
+
+            result = await step.execute(mock_ctx)
+
+        assert not result.success
+        assert result.error.startswith("fix_llm_timeout on cycle 1:")
+        assert result.error != "step_hard_timeout"
+        assert "check fix LLM failed" not in result.error
+
+    @pytest.mark.asyncio
+    async def test_fix_llm_generic_failure_produces_generic_marker(self, mock_ctx, tmp_path):
+        """A non-timeout fix-LLM RuntimeError gets the generic marker, not the timeout one."""
+        step = DevelopStep()
+
+        (tmp_path / "Makefile").write_text("check:\n\tfalse\n")
+        mock_ctx.config.check_cmd = "make check"
+
+        async def mock_run_func(*args, **kwargs):
+            if len(args) >= 3 and args[0] == "sh" and args[1] == "-c" and "command -v" in args[2]:
+                return ShellResult(returncode=0, stdout="/usr/bin/make", stderr="")
+            if len(args) >= 3 and args[0] == "sh" and args[1] == "-c" and "make check" in args[2]:
+                return ShellResult(returncode=1, stdout="", stderr="error")
+            return ShellResult(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sova.core.steps.develop.invoke_command") as mock_invoke_cmd,
+            patch("sova.core.steps.develop.invoke", side_effect=RuntimeError("model unavailable")),
+            patch("sova.core.steps.develop.run", side_effect=mock_run_func),
+        ):
+            mock_invoke_cmd.return_value = MockLLMResult(
+                text="done",
+                cost_usd=Decimal("0.60"),
+                input_tokens=500,
+                output_tokens=500,
+                session_id="test-session",
+            )
+
+            result = await step.execute(mock_ctx)
+
+        assert not result.success
+        assert result.error.startswith("fix_llm_failed on cycle 1:")
+        assert "fix_llm_timeout" not in result.error
+
+    def test_check_loop_budget_stops_when_step_deadline_insufficient(self, mock_ctx):
+        """A worst-case cycle (check_timeout + fix_timeout) that cannot fit inside
+        the step's own remaining deadline must stop the loop before it starts,
+        rather than being hard-killed mid-cycle by the outer step timeout."""
+        step = DevelopStep()
+        # develop.check_timeout=300 + develop.fix_timeout=180 + a fixed
+        # overhead buffer = 540s worst case; 100s remaining cannot fit
+        # another cycle.
+        mock_ctx.step_time_remaining = 100
+
+        result = step._check_loop_budget(mock_ctx, loop_start_time=time.monotonic(), max_fix_time=600, cycle=1)
+
+        assert result is not None
+        assert "step deadline approaching" in result
+
+    def test_check_loop_budget_skips_bailout_when_runaway_capped(self, mock_ctx):
+        """When the step's remaining deadline was capped by the run-wide runaway
+        wall-clock guard (not the step's own configured timeout), the loop must
+        NOT preemptively bail out with a plain failed result: doing so would
+        return a StepResult with runaway_triggered unset, routing the failure
+        through the generic FAILED path instead of WorkflowEngine's resumable
+        PAUSED/"runaway" path. Letting the outer asyncio.timeout fire instead
+        preserves that classification (issue #977)."""
+        step = DevelopStep()
+        mock_ctx.step_time_remaining = 100  # insufficient for a worst-case cycle
+        mock_ctx.step_deadline_is_runaway = True
+
+        result = step._check_loop_budget(mock_ctx, loop_start_time=time.monotonic(), max_fix_time=600, cycle=1)
+
+        assert result is None
+
+    def test_check_loop_budget_continues_when_step_deadline_ample(self, mock_ctx):
+        """A step with plenty of remaining deadline must not be short-circuited."""
+        step = DevelopStep()
+        mock_ctx.step_time_remaining = 900  # comfortably above the 540s worst case
+
+        result = step._check_loop_budget(mock_ctx, loop_start_time=time.monotonic(), max_fix_time=600, cycle=1)
+
+        assert result is None
+
+    def test_check_loop_budget_unconstrained_when_step_deadline_unknown(self, mock_ctx):
+        """No WorkflowEngine driving the context (step_time_remaining=None) must not
+        constrain the loop; only max_fix_time and budget still apply."""
+        step = DevelopStep()
+        mock_ctx.step_time_remaining = None
+
+        result = step._check_loop_budget(mock_ctx, loop_start_time=time.monotonic(), max_fix_time=600, cycle=1)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_step_deadline_insufficient_stops_loop_before_first_cycle(self, mock_ctx, tmp_path):
+        """End-to-end: when the step's remaining deadline cannot fit a worst-case
+        cycle, the loop must exit before invoking the fix LLM at all, leaving
+        the step's remaining budget available for later pipeline steps."""
+        step = DevelopStep()
+
+        (tmp_path / "Makefile").write_text("check:\n\tfalse\n")
+        mock_ctx.config.check_cmd = "make check"
+        mock_ctx.step_time_remaining = 100
+
+        async def mock_run_func(*args, **kwargs):
+            if len(args) >= 3 and args[0] == "sh" and args[1] == "-c" and "command -v" in args[2]:
+                return ShellResult(returncode=0, stdout="/usr/bin/make", stderr="")
+            if len(args) >= 3 and args[0] == "sh" and args[1] == "-c" and "make check" in args[2]:
+                return ShellResult(returncode=1, stdout="", stderr="error")
+            return ShellResult(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sova.core.steps.develop.invoke_command") as mock_invoke_cmd,
+            patch("sova.core.steps.develop.invoke") as mock_invoke_fix,
+            patch("sova.core.steps.develop.run", side_effect=mock_run_func),
+        ):
+            mock_invoke_cmd.return_value = MockLLMResult(
+                text="done",
+                cost_usd=Decimal("0.60"),
+                input_tokens=500,
+                output_tokens=500,
+                session_id="test-session",
+            )
+
+            result = await step.execute(mock_ctx)
+
+        assert not result.success
+        assert "step deadline approaching" in result.error
+        assert mock_invoke_fix.call_count == 0, "No fix cycle should start when it cannot fit the step deadline"
 
 
 class TestEarlyNoChangeDetection:

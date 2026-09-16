@@ -18,6 +18,7 @@ from pathlib import Path
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke, invoke_command
+from sova.llm.errors import format_fix_llm_failure
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -120,6 +121,15 @@ def _resolve_check_cmd(ctx: ExecutionContext) -> str | None:
 
 
 _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]+\.py|tests\.py|[^/]+_test\.py)$")
+
+# Fixed allowance for the non-LLM overhead inside a fix cycle (git diff/status
+# calls in _detect_fix_changes, ruff, commit) that check_timeout + fix_timeout
+# alone do not account for. A slow or heavily loaded environment can add
+# enough real wall-clock time here that a cycle allowed to start under a bare
+# check_timeout + fix_timeout reserve still overruns step_time_remaining,
+# landing back on the uninformative step_hard_timeout path this budget check
+# exists to avoid.
+_CYCLE_OVERHEAD_BUFFER_SECONDS = 60
 
 _NON_SUBSTANTIVE_RE = re.compile(
     r"(?:"
@@ -295,6 +305,24 @@ class DevelopStep(BaseStep):
         """Check time and budget constraints for the inner check loop.
 
         Returns error summary if budget exceeded, None if OK to continue.
+
+        Two time constraints are checked: the loop's own max_fix_time window,
+        and (when known) the step's own remaining hard-timeout budget. A
+        worst-case cycle (check_timeout + fix_timeout, plus a fixed buffer for
+        the non-LLM overhead between them: git diff/status calls, ruff, commit)
+        must still fit inside what is left of develop.step_timeout, otherwise
+        the outer WorkflowEngine hard timeout would kill the step mid-cycle,
+        reporting the generic "step_hard_timeout" instead of this loop's own
+        diagnostic summary, and starving whatever pipeline steps run after
+        this one.
+
+        When the step's remaining deadline was itself capped by the run-wide
+        runaway wall-clock guard (ctx.step_deadline_is_runaway), this
+        preemptive check is skipped: bailing out here would return a plain
+        failed StepResult and silently lose the runaway guard's
+        pause/resume (PAUSED) semantics. Instead the loop is allowed to run
+        until the outer asyncio.timeout fires, which WorkflowEngine already
+        classifies as a resumable runaway event.
         """
         import time
 
@@ -302,6 +330,19 @@ class DevelopStep(BaseStep):
         if elapsed >= max_fix_time:
             log.warning("step.develop.max_fix_time_exceeded", elapsed=int(elapsed), limit=max_fix_time)
             return f"checks still failing after {cycle - 1} fix cycle(s) (time budget exceeded)"
+
+        step_remaining = ctx.step_time_remaining
+        if step_remaining is not None and not ctx.step_deadline_is_runaway:
+            develop_cfg = ctx.config.develop
+            worst_case_cycle = develop_cfg.check_timeout + develop_cfg.fix_timeout + _CYCLE_OVERHEAD_BUFFER_SECONDS
+            if step_remaining < worst_case_cycle:
+                log.warning(
+                    "step.develop.step_deadline_insufficient",
+                    cycle=cycle,
+                    step_remaining=int(step_remaining),
+                    worst_case_cycle=worst_case_cycle,
+                )
+                return f"checks still failing after {cycle - 1} fix cycle(s) (step deadline approaching)"
 
         if ctx.is_budget_exceeded:
             log.warning("step.develop.budget_exceeded_in_check_loop", cycle=cycle)
@@ -425,7 +466,7 @@ class DevelopStep(BaseStep):
             ctx.add_usage(llm_result)
         except RuntimeError as exc:
             log.error("step.develop.fix_llm_failed", error=str(exc), exc_info=True)
-            return f"check fix LLM failed on cycle {cycle}: {exc}"
+            return format_fix_llm_failure(exc, cycle)
         return None
 
     async def _detect_fix_changes(self, ctx: ExecutionContext, pre_hash: str) -> dict[str, bool]:

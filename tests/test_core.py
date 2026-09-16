@@ -2132,6 +2132,34 @@ class TestValidateStep:
         assert "still failing" in result.summary.lower()
         assert mock_invoke.await_count == 2
 
+    async def test_llm_timeout_produces_distinct_marker(self) -> None:
+        """A fix-LLM timeout must be tagged distinctly from a generic RuntimeError
+        and from the unrelated step_hard_timeout string (issue #977)."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.errors import LLMTimeoutError
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch(
+                "sova.core.steps.validate.invoke",
+                new_callable=AsyncMock,
+                side_effect=LLMTimeoutError("Command timed out after 180s"),
+            ),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
+                MagicMock(success=True, stdout=""),  # test -x
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # hook fails
+            ]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert result.error.startswith("fix_llm_timeout on cycle 1:")
+        assert result.error != "step_hard_timeout"
+
     async def test_low_budget_fraction_stops_retry_without_failing(self) -> None:
         """Below the 20% threshold, the fix loop stops retrying but reports success."""
         from sova.config.models import AgentConfig
@@ -5039,6 +5067,45 @@ class TestMonitorCIFixLoop:
         assert "2 fix attempt" in result.summary
         assert "Tests" in result.summary
         assert mock_invoke.await_count == 2
+
+    async def test_llm_timeout_produces_distinct_marker(self) -> None:
+        """A CI fix-LLM timeout must be tagged distinctly from a generic
+        RuntimeError and from the unrelated step_hard_timeout string (issue #977)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.errors import LLMTimeoutError
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check(
+            "Tests", passed=False, details_url="https://github.com/o/r/actions/runs/123/job/456"
+        )
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.return_value = [failed_check]
+            mock_logs.return_value = "ERROR: persistent failure"
+
+            with (
+                patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.operations.push", new_callable=AsyncMock),
+                patch(
+                    "sova.llm.client.invoke",
+                    new_callable=AsyncMock,
+                    side_effect=LLMTimeoutError("Command timed out after 180s"),
+                ),
+                patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
+            ):
+                mock_run.side_effect = _shell_side_effect
+                result = await step.execute(ctx)
+
+        assert not result.success
+        assert result.error.startswith("fix_llm_timeout on cycle 1:")
+        assert result.error != "step_hard_timeout"
 
     async def test_low_budget_fraction_stops_retry_and_fails(self) -> None:
         """Below the 20% threshold, CI fix retries stop and the step reports

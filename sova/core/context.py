@@ -151,6 +151,26 @@ class ExecutionContext:
     # constraint.
     run_started_at: float = 0.0
 
+    # Wall-clock start of the current step attempt and its own effective hard
+    # timeout in seconds, both mirrored by WorkflowEngine._run_step_with_timeout
+    # immediately before step.execute() runs (from the same
+    # _effective_step_timeout() value that bounds the step's asyncio.timeout).
+    # 0.0 / None mean "not set" (no WorkflowEngine involved, or a fresh
+    # dataclass in a unit test), matching run_started_at's convention.
+    step_started_at: float = 0.0
+    step_deadline_seconds: int | None = None
+
+    # True when step_deadline_seconds was capped by the run-wide
+    # runaway.max_run_wall_clock_seconds guard rather than the step's own
+    # configured timeout (mirrors _effective_step_timeout's capped_by_runaway
+    # return value). A caller that preemptively bails out of a retry loop
+    # based on step_time_remaining must not do so while this is True: the
+    # outer asyncio.timeout is expected to fire and route the failure through
+    # WorkflowEngine's runaway_triggered/_pause_for_runaway (resumable PAUSED)
+    # path, not a plain failed StepResult, which would silently drop the
+    # runaway guard's pause/resume semantics.
+    step_deadline_is_runaway: bool = False
+
     def add_cost(self, amount: Decimal) -> None:
         """Accumulate cost from an LLM invocation."""
         self.cost_usd += amount
@@ -256,6 +276,26 @@ class ExecutionContext:
             self._wall_clock_remaining_fraction,
             self._call_count_remaining_fraction,
         )
+
+    @property
+    def step_time_remaining(self) -> float | None:
+        """Seconds left before the current step's own hard timeout fires.
+
+        None when no WorkflowEngine is driving this context (step_deadline_seconds
+        unset), matching run_started_at's "0.0 means not set" convention. A
+        caller should then treat the step deadline as unconstrained.
+        Lets an inner fix loop (e.g. DevelopStep._check_loop_budget) stop
+        itself cleanly before WorkflowEngine._run_step_with_timeout's outer
+        asyncio.timeout kills the step mid-cycle and reports step_hard_timeout
+        instead of the loop's own diagnostic summary.
+        """
+        if self.step_deadline_seconds is None or not self.step_started_at:
+            return None
+
+        import time
+
+        elapsed = time.monotonic() - self.step_started_at
+        return self.step_deadline_seconds - elapsed
 
     @property
     def working_dir(self) -> Path:
