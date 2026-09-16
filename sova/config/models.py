@@ -133,7 +133,9 @@ class LLMConfig(BaseSettings):
 class AgentConfig(BaseSettings):
     """Agent behavior configuration."""
 
-    # Keep in sync with sova/ipc/runtime.py:_RUNTIMES registry
+    # Subset of the sova/ipc/runtime.py:_RUNTIMES registry that is selectable from config.
+    # "codex" is registered in that factory but deliberately not offered here yet:
+    # config and dashboard selection for it are follow-up work under epic #940.
     runtime: Literal["claude-code", "aider"] = "claude-code"
     model: str = "opus"
     fallback_models: list[str] = Field(default_factory=list)

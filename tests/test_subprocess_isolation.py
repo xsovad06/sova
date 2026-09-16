@@ -49,8 +49,18 @@ class TestSubprocessIsolation:
             ("AiderRuntime", "fix bug", False),
             ("AiderRuntime", "fix bug", True),
             ("AiderRuntime", "Run the following command:\n```bash\nsova run 42\n```", False),
+            ("CodexRuntime", "fix bug", False),
+            ("CodexRuntime", "fix bug", True),
         ],
-        ids=["claude-pipe", "claude-file", "aider-pipe", "aider-file", "aider-sova-cmd"],
+        ids=[
+            "claude-pipe",
+            "claude-file",
+            "aider-pipe",
+            "aider-file",
+            "aider-sova-cmd",
+            "codex-pipe",
+            "codex-file",
+        ],
     )
     async def test_runtime_spawn_uses_start_new_session(
         self, tmp_path: Path, runtime_cls: str, prompt: str, use_file_output: bool
