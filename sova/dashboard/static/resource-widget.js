@@ -21,29 +21,8 @@
     var widget = document.getElementById('resource-widget');
     if (!widget) return;
 
-    var toggle = document.getElementById('resource-widget-toggle');
-    var panel = document.getElementById('resource-widget-panel');
-    if (toggle && panel) {
-      toggle.addEventListener('click', function () {
-        var nowHidden = panel.classList.toggle('hidden');
-        localStorage.setItem(STORAGE_KEY, nowHidden ? '0' : '1');
-        syncToggleState(!nowHidden);
-      });
-      // Restore state
-      if (localStorage.getItem(STORAGE_KEY) === '1') {
-        panel.classList.remove('hidden');
-        syncToggleState(true);
-      }
-    }
-
-    // Listen for cross-tab sync
-    window.addEventListener('storage', function (e) {
-      if (e.key === STORAGE_KEY && panel) {
-        var show = e.newValue === '1';
-        panel.classList.toggle('hidden', !show);
-        syncToggleState(show);
-      }
-    });
+    // Uses global initWidgetToggle(toggleId, panelId, storageKey) from app.js
+    initWidgetToggle('resource-widget-toggle', 'resource-widget-panel', STORAGE_KEY);
 
     seedHistory().then(function () {
       schedulePoll();
@@ -87,15 +66,6 @@
       await poll();
       schedulePoll();
     }, getBackoffDelay());
-  }
-
-  function syncToggleState(expanded) {
-    var toggle = document.getElementById('resource-widget-toggle');
-    if (!toggle) return;
-    var chevron = toggle.querySelector('.resource-widget-chevron');
-    if (chevron) {
-      chevron.style.transform = expanded ? 'rotate(180deg)' : '';
-    }
   }
 
   async function poll() {

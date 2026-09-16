@@ -41,6 +41,7 @@ from slowapi.util import get_remote_address
 from sova.config.registry import has_projects, list_projects
 from sova.dashboard.routers import (
     agents,
+    auth,
     briefing,
     control,
     costs,
@@ -1276,6 +1277,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
 def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     """Register API routers under the given prefix."""
+    app.include_router(auth.router, prefix=prefix)
     app.include_router(overview.router, prefix=prefix)
     app.include_router(runs.router, prefix=prefix)
     app.include_router(costs.router, prefix=prefix)

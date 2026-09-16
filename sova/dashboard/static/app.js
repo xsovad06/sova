@@ -393,6 +393,61 @@ function visibilityAwarePoll(fn, intervalMs) {
 }
 
 /* ============================================================
+   6a. FLOATING WIDGET TOGGLE (shared by the corner widgets)
+   ============================================================ */
+
+/* Wires a corner widget's expand/collapse button: click toggles the panel,
+   the state persists in localStorage under storageKey, and a storage event
+   keeps other tabs in sync. Storage access is wrapped: private-browsing modes
+   and disabled storage can make localStorage throw, and a widget must still
+   initialize (just without persisted state) rather than fail entirely. */
+function safeStorageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    /* storage unavailable; toggle state simply won't persist */
+  }
+}
+
+function initWidgetToggle(toggleId, panelId, storageKey) {
+  var toggle = document.getElementById(toggleId);
+  var panel = document.getElementById(panelId);
+
+  function syncChevron(expanded) {
+    var chevron = toggle && toggle.querySelector('.resource-widget-chevron');
+    if (chevron) chevron.style.transform = expanded ? 'rotate(180deg)' : '';
+  }
+
+  if (toggle && panel) {
+    toggle.addEventListener('click', function () {
+      var nowHidden = panel.classList.toggle('hidden');
+      safeStorageSet(storageKey, nowHidden ? '0' : '1');
+      syncChevron(!nowHidden);
+    });
+    if (safeStorageGet(storageKey) === '1') {
+      panel.classList.remove('hidden');
+      syncChevron(true);
+    }
+  }
+
+  window.addEventListener('storage', function (e) {
+    if (e.key === storageKey && panel) {
+      var show = e.newValue === '1';
+      panel.classList.toggle('hidden', !show);
+      syncChevron(show);
+    }
+  });
+}
+
+/* ============================================================
    7. SIDEBAR POLLING & NOTIFICATIONS
    ============================================================ */
 
