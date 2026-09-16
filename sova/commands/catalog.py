@@ -73,6 +73,17 @@ def classify(commands: list[CommandEntry]) -> dict[str, list[CommandEntry]]:
     return groups
 
 
+def parse_frontmatter(content: str) -> tuple[dict[str, str | list[str]], str] | None:
+    """Split a command markdown file into its parsed frontmatter and body.
+
+    Returns ``None`` if the content has no valid ``---`` delimited frontmatter block.
+    """
+    match = _FRONTMATTER_RE.match(content)
+    if not match:
+        return None
+    return _parse_yaml_simple(match.group(1)), content[match.end() :]
+
+
 def _parse_command_file(path: Path) -> CommandEntry | None:
     """Parse a command markdown file and extract frontmatter metadata."""
     try:
@@ -81,13 +92,12 @@ def _parse_command_file(path: Path) -> CommandEntry | None:
         log.warning("commands.read_error", path=str(path))
         return None
 
-    match = _FRONTMATTER_RE.match(content)
-    if not match:
+    parsed = parse_frontmatter(content)
+    if parsed is None:
         log.debug("commands.no_frontmatter", path=str(path))
         return None
 
-    frontmatter = match.group(1)
-    fields = _parse_yaml_simple(frontmatter)
+    fields, _body = parsed
 
     name = fields.get("name", "")
     if not name:
