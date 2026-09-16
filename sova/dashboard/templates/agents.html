@@ -300,8 +300,8 @@ var _taskStateFilter = localStorage.getItem('sova-task-state-filter') || '';
 
 var _STATE_FILTER_GROUPS = {
   running: ['agent_running'],
-  pr_stage: ['pr_draft', 'pr_conflicted', 'pr_ci_running', 'pr_ci_failed', 'pr_awaiting_review', 'pr_sova_pending',
-    'pr_changes_requested', 'pr_sova_changes', 'pr_external_changes',
+  pr_stage: ['pr_draft', 'pr_conflicted', 'pr_ci_running', 'pr_ci_failed', 'pr_awaiting_review',
+    'pr_sova_pending', 'pr_changes_requested', 'pr_sova_changes', 'pr_external_changes',
     'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge'],
   ci_failed: ['pr_ci_failed'],
   needs_review: ['pr_awaiting_review', 'pr_sova_pending'],
