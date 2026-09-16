@@ -87,6 +87,20 @@ def _resolve_project_dir() -> Path:
     return Path.cwd().resolve()
 
 
+def _project_dir_and_slug() -> tuple[Path, str | None]:
+    """Return the active project dir and its github_repo slug (None on any config load failure)."""
+    from sova.config.loader import load_config
+
+    project_dir = get_project_dir()
+    try:
+        cfg = load_config(project_dir)
+        project_slug = cfg.github_repo or None
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+        log.warning("supervisor.config_load_failed", project_dir=str(project_dir), exc_info=True)
+        project_slug = None
+    return project_dir, project_slug
+
+
 @router.get("/status")
 async def get_status() -> dict:
     """Return supervisor daemon status."""
@@ -115,16 +129,9 @@ async def get_decisions(
     event_type: str | None = None,
 ) -> dict:
     """Return recent supervisor decisions."""
-    from sova.config.loader import load_config
     from sova.dashboard.services.supervisor_service import get_recent_decisions
 
-    project_dir = get_project_dir()
-    try:
-        cfg = load_config(project_dir)
-        project_slug = cfg.github_repo or None
-    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
-        log.warning("supervisor.config_load_failed", project_dir=str(project_dir), exc_info=True)
-        project_slug = None
+    project_dir, project_slug = _project_dir_and_slug()
     decisions = await get_recent_decisions(
         project_dir,
         project_slug=project_slug,
@@ -232,18 +239,28 @@ async def get_ci_budget() -> dict:
 @router.get("/counts")
 async def get_counts() -> dict:
     """Return per-component decision counts."""
-    from sova.config.loader import load_config
     from sova.dashboard.services.supervisor_service import get_decision_counts
+
+    project_dir, project_slug = _project_dir_and_slug()
+    counts = await get_decision_counts(project_dir, project_slug=project_slug)
+    return {"counts": counts}
+
+
+@router.get("/planner-health")
+async def get_planner_health_endpoint() -> dict:
+    """Return planner success/failure counts and last-seen timestamps for the dashboard widget."""
+    from sova.config.loader import load_config
+    from sova.dashboard.services.supervisor_service import get_planner_health, resolve_project_slug
 
     project_dir = get_project_dir()
     try:
         cfg = load_config(project_dir)
-        project_slug = cfg.github_repo or None
-    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
-        log.warning("supervisor.config_load_failed", project_dir=str(project_dir), exc_info=True)
-        project_slug = None
-    counts = await get_decision_counts(project_dir, project_slug=project_slug)
-    return {"counts": counts}
+        project_slug = resolve_project_slug(cfg.github_repo, project_dir)
+    except (FileNotFoundError, PermissionError, ValueError):
+        log.exception("Config load failed for project dir %s", project_dir)
+        return get_planner_health(None)
+
+    return get_planner_health(project_slug)
 
 
 @router.get("/plan")

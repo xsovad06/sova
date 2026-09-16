@@ -10,7 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import OperationalError
 
-from sova.dashboard.services.supervisor_service import get_decision_counts, get_recent_decisions
+from sova.dashboard.services.supervisor_service import get_decision_counts, get_planner_health, get_recent_decisions
 from sova.db.models import SupervisorDecision
 from sova.db.session import close_db, get_session, init_db
 
@@ -56,6 +56,31 @@ async def seed_decisions():
         )
 
 
+@pytest.fixture(autouse=True)
+def clear_planner_health():
+    """Reset the in-memory planner health counters before and after each test.
+
+    Planner health is deliberately not persisted to the database (see
+    ``supervisor_service._planner_health``), so it must be reset between
+    tests the same way ``_pending_plan`` is in ``TestMultiProjectPlanIsolation``.
+    """
+    from sova.dashboard.services import supervisor_service
+
+    supervisor_service._planner_health.clear()
+    yield
+    supervisor_service._planner_health.clear()
+
+
+@pytest.fixture
+def seed_planner_health():
+    """Seed in-memory planner health counters for project_slug 'test/repo'."""
+    from sova.dashboard.services.supervisor_service import record_planner_outcome
+
+    record_planner_outcome("test/repo", "success")
+    record_planner_outcome("test/repo", "success")
+    record_planner_outcome("test/repo", "failure")
+
+
 class TestSupervisorService:
     async def test_get_recent_decisions_empty(self) -> None:
         result = await get_recent_decisions(Path.cwd())
@@ -98,6 +123,29 @@ class TestSupervisorService:
         assert counts["progression"] == 1
         counts_other = await get_decision_counts(Path.cwd(), project_slug="other/repo")
         assert counts_other == {}
+
+    def test_get_planner_health_empty(self) -> None:
+        health = get_planner_health()
+        assert health == {
+            "success_count": 0,
+            "failure_count": 0,
+            "last_success_at": None,
+            "last_failure_at": None,
+        }
+
+    def test_get_planner_health_returns_counts(self, seed_planner_health) -> None:
+        health = get_planner_health()
+        assert health["success_count"] == 2
+        assert health["failure_count"] == 1
+        assert health["last_success_at"] is not None
+        assert health["last_failure_at"] is not None
+
+    def test_get_planner_health_filter_project_slug(self, seed_planner_health) -> None:
+        health = get_planner_health(project_slug="test/repo")
+        assert health["success_count"] == 2
+        health_other = get_planner_health(project_slug="other/repo")
+        assert health_other["success_count"] == 0
+        assert health_other["failure_count"] == 0
 
 
 class TestSupervisorRouter:
@@ -322,6 +370,25 @@ class TestSupervisorRouter:
                 counts = resp.json()["counts"]
                 assert counts.get("progression") == 1
                 assert counts.get("quota") == 1
+
+    async def test_get_planner_health_empty(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/supervisor/planner-health")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success_count"] == 0
+            assert data["failure_count"] == 0
+
+    async def test_get_planner_health_with_data(self, app, seed_planner_health) -> None:
+        mock_cfg = MagicMock()
+        mock_cfg.github_repo = "test/repo"
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/planner-health")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success_count"] == 2
+                assert data["failure_count"] == 1
 
     async def test_get_decisions_with_filters(self, app, seed_decisions) -> None:
         mock_cfg = MagicMock()

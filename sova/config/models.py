@@ -819,6 +819,10 @@ class SupervisorConfig(BaseSettings):
     persona_path: str = ""
     llm_planning: bool = False
     planner_timeout_seconds: int = Field(180, ge=10)
+    planner_max_attempts: int = Field(3, ge=1)
+    planner_retry_backoff_seconds: float = Field(1.0, ge=0)
+    planner_issue_health_max_rows: int = Field(50, ge=1)
+    planner_max_failures_in_context: int = Field(20, ge=1)
     auto_queue: bool = True
     max_queue_size: int = Field(10, ge=0)
     task_queue: list[int] = Field(default_factory=list, json_schema_extra={"items": {"exclusiveMinimum": 0}})
