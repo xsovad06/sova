@@ -24,9 +24,6 @@ from sova.dashboard.services.work_state import (
     _LABEL_STATE_MAP as _LABEL_STATE_MAP,
 )
 from sova.dashboard.services.work_state import (
-    _PR_STATE_MAP as _PR_STATE_MAP,
-)
-from sova.dashboard.services.work_state import (
     _ROLE_LABELS as _ROLE_LABELS,
 )
 from sova.dashboard.services.work_state import (
@@ -41,11 +38,14 @@ from sova.dashboard.services.work_state import (
 from sova.dashboard.services.work_state import (
     _STATE_SORT_ORDER as _STATE_SORT_ORDER,
 )
-from sova.dashboard.services.work_state import (  # re-export facade
-    WorkItemState as WorkItemState,
+from sova.dashboard.services.work_state import (
+    PRFacts as PRFacts,
 )
 from sova.dashboard.services.work_state import (
-    _apply_sova_verdict as _apply_sova_verdict,
+    Resolution as Resolution,
+)
+from sova.dashboard.services.work_state import (  # re-export facade
+    WorkItemState as WorkItemState,
 )
 from sova.dashboard.services.work_state import (
     _build_action as _build_action,
@@ -54,13 +54,13 @@ from sova.dashboard.services.work_state import (
     _get_actions as _get_actions,
 )
 from sova.dashboard.services.work_state import (
-    _is_verdict_stale_by_sha as _is_verdict_stale_by_sha,
-)
-from sova.dashboard.services.work_state import (
     _sort_items as _sort_items,
 )
 from sova.dashboard.services.work_state import (
     compute_work_item_state as compute_work_item_state,
+)
+from sova.dashboard.services.work_state import (
+    resolve_next_action as resolve_next_action,
 )
 from sova.dashboard.services.work_verdict import (  # re-export facade
     _SOVA_MARKER_RE as _SOVA_MARKER_RE,
