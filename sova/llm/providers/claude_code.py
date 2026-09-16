@@ -36,6 +36,18 @@ _MODEL_ALIASES: dict[str, str] = {
 class ClaudeCodeProvider(LLMProvider):
     """LLM provider that wraps the Claude Code CLI (``claude -p``)."""
 
+    def __init__(self) -> None:
+        # Set unconditionally at the top of every check_available() call
+        # (including its early-return paths for a missing/broken CLI), so a
+        # same-instance get_auth_details() call (the setup_service.get_auth_status()
+        # flow) reuses that outcome instead of spawning a second CLI process.
+        # `_probed` distinguishes "check_available() never ran" (probe fresh)
+        # from "it ran and found no auth data" (data genuinely absent, do not
+        # re-probe); `_last_auth_probe` alone can't carry that distinction
+        # since a completed probe can also legitimately be None.
+        self._probed = False
+        self._last_auth_probe: dict | None = None
+
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -185,17 +197,48 @@ class ClaudeCodeProvider(LLMProvider):
         return _MODEL_ALIASES.get(model, model)
 
     async def check_available(self) -> tuple[bool, str]:
+        # Cleared unconditionally, including every early-return path below, so
+        # a later failing call always invalidates a cached successful probe
+        # from an earlier one: get_auth_details() must never serve stale
+        # account data for the current auth state.
+        self._probed = True
+        self._last_auth_probe = None
+
         claude_path = shutil.which("claude")
         if not claude_path:
             return False, "claude CLI not found -- install: https://docs.anthropic.com/en/docs/claude-code"
-        result = await run("claude", "--version", env=scrub_agent_env(passthrough=configured_passthrough()))
+        result = await run(
+            "claude",
+            "--version",
+            env=scrub_agent_env(passthrough=configured_passthrough()),
+            timeout=_AUTH_CHECK_TIMEOUT,
+        )
         if not result.success:
             return False, "claude CLI found but --version failed"
         version = result.stdout.strip().split("\n")[0]
-        authenticated, auth_detail = await _check_cli_auth()
+        self._last_auth_probe = await _probe_auth()
+        authenticated, auth_detail = _interpret_auth_probe(self._last_auth_probe)
         if not authenticated:
             return False, f"{version} but {auth_detail}"
         return True, f"{version} ({auth_detail})"
+
+    async def get_auth_details(self) -> dict | None:
+        """Return the parsed ``claude auth status --json`` payload, or ``None``.
+
+        Reuses the outcome of a preceding ``check_available()`` call on this
+        same instance, whatever it was (including "CLI missing" or "--version
+        failed", both of which mean no auth data was ever fetched), instead of
+        spawning a second CLI process. Probes fresh only when this instance has
+        never had ``check_available()`` called on it.
+
+        ``None`` covers a probe never reached, a probe failure, unparseable
+        output, and any ``loggedIn`` value other than ``True``: callers must
+        never build an account identity from a partial or failed probe.
+        """
+        data = self._last_auth_probe if self._probed else await _probe_auth()
+        if data is None or data.get("loggedIn") is not True:
+            return None
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +246,42 @@ class ClaudeCodeProvider(LLMProvider):
 # ---------------------------------------------------------------------------
 
 
-async def _check_cli_auth() -> tuple[bool, str]:
-    """Report Claude CLI authentication state via ``claude auth status --json``.
+async def _probe_auth() -> dict | None:
+    """Run ``claude auth status --json`` once and return the parsed payload.
+
+    Returns ``None`` on subprocess failure, unparseable output, or output that
+    doesn't parse to a JSON object. Callers derive their own meaning (fails
+    open vs. explicitly logged out) from the returned ``loggedIn`` field, so
+    this function does not interpret it.
+    """
+    try:
+        result = await run(
+            "claude",
+            "auth",
+            "status",
+            "--json",
+            env=scrub_agent_env(passthrough=configured_passthrough()),
+            timeout=_AUTH_CHECK_TIMEOUT,
+        )
+    except OSError:
+        # A fresh get_auth_details() call (no preceding check_available()) can
+        # reach here with the CLI missing: create_subprocess_exec raises
+        # FileNotFoundError before a ShellResult exists to report failure.
+        log.debug("llm.auth_probe.failed", exc_info=True)
+        return None
+    if not result.success:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _interpret_auth_probe(data: dict | None) -> tuple[bool, str]:
+    """Interpret an already-fetched ``claude auth status --json`` payload.
 
     An installed but logged-out CLI passes ``--version`` and then fails every
     agent run at invocation time, so installation alone is not readiness.
@@ -213,21 +290,7 @@ async def _check_cli_auth() -> tuple[bool, str]:
     not understand, report as available with an unknown auth state rather than
     blocking an otherwise working setup.
     """
-    result = await run(
-        "claude",
-        "auth",
-        "status",
-        "--json",
-        env=scrub_agent_env(passthrough=configured_passthrough()),
-        timeout=_AUTH_CHECK_TIMEOUT,
-    )
-    if not result.success:
-        return True, "auth state unknown"
-    try:
-        data = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
-        return True, "auth state unknown"
-    if not isinstance(data, dict):
+    if data is None:
         return True, "auth state unknown"
     logged_in = data.get("loggedIn")
     if logged_in is False:

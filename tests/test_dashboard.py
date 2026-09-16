@@ -10428,8 +10428,249 @@ class TestParseStreamLine:
 
 
 # ---------------------------------------------------------------------------
-# Setup Service: TomlConfig
+# Auth status API
 # ---------------------------------------------------------------------------
+
+
+class _FakeAuthProvider:
+    """Fake claude-code-shaped provider: exposes get_auth_details()."""
+
+    def __init__(self, authenticated: bool, detail: str, account: dict | None) -> None:
+        self._authenticated = authenticated
+        self._detail = detail
+        self._account = account
+
+    async def check_available(self):
+        return self._authenticated, self._detail
+
+    async def get_auth_details(self):
+        return self._account
+
+
+class _FakeNoAuthDetailsProvider:
+    """Fake non-claude-code provider: has no get_auth_details() at all."""
+
+    def __init__(self, authenticated: bool, detail: str) -> None:
+        self._authenticated = authenticated
+        self._detail = detail
+
+    async def check_available(self):
+        return self._authenticated, self._detail
+
+
+def _fake_cfg(provider: str = "claude-code", api_key: str = ""):
+    from types import SimpleNamespace
+
+    from sova.config.models import LLMConfig
+
+    return SimpleNamespace(llm=LLMConfig(provider=provider, api_key=api_key, model="claude-sonnet-4-6"))
+
+
+class TestAuthStatusAPI:
+    @pytest.fixture(autouse=True)
+    def _clear_auth_cache(self):
+        from sova.dashboard.services.setup_service import _auth_status_cache
+
+        _auth_status_cache.clear()
+        yield
+        _auth_status_cache.clear()
+
+    async def test_authenticated_claude_code_response_shape(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        account = {
+            "loggedIn": True,
+            "email": "user@example.com",
+            "authMethod": "claude.ai",
+            "apiProvider": "firstParty",
+            "orgId": "org_123",
+            "orgName": "Example Org",
+            "subscriptionType": "max",
+        }
+        provider = _FakeAuthProvider(True, "2.1.259 (user@example.com, max)", account)
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            resp = await client.get("/api/auth/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "claude-code"
+        assert data["authenticated"] is True
+        assert data["detail"] == "2.1.259 (user@example.com, max)"
+        assert data["account"]["email"] == "user@example.com"
+        assert "loggedIn" not in data["account"]
+        assert data["api_key_configured"] is False
+        assert data["routing_warnings"] == []
+        assert data["cached"] is False
+        assert "checked_at" in data
+
+    async def test_unauthenticated_response_has_no_invented_account(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        provider = _FakeAuthProvider(False, "not authenticated (run: claude auth login)", None)
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            resp = await client.get("/api/auth/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["authenticated"] is False
+        assert data["account"] is None
+        assert data["detail"] == "not authenticated (run: claude auth login)"
+
+    async def test_fail_open_availability_is_not_reported_as_authenticated(self, client: AsyncClient) -> None:
+        """check_available() fails open (reports available with "auth state
+        unknown") so a CLI build without the auth subcommand doesn't block
+        agent spawning. The widget must not read that fail-open availability
+        as a confirmed login: only a get_auth_details() payload counts here."""
+        from unittest.mock import patch
+
+        provider = _FakeAuthProvider(True, "2.1.259 (auth state unknown)", None)
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            resp = await client.get("/api/auth/status")
+        data = resp.json()
+        assert data["authenticated"] is False
+        assert data["account"] is None
+        assert "auth state unknown" in data["detail"]
+
+    async def test_non_claude_code_provider_has_no_account_field(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        provider = _FakeNoAuthDetailsProvider(True, "ollama available")
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg(provider="ollama")),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            resp = await client.get("/api/auth/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "ollama"
+        assert data["authenticated"] is True
+        assert data["account"] is None
+
+    async def test_cache_hit_returns_cached_true(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        provider = _FakeAuthProvider(True, "2.1.259 (user@example.com, max)", None)
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()) as mock_load,
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            first = await client.get("/api/auth/status")
+            second = await client.get("/api/auth/status")
+        assert first.json()["cached"] is False
+        assert second.json()["cached"] is True
+        assert second.json()["checked_at"] == first.json()["checked_at"]
+        assert mock_load.call_count == 1
+
+    async def test_concurrent_uncached_requests_share_one_probe(self, client: AsyncClient) -> None:
+        """Two concurrent requests racing a cold/expired cache must not each
+        spawn their own probe: the single-flight lock (mirroring
+        coderabbit_quota.py's per-repo lock) makes the second one wait for and
+        reuse the first's result instead of duplicating CLI subprocess calls."""
+        import asyncio
+        from unittest.mock import patch
+
+        probe_count = 0
+
+        class _SlowAuthProvider:
+            async def check_available(self):
+                nonlocal probe_count
+                probe_count += 1
+                await asyncio.sleep(0.05)
+                return True, "2.1.259 (user@example.com, max)"
+
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", return_value=_SlowAuthProvider()),
+        ):
+            first, second = await asyncio.gather(
+                client.get("/api/auth/status"),
+                client.get("/api/auth/status"),
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert probe_count == 1
+        assert first.json()["authenticated"] is True
+        assert second.json()["authenticated"] is True
+
+    async def test_routing_variable_warning_detected(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        provider = _FakeAuthProvider(True, "2.1.259 (user@example.com, max)", None)
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+            patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "some-project"}),
+        ):
+            resp = await client.get("/api/auth/status")
+        data = resp.json()
+        assert "ANTHROPIC_VERTEX_PROJECT_ID" in data["routing_warnings"]
+
+    async def test_misconfigured_provider_returns_200(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg(provider="claude-code")),
+            patch("sova.llm.provider.create_provider", side_effect=ValueError("Unknown LLM provider")),
+        ):
+            resp = await client.get("/api/auth/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["authenticated"] is False
+        assert data["account"] is None
+        assert "Unknown LLM provider" in data["detail"]
+
+    async def test_config_load_failure_returns_503(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("config unreadable")):
+            resp = await client.get("/api/auth/status")
+        assert resp.status_code == 503
+
+    async def test_no_expires_at_or_models_fields(self, client: AsyncClient) -> None:
+        """Neither the envelope nor the account carries expires_at/models.
+
+        The account payload is whatever the CLI printed, so the fields that
+        must never appear have to be asserted against an account that actually
+        contains them, not against an envelope that never had them.
+        """
+        from unittest.mock import patch
+
+        account = {"loggedIn": True, "email": "u@e.com", "expires_at": "2026-01-01", "models": ["opus"]}
+        provider = _FakeAuthProvider(True, "2.1.259 (user@example.com, max)", account)
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            resp = await client.get("/api/auth/status")
+        data = resp.json()
+        assert "expires_at" not in data
+        assert "models" not in data
+        assert "expires_at" not in data["account"]
+        assert "models" not in data["account"]
+        assert data["account"] == {"email": "u@e.com"}
+
+    async def test_account_drops_unknown_fields(self, client: AsyncClient) -> None:
+        """A field outside the verified contract is never echoed to the client."""
+        from unittest.mock import patch
+
+        account = {"loggedIn": True, "email": "u@e.com", "accessToken": "sk-ant-secret"}
+        provider = _FakeAuthProvider(True, "2.1.259", account)
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            resp = await client.get("/api/auth/status")
+        body = resp.text
+        assert "sk-ant-secret" not in body
+        assert resp.json()["account"] == {"email": "u@e.com"}
 
 
 class TestTomlConfigGeneration:

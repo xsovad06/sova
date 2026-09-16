@@ -6,9 +6,13 @@ tech stack detection, and sova.toml generation.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import os
 import re
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -22,6 +26,22 @@ _PACKAGE_JSON = "package.json"
 _PYPROJECT_TOML = "pyproject.toml"
 _REQUIREMENTS_TXT = "requirements.txt"
 _SOVA_TOML = "sova.toml"
+
+# TTL matches the provider-status-widget.js poll interval so a poll never
+# re-probes the CLI more than once per interval.
+_AUTH_STATUS_CACHE_TTL = 60.0
+_auth_status_cache: dict[str, tuple[float, dict]] = {}
+# project dir -> single-flight lock, mirroring coderabbit_quota.py's per-repo
+# lock so concurrent uncached requests for the same project share one probe
+# instead of each spawning duplicate `claude --version` / `claude auth status` calls.
+_auth_status_locks: dict[str, asyncio.Lock] = {}
+
+# Allowlist, not a denylist: the account payload is whatever `claude auth
+# status --json` happens to print, so a field a future CLI version adds (a
+# token, a session id) would otherwise be served verbatim by an endpoint that
+# is explicitly forbidden from exposing secret material. Only these six fields
+# are part of the verified contract in issue #933.
+_ACCOUNT_FIELDS = ("email", "authMethod", "apiProvider", "orgId", "orgName", "subscriptionType")
 
 _PROJECT_MARKERS = (
     ".git",
@@ -540,3 +560,65 @@ def _read_existing_toml(project: Path) -> dict:
     except (OSError, ValueError):
         log.warning("setup.toml_read_failed", toml_file=str(toml_file), exc_info=True)
         return {}
+
+
+async def get_auth_status(project_dir: Path) -> dict:
+    """Assemble the read-only LLM provider auth status for the dashboard widget.
+
+    Cached per project directory for ``_AUTH_STATUS_CACHE_TTL`` seconds so the
+    CLI auth probe isn't re-run on every widget poll. A ``create_provider``
+    ``ValueError`` (unknown/misconfigured provider type) is a routine
+    misconfigured state, reported here rather than raised, mirroring
+    ``sova/cli/commands/doctor.py:_check_llm_provider``. Any other exception
+    (e.g. config load failure) propagates so the router can turn it into a
+    503 (a genuine service failure, not a status to report).
+    """
+    from sova.config.loader import load_config
+    from sova.llm.provider import create_provider
+    from sova.utils.env import PROVIDER_ROUTING_VARS
+
+    cache_key = str(project_dir.resolve())
+    now = time.monotonic()
+    cached = _auth_status_cache.get(cache_key)
+    if cached and (now - cached[0]) < _AUTH_STATUS_CACHE_TTL:
+        return {**cached[1], "cached": True}
+
+    lock = _auth_status_locks.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        # Recheck after acquiring: another task may have refreshed while we waited
+        now = time.monotonic()
+        cached = _auth_status_cache.get(cache_key)
+        if cached and (now - cached[0]) < _AUTH_STATUS_CACHE_TTL:
+            return {**cached[1], "cached": True}
+
+        cfg = await asyncio.to_thread(load_config, project_dir)
+        result = {
+            "provider": cfg.llm.provider,
+            "authenticated": False,
+            "detail": "",
+            "account": None,
+            "api_key_configured": bool(cfg.llm.api_key),
+            "routing_warnings": sorted(PROVIDER_ROUTING_VARS & os.environ.keys()),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            provider = create_provider(cfg.llm)
+        except ValueError as exc:
+            result["detail"] = str(exc)
+        else:
+            result["authenticated"], result["detail"] = await provider.check_available()
+            get_auth_details = getattr(provider, "get_auth_details", None)
+            account = await get_auth_details() if get_auth_details is not None else None
+            if get_auth_details is not None:
+                # check_available() fails open on an unreadable/unknown auth
+                # probe so agent spawning isn't blocked; the widget must not
+                # report that same fail-open case as a confirmed login. Only
+                # a get_auth_details() payload counts as authenticated here.
+                result["authenticated"] = account is not None
+            if account is not None:
+                account = {k: account[k] for k in _ACCOUNT_FIELDS if k in account}
+            result["account"] = account
+
+        _auth_status_cache[cache_key] = (time.monotonic(), result)
+        return {**result, "cached": False}

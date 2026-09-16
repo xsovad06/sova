@@ -4458,6 +4458,23 @@ class TestClaudeCodeAuthAwareness:
         assert available is False
         assert "claude auth login" in detail
 
+    async def test_version_probe_uses_auth_check_timeout(self) -> None:
+        """The `claude --version` probe must not inherit run()'s 300s default:
+        get_auth_status() holds its per-project lock for the whole call, so an
+        unresponsive CLI would otherwise stall every widget poll for 5 minutes."""
+        from sova.llm.providers.claude_code import _AUTH_CHECK_TIMEOUT, ClaudeCodeProvider
+
+        auth = '{"loggedIn": true, "email": "dev@example.com", "subscriptionType": "max"}'
+        mock_run = AsyncMock(side_effect=self._results("2.1.259\n", auth))
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("sova.llm.providers.claude_code.run", mock_run),
+        ):
+            await ClaudeCodeProvider().check_available()
+
+        version_call = mock_run.await_args_list[0]
+        assert version_call.kwargs["timeout"] == _AUTH_CHECK_TIMEOUT
+
     async def test_missing_auth_subcommand_fails_open(self) -> None:
         """Older CLI builds have no `auth` subcommand; do not block them."""
         from sova.llm.providers.claude_code import ClaudeCodeProvider
@@ -4614,3 +4631,184 @@ class TestClaudeCodeAuthAwareness:
         assert mock_run.await_count == 2
         for call in mock_run.await_args_list:
             assert call.kwargs["env"]["CLAUDE_CODE_USE_VERTEX"] == "1"
+
+
+class TestClaudeCodeGetAuthDetails:
+    """get_auth_details() shares its probe with check_available() via _probe_auth()."""
+
+    async def test_logged_in_returns_full_payload(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        auth = (
+            '{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", '
+            '"email": "dev@example.com", "orgId": "org_1", "orgName": "Example Org", '
+            '"subscriptionType": "max"}'
+        )
+        with patch(
+            "sova.llm.providers.claude_code.run",
+            new_callable=AsyncMock,
+            return_value=ShellResult(returncode=0, stdout=auth, stderr=""),
+        ):
+            details = await ClaudeCodeProvider().get_auth_details()
+
+        assert details is not None
+        assert details["email"] == "dev@example.com"
+        assert details["orgName"] == "Example Org"
+        assert details["subscriptionType"] == "max"
+
+    async def test_logged_out_returns_none(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        with patch(
+            "sova.llm.providers.claude_code.run",
+            new_callable=AsyncMock,
+            return_value=ShellResult(returncode=0, stdout='{"loggedIn": false}', stderr=""),
+        ):
+            details = await ClaudeCodeProvider().get_auth_details()
+
+        assert details is None
+
+    async def test_probe_failure_returns_none(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        with patch(
+            "sova.llm.providers.claude_code.run",
+            new_callable=AsyncMock,
+            return_value=ShellResult(returncode=1, stdout="", stderr="no such subcommand"),
+        ):
+            details = await ClaudeCodeProvider().get_auth_details()
+
+        assert details is None
+
+    async def test_missing_cli_on_fresh_probe_returns_none(self) -> None:
+        """A fresh get_auth_details() (no preceding check_available()) must not
+        propagate the FileNotFoundError create_subprocess_exec raises when the
+        `claude` executable is absent; it degrades to the documented None."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        with patch(
+            "sova.llm.providers.claude_code.run",
+            new_callable=AsyncMock,
+            side_effect=FileNotFoundError("claude"),
+        ):
+            details = await ClaudeCodeProvider().get_auth_details()
+
+        assert details is None
+
+    async def test_unparseable_output_returns_none(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        with patch(
+            "sova.llm.providers.claude_code.run",
+            new_callable=AsyncMock,
+            return_value=ShellResult(returncode=0, stdout="not json", stderr=""),
+        ):
+            details = await ClaudeCodeProvider().get_auth_details()
+
+        assert details is None
+
+    async def test_missing_logged_in_key_returns_none(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        with patch(
+            "sova.llm.providers.claude_code.run",
+            new_callable=AsyncMock,
+            return_value=ShellResult(returncode=0, stdout="{}", stderr=""),
+        ):
+            details = await ClaudeCodeProvider().get_auth_details()
+
+        assert details is None
+
+    async def test_single_subprocess_call(self) -> None:
+        """get_auth_details() makes exactly one CLI call, not a duplicate probe."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run = AsyncMock(
+            return_value=ShellResult(returncode=0, stdout='{"loggedIn": true, "email": "d@e.com"}', stderr="")
+        )
+        with patch("sova.llm.providers.claude_code.run", mock_run):
+            await ClaudeCodeProvider().get_auth_details()
+
+        assert mock_run.await_count == 1
+
+    async def test_reuses_probe_from_preceding_check_available(self) -> None:
+        """setup_service.get_auth_status() calls check_available() then
+        get_auth_details() on the same provider instance; the second call must
+        not spawn a second `claude auth status --json` process for data
+        already fetched by the first."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        auth = '{"loggedIn": true, "email": "dev@example.com", "subscriptionType": "max"}'
+        mock_run = AsyncMock(
+            side_effect=[
+                ShellResult(returncode=0, stdout="2.1.259\n", stderr=""),
+                ShellResult(returncode=0, stdout=auth, stderr=""),
+            ]
+        )
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("sova.llm.providers.claude_code.run", mock_run),
+        ):
+            provider = ClaudeCodeProvider()
+            await provider.check_available()
+            details = await provider.get_auth_details()
+
+        assert mock_run.await_count == 2  # --version + one auth status, not two
+        assert details is not None
+        assert details["email"] == "dev@example.com"
+
+    async def test_no_second_probe_after_check_available_finds_cli_unavailable(self) -> None:
+        """When check_available() fails before ever reaching the auth probe
+        (CLI missing or --version failing), get_auth_details() on the same
+        instance must not spawn a second, guaranteed-to-fail
+        `claude auth status --json` process for data that was never fetched."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run = AsyncMock(return_value=ShellResult(returncode=1, stdout="", stderr="boom"))
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("sova.llm.providers.claude_code.run", mock_run),
+        ):
+            provider = ClaudeCodeProvider()
+            available, _ = await provider.check_available()
+            details = await provider.get_auth_details()
+
+        assert available is False
+        assert details is None
+        assert mock_run.await_count == 1  # only --version; no auth probe attempted at all
+
+    async def test_stale_probe_not_served_after_later_check_available_failure(self) -> None:
+        """A second check_available() call that fails must invalidate the
+        cached probe from an earlier successful call on the same instance, so
+        get_auth_details() never serves stale account data."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        ok_auth = '{"loggedIn": true, "email": "dev@example.com", "subscriptionType": "max"}'
+        mock_run = AsyncMock(
+            side_effect=[
+                ShellResult(returncode=0, stdout="2.1.259\n", stderr=""),  # 1st check_available: --version
+                ShellResult(returncode=0, stdout=ok_auth, stderr=""),  # 1st check_available: auth probe
+                ShellResult(returncode=1, stdout="", stderr="boom"),  # 2nd check_available: --version fails
+            ]
+        )
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("sova.llm.providers.claude_code.run", mock_run),
+        ):
+            provider = ClaudeCodeProvider()
+            await provider.check_available()
+            available, _ = await provider.check_available()
+            details = await provider.get_auth_details()
+
+        assert available is False
+        assert details is None
+        assert mock_run.await_count == 3  # no extra auth probe spawned for the now-stale data

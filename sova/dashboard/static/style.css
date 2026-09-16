@@ -1215,6 +1215,60 @@ body.feed-open .feed-fab { display: none; }
 
 .resource-widget-panel.hidden { display: none; }
 
+/* ============================================================
+   9a. PROVIDER AUTH STATUS WIDGET
+   ============================================================ */
+
+.auth-widget {
+  position: fixed;
+  /* Stacked directly above the resource widget (same right offset) rather
+     than placed further left: a horizontal offset large enough to clear the
+     resource widget's toggle would need to vary with label text width
+     ("claude-code" is wider than "N agents"), which is fragile. Vertical
+     stacking has no such dependency. */
+  bottom: 3.5rem;
+  right: 6rem;
+  /* One below .resource-widget (45): the resource panel opens upward from
+     bottom: calc(100% + 0.5rem) and is 480px tall, so it passes straight
+     through this widget's toggle. At an equal z-index the later DOM node (this
+     one) would win and punch a hole in the expanded panel; one lower makes the
+     panel cleanly cover the toggle instead. */
+  z-index: 44;
+}
+
+.auth-widget-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.75rem;
+  background: var(--color-surface-card);
+  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: border-color 150ms ease, background-color 150ms ease;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.3);
+}
+
+.auth-widget-toggle:hover {
+  border-color: rgb(var(--ctp-surface2-rgb) / 0.8);
+  background: var(--color-surface-hover);
+}
+
+.auth-widget-panel {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  right: 0;
+  width: min(320px, calc(100vw - 7rem));
+  max-height: 480px;
+  overflow-y: auto;
+  background: var(--color-surface-card);
+  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+  border-radius: 0.5rem;
+  box-shadow: 0 10px 25px rgb(0 0 0 / 0.4);
+}
+
+.auth-widget-panel.hidden { display: none; }
+
 /* Sidebar tooltips: only visible when collapsed */
 .sidebar [data-tooltip]::after {
   display: none;
