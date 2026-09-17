@@ -102,7 +102,7 @@ class TestDevelopStepTimeout:
 
     @pytest.mark.asyncio
     async def test_develop_uses_custom_timeout(self, mock_ctx, mock_config):
-        """Develop step should use develop.step_timeout capped at agent.step_timeout."""
+        """Develop step should use develop.step_timeout."""
         engine = WorkflowEngine(steps=[], ctx=mock_ctx)
 
         assert engine._step_timeout("develop") == 1200
@@ -110,12 +110,20 @@ class TestDevelopStepTimeout:
         assert engine._step_timeout("monitor_ci") == 1620
 
     @pytest.mark.asyncio
-    async def test_develop_timeout_capped_at_agent_timeout(self, mock_ctx, mock_config):
-        """Develop step timeout must never exceed agent.step_timeout."""
+    async def test_develop_timeout_not_capped_at_agent_timeout(self, mock_ctx, mock_config):
+        """develop.step_timeout above agent.step_timeout must be honoured.
+
+        This deliberately reverses the original fail-fast clamp: capping
+        develop at agent.step_timeout meant a project that raised
+        develop.step_timeout to 3000 still had its develop steps killed at
+        1800s, with nothing reporting that the configured value had been
+        discarded. The global ceiling is runaway.max_run_wall_clock_seconds
+        (applied by _effective_step_timeout), not agent.step_timeout.
+        """
         mock_config.develop.step_timeout = 2400
         engine = WorkflowEngine(steps=[], ctx=mock_ctx)
 
-        assert engine._step_timeout("develop") == 1800
+        assert engine._step_timeout("develop") == 2400
 
 
 class TestInnerCheckLoopTimeControl:

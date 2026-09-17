@@ -793,6 +793,14 @@ class WorkflowEngine:
         develop uses develop.step_timeout;
         all other steps use agent.step_timeout.
 
+        develop.step_timeout is authoritative, deliberately NOT clamped by
+        agent.step_timeout: the step-specific knob is the more specific
+        setting and must win. Taking min() of the two silently discarded any
+        develop.step_timeout raised above agent.step_timeout's 1800s default,
+        so a project that raised it to 3000 still had develop steps killed at
+        exactly 1800s (and 2700s once the COMPLEX multiplier applied) with no
+        indication the configured value was being ignored.
+
         Complexity multiplier (shared with the wall-clock runaway guard via
         sova.llm.complexity.complexity_multiplier): COMPLEX issues get 1.5x
         timeout, EPIC get 2.0x, capped at 3.0x (max multiplier). Applied to
@@ -803,7 +811,7 @@ class WorkflowEngine:
         if step_name == "monitor_ci":
             base = self._ctx.config.ci.max_wait + 120
         elif step_name == "develop":
-            base = min(self._ctx.config.develop.step_timeout, self._ctx.config.agent.step_timeout)
+            base = self._ctx.config.develop.step_timeout
         else:
             base = self._ctx.config.agent.step_timeout
 
