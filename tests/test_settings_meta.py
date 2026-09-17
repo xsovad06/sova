@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sova.config.models import AtlassianMCPConfig
+from sova.config.models import AtlassianMCPConfig, IntegrationGatesConfig
 from sova.dashboard.settings_meta import (
     _REGISTRY,
     GROUP_ORDER,
@@ -42,6 +42,29 @@ class TestSettingMeta:
         assert meta is not None
         assert meta.group == "integration"
         assert meta.value_type == "boolean"
+
+    @pytest.mark.parametrize(
+        ("key", "field_name"),
+        [
+            ("integration_gates.ci_passed", "ci_passed"),
+            ("integration_gates.sova_reviewed", "sova_reviewed"),
+            ("integration_gates.coderabbit_reviewed", "coderabbit_reviewed"),
+            ("integration_gates.threads_resolved", "threads_resolved"),
+        ],
+    )
+    def test_integration_gates_description_default_annotation_matches_config(self, key: str, field_name: str) -> None:
+        """The "(on/off by default)" suffix in each description must match the field's
+        actual default in IntegrationGatesConfig, so a future default change (e.g.
+        reverting threads_resolved to False) can't silently leave a stale annotation
+        in the dashboard settings UI."""
+        meta = get_meta(key)
+        assert meta is not None
+        actual_default = getattr(IntegrationGatesConfig(), field_name)
+        expected_suffix = "(on by default)" if actual_default else "(off by default)"
+        assert expected_suffix in meta.description, (
+            f"{key} default is {actual_default!r} but description does not say '{expected_suffix}': "
+            f"{meta.description!r}"
+        )
 
     @pytest.mark.parametrize(
         ("key", "value_type"),

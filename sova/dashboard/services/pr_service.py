@@ -459,12 +459,21 @@ async def check_integration_gates(
     pr_data: dict,
     issue_number: str | None,
     config: ProjectConfig,
+    project_dir: Path | None = None,
+    sova_verdict: dict | None = None,
 ) -> dict:
     """Check all configured integration gates for a PR.
 
     Uses pre-fetched data from enriched PR dicts (review_logins, thread_total,
     thread_resolved).  check_coderabbit and check_threads inspect only the
     supplied pr_data and do not fall back to API calls when fields are absent.
+
+    ``sova_verdict`` is the verdict already assembled by resolve_sova_verdict()
+    for this PR.  When supplied it is used as-is: the gate that decides whether
+    the Integrate button is enabled must read the same verdict that decided the
+    button exists at all, otherwise the canonical assembly path (#991) and this
+    gate can disagree on the same PR.  Callers without one (the standalone
+    /gates endpoint) fall back to the DB-only lookup.
 
     Returns a dict with:
       - passed: bool (all enabled gates passed)
@@ -481,9 +490,14 @@ async def check_integration_gates(
             return _gate("sova_reviewed", enabled=False, passed=True)
         if not issue_number and pr_data.get("number") is None:
             return _gate("sova_reviewed", enabled=True, passed=True, reason="No linked issue or PR (skipped)")
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 
-        verdict = await get_sova_review_verdict(issue_number, pr_number=pr_data.get("number"))
+        verdict = sova_verdict
+        if verdict is None:
+            from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+            verdict = await get_sova_review_verdict(
+                issue_number, pr_number=pr_data.get("number"), project_dir=project_dir
+            )
         if not verdict.get("has_sova_review"):
             return _gate("sova_reviewed", enabled=True, passed=False, reason="No SOVA review found")
         v = verdict.get("verdict", "")
