@@ -38,6 +38,19 @@ def _isolate_sova_env(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _reset_log_dedup() -> None:
+    """Clear sova.utils.log_dedup state so one test's warning can't suppress another's.
+
+    Production relies on process lifetime + TTL to bound repeated-warning
+    noise; tests asserting on warning calls need a clean slate regardless of
+    what an earlier test already logged with the same (event, key) pair.
+    """
+    from sova.utils.log_dedup import reset
+
+    reset()
+
+
 def _seed_project_settings(project_dir: Path, values: dict[str, Any]) -> None:
     """Upsert flattened, JSON-encoded config values into ``project_settings``.
 
