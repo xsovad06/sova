@@ -305,31 +305,71 @@ def _interpret_auth_probe(data: dict | None) -> tuple[bool, str]:
     return True, email or subscription or "authenticated"
 
 
+def _strip_leading_warnings(stderr: str) -> str:
+    """Strip a contiguous prefix of ``Warning:`` lines from stderr.
+
+    Claude CLI writes incidental warnings (e.g. model-availability notices)
+    to stderr regardless of the configured model. Only the leading run of
+    warning lines is removed, so a real error following a warning is kept.
+    """
+    lines = stderr.splitlines()
+    idx = 0
+    while idx < len(lines) and lines[idx].strip().lower().startswith("warning:"):
+        idx += 1
+    return "\n".join(lines[idx:]).strip()
+
+
+def _parse_stdout_error(stdout: str) -> tuple[list[str], str | None]:
+    """Parse stdout for a structured Claude CLI error payload.
+
+    Returns (parts, raw_fallback): ``parts`` is non-empty only when stdout
+    carries a structured is_error/terminal_reason/result payload; otherwise
+    ``raw_fallback`` holds the truncated raw stdout text (or None if stdout
+    is empty) to fall back on once stderr has been exhausted.
+    """
+    if not stdout.strip():
+        return [], None
+
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        data = None
+
+    if not isinstance(data, dict):
+        return [], stdout[:500]
+
+    parts: list[str] = []
+    if data.get("terminal_reason"):
+        parts.append(f"terminal_reason={data['terminal_reason']}")
+    if data.get("is_error"):
+        parts.append("is_error=true")
+    if data.get("result"):
+        parts.append(str(data["result"])[:300])
+    return parts, stdout[:500]
+
+
 def _extract_failure_detail(result: ShellResult) -> str:
     """Extract the best available error detail from a failed Claude CLI run.
 
-    Claude CLI with --output-format json writes error info to stdout as JSON
-    (is_error, result, terminal_reason), while stderr is often empty.
+    Claude CLI with --output-format json writes the real error to stdout as
+    JSON (is_error, result, terminal_reason), while stderr often carries only
+    an incidental warning. Stdout's structured error always wins when present;
+    stderr is used only as a fallback, with leading warning lines stripped so
+    a warning never masquerades as the cause.
     """
-    if result.stderr.strip():
-        return result.stderr[:500]
+    stdout_parts, stdout_raw_fallback = _parse_stdout_error(result.stdout)
+    if stdout_parts:
+        return "; ".join(stdout_parts)[:500]
 
-    if result.stdout.strip():
-        try:
-            data = json.loads(result.stdout)
-            if not isinstance(data, dict):
-                return result.stdout[:500]
-            parts: list[str] = []
-            if data.get("terminal_reason"):
-                parts.append(f"terminal_reason={data['terminal_reason']}")
-            if data.get("is_error"):
-                parts.append("is_error=true")
-            if data.get("result"):
-                parts.append(str(data["result"])[:300])
-            if parts:
-                return "; ".join(parts)
-        except (json.JSONDecodeError, KeyError):
-            return result.stdout[:500]
+    stripped_stderr = _strip_leading_warnings(result.stderr)
+    if stripped_stderr:
+        return stripped_stderr[:500]
+
+    if stdout_raw_fallback is not None:
+        return stdout_raw_fallback
+
+    if result.stderr.strip():
+        return "(no error detail captured beyond warnings)"
 
     return "(no error detail captured)"
 

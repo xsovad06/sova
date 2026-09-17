@@ -378,14 +378,28 @@ class TestInvoke:
         assert result.text == "Hello"
         mock_classify.assert_not_called()
 
-    async def test_invoke_cli_failure_prefers_stderr(self, mock_run: AsyncMock) -> None:
-        """When stderr has content, it should be used over stdout."""
+    async def test_invoke_cli_failure_prefers_structured_stdout_over_stderr(self, mock_run: AsyncMock) -> None:
+        """When stdout carries a structured error, it wins even if stderr is non-empty."""
         from sova.llm.client import invoke
         from sova.utils.shell import ShellResult
 
         mock_run.return_value = ShellResult(
             returncode=1,
-            stdout='{"result": "ignored"}',
+            stdout='{"result": "the real cause"}',
+            stderr="Warning: Opus: Opus 5 not available, using configured fallback",
+        )
+
+        with pytest.raises(RuntimeError, match="the real cause"):
+            await invoke("Hello")
+
+    async def test_invoke_cli_failure_uses_stderr_when_no_structured_stdout(self, mock_run: AsyncMock) -> None:
+        """When stdout has no structured error, stderr is used as the fallback."""
+        from sova.llm.client import invoke
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=1,
+            stdout="",
             stderr="actual error message",
         )
 
@@ -464,6 +478,66 @@ class TestExtractFailureDetail:
         result = ShellResult(returncode=1, stdout='["a", "b"]', stderr="")
         detail = _extract_failure_detail(result)
         assert detail == '["a", "b"]'
+
+    def test_truncates_long_terminal_reason(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        stdout = json.dumps({"terminal_reason": "x" * 1000})
+        result = ShellResult(returncode=1, stdout=stdout, stderr="")
+        detail = _extract_failure_detail(result)
+        assert len(detail) <= 500
+
+    def test_structured_stdout_wins_over_warning_stderr(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        stdout = json.dumps({"is_error": True, "terminal_reason": "budget_exceeded", "result": "billing limit reached"})
+        result = ShellResult(
+            returncode=1,
+            stdout=stdout,
+            stderr="Warning: Opus: Opus 5 not available, using configured fallback",
+        )
+        detail = _extract_failure_detail(result)
+        assert "budget_exceeded" in detail
+        assert "billing limit reached" in detail
+        assert "Warning" not in detail
+
+    def test_warning_only_stderr_with_no_structured_stdout(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        result = ShellResult(
+            returncode=1,
+            stdout="",
+            stderr="Warning: Opus: Opus 5 not available, using configured fallback\n",
+        )
+        detail = _extract_failure_detail(result)
+        assert detail == "(no error detail captured beyond warnings)"
+
+    def test_strips_only_leading_warning_lines_from_stderr(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        result = ShellResult(
+            returncode=1,
+            stdout="",
+            stderr="Warning: Opus: Opus 5 not available\nreal error line",
+        )
+        detail = _extract_failure_detail(result)
+        assert detail == "real error line"
+
+    def test_strips_indented_lowercase_warning_lines(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        result = ShellResult(
+            returncode=1,
+            stdout="",
+            stderr="  warning: something\nreal error",
+        )
+        detail = _extract_failure_detail(result)
+        assert detail == "real error"
 
 
 # ---------------------------------------------------------------------------
