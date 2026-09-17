@@ -120,6 +120,37 @@ async def _check_cli_available(cli_name: str, install_hint: str) -> tuple[bool, 
         return False, f"error checking version: {exc}"
 
 
+async def _spawn_agent_process(
+    args: list[str],
+    cwd: str | Path,
+    env: dict[str, str] | None,
+    output_dir: Path | None,
+    run_label: str | None,
+) -> AgentProcess | FileAgentProcess:
+    """Spawn ``args`` in the scrubbed agent environment.
+
+    Redirects stdout/stderr to files when ``output_dir`` is set, otherwise
+    pipes them for streaming. Every runtime spawn path funnels through here,
+    so ``start_new_session=True`` (see the subprocess isolation note in
+    ``.claude/rules/architecture.md``) cannot be omitted by one of them.
+    """
+    agent_env = _inject_agent_marker(env)
+
+    if output_dir is not None:
+        return await _spawn_with_file_output(args, cwd, agent_env, output_dir, run_label)
+
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=agent_env,
+        limit=_SUBPROCESS_LINE_LIMIT,
+        start_new_session=True,
+    )
+    return AgentProcess(proc)
+
+
 class AgentRuntime(ABC):
     """Abstract interface for coding agent backends.
 
@@ -132,7 +163,7 @@ class AgentRuntime(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Human-readable runtime name (e.g., 'claude-code', 'aider')."""
+        """Human-readable runtime name (e.g., 'claude-code', 'aider', 'codex')."""
         ...
 
     @abstractmethod
@@ -225,22 +256,7 @@ class ClaudeCodeRuntime(AgentRuntime):
 
         log.info("process.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
 
-        agent_env = _inject_agent_marker(env)
-
-        if output_dir is not None:
-            return await _spawn_with_file_output(args, cwd, agent_env, output_dir, run_label)
-
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=agent_env,
-            limit=_SUBPROCESS_LINE_LIMIT,
-            start_new_session=True,
-        )
-
-        return AgentProcess(proc)
+        return await _spawn_agent_process(args, cwd, env, output_dir, run_label)
 
     def parse_output(self, line: str) -> StreamEvent | None:
         stripped = line.strip()
@@ -342,7 +358,6 @@ class AiderRuntime(AgentRuntime):
         run_label: str | None = None,
     ) -> AgentProcess | FileAgentProcess:
         transformed = self.transform_prompt(prompt)
-        agent_env = _inject_agent_marker(env)
 
         # If the prompt was a sova CLI command, execute it directly
         # instead of passing to Aider (which cannot run shell commands).
@@ -350,21 +365,7 @@ class AiderRuntime(AgentRuntime):
             log.info("aider.exec_sova_cmd", cwd=str(cwd), cmd=transformed)
             import shlex as _shlex
 
-            cmd_parts = _shlex.split(transformed)
-
-            if output_dir is not None:
-                return await _spawn_with_file_output(cmd_parts, cwd, agent_env, output_dir, run_label)
-
-            proc = await asyncio.create_subprocess_exec(
-                *cmd_parts,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=agent_env,
-                limit=_SUBPROCESS_LINE_LIMIT,
-                start_new_session=True,
-            )
-            return AgentProcess(proc)
+            return await _spawn_agent_process(_shlex.split(transformed), cwd, env, output_dir, run_label)
 
         args: list[str] = [
             "aider",
@@ -387,19 +388,7 @@ class AiderRuntime(AgentRuntime):
 
         log.info("aider.spawn", cwd=str(cwd), model=model, prompt_len=len(transformed))
 
-        if output_dir is not None:
-            return await _spawn_with_file_output(args, cwd, agent_env, output_dir, run_label)
-
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=agent_env,
-            limit=_SUBPROCESS_LINE_LIMIT,
-            start_new_session=True,
-        )
-        return AgentProcess(proc)
+        return await _spawn_agent_process(args, cwd, env, output_dir, run_label)
 
     def parse_output(self, line: str) -> StreamEvent | None:
         stripped = line.strip()
@@ -409,6 +398,74 @@ class AiderRuntime(AgentRuntime):
 
     async def check_available(self) -> tuple[bool, str]:
         return await _check_cli_available("aider", "pip install aider-chat")
+
+
+class CodexRuntime(AgentRuntime):
+    """Runtime that spawns Codex CLI processes.
+
+    Codex (https://developers.openai.com/codex/) is OpenAI's coding agent
+    CLI. Invoked non-interactively via ``codex exec`` with JSON Lines
+    output and an explicit ``workspace-write`` sandbox.
+
+    Parity gaps tracked by epic #940, not yet closed here: the prompt does
+    not carry ``_HEADLESS_PREAMBLE`` (which is written for Claude Code and
+    references its ``/compact`` command), so SOVA's pipeline-boundary
+    guardrails are absent, and ``parse_output()`` returns each JSONL line
+    verbatim instead of mapping it to content and result events.
+    """
+
+    @property
+    def name(self) -> str:
+        return "codex"
+
+    async def spawn(
+        self,
+        prompt: str,
+        cwd: str | Path,
+        *,
+        env: dict[str, str] | None = None,
+        model: str | None = None,
+        fallback_model: str | None = None,
+        max_budget_usd: Decimal | None = None,
+        output_dir: Path | None = None,
+        run_label: str | None = None,
+    ) -> AgentProcess | FileAgentProcess:
+        if fallback_model is not None:
+            log.warning(
+                "codex.fallback_model_not_supported",
+                fallback_model=fallback_model,
+                hint="Codex CLI does not support a fallback model; the input is ignored",
+            )
+
+        if max_budget_usd is not None:
+            log.warning(
+                "codex.budget_not_enforced",
+                budget=str(max_budget_usd),
+                hint="Codex CLI does not support budget caps; cost is not limited",
+            )
+
+        args: list[str] = ["codex", "exec", "--json", "--sandbox", "workspace-write"]
+
+        if model:
+            args.extend(["--model", model])
+
+        # "--" is required: codex exec takes PROMPT as a positional argument
+        # (clap-based parser), so a prompt starting with "-" would otherwise
+        # be misread as an unrecognized option.
+        args.extend(["--", prompt])
+
+        log.info("codex.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
+
+        return await _spawn_agent_process(args, cwd, env, output_dir, run_label)
+
+    def parse_output(self, line: str) -> StreamEvent | None:
+        stripped = line.strip()
+        if not stripped:
+            return None
+        return StreamEvent(type="content", text=stripped)
+
+    async def check_available(self) -> tuple[bool, str]:
+        return await _check_cli_available("codex", "npm install -g @openai/codex")
 
 
 # ---------------------------------------------------------------------------
@@ -440,21 +497,7 @@ async def spawn_direct(
     """
     log.info("process.spawn_direct", cwd=str(cwd), cmd=cmd_parts[0:3])
 
-    agent_env = _inject_agent_marker(env)
-
-    if output_dir is not None:
-        return await _spawn_with_file_output(cmd_parts, cwd, agent_env, output_dir, run_label)
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd_parts,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        env=agent_env,
-        limit=_SUBPROCESS_LINE_LIMIT,
-        start_new_session=True,
-    )
-    return AgentProcess(proc)
+    return await _spawn_agent_process(cmd_parts, cwd, env, output_dir, run_label)
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +543,7 @@ async def _spawn_with_file_output(
 _RUNTIMES: dict[str, type[AgentRuntime]] = {
     "claude-code": ClaudeCodeRuntime,
     "aider": AiderRuntime,
+    "codex": CodexRuntime,
 }
 
 
@@ -507,7 +551,7 @@ def create_runtime(runtime_type: str = "claude-code") -> AgentRuntime:
     """Create an AgentRuntime instance by type name.
 
     Args:
-        runtime_type: Runtime identifier (e.g., "claude-code", "aider").
+        runtime_type: Runtime identifier (e.g., "claude-code", "aider", "codex").
 
     Returns:
         An AgentRuntime instance.
