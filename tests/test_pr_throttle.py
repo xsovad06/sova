@@ -211,12 +211,25 @@ class TestProcessQueue:
         mock_pr = PRInfo(number=99, url="https://github.com/owner/repo/pull/99")
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
         with (
-            patch("sova.git.operations.create_pr", new_callable=AsyncMock, return_value=mock_pr),
+            patch("sova.git.operations.create_pr", new_callable=AsyncMock, return_value=mock_pr) as mock_create_pr,
             patch("sova.supervisor.pr_throttle.run_post_create_side_effects", new_callable=AsyncMock),
         ):
             async with await get_session() as session:
                 count = await process_queue(session, cfg)
         assert count == 1
+
+        # Regression guard: the queued entry's github_user must reach create_pr,
+        # otherwise it silently falls back to the daemon's ambient GH_TOKEN
+        # instead of the configured account (issue seen in production logs as
+        # "must be a collaborator" from a mismatched token).
+        mock_create_pr.assert_awaited_once_with(
+            title="feat(#42): test",
+            body="body",
+            base="main",
+            head="feat/42",
+            repo="owner/repo",
+            github_user="user",
+        )
 
         async with await get_session() as session:
             entry = await session.get(PRCreationQueue, entry_id)

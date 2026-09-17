@@ -205,6 +205,7 @@ async def process_queue(
             base=entry_base_branch,
             head=entry_head_branch,
             repo=entry_repo,
+            github_user=entry_github_user,
         )
     except (RuntimeError, OSError) as exc:
         async with session.begin():
