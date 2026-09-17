@@ -828,6 +828,7 @@ class SupervisorConfig(BaseSettings):
     auto_queue: bool = True
     max_queue_size: int = Field(10, ge=0)
     task_queue: list[int] = Field(default_factory=list, json_schema_extra={"items": {"exclusiveMinimum": 0}})
+    decision_staleness_threshold_seconds: int = Field(1800, ge=60)
 
     @field_validator("task_queue", mode="before")
     @classmethod

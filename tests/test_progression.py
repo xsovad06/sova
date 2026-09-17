@@ -388,6 +388,62 @@ class TestAlreadyRunning:
 
 
 # ---------------------------------------------------------------------------
+# check_already_running: real-DB read consistency regression (#984)
+# ---------------------------------------------------------------------------
+
+
+class TestAlreadyRunningReadConsistency:
+    """Regression coverage for #984: a freshly-opened session must observe a
+    just-committed terminal status, not a stale pre-commit snapshot.
+
+    Uses a real, file-backed SQLite DB (not the ``sqlite+aiosqlite://`` in-memory
+    URL the other integration fixtures use) so the test exercises the same
+    engine/connection-pool machinery a running supervisor daemon uses: an
+    in-memory DB is served by a single connection and cannot exhibit pool-level
+    staleness even if it existed.
+    """
+
+    @pytest.fixture
+    async def db_engine(self) -> TaskProgressionEngine:
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        project_dir = Path(tempfile.mkdtemp())
+        await init_db(project_dir)
+        sf = await get_session_factory(project_dir)
+        engine = _make_engine()
+        engine._session_factory = sf
+        yield engine
+        await close_db()
+
+    @pytest.mark.asyncio
+    async def test_freshly_opened_session_sees_committed_terminal_status(
+        self, db_engine: TaskProgressionEngine
+    ) -> None:
+        """finalize via one session, then re-check via a separately-opened one.
+
+        _ALREADY_RUNNING_TERMINAL already excludes "failed" from the WHERE
+        clause, so this pins down whether the bug (if real) lives in session/
+        connection read consistency rather than the query itself.
+        """
+        from sqlalchemy import select
+
+        from sova.db.models import TaskRun
+
+        async with db_engine._session_factory() as session:
+            async with session.begin():
+                session.add(TaskRun(issue_number="467", role="developer", status="in_progress", pid=60646))
+
+        async with db_engine._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(select(TaskRun).where(TaskRun.issue_number == "467"))
+                stored = result.scalar_one()
+                stored.status = "failed"
+
+        result = await check_already_running(467, db_engine._session_factory)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # _check_slot_gate
 # ---------------------------------------------------------------------------
 
@@ -2299,6 +2355,47 @@ class TestAutoRebase:
         assert decision.issue_number == 42
 
     @pytest.mark.asyncio
+    async def test_stale_already_running_wait_self_heals_to_spawn_rebase(self) -> None:
+        """A stale already_running false-positive on one poll must not prevent a
+        later poll for the same issue (once the gate correctly reports the agent
+        gone) from reaching the all_conflict / SPAWN_REBASE branch (#984).
+
+        Each _evaluate_single() call is independent and stateless: nothing carries
+        a prior poll's stale WAIT forward, so the very next poll for the same
+        issue re-checks the gate from scratch and proceeds once it clears.
+        """
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
+
+        with patch(
+            "sova.supervisor.progression.check_already_running",
+            new_callable=AsyncMock,
+            return_value=BlockReason(
+                gate="already_running", detail="Agent already running for #42 (run 1208, PID 60646)"
+            ),
+        ):
+            decision_1 = await engine._evaluate_single(42, TaskState.IN_PROGRESS, MagicMock())
+        assert decision_1.action == ProgressionAction.WAIT
+        assert "Agent still active for IN_PROGRESS #42" in decision_1.reason
+
+        with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=548, url="")),
+            ),
+            patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
+        ):
+            mock_gates.return_value = (
+                [BlockReason(gate="conflict", detail="PR for #42 has merge conflicts")],
+                None,
+            )
+            decision_2 = await engine._evaluate_single(42, TaskState.IN_REVIEW, MagicMock())
+
+        assert decision_2.action == ProgressionAction.SPAWN_REBASE
+        assert decision_2.issue_number == 42
+
+    @pytest.mark.asyncio
     async def test_conflict_with_other_blockers_returns_blocked(self) -> None:
         """When conflict + other blockers exist, return BLOCKED even with auto_rebase."""
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
@@ -2349,6 +2446,129 @@ class TestAutoRebase:
                 MagicMock(),
             )
         assert decision.action == ProgressionAction.BLOCKED
+
+
+# ---------------------------------------------------------------------------
+# _check_decision_staleness watchdog (#984)
+# ---------------------------------------------------------------------------
+
+
+class TestDecisionStalenessWatchdog:
+    """An issue that silently drops out of evaluate_all()'s per-cycle scan (as
+    opposed to one that keeps being re-evaluated and re-blocked) never gets a
+    fresh SupervisorDecision row to self-correct. This watchdog is the second
+    line of defense the acceptance criteria call for: it flags such an issue by
+    comparing its last known decision timestamp against the current cycle.
+    """
+
+    @pytest.fixture
+    async def db_engine(self) -> TaskProgressionEngine:
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        project_dir = Path(tempfile.mkdtemp())
+        await init_db(project_dir)
+        sf = await get_session_factory(project_dir)
+        engine = _make_engine(
+            SupervisorConfig(decision_staleness_threshold_seconds=60),
+            project_overrides={"github_repo": "xsovad06/gwym"},
+        )
+        engine._session_factory = sf
+        yield engine
+        await close_db()
+
+    @staticmethod
+    async def _add_decision(engine: TaskProgressionEngine, issue: str, hours_ago: float) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        from sova.db.models import SupervisorDecision
+
+        async with engine._session_factory() as session:
+            async with session.begin():
+                session.add(
+                    SupervisorDecision(
+                        project_slug=engine._config.github_repo,
+                        component="progression",
+                        event_type="decision",
+                        issue_number=issue,
+                        action="wait",
+                        detail="Agent still active for IN_PROGRESS #467: stale",
+                        created_at=datetime.now(timezone.utc) - timedelta(hours=hours_ago),
+                    )
+                )
+
+    @pytest.mark.asyncio
+    async def test_evaluated_issue_is_never_a_candidate(self, db_engine: TaskProgressionEngine) -> None:
+        """No DB call is needed when every graph node was evaluated this cycle."""
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        graph = DependencyGraph([_task(467, state=TaskState.IN_PROGRESS)])
+        db_engine._session_factory = MagicMock(side_effect=AssertionError("should not query the DB"))
+        stale = await db_engine._check_decision_staleness([467], graph, evaluated_issues={467})
+        assert stale == []
+
+    @pytest.mark.asyncio
+    async def test_dropped_non_done_issue_flagged_and_emits_feed_event(self, db_engine: TaskProgressionEngine) -> None:
+        await self._add_decision(db_engine, "467", hours_ago=2)
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        graph = DependencyGraph([_task(467, state=TaskState.IN_PROGRESS)])
+        with patch("sova.supervisor.progression.emit_safe") as mock_emit:
+            stale = await db_engine._check_decision_staleness([467], graph, evaluated_issues=set())
+        assert stale == [467]
+        mock_emit.assert_called_once()
+        assert mock_emit.call_args.kwargs["metadata"]["issue"] == 467
+
+    @pytest.mark.asyncio
+    async def test_recent_decision_not_flagged(self, db_engine: TaskProgressionEngine) -> None:
+        await self._add_decision(db_engine, "467", hours_ago=0.001)
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        graph = DependencyGraph([_task(467, state=TaskState.IN_PROGRESS)])
+        stale = await db_engine._check_decision_staleness([467], graph, evaluated_issues=set())
+        assert stale == []
+
+    @pytest.mark.asyncio
+    async def test_done_issue_never_flagged(self, db_engine: TaskProgressionEngine) -> None:
+        """A completed issue naturally stops receiving decisions; that's not a stall."""
+        await self._add_decision(db_engine, "467", hours_ago=5)
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        graph = DependencyGraph([_task(467, state=TaskState.DONE)])
+        stale = await db_engine._check_decision_staleness([467], graph, evaluated_issues=set())
+        assert stale == []
+
+    @pytest.mark.asyncio
+    async def test_issue_with_no_prior_decision_not_flagged(self, db_engine: TaskProgressionEngine) -> None:
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        graph = DependencyGraph([_task(999, state=TaskState.IN_PROGRESS)])
+        stale = await db_engine._check_decision_staleness([999], graph, evaluated_issues=set())
+        assert stale == []
+
+    @pytest.mark.asyncio
+    async def test_issue_outside_task_queue_never_flagged(self, db_engine: TaskProgressionEngine) -> None:
+        """A stale decision for an issue no longer in scope this cycle (evicted by
+        max_queue_size capacity or planner deprioritization) must not be flagged:
+        task_queue is an intentionally exclusive filter, not a scan gap. Comparing
+        against every dependency-graph node instead of the resolved task_ids would
+        flag the entire backlog beyond the queue as "dropped out" forever.
+        """
+        await self._add_decision(db_engine, "467", hours_ago=2)
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        graph = DependencyGraph([_task(467, state=TaskState.IN_PROGRESS), _task(1, state=TaskState.BACKLOG)])
+        stale = await db_engine._check_decision_staleness([1], graph, evaluated_issues=set())
+        assert stale == []
+
+    @pytest.mark.asyncio
+    async def test_db_failure_fails_open(self) -> None:
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        engine = _make_engine(SupervisorConfig(decision_staleness_threshold_seconds=60))
+        engine._session_factory = MagicMock(side_effect=RuntimeError("db down"))
+        graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
+        stale = await engine._check_decision_staleness([1], graph, evaluated_issues=set())
+        assert stale == []
 
 
 # ---------------------------------------------------------------------------
