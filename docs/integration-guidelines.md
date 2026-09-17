@@ -124,7 +124,7 @@ All paths wrapped in `try/except` -- notifications never crash the pipeline.
 
 ## Agent Process Control (`sova/ipc/control.py`, `sova/ipc/runtime.py`)
 
-`ClaudeCodeRuntime.spawn()` runs `claude -p` with `--permission-mode auto`. A headless preamble instructs the model to act without confirmation. CLI commands must be framed as bash code blocks to prevent natural language interpretation. `AgentProcess` is a generic async subprocess handle; runtime-specific spawning logic lives in the corresponding `AgentRuntime` implementation.
+`ClaudeCodeRuntime.spawn()` runs `claude -p` with `--permission-mode bypassPermissions`. A headless preamble instructs the model to act without confirmation. CLI commands must be framed as bash code blocks to prevent natural language interpretation. `AgentProcess` is a generic async subprocess handle; runtime-specific spawning logic lives in the corresponding `AgentRuntime` implementation.
 
 Lifecycle: SIGTERM with configurable wait, then SIGKILL. `ProcessTracker` maps `task_run_id -> AgentProcess` for crash detection.
 

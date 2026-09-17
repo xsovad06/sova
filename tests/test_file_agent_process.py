@@ -404,6 +404,26 @@ class TestRuntimeFileOutput:
         assert isinstance(result, FileAgentProcess)
         assert result.stdout_path == output_dir / "200.stdout"
 
+    async def test_codex_spawn_with_output_dir(self, tmp_path: Path) -> None:
+        from sova.ipc.control import FileAgentProcess
+        from sova.ipc.runtime import CodexRuntime
+
+        output_dir = tmp_path / "agent-output"
+        output_dir.mkdir()
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 44
+        mock_proc.returncode = None
+
+        rt = CodexRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await rt.spawn("fix bug", tmp_path, output_dir=output_dir, run_label="300")
+
+        assert isinstance(result, FileAgentProcess)
+        assert result.pid == 44
+        assert result.stdout_path == output_dir / "300.stdout"
+        assert result.stderr_path == output_dir / "300.stderr"
+
     async def test_mock_runtime_accepts_output_dir(self, tmp_path: Path) -> None:
         from sova.ipc.testing import MockRuntime
 

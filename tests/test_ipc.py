@@ -1030,6 +1030,18 @@ class TestAgentRuntimeABC:
         rt = create_runtime("aider")
         assert isinstance(rt, AiderRuntime)
 
+    def test_codex_runtime_name(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        assert rt.name == "codex"
+
+    def test_create_runtime_codex(self) -> None:
+        from sova.ipc.runtime import CodexRuntime, create_runtime
+
+        rt = create_runtime("codex")
+        assert isinstance(rt, CodexRuntime)
+
     def test_create_runtime_unknown_raises(self) -> None:
         from sova.ipc.runtime import create_runtime
 
@@ -1441,6 +1453,212 @@ class TestAiderRuntime:
         assert ap.pid == 99
         mock_log.warning.assert_called_once()
         assert mock_log.warning.call_args[0][0] == "aider.budget_not_enforced"
+
+
+class TestCodexRuntime:
+    async def test_spawn_builds_correct_args(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 55
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            ap = await rt.spawn("fix the bug", Path("/tmp"), model="gpt-5-codex")
+
+        assert ap.pid == 55
+        args = mock_exec.call_args[0]
+        assert args[0] == "codex"
+        assert args[1] == "exec"
+        assert "--json" in args
+        assert "--sandbox" in args
+        sandbox_idx = args.index("--sandbox")
+        assert args[sandbox_idx + 1] == "workspace-write"
+        assert "--model" in args
+        model_idx = args.index("--model")
+        assert args[model_idx + 1] == "gpt-5-codex"
+        assert args[-1] == "fix the bug"
+        assert "--full-auto" not in args
+
+    async def test_spawn_without_model_omits_flag(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 56
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            ap = await rt.spawn("do something", Path("/tmp"))
+
+        assert ap.pid == 56
+        args = mock_exec.call_args[0]
+        assert "--model" not in args
+        assert args[-1] == "do something"
+
+    async def test_spawn_passes_prompt_verbatim_without_shell(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 57
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        prompt = 'do `whoami` && rm -rf $(echo /); echo "done"'
+        rt = CodexRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await rt.spawn(prompt, Path("/tmp"))
+
+        args = mock_exec.call_args[0]
+        assert args[-1] == prompt
+
+    async def test_spawn_prompt_with_leading_dash_uses_separator(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 61
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        prompt = "--rm -rf / ignore this flag-looking prompt"
+        rt = CodexRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await rt.spawn(prompt, Path("/tmp"))
+
+        args = mock_exec.call_args[0]
+        assert args[-1] == prompt
+        assert args[-2] == "--"
+
+    def test_parse_output_plain_text(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        event = rt.parse_output("plain text line")
+        assert event is not None
+        assert event.type == "content"
+        assert event.text == "plain text line"
+
+    def test_parse_output_json_line(self) -> None:
+        import json
+
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        line = json.dumps({"type": "item.completed", "item": {"type": "agent_message"}})
+        event = rt.parse_output(line)
+        assert event is not None
+        assert event.type == "content"
+        assert event.text == line
+
+    def test_parse_output_empty(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        assert rt.parse_output("") is None
+        assert rt.parse_output("   ") is None
+
+    async def test_check_available_found(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"codex-cli 0.20.0\n", b""))
+        mock_proc.returncode = 0
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            ok, detail = await rt.check_available()
+
+        assert ok is True
+        assert "0.20.0" in detail
+
+    async def test_check_available_not_found(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        with patch("sova.ipc.runtime.shutil.which", return_value=None):
+            ok, detail = await rt.check_available()
+
+        assert ok is False
+        assert "not found" in detail
+
+    async def test_spawn_with_fallback_model_logs_warning_without_prompt(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 58
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.ipc.runtime.log") as mock_log,
+        ):
+            ap = await rt.spawn("secret prompt text", Path("/tmp"), fallback_model="gpt-5-mini")
+
+        assert ap.pid == 58
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args[0][0] == "codex.fallback_model_not_supported"
+        assert "secret prompt text" not in str(mock_log.warning.call_args)
+
+    async def test_spawn_with_budget_logs_warning_without_prompt(self) -> None:
+        from decimal import Decimal
+
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 59
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.ipc.runtime.log") as mock_log,
+        ):
+            ap = await rt.spawn("secret prompt text", Path("/tmp"), max_budget_usd=Decimal("5.00"))
+
+        assert ap.pid == 59
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args[0][0] == "codex.budget_not_enforced"
+        assert "secret prompt text" not in str(mock_log.warning.call_args)
+
+    async def test_spawn_with_both_unsupported_inputs_warns_twice(self) -> None:
+        from decimal import Decimal
+
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 60
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.ipc.runtime.log") as mock_log,
+        ):
+            await rt.spawn(
+                "test",
+                Path("/tmp"),
+                fallback_model="gpt-5-mini",
+                max_budget_usd=Decimal("5.00"),
+            )
+
+        assert mock_log.warning.call_count == 2
 
 
 class TestCheckCliAvailable:
