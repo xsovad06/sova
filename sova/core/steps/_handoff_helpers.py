@@ -39,6 +39,7 @@ async def write_step_handoff(
     awaiting_approval: bool = False,
 ) -> StepResult:
     """Write both DB and file handoffs, send notification, return StepResult."""
+    addressed_findings = [*ctx.addressed_external_findings, *ctx.addressed_review_findings]
     agent_handoff = AgentHandoff(
         role=role,
         phase=phase,
@@ -48,7 +49,7 @@ async def write_step_handoff(
         human_message=human_message or "",
         pr_number=ctx.pr_number,
         branch_name=ctx.branch_name,
-        addressed_findings=ctx.addressed_external_findings,
+        addressed_findings=addressed_findings,
     )
 
     if ctx.task_run_id:
@@ -67,7 +68,7 @@ async def write_step_handoff(
         details={
             "next_action": next_action,
             "cost_usd": str(ctx.cost_usd),
-            **({"addressed_findings": ctx.addressed_external_findings} if ctx.addressed_external_findings else {}),
+            **({"addressed_findings": addressed_findings} if addressed_findings else {}),
         },
         next_actions=actions,
     )

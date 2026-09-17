@@ -234,18 +234,24 @@ This command runs as a headless agent. You MUST execute every step below through
 
     Reply to every thread, then resolve every thread: bot and human reviewers alike, Fixed and Acknowledged findings alike. A PR must show zero unresolved conversations before merge; leaving "Acknowledged" human threads open only creates unnecessary back-and-forth for the reviewer.
 
-14. **Post a summary comment** on the PR with all dispositions in one table:
+14. **Post the address summary as a COMMENT review** on the PR with all dispositions in one table. The first line MUST be the `sova-addressed` marker carrying the pushed head commit: the dashboard reads it from the PR's review list to learn that the standing SOVA verdict has been addressed. A plain `gh pr comment` is invisible to that check and leaves the PR stuck at "SOVA Changes Requested".
 
-    ```markdown
+    ```bash
+    HEAD_SHA=$(git rev-parse HEAD)
+    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews \
+      -f event=COMMENT \
+      -f body="$(printf '<!-- sova-addressed: sha=%s -->\n\n' "$HEAD_SHA"; cat <<'EOF'
     ## Address Review: Round N
 
     | # | Finding | Action |
     |---|---------|--------|
     | 1 | `file:line`: short description | Fixed: what changed. |
     | 2 | `file:line`: short description | Acknowledged: justification. |
+    EOF
+    )"
     ```
 
-    Keep the Action column SHORT and DIRECT. No filler words, no emojis.
+    Round N counts earlier `sova-addressed` reviews on this PR plus one. Keep the Action column SHORT and DIRECT. No filler words, no emojis.
 
 15. **Dismiss bot CHANGES_REQUESTED reviews** (mandatory when any bot review is in CHANGES_REQUESTED state after addressing findings):
 
@@ -257,7 +263,7 @@ This command runs as a headless agent. You MUST execute every step below through
     For each such review:
     ```bash
     gh api -X PUT repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews/<REVIEW_ID>/dismissals \
-      -f message="Findings addressed or acknowledged. See Address Review comment."
+      -f message="Findings addressed or acknowledged. See the Address Review summary."
     ```
 
     **Never dismiss human reviews**: only bot reviews (`user.type == "Bot"`) whose findings have been addressed.

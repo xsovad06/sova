@@ -24,7 +24,7 @@ Gather all PR data in parallel:
 
 ```bash
 # Metadata
-gh pr view <PR_NUMBER> --json title,body,author,state,additions,deletions,files,commits,reviewRequests,labels,baseRefName,headRefName,statusCheckRollup
+gh pr view <PR_NUMBER> --json title,body,author,state,additions,deletions,files,commits,reviewRequests,labels,baseRefName,headRefName,headRefOid,statusCheckRollup
 
 # Full diff
 gh pr diff <PR_NUMBER>
@@ -45,7 +45,7 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | "\(.user.login
 gh pr checks <PR_NUMBER>
 ```
 
-Extract: author, linked issue, whether AI-generated (bot prefixes, agent comments).
+Extract: author, linked issue, `headRefOid` (the commit under review; it becomes the `sha` field in Step 6), whether AI-generated (bot prefixes, agent comments).
 
 **CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. CI issues are a separate concern -- the review's job is to evaluate code quality, correctness, and design. A PR with failing CI still needs its code reviewed.
 
@@ -139,7 +139,8 @@ cat > /tmp/sova-review-findings.json <<'REVIEW_JSON'
     }
   ],
   "summary": "### PR Summary\nOne paragraph: what the PR does, who authored it, how many commits/files.\n\n### Ghost Commits\n(table if any, omit section if none)\n\n### Confirmed Bot Findings\n(if Step 1.5 was performed, omit if none)",
-  "positives": ["Good thing 1", "Good thing 2"]
+  "positives": ["Good thing 1", "Good thing 2"],
+  "sha": "<headRefOid from Step 1>"
 }
 REVIEW_JSON
 ```
@@ -148,6 +149,7 @@ REVIEW_JSON
 - `findings`: array of objects with `file`, `line` (nullable), `severity` (1-10 integer), `category`, `description`, `suggestion` (empty string if none)
 - `summary`: the PR Summary paragraph, optionally followed by Ghost Commits and Confirmed Bot Findings sections (use `\n` for newlines)
 - `positives`: 2-3 things the code does well (omit key or pass empty array to skip the section)
+- `sha`: the full `headRefOid` fetched in Step 1. It anchors the verdict to the reviewed commit, so the dashboard can tell a verdict that still stands from one superseded by later pushes. Omit only if unknown (the verdict is then treated as current until addressed).
 
 **Scoring guidance**: bump to 3+ (not 1-2) if the finding removes code/duplication, improves error handling, fixes misleading docs, or eliminates dead code. Reserve 1-2 only for purely subjective preferences (naming, comment wording, formatting not caught by linter).
 
@@ -157,9 +159,9 @@ Format the review body through the shared SOVA formatter:
 REVIEW_BODY=$(python3 -c "import sys; from sova.roles._review_format import format_from_json; print(format_from_json(sys.stdin.read()))" < /tmp/sova-review-findings.json) || REVIEW_BODY=""
 ```
 
-The formatter produces: `<!-- sova-review: {verdict} -->` marker, `## Review:` heading, severity-sorted findings with `[LABEL N/10]` scores, `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity (7+ = block, any lower non-zero severity = revise, no findings = approve).
+The formatter produces: `<!-- sova-review: {verdict} sha={sha} -->` marker, `## Review:` heading, severity-sorted findings with `[LABEL N/10]` scores, `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity (7+ = block, any lower non-zero severity = revise, no findings = approve).
 
-**Fallback**: if `python3` fails (SOVA not installed, import error, malformed JSON), `REVIEW_BODY` will be empty. In that case, write the review body manually: first line `<!-- sova-review: {verdict} -->`, then `### Findings` heading, then findings as `- **[LABEL N/10]** [category] \`file:line\`: description. Fix: suggestion`. Determine the verdict from the highest severity in your JSON: 7+ = block, any findings (severity 1-6) = revise, no findings = approve. A finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely.
+**Fallback**: if `python3` fails (SOVA not installed, import error, malformed JSON), `REVIEW_BODY` will be empty. In that case, write the review body manually: first line `<!-- sova-review: {verdict} sha={headRefOid} -->`, then `### Findings` heading, then findings as `- **[LABEL N/10]** [category] \`file:line\`: description. Fix: suggestion`. Determine the verdict from the highest severity in your JSON: 7+ = block, any findings (severity 1-6) = revise, no findings = approve. A finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely.
 
 ## 7. Post Review on GitHub
 

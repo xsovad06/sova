@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+from sova.utils.review_markers import SHA_RE
+
 _SEVERITY_CRITICAL = 7
 _SEVERITY_HIGH = 5
 _SEVERITY_MEDIUM = 3
@@ -149,8 +151,18 @@ def format_from_json(json_text: str) -> str:
             print(format_from_json(sys.stdin.read()))" < /tmp/review.json
     """
     data = json.loads(json_text)
+    sha = data.get("sha")
+    if isinstance(sha, str) and SHA_RE.fullmatch(sha):
+        # Lowercased so the anchor compares equal to the lowercase head sha
+        # GitHub reports; a case mismatch would read as a stale verdict.
+        sha = sha.lower()
+    else:
+        # An unknown or malformed anchor leaves the marker unanchored (fresh,
+        # never stale) rather than embedding a value the dashboard cannot parse.
+        sha = None
     return format_review_body(
         data.get("findings", []),
         data.get("summary", ""),
         data.get("positives"),
+        sha=sha,
     )

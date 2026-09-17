@@ -12,6 +12,7 @@ from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.handoff import read_handoff, read_handoff_file
 from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
+from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE
 from sova.utils.shell import run
 
 log = get_logger(component="step.address_review")
@@ -187,6 +188,10 @@ async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict
             body = r.get("body", "") or ""
             is_bot = r.get("user", {}).get("type", "") == "Bot"
             if state == "DISMISSED" or is_bot or not body.strip():
+                continue
+            # An address cycle's own summary is posted as a COMMENT review; it
+            # reports fixes, it does not request any, so it is never a finding.
+            if SOVA_ADDRESSED_MARKER_RE.search(body):
                 continue
             findings.extend(_parse_review_body(body))
 
@@ -408,6 +413,9 @@ class AddressReviewStep(BaseStep):
             )
             ctx.add_usage(result)
             self._had_findings = bool(findings)
+            # Carried to ResolveExternalReviewsStep, which posts the address
+            # summary on the PR once the fixes are pushed and CI is green.
+            ctx.addressed_review_findings = list(findings)
             if findings:
                 summary = f"Addressed {len(findings)} review findings"
             else:

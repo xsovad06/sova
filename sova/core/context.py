@@ -120,6 +120,10 @@ class ExecutionContext:
     files_changed: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)
     addressed_external_findings: list[dict] = field(default_factory=list)
+    # Set by AddressReviewStep once the LLM has addressed the reviewer's findings,
+    # read by ResolveExternalReviewsStep to post the address summary on the PR
+    # after the push, and by the handoff step to record what was addressed.
+    addressed_review_findings: list[dict] = field(default_factory=list)
 
     # Set by ConfidenceScoreStep, read by HandoffToReviewerStep for score-based routing.
     confidence_score: int | None = None
