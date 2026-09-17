@@ -75,13 +75,38 @@ def _coerce_usage_int(usage: Any, key: str) -> int:
     Missing, null, non-dict ``usage``, non-integer, negative, or
     string-encoded values all coerce to 0 rather than being parsed:
     a bad usage payload must never suppress the terminal result.
+
+    A key that is present but unusable is logged at debug. Without that,
+    an upstream schema change (ints becoming strings, counts moving into
+    a nested object) degrades to silent zeros in every token column with
+    nothing in the run log to point at the cause.
     """
     if not isinstance(usage, dict):
         return 0
-    value = usage.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
+    if key not in usage:
         return 0
-    return value if value >= 0 else 0
+    value = usage[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        log.debug("codex.unusable_usage_value", key=key, value_type=type(value).__name__)
+        return 0
+    return value
+
+
+def _coerce_reasoning_tokens(usage: Any) -> int:
+    """Read the reasoning-token count from either shape Codex may report.
+
+    ``codex exec --json`` reports usage flat, but the OpenAI Responses API
+    that backs it nests the same breakdown under
+    ``output_tokens_details.reasoning_tokens``. Accepting both mirrors the
+    ``item_type`` / ``type`` tolerance elsewhere in this parser: whichever
+    shape arrives, the count is captured, and a payload carrying neither
+    still reports 0.
+    """
+    flat = _coerce_usage_int(usage, "reasoning_output_tokens")
+    if flat:
+        return flat
+    details = usage.get("output_tokens_details") if isinstance(usage, dict) else None
+    return _coerce_usage_int(details, "reasoning_tokens")
 
 
 class CodexStreamParser:
@@ -225,7 +250,7 @@ class CodexStreamParser:
             input_tokens=_coerce_usage_int(usage, "input_tokens"),
             output_tokens=_coerce_usage_int(usage, "output_tokens"),
             cache_read_tokens=_coerce_usage_int(usage, "cached_input_tokens"),
-            reasoning_output_tokens=_coerce_usage_int(usage, "reasoning_output_tokens"),
+            reasoning_output_tokens=_coerce_reasoning_tokens(usage),
             session_id=self._thread_id,
             stop_reason="end_turn",
         )
