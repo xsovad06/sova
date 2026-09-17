@@ -109,6 +109,39 @@ class TestFindPrForIssueTracking:
         assert tracker.should_skip()
 
 
+class TestFindPrForIssueChecked:
+    """find_pr_for_issue_checked should distinguish a lookup failure from 'no PR found'."""
+
+    def setup_method(self) -> None:
+        from sova.supervisor import github_quota
+
+        github_quota._trackers.clear()
+
+    @pytest.mark.asyncio
+    async def test_find_pr_checked_raises_on_total_failure(self) -> None:
+        from sova.git.pr import PRLookupError, find_pr_for_issue_checked
+
+        rate_limited = ShellResult(returncode=1, stdout="", stderr="API rate limit exceeded")
+        with patch("sova.git.pr.run", new_callable=AsyncMock, return_value=rate_limited):
+            with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
+                with pytest.raises(PRLookupError):
+                    await find_pr_for_issue_checked("42", repo="owner/repo", github_user="testuser")
+
+        tracker = get_github_quota_tracker("testuser")
+        assert tracker.should_skip()
+
+    @pytest.mark.asyncio
+    async def test_find_pr_checked_returns_none_on_confirmed_empty(self) -> None:
+        from sova.git.pr import find_pr_for_issue_checked
+
+        empty = ShellResult(returncode=0, stdout="[]", stderr="")
+        with patch("sova.git.pr.run", new_callable=AsyncMock, return_value=empty):
+            with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
+                result = await find_pr_for_issue_checked("42", repo="owner/repo", github_user="testuser")
+
+        assert result is None
+
+
 class TestGetReviewThreadCountsTracking:
     """get_review_thread_counts should feed the rate limit tracker."""
 

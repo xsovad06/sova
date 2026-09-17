@@ -3725,9 +3725,16 @@ class TestStaleInProgressReset:
 
     @pytest.mark.asyncio
     async def test_no_agent_returns_reset(self) -> None:
-        """IN_PROGRESS with no alive agent should return RESET_STALE_STATE."""
+        """IN_PROGRESS with no alive agent and no open PR should return RESET_STALE_STATE."""
         engine = _make_engine()
-        with patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None):
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.find_pr_for_issue_checked",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
             from sova.supervisor.dependency_graph import DependencyGraph
 
             graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
@@ -3740,13 +3747,111 @@ class TestStaleInProgressReset:
         """RESET_STALE_STATE should be blocked when rate limited."""
         engine = _make_engine()
         rate_block = BlockReason(gate="rate_limit", detail="GitHub API throttled")
-        with patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None):
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.find_pr_for_issue_checked",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
             from sova.supervisor.dependency_graph import DependencyGraph
 
             graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
             decision = await engine._evaluate_single(1, TaskState.IN_PROGRESS, graph, precomputed_rate_limit=rate_block)
         assert decision.action == ProgressionAction.BLOCKED
         assert "Rate limited" in decision.reason
+
+    @pytest.mark.asyncio
+    async def test_open_pr_returns_repair_instead_of_reset(self) -> None:
+        """IN_PROGRESS with no alive agent but an open PR should repair forward, not reset."""
+        engine = _make_engine()
+        pr_info = PRInfo(number=77, url="https://github.com/o/r/pull/77")
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.find_pr_for_issue_checked",
+                new_callable=AsyncMock,
+                return_value=pr_info,
+            ),
+        ):
+            from sova.supervisor.dependency_graph import DependencyGraph
+
+            graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
+            decision = await engine._evaluate_single(1, TaskState.IN_PROGRESS, graph)
+        assert decision.action == ProgressionAction.REPAIR_TO_IN_REVIEW
+        assert decision.pr_number == 77
+        assert "#77" in decision.reason
+
+    @pytest.mark.asyncio
+    async def test_pr_lookup_failure_returns_wait_not_reset(self) -> None:
+        """A PR lookup failure (PRLookupError) must not be treated as 'confirmed no PR'."""
+        from sova.git.pr import PRLookupError
+
+        engine = _make_engine()
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.find_pr_for_issue_checked",
+                new_callable=AsyncMock,
+                side_effect=PRLookupError("lookup failed"),
+            ),
+        ):
+            from sova.supervisor.dependency_graph import DependencyGraph
+
+            graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
+            decision = await engine._evaluate_single(1, TaskState.IN_PROGRESS, graph)
+        assert decision.action == ProgressionAction.WAIT
+        assert "Could not confirm PR status" in decision.reason
+
+    @pytest.mark.asyncio
+    async def test_no_repo_adapter_skips_pr_check(self) -> None:
+        """A falsy adapter.repo (e.g. Jira) must fall through to today's reset behavior."""
+        engine = _make_engine()
+        engine._adapter.repo = ""
+        with (
+            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.find_pr_for_issue_checked",
+                new_callable=AsyncMock,
+            ) as mock_find,
+        ):
+            from sova.supervisor.dependency_graph import DependencyGraph
+
+            graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
+            decision = await engine._evaluate_single(1, TaskState.IN_PROGRESS, graph)
+        assert decision.action == ProgressionAction.RESET_STALE_STATE
+        mock_find.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_execute_repair_to_in_review_transitions_and_emits_feed_event(self) -> None:
+        """execute_decision for REPAIR_TO_IN_REVIEW transitions the issue and emits a feed event."""
+        engine = _make_engine()
+        engine._adapter = AsyncMock()
+        decision = ProgressionDecision(
+            issue_number=10,
+            action=ProgressionAction.REPAIR_TO_IN_REVIEW,
+            reason="repair",
+            pr_number=55,
+        )
+        with patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit:
+            result = await engine.execute_decision(decision)
+        assert result["repaired"] is True
+        assert result["pr_number"] == 55
+        engine._adapter.transition_state.assert_awaited_once_with("10", TaskState.IN_REVIEW)
+        mock_emit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_repair_does_not_decrement_agent_slots(self) -> None:
+        """REPAIR_TO_IN_REVIEW is actionable but should not consume agent slot capacity."""
+        engine = _make_engine()
+        remaining_slots, remaining_quota = engine._update_remaining_capacity(
+            ProgressionDecision(issue_number=1, action=ProgressionAction.REPAIR_TO_IN_REVIEW, reason="repair"),
+            remaining_slots=1,
+            remaining_quota=True,
+        )
+        assert remaining_slots == 1
+        assert remaining_quota is True
 
     @pytest.mark.asyncio
     async def test_execute_stale_reset_with_task_run(self) -> None:
@@ -3917,6 +4022,11 @@ class TestStaleInProgressReset:
                 "sova.supervisor.progression.build_dependency_graph",
                 new_callable=AsyncMock,
                 return_value=graph,
+            ),
+            patch(
+                "sova.supervisor.progression.find_pr_for_issue_checked",
+                new_callable=AsyncMock,
+                return_value=None,
             ),
         ):
             decision = await engine.evaluate_task(1)
