@@ -9,10 +9,12 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sova.utils.logging import get_logger
+from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE
 
 if TYPE_CHECKING:
     from sova.adapters.base import PRReview
@@ -89,6 +91,15 @@ def _parse_sova_review_from_github(reviews: list[PRReview]) -> dict | None:
     SOVA's characteristic body structure for reviews posted before the
     marker was introduced.
 
+    An address cycle (the autonomous pipeline or ``/address-pr``) posts its
+    ``## Address Review`` summary as a COMMENT-state review whose first line is
+    the ``sova-addressed`` marker. Because the scan is newest-first, meeting
+    that marker before the verdict means the verdict was addressed after it
+    was posted, and the result is "addressed" rather than the pre-fix verdict,
+    matching what get_sova_review_verdict() reports from the local DB. A
+    summary older than the verdict (a re-review after an earlier cycle) is
+    ignored, since the verdict then postdates the fixes.
+
     Returns a verdict dict matching get_sova_review_verdict()'s shape, or None.
     """
 
@@ -101,27 +112,92 @@ def _parse_sova_review_from_github(reviews: list[PRReview]) -> dict | None:
             "review_head_sha": review_head_sha,
         }
 
+    addressed_after_verdict = False
     for review in sorted(reviews, key=lambda r: r.submitted_at, reverse=True):
         if review.state == "DISMISSED":
             continue
         body = review.body or ""
 
-        # Marker path: explicit machine-readable tag emitted by _format_findings_body.
-        m = _SOVA_MARKER_RE.search(body)
-        if m:
-            return _verdict_dict(m.group(1).lower(), review.submitted_at, m.group(2))
+        if SOVA_ADDRESSED_MARKER_RE.search(body):
+            addressed_after_verdict = True
+            continue
 
-        # Heuristic fallback: detect SOVA's characteristic review body structure.
-        # Matches reviews from the /review-pr command before the marker was added.
-        if "## PR Summary" in body and "## Verdict" in body:
-            # Scope to the ## Verdict section to avoid matching bold lines in ## Findings.
-            verdict_section = body.split("## Verdict", 1)[-1]
-            verdict_match = _SOVA_VERDICT_LINE_RE.search(verdict_section)
-            if verdict_match:
-                verdict = _VERDICT_NORMALIZE.get(verdict_match.group(1).lower(), "revise")
-                return _verdict_dict(verdict, review.submitted_at, None)
+        found = _extract_review_verdict(body)
+        if found is None:
+            continue
+        if addressed_after_verdict:
+            return _verdict_dict("addressed", review.submitted_at, None)
+        verdict, review_head_sha = found
+        return _verdict_dict(verdict, review.submitted_at, review_head_sha)
 
     return None
+
+
+def _extract_review_verdict(body: str) -> tuple[str, str | None] | None:
+    """Read (verdict, reviewed sha) from one SOVA review body, or None if it is not one.
+
+    Tries the machine-readable marker first, then the heuristic body structure
+    used by /review-pr before the marker existed (never sha-anchored).
+    """
+    m = _SOVA_MARKER_RE.search(body)
+    if m:
+        sha = m.group(2)
+        return m.group(1).lower(), (sha.lower() if sha else None)
+
+    if "## PR Summary" in body and "## Verdict" in body:
+        # Scope to the ## Verdict section to avoid matching bold lines in ## Findings.
+        verdict_section = body.split("## Verdict", 1)[-1]
+        verdict_match = _SOVA_VERDICT_LINE_RE.search(verdict_section)
+        if verdict_match:
+            return _VERDICT_NORMALIZE.get(verdict_match.group(1).lower(), "revise"), None
+
+    return None
+
+
+def _parse_reviewed_at(value: Any) -> datetime | None:
+    """Parse a review's ISO 8601 ``submitted_at`` into an aware UTC datetime, or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+async def _supersede_if_addressed_locally(
+    verdict: dict, issue_number: str | None, pr_number: int | None, project_dir: Path | None
+) -> dict:
+    """Apply the local DB's address-cycle record to a verdict that did not come from the DB.
+
+    get_sova_review_verdict() only evaluates address-cycle supersession for a
+    review run it found in the DB. A verdict read from a GitHub review marker
+    (posted by the ``/review-pr`` command, whose run leaves no reviewer
+    TaskRun, or by another SOVA instance) therefore used to stand forever,
+    even after this machine's own address-review pipeline had fixed and
+    pushed every finding: the dashboard kept routing the PR to "Address"
+    with nothing left to address (#1063). Here the same supersession rule is
+    applied to the GitHub-sourced verdict using its own ``reviewed_at``.
+    """
+    if verdict.get("verdict") == "addressed":
+        return verdict
+    since = _parse_reviewed_at(verdict.get("reviewed_at"))
+    if since is None:
+        return verdict
+
+    from sova.dashboard.services.agent_recovery import has_address_cycle_since
+
+    if not await has_address_cycle_since(since, issue_number, pr_number=pr_number, project_dir=project_dir):
+        return verdict
+    return {
+        **verdict,
+        "verdict": "addressed",
+        "finding_count": 0,
+        "run_status": "done",
+        "review_head_sha": None,
+    }
 
 
 async def _fetch_github_review_fallback(pr_number: int, adapter: Any) -> dict | None:
@@ -221,7 +297,11 @@ async def resolve_sova_verdict(
     Sources, in order: the (project, PR)-keyed verdict cache, the local DB
     (get_sova_review_verdict), the issue's sova:* label reconciled against the
     DB by _merge_label_verdict(), and finally a GitHub PR review marker scan
-    for reviews posted by an instance whose DB this machine cannot see.
+    for reviews posted by an instance whose DB this machine cannot see (or by
+    the /review-pr command, which leaves no reviewer TaskRun). A verdict found
+    on GitHub is then checked against this machine's completed address cycles
+    via _supersede_if_addressed_locally(), so the DB and GitHub paths agree on
+    when a verdict counts as addressed.
 
     The cache stores the unmerged DB/GitHub source verdict, never a verdict
     already merged against labels: label reconciliation is applied fresh on
@@ -250,7 +330,7 @@ async def resolve_sova_verdict(
     if not verdict.get("has_sova_review") and pr_number is not None and fallback_adapter is not None:
         gh_verdict = await _fetch_github_review_fallback(pr_number, fallback_adapter)
         if gh_verdict is not None:
-            verdict = gh_verdict
+            verdict = await _supersede_if_addressed_locally(gh_verdict, issue_number, pr_number, project_dir)
 
     if pr_number is not None and use_cache:
         _cache_put(project_dir, pr_number, verdict)

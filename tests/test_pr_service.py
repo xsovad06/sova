@@ -1258,6 +1258,20 @@ class TestCheckIntegrationGates:
         assert sova_gate["passed"] is True
 
     @pytest.mark.asyncio
+    async def test_sova_review_gate_fails_addressed_with_re_review_reason(self, monkeypatch) -> None:
+        """An address cycle supersedes the verdict but does not approve the new head (#993)."""
+        cfg = _make_config(sova_reviewed=True)
+        mock_verdict = AsyncMock(
+            return_value={"has_sova_review": True, "verdict": "addressed", "finding_count": 0, "run_status": "done"}
+        )
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
+
+        result = await check_integration_gates(pr_data=_pr_data(), issue_number="10", config=cfg)
+        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
+        assert sova_gate["passed"] is False
+        assert "re-review" in sova_gate["reason"]
+
+    @pytest.mark.asyncio
     async def test_sova_review_gate_fails_revise(self, monkeypatch) -> None:
         cfg = _make_config(sova_reviewed=True)
         mock_verdict = AsyncMock(

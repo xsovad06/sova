@@ -2850,3 +2850,149 @@ class TestRollbackIssueState:
         monkeypatch.setattr("sova.config.loader.load_config", lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
 
         await rollback_issue_state(run_id)  # must not raise
+
+
+class TestReviewVerdictScopedByPrNumber:
+    """When a PR number is known, runs are matched on it alone (#1063).
+
+    PR #1063 was addressed by a developer run recorded with issue_number=NULL:
+    its issue was created after the run started, so the PR body had nothing
+    to link at spawn time. ANDing the issue filter with the PR filter made
+    that run invisible to the supersession check.
+    """
+
+    async def test_pipeline_run_without_issue_supersedes_when_pr_matches(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+        session = await get_session()
+        async with session.begin():
+            review_run = TaskRun(
+                issue_number="1065",
+                role="reviewer",
+                status="done",
+                pr_number=1063,
+                handoff_json={"next_action": "revise", "pending_findings": [{"severity": 5}]},
+                started_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=1),
+            )
+            session.add(review_run)
+            addr_run = TaskRun(
+                issue_number=None,
+                role="developer",
+                status="done",
+                pr_number=1063,
+                started_at=now - timedelta(minutes=30),
+                ended_at=now - timedelta(minutes=10),
+            )
+            session.add(addr_run)
+            await session.flush()
+            session.add(StepExecution(task_run_id=addr_run.id, step_name="address_review", status="done"))
+
+        result = await get_sova_review_verdict(issue_number="1065", pr_number=1063, project_dir=Path("/tmp"))
+
+        assert result["verdict"] == "addressed"
+
+    async def test_reviewer_run_without_issue_found_when_pr_matches(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number=None,
+                    role="reviewer",
+                    status="done",
+                    pr_number=1063,
+                    handoff_json={"next_action": "approve", "pending_findings": []},
+                    started_at=now - timedelta(hours=2),
+                    ended_at=now - timedelta(hours=1),
+                )
+            )
+
+        result = await get_sova_review_verdict(issue_number="1065", pr_number=1063, project_dir=Path("/tmp"))
+
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+
+    async def test_other_pr_of_same_issue_does_not_supersede(self) -> None:
+        """PR scoping stays exact: an address cycle on a different PR is not this PR's."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="1065",
+                    role="reviewer",
+                    status="done",
+                    pr_number=1063,
+                    handoff_json={"next_action": "revise", "pending_findings": [{"severity": 5}]},
+                    started_at=now - timedelta(hours=2),
+                    ended_at=now - timedelta(hours=1),
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="1065",
+                    role="command:address-pr",
+                    status="done",
+                    pr_number=1070,
+                    started_at=now - timedelta(minutes=30),
+                    ended_at=now - timedelta(minutes=10),
+                )
+            )
+
+        result = await get_sova_review_verdict(issue_number="1065", pr_number=1063, project_dir=Path("/tmp"))
+
+        assert result["verdict"] == "revise"
+
+
+class TestHasAddressCycleSince:
+    """Public supersession check for verdicts that did not come from the local DB."""
+
+    async def _seed_pipeline_cycle(self, *, ended: datetime, issue_number: str | None = None) -> None:
+        session = await get_session()
+        async with session.begin():
+            addr_run = TaskRun(
+                issue_number=issue_number,
+                role="developer",
+                status="done",
+                pr_number=1063,
+                started_at=ended - timedelta(minutes=20),
+                ended_at=ended,
+            )
+            session.add(addr_run)
+            await session.flush()
+            session.add(StepExecution(task_run_id=addr_run.id, step_name="address_review", status="done"))
+
+    async def test_true_when_pipeline_cycle_finished_after_review(self) -> None:
+        from sova.dashboard.services.agent_recovery import has_address_cycle_since
+
+        now = datetime.now(timezone.utc)
+        await self._seed_pipeline_cycle(ended=now - timedelta(minutes=10))
+
+        assert await has_address_cycle_since(now - timedelta(hours=1), "1065", pr_number=1063, project_dir=Path("/tmp"))
+
+    async def test_false_when_cycle_predates_review(self) -> None:
+        from sova.dashboard.services.agent_recovery import has_address_cycle_since
+
+        now = datetime.now(timezone.utc)
+        await self._seed_pipeline_cycle(ended=now - timedelta(hours=2))
+
+        since = now - timedelta(hours=1)
+        assert not await has_address_cycle_since(since, "1065", pr_number=1063, project_dir=Path("/tmp"))
+
+    async def test_false_without_any_scope(self) -> None:
+        from sova.dashboard.services.agent_recovery import has_address_cycle_since
+
+        assert not await has_address_cycle_since(datetime.now(timezone.utc), None, pr_number=None)
+
+    async def test_fails_open_to_false_on_db_error(self, monkeypatch) -> None:
+        from sova.dashboard.services.agent_recovery import has_address_cycle_since
+
+        monkeypatch.setattr("sova.db.session.get_session", lambda **_kw: (_ for _ in ()).throw(RuntimeError("db down")))
+
+        assert not await has_address_cycle_since(datetime.now(timezone.utc), "1065", pr_number=1063)
