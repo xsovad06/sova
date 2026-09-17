@@ -413,18 +413,12 @@ class CodexRuntime(AgentRuntime):
     output and an explicit ``workspace-write`` sandbox.
 
     ``parse_output()`` delegates to a ``CodexStreamParser`` held on this
-    runtime object, which maps Codex's JSONL lifecycle events onto
-    ``StreamEvent`` / ``LLMResult``. That parser is stateful (thread ID,
-    terminal-result latch) and this runtime is a module-level singleton
-    (``get_runtime()``), so the instance here is a single-stream
-    convenience only: it is correct for one process's output and would
-    interleave state across concurrent Codex agents. Nothing calls
-    ``parse_output()`` in production yet and ``AgentConfig.runtime`` does
-    not offer ``codex``, so this is latent. Wiring Codex into the
-    dashboard's stream tailer (``sova/dashboard/services/agent_output.py``)
-    must construct one ``CodexStreamParser`` per spawned process there
-    rather than reuse this one; that wiring is a separate epic #940
-    follow-up, not done here.
+    runtime object. That parser is stateful and single-stream while this
+    runtime is a module-level singleton (``get_runtime()``), so the
+    instance here is correct for one process's output only: whoever wires
+    Codex into the dashboard's stream tailer must construct one parser per
+    spawned process instead of reusing it. ``sova/ipc/codex.py`` documents
+    why that is latent today and what the follow-up must do.
 
     Parity gap tracked by epic #940, not yet closed here: the prompt does
     not carry ``_HEADLESS_PREAMBLE`` (which is written for Claude Code and

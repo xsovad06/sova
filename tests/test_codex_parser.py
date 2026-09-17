@@ -13,11 +13,12 @@ from sova.ipc.codex import (
     _MAX_CONTENT_CHARS,
     _MAX_OUTPUT_HEAD_CHARS,
     CodexStreamParser,
+    _redact_and_truncate,
 )
 from sova.llm.models import CostSource, LLMResult
 
 
-def _line(**kwargs) -> str:
+def _line(**kwargs: object) -> str:
     return json.dumps(kwargs)
 
 
@@ -165,7 +166,7 @@ class TestItemLifecycle:
         assert event is None
 
     def test_non_dict_item_payload_returns_none(self, parser: CodexStreamParser) -> None:
-        event = parser.parse_line(json.dumps({"type": "item.completed", "item": "not a dict"}))
+        event = parser.parse_line(_line(type="item.completed", item="not a dict"))
         assert event is None
 
     def test_agent_message_with_no_text_returns_none(self, parser: CodexStreamParser) -> None:
@@ -183,7 +184,7 @@ class TestUnknownEvents:
         assert event is None
 
     def test_missing_type_key_treated_as_unknown(self, parser: CodexStreamParser) -> None:
-        event = parser.parse_line(json.dumps({"foo": "bar"}))
+        event = parser.parse_line(_line(foo="bar"))
         assert event is None
 
 
@@ -234,7 +235,7 @@ class TestTurnCompleted:
         assert event.result.text == ""
 
     def test_missing_usage_defaults_all_fields_to_zero(self, parser: CodexStreamParser) -> None:
-        event = parser.parse_line(json.dumps({"type": "turn.completed"}))
+        event = parser.parse_line(_line(type="turn.completed"))
         assert event is not None
         result = event.result
         assert result is not None
@@ -244,14 +245,14 @@ class TestTurnCompleted:
         assert result.reasoning_output_tokens == 0
 
     def test_null_usage_defaults_all_fields_to_zero(self, parser: CodexStreamParser) -> None:
-        event = parser.parse_line(json.dumps({"type": "turn.completed", "usage": None}))
+        event = parser.parse_line(_line(type="turn.completed", usage=None))
         assert event is not None
         result = event.result
         assert result is not None
         assert result.input_tokens == 0
 
     def test_non_dict_usage_defaults_to_zero(self, parser: CodexStreamParser) -> None:
-        event = parser.parse_line(json.dumps({"type": "turn.completed", "usage": "bogus"}))
+        event = parser.parse_line(_line(type="turn.completed", usage="bogus"))
         assert event is not None
         result = event.result
         assert result is not None
@@ -362,6 +363,14 @@ class TestTerminalFailure:
         assert event.result is not None
         assert event.result.text == "partial work"
 
+    def test_bare_scalar_error_payload_is_rendered(self, parser: CodexStreamParser) -> None:
+        """A string under "error" carries the cause; it must not fall through to the last message."""
+        parser.parse_line(_line(type="item.completed", item={"item_type": "agent_message", "text": "partial work"}))
+        event = parser.parse_line(_line(type="turn.failed", error="sandbox denied write"))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.text == "sandbox denied write"
+
     def test_second_terminal_event_after_failure_is_suppressed(self, parser: CodexStreamParser) -> None:
         first = parser.parse_line(_line(type="turn.failed", error={"message": "boom"}))
         second = parser.parse_line(_line(type="turn.completed", usage={}))
@@ -441,3 +450,40 @@ class TestRedactionAndTruncation:
         )
         assert event is not None
         assert event.type == "content"
+
+
+class TestScanWindowBoundary:
+    """The scan window is itself a truncation, so it must not slice a secret loose.
+
+    Redaction shrinks a secret-dense window (a 48-char ``api_key=`` pair becomes
+    an 18-char marker), which can pull a boundary-sliced fragment back inside
+    ``max_chars``. A GitHub PAT is the sharpest case: the pattern needs 36+ word
+    characters, so a sliced prefix silently stops matching.
+    """
+
+    @pytest.mark.parametrize("max_chars", [_MAX_CONTENT_CHARS, _MAX_OUTPUT_HEAD_CHARS, _MAX_COMMAND_CHARS])
+    def test_secret_straddling_the_window_never_leaks(self, max_chars: int) -> None:
+        pat = "ghp_" + "B" * 36
+        dense = ("api_key=" + "a" * 40 + " ") * 200
+        for prefix in (dense, "x" * 10_000):
+            text = prefix[: max_chars + 236] + pat + "z" * 500
+            out = _redact_and_truncate(text, max_chars)
+            assert "ghp_BBBB" not in out
+            assert len(out) <= max_chars
+
+    def test_secret_fully_inside_the_window_is_still_redacted(self) -> None:
+        out = _redact_and_truncate("hello api_key=abcd1234efgh5678ijkl world")
+        assert "abcd1234efgh5678ijkl" not in out
+        assert "REDACTED" in out
+
+    def test_uncut_text_keeps_its_full_tail(self) -> None:
+        """The margin is dropped only when the input was actually cut."""
+        text = "tail marker at the very end"
+        assert _redact_and_truncate(text) == text
+
+    def test_agent_message_straddling_the_window_never_leaks(self, parser: CodexStreamParser) -> None:
+        dense = ("api_key=" + "a" * 40 + " ") * 200
+        text = dense[: _MAX_CONTENT_CHARS + 236] + "ghp_" + "B" * 36 + "z" * 500
+        event = parser.parse_line(_line(type="item.completed", item={"item_type": "agent_message", "text": text}))
+        assert event is not None
+        assert "ghp_BBBB" not in event.text

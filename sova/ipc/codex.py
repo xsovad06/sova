@@ -40,10 +40,15 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="ipc.codex")
 
-# Cap applied before redaction scanning, so an unbounded aggregated command
-# output string (can approach the 10 MB subprocess line limit) never turns
-# the regex scan into an expensive full-buffer walk.
-_MAX_RENDERED_CHARS = 4000
+# Margin applied to the scan window beyond the caller's own cap, so an
+# unbounded aggregated command output string (can approach the 10 MB
+# subprocess line limit) never turns the regex scan into an expensive
+# full-buffer walk, while still leaving room for a secret that begins just
+# past the cap to be matched whole. Must exceed the widest "would have
+# matched but was sliced" fragment any pattern in ``_SENSITIVE_PATTERNS``
+# can produce: the longest minimum-width requirement is
+# ``github_pat_\w{82,}`` at 93 chars, so 256 is comfortable headroom.
+_BOUNDARY_MARGIN_CHARS = 256
 # Cap applied to the final, already-redacted content text.
 _MAX_CONTENT_CHARS = 2000
 _MAX_COMMAND_CHARS = 200
@@ -60,12 +65,24 @@ def _redact_and_truncate(text: str, max_chars: int = _MAX_CONTENT_CHARS) -> str:
 
     Order matters: truncating first could slice a secret in half below the
     redaction regex's match width, leaving a mangled fragment that no
-    longer matches. The pre-scan cap keeps the scan itself bounded.
+    longer matches. Bounding the scan window is itself a truncation, so it
+    has the same hazard and needs the same care: the window is taken at
+    ``max_chars + _BOUNDARY_MARGIN_CHARS``, and whenever the input was
+    actually cut, the trailing margin is dropped after redaction. Only the
+    tail of the window can hold a boundary-sliced fragment (redaction never
+    reorders text), so dropping it is what makes the final cut safe.
+
+    Without that drop the pre-scan cap leaks: redaction shrinks a
+    secret-dense window (a 48-char ``api_key=`` pair becomes an 18-char
+    marker), which can pull an unmatched boundary fragment back inside
+    ``max_chars`` and straight into the emitted event.
     """
     if not text:
         return text
-    capped = text[:_MAX_RENDERED_CHARS]
-    redacted = scan_and_redact(capped).redacted_text
+    window = max_chars + _BOUNDARY_MARGIN_CHARS
+    redacted = scan_and_redact(text[:window]).redacted_text
+    if len(text) > window:
+        redacted = redacted[:-_BOUNDARY_MARGIN_CHARS]
     return redacted[:max_chars]
 
 
@@ -265,6 +282,10 @@ class CodexStreamParser:
         error = data.get("error")
         if isinstance(error, dict):
             raw_message = str(error.get("message", ""))
+        elif error:
+            # A bare scalar under "error" still carries the cause; rendering
+            # it beats falling through to the unrelated last agent message.
+            raw_message = str(error)
         else:
             raw_message = str(data.get("message", ""))
         message = _redact_and_truncate(raw_message) or self._last_message_text
