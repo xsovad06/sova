@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
@@ -12,7 +13,11 @@ from pydantic import BaseModel
 from sova.config.loader import load_config
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services.pr_service import check_integration_gates, list_open_prs_with_state
+from sova.dashboard.services.work_verdict import resolve_sova_verdict
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.prs")
 
@@ -65,14 +70,61 @@ async def get_integration_gates(pr_number: int) -> dict:
         log.warning("prs.gates.config_error", pr=pr_number, exc_info=True)
         raise HTTPException(status_code=400, detail="Failed to load project configuration") from exc
 
-    prs = await list_open_prs_with_state()
+    prs = await list_open_prs_with_state(project_dir)
     pr_data = next((p for p in prs if p["number"] == pr_number), None)
     if not pr_data:
         raise HTTPException(status_code=404, detail=f"PR #{pr_number} not found")
 
     issue_number = str(pr_data["linked_issue"]) if pr_data.get("linked_issue") else None
 
-    return await check_integration_gates(pr_data=pr_data, issue_number=issue_number, config=cfg)
+    sova_verdict = await _resolve_gate_verdict(issue_number, pr_number, cfg, project_dir)
+
+    return await check_integration_gates(
+        pr_data=pr_data,
+        issue_number=issue_number,
+        config=cfg,
+        project_dir=project_dir,
+        sova_verdict=sova_verdict,
+    )
+
+
+async def _resolve_gate_verdict(
+    issue_number: str | None, pr_number: int, cfg: ProjectConfig, project_dir: Path
+) -> dict | None:
+    """Resolve the SOVA verdict through the same canonical path the work-item listing uses.
+
+    Without this, the single-PR gate endpoint used a DB-only verdict lookup while the
+    batch work-item listing used resolve_sova_verdict() (label + DB, reconciled), so the
+    two views could disagree about whether integration was authorized for the same PR.
+    The adapter is built independently of issue_number so the GitHub review fallback
+    (resolve_sova_verdict()'s cross-instance marker scan) still works for unlinked PRs;
+    only label lookup itself requires an issue_number. Adapter/label lookup is
+    best-effort: a failure here (e.g. adapter misconfiguration) falls back to
+    resolve_sova_verdict()'s other sources rather than failing the gate check outright.
+    """
+    issue_labels: list[str] = []
+    fallback_adapter = None
+    try:
+        from sova.adapters import create_adapter
+
+        fallback_adapter = create_adapter(cfg)
+    except Exception:  # noqa: BLE001 (fallback adapter is optional; verdict lookup uses other sources)
+        log.debug("prs.gates.adapter_build_failed", exc_info=True)
+
+    if issue_number and fallback_adapter is not None:
+        try:
+            task = await fallback_adapter.get_task(issue_number)
+            issue_labels = task.labels
+        except Exception:  # noqa: BLE001 (label lookup is best-effort context for the verdict)
+            log.debug("prs.gates.label_lookup_failed", issue=issue_number, exc_info=True)
+
+    return await resolve_sova_verdict(
+        issue_number,
+        pr_number=pr_number,
+        project_dir=project_dir,
+        issue_labels=issue_labels,
+        fallback_adapter=fallback_adapter,
+    )
 
 
 @router.post(

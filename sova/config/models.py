@@ -667,10 +667,10 @@ class CodeRabbitQuotaConfig(BaseSettings):
 class IntegrationGatesConfig(BaseSettings):
     """Configurable gates that must pass before PR integration is allowed."""
 
-    ci_passed: bool = False
-    sova_reviewed: bool = False
+    ci_passed: bool = True
+    sova_reviewed: bool = True
     coderabbit_reviewed: bool = False
-    threads_resolved: bool = False
+    threads_resolved: bool = True
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_INTEGRATION_GATES_")
 

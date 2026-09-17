@@ -20,10 +20,14 @@ if TYPE_CHECKING:
 log = get_logger(component="dashboard.work_item")
 
 
-# Verdict cache: {pr_number: (monotonic_timestamp, verdict_dict)}
+# Verdict cache: {(project_key, pr_number): (monotonic_timestamp, verdict_dict)}
 # Positive results (has_sova_review=True) are stable: a review verdict doesn't change.
 # Negative results expire quickly so newly posted reviews are detected within 30s.
-_sova_verdict_cache: dict[int, tuple[float, dict]] = {}
+# The project key is part of the cache key because PR numbers are only unique
+# within a repository: in multi-project mode (one server process serving several
+# projects) a bare pr_number would let project A's verdict answer for project B's
+# PR of the same number.
+_sova_verdict_cache: dict[tuple[str, int], tuple[float, dict]] = {}
 _VERDICT_CACHE_POSITIVE_TTL = 300.0  # 5 minutes
 _VERDICT_CACHE_NEGATIVE_TTL = 30.0  # 30 seconds
 
@@ -148,9 +152,14 @@ _NO_REVIEW: dict = {
 }
 
 
-def _cache_get(pr_number: int) -> dict | None:
+def _cache_key(project_dir: Path | None, pr_number: int) -> tuple[str, int]:
+    """Build the per-project cache key for a PR number."""
+    return (str(project_dir) if project_dir else "", pr_number)
+
+
+def _cache_get(project_dir: Path | None, pr_number: int) -> dict | None:
     """Return a live cached verdict for this PR, or None when absent or expired."""
-    entry = _sova_verdict_cache.get(pr_number)
+    entry = _sova_verdict_cache.get(_cache_key(project_dir, pr_number))
     if entry is None:
         return None
     ts, cached = entry
@@ -160,10 +169,10 @@ def _cache_get(pr_number: int) -> dict | None:
     return dict(cached)
 
 
-def _cache_put(pr_number: int, verdict: dict) -> None:
+def _cache_put(project_dir: Path | None, pr_number: int, verdict: dict) -> None:
     if len(_sova_verdict_cache) > 1000:
         _sova_verdict_cache.clear()
-    _sova_verdict_cache[pr_number] = (time.monotonic(), dict(verdict))
+    _sova_verdict_cache[_cache_key(project_dir, pr_number)] = (time.monotonic(), dict(verdict))
 
 
 def _merge_label_verdict(db_verdict: dict, label_verdict: dict | None) -> dict:
@@ -209,17 +218,28 @@ async def resolve_sova_verdict(
     it so the same PR cannot yield two different verdict dicts, and therefore
     cannot resolve to two different next actions via resolve_next_action().
 
-    Sources, in order: the PR-keyed verdict cache, the local DB
+    Sources, in order: the (project, PR)-keyed verdict cache, the local DB
     (get_sova_review_verdict), the issue's sova:* label reconciled against the
     DB by _merge_label_verdict(), and finally a GitHub PR review marker scan
     for reviews posted by an instance whose DB this machine cannot see.
+
+    The cache stores the unmerged DB/GitHub source verdict, never a verdict
+    already merged against labels: label reconciliation is applied fresh on
+    every call (cache hit or miss) against the caller's current issue_labels.
+    Caching a merged result would let a label-only "approve" (no DB record
+    backing it, e.g. a cross-instance review) freeze into the cache and keep
+    being served even after the label lookup comes back empty on a later
+    call, whether because the label was actually removed or because the
+    lookup itself failed transiently.
     """
     from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 
+    label_verdict = _extract_sova_verdict_from_labels(issue_labels or [])
+
     if pr_number is not None and use_cache:
-        cached = _cache_get(pr_number)
+        cached = _cache_get(project_dir, pr_number)
         if cached is not None:
-            return cached
+            return _merge_label_verdict(cached, label_verdict)
 
     try:
         verdict = await get_sova_review_verdict(issue_number, pr_number=pr_number, project_dir=project_dir)
@@ -227,17 +247,15 @@ async def resolve_sova_verdict(
         log.debug("work_items.db_verdict_failed", issue=issue_number, pr=pr_number, exc_info=True)
         verdict = dict(_NO_REVIEW)
 
-    verdict = _merge_label_verdict(verdict, _extract_sova_verdict_from_labels(issue_labels or []))
-
     if not verdict.get("has_sova_review") and pr_number is not None and fallback_adapter is not None:
         gh_verdict = await _fetch_github_review_fallback(pr_number, fallback_adapter)
         if gh_verdict is not None:
             verdict = gh_verdict
 
     if pr_number is not None and use_cache:
-        _cache_put(pr_number, verdict)
+        _cache_put(project_dir, pr_number, verdict)
 
-    return verdict
+    return _merge_label_verdict(verdict, label_verdict)
 
 
 async def _fetch_sova_verdicts(

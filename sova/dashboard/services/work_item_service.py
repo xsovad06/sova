@@ -367,12 +367,31 @@ def _find_integrate_action(item: dict) -> dict | None:
     return None
 
 
+def _item_verdict(item: dict, verdicts_by_issue: dict[str, dict] | None) -> dict | None:
+    """Look up an item's already-resolved verdict, keyed as _fetch_sova_verdicts() stores it."""
+    if not verdicts_by_issue:
+        return None
+    issue_number = item.get("issue_number")
+    if issue_number:
+        return verdicts_by_issue.get(str(issue_number))
+    pr_number = item.get("pr_number")
+    return verdicts_by_issue.get(f"pr:{pr_number}") if pr_number else None
+
+
 async def _attach_integration_gates(
     items: list[dict],
     prs_by_issue: dict[str, dict],
     config: ProjectConfig | None,
+    project_dir: Path | None = None,
+    verdicts_by_issue: dict[str, dict] | None = None,
 ) -> None:
-    """Check integration gates for items with integrate actions and attach results."""
+    """Check integration gates for items with integrate actions and attach results.
+
+    ``verdicts_by_issue`` is the batch already resolved through
+    resolve_sova_verdict() for this listing; forwarding it keeps the gate that
+    enables/disables the Integrate button on the same verdict that produced the
+    button, and avoids a second per-item DB lookup on every dashboard poll.
+    """
     if config is None:
         return
 
@@ -398,6 +417,8 @@ async def _attach_integration_gates(
                 pr_data=pr_data,
                 issue_number=item.get("issue_number"),
                 config=config,
+                project_dir=project_dir,
+                sova_verdict=_item_verdict(item, verdicts_by_issue),
             )
             action["gate_result"] = result
         except Exception:  # noqa: BLE001 (a raising gate check must fail the gate, not the listing)
@@ -486,7 +507,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
 
     _sort_items(items)
 
-    await _attach_integration_gates(items, prs_by_issue, cfg)
+    await _attach_integration_gates(items, prs_by_issue, cfg, project_dir, verdicts_by_issue)
 
     pa = _get_project_agents(slug)
     max_concurrent = pa.max_concurrent if pa else 3
@@ -545,7 +566,7 @@ async def _fetch_all_sources(
 
     async def safe_prs() -> list[dict]:
         try:
-            return await list_open_prs_with_state()
+            return await list_open_prs_with_state(project_dir)
         except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
             log.warning("work_items.prs_failed", exc_info=True)
             return []

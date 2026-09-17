@@ -1141,7 +1141,20 @@ class TestGetReviewThreadCounts:
 
 
 def _make_config(**gate_overrides: bool) -> ProjectConfig:
-    gates = IntegrationGatesConfig(**gate_overrides)
+    """Build a config with all gates disabled unless explicitly overridden.
+
+    Gates now default to True (issue #993), so tests exercising a single gate
+    must not implicitly enable the others via IntegrationGatesConfig()'s own
+    defaults.
+    """
+    defaults: dict[str, bool] = {
+        "ci_passed": False,
+        "sova_reviewed": False,
+        "coderabbit_reviewed": False,
+        "threads_resolved": False,
+    }
+    defaults.update(gate_overrides)
+    gates = IntegrationGatesConfig(**defaults)
     return ProjectConfig(
         github_repo="owner/repo",
         github_user="testuser",
@@ -1215,7 +1228,7 @@ class TestCheckIntegrationGates:
         sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
         assert sova_gate["passed"] is False
         assert "No SOVA review" in sova_gate["reason"]
-        mock_verdict.assert_called_once_with(None, pr_number=42)
+        mock_verdict.assert_called_once_with(None, pr_number=42, project_dir=None)
 
     @pytest.mark.asyncio
     async def test_sova_review_gate_fails_no_review(self, monkeypatch) -> None:
@@ -1260,6 +1273,80 @@ class TestCheckIntegrationGates:
         sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
         assert sova_gate["passed"] is False
         assert "revise" in sova_gate["reason"]
+
+    @pytest.mark.asyncio
+    async def test_sova_review_gate_passes_project_dir_to_verdict_lookup(self, monkeypatch) -> None:
+        """The verdict lookup must query the passed project, not an ambient/default one."""
+        cfg = _make_config(sova_reviewed=True)
+        mock_verdict = AsyncMock(return_value={"has_sova_review": True, "verdict": "approve", "finding_count": 0})
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
+
+        project_a = Path("/tmp/project-a")
+        result = await check_integration_gates(pr_data=_pr_data(), issue_number="10", config=cfg, project_dir=project_a)
+        assert result["passed"] is True
+        mock_verdict.assert_called_once_with("10", pr_number=42, project_dir=project_a)
+
+    @pytest.mark.asyncio
+    async def test_sova_review_gate_project_dir_distinguishes_verdicts(self, monkeypatch) -> None:
+        """Two projects with different verdicts must each get their own result."""
+        cfg = _make_config(sova_reviewed=True)
+        project_a = Path("/tmp/project-a")
+        project_b = Path("/tmp/project-b")
+        verdicts_by_project = {
+            project_a: {"has_sova_review": True, "verdict": "approve", "finding_count": 0},
+            project_b: {"has_sova_review": True, "verdict": "revise", "finding_count": 2},
+        }
+
+        async def fake_verdict(issue_number, *, pr_number=None, project_dir=None):
+            return verdicts_by_project[project_dir]
+
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", fake_verdict)
+
+        result_a = await check_integration_gates(
+            pr_data=_pr_data(), issue_number="10", config=cfg, project_dir=project_a
+        )
+        result_b = await check_integration_gates(
+            pr_data=_pr_data(), issue_number="10", config=cfg, project_dir=project_b
+        )
+        sova_gate_a = next(g for g in result_a["gates"] if g["name"] == "sova_reviewed")
+        sova_gate_b = next(g for g in result_b["gates"] if g["name"] == "sova_reviewed")
+        assert sova_gate_a["passed"] is True
+        assert sova_gate_b["passed"] is False
+
+    @pytest.mark.asyncio
+    async def test_sova_review_gate_uses_supplied_verdict_without_db_lookup(self, monkeypatch) -> None:
+        """A caller-supplied verdict is authoritative: the DB is not queried again."""
+        cfg = _make_config(sova_reviewed=True)
+        mock_verdict = AsyncMock(return_value={"has_sova_review": False, "verdict": None})
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
+
+        result = await check_integration_gates(
+            pr_data=_pr_data(),
+            issue_number="10",
+            config=cfg,
+            sova_verdict={"has_sova_review": True, "verdict": "approve", "finding_count": 0},
+        )
+        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
+        assert sova_gate["passed"] is True
+        mock_verdict.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sova_review_gate_supplied_verdict_can_block(self, monkeypatch) -> None:
+        """A supplied revise verdict blocks even when the DB would report an approval."""
+        cfg = _make_config(sova_reviewed=True)
+        mock_verdict = AsyncMock(return_value={"has_sova_review": True, "verdict": "approve", "finding_count": 0})
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
+
+        result = await check_integration_gates(
+            pr_data=_pr_data(),
+            issue_number="10",
+            config=cfg,
+            sova_verdict={"has_sova_review": True, "verdict": "revise", "finding_count": 3},
+        )
+        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
+        assert sova_gate["passed"] is False
+        assert "revise" in sova_gate["reason"]
+        mock_verdict.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_coderabbit_gate_passes(self) -> None:
@@ -1657,6 +1744,123 @@ class TestPRGatesRouter:
             assert resp.status_code == 200
             data = resp.json()
             assert data["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_gates_endpoint_routes_through_canonical_verdict_resolver(self, monkeypatch, tmp_path) -> None:
+        """The standalone /gates endpoint must resolve its verdict the same way the batch
+        work-item listing does (resolve_sova_verdict, label + DB reconciled), not via a
+        DB-only lookup: otherwise the single-PR view and the list view can disagree about
+        whether integration is authorized for the same PR."""
+        from unittest.mock import MagicMock
+
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr("sova.dashboard.routers.prs.get_project_dir", lambda: tmp_path)
+        mock_cfg = MagicMock()
+        mock_cfg.integration_gates.ci_passed = False
+        mock_cfg.integration_gates.sova_reviewed = True
+        mock_cfg.integration_gates.coderabbit_reviewed = False
+        mock_cfg.integration_gates.threads_resolved = False
+        monkeypatch.setattr("sova.dashboard.routers.prs.load_config", lambda _: mock_cfg)
+
+        pr_data = {
+            "number": 42,
+            "linked_issue": 10,
+            "ci_status": "passed",
+            "review_logins": [],
+            "thread_total": 0,
+            "thread_resolved": 0,
+        }
+        monkeypatch.setattr(
+            "sova.dashboard.routers.prs.list_open_prs_with_state",
+            AsyncMock(return_value=[pr_data]),
+        )
+
+        # No completed reviewer run in the DB, but the sova:approved label is present:
+        # only resolve_sova_verdict()'s label-reconciliation path can see this.
+        mock_adapter = MagicMock()
+        mock_adapter.get_task = AsyncMock(return_value=MagicMock(labels=["sova:approved"]))
+        monkeypatch.setattr("sova.adapters.create_adapter", lambda _cfg: mock_adapter)
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            AsyncMock(return_value={"has_sova_review": False, "verdict": None}),
+        )
+
+        app = create_app(multi_project=False)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/prs/42/gates")
+            assert resp.status_code == 200
+            data = resp.json()
+            sova_gate = next(g for g in data["gates"] if g["name"] == "sova_reviewed")
+            assert sova_gate["passed"] is True
+            mock_adapter.get_task.assert_awaited_once_with("10")
+
+    @pytest.mark.asyncio
+    async def test_gates_endpoint_unlinked_pr_still_checks_github_review_fallback(self, monkeypatch, tmp_path) -> None:
+        """An unlinked PR (no issue_number) must still get the GitHub review fallback
+        adapter: resolve_sova_verdict()'s cross-instance marker scan only runs when
+        fallback_adapter is not None, and building the adapter must not be gated on
+        issue_number being present (only label lookup itself needs an issue_number)."""
+        from unittest.mock import MagicMock
+
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.adapters.base import PRReview
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr("sova.dashboard.routers.prs.get_project_dir", lambda: tmp_path)
+        mock_cfg = MagicMock()
+        mock_cfg.integration_gates.ci_passed = False
+        mock_cfg.integration_gates.sova_reviewed = True
+        mock_cfg.integration_gates.coderabbit_reviewed = False
+        mock_cfg.integration_gates.threads_resolved = False
+        monkeypatch.setattr("sova.dashboard.routers.prs.load_config", lambda _: mock_cfg)
+
+        pr_data = {
+            "number": 42,
+            "linked_issue": None,
+            "ci_status": "passed",
+            "review_logins": [],
+            "thread_total": 0,
+            "thread_resolved": 0,
+        }
+        monkeypatch.setattr(
+            "sova.dashboard.routers.prs.list_open_prs_with_state",
+            AsyncMock(return_value=[pr_data]),
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.get_task = AsyncMock()
+        mock_adapter.get_pr_reviews = AsyncMock(
+            return_value=[
+                PRReview(
+                    reviewer="other-instance",
+                    state="COMMENTED",
+                    body="<!-- sova-review: approve sha=abc1234 -->",
+                    submitted_at="2026-01-01T00:00:00Z",
+                    is_bot=False,
+                )
+            ]
+        )
+        monkeypatch.setattr("sova.adapters.create_adapter", lambda _cfg: mock_adapter)
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            AsyncMock(return_value={"has_sova_review": False, "verdict": None}),
+        )
+
+        app = create_app(multi_project=False)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/prs/42/gates")
+            assert resp.status_code == 200
+            data = resp.json()
+            sova_gate = next(g for g in data["gates"] if g["name"] == "sova_reviewed")
+            assert sova_gate["passed"] is True
+            mock_adapter.get_task.assert_not_called()
+            mock_adapter.get_pr_reviews.assert_awaited_once_with(42)
 
 
 # ---------------------------------------------------------------------------

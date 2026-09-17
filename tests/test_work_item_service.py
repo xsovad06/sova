@@ -1575,6 +1575,129 @@ class TestAttachIntegrationGates:
         action = _find_integrate_action(item)
         assert "gate_result" not in action
 
+    @pytest.mark.asyncio
+    async def test_passes_project_dir_through_to_check_integration_gates(self, monkeypatch) -> None:
+        """project_dir must reach check_integration_gates for correct multi-project verdict lookup."""
+        from pathlib import Path
+
+        from sova.config.models import IntegrationGatesConfig, ProjectConfig
+
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            github_user="testuser",
+            integration_gates=IntegrationGatesConfig(sova_reviewed=True),
+        )
+        item = {
+            "issue_number": "42",
+            "pr_details": {"number": 1, "ci_status": "passed"},
+            "primary_action": {"id": "integrate", "label": "Integrate PR"},
+            "secondary_actions": [],
+        }
+        expected_project_dir = Path("/tmp/some-project")
+        captured: dict = {}
+
+        async def _fake_check(**kwargs):
+            captured.update(kwargs)
+            return {"passed": True, "gates": []}
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.pr_service.check_integration_gates",
+            _fake_check,
+        )
+        await _attach_integration_gates([item], {}, cfg, expected_project_dir)
+        assert captured["project_dir"] == expected_project_dir
+
+    @pytest.mark.asyncio
+    async def test_forwards_resolved_verdict_to_check_integration_gates(self, monkeypatch) -> None:
+        """The gate must be handed the same verdict that produced the Integrate action."""
+        from sova.config.models import IntegrationGatesConfig, ProjectConfig
+
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            github_user="testuser",
+            integration_gates=IntegrationGatesConfig(sova_reviewed=True),
+        )
+        item = {
+            "issue_number": "42",
+            "pr_number": 7,
+            "pr_details": {"number": 7, "ci_status": "passed"},
+            "primary_action": {"id": "integrate", "label": "Integrate PR"},
+            "secondary_actions": [],
+        }
+        verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
+        captured: dict = {}
+
+        async def _fake_check(**kwargs):
+            captured.update(kwargs)
+            return {"passed": True, "gates": []}
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.pr_service.check_integration_gates",
+            _fake_check,
+        )
+        await _attach_integration_gates([item], {}, cfg, None, {"42": verdict})
+        assert captured["sova_verdict"] == verdict
+
+    @pytest.mark.asyncio
+    async def test_forwards_unlinked_pr_verdict_by_pr_key(self, monkeypatch) -> None:
+        """A standalone PR item resolves its verdict under the "pr:{number}" key."""
+        from sova.config.models import IntegrationGatesConfig, ProjectConfig
+
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            github_user="testuser",
+            integration_gates=IntegrationGatesConfig(sova_reviewed=True),
+        )
+        item = {
+            "issue_number": None,
+            "pr_number": 7,
+            "pr_details": {"number": 7, "ci_status": "passed"},
+            "primary_action": {"id": "integrate", "label": "Integrate PR"},
+            "secondary_actions": [],
+        }
+        verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
+        captured: dict = {}
+
+        async def _fake_check(**kwargs):
+            captured.update(kwargs)
+            return {"passed": True, "gates": []}
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.pr_service.check_integration_gates",
+            _fake_check,
+        )
+        await _attach_integration_gates([item], {}, cfg, None, {"pr:7": verdict})
+        assert captured["sova_verdict"] == verdict
+
+
+class TestVerdictCacheProjectScoping:
+    """The verdict cache must not let one project answer for another's PR number."""
+
+    @pytest.mark.asyncio()
+    async def test_same_pr_number_in_two_projects_does_not_share_verdict(self) -> None:
+        from pathlib import Path as _Path
+
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        clear_verdict_cache()
+        verdicts = {
+            "/tmp/project-a": {"has_sova_review": True, "verdict": "approve", "finding_count": 0},
+            "/tmp/project-b": {"has_sova_review": True, "verdict": "revise", "finding_count": 2},
+        }
+
+        async def fake_db_verdict(issue_number, *, pr_number=None, project_dir=None):
+            return dict(verdicts[str(project_dir)])
+
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new=fake_db_verdict,
+        ):
+            a = await resolve_sova_verdict("10", pr_number=42, project_dir=_Path("/tmp/project-a"))
+            b = await resolve_sova_verdict("10", pr_number=42, project_dir=_Path("/tmp/project-b"))
+
+        assert a["verdict"] == "approve"
+        assert b["verdict"] == "revise"
+
 
 class TestGetWorkItemsConfigLoadFailure:
     @pytest.mark.asyncio
@@ -1681,6 +1804,43 @@ class TestExtractSovaVerdictFromLabels:
             )
             == WorkItemState.PR_SOVA_CHANGES
         )
+
+
+class TestFetchAllSourcesProjectDir:
+    """_fetch_all_sources() must thread project_dir into every per-project data source."""
+
+    @pytest.mark.asyncio()
+    async def test_safe_prs_passes_project_dir(self, tmp_path) -> None:
+        """Regression: safe_prs() used to call list_open_prs_with_state() with no
+        project_dir, so it fell back to the request context or Path.cwd() instead of
+        the explicit project_dir already in scope, letting a multi-project poll mix
+        another project's PRs into this one's verdicts and integration gates."""
+        from sova.dashboard.services.work_item_service import _fetch_all_sources
+
+        with (
+            patch(
+                "sova.dashboard.services.queue_service.get_priority_queue",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_prs,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_unified_agents",
+                new_callable=AsyncMock,
+                return_value={"agents": [], "completed": []},
+            ),
+            patch(
+                "sova.dashboard.services.handoff_service.get_all_handoffs",
+                return_value=[],
+            ),
+        ):
+            await _fetch_all_sources(project_dir=tmp_path, slug=None)
+
+        mock_prs.assert_awaited_once_with(tmp_path)
 
 
 class TestFetchSovaVerdicts:
@@ -1815,7 +1975,7 @@ class TestFetchSovaVerdicts:
         import time
 
         for i in range(1001):
-            _sova_verdict_cache[i] = (time.monotonic(), {"has_sova_review": False})
+            _sova_verdict_cache[("", i)] = (time.monotonic(), {"has_sova_review": False})
 
         labels_by_issue = {"42": ["sova:revise"]}
 
@@ -1832,7 +1992,7 @@ class TestFetchSovaVerdicts:
         assert result["42"]["verdict"] == "revise"
         # Cache was cleared and only the new entry remains.
         assert len(_sova_verdict_cache) == 1
-        assert 9999 in _sova_verdict_cache
+        assert ("", 9999) in _sova_verdict_cache
 
     @pytest.mark.asyncio()
     async def test_labels_no_pr_number_skips_cache(self) -> None:
@@ -1987,6 +2147,59 @@ class TestCanonicalVerdictPath:
 
         assert first == second
         assert mock_db.call_count == 1
+
+    @pytest.mark.asyncio()
+    async def test_cache_hit_still_reconciles_against_current_labels(self) -> None:
+        """A cache hit must not bypass label reconciliation: caching the merged verdict
+        from the first call must not let a newer sova:revise/sova:block label be ignored
+        for the remainder of the positive TTL."""
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        clear_verdict_cache()
+        db_verdict = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc"}
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=db_verdict,
+        ) as mock_db:
+            first = await resolve_sova_verdict("42", pr_number=104, issue_labels=["sova:approved"])
+            second = await resolve_sova_verdict("42", pr_number=104, issue_labels=["sova:revise"])
+
+        assert first["verdict"] == "approve"
+        assert second["verdict"] == "revise"
+        # The DB is not re-queried on the cache-hit path: reconciliation uses the
+        # already-cached db_verdict merged against the freshly supplied label.
+        assert mock_db.call_count == 1
+
+    @pytest.mark.asyncio()
+    async def test_label_only_approve_does_not_survive_a_later_empty_label_lookup(self) -> None:
+        """A verdict resolved purely from a sova:* label (no local DB record, the
+        cross-instance case) must not freeze into the cache as a standing "approve".
+        If a later call's label lookup comes back empty, whether the label was
+        actually removed or the lookup itself failed transiently, the result must
+        fall back to the unmerged source verdict rather than keep serving the
+        stale label-derived approval for the rest of the positive TTL."""
+        from sova.dashboard.services.work_verdict import _NO_REVIEW, resolve_sova_verdict
+
+        clear_verdict_cache()
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value=dict(_NO_REVIEW),
+            ),
+            patch(
+                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            first = await resolve_sova_verdict("42", pr_number=105, issue_labels=["sova:approved"])
+            second = await resolve_sova_verdict("42", pr_number=105, issue_labels=[])
+
+        assert first["has_sova_review"] is True
+        assert first["verdict"] == "approve"
+        assert second["has_sova_review"] is False
 
 
 class TestParseSovaReviewFromGithub:

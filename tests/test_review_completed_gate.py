@@ -19,10 +19,12 @@ class TestHasSovaLabel:
         assert _has_sova_label(["sova:approved", "type: feature"]) is True
 
     def test_revise_label(self) -> None:
-        assert _has_sova_label(["sova:revise"]) is True
+        """sova:revise means the review rejected the PR; it must not satisfy this gate."""
+        assert _has_sova_label(["sova:revise"]) is False
 
     def test_block_label(self) -> None:
-        assert _has_sova_label(["sova:block"]) is True
+        """sova:block means the review rejected the PR; it must not satisfy this gate."""
+        assert _has_sova_label(["sova:block"]) is False
 
     def test_no_sova_label(self) -> None:
         assert _has_sova_label(["type: feature", "priority: high"]) is False
@@ -117,6 +119,57 @@ class TestCheckReviewCompletedGate:
         verdict = {
             "has_sova_review": True,
             "verdict": "approve",
+            "finding_count": 0,
+            "reviewed_at": "2026-01-01",
+            "run_status": "done",
+        }
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=verdict,
+        ):
+            result = await check_review_completed_gate(
+                42,
+                labels=[],
+                pr_number=100,
+                project_dir=Path("/tmp/test"),
+                pr_data={"thread_total": 0, "thread_resolved": 0},
+            )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_completed_revise_reviewer_run_still_satisfies_gate(self) -> None:
+        """Documents the known residual gap (module docstring): source 2 is verdict-blind
+        by design (issue #993 scope excludes reworking _has_reviewer_run(), overlaps #991),
+        so a completed run with a "revise" verdict still satisfies the gate even though the
+        matching sova:revise label (source 1) would not."""
+        verdict = {
+            "has_sova_review": True,
+            "verdict": "revise",
+            "finding_count": 4,
+            "reviewed_at": "2026-01-01",
+            "run_status": "done",
+        }
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=verdict,
+        ):
+            result = await check_review_completed_gate(
+                42,
+                labels=[],
+                pr_number=100,
+                project_dir=Path("/tmp/test"),
+                pr_data={"thread_total": 0, "thread_resolved": 0},
+            )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_passes_with_completed_addressed_reviewer_run(self) -> None:
+        """An addressed verdict is not a rejection: a review did happen, so the gate is satisfied."""
+        verdict = {
+            "has_sova_review": True,
+            "verdict": "addressed",
             "finding_count": 0,
             "reviewed_at": "2026-01-01",
             "run_status": "done",
@@ -233,6 +286,48 @@ class TestCheckReviewCompletedGate:
                 pr_data=pr_data,
             )
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_blocks_with_revise_label_and_no_other_source(self) -> None:
+        """A sova:revise label must not authorize SPAWN_INTEGRATE on its own.
+
+        No completed reviewer run and no human approval are supplied, so this
+        isolates the label check itself rather than passing by accident via
+        another one of the three review sources.
+        """
+        verdict = {"has_sova_review": False, "verdict": None}
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=verdict,
+        ):
+            result = await check_review_completed_gate(
+                42,
+                labels=["sova:revise"],
+                pr_number=100,
+                project_dir=Path("/tmp/test"),
+                pr_data={"thread_total": 0, "thread_resolved": 0},
+            )
+        assert result is not None
+        assert result.gate == "review_completed"
+
+    @pytest.mark.asyncio
+    async def test_blocks_with_block_label_and_no_other_source(self) -> None:
+        verdict = {"has_sova_review": False, "verdict": None}
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=verdict,
+        ):
+            result = await check_review_completed_gate(
+                42,
+                labels=["sova:block"],
+                pr_number=100,
+                project_dir=Path("/tmp/test"),
+                pr_data={"thread_total": 0, "thread_resolved": 0},
+            )
+        assert result is not None
+        assert result.gate == "review_completed"
 
     @pytest.mark.asyncio
     async def test_blocks_with_no_review(self) -> None:

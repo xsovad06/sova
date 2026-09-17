@@ -1,8 +1,10 @@
 """Review completed gate: blocks SPAWN_INTEGRATE when no review exists.
 
 Three-source check (defense in depth):
-  1. Issue labels: sova:approved / sova:revise / sova:block (zero API cost)
-  2. DB TaskRun: completed (status="done") reviewer run with handoff_json
+  1. Issue labels: sova:approved only (zero API cost). sova:revise and
+     sova:block explicitly reject the PR and must not satisfy this gate.
+  2. DB TaskRun: completed (status="done") reviewer run with handoff_json.
+     Deliberately verdict-blind (see below).
   3. PR review_decision: non-bot GitHub approval (from cached PR data)
 
 Additionally blocks regardless of the above when the PR has unresolved review
@@ -10,6 +12,17 @@ threads (from any reviewer), or when thread resolution state could not be
 determined at all (unknown fails closed, same as unresolved): a stale
 "reviewed" signal must not authorize integration while open conversations
 remain, or might remain undetected.
+
+Known residual gap: source 2 (``_has_reviewer_run()``) only checks that a
+reviewer run completed, not what it concluded, so a completed run with a
+"revise" or "block" verdict (or one whose findings never reached any external
+observer, e.g. "post_failed") still satisfies it even though source 1 rejects
+the matching label. Making source 2 verdict-aware was considered and
+deliberately deferred: it overlaps issue #991's next-action resolver work and
+was out of scope for the label-narrowing fix that introduced source 1's
+rejection rule (issue #993). A genuine human GitHub approval (source 3)
+posted after a rejecting label or run still authorizes integration, since this
+gate only fails to satisfy on a rejection, it does not veto.
 
 Only blocks supervisor autonomy; dashboard "Integrate" button remains available
 for human-initiated integration (explicit user choice).
@@ -27,7 +40,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("sova.supervisor.gates.review_completed")
 
-_SOVA_VERDICT_LABELS = frozenset({"sova:approved", "sova:revise", "sova:block"})
+_APPROVED_LABEL = "sova:approved"
 
 
 async def check_review_completed_gate(
@@ -72,8 +85,12 @@ async def check_review_completed_gate(
 
 
 def _has_sova_label(labels: list[str]) -> bool:
-    """Check if any sova:* verdict label is present on the issue."""
-    return bool(_SOVA_VERDICT_LABELS.intersection(labels))
+    """Check if the sova:approved label is present on the issue.
+
+    sova:revise and sova:block are deliberately excluded: they mean a review
+    explicitly rejected the PR, not that integration was authorized.
+    """
+    return _APPROVED_LABEL in labels
 
 
 def _unresolved_thread_count(pr_data: dict | None) -> int | None:
@@ -106,6 +123,10 @@ async def _has_reviewer_run(
     this safety-critical gate. ``get_sova_review_verdict()`` is shared with
     display-only callers that legitimately want to surface a verdict from a
     non-"done" run, so the completion check is done here instead.
+
+    Deliberately verdict-blind: a completed run's verdict (including "revise"
+    or "block") is not consulted here. See the module docstring's "Known
+    residual gap" note.
     """
     try:
         from sova.dashboard.services.agent_recovery import get_sova_review_verdict
