@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -930,6 +931,88 @@ class TestTransitionState:
         bodies = [json.loads(call.request.content) for call in put_issue.calls]
         assert any({"remove": "agent:triaged"} in b.get("update", {}).get("labels", []) for b in bodies)
         assert any({"add": "agent:on-qa"} in b.get("update", {}).get("labels", []) for b in bodies)
+
+    @respx.mock
+    async def test_transition_state_combines_remove_and_add_into_single_put(self) -> None:
+        """The removal of the stale state label and the addition of the new one
+        must be sent as one PUT, not two separate calls: otherwise a
+        concurrent reader can observe a window with zero state labels."""
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-1", labels=["agent:triaged"])),
+        )
+        put_issue = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(200, json={"transitions": [{"id": "31", "name": "In Progress"}]}),
+        )
+        respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(204),
+        )
+
+        await adapter.transition_state("1", TaskState.IN_PROGRESS)
+
+        assert put_issue.call_count == 1
+        body = json.loads(put_issue.calls[0].request.content)
+        assert body["update"]["labels"] == [{"remove": "agent:triaged"}, {"add": "agent:in-progress"}]
+
+    @respx.mock
+    async def test_transition_state_concurrent_calls_never_expose_zero_or_dual_labels(self) -> None:
+        """Two concurrent transition_state() calls on the same issue must never let a
+        reader observe zero state labels, nor leave two conflicting state labels stuck.
+
+        A plain ``respx`` side effect with no real delay lets both calls'
+        GET+PUT sequences run back to back without ever truly overlapping,
+        which would pass even without the fix and prove nothing. A sleep
+        inside the PUT handler widens the window enough that, without
+        ``JiraAdapter._label_lock`` serializing ``_set_state_label`` per
+        issue, the second call's GET fires while the first call's PUT is
+        still in flight and both new state labels survive (verified
+        empirically: removing the lock produces
+        ``final_state_labels == ["agent:in-progress", "agent:in-review"]``
+        against this exact test body). With the lock, the second call's GET
+        cannot start until the first call's PUT has completed.
+        """
+        adapter = _adapter()
+        store = {"labels": ["agent:researched"]}
+        call_order: list[str] = []
+
+        async def get_side_effect(request):  # noqa: ANN001, ANN202
+            call_order.append("get")
+            return Response(200, json=_issue_json(key="TEST-1", labels=list(store["labels"])))
+
+        async def put_side_effect(request):  # noqa: ANN001, ANN202
+            call_order.append("put-start")
+            await asyncio.sleep(0.02)
+            payload = json.loads(request.content)
+            ops = payload.get("update", {}).get("labels", [])
+            labels = set(store["labels"])
+            for op in ops:
+                if "remove" in op:
+                    labels.discard(op["remove"])
+                if "add" in op:
+                    labels.add(op["add"])
+            store["labels"] = list(labels)
+            call_order.append("put-end")
+            return Response(204)
+
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(side_effect=get_side_effect)
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(side_effect=put_side_effect)
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(200, json={"transitions": []}),
+        )
+
+        await asyncio.gather(
+            adapter.transition_state("1", TaskState.IN_PROGRESS),
+            adapter.transition_state("1", TaskState.IN_REVIEW),
+        )
+
+        # The lock forces the second call's GET+PUT to wait for the first
+        # call's to fully complete: never interleaved.
+        assert call_order == ["get", "put-start", "put-end", "get", "put-start", "put-end"]
+        final_state_labels = [lbl for lbl in store["labels"] if lbl in _LABEL_TO_STATE]
+        assert len(final_state_labels) == 1
 
 
 class TestTriggerTransitionEdgeCases:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 from urllib.parse import quote
@@ -118,6 +119,22 @@ class JiraAdapter(TaskAdapter):
         }
         self._client: httpx.AsyncClient | None = None
         self._version_cache: dict[str, str] | None = None
+        self._label_locks: dict[str, asyncio.Lock] = {}
+
+    def _label_lock(self, issue_key: str) -> asyncio.Lock:
+        """Per-issue lock serializing this instance's ``_set_state_label`` calls.
+
+        ``_set_state_label`` computes its remove/add ops from a GET snapshot
+        of the current labels. Two concurrent calls that both read the same
+        stale state label each queue a remove for it and an add for their own
+        new label; Jira applies both PUTs against its live state, so the
+        second call's removal becomes a no-op and both new state labels
+        survive. Serializing on this lock makes the second call's read see
+        the first call's already-applied write, closing that window for calls
+        made through this adapter instance (not across processes or other
+        Jira clients).
+        """
+        return self._label_locks.setdefault(issue_key, asyncio.Lock())
 
     @property
     def _http(self) -> httpx.AsyncClient:
@@ -310,11 +327,7 @@ class JiraAdapter(TaskAdapter):
 
         await self._trigger_transition(issue_key, new_state)
 
-        await self._clear_state_labels(issue_key)
-        if new_state != TaskState.DONE:
-            label = _STATE_LABELS.get(new_state)
-            if label:
-                await self.add_label(task_id, label)
+        await self._set_state_label(issue_key, new_state)
 
     async def assign(self, task_id: str, agent_role: str) -> bool:
         await self.add_label(task_id, f"role:{agent_role}")
@@ -622,23 +635,46 @@ class JiraAdapter(TaskAdapter):
             parts.append("\n")
         return "".join(parts).strip()
 
-    async def _clear_state_labels(self, issue_key: str) -> None:
-        response = await self._http.get(
-            self._issue_path(issue_key),
-            params={"fields": "labels"},
-        )
-        if response.status_code != 200:
-            return
+    async def _set_state_label(self, issue_key: str, new_state: TaskState) -> None:
+        """Atomically swap the issue's state label via a single ``labels`` PUT.
 
-        labels = response.json().get("fields", {}).get("labels", [])
-        removals = [{"remove": label} for label in labels if label in _LABEL_TO_STATE]
-        if removals:
+        Jira's REST v3 issue-update API supports mixing ``{"add": ...}`` and
+        ``{"remove": ...}`` operations for the same field in one ``update``
+        object, so the removal of stale state labels and the addition of the
+        new one are sent as a single PUT. This closes the same non-atomic
+        window a separate clear-then-add call pair would leave open for a
+        concurrent reader.
+
+        Serialized on a per-issue lock (see ``_label_lock``): the ops list is
+        computed from a GET snapshot, so two concurrent calls racing off the
+        same stale snapshot could each remove the same old label and add a
+        different new one, leaving both new state labels stuck.
+        """
+        async with self._label_lock(issue_key):
+            response = await self._http.get(
+                self._issue_path(issue_key),
+                params={"fields": "labels"},
+            )
+            if response.status_code != 200:
+                log.warning("set_state_label.read_failed", issue=issue_key, status=response.status_code)
+                return
+
+            labels = response.json().get("fields", {}).get("labels", [])
+            ops = [{"remove": label} for label in labels if label in _LABEL_TO_STATE]
+
+            new_label = _STATE_LABELS.get(new_state)
+            if new_state != TaskState.DONE and new_label:
+                ops.append({"add": new_label})
+
+            if not ops:
+                return
+
             resp = await self._http.put(
                 self._issue_path(issue_key),
-                json={"update": {"labels": removals}},
+                json={"update": {"labels": ops}},
             )
             if resp.status_code not in (200, 204):
-                log.warning("clear_labels.failed", issue=issue_key, status=resp.status_code)
+                log.warning("set_state_label.failed", issue=issue_key, status=resp.status_code)
 
     async def _do_create_issue(
         self,

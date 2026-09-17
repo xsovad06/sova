@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -353,9 +354,8 @@ class TestGitHubAdapter:
         assert "42" in call_args
 
     async def test_transition_state_in_progress_adds_label(self, mock_run: AsyncMock) -> None:
-        # First call: _clear_state_labels fetches current labels
-        # Second call: _clear_state_labels is a no-op (no state labels)
-        # Third call: add the new label
+        # First call: read current labels. Second call: single PATCH that
+        # replaces the full label array (the atomic swap).
         mock_run.side_effect = [
             _shell_result(stdout='{"labels": []}'),
             _shell_result(),
@@ -363,9 +363,12 @@ class TestGitHubAdapter:
 
         await self.adapter.transition_state("42", TaskState.IN_PROGRESS)
 
-        last_call_args = mock_run.call_args[0]
-        assert "edit" in last_call_args
-        assert "--add-label" in last_call_args
+        assert mock_run.call_count == 2
+        patch_args, patch_kwargs = mock_run.call_args_list[1]
+        assert "PATCH" in patch_args
+        assert "repos/user/repo/issues/42" in patch_args
+        payload = json.loads(patch_kwargs["stdin"])
+        assert payload["labels"] == ["agent:in-progress"]
 
     async def test_transition_state_needs_spec(self, mock_run: AsyncMock) -> None:
         mock_run.side_effect = [
@@ -375,8 +378,219 @@ class TestGitHubAdapter:
 
         await self.adapter.transition_state("42", TaskState.NEEDS_SPEC)
 
-        last_call_args = mock_run.call_args[0]
-        assert "agent:needs-spec" in last_call_args
+        _patch_args, patch_kwargs = mock_run.call_args_list[1]
+        payload = json.loads(patch_kwargs["stdin"])
+        assert payload["labels"] == ["agent:needs-spec"]
+
+    async def test_transition_state_preserves_non_state_labels(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout=json.dumps({"labels": [{"name": "bug"}, {"name": "agent:researched"}]})),
+            _shell_result(),
+        ]
+
+        await self.adapter.transition_state("42", TaskState.IN_PROGRESS)
+
+        _patch_args, patch_kwargs = mock_run.call_args_list[1]
+        payload = json.loads(patch_kwargs["stdin"])
+        assert sorted(payload["labels"]) == sorted(["bug", "agent:in-progress"])
+
+    async def test_transition_state_never_uses_edit_remove_add_labels(self, mock_run: AsyncMock) -> None:
+        """The two-call gh issue edit --add-label/--remove-label path must not be used."""
+        mock_run.side_effect = [
+            _shell_result(stdout='{"labels": []}'),
+            _shell_result(),
+        ]
+
+        await self.adapter.transition_state("42", TaskState.IN_PROGRESS)
+
+        for call in mock_run.call_args_list:
+            args = call[0]
+            assert "--remove-label" not in args
+            assert "--add-label" not in args
+
+    async def test_transition_state_auto_creates_missing_state_label(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout='{"labels": []}'),
+            _shell_result(returncode=1, stderr="label 'agent:in-progress' not found"),
+            _shell_result(),  # label create succeeds
+            _shell_result(),  # retry PATCH succeeds
+        ]
+
+        await self.adapter.transition_state("42", TaskState.IN_PROGRESS)
+
+        assert mock_run.call_count == 4
+        create_args = mock_run.call_args_list[2][0]
+        assert "label" in create_args
+        assert "create" in create_args
+        assert "agent:in-progress" in create_args
+
+    async def test_transition_state_concurrent_calls_never_expose_zero_or_dual_labels(self) -> None:
+        """Two concurrent transition_state() calls on the same issue must never let a
+        reader observe zero state labels, nor leave two conflicting state labels stuck.
+
+        ``_set_state_label`` serializes on a per-issue ``asyncio.Lock`` (see
+        ``GitHubAdapter._label_lock``), so the second call's view+PATCH cannot
+        start until the first call's view+PATCH has fully completed: the two
+        never interleave, and the second call's read reflects the first call's
+        write rather than a stale snapshot from before it.
+        """
+        store = {"labels": ["agent:researched"]}
+        state_label_values = set(_STATE_LABELS.values())
+        patch_label_counts: list[int] = []
+        call_order: list[str] = []
+
+        async def fake_run(*args: str, **kwargs: object):
+            if "view" in args:
+                call_order.append("view")
+                data = json.dumps({"labels": [{"name": lbl} for lbl in store["labels"]]})
+                # Force a suspension point so an absent lock would let the
+                # second task's view interleave here, on the stale snapshot.
+                await asyncio.sleep(0)
+                return _shell_result(stdout=data)
+            if "PATCH" in args:
+                payload = json.loads(kwargs["stdin"])
+                patch_label_counts.append(sum(1 for lbl in payload["labels"] if lbl in state_label_values))
+                store["labels"] = payload["labels"]
+                call_order.append("patch")
+                return _shell_result()
+            return _shell_result()
+
+        with (
+            patch("sova.adapters.github.run", new=AsyncMock(side_effect=fake_run)),
+            patch("sova.adapters.github.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            await asyncio.gather(
+                self.adapter.transition_state("42", TaskState.IN_PROGRESS),
+                self.adapter.transition_state("42", TaskState.IN_REVIEW),
+            )
+
+        # The per-issue lock forces the second transition's view+PATCH to wait
+        # for the first's to fully complete: never interleaved.
+        assert call_order == ["view", "patch", "view", "patch"]
+        # Every write replaced the label set with exactly one state label:
+        # never zero, never two.
+        assert patch_label_counts == [1, 1]
+        final_state_labels = [lbl for lbl in store["labels"] if lbl in state_label_values]
+        assert len(final_state_labels) == 1
+
+    async def test_transition_state_serializes_with_concurrent_add_label(self) -> None:
+        """A non-state label added concurrently with a state transition on the
+        same issue must never be dropped by the transition's full-array PATCH.
+
+        ``_set_state_label`` computes its replacement label array from a GET
+        snapshot; a concurrent ``_add_label`` call landing between that read
+        and the PATCH would otherwise be invisible to the snapshot and get
+        silently overwritten. ``_add_label`` and ``_set_state_label`` share a
+        per-issue lock (``GitHubAdapter._label_lock``) precisely to make that
+        window impossible: this test deliberately tries to slot the add in
+        right after the transition's read (the exact vulnerable point) and
+        asserts it is forced to wait until after the write instead.
+        """
+        store = {"labels": ["agent:researched"]}
+        state_label_values = set(_STATE_LABELS.values())
+        call_order: list[str] = []
+        view_started = asyncio.Event()
+
+        async def fake_run(*args: str, **kwargs: object):
+            if "view" in args:
+                call_order.append("view")
+                data = json.dumps({"labels": [{"name": lbl} for lbl in store["labels"]]})
+                view_started.set()
+                await asyncio.sleep(0)
+                return _shell_result(stdout=data)
+            if "PATCH" in args:
+                call_order.append("patch")
+                payload = json.loads(kwargs["stdin"])
+                store["labels"] = payload["labels"]
+                return _shell_result()
+            if "edit" in args and "--add-label" in args:
+                call_order.append("add-label")
+                label = args[args.index("--add-label") + 1]
+                if label not in store["labels"]:
+                    store["labels"].append(label)
+                return _shell_result()
+            return _shell_result()
+
+        async def add_label_after_view() -> None:
+            await view_started.wait()
+            await self.adapter._add_label("42", "priority:high")
+
+        with (
+            patch("sova.adapters.github.run", new=AsyncMock(side_effect=fake_run)),
+            patch("sova.adapters.github.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            await asyncio.gather(
+                self.adapter.transition_state("42", TaskState.IN_PROGRESS),
+                add_label_after_view(),
+            )
+
+        # add_label_after_view() waits for the transition's view to start (the
+        # vulnerable moment), but the shared lock keeps it from acquiring
+        # until the transition's PATCH has already landed.
+        assert call_order == ["view", "patch", "add-label"]
+        final_state_labels = [lbl for lbl in store["labels"] if lbl in state_label_values]
+        assert len(final_state_labels) == 1
+        assert "priority:high" in store["labels"]
+
+    async def test_transition_state_serializes_with_concurrent_remove_label(self) -> None:
+        """A label removed concurrently with a state transition on the same
+        issue must never be restored by the transition's full-array PATCH.
+
+        ``_set_state_label`` computes its replacement label array from a GET
+        snapshot; a concurrent ``remove_label`` call landing between that read
+        and the PATCH would otherwise be invisible to the snapshot, so the
+        PATCH's ``final_labels`` still carries the (by then removed) label and
+        writes it back. ``remove_label`` and ``_set_state_label`` share a
+        per-issue lock (``GitHubAdapter._label_lock``) precisely to make that
+        window impossible: this test deliberately tries to slot the removal in
+        right after the transition's read (the exact vulnerable point) and
+        asserts it is forced to wait until after the write instead.
+        """
+        store = {"labels": ["agent:researched", "priority:high"]}
+        state_label_values = set(_STATE_LABELS.values())
+        call_order: list[str] = []
+        view_started = asyncio.Event()
+
+        async def fake_run(*args: str, **kwargs: object):
+            if "view" in args:
+                call_order.append("view")
+                data = json.dumps({"labels": [{"name": lbl} for lbl in store["labels"]]})
+                view_started.set()
+                await asyncio.sleep(0)
+                return _shell_result(stdout=data)
+            if "PATCH" in args:
+                call_order.append("patch")
+                payload = json.loads(kwargs["stdin"])
+                store["labels"] = payload["labels"]
+                return _shell_result()
+            if "edit" in args and "--remove-label" in args:
+                call_order.append("remove-label")
+                label = args[args.index("--remove-label") + 1]
+                if label in store["labels"]:
+                    store["labels"].remove(label)
+                return _shell_result()
+            return _shell_result()
+
+        async def remove_label_after_view() -> None:
+            await view_started.wait()
+            await self.adapter.remove_label("42", "priority:high")
+
+        with (
+            patch("sova.adapters.github.run", new=AsyncMock(side_effect=fake_run)),
+            patch("sova.adapters.github.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            await asyncio.gather(
+                self.adapter.transition_state("42", TaskState.IN_PROGRESS),
+                remove_label_after_view(),
+            )
+
+        # remove_label_after_view() waits for the transition's view to start
+        # (the vulnerable moment), but the shared lock keeps it from acquiring
+        # until the transition's PATCH has already landed.
+        assert call_order == ["view", "patch", "remove-label"]
+        final_state_labels = [lbl for lbl in store["labels"] if lbl in state_label_values]
+        assert len(final_state_labels) == 1
+        assert "priority:high" not in store["labels"]
 
     # -- assign --
 
@@ -463,6 +677,21 @@ class TestGitHubAdapter:
 
         with pytest.raises(RuntimeError, match="Failed to create label"):
             await self.adapter.add_label("42", "x")
+
+    async def test_add_label_create_already_exists_still_retries(self, mock_run: AsyncMock) -> None:
+        """A concurrent caller may create the label first: _create_label() must
+        treat "already exists" as success and let the retry add-label proceed,
+        rather than raising and aborting before the retry.
+        """
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="label 'agent:custom' not found"),
+            _shell_result(returncode=1, stderr='label with name "agent:custom" already exists'),
+            _shell_result(),  # retry add-label succeeds
+        ]
+
+        await self.adapter.add_label("42", "agent:custom")
+
+        assert mock_run.call_count == 3
 
     async def test_add_label_retry_after_create_fails_raises(self, mock_run: AsyncMock) -> None:
         """When retry after label create also fails, raise RuntimeError."""

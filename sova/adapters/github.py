@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 
@@ -60,6 +61,28 @@ class GitHubAdapter(TaskAdapter):
         super().__init__(repo=repo, github_user=github_user)
         self.project_number = project_number
         self._board_meta: _ProjectBoardMeta | None = None
+        self._label_locks: dict[str, asyncio.Lock] = {}
+
+    def _label_lock(self, task_id: str) -> asyncio.Lock:
+        """Per-issue lock serializing this instance's label read-modify-write calls.
+
+        ``_set_state_label`` reads the full label list, then PATCHes a
+        replacement array computed from that snapshot; a concurrent
+        ``_add_label`` call landing between the read and the PATCH is
+        invisible to the snapshot, so the PATCH silently drops it. The same
+        applies in reverse to ``remove_label``: a removal that completes
+        inside that window is reversed when the PATCH writes back the
+        stale, pre-removal label from its snapshot. GitHub's REST API has no
+        conditional/If-Match support for this endpoint (unsafe methods do not
+        support conditional requests), so the read-then-write window cannot be
+        closed by a single API call. Serializing all three methods on this
+        lock closes it for calls made through this adapter instance; it does
+        not protect against another process, another SOVA instance, or a
+        human editing labels in the GitHub UI concurrently. Never evicted,
+        matching the identity-keyed tracker pattern used elsewhere (e.g.
+        ``github_quota.py``) since the memory cost per issue is negligible.
+        """
+        return self._label_locks.setdefault(task_id, asyncio.Lock())
 
     async def _gh(self, *args: str, **kwargs: object) -> ShellResult:
         """Run a ``gh`` CLI command with per-project auth."""
@@ -146,8 +169,7 @@ class GitHubAdapter(TaskAdapter):
 
         label = _STATE_LABELS.get(new_state)
         if label:
-            await self._clear_state_labels(task_id)
-            await self._add_label(task_id, label)
+            await self._set_state_label(task_id, label)
 
         await self._move_on_board(task_id, new_state)
 
@@ -210,16 +232,24 @@ class GitHubAdapter(TaskAdapter):
         await self._add_label(task_id, label)
 
     async def remove_label(self, task_id: str, label: str) -> None:
+        """Remove a label from an issue.
+
+        Serialized on the same per-issue lock as ``_set_state_label`` so a
+        removal that completes inside that method's read-then-PATCH window is
+        never reversed by the PATCH restoring the label from its now-stale
+        ``final_labels`` snapshot (see ``_label_lock``).
+        """
         log.info("remove_label", issue=task_id, label=label, repo=self.repo)
-        await self._gh(
-            "issue",
-            "edit",
-            task_id,
-            "--repo",
-            self.repo,
-            "--remove-label",
-            label,
-        )
+        async with self._label_lock(task_id):
+            await self._gh(
+                "issue",
+                "edit",
+                task_id,
+                "--repo",
+                self.repo,
+                "--remove-label",
+                label,
+            )
 
     async def _do_post_comment(self, task_id: str, body: str) -> None:
         log.info("post_comment", issue=task_id, body_len=len(body), repo=self.repo)
@@ -550,38 +580,14 @@ class GitHubAdapter(TaskAdapter):
             )
 
     async def _add_label(self, task_id: str, label: str) -> None:
-        """Add a label to an issue, creating the label on the repo if it doesn't exist."""
-        result = await self._gh(
-            "issue",
-            "edit",
-            task_id,
-            "--repo",
-            self.repo,
-            "--add-label",
-            label,
-        )
-        if result.success:
-            return
+        """Add a label to an issue, creating the label on the repo if it doesn't exist.
 
-        # Match label-specific "not found" errors. gh outputs either
-        # "label 'X' not found" or "'X' not found" depending on version.
-        stderr_lower = result.stderr.lower()
-        label_lower = label.lower()
-        if "not found" in stderr_lower and label_lower in stderr_lower:
-            log.info("label.auto_create", label=label, repo=self.repo)
-            create = await self._gh(
-                "label",
-                "create",
-                label,
-                "--repo",
-                self.repo,
-                "--description",
-                "",
-                "--color",
-                "ededed",
-            )
-            if not create.success:
-                raise RuntimeError(f"Failed to create label '{label}': {create.stderr[:200]}")
+        Serialized on the same per-issue lock as ``_set_state_label`` so this
+        add can never land inside that method's read-then-PATCH window (see
+        ``_label_lock`` for why the window exists and what the lock does and
+        does not protect).
+        """
+        async with self._label_lock(task_id):
             result = await self._gh(
                 "issue",
                 "edit",
@@ -594,39 +600,129 @@ class GitHubAdapter(TaskAdapter):
             if result.success:
                 return
 
-        raise RuntimeError(f"Failed to add label '{label}' to issue #{task_id}: {result.stderr[:200]}")
-
-    async def _clear_state_labels(self, task_id: str) -> None:
-        """Remove all agent state labels from an issue."""
-        result = await self._gh(
-            "issue",
-            "view",
-            task_id,
-            "--repo",
-            self.repo,
-            "--json",
-            "labels",
-        )
-        if not result.success:
-            return
-
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return
-        current_labels = [lbl["name"] for lbl in data.get("labels", [])]
-
-        for label in current_labels:
-            if label in _LABEL_TO_STATE:
-                await self._gh(
+            # Match label-specific "not found" errors. gh outputs either
+            # "label 'X' not found" or "'X' not found" depending on version.
+            stderr_lower = result.stderr.lower()
+            label_lower = label.lower()
+            if "not found" in stderr_lower and label_lower in stderr_lower:
+                await self._create_label(label)
+                result = await self._gh(
                     "issue",
                     "edit",
                     task_id,
                     "--repo",
                     self.repo,
-                    "--remove-label",
+                    "--add-label",
                     label,
                 )
+                if result.success:
+                    return
+
+            raise RuntimeError(f"Failed to add label '{label}' to issue #{task_id}: {result.stderr[:200]}")
+
+    async def _create_label(self, label: str) -> None:
+        """Create a label on the repo, used as a not-found retry fallback.
+
+        Treats "already exists" as success rather than raising: a concurrent
+        transition_state() call for the same issue can race this same
+        not-found-retry path and create the label first. Since the caller only
+        needs the label to exist before its own retry, that outcome is
+        equivalent to this call having created it. ``--force`` is deliberately
+        not used, since it would overwrite the color/description a concurrent
+        creator (or a human) set.
+        """
+        log.info("label.auto_create", label=label, repo=self.repo)
+        create = await self._gh(
+            "label",
+            "create",
+            label,
+            "--repo",
+            self.repo,
+            "--description",
+            "",
+            "--color",
+            "ededed",
+        )
+        if create.success:
+            return
+        if "already exists" in create.stderr.lower():
+            return
+        raise RuntimeError(f"Failed to create label '{label}': {create.stderr[:200]}")
+
+    async def _set_state_label(self, task_id: str, new_label: str) -> None:
+        """Atomically swap the issue's state label via a single full-array PATCH.
+
+        ``gh issue edit --add-label/--remove-label`` issues two separate
+        GraphQL mutations under the hood, even when both flags are passed to
+        one invocation, leaving a window where a concurrent reader observes
+        zero state labels (or, if two transitions interleave, two conflicting
+        ones). GitHub's REST ``PATCH .../issues/{n}`` endpoint replaces the
+        entire label set in a single HTTP request, closing that window.
+
+        Serialized on the per-issue lock shared with ``_add_label`` (see
+        ``_label_lock``): the read and the PATCH below are computed from one
+        snapshot, so a non-state label added by a concurrent ``_add_label``
+        call between them would otherwise be silently dropped from the
+        replacement array.
+        """
+        async with self._label_lock(task_id):
+            result = await self._gh(
+                "issue",
+                "view",
+                task_id,
+                "--repo",
+                self.repo,
+                "--json",
+                "labels",
+            )
+            if not result.success:
+                raise RuntimeError(f"Failed to read labels for issue #{task_id}: {result.stderr[:200]}")
+
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"Failed to parse labels for issue #{task_id}: {e}") from e
+
+            current_labels = [lbl["name"] for lbl in data.get("labels", [])]
+            final_labels = [lbl for lbl in current_labels if lbl not in _LABEL_TO_STATE]
+            final_labels.append(new_label)
+
+            # Every label already on the issue is known to exist repo-wide; only
+            # the newly-added state label can be missing, so it is the only one
+            # worth an auto-create retry (mirrors _add_label()'s fallback).
+            await self._patch_labels(task_id, final_labels, retry_label=new_label)
+
+    async def _patch_labels(self, task_id: str, labels: list[str], retry_label: str) -> None:
+        """Replace an issue's full label set via one REST PATCH call."""
+        payload = json.dumps({"labels": labels})
+        result = await self._gh(
+            "api",
+            f"repos/{self.repo}/issues/{task_id}",
+            "--method",
+            "PATCH",
+            "--input",
+            "-",
+            stdin=payload,
+        )
+        if result.success:
+            return
+
+        stderr_lower = result.stderr.lower()
+        if "not found" in stderr_lower and retry_label.lower() in stderr_lower:
+            await self._create_label(retry_label)
+            result = await self._gh(
+                "api",
+                f"repos/{self.repo}/issues/{task_id}",
+                "--method",
+                "PATCH",
+                "--input",
+                "-",
+                stdin=payload,
+            )
+            if result.success:
+                return
+
+        raise RuntimeError(f"Failed to set labels on issue #{task_id}: {result.stderr[:200]}")
 
     # -- Project board integration -----------------------------------------------
 
