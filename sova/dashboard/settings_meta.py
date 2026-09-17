@@ -1692,6 +1692,14 @@ _REGISTRY: list[SettingMeta] = [
         "supervisor",
         "list",
     ),
+    SettingMeta(
+        "supervisor.decision_staleness_threshold_seconds",
+        "Decision staleness threshold (seconds)",
+        "Flag an open, non-done issue whose most recent supervisor decision is older than this "
+        "while it is absent from the current cycle's evaluated set (dropped out of the scan)",
+        "supervisor",
+        "integer",
+    ),
     # -- Agent Health: Memory Guard --
     SettingMeta(
         "memory_guard.enabled",

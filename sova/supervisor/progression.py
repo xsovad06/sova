@@ -9,16 +9,20 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.adapters.base import TaskAdapter, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.state import TASK_RUN_TERMINAL
+from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.dashboard.services.work_state import _build_pr_facts, resolve_next_action
 from sova.dashboard.services.work_verdict import resolve_sova_verdict
+from sova.db.models import SupervisorDecision
 from sova.git.pr import PRInfo
 from sova.supervisor.dependency_graph import (
     DependencyGraph,
@@ -304,7 +308,87 @@ class TaskProgressionEngine:
         if plan is not None:
             decisions = self.apply_plan(decisions, plan)
 
+        evaluated_issues = {d.issue_number for d in decisions}
+        await self._check_decision_staleness(task_ids, graph, evaluated_issues)
+
         return decisions
+
+    async def _check_decision_staleness(
+        self, task_ids: list[int], graph: DependencyGraph, evaluated_issues: set[int]
+    ) -> list[int]:
+        """Flag issues that were in this cycle's scope but never got a decision.
+
+        Every issue this cycle's ``task_ids`` loop actually reaches gets a fresh
+        SupervisorDecision row regardless of gate outcome (self-heal: the next poll
+        re-checks and proceeds once a stale ``already_running`` false-positive clears).
+        ``task_ids`` (not ``graph.nodes``) is the correct universe to compare against:
+        ``task_queue`` is an intentionally exclusive filter (capacity limits, planner
+        deprioritization), so an open issue that simply isn't queued this cycle is
+        working as designed, not stalled: comparing against every graph node would
+        flag the entire backlog beyond ``max_queue_size`` as "dropped out" forever.
+        An issue that *was* in ``task_ids`` but is missing from *evaluated_issues* has
+        silently fallen out of the scan itself (e.g. a mid-loop rate-limit break or a
+        graph-cache gap), which self-heal cannot catch since it never gets a fresh
+        WAIT to correct. This is diagnostic only: it never blocks or alters
+        progression, only logs and emits a feed event.
+        """
+        threshold = timedelta(seconds=self._config.supervisor.decision_staleness_threshold_seconds)
+        now = datetime.now(timezone.utc)
+        candidates = [
+            node_id
+            for node_id in task_ids
+            if node_id not in evaluated_issues
+            and (task := graph.get_task(node_id)) is not None
+            and task.state != TaskState.DONE
+        ]
+        if not candidates:
+            return []
+
+        try:
+            async with self._session_factory() as session:
+                stmt = (
+                    select(SupervisorDecision.issue_number, func.max(SupervisorDecision.created_at))
+                    .where(
+                        SupervisorDecision.project_slug == self._config.github_repo,
+                        SupervisorDecision.component == "progression",
+                        SupervisorDecision.issue_number.in_([str(node_id) for node_id in candidates]),
+                    )
+                    .group_by(SupervisorDecision.issue_number)
+                )
+                result = await session.execute(stmt)
+                last_seen = dict(result.all())
+        except Exception:  # noqa: BLE001 (fail-open: watchdog is diagnostic, must not block the poll cycle)
+            log.debug("evaluate_all.staleness_check_failed", exc_info=True)
+            return []
+
+        stale: list[int] = []
+        for node_id in candidates:
+            last = last_seen.get(str(node_id))
+            if last is None:
+                continue
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            age = now - last
+            if age <= threshold:
+                continue
+            stale.append(node_id)
+            log.warning(
+                "evaluate_all.decision_stale",
+                issue=node_id,
+                last_decision_at=last.isoformat(),
+                age_seconds=age.total_seconds(),
+            )
+            emit_safe(
+                f"Issue #{node_id} dropped out of supervisor evaluation",
+                severity=FeedEventSeverity.warning,
+                detail=(
+                    f"Last supervisor decision for #{node_id} was {int(age.total_seconds() // 60)} min ago "
+                    "while other queued issues kept receiving fresh decisions this cycle"
+                ),
+                category="supervisor",
+                metadata={"issue": node_id, "age_seconds": age.total_seconds()},
+            )
+        return stale
 
     def apply_plan(self, decisions: list[ProgressionDecision], plan: PlanResult) -> list[ProgressionDecision]:
         """Convert actionable decisions the plan did not approve into WAIT.
