@@ -46,6 +46,13 @@ class LLMResult:
     # min_chars, package missing, or error); an int (>= 0) when it did.
     pre_compression_input_tokens: int | None = None
     tokens_saved: int | None = None
+    # Codex-only breakdown detail: how many of the turn's output tokens were
+    # reasoning tokens. Deliberately absent from total_tokens, because Codex
+    # reports it as a component of output_tokens (OpenAI Responses API
+    # convention), so adding it would double-count. Stays None on every
+    # non-Codex result, which never populates it; a Codex result that omits
+    # the field reports 0.
+    reasoning_output_tokens: int | None = None
 
     @property
     def total_tokens(self) -> int:

@@ -16,6 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sova.ipc.codex import CodexStreamParser
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
 from sova.llm.models import LLMResult, StreamEvent
@@ -203,7 +204,11 @@ class AgentRuntime(ABC):
     def parse_output(self, line: str) -> StreamEvent | None:
         """Parse a line of agent stdout into a StreamEvent.
 
-        Returns None for empty/whitespace lines only.
+        Returns None for any line that carries nothing worth surfacing:
+        always for empty/whitespace lines, and for whatever else a given
+        runtime treats as internal (Codex, for instance, drops reasoning
+        items, no-op lifecycle events and duplicate terminal events).
+        Callers must skip a None rather than read it as end-of-stream.
         """
         ...
 
@@ -407,12 +412,28 @@ class CodexRuntime(AgentRuntime):
     CLI. Invoked non-interactively via ``codex exec`` with JSON Lines
     output and an explicit ``workspace-write`` sandbox.
 
-    Parity gaps tracked by epic #940, not yet closed here: the prompt does
+    ``parse_output()`` delegates to a ``CodexStreamParser`` held on this
+    runtime object, which maps Codex's JSONL lifecycle events onto
+    ``StreamEvent`` / ``LLMResult``. That parser is stateful (thread ID,
+    terminal-result latch) and this runtime is a module-level singleton
+    (``get_runtime()``), so the instance here is a single-stream
+    convenience only: it is correct for one process's output and would
+    interleave state across concurrent Codex agents. Nothing calls
+    ``parse_output()`` in production yet and ``AgentConfig.runtime`` does
+    not offer ``codex``, so this is latent. Wiring Codex into the
+    dashboard's stream tailer (``sova/dashboard/services/agent_output.py``)
+    must construct one ``CodexStreamParser`` per spawned process there
+    rather than reuse this one; that wiring is a separate epic #940
+    follow-up, not done here.
+
+    Parity gap tracked by epic #940, not yet closed here: the prompt does
     not carry ``_HEADLESS_PREAMBLE`` (which is written for Claude Code and
     references its ``/compact`` command), so SOVA's pipeline-boundary
-    guardrails are absent, and ``parse_output()`` returns each JSONL line
-    verbatim instead of mapping it to content and result events.
+    guardrails are absent.
     """
+
+    def __init__(self) -> None:
+        self._parser = CodexStreamParser()
 
     @property
     def name(self) -> str:
@@ -459,10 +480,7 @@ class CodexRuntime(AgentRuntime):
         return await _spawn_agent_process(args, cwd, env, output_dir, run_label)
 
     def parse_output(self, line: str) -> StreamEvent | None:
-        stripped = line.strip()
-        if not stripped:
-            return None
-        return StreamEvent(type="content", text=stripped)
+        return self._parser.parse_line(line)
 
     async def check_available(self) -> tuple[bool, str]:
         return await _check_cli_available("codex", "npm install -g @openai/codex")

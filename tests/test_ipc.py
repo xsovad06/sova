@@ -1551,11 +1551,26 @@ class TestCodexRuntime:
         from sova.ipc.runtime import CodexRuntime
 
         rt = CodexRuntime()
-        line = json.dumps({"type": "item.completed", "item": {"type": "agent_message"}})
+        line = json.dumps({"type": "item.completed", "item": {"item_type": "agent_message", "text": "Hello"}})
         event = rt.parse_output(line)
         assert event is not None
         assert event.type == "content"
-        assert event.text == line
+        assert event.text == "Hello"
+
+    def test_parse_output_delegates_to_stateful_parser(self) -> None:
+        """The runtime owns one CodexStreamParser instance, so thread state persists across calls."""
+        import json
+
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        rt.parse_output(json.dumps({"type": "thread.started", "thread_id": "thread-abc"}))
+        event = rt.parse_output(json.dumps({"type": "turn.completed", "usage": {}}))
+
+        assert event is not None
+        assert event.type == "result"
+        assert event.result is not None
+        assert event.result.session_id == "thread-abc"
 
     def test_parse_output_empty(self) -> None:
         from sova.ipc.runtime import CodexRuntime
