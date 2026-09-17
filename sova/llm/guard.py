@@ -13,6 +13,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+from sova.utils.log_dedup import warn_once
 from sova.utils.logging import get_logger
 
 log = get_logger(component="llm.guard")
@@ -353,12 +354,14 @@ def sanitize_external_input(text: str, *, source: str = "unknown") -> str:
 
     result = scan_prompt(text)
     if result.risk_score >= 0.7:
-        log.warning(
-            "external_input.injection_detected: source=%s risk=%.2f flags=%s preview=%s",
-            source,
-            result.risk_score,
-            result.flags,
-            text[:100],
+        warn_once(
+            log,
+            "external_input.injection_detected",
+            _compute_hash(text),
+            source=source,
+            risk=result.risk_score,
+            flags=result.flags,
+            preview=text[:100],
         )
     elif result.flags:
         log.info(

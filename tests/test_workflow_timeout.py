@@ -40,30 +40,30 @@ class TestComplexityTimeoutMultiplier:
         """When complexity is None, multiplier is 1.0."""
         engine = WorkflowEngine(steps=[], ctx=ctx)
         ctx.complexity = None
-        assert engine._step_timeout("develop") == min(1200, 1800)
+        assert engine._step_timeout("develop") == ctx.config.develop.step_timeout
 
     def test_step_timeout_complex_multiplier(self, ctx: ExecutionContext) -> None:
         """COMPLEX issues get 1.5x timeout."""
         engine = WorkflowEngine(steps=[], ctx=ctx)
         ctx.complexity = ComplexityTier.COMPLEX
-        base = min(ctx.config.develop.step_timeout, ctx.config.agent.step_timeout)
+        base = ctx.config.develop.step_timeout
         assert engine._step_timeout("develop") == int(base * 1.5)
 
     def test_step_timeout_epic_multiplier(self, ctx: ExecutionContext) -> None:
         """EPIC issues get 2.0x timeout."""
         engine = WorkflowEngine(steps=[], ctx=ctx)
         ctx.complexity = ComplexityTier.EPIC
-        base = min(ctx.config.develop.step_timeout, ctx.config.agent.step_timeout)
+        base = ctx.config.develop.step_timeout
         assert engine._step_timeout("develop") == int(base * 2.0)
 
     def test_step_timeout_trivial_no_multiplier(self, ctx: ExecutionContext) -> None:
         """TRIVIAL and SIMPLE issues get no multiplier."""
         engine = WorkflowEngine(steps=[], ctx=ctx)
         ctx.complexity = ComplexityTier.TRIVIAL
-        assert engine._step_timeout("develop") == min(1200, 1800)
+        assert engine._step_timeout("develop") == ctx.config.develop.step_timeout
 
         ctx.complexity = ComplexityTier.SIMPLE
-        assert engine._step_timeout("develop") == min(1200, 1800)
+        assert engine._step_timeout("develop") == ctx.config.develop.step_timeout
 
     def test_step_timeout_multiplier_capped_at_3x(self, ctx: ExecutionContext, tmp_path: Path) -> None:
         """Multiplier is capped at 3.0x to prevent unbounded timeouts."""
@@ -73,11 +73,33 @@ class TestComplexityTimeoutMultiplier:
         # but the cap is set to 3.0 for future extensibility
         engine = WorkflowEngine(steps=[], ctx=ctx)
         ctx.complexity = ComplexityTier.EPIC
-        base = min(ctx.config.develop.step_timeout, ctx.config.agent.step_timeout)
+        base = ctx.config.develop.step_timeout
         result = engine._step_timeout("develop")
         # Result should be 2.0x, well under the 3.0x cap
         assert result == int(base * 2.0)
         assert result <= int(base * 3.0)
+
+    def test_develop_step_timeout_not_clamped_by_agent_step_timeout(self, ctx: ExecutionContext) -> None:
+        """develop.step_timeout above agent.step_timeout must be honoured.
+
+        Regression guard: this was min()'d against agent.step_timeout, so a
+        project that raised develop.step_timeout to 3000 still had develop
+        steps killed at agent.step_timeout's 1800s default with no indication
+        the configured value had been discarded.
+        """
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        ctx.complexity = None
+        ctx.config.develop.step_timeout = 3000
+        ctx.config.agent.step_timeout = 1800
+        assert engine._step_timeout("develop") == 3000
+
+    def test_develop_step_timeout_below_agent_is_still_its_own_value(self, ctx: ExecutionContext) -> None:
+        """A develop.step_timeout below agent.step_timeout is not raised to it."""
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        ctx.complexity = None
+        ctx.config.develop.step_timeout = 900
+        ctx.config.agent.step_timeout = 1800
+        assert engine._step_timeout("develop") == 900
 
     def test_monitor_ci_timeout_with_complexity(self, ctx: ExecutionContext) -> None:
         """monitor_ci timeout also gets complexity multiplier."""

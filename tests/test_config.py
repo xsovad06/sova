@@ -1358,7 +1358,7 @@ class TestVerifyInstall:
 def test_validate_config_defaults() -> None:
     """ValidateConfig has correct default values."""
     cfg = ValidateConfig()
-    assert cfg.fix_timeout == 180
+    assert cfg.fix_timeout == 600
     assert cfg.max_fix_attempts == 2
     assert cfg.hook_timeout == 120
 

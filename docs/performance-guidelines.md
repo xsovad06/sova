@@ -12,9 +12,12 @@ All configurable timeouts cascade from SOVA config or env vars (`SOVA_` prefix).
 | LLM invoke | 600s | hardcoded | `sova/llm/client.py` |
 | Pipeline steps (LLM) | 1800s | `agent.step_timeout` | `sova/config/models.py` |
 | Pipeline steps (git/API) | 15-120s | hardcoded per step | `create_pr.py` |
-| Develop step | 1200s | `develop.step_timeout` | `sova/config/models.py` |
+| Develop step | 2400s | `develop.step_timeout` | `sova/config/models.py` |
+| Develop check phase | 600s | `develop.check_timeout` | `sova/config/models.py` |
+| Develop LLM fix | 600s | `develop.fix_timeout` | `sova/config/models.py` |
+| Develop max fix time | 1800s | `develop.max_fix_time` | `sova/config/models.py` |
 | Validate hook execution | 120s | `validation.hook_timeout` | `sova/config/models.py` |
-| Validate LLM fix | 180s | `validation.fix_timeout` | `sova/config/models.py` |
+| Validate LLM fix | 600s | `validation.fix_timeout` | `sova/config/models.py` |
 | CI polling max wait | 900s | `ci.max_wait` | `sova/config/models.py` |
 | CI poll interval | 60s | `ci.poll_interval` | `sova/config/models.py` |
 | CI no-checks grace | 120s | `ci.no_checks_grace_period` | `sova/config/models.py` |

@@ -115,7 +115,7 @@ class TestParseDependencies:
             result = parse_dependencies(body)
         assert result == {10}
         mock_log.warning.assert_called_once()
-        assert "Multiple" in mock_log.warning.call_args[0][0]
+        assert mock_log.warning.call_args[0][0] == "dependency_graph.multiple_dependencies_sections"
 
     def test_code_dependencies_not_matched(self) -> None:
         """'## Code Dependencies' (code-level) must not match the issue-level parser."""

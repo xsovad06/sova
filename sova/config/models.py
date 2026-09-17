@@ -194,22 +194,41 @@ class ReviewConfig(BaseSettings):
 
 
 class DevelopConfig(BaseSettings):
-    """Inner check loop configuration for the develop step."""
+    """Inner check loop configuration for the develop step.
+
+    Most timeout defaults are sized from measured step durations rather than
+    guessed: across two production projects the p90 of *successful* develop
+    steps was 1172s and 1365s, p95 ~1500s, max 2344s. The previous 1200s
+    step_timeout therefore sat at the p90 of work that would otherwise have
+    succeeded, killing roughly the slowest tenth of viable develop steps.
+    fix_timeout's 600s bump is directly evidenced by observed
+    "Command timed out after 180s" failures, and max_fix_time's 1800s is a
+    clean arithmetic fit for two fix_timeout-bounded cycles. check_timeout's
+    300->600 bump is not backed by an equivalent measurement of check-phase
+    (e.g. ``make check``) duration alone; it was raised for consistency with
+    the other budgets since a longer timeout is strictly safer. Revisit with
+    real check-phase duration data if this proves too conservative or too
+    loose.
+    """
 
     max_fix_cycles: int = Field(3, ge=0)
-    check_timeout: int = Field(300, gt=0)
+    check_timeout: int = Field(600, gt=0)
     guard_test_weakening: bool = True
-    max_fix_time: int = Field(600, gt=0)
-    fix_timeout: int = Field(180, gt=0)
-    step_timeout: int = Field(1200, gt=0)
+    max_fix_time: int = Field(1800, gt=0)
+    fix_timeout: int = Field(600, gt=0)
+    step_timeout: int = Field(2400, gt=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DEVELOP_")
 
 
 class ValidateConfig(BaseSettings):
-    """Pre-push hook validation and fix loop configuration."""
+    """Pre-push hook validation and fix loop configuration.
 
-    fix_timeout: int = Field(180, gt=0)
+    ``fix_timeout`` is shared by ValidateStep and MonitorCIStep, so it is not
+    covered by raising ``develop.fix_timeout`` alone.
+    """
+
+    fix_timeout: int = Field(600, gt=0)
     max_fix_attempts: int = Field(2, ge=0)
     hook_timeout: int = Field(120, gt=0)
     gate_timeout: int = Field(60, gt=0)

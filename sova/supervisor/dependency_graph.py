@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sova.adapters.base import Task, TaskAdapter, TaskState
+from sova.utils.log_dedup import warn_once
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 
@@ -470,7 +471,13 @@ def parse_dependencies(body: str, *, exclude_self: int | None = None) -> set[int
     # Warn if there are multiple ## Dependencies sections
     dep_heading_count = len(re.findall(r"^## dependencies\s*$", body, re.MULTILINE | re.IGNORECASE))
     if dep_heading_count > 1:
-        log.warning("Multiple '## Dependencies' sections found; using the first one")
+        dedup_key = str(exclude_self) if exclude_self is not None else str(hash(body))
+        warn_once(
+            log,
+            "dependency_graph.multiple_dependencies_sections",
+            dedup_key,
+            issue=exclude_self,
+        )
 
     deps: set[int] = set()
     for ref in _DEP_PATTERN.findall(section):
