@@ -12,6 +12,7 @@ import pytest
 from sova.config.models import NotificationConfig
 from sova.db.models import TaskRun
 from sova.db.session import close_db, get_session, init_db
+from sova.utils.shell import ShellResult
 
 
 @pytest.fixture(autouse=True)
@@ -1591,6 +1592,260 @@ class TestCodexRuntime:
         assert ok is False
         assert "not found" in detail
 
+    @staticmethod
+    def _version_proc() -> AsyncMock:
+        """Mock the ``codex --version`` process that precedes every auth probe."""
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"codex-cli 0.20.0\n", b""))
+        proc.returncode = 0
+        return proc
+
+    async def test_check_available_missing_cli_never_probes_auth(self) -> None:
+        """A missing CLI must return the install hint without attempting the login probe."""
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value=None),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec") as mock_exec,
+            patch("sova.ipc.runtime.run") as mock_run,
+        ):
+            ok, detail = await rt.check_available()
+
+        assert ok is False
+        assert "install" in detail
+        mock_exec.assert_not_called()
+        mock_run.assert_not_called()
+
+    async def test_check_available_logged_out(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        probe = ShellResult(returncode=1, stdout="Not logged in. Run codex login.\n", stderr="")
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
+            patch("sova.ipc.runtime.run", return_value=probe),
+        ):
+            ok, detail = await rt.check_available()
+
+        assert ok is False
+        assert "codex login" in detail
+
+    async def test_check_available_authenticated(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        probe = ShellResult(returncode=0, stdout="Logged in via ChatGPT session.\n", stderr="")
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
+            patch("sova.ipc.runtime.run", return_value=probe),
+        ):
+            ok, detail = await rt.check_available()
+
+        assert ok is True
+        assert "authenticated" in detail
+
+    async def test_check_available_auth_probe_timeout_fails_open(self) -> None:
+        """An unparseable/timed-out auth probe must not block an otherwise working CLI."""
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        probe = ShellResult(returncode=-1, stdout="", stderr="Command timed out after 5.0s", timed_out=True)
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
+            patch("sova.ipc.runtime.run", return_value=probe),
+        ):
+            ok, detail = await rt.check_available()
+
+        assert ok is True
+        assert "unknown" in detail
+
+    async def test_check_available_reports_env_key_presence_without_value(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        probe = ShellResult(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch.dict(os.environ, {"CODEX_API_KEY": "sk-codex-sentinel"}, clear=False),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
+            patch("sova.ipc.runtime.run", return_value=probe),
+        ):
+            ok, detail = await rt.check_available()
+
+        assert ok is True
+        assert "CODEX_API_KEY set" in detail
+        assert "sk-codex-sentinel" not in detail
+
+    async def test_spawn_injects_codex_api_key_scoped_to_this_process(self) -> None:
+        """CODEX_API_KEY must reach the Codex child even though SCRUBBED_VARS strips it by default."""
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 62
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch.dict(os.environ, {"CODEX_API_KEY": "sk-codex-sentinel"}, clear=False),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+        ):
+            await rt.spawn("do the task", Path("/tmp"))
+
+        child_env = mock_exec.call_args.kwargs["env"]
+        assert child_env["CODEX_API_KEY"] == "sk-codex-sentinel"
+        args = mock_exec.call_args[0]
+        assert "sk-codex-sentinel" not in args
+
+    async def test_spawn_strips_anthropic_api_key_from_codex_child(self) -> None:
+        """A key meant for Claude Code must not leak into an unrelated Codex child."""
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 63
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-sentinel"}, clear=False),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+        ):
+            await rt.spawn("do the task", Path("/tmp"))
+
+        child_env = mock_exec.call_args.kwargs["env"]
+        assert "ANTHROPIC_API_KEY" not in child_env
+
+    async def test_spawn_prefers_caller_supplied_api_key(self) -> None:
+        """A curated env's own key wins over whatever is in the server's process env."""
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 67
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch.dict(os.environ, {"CODEX_API_KEY": "sk-server-key"}, clear=False),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+        ):
+            await rt.spawn("do the task", Path("/tmp"), env={"PATH": "/bin", "CODEX_API_KEY": "sk-project-key"})
+
+        child_env = mock_exec.call_args.kwargs["env"]
+        assert child_env["CODEX_API_KEY"] == "sk-project-key"
+
+    async def test_spawn_omits_key_when_caller_env_excludes_it(self) -> None:
+        """A caller that deliberately built an env without the key must not get the server's."""
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 68
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch.dict(os.environ, {"CODEX_API_KEY": "sk-server-key"}, clear=False),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+        ):
+            await rt.spawn("do the task", Path("/tmp"), env={"PATH": "/bin"})
+
+        child_env = mock_exec.call_args.kwargs["env"]
+        assert "CODEX_API_KEY" not in child_env
+
+    async def test_spawn_treats_blank_api_key_as_absent(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 69
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch.dict(os.environ, {"CODEX_API_KEY": "   "}, clear=False),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+        ):
+            await rt.spawn("do the task", Path("/tmp"))
+
+        child_env = mock_exec.call_args.kwargs["env"]
+        assert "CODEX_API_KEY" not in child_env
+
+    async def test_spawn_without_codex_api_key_omits_it(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 64
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+        ):
+            os.environ.pop("CODEX_API_KEY", None)
+            await rt.spawn("do the task", Path("/tmp"))
+
+        child_env = mock_exec.call_args.kwargs["env"]
+        assert "CODEX_API_KEY" not in child_env
+
+    async def test_claude_code_and_aider_never_receive_codex_api_key(self) -> None:
+        """CODEX_API_KEY is Codex-only; other runtimes must never see it."""
+        from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime
+
+        for runtime_cls in (ClaudeCodeRuntime, AiderRuntime):
+            mock_proc = AsyncMock()
+            mock_proc.pid = 65
+            mock_proc.returncode = None
+            mock_proc.stdout = AsyncMock()
+            mock_proc.stderr = AsyncMock()
+
+            rt = runtime_cls()
+            with (
+                patch.dict(os.environ, {"CODEX_API_KEY": "sk-codex-sentinel"}, clear=False),
+                patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+            ):
+                await rt.spawn("do the task", Path("/tmp"))
+
+            child_env = mock_exec.call_args.kwargs["env"]
+            assert "CODEX_API_KEY" not in child_env
+
+    async def test_spawn_never_logs_codex_api_key(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 66
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch.dict(os.environ, {"CODEX_API_KEY": "sk-codex-sentinel"}, clear=False),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.ipc.runtime.log") as mock_log,
+        ):
+            await rt.spawn("do the task", Path("/tmp"))
+
+        for call in mock_log.mock_calls:
+            assert "sk-codex-sentinel" not in str(call)
+
     async def test_spawn_with_fallback_model_logs_warning_without_prompt(self) -> None:
         from sova.ipc.runtime import CodexRuntime
 
@@ -2033,3 +2288,59 @@ class TestAgentEnvScrubbing:
 
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("no project")):
             assert configured_passthrough() == ()
+
+
+class TestInterpretCodexAuthProbe:
+    """The pure interpreter for ``codex login status`` output."""
+
+    def test_empty_or_missing_output_is_unknown(self) -> None:
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        assert _interpret_codex_auth_probe(None) == (None, "auth state unknown")
+        assert _interpret_codex_auth_probe("") == (None, "auth state unknown")
+
+    def test_json_object_reports_logged_in(self) -> None:
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        assert _interpret_codex_auth_probe('{"loggedIn": true}') == (True, "authenticated")
+
+    def test_json_object_reports_logged_out(self) -> None:
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        authenticated, detail = _interpret_codex_auth_probe('{"logged_in": false}')
+        assert authenticated is False
+        assert "codex login" in detail
+
+    def test_json_null_value_falls_through_to_unknown(self) -> None:
+        """A null field is a shape we do not understand, never a definite logout."""
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        assert _interpret_codex_auth_probe('{"loggedIn": null}') == (None, "auth state unknown")
+
+    def test_json_dict_without_a_readable_flag_is_unknown(self) -> None:
+        """A key name in the JSON source must not be phrase-matched as a verdict."""
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        assert _interpret_codex_auth_probe('{"authenticated": "false"}') == (None, "auth state unknown")
+        assert _interpret_codex_auth_probe('{"status": "unknown"}') == (None, "auth state unknown")
+
+    def test_bare_json_scalar_falls_through_to_text_scan(self) -> None:
+        """Valid JSON is not necessarily an object; a quoted scalar has no fields to read."""
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        assert _interpret_codex_auth_probe('"not logged in"')[0] is False
+        assert _interpret_codex_auth_probe('"42"') == (None, "auth state unknown")
+
+    def test_negative_phrase_wins_over_substring_of_positive(self) -> None:
+        """The phrase "not logged in" contains "logged in", so the negative scan must run first."""
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        assert _interpret_codex_auth_probe("Not logged in. Run codex login.")[0] is False
+
+    def test_unrecognized_output_is_unknown(self) -> None:
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        assert _interpret_codex_auth_probe("error: unrecognized subcommand 'status'") == (
+            None,
+            "auth state unknown",
+        )
