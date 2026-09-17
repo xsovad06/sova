@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,8 +21,9 @@ from typing import TYPE_CHECKING
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
 from sova.llm.models import LLMResult, StreamEvent
-from sova.utils.env import configured_passthrough, scrub_agent_env
+from sova.utils.env import ANTHROPIC_CREDENTIAL_VARS, configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
+from sova.utils.shell import run
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
@@ -71,15 +74,29 @@ _HEADLESS_PREAMBLE = (
 _SOVA_AGENT_ENV_KEY = "SOVA_AGENT_RUN"
 
 
-def _inject_agent_marker(env: dict[str, str] | None) -> dict[str, str]:
+def _inject_agent_marker(
+    env: dict[str, str] | None,
+    *,
+    extra_scrub: Iterable[str] = (),
+    extra_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """Build the child environment for a spawned agent.
 
     Scrubs inherited provider-routing and parent-session variables (see
     ``sova.utils.env``) and sets SOVA_AGENT_RUN=1 so benchmark hooks skip
     logging. Every spawn path in this module routes through here.
+
+    ``extra_scrub`` removes additional variables for this spawn only (e.g. a
+    cross-provider credential that must never reach this particular runtime).
+    ``extra_env`` is merged in after scrubbing, so it can re-admit a variable
+    this spawn explicitly wants (e.g. ``CodexRuntime`` re-injecting
+    ``CODEX_API_KEY``, which ``SCRUBBED_VARS`` strips by default) without
+    reopening it for every other runtime.
     """
-    merged = scrub_agent_env(env, passthrough=configured_passthrough())
+    merged = scrub_agent_env(env, passthrough=configured_passthrough(), extra_scrub=extra_scrub)
     merged[_SOVA_AGENT_ENV_KEY] = "1"
+    if extra_env:
+        merged.update(extra_env)
     return merged
 
 
@@ -126,6 +143,9 @@ async def _spawn_agent_process(
     env: dict[str, str] | None,
     output_dir: Path | None,
     run_label: str | None,
+    *,
+    extra_scrub: Iterable[str] = (),
+    extra_env: Mapping[str, str] | None = None,
 ) -> AgentProcess | FileAgentProcess:
     """Spawn ``args`` in the scrubbed agent environment.
 
@@ -133,8 +153,11 @@ async def _spawn_agent_process(
     pipes them for streaming. Every runtime spawn path funnels through here,
     so ``start_new_session=True`` (see the subprocess isolation note in
     ``.claude/rules/architecture.md``) cannot be omitted by one of them.
+
+    ``extra_scrub``/``extra_env`` are per-spawn overrides layered on top of
+    the shared scrub; see ``_inject_agent_marker()``.
     """
-    agent_env = _inject_agent_marker(env)
+    agent_env = _inject_agent_marker(env, extra_scrub=extra_scrub, extra_env=extra_env)
 
     if output_dir is not None:
         return await _spawn_with_file_output(args, cwd, agent_env, output_dir, run_label)
@@ -400,12 +423,138 @@ class AiderRuntime(AgentRuntime):
         return await _check_cli_available("aider", "pip install aider-chat")
 
 
+# codex login status is a local keychain/credential-store read, matching the
+# rationale for _AUTH_CHECK_TIMEOUT in the Claude Code provider.
+_CODEX_AUTH_PROBE_TIMEOUT = _VERSION_CHECK_TIMEOUT
+
+_AUTH_UNKNOWN_DETAIL = "auth state unknown"
+
+
+def _resolve_codex_api_key(env: Mapping[str, str] | None = None) -> str | None:
+    """Read ``CODEX_API_KEY`` from ``env``, falling back to the process environment.
+
+    ``env`` is the caller-supplied child environment (``spawn(env=...)``), so a
+    caller that curated its own environment gets its own key rather than the
+    server's: a per-project key must not be silently replaced by whatever
+    happens to be in ``os.environ``. ``None`` means "no curated env", which is
+    the probe path and the default spawn path.
+
+    A blank or whitespace-only value is treated as absent: SOVA must not inject
+    or report an empty credential as present.
+    """
+    source = os.environ if env is None else env
+    value = source.get("CODEX_API_KEY", "").strip()
+    return value or None
+
+
+def _codex_extra_env(env: Mapping[str, str] | None = None) -> dict[str, str] | None:
+    """Build the ``extra_env`` override that re-admits ``CODEX_API_KEY``.
+
+    ``CODEX_API_KEY`` is in ``SCRUBBED_VARS`` by default (see
+    ``sova.utils.env``), so it is absent from the ``env`` a ``CodexRuntime``
+    spawn would otherwise receive. This re-injects it after scrubbing, scoped
+    to this one spawn/probe: no other runtime calls this function, so the key
+    never reaches a Claude Code or Aider child.
+    """
+    api_key = _resolve_codex_api_key(env)
+    return {"CODEX_API_KEY": api_key} if api_key else None
+
+
+async def _probe_codex_auth() -> str | None:
+    """Run ``codex login status`` once and return its combined output.
+
+    A local credential-store read only (never a model request or any other
+    billable API call). Uses the same environment a real Codex spawn would see
+    (shared scrub, cross-provider credentials removed, ``CODEX_API_KEY``
+    re-injected if set) so the probe's answer matches what agents actually
+    experience.
+
+    Returns ``None`` on subprocess spawn failure or timeout, mirroring
+    ``_probe_auth()`` in the Claude Code provider (which runs the equivalent
+    ``claude auth status`` probe through the same ``shell.run()`` helper).
+    ``codex login status`` has no documented machine-readable output contract,
+    so stdout and stderr are returned as one blob for the caller to interpret
+    defensively rather than assumed to be JSON. The exit code is deliberately
+    not returned: its meaning is undocumented too, so only the text is worth
+    reading.
+    """
+    probe_env = _inject_agent_marker(None, extra_scrub=ANTHROPIC_CREDENTIAL_VARS, extra_env=_codex_extra_env())
+    try:
+        result = await run("codex", "login", "status", env=probe_env, timeout=_CODEX_AUTH_PROBE_TIMEOUT)
+    except OSError:
+        log.debug("codex.auth_probe_failed", exc_info=True)
+        return None
+    if result.timed_out:
+        return None
+    return f"{result.stdout}\n{result.stderr}".strip()
+
+
+def _interpret_codex_auth_probe(text: str | None) -> tuple[bool | None, str]:
+    """Interpret ``codex login status`` output.
+
+    Returns ``(authenticated, detail)``:
+
+    - ``True``: the CLI reports an authenticated session.
+    - ``False``: the CLI reports it is logged out.
+    - ``None``: the output could not be confidently interpreted (unknown CLI
+      build, unexpected format, probe never ran). Callers fail open on this
+      case, matching ``_interpret_auth_probe()`` in the Claude Code provider:
+      a CLI build variation must never block agent spawning.
+
+    ``codex login status`` has no documented machine-readable contract, so
+    text is scanned defensively rather than assumed to be JSON. A JSON
+    payload is still attempted first in case a future CLI version emits one;
+    a bare scalar (valid JSON, but not an object, the same trap documented
+    for ``_parse_log_file()``) carries no fields to read and falls through to
+    the plain-text scan below, matching ``_extract_auth_detail()`` in
+    ``doctor.py`` for ``gh auth status``.
+    """
+    if not text:
+        return None, _AUTH_UNKNOWN_DETAIL
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict):
+        for key in ("loggedIn", "logged_in", "authenticated"):
+            # Strict identity, not truthiness: a null or string value is a
+            # shape this code does not understand, and must fall through to
+            # "unknown" (fail open) rather than be read as a definite logout.
+            if data.get(key) is True:
+                return True, "authenticated"
+            if data.get(key) is False:
+                return False, "not authenticated (run: codex login)"
+        # A dict this code could not read is unknown, full stop. Falling back
+        # to the phrase scan here would scan the JSON source itself, where a
+        # key name ("authenticated") matches regardless of its value.
+        return None, _AUTH_UNKNOWN_DETAIL
+
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in ("not logged in", "not authenticated", "logged out", "no credentials")):
+        return False, "not authenticated (run: codex login)"
+    if any(phrase in lowered for phrase in ("logged in", "authenticated")):
+        return True, "authenticated"
+
+    return None, _AUTH_UNKNOWN_DETAIL
+
+
 class CodexRuntime(AgentRuntime):
     """Runtime that spawns Codex CLI processes.
 
     Codex (https://developers.openai.com/codex/) is OpenAI's coding agent
     CLI. Invoked non-interactively via ``codex exec`` with JSON Lines
     output and an explicit ``workspace-write`` sandbox.
+
+    Credential handling: local setup should rely on Codex's own keyring
+    storage (``codex login`` / ``cli_auth_credentials_store = "keyring"``);
+    SOVA never reads, copies, or persists that credential. An optional
+    ``CODEX_API_KEY`` in SOVA's own process environment is forwarded only to
+    the Codex child that needs it (see ``_codex_extra_env()``), and is
+    scrubbed from every other spawned runtime by default (``SCRUBBED_VARS``
+    in ``sova.utils.env``). ``check_available()`` uses ``codex login status``
+    to distinguish missing CLI, logged-out CLI, and authenticated CLI without
+    ever making a model request.
 
     Parity gaps tracked by epic #940, not yet closed here: the prompt does
     not carry ``_HEADLESS_PREAMBLE`` (which is written for Claude Code and
@@ -456,7 +605,15 @@ class CodexRuntime(AgentRuntime):
 
         log.info("codex.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
 
-        return await _spawn_agent_process(args, cwd, env, output_dir, run_label)
+        return await _spawn_agent_process(
+            args,
+            cwd,
+            env,
+            output_dir,
+            run_label,
+            extra_scrub=ANTHROPIC_CREDENTIAL_VARS,
+            extra_env=_codex_extra_env(env),
+        )
 
     def parse_output(self, line: str) -> StreamEvent | None:
         stripped = line.strip()
@@ -465,7 +622,18 @@ class CodexRuntime(AgentRuntime):
         return StreamEvent(type="content", text=stripped)
 
     async def check_available(self) -> tuple[bool, str]:
-        return await _check_cli_available("codex", "npm install -g @openai/codex")
+        available, version_detail = await _check_cli_available("codex", "npm install -g @openai/codex")
+        if not available:
+            return False, version_detail
+
+        probe = await _probe_codex_auth()
+        authenticated, auth_detail = _interpret_codex_auth_probe(probe)
+        if _resolve_codex_api_key() is not None:
+            auth_detail = f"{auth_detail}, CODEX_API_KEY set"
+
+        if authenticated is False:
+            return False, f"{version_detail} but {auth_detail}"
+        return True, f"{version_detail} ({auth_detail})"
 
 
 # ---------------------------------------------------------------------------

@@ -60,11 +60,23 @@ PARENT_SESSION_VARS: frozenset[str] = frozenset(
     }
 )
 
-SCRUBBED_VARS: frozenset[str] = PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS
+# OpenAI/Codex credential. Folded into SCRUBBED_VARS so a CODEX_API_KEY set in
+# the SOVA server's own environment (e.g. for someone else's automation
+# script) is stripped from every spawned child by default, not just Codex's.
+# Deliberately NOT reused via agent.env_passthrough, since that list is global
+# across runtimes and would re-leak the key into ClaudeCodeRuntime/AiderRuntime
+# children too; CodexRuntime re-injects it explicitly, scoped to its own spawn.
+CODEX_CREDENTIAL_VARS: frozenset[str] = frozenset({"CODEX_API_KEY"})
 
-# Credential variables are deliberately NOT scrubbed: the anthropic provider
-# reads ANTHROPIC_API_KEY from the environment, and removing it here would
-# break that path. Provider-aware credential scrubbing is tracked separately.
+SCRUBBED_VARS: frozenset[str] = PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS | CODEX_CREDENTIAL_VARS
+
+# Credential variables are deliberately NOT scrubbed by default: the anthropic
+# provider reads ANTHROPIC_API_KEY from the environment, and removing it here
+# would break that path. However, an unrelated provider's child (e.g. Codex)
+# must never receive it just because it happened to be set in the server's own
+# environment; ``scrub_agent_env()``'s ``extra_scrub`` parameter lets a caller
+# remove these on a per-spawn basis without touching the shared default.
+ANTHROPIC_CREDENTIAL_VARS: frozenset[str] = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
 
 
 def configured_passthrough() -> tuple[str, ...]:
@@ -90,6 +102,7 @@ def scrub_agent_env(
     env: Mapping[str, str] | None = None,
     *,
     passthrough: Iterable[str] = (),
+    extra_scrub: Iterable[str] = (),
 ) -> dict[str, str]:
     """Return a copy of ``env`` with inherited provider overrides removed.
 
@@ -98,16 +111,29 @@ def scrub_agent_env(
         passthrough: Variable names to preserve despite being scrubbed by
             default. Set via ``agent.env_passthrough`` for deployments that
             intentionally route the Claude CLI through Vertex AI or Bedrock.
+        extra_scrub: Variable names to remove in addition to ``SCRUBBED_VARS``,
+            for a single spawn rather than every one. Applied unconditionally,
+            after the ``passthrough`` keep-set: a name here is removed even if
+            it was also named in ``passthrough``, since ``env_passthrough`` is
+            a global escape hatch and must not be able to re-admit a
+            credential a specific caller has deliberately excluded (e.g.
+            ``CodexRuntime`` scrubbing ``ANTHROPIC_API_KEY`` from its own
+            children regardless of what a Vertex/Bedrock deployment opted
+            back in for Claude Code).
 
     Returns:
         A new dict safe to hand to a spawned subprocess.
     """
     source = os.environ if env is None else env
     keep = {name.strip() for name in passthrough if name and name.strip()}
+    always_remove = {name.strip() for name in extra_scrub if name and name.strip()}
 
     result: dict[str, str] = {}
     removed: list[str] = []
     for key, value in source.items():
+        if key in always_remove:
+            removed.append(key)
+            continue
         if key in SCRUBBED_VARS and key not in keep:
             removed.append(key)
             continue

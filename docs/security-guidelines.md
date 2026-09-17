@@ -20,6 +20,15 @@ Every `gh` CLI call in `sova/adapters/github.py` and `sova/git/pr.py` passes `en
 
 `jira_api_token` in `sova/config/models.py` uses `Field("", repr=False)` to suppress from Pydantic repr, preventing accidental logging. Store as `SOVA_TASK_JIRA_API_TOKEN` env var. See [JIRA Configuration Guide](jira-configuration-guide.md) for full setup.
 
+### Codex/OpenAI Authentication
+
+Codex CLI owns its own credential storage; SOVA never reads, copies, masks, or persists it. Two distinct auth paths:
+
+- **Saved keyring auth** (preferred for a local, long-running server): one-time `codex login`, or `cli_auth_credentials_store = "keyring"` in Codex's own config. The credential lives entirely inside Codex's credential store; SOVA's only interaction is a read-only readiness probe (`codex login status`, never a model request).
+- **Per-process automation auth** (`CODEX_API_KEY`): an opt-in escape hatch for trusted automation that explicitly wants environment-based auth instead of keyring. Scoped to the immediate `codex exec` child only, never written to argv, config, the database, shell profiles, or file-backed output. `CODEX_API_KEY` is in `sova/utils/env.py`'s `SCRUBBED_VARS`, so it is stripped from every spawned agent by default; only `CodexRuntime.spawn()` re-injects it (via `extra_env`, applied after scrubbing), so it never reaches a `ClaudeCodeRuntime` or `AiderRuntime` child even if set in the server's own process environment.
+
+Codex spawns also scrub `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` (via `extra_scrub`, which wins over `agent.env_passthrough`) so a credential meant for Claude Code cannot leak into an unrelated Codex child. `check_available()` reports credential presence as a boolean only (`", CODEX_API_KEY set"`), never the value.
+
 ### Worktree Credential Copying
 
 `WorktreeConfig.copy_files` defaults to `[".env", ".env.local"]`. These are copied into new worktrees so agents can authenticate. Ensure `.gitignore` covers these patterns.
