@@ -866,7 +866,9 @@ class TestDeveloperRole:
         from sova.roles.developer import DeveloperRole
 
         adapter = _mock_adapter(TaskState.IN_PROGRESS)
-        ctx = _make_ctx(role="developer", state=TaskState.IN_PROGRESS, adapter=adapter, pr_number=88)
+        ctx = _make_ctx(
+            role="developer", state=TaskState.IN_PROGRESS, adapter=adapter, pr_number=88, branch_name="feat/issue-42"
+        )
         role = DeveloperRole()
 
         mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
@@ -902,6 +904,33 @@ class TestDeveloperRole:
 
         assert result.success
         assert ctx.branch_name == "feat/issue-42"
+
+    async def test_address_review_fails_cleanly_when_branch_unresolved(self) -> None:
+        """Regression for PR #1015: an unresolved branch_name must surface as a
+        clean RoleResult failure, not propagate out of execute() as a raw
+        RuntimeError (which would crash the CLI process before ever reaching
+        PushStep)."""
+        from unittest.mock import patch
+
+        from sova.roles.developer import DeveloperRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="developer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=88)
+        role = DeveloperRole()
+
+        with (
+            patch.object(WorkflowEngine, "run", new=AsyncMock()) as mock_run,
+            patch(
+                "sova.roles.developer.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="",
+            ),
+        ):
+            result = await role.execute(ctx)
+
+        assert not result.success
+        assert "branch_name" in (result.error or "")
+        mock_run.assert_not_awaited()
 
     async def test_address_review_discovers_existing_worktree(self, tmp_path: Path) -> None:
         """Address-review should discover and use an existing worktree for the issue."""
@@ -1098,6 +1127,36 @@ class TestDiscoverAddressReviewContext:
 
         assert ctx.worktree_dir == wt_path
         mock_find.assert_not_awaited()
+
+    async def test_raises_when_branch_name_unresolved_despite_existing_worktree(self, tmp_path: Path) -> None:
+        """Regression for PR #1015: a pre-existing worktree must not mask an
+        unresolved branch_name. get_pr_branch() returning "" (matching its
+        real failure contract) must still cause discovery to fail loudly."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.roles.developer import DeveloperRole
+
+        wt_path = tmp_path / ".claude" / "worktrees" / "pr-1015"
+        wt_path.mkdir(parents=True)
+
+        ctx = _make_ctx(
+            issue_number="",
+            pr_number=1015,
+            project_dir=tmp_path,
+        )
+        role = DeveloperRole()
+
+        with patch(
+            "sova.roles.developer.get_pr_branch",
+            new_callable=AsyncMock,
+            return_value="",
+        ):
+            with pytest.raises(RuntimeError, match="branch_name"):
+                await role._discover_address_review_context(ctx)
+
+        # Worktree discovery (independent of branch_name) must still succeed.
+        assert ctx.worktree_dir == wt_path
+        assert ctx.branch_name == ""
 
 
 # ---------------------------------------------------------------------------
