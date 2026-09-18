@@ -503,6 +503,13 @@ async def check_integration_gates(
         v = verdict.get("verdict", "")
         if v == "approve":
             return _gate("sova_reviewed", enabled=True, passed=True)
+        if v == "addressed":
+            return _gate(
+                "sova_reviewed",
+                enabled=True,
+                passed=False,
+                reason="SOVA findings addressed; a re-review must approve the new head",
+            )
         return _gate(
             "sova_reviewed",
             enabled=True,

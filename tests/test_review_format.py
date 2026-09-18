@@ -329,3 +329,24 @@ class TestFormatFromJson:
 
         with pytest.raises(json.JSONDecodeError):
             format_from_json("not json")
+
+
+class TestFormatFromJsonSha:
+    """The /review-pr command anchors its verdict to the reviewed commit via the ``sha`` field."""
+
+    def test_sha_is_embedded_in_marker(self) -> None:
+        sha = "892372e3512475e42638ffe7cab9a14d0734a2b5"
+        body = format_from_json(json.dumps({"findings": [], "summary": "s", "sha": sha}))
+        assert body.splitlines()[0] == f"<!-- sova-review: approve sha={sha} -->"
+
+    def test_missing_sha_leaves_marker_unanchored(self) -> None:
+        body = format_from_json(json.dumps({"findings": [], "summary": "s"}))
+        assert body.splitlines()[0] == "<!-- sova-review: approve -->"
+
+    def test_malformed_sha_is_not_embedded(self) -> None:
+        body = format_from_json(json.dumps({"findings": [], "summary": "s", "sha": "<headRefOid from Step 1>"}))
+        assert body.splitlines()[0] == "<!-- sova-review: approve -->"
+
+    def test_uppercase_sha_is_lowercased_to_match_github_head(self) -> None:
+        body = format_from_json(json.dumps({"findings": [], "summary": "s", "sha": "892372E3"}))
+        assert body.splitlines()[0] == "<!-- sova-review: approve sha=892372e3 -->"

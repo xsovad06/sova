@@ -1,4 +1,4 @@
-"""Step: Resolve external reviews -- resolve threads and dismiss bot reviews after push."""
+"""Step: Resolve external reviews (resolve threads, dismiss bot reviews, post the address summary after push)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.utils.gh import get_active_gh_user
 from sova.utils.logging import get_logger
+from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE, format_address_summary
 from sova.utils.shell import run
 
 log = get_logger(component="step.resolve_external_reviews")
@@ -79,6 +80,43 @@ async def _dismiss_bot_reviews(
     return dismissed
 
 
+async def _post_address_summary(ctx: ExecutionContext) -> bool:
+    """Post the ``## Address Review`` summary as a COMMENT-state review on the PR.
+
+    The autonomous counterpart of ``/address-pr`` step 14. Runs after the push
+    and CI so the marker is anchored to the commit that actually carries the
+    fixes; the dashboard reads the marker from the PR's review list to tell
+    that the standing SOVA verdict has been addressed, so without this post a
+    pipeline-addressed PR keeps showing "SOVA Changes Requested". Never
+    raises: a failed post is logged, and the local DB record of the completed
+    address cycle still supersedes the verdict on this machine.
+    """
+    findings = ctx.addressed_review_findings
+    if not findings or ctx.pr_number is None:
+        return False
+
+    head_sha: str | None = None
+    head = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
+    if head.success:
+        head_sha = head.stdout.strip() or None
+
+    round_no = 1
+    try:
+        reviews = await ctx.adapter.get_pr_reviews(ctx.pr_number)
+        round_no += sum(1 for r in reviews if SOVA_ADDRESSED_MARKER_RE.search(r.body or ""))
+    except Exception:  # noqa: BLE001 (round numbering is cosmetic; adapter raises AdapterError/ValueError too)
+        log.debug("step.resolve_external_reviews.round_lookup_failed", pr=ctx.pr_number, exc_info=True)
+
+    body = format_address_summary(findings, head_sha=head_sha, round_no=round_no)
+    try:
+        await ctx.adapter.post_pr_review(ctx.pr_number, body=body, event="COMMENT", comments=[])
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
+        log.warning("step.resolve_external_reviews.summary_post_failed", pr=ctx.pr_number, exc_info=True)
+        return False
+    log.info("step.resolve_external_reviews.summary_posted", pr=ctx.pr_number, findings=len(findings), round=round_no)
+    return True
+
+
 class ResolveExternalReviewsStep(BaseStep):
     name = "resolve_external_reviews"
     max_retries = 0
@@ -133,11 +171,15 @@ class ResolveExternalReviewsStep(BaseStep):
         except (RuntimeError, OSError):
             log.warning("step.resolve_external_reviews.dismiss_failed", exc_info=True)
 
+        summary_posted = await _post_address_summary(ctx)
+
         parts = []
         if resolved_count:
             parts.append(f"{resolved_count} threads resolved")
         if dismissed_count:
             parts.append(f"{dismissed_count} bot reviews dismissed")
+        if summary_posted:
+            parts.append("address summary posted")
         summary = ", ".join(parts) if parts else "No external review threads to resolve"
 
         return StepResult(success=True, summary=summary)

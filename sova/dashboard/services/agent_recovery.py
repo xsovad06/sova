@@ -7,12 +7,16 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from cachetools import TTLCache
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = get_logger(component="dashboard.control.recovery")
 
@@ -666,6 +670,107 @@ def _parse_verdict_from_output(lines: list[str]) -> str | None:
     return None
 
 
+def _clean_issue_scope(issue_number: str | None, pr_number: int | None) -> tuple[bool, str | None]:
+    """Normalize the caller's (issue_number, pr_number) into (has_scope, issue_num_clean).
+
+    Strips a leading ``#`` and whitespace from the issue. ``has_scope`` is
+    False when neither key is usable (no issue and no PR, or a blank issue
+    with no PR), in which case the caller has nothing to query for.
+    """
+    if issue_number is None and pr_number is None:
+        return False, None
+    issue_num_clean = issue_number.lstrip("#").strip() if issue_number is not None else None
+    if issue_num_clean == "":
+        if pr_number is None:
+            return False, None
+        issue_num_clean = None  # fall through to PR-only scope
+    return True, issue_num_clean
+
+
+def _run_scope_filters(issue_num_clean: str | None, pr_number: int | None) -> list:
+    """SQL filters selecting the TaskRuns that belong to one review cycle.
+
+    A PR number identifies the cycle exactly, so when one is known it is the
+    only key. Requiring the issue to match as well only adds false negatives:
+    a run spawned before the PR body linked its issue, or from a standalone-PR
+    work item, is recorded with ``issue_number=NULL`` yet is unambiguously a
+    run against this PR (#1063 was addressed by exactly such a run, and the
+    issue-and-PR filter could not see it). Without a PR number the issue is
+    the only key available.
+    """
+    from sova.db.models import TaskRun
+
+    if pr_number is not None:
+        return [TaskRun.pr_number == pr_number]
+    return [TaskRun.issue_number == issue_num_clean]
+
+
+async def _address_cycle_completed_since(
+    session: "AsyncSession", since: datetime, issue_num_clean: str | None, pr_number: int | None
+) -> bool:
+    """True when a completed address cycle for this PR/issue finished at or after ``since``.
+
+    Two shapes count as a completed address cycle: a ``command:address-pr``
+    run, or a ``developer`` run whose pipeline included a completed
+    ``address_review`` step (the autonomous address-review pipeline).
+    """
+    from sqlalchemy import and_, exists, func, or_, select
+
+    from sova.db.models import StepExecution, TaskRun
+
+    scope = _run_scope_filters(issue_num_clean, pr_number)
+    finished_at = func.coalesce(TaskRun.ended_at, TaskRun.started_at)
+    command_cycle = and_(
+        TaskRun.role == "command:address-pr",
+        TaskRun.status == "done",
+        finished_at >= since,
+        *scope,
+    )
+    pipeline_cycle = and_(
+        TaskRun.role == "developer",
+        TaskRun.status == "done",
+        finished_at >= since,
+        exists(
+            select(1).where(
+                StepExecution.task_run_id == TaskRun.id,
+                StepExecution.step_name == "address_review",
+                StepExecution.status == "done",
+            )
+        ),
+        *scope,
+    )
+    result = await session.execute(select(func.count()).select_from(TaskRun).where(or_(command_cycle, pipeline_cycle)))
+    return result.scalar_one() > 0
+
+
+async def has_address_cycle_since(
+    since: datetime,
+    issue_number: str | None,
+    *,
+    pr_number: int | None,
+    project_dir: "Path | None" = None,
+) -> bool:
+    """Whether this machine's DB records a completed address cycle at or after ``since``.
+
+    Lets a verdict that did not come from the local DB (a ``sova-review``
+    marker found on GitHub, e.g. one posted by the ``/review-pr`` command or by
+    another SOVA instance) still be superseded by an address cycle this
+    machine ran. Fails open to ``False``: an unreadable DB leaves the verdict
+    standing rather than claiming it was addressed.
+    """
+    from sova.db.session import get_session
+
+    has_scope, issue_num_clean = _clean_issue_scope(issue_number, pr_number)
+    if not has_scope:
+        return False
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            return await _address_cycle_completed_since(session, since, issue_num_clean, pr_number)
+    except Exception:  # noqa: BLE001 (DB failure must leave the verdict standing, never fake an address cycle)
+        log.debug("has_address_cycle_since.failed", issue=issue_number, pr=pr_number, exc_info=True)
+        return False
+
+
 async def get_sova_review_verdict(
     issue_number: str | None, *, pr_number: int | None = None, project_dir: "Path | None" = None
 ) -> dict:
@@ -674,12 +779,14 @@ async def get_sova_review_verdict(
     Returns adapter-agnostic review state from SOVA's own TaskRun records,
     independent of any platform-specific review mechanism (GitHub reviews, etc.).
 
-    When pr_number is provided, only runs against that specific PR are considered.
-    This prevents a reviewer verdict from a previous PR version being treated as
-    current when the PR has since been updated by an address-review cycle.
+    When pr_number is provided it is the only scope key: runs are matched on
+    the PR alone, whether or not their issue_number is set (see
+    _run_scope_filters). This prevents a reviewer verdict from a previous PR
+    version being treated as current when the PR has since been updated by an
+    address-review cycle, and it still finds runs recorded before the PR body
+    linked its issue.
 
-    When issue_number is None, pr_number must be provided; the lookup queries
-    solely by PR number (for unlinked standalone PRs with no associated issue).
+    When pr_number is None, issue_number must be provided and is the scope key.
 
     When a completed address cycle exists for the same issue/PR with a
     timestamp newer than the selected reviewer run, returns "addressed"
@@ -696,9 +803,9 @@ async def get_sova_review_verdict(
     the agent's output lines.  Falls back to "revise" if the output contains no
     recognizable verdict pattern.
     """
-    from sqlalchemy import and_, exists, func, or_, select
+    from sqlalchemy import func, select
 
-    from sova.db.models import StepExecution, TaskRun
+    from sova.db.models import TaskRun
     from sova.db.session import get_session
 
     no_review: dict = {
@@ -710,14 +817,11 @@ async def get_sova_review_verdict(
         "review_head_sha": None,
     }
 
-    if issue_number is None and pr_number is None:
+    has_scope, issue_num_clean = _clean_issue_scope(issue_number, pr_number)
+    if not has_scope:
         return no_review
 
-    issue_num_clean = issue_number.lstrip("#").strip() if issue_number is not None else None
-    if issue_num_clean == "":
-        if pr_number is None:
-            return no_review
-        issue_num_clean = None  # fall through to PR-only query
+    scope = _run_scope_filters(issue_num_clean, pr_number)
 
     try:
         async with await get_session(project_dir=project_dir) as session:
@@ -726,11 +830,8 @@ async def get_sova_review_verdict(
                 TaskRun.role.in_(["reviewer", "command:review-pr"]),
                 TaskRun.status.in_(["done", "failed", "interrupted"]),
                 TaskRun.handoff_json.isnot(None),
+                *scope,
             ]
-            if issue_num_clean is not None:
-                filters.append(TaskRun.issue_number == issue_num_clean)
-            if pr_number is not None:
-                filters.append(TaskRun.pr_number == pr_number)
             stmt = (
                 select(TaskRun)
                 .where(*filters)
@@ -749,11 +850,8 @@ async def get_sova_review_verdict(
                     TaskRun.role.in_(["reviewer", "command:review-pr"]),
                     TaskRun.status == "done",
                     TaskRun.handoff_json.is_(None),
+                    *scope,
                 ]
-                if issue_num_clean is not None:
-                    fallback_filters.append(TaskRun.issue_number == issue_num_clean)
-                if pr_number is not None:
-                    fallback_filters.append(TaskRun.pr_number == pr_number)
                 stmt = (
                     select(TaskRun)
                     .where(*fallback_filters)
@@ -768,41 +866,9 @@ async def get_sova_review_verdict(
 
             # If an address cycle completed after this review, the review cycle is
             # done: return "addressed" so a fresh review drives the display rather
-            # than the stale pre-fix verdict. Two shapes count as a completed
-            # address cycle: a `/address-pr` command run, or a `developer` run
-            # whose pipeline included a completed `address_review` step.
+            # than the stale pre-fix verdict.
             run_ts = run.ended_at or run.started_at
-            addr_conditions = [
-                TaskRun.role == "command:address-pr",
-                TaskRun.status == "done",
-                func.coalesce(TaskRun.ended_at, TaskRun.started_at) >= run_ts,
-            ]
-            if issue_num_clean is not None:
-                addr_conditions.append(TaskRun.issue_number == issue_num_clean)
-            if pr_number is not None:
-                addr_conditions.append(TaskRun.pr_number == pr_number)
-
-            pipeline_conditions = [
-                TaskRun.role == "developer",
-                TaskRun.status == "done",
-                func.coalesce(TaskRun.ended_at, TaskRun.started_at) >= run_ts,
-                exists(
-                    select(1).where(
-                        StepExecution.task_run_id == TaskRun.id,
-                        StepExecution.step_name == "address_review",
-                        StepExecution.status == "done",
-                    )
-                ),
-            ]
-            if issue_num_clean is not None:
-                pipeline_conditions.append(TaskRun.issue_number == issue_num_clean)
-            if pr_number is not None:
-                pipeline_conditions.append(TaskRun.pr_number == pr_number)
-
-            superseded_result = await session.execute(
-                select(func.count()).select_from(TaskRun).where(or_(and_(*addr_conditions), and_(*pipeline_conditions)))
-            )
-            superseded = superseded_result.scalar_one() > 0
+            superseded = await _address_cycle_completed_since(session, run_ts, issue_num_clean, pr_number)
 
             if superseded:
                 return {

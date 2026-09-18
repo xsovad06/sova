@@ -527,3 +527,67 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
         mock_adapter.remove_label.assert_any_call(execution_context.issue_number, "sova:revise")
         mock_adapter.remove_label.assert_any_call(execution_context.issue_number, "sova:block")
         assert mock_adapter.remove_label.call_count == 2
+
+
+class TestAddressReviewStepRecordsAddressedFindings:
+    """The step carries the findings it addressed to the post-push summary and the handoff."""
+
+    @pytest.mark.asyncio
+    async def test_findings_stored_on_context(self, execution_context: ExecutionContext) -> None:
+        step = AddressReviewStep()
+        findings = [{"file": "a.py", "line": 1, "description": "bug", "severity": 8, "category": "correctness"}]
+        fake_result = LLMResult(
+            text="done", model="claude-opus-5", cost_usd=Decimal("0.02"), input_tokens=1, output_tokens=1
+        )
+        with (
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(return_value=MagicMock(success=True, stdout="abc123")),
+            ),
+            patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
+            patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+        ):
+            await step.execute(execution_context)
+
+        assert execution_context.addressed_review_findings == findings
+
+
+class TestGithubReviewFindingsSkipAddressSummaries:
+    """An address cycle's own summary review is never re-parsed as a finding."""
+
+    @pytest.mark.asyncio
+    async def test_addressed_marker_bodies_are_skipped(self, execution_context: ExecutionContext) -> None:
+        import json
+
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+
+        execution_context.pr_number = 1063
+        reviews = [
+            {
+                "state": "COMMENTED",
+                "user": {"type": "User"},
+                "body": (
+                    "<!-- sova-addressed: sha=892372e -->\n## Address Review: Round 1\n\n"
+                    "| # | Finding | Action |\n|---|---|---|\n| 1 | x | Addressed. |"
+                ),
+            },
+            {
+                "state": "COMMENTED",
+                "user": {"type": "User"},
+                # The header regex accepts the dashes without surrounding spaces,
+                # which keeps this fixture clear of the no-double-dash invariant.
+                "body": "[HIGH] Correctness --Off-by-one in loop\nLocation: a.py:12\nProblem: loop skips last item",
+            },
+        ]
+        with (
+            patch("sova.utils.gh.resolve_gh_env", new=AsyncMock(return_value={})),
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(return_value=MagicMock(success=True, stdout=json.dumps(reviews))),
+            ),
+        ):
+            findings = await _load_findings_from_github_reviews(execution_context)
+
+        assert len(findings) == 1
+        assert findings[0]["file"] == "a.py"
