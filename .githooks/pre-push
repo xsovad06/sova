@@ -143,8 +143,13 @@ echo "[7/7] Secrets scan (gitleaks)..."
 if command -v gitleaks &>/dev/null; then
   # Scan git history (not the working tree) so gitignored real secrets
   # (.env, .claude/settings.local.json) are never read; the allowlist in
-  # .gitleaks.toml suppresses known-safe test fixtures.
-  if gitleaks git "$REPO_ROOT" --no-banner --redact --config "$REPO_ROOT/.gitleaks.toml"; then
+  # .gitleaks.toml suppresses known-safe test fixtures. --log-opts=HEAD scopes
+  # the scan to the current branch's own history, matching CI's single-ref
+  # checkout: without it, gitleaks enumerates every local branch reachable in
+  # this repo's shared .git directory (including unrelated, unpushed worktree
+  # branches), so a fixture on a sibling in-progress branch can block a push
+  # on this one for a "leak" CI will never see.
+  if gitleaks git "$REPO_ROOT" --log-opts="HEAD" --no-banner --redact --config "$REPO_ROOT/.gitleaks.toml"; then
     echo "  PASS"
   else
     echo "  FAIL (secrets detected -- review the findings above)"

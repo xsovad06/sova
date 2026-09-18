@@ -231,6 +231,8 @@ _REGISTRY: list[SettingMeta] = [
         "Agent runtime",
         "Coding agent backend to use (see sova.toml [agent] for available runtimes)",
         "agent",
+        "select",
+        options=("claude-code", "aider", "codex"),
     ),
     SettingMeta("agent.model", "Model", "Claude model to use for agent work (opus, sonnet, haiku)", "agent"),
     SettingMeta(
@@ -278,6 +280,22 @@ _REGISTRY: list[SettingMeta] = [
         "Empty means SOVA scrubs all of them so the configured provider always wins",
         "agent",
         "list",
+    ),
+    SettingMeta(
+        "codex.model",
+        "Codex model",
+        "Model for the Codex CLI runtime (e.g. gpt-5-codex). Empty uses the Codex CLI's own "
+        "configured default. Only applies when agent.runtime = codex; agent.model is never "
+        "forwarded to codex exec",
+        "agent",
+    ),
+    SettingMeta(
+        "codex.sandbox",
+        "Codex sandbox",
+        "Filesystem/network sandbox policy for Codex CLI spawns. Only applies when agent.runtime = codex",
+        "agent",
+        "select",
+        options=("read-only", "workspace-write"),
     ),
     # Runaway Guards (cost-independent backstops for R6)
     SettingMeta(

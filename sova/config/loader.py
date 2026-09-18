@@ -84,6 +84,7 @@ _NESTED_SECTIONS = (
     "llm",
     "task_source",
     "agent",
+    "codex",
     "review",
     "develop",
     "validation",
@@ -257,6 +258,16 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
             ("uid_attribute", "SOVA_LDAP_UID_ATTRIBUTE"),
             ("allow_insecure", "SOVA_LDAP_ALLOW_INSECURE"),
             ("ca_cert_file", "SOVA_LDAP_CA_CERT_FILE"),
+        ],
+    )
+
+    _apply_nested_env_overrides(
+        merged,
+        "codex",
+        "SOVA_CODEX_",
+        [
+            ("model", "SOVA_CODEX_MODEL"),
+            ("sandbox", "SOVA_CODEX_SANDBOX"),
         ],
     )
 

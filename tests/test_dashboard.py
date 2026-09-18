@@ -5330,6 +5330,71 @@ class TestLLMSettingsAPI:
         assert Decimal(str(data["projected_monthly_usd"])) > 0
 
 
+class TestAgentRuntimeSettingsAPI:
+    """Tests for the agent runtime test-connection endpoint."""
+
+    async def test_test_connection_config_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
+        def boom(*_a, **_kw):
+            raise RuntimeError("bad config")
+
+        monkeypatch.setattr("sova.config.loader.load_config", boom)
+        resp = await client.post("/api/settings/agent-runtime/test-connection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert "Failed to load configuration" in data["detail"]
+
+    async def test_test_connection_runtime_create_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+
+        def boom(*_a, **_kw):
+            raise ValueError("unknown runtime")
+
+        monkeypatch.setattr("sova.ipc.runtime.create_runtime", boom)
+        resp = await client.post("/api/settings/agent-runtime/test-connection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert "unknown runtime" in data["detail"]
+
+    async def test_test_connection_success(self, client: AsyncClient, monkeypatch) -> None:
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr(
+            "sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig(agent={"runtime": "codex"})
+        )
+
+        class _FakeRuntime:
+            async def check_available(self):
+                return True, "codex-cli 0.20.0 (authenticated)"
+
+        monkeypatch.setattr("sova.ipc.runtime.create_runtime", lambda *_a, **_kw: _FakeRuntime())
+        resp = await client.post("/api/settings/agent-runtime/test-connection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["runtime"] == "codex"
+        assert data["detail"] == "codex-cli 0.20.0 (authenticated)"
+
+    async def test_test_connection_check_available_raises_not_500(self, client: AsyncClient, monkeypatch) -> None:
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+
+        class _FakeRuntime:
+            async def check_available(self):
+                raise RuntimeError("cli not found")
+
+        monkeypatch.setattr("sova.ipc.runtime.create_runtime", lambda *_a, **_kw: _FakeRuntime())
+        resp = await client.post("/api/settings/agent-runtime/test-connection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert "cli not found" in data["detail"]
+
+
 class TestSetupAPI:
     async def test_browse_home(self, client: AsyncClient) -> None:
         resp = await client.post("/api/setup/browse", json={"path": ""})

@@ -542,12 +542,12 @@ def create_app(
         # Initialize the global LLM provider from project config.
         # NOTE: in multi_project mode this uses the first resolved dir's config.
         # Per-project provider selection requires threading through ExecutionContext.
-        from sova.ipc.runtime import create_runtime, set_runtime
+        from sova.ipc.runtime import reload_runtime
         from sova.llm.client import reload_provider
 
         cfg = _load_config_or_fail(resolved)
         reload_provider(cfg)
-        set_runtime(create_runtime(cfg.agent.runtime))
+        reload_runtime(cfg)
 
         from sova.core.output import cleanup_old_output
         from sova.dashboard.services.agent_recovery import _kill_terminal_zombies

@@ -242,6 +242,7 @@ async function loadConfig() {
     // Inject LLM-specific tools and toggle the API key row before measuring
     // group heights so the restored maxHeight reflects the final DOM.
     enhanceLLMGroup();
+    enhanceAgentGroup();
 
     // Restore previously expanded groups without animation, or auto-expand first on initial load
     var toExpand = expanded.length > 0 ? expanded : (groups.length > 0 ? [groups[0].id] : []);
@@ -469,23 +470,61 @@ function enhanceLLMGroup() {
   loadCostProjection();
 }
 
-async function testLLMConnection() {
-  var el = document.getElementById('llm-test-result');
+async function _testConnection(url, elId, successPrefix, failureFallback) {
+  var el = document.getElementById(elId);
   if (el) { el.textContent = 'Testing...'; el.className = 'text-xs text-gray-500'; }
   try {
-    var res = await fetch(apiUrl('/settings/llm/test-connection'), { method: 'POST' });
+    var res = await fetch(apiUrl(url), { method: 'POST' });
     var data = await res.json();
     if (!el) return;
     if (data.ok) {
-      el.textContent = 'Connected' + (data.detail ? ' (' + data.detail + ')' : '');
+      el.textContent = successPrefix + (data.detail ? ' (' + data.detail + ')' : '');
       el.className = 'text-xs text-green-400';
     } else {
-      el.textContent = 'Failed: ' + (data.detail || 'provider unavailable');
+      el.textContent = 'Failed: ' + (data.detail || failureFallback);
       el.className = 'text-xs text-red-400';
     }
   } catch (e) {
     if (el) { el.textContent = 'Failed: ' + e.message; el.className = 'text-xs text-red-400'; }
   }
+}
+
+async function testLLMConnection() {
+  return _testConnection('/settings/llm/test-connection', 'llm-test-result', 'Connected', 'provider unavailable');
+}
+
+function enhanceAgentGroup() {
+  var runtimeSpan = document.querySelector('.config-val[data-key="agent.runtime"]');
+  var runtime = 'claude-code';
+  if (runtimeSpan && runtimeSpan.dataset.raw) {
+    try { runtime = JSON.parse(runtimeSpan.dataset.raw); } catch (e) { runtime = 'claude-code'; }
+  }
+
+  // codex.* settings only apply when agent.runtime = codex; hide them
+  // otherwise (the stored value is retained server-side, not deleted).
+  ['codex.model', 'codex.sandbox'].forEach(function(key) {
+    var span = document.querySelector('.config-val[data-key="' + key + '"]');
+    if (span) {
+      var row = span.closest('tr');
+      if (row) row.style.display = (runtime === 'codex') ? '' : 'none';
+    }
+  });
+
+  var body = document.getElementById('group-body-agent');
+  if (!body || document.getElementById('agent-runtime-tools')) return;
+  var panel = document.createElement('div');
+  panel.id = 'agent-runtime-tools';
+  panel.className = 'px-4 py-3 border-t border-gray-700/20 space-y-2';
+  panel.innerHTML =
+    '<div class="flex items-center gap-3">' +
+      '<button type="button" onclick="testAgentRuntimeConnection()" class="sova-btn sova-btn-primary text-xs">Test Runtime</button>' +
+      '<span id="agent-runtime-test-result" class="text-xs text-gray-500"></span>' +
+    '</div>';
+  body.appendChild(panel);
+}
+
+async function testAgentRuntimeConnection() {
+  return _testConnection('/settings/agent-runtime/test-connection', 'agent-runtime-test-result', 'Available', 'runtime unavailable');
 }
 
 async function loadCostProjection() {

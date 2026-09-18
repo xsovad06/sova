@@ -12,5 +12,4 @@ useDefault = true
 description = "Egress filter tests use fake token-shaped strings as fixtures"
 paths = [
     '''tests/test_egress\.py''',
-    '''tests/test_codex_parser\.py''',
 ]
