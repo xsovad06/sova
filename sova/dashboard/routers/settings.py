@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
+from typing import Protocol
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -204,6 +206,49 @@ async def get_config_grouped() -> dict:
         raise HTTPException(status_code=500, detail=detail) from None
 
 
+class _AvailabilityCheckable(Protocol):
+    """Anything exposing the ``(available, detail)`` readiness probe contract."""
+
+    async def check_available(self) -> tuple[bool, str]: ...
+
+
+async def _check_component_availability(
+    result_key: str,
+    log_prefix: str,
+    resolve_name: Callable[[ProjectConfig], str],
+    build: Callable[[ProjectConfig], _AvailabilityCheckable],
+) -> dict:
+    """Shared body for the LLM-provider and agent-runtime connection tests.
+
+    Both load the project config, build a component from it, and report that
+    component's ``check_available()`` result. Every failure (config load,
+    construction, or the probe itself) is returned inline as
+    ``{ok: false, <result_key>: ..., detail: ...}`` rather than as a 500.
+    """
+    from sova.config.loader import load_config
+
+    try:
+        cfg = load_config(get_project_dir())
+    except Exception as exc:  # noqa: BLE001 (report config errors inline, not as 500)
+        log.warning(f"{log_prefix}.config_error", exc_info=True)
+        return {"ok": False, result_key: None, "detail": f"Failed to load configuration: {exc}"}
+
+    name = resolve_name(cfg)
+    try:
+        component = build(cfg)
+    except Exception as exc:  # noqa: BLE001 (misconfiguration must not 500)
+        log.info(f"{log_prefix}.create_failed", name=name, exc_info=True)
+        return {"ok": False, result_key: name, "detail": str(exc)}
+
+    try:
+        available, detail = await component.check_available()
+    except Exception as exc:  # noqa: BLE001 (component errors must not 500)
+        log.info(f"{log_prefix}.check_failed", name=name, exc_info=True)
+        return {"ok": False, result_key: name, "detail": str(exc)}
+
+    return {"ok": bool(available), result_key: name, "detail": detail}
+
+
 @router.post("/settings/llm/test-connection")
 async def test_llm_connection() -> dict:
     """Validate the configured LLM provider credentials.
@@ -212,29 +257,33 @@ async def test_llm_connection() -> dict:
     ``check_available``) so it stays provider-agnostic. Any construction or
     validation error is returned as ``{ok: false, detail}`` rather than a 500.
     """
-    from sova.config.loader import load_config
     from sova.llm.provider import create_provider
 
-    try:
-        project_dir = get_project_dir()
-        cfg = load_config(project_dir)
-    except Exception as exc:  # noqa: BLE001 (report config errors inline, not as 500)
-        log.warning("settings.llm.test.config_error", exc_info=True)
-        return {"ok": False, "provider": None, "detail": f"Failed to load configuration: {exc}"}
+    return await _check_component_availability(
+        "provider",
+        "settings.llm.test",
+        lambda cfg: cfg.llm.provider,
+        lambda cfg: create_provider(cfg.llm),
+    )
 
-    try:
-        provider = create_provider(cfg.llm)
-    except Exception as exc:  # noqa: BLE001 (misconfiguration must not 500)
-        log.info("settings.llm.test.create_failed", provider=cfg.llm.provider, exc_info=True)
-        return {"ok": False, "provider": cfg.llm.provider, "detail": str(exc)}
 
-    try:
-        available, detail = await provider.check_available()
-    except Exception as exc:  # noqa: BLE001 (provider errors must not 500)
-        log.info("settings.llm.test.check_failed", provider=cfg.llm.provider, exc_info=True)
-        return {"ok": False, "provider": cfg.llm.provider, "detail": str(exc)}
+@router.post("/settings/agent-runtime/test-connection")
+async def test_agent_runtime_connection() -> dict:
+    """Validate the configured agent runtime CLI (claude-code, aider, or codex).
 
-    return {"ok": bool(available), "provider": cfg.llm.provider, "detail": detail}
+    Mirrors ``/settings/llm/test-connection``: routes through the runtime
+    abstraction (``create_runtime`` + ``check_available``) so it stays
+    runtime-agnostic, and any construction or validation error is returned as
+    ``{ok: false, detail}`` rather than a 500.
+    """
+    from sova.ipc.runtime import create_runtime
+
+    return await _check_component_availability(
+        "runtime",
+        "settings.runtime.test",
+        lambda cfg: cfg.agent.runtime,
+        lambda cfg: create_runtime(cfg.agent.runtime, codex=cfg.codex),
+    )
 
 
 def _decimal_to_float(obj: object) -> object:
@@ -287,6 +336,7 @@ _RELOAD_PREFIX_MAP: dict[str, str] = {
     "integration.": "integration",
     "llm.": "llm",
     "agent.runtime": "runtime",
+    "codex.": "runtime",
 }
 
 

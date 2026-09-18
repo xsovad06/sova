@@ -16,17 +16,14 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+from sova.config.models import CodexConfig, ProjectConfig
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
 from sova.llm.models import LLMResult, StreamEvent
 from sova.utils.env import ANTHROPIC_CREDENTIAL_VARS, configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
-
-if TYPE_CHECKING:
-    from sova.config.models import ProjectConfig
 
 log = get_logger(component="ipc.runtime")
 
@@ -561,7 +558,15 @@ class CodexRuntime(AgentRuntime):
     references its ``/compact`` command), so SOVA's pipeline-boundary
     guardrails are absent, and ``parse_output()`` returns each JSONL line
     verbatim instead of mapping it to content and result events.
+
+    Model and sandbox policy come from ``CodexConfig`` (``[codex]`` in
+    ``sova.toml``), passed in at construction via ``create_runtime(codex=...)``.
+    The caller-supplied ``model`` argument to ``spawn()`` is a Claude model id
+    resolved from ``agent.model`` and is never forwarded to ``codex exec``.
     """
+
+    def __init__(self, config: CodexConfig | None = None) -> None:
+        self._config = config if config is not None else CodexConfig()
 
     @property
     def name(self) -> str:
@@ -593,17 +598,18 @@ class CodexRuntime(AgentRuntime):
                 hint="Codex CLI does not support budget caps; cost is not limited",
             )
 
-        args: list[str] = ["codex", "exec", "--json", "--sandbox", "workspace-write"]
+        args: list[str] = ["codex", "exec", "--json", "--sandbox", self._config.sandbox]
 
-        if model:
-            args.extend(["--model", model])
+        codex_model = self._config.model
+        if codex_model:
+            args.extend(["--model", codex_model])
 
         # "--" is required: codex exec takes PROMPT as a positional argument
         # (clap-based parser), so a prompt starting with "-" would otherwise
         # be misread as an unrecognized option.
         args.extend(["--", prompt])
 
-        log.info("codex.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
+        log.info("codex.spawn", cwd=str(cwd), model=codex_model, prompt_len=len(prompt))
 
         return await _spawn_agent_process(
             args,
@@ -715,11 +721,13 @@ _RUNTIMES: dict[str, type[AgentRuntime]] = {
 }
 
 
-def create_runtime(runtime_type: str = "claude-code") -> AgentRuntime:
+def create_runtime(runtime_type: str = "claude-code", *, codex: CodexConfig | None = None) -> AgentRuntime:
     """Create an AgentRuntime instance by type name.
 
     Args:
         runtime_type: Runtime identifier (e.g., "claude-code", "aider", "codex").
+        codex: Codex-specific config, forwarded to ``CodexRuntime`` when
+            ``runtime_type == "codex"``. Ignored for every other runtime type.
 
     Returns:
         An AgentRuntime instance.
@@ -736,6 +744,9 @@ def create_runtime(runtime_type: str = "claude-code") -> AgentRuntime:
     if cls is None:
         available = ", ".join(sorted([*_RUNTIMES, "mock"]))
         raise ValueError(f"Unknown agent runtime: {runtime_type!r}. Available: {available}")
+
+    if cls is CodexRuntime:
+        return CodexRuntime(config=codex)
     return cls()
 
 
@@ -760,10 +771,10 @@ def set_runtime(runtime: AgentRuntime) -> None:
     _runtime = runtime
 
 
-def reload_runtime(cfg: "ProjectConfig") -> None:
+def reload_runtime(cfg: ProjectConfig) -> None:
     """Recreate the global agent runtime from fresh config.
 
     Python's GIL ensures the reference swap is atomic. In-flight spawns
     hold their own reference to the old runtime via the returned process.
     """
-    set_runtime(create_runtime(cfg.agent.runtime))
+    set_runtime(create_runtime(cfg.agent.runtime, codex=cfg.codex))

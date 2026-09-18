@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,6 +11,7 @@ import pytest
 
 from sova.core.context import ExecutionContext
 from sova.core.workflow import WorkflowEngine
+from sova.db.session import close_db, init_db
 from sova.llm.complexity import ComplexityTier
 
 
@@ -329,6 +331,42 @@ class TestStepDeadlineRunawayInteraction:
         adapter = MagicMock()
         adapter.repo = "test/repo"
         return adapter
+
+    @pytest.fixture(autouse=True)
+    async def setup_db(self):
+        """Isolate DB access to an in-memory SQLite DB for this test.
+
+        ``engine.run()`` below drives ``WorkflowEngine`` end to end, including
+        ``_check_per_issue_budget()``, which calls the DB-session-less
+        ``get_session()``. With no project context var set (that's only wired
+        up by the dashboard request middleware and the PR-monitor daemon, not
+        by a bare ``WorkflowEngine`` in a test), an un-isolated run falls back
+        to the developer machine's real default DB (``~/.config/sova/sova.db``)
+        and both reads and writes real ``TaskRun`` rows there. Repeated test
+        runs then accumulate real cost against issue "977" until the per-issue
+        budget check starts tripping on stale production data instead of the
+        scenario this test constructs. Mirrors the isolation pattern in
+        ``tests/test_core.py``'s ``setup_db`` fixture.
+
+        Restores rather than unconditionally pops ``SOVA_DATABASE_URL`` on
+        cleanup, and wraps the whole body in try/finally, so a value already
+        set by the caller (or an exception raised by ``init_db()`` itself)
+        can never leak this test's in-memory URL into later tests in the
+        same process.
+        """
+        previous_database_url = os.environ.get("SOVA_DATABASE_URL")
+        try:
+            os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+            await init_db(run_migrations=False)
+            yield
+        finally:
+            try:
+                await close_db()
+            finally:
+                if previous_database_url is None:
+                    os.environ.pop("SOVA_DATABASE_URL", None)
+                else:
+                    os.environ["SOVA_DATABASE_URL"] = previous_database_url
 
     async def test_runaway_capped_deadline_pauses_not_fails(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         import asyncio

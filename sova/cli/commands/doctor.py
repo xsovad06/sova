@@ -338,7 +338,7 @@ async def _check_agent_runtime(project_dir: Path) -> list[_Check]:
         cfg = load_config(project_dir)
         runtime_type = cfg.agent.runtime
         try:
-            runtime = create_runtime(runtime_type)
+            runtime = create_runtime(runtime_type, codex=cfg.codex)
         except ValueError as exc:
             checks.append((_LABEL, False, str(exc), True))
             return checks

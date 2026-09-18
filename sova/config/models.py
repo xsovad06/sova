@@ -133,10 +133,9 @@ class LLMConfig(BaseSettings):
 class AgentConfig(BaseSettings):
     """Agent behavior configuration."""
 
-    # Subset of the sova/ipc/runtime.py:_RUNTIMES registry that is selectable from config.
-    # "codex" is registered in that factory but deliberately not offered here yet:
-    # config and dashboard selection for it are follow-up work under epic #940.
-    runtime: Literal["claude-code", "aider"] = "claude-code"
+    # Must match the sova/ipc/runtime.py:_RUNTIMES registry keys exactly (pinned by
+    # tests/test_ipc.py::test_runtime_literal_matches_registry_and_settings_meta).
+    runtime: Literal["claude-code", "aider", "codex"] = "claude-code"
     model: str = "opus"
     fallback_models: list[str] = Field(default_factory=list)
     max_budget: Decimal = Field(Decimal("10.00"), gt=0)
@@ -147,6 +146,27 @@ class AgentConfig(BaseSettings):
     env_passthrough: list[str] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_AGENT_")
+
+
+class CodexConfig(BaseSettings):
+    """Codex CLI runtime configuration, used only when agent.runtime = "codex".
+
+    Deliberately minimal: user-level Codex configuration (profiles, MCP
+    servers, approval policy, reasoning effort) remains owned by Codex's own
+    ``config.toml``. This section only covers what SOVA's spawn boundary
+    needs to select a model and a sandbox policy per project.
+    """
+
+    # Empty means the Codex CLI's own configured default model is used.
+    # CodexRuntime.spawn() never forwards the caller-supplied model (a Claude
+    # model id resolved from agent.model) to `codex exec --model`.
+    model: str = ""
+    # "danger-full-access" is deliberately not a valid value: the default
+    # spawn surface must never grant Codex unrestricted filesystem/network
+    # access.
+    sandbox: Literal["read-only", "workspace-write"] = "workspace-write"
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CODEX_")
 
 
 class ReviewPanelConfig(BaseSettings):
@@ -981,6 +1001,7 @@ class ProjectConfig(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     task_source: TaskSourceConfig = Field(default_factory=TaskSourceConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    codex: CodexConfig = Field(default_factory=CodexConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     develop: DevelopConfig = Field(default_factory=DevelopConfig)
     validation: ValidateConfig = Field(default_factory=ValidateConfig)

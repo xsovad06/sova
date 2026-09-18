@@ -1525,6 +1525,28 @@ class TestDoctorHelpers:
         assert len(checks) == 1
         assert checks[0][1] is False
 
+    async def test_check_agent_runtime_codex_forwards_config(self, tmp_path: Path) -> None:
+        """The [codex] section must reach create_runtime() so CodexRuntime probes with it."""
+        from sova.cli.commands.doctor import _check_agent_runtime
+        from sova.config.models import CodexConfig
+
+        codex_cfg = CodexConfig(model="gpt-5-codex")
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.ipc.runtime.create_runtime") as mock_create,
+        ):
+            mock_cfg.return_value.agent.runtime = "codex"
+            mock_cfg.return_value.codex = codex_cfg
+            mock_rt = MagicMock()
+            mock_rt.check_available = AsyncMock(return_value=(True, "authenticated"))
+            mock_create.return_value = mock_rt
+
+            checks = await _check_agent_runtime(tmp_path)
+
+        mock_create.assert_called_once_with("codex", codex=codex_cfg)
+        assert len(checks) == 1
+        assert checks[0][1] is True
+
 
 # ---------------------------------------------------------------------------
 # Triage helper functions
