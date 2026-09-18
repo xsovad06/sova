@@ -539,6 +539,9 @@ async def get_review_thread_counts(
     return {n: (v.thread_total, v.thread_resolved) if v is not None else None for n, v in data.items()}
 
 
+_GET_PR_BRANCH_FAILED_EVENT = "git.get_pr_branch.failed"
+
+
 async def get_pr_branch(pr_number: int, *, repo: str, github_user: str = "") -> str:
     """Get the head branch name of a PR. Returns empty string on failure."""
     env = await resolve_gh_env(github_user)
@@ -555,12 +558,17 @@ async def get_pr_branch(pr_number: int, *, repo: str, github_user: str = "") -> 
     )
     _track_gh_rate_limit(result, github_user)
     if not result.success:
+        log.warning(_GET_PR_BRANCH_FAILED_EVENT, pr=pr_number, reason="gh_command_failed", stderr=result.stderr[:200])
         return ""
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
+        log.warning(_GET_PR_BRANCH_FAILED_EVENT, pr=pr_number, reason="json_decode_failed", stdout=result.stdout[:200])
         return ""
-    return data.get("headRefName", "") or ""
+    branch = data.get("headRefName", "") or ""
+    if not branch:
+        log.warning(_GET_PR_BRANCH_FAILED_EVENT, pr=pr_number, reason="missing_head_ref_name")
+    return branch
 
 
 async def get_pr_head_sha(pr_number: int, *, repo: str, github_user: str = "") -> str:
