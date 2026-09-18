@@ -880,7 +880,7 @@ class WorkflowEngine:
             return
 
         max_issue_budget = self._ctx.config.agent.max_issue_budget
-        async with await get_session() as session:
+        async with await get_session(self._ctx.project_dir) as session:
             from sqlalchemy import func, select
 
             _TERMINAL = ("done", "failed", "rejected", "interrupted", "paused")
@@ -915,7 +915,7 @@ class WorkflowEngine:
 
     async def _create_task_run(self) -> int:
         """Create the initial TaskRun record and return its ID."""
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             task_run = TaskRun(
                 issue_number=self._ctx.issue_number or None,
                 run_label=self._ctx.run_label,
@@ -940,7 +940,7 @@ class WorkflowEngine:
         which surfaces DB path mismatches instead of silently proceeding
         with no step tracking.
         """
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             task_run = await session.get(TaskRun, self._task_run_id)
             if not task_run:
                 db_url = os.environ.get("SOVA_DATABASE_URL", str(self._ctx.project_dir / ".claude" / "sova.db"))
@@ -959,14 +959,14 @@ class WorkflowEngine:
 
     async def _set_current_step(self, step_name: str) -> None:
         """Update the current_step field on the TaskRun."""
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             task_run = await session.get(TaskRun, self._task_run_id)
             if task_run:
                 task_run.current_step = step_name
 
     async def _update_task_run_status(self, status: TaskStatus, *, error: str | None = None) -> None:
         """Update the TaskRun status and optional error message."""
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             task_run = await session.get(TaskRun, self._task_run_id)
             if task_run:
                 task_run.status = status.value
@@ -978,7 +978,7 @@ class WorkflowEngine:
 
     async def _sync_task_run_context(self) -> None:
         """Persist mutable context fields to the TaskRun so they survive crashes and are available on resume."""
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             task_run = await session.get(TaskRun, self._task_run_id)
             if task_run:
                 task_run.branch_name = self._ctx.branch_name
@@ -995,7 +995,7 @@ class WorkflowEngine:
 
     async def _finalize_task_run(self) -> None:
         """Write final state to the TaskRun after successful completion."""
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             task_run = await session.get(TaskRun, self._task_run_id)
             if task_run:
                 task_run.total_cost_usd = self._ctx.cost_usd
@@ -1011,7 +1011,7 @@ class WorkflowEngine:
         if step_exec_id is None:
             return
         try:
-            async with await get_session() as session, session.begin():
+            async with await get_session(self._ctx.project_dir) as session, session.begin():
                 step_exec = await session.get(StepExecution, step_exec_id)
                 if step_exec:
                     step_exec.status = status
@@ -1054,7 +1054,7 @@ class WorkflowEngine:
         ended_at: datetime | None = None,
     ) -> int:
         """Create a StepExecution record and return its ID."""
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             step_exec = StepExecution(
                 task_run_id=self._task_run_id,
                 step_name=step_name,
@@ -1073,7 +1073,7 @@ class WorkflowEngine:
 
     async def _update_step_execution(self, step_exec_id: int, result: StepResult, elapsed_ms: int) -> None:
         """Update a StepExecution after step completion."""
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             record = await session.get(StepExecution, step_exec_id)
             if record:
                 record.status = "done" if result.success else "failed"
@@ -1107,7 +1107,7 @@ class WorkflowEngine:
 
     async def _update_step_execution_gate(self, step_exec_id: int, gate: GateCheckResult) -> None:
         """Record gate check result on the StepExecution."""
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             record = await session.get(StepExecution, step_exec_id)
             if record:
                 record.gate_check_result = gate.reason
@@ -1115,7 +1115,7 @@ class WorkflowEngine:
 
     async def _record_failure(self, step_name: str, failure_type: str, message: str) -> None:
         """Create a FailureRecord for dashboard observability."""
-        async with await get_session() as session, session.begin():
+        async with await get_session(self._ctx.project_dir) as session, session.begin():
             failure = FailureRecord(
                 task_run_id=self._task_run_id,
                 step_name=step_name,

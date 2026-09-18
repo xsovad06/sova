@@ -765,6 +765,58 @@ class TestWorkflowEngine:
         assert ctx.task_run_id is not None
         assert result.task_run_id == ctx.task_run_id
 
+    async def test_db_writes_use_explicit_project_dir_not_ambient_contextvar(self, tmp_path: Path) -> None:
+        """WorkflowEngine DB session calls must route via ctx.project_dir, never the ambient contextvar.
+
+        Regression test for PR #1069 review: get_session() with no argument
+        falls back to sova.config.context.get_project_dir(), so a call site
+        that forgot to pass project_dir would silently write to whatever
+        project the contextvar happens to be scoped to (e.g. stale state in
+        multi-project dashboard mode). WorkflowEngine passes
+        self._ctx.project_dir explicitly at every DB call site instead. This
+        points the contextvar at a different project directory than
+        ctx.project_dir and confirms the TaskRun still lands in
+        ctx.project_dir's database, not the contextvar's.
+        """
+        import os
+
+        from sova.config.context import clear_project_context, set_project_context
+        from sova.db.session import _engines, init_db_for_project
+
+        real_dir = tmp_path / "real-project"
+        other_dir = tmp_path / "other-project"
+        real_url = f"sqlite+aiosqlite:///{real_dir}/.claude/sova.db"
+        other_url = f"sqlite+aiosqlite:///{other_dir}/.claude/sova.db"
+
+        # The module-wide autouse setup_db fixture points every project_dir at
+        # the same in-memory DB, which would mask the routing bug this test
+        # exists to catch.
+        saved_url = os.environ.pop("SOVA_DATABASE_URL", None)
+        try:
+            with patch("sova.db.session._backup_db"):
+                await init_db_for_project(real_dir)
+                await init_db_for_project(other_dir)
+
+            ctx = _make_ctx(project_dir=real_dir)
+            engine = WorkflowEngine(steps=[], ctx=ctx)
+
+            set_project_context(other_dir, "other")
+            try:
+                task_run_id = await engine._create_task_run()
+            finally:
+                clear_project_context()
+
+            async with await get_session(real_dir) as real_session:
+                assert await real_session.get(TaskRun, task_run_id) is not None
+
+            async with await get_session(other_dir) as other_session:
+                assert await other_session.get(TaskRun, task_run_id) is None
+        finally:
+            if saved_url is not None:
+                os.environ["SOVA_DATABASE_URL"] = saved_url
+            _engines.pop(real_url, None)
+            _engines.pop(other_url, None)
+
     async def test_create_step_execution_db_error_retries(self) -> None:
         """When _create_step_execution raises, the engine retries and can still succeed."""
         ctx = _make_ctx()
@@ -7232,6 +7284,20 @@ class TestPushStepExecute:
             cwd=Path("/tmp/worktree"),
             no_verify=True,
         )
+
+    async def test_execute_rejects_empty_branch_name(self) -> None:
+        """An empty branch_name must fail fast without ever calling git_ops.push."""
+        from sova.core.steps.push import PushStep
+
+        ctx = _make_ctx(branch_name="", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "branch_name is empty" in result.error
+        mock_push.assert_not_awaited()
 
     async def test_execute_handles_push_failure(self) -> None:
         from sova.core.steps.push import PushStep

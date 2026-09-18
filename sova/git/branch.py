@@ -153,6 +153,9 @@ async def push(
     no_verify: bool = False,
 ) -> None:
     """Push a branch to origin."""
+    if not branch:
+        raise RuntimeError("Cannot push: branch name is empty")
+
     log.info("git.push", branch=branch, force=force)
 
     args = ["git", "push", "origin", branch]

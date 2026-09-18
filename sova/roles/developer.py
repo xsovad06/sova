@@ -112,7 +112,12 @@ class DeveloperRole(AgentRole):
         )
 
     async def _execute_address_review(self, ctx: ExecutionContext) -> RoleResult:
-        await self._discover_address_review_context(ctx)
+        try:
+            await self._discover_address_review_context(ctx)
+        except RuntimeError as exc:
+            log.error("developer.address_review.discovery_failed", error=str(exc), exc_info=True)
+            return RoleResult(success=False, summary="Address-review context discovery failed", error=str(exc))
+
         log.info(
             "developer.address_review.start",
             issue=ctx.issue_number,
@@ -187,3 +192,8 @@ class DeveloperRole(AgentRole):
                     log.info("developer.discovered_worktree_by_branch", branch=ctx.branch_name, path=str(wt_path))
             except (RuntimeError, OSError):
                 log.debug("developer.branch_worktree_lookup_failed", exc_info=True)
+
+        if not ctx.branch_name:
+            raise RuntimeError(
+                f"Cannot resolve branch_name for address-review pipeline (pr={ctx.pr_number}, issue={ctx.issue_number})"
+            )
