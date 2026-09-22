@@ -18,6 +18,9 @@ class PushStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.push", branch=ctx.branch_name, cwd=str(ctx.working_dir))
 
+        if not ctx.branch_name:
+            return StepResult(success=False, summary="Push failed", error="Cannot push: branch_name is empty")
+
         force = ctx.pr_number is not None
         # Dollar budget only, not the composite resource_remaining_fraction:
         # wall-clock or LLM-call pressure alone must never disable the

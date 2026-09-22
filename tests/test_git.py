@@ -25,6 +25,7 @@ from sova.git.operations import (
     get_ci_failure_logs,
     get_current_branch,
     get_pr_body,
+    get_pr_branch,
     get_pr_branch_and_head_sha,
     get_pr_diff,
     get_pr_files,
@@ -551,6 +552,13 @@ class TestPush:
 
             call_args = mock_run.call_args[0]
             assert "--no-verify" not in call_args
+
+    async def test_rejects_empty_branch(self) -> None:
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            with pytest.raises(RuntimeError, match="branch name is empty"):
+                await push("", cwd=Path("/repo"))
+
+            mock_run.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -2103,6 +2111,43 @@ class TestGetPrFiles:
             mock_run.return_value = _shell_fail(stderr="not found")
             with pytest.raises(RuntimeError, match="Failed to get files"):
                 await get_pr_files(42, repo="user/repo")
+
+
+class TestGetPrBranch:
+    async def test_returns_branch(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout='{"headRefName": "feat/x"}')
+            result = await get_pr_branch(42, repo="user/repo")
+
+        assert result == "feat/x"
+
+    async def test_logs_warning_and_returns_empty_on_command_failure(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run, patch("sova.git.pr.log") as mock_log:
+            mock_run.return_value = _shell_fail(stderr="not found")
+            result = await get_pr_branch(42, repo="user/repo")
+
+        assert result == ""
+        mock_log.warning.assert_called_once_with(
+            "git.get_pr_branch.failed", pr=42, reason="gh_command_failed", stderr="not found"
+        )
+
+    async def test_logs_warning_and_returns_empty_on_malformed_json(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run, patch("sova.git.pr.log") as mock_log:
+            mock_run.return_value = _shell_ok(stdout="not json")
+            result = await get_pr_branch(42, repo="user/repo")
+
+        assert result == ""
+        mock_log.warning.assert_called_once_with(
+            "git.get_pr_branch.failed", pr=42, reason="json_decode_failed", stdout="not json"
+        )
+
+    async def test_logs_warning_and_returns_empty_on_missing_head_ref_name(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run, patch("sova.git.pr.log") as mock_log:
+            mock_run.return_value = _shell_ok(stdout="{}")
+            result = await get_pr_branch(42, repo="user/repo")
+
+        assert result == ""
+        mock_log.warning.assert_called_once_with("git.get_pr_branch.failed", pr=42, reason="missing_head_ref_name")
 
 
 class TestGetPrHeadSha:
