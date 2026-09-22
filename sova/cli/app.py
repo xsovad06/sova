@@ -89,12 +89,12 @@ _CONFIG_TOLERANT_COMMANDS = frozenset({"doctor"})
 
 def _init_llm_provider() -> None:
     """Initialize the global LLM provider and agent runtime from project config."""
-    from sova.ipc.runtime import create_runtime, set_runtime
+    from sova.ipc.runtime import reload_runtime
     from sova.llm.client import reload_provider
 
     cfg = load_config()
     reload_provider(cfg)
-    set_runtime(create_runtime(cfg.agent.runtime))
+    reload_runtime(cfg)
 
 
 def version_callback(value: bool) -> None:

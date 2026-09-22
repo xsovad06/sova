@@ -758,6 +758,7 @@ class TestSingletonReload:
         new = get_runtime()
         assert new is mock_rt
         assert new is not old
+        mock_create.assert_called_once_with("claude-code", codex=cfg.codex)
 
         set_runtime(old)
 
@@ -784,6 +785,8 @@ class TestMatchReloadTarget:
         from sova.dashboard.routers.settings import _match_reload_target
 
         assert _match_reload_target("agent.runtime") == "runtime"
+        assert _match_reload_target("codex.model") == "runtime"
+        assert _match_reload_target("codex.sandbox") == "runtime"
 
     def test_no_match_returns_none(self) -> None:
         from sova.dashboard.routers.settings import _match_reload_target

@@ -539,6 +539,72 @@ def test_llm_provider_settings_meta_matches_literal() -> None:
     assert set(meta.options or ()) == set(literal_values)
 
 
+def test_agent_runtime_accepts_codex() -> None:
+    """agent.runtime = "codex" is a valid Literal value."""
+    from sova.config.models import AgentConfig
+
+    cfg = AgentConfig(runtime="codex")
+    assert cfg.runtime == "codex"
+
+
+def test_load_config_invalid_agent_runtime_raises_runtime_error(tmp_path: Path) -> None:
+    """A stale/bad agent.runtime value raises a readable RuntimeError, not a raw ValidationError."""
+    toml_content = """
+[agent]
+runtime = "codex-cli"
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+
+    with pytest.raises(RuntimeError, match="agent.runtime") as exc_info:
+        load_config(tmp_path)
+    assert not isinstance(exc_info.value, ValidationError)
+
+
+def test_codex_config_defaults() -> None:
+    from sova.config.models import CodexConfig
+
+    cfg = CodexConfig()
+    assert cfg.model == ""
+    assert cfg.sandbox == "workspace-write"
+
+
+def test_codex_config_rejects_danger_full_access() -> None:
+    """danger-full-access must be unreachable from config: it is absent from the Literal."""
+    from sova.config.models import CodexConfig
+
+    with pytest.raises(ValidationError):
+        CodexConfig(sandbox="danger-full-access")
+
+
+def test_codex_section_loaded_from_toml(tmp_path: Path) -> None:
+    toml_content = """
+[codex]
+model = "gpt-5-codex"
+sandbox = "read-only"
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.codex.model == "gpt-5-codex"
+    assert cfg.codex.sandbox == "read-only"
+
+
+def test_codex_section_present_without_codex_runtime_is_inert(tmp_path: Path) -> None:
+    """A [codex] section loads and validates even when agent.runtime stays claude-code."""
+    toml_content = """
+[agent]
+runtime = "claude-code"
+
+[codex]
+model = "gpt-5-codex"
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.agent.runtime == "claude-code"
+    assert cfg.codex.model == "gpt-5-codex"
+
+
 def test_shared_knowledge_path_expansion() -> None:
     """Shared knowledge dir expands ~ to home."""
     cfg = ProjectConfig()
@@ -1460,3 +1526,20 @@ def test_ldap_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.Monkey
     cfg = load_config(tmp_path)
     assert cfg.ldap.enabled is True
     assert cfg.ldap.server == "ldaps://ldap.override.example.com"
+
+
+def test_codex_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SOVA_CODEX_* env vars override TOML/database codex settings.
+
+    Without a "codex" entry in _apply_env_overrides(), SOVA_CODEX_MODEL and
+    SOVA_CODEX_SANDBOX had no effect once [codex] was present in sova.toml,
+    since ProjectConfig(**merged) only ever saw the stored TOML values.
+    """
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text('[codex]\nmodel = "stored-model"\nsandbox = "read-only"\n')
+    monkeypatch.setenv("SOVA_CODEX_MODEL", "override-model")
+    monkeypatch.setenv("SOVA_CODEX_SANDBOX", "workspace-write")
+
+    cfg = load_config(tmp_path)
+    assert cfg.codex.model == "override-model"
+    assert cfg.codex.sandbox == "workspace-write"

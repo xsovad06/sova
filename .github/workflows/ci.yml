@@ -292,7 +292,7 @@ jobs:
           gitleaks version
 
       - name: Run gitleaks
-        run: gitleaks git . --no-banner --redact --config .gitleaks.toml
+        run: gitleaks git . --log-opts="HEAD" --no-banner --redact --config .gitleaks.toml
 
   invariants:
     name: Invariants

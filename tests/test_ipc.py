@@ -1042,12 +1042,50 @@ class TestAgentRuntimeABC:
 
         rt = create_runtime("codex")
         assert isinstance(rt, CodexRuntime)
+        assert rt._config.model == ""
+        assert rt._config.sandbox == "workspace-write"
+
+    def test_create_runtime_codex_forwards_config(self) -> None:
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime, create_runtime
+
+        cfg = CodexConfig(model="gpt-5-codex", sandbox="read-only")
+        rt = create_runtime("codex", codex=cfg)
+        assert isinstance(rt, CodexRuntime)
+        assert rt._config is cfg
+
+    def test_create_runtime_codex_config_ignored_for_other_runtimes(self) -> None:
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import ClaudeCodeRuntime, create_runtime
+
+        rt = create_runtime("claude-code", codex=CodexConfig(model="gpt-5-codex"))
+        assert isinstance(rt, ClaudeCodeRuntime)
 
     def test_create_runtime_unknown_raises(self) -> None:
         from sova.ipc.runtime import create_runtime
 
         with pytest.raises(ValueError, match="Unknown agent runtime"):
             create_runtime("nonexistent")
+
+    def test_runtime_literal_matches_registry_and_settings_meta(self) -> None:
+        """Config Literal, runtime registry, and settings-meta options must agree.
+
+        A runtime added to one but not the others silently diverges: e.g. a
+        runtime selectable in sova.toml but absent from the dashboard select,
+        or vice versa.
+        """
+        from typing import get_args
+
+        from sova.config.models import AgentConfig
+        from sova.dashboard.settings_meta import get_meta
+        from sova.ipc.runtime import _RUNTIMES
+
+        literal_values = set(get_args(AgentConfig.model_fields["runtime"].annotation))
+        assert literal_values == set(_RUNTIMES)
+
+        meta = get_meta("agent.runtime")
+        assert meta is not None
+        assert set(meta.options) == literal_values
 
     def test_get_set_runtime(self) -> None:
         from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime, get_runtime, set_runtime
@@ -1059,6 +1097,39 @@ class TestAgentRuntimeABC:
         # Switch to Aider
         set_runtime(AiderRuntime())
         assert isinstance(get_runtime(), AiderRuntime)
+
+        # Reset for other tests
+        set_runtime(ClaudeCodeRuntime())
+
+    def test_reload_runtime_swaps_global_only(self) -> None:
+        """reload_runtime() swaps the singleton without mutating held references.
+
+        Simulates an in-flight agent spawned before the reload: its own
+        runtime object must be untouched.
+        """
+        from sova.config.models import ProjectConfig
+        from sova.ipc.runtime import ClaudeCodeRuntime, get_runtime, reload_runtime, set_runtime
+
+        set_runtime(ClaudeCodeRuntime())
+        in_flight_runtime = get_runtime()
+
+        reload_runtime(ProjectConfig(agent={"runtime": "codex"}, codex={"model": "gpt-5-codex"}))
+
+        assert isinstance(in_flight_runtime, ClaudeCodeRuntime)
+        new_runtime = get_runtime()
+        assert new_runtime is not in_flight_runtime
+        assert new_runtime.name == "codex"
+        assert new_runtime._config.model == "gpt-5-codex"
+
+        # Reset for other tests
+        set_runtime(ClaudeCodeRuntime())
+
+    def test_reload_runtime_passes_codex_config(self) -> None:
+        from sova.config.models import ProjectConfig
+        from sova.ipc.runtime import ClaudeCodeRuntime, get_runtime, reload_runtime, set_runtime
+
+        reload_runtime(ProjectConfig(agent={"runtime": "codex"}, codex={"sandbox": "read-only"}))
+        assert get_runtime()._config.sandbox == "read-only"
 
         # Reset for other tests
         set_runtime(ClaudeCodeRuntime())
@@ -1458,6 +1529,7 @@ class TestAiderRuntime:
 
 class TestCodexRuntime:
     async def test_spawn_builds_correct_args(self) -> None:
+        from sova.config.models import CodexConfig
         from sova.ipc.runtime import CodexRuntime
 
         mock_proc = AsyncMock()
@@ -1466,9 +1538,9 @@ class TestCodexRuntime:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        rt = CodexRuntime()
+        rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            ap = await rt.spawn("fix the bug", Path("/tmp"), model="gpt-5-codex")
+            ap = await rt.spawn("fix the bug", Path("/tmp"))
 
         assert ap.pid == 55
         args = mock_exec.call_args[0]
@@ -1501,6 +1573,48 @@ class TestCodexRuntime:
         args = mock_exec.call_args[0]
         assert "--model" not in args
         assert args[-1] == "do something"
+
+    async def test_spawn_ignores_caller_supplied_model(self) -> None:
+        """CodexRuntime uses ``codex.model`` exclusively, never the caller's model.
+
+        The caller's ``model`` argument is a Claude model id resolved from
+        ``agent.model``, which Codex cannot serve.
+        """
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 58
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await rt.spawn("fix the bug", Path("/tmp"), model="claude-opus-4-6")
+
+        args = mock_exec.call_args[0]
+        model_idx = args.index("--model")
+        assert args[model_idx + 1] == "gpt-5-codex"
+        assert "claude-opus-4-6" not in args
+
+    async def test_spawn_uses_configured_sandbox(self) -> None:
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 59
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime(config=CodexConfig(sandbox="read-only"))
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await rt.spawn("do something", Path("/tmp"))
+
+        args = mock_exec.call_args[0]
+        sandbox_idx = args.index("--sandbox")
+        assert args[sandbox_idx + 1] == "read-only"
 
     async def test_spawn_passes_prompt_verbatim_without_shell(self) -> None:
         from sova.ipc.runtime import CodexRuntime
