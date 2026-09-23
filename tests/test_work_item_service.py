@@ -739,6 +739,36 @@ class TestResolveNextAction:
                 "review_pr",
             ),
             (
+                "addressed_but_external_changes_requested_routes_to_address_pr",
+                _facts(sova_verdict="revise", sova_verdict_addressed=True, external_changes_requested=True),
+                WorkItemState.PR_EXTERNAL_CHANGES,
+                "address_pr",
+            ),
+            (
+                "addressed_but_unresolved_threads_routes_to_address_pr",
+                _facts(sova_verdict="revise", sova_verdict_addressed=True, thread_signal="pending"),
+                WorkItemState.PR_EXTERNAL_CHANGES,
+                "address_pr",
+            ),
+            (
+                "no_sova_review_but_external_changes_requested_routes_to_address_pr",
+                _facts(sova_verdict=None, sova_verdict_sha=None, external_changes_requested=True),
+                WorkItemState.PR_EXTERNAL_CHANGES,
+                "address_pr",
+            ),
+            (
+                "stale_verdict_with_unresolved_threads_routes_to_address_pr",
+                _facts(sova_verdict="revise", sova_verdict_sha="old-sha", head_sha="sha-head", thread_signal="pending"),
+                WorkItemState.PR_EXTERNAL_CHANGES,
+                "address_pr",
+            ),
+            (
+                "standing_revise_on_current_head_still_beats_external_changes",
+                _facts(sova_verdict="revise", sova_verdict_sha="sha-head", external_changes_requested=True),
+                WorkItemState.PR_SOVA_CHANGES,
+                "address_review",
+            ),
+            (
                 "no_sova_review_at_all",
                 _facts(sova_verdict=None, sova_verdict_sha=None),
                 WorkItemState.PR_SOVA_PENDING,
@@ -862,6 +892,24 @@ class TestDescribeReasonChain:
         """A future ladder rule with no renderer must not crash; it falls back to the identifier."""
         sentences = describe_reason_chain(("some_future_rule",), _facts())
         assert sentences == ["some_future_rule"]
+
+    def test_external_changes_are_evaluated_before_addressed_and_no_review(self) -> None:
+        """A bot CHANGES_REQUESTED posted after an address cycle must not hide behind
+        PR_REVIEW_ADDRESSED: the external rule now precedes the addressed/no-review
+        routes to review_pr, so the chain ends at the external rule and never
+        records either of them."""
+        resolution = resolve_next_action(
+            _facts(sova_verdict="revise", sova_verdict_addressed=True, external_changes_requested=True)
+        )
+        assert resolution.reason_chain[-1] == "external_changes_or_unresolved_threads"
+        assert "sova_verdict_addressed" not in resolution.reason_chain
+        assert "no_sova_review" not in resolution.reason_chain
+        # And the standing-changes rule still comes first: a live SOVA revise on the
+        # current head wins over an external request, per the PR_SOVA_CHANGES split.
+        standing = resolve_next_action(
+            _facts(sova_verdict="revise", sova_verdict_sha="sha-head", external_changes_requested=True)
+        )
+        assert standing.reason_chain[-1] == "sova_standing_changes"
 
     def test_thread_signal_unknown_never_reads_like_clear(self) -> None:
         clear_sentence = describe_reason_chain(

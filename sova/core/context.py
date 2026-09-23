@@ -109,6 +109,13 @@ class ExecutionContext:
     resume_run_id: int | None = None
     completed_steps: frozenset[str] = field(default_factory=frozenset)
 
+    # Which step pipeline this run executes ("developer", "address_review",
+    # "researcher", "planner"). Set by the role before the WorkflowEngine
+    # starts; completed_steps is only populated on --resume, so a step that
+    # behaves differently per pipeline (HandoffToReviewerStep) cannot infer
+    # the variant from step history on a fresh run.
+    pipeline_variant: str = "developer"
+
     # Output writer (set by WorkflowEngine, used by steps for heartbeats)
     output_writer: OutputWriter | None = None
 

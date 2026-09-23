@@ -1925,7 +1925,7 @@ class TestSpecAnchoredReview:
         ]
         prompt = _build_review_prompt(task, "diff", ["a.py"], addressed_findings=addressed)
 
-        assert "## Already Addressed by Static Tools" in prompt
+        assert "## Already Addressed in Earlier Rounds" in prompt
         assert "sonarcloud (2 findings)" in prompt
         assert "coderabbit (1 finding)" in prompt
         assert "[S1192]" in prompt

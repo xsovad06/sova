@@ -1529,7 +1529,16 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "supervisor.auto_address_review",
         "Auto-address review",
-        "Automatically spawn address-review agent when SOVA review verdict is revise or block",
+        "Automatically spawn the address-review pipeline when the SOVA verdict is revise or block, "
+        "and the /address-pr command when an external reviewer requested changes or threads are unresolved",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.auto_review",
+        "Auto-review",
+        "Automatically spawn the Reviewer when a PR has no current SOVA review or its findings were "
+        "addressed (re-review), so the loop reaches an approving verdict without a human click",
         "supervisor",
         "boolean",
     ),

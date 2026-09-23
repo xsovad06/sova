@@ -127,13 +127,16 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 # Skip spawning if a reviewer already ran for this PR: the
                 # developer may have written a "please review" handoff after the
                 # reviewer already completed (timing race), making the handoff stale.
+                # An "addressed" verdict is the one exception: it means an address
+                # cycle completed after that review, so the handoff is a re-review
+                # request for the new head, not a stale duplicate.
                 if action.id in {"review", "review_pr"} and pr_num is not None:
                     from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 
                     verdict = await get_sova_review_verdict(
                         target_issue, pr_number=pr_num, project_dir=agent.project_dir
                     )
-                    if verdict.get("has_sova_review"):
+                    if verdict.get("has_sova_review") and verdict.get("verdict") != "addressed":
                         log.info(
                             "auto_handoff.review_already_done",
                             run_id=agent.run_id,

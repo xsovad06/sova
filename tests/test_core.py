@@ -3332,7 +3332,7 @@ class TestStepRegistry:
             "monitor_ci",
             "resolve_external_reviews",
             "extract_memory",
-            "handoff_to_user",
+            "handoff_to_reviewer",
         ]
 
 
@@ -9252,3 +9252,56 @@ class TestGetActiveGhUser:
             result = await get_active_gh_user()
 
         assert result is None
+
+
+class TestHandoffToReviewerRereview:
+    """The address-review pipeline ends with HandoffToReviewerStep so the loop reaches
+    an approving verdict on the new head without a human click."""
+
+    async def test_address_review_variant_writes_rereview_handoff(self) -> None:
+        from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, pr_number=42)
+        ctx.project_dir = Path("/tmp/test-handoff")
+        ctx.task_run_id = 1
+        ctx.pipeline_variant = "address_review"
+        ctx.addressed_review_findings = [{"file": "a.py", "line": 1, "severity": 5, "description": "x"}]
+        step = HandoffToReviewerStep()
+
+        with (
+            patch("sova.core.steps._handoff_helpers.write_handoff", new_callable=AsyncMock) as mock_db,
+            patch("sova.core.steps._handoff_helpers.write_handoff_file") as mock_file,
+            patch("sova.core.steps._handoff_helpers.notify"),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "re-review" in result.summary
+        agent_handoff = mock_db.call_args[0][1]
+        assert agent_handoff.phase == "address_review"
+        assert agent_handoff.next_action == "review"
+        assert agent_handoff.addressed_findings == ctx.addressed_review_findings
+        handoff = mock_file.call_args[0][1]
+        assert [a.id for a in handoff.next_actions] == ["review"]
+        assert handoff.next_actions[0].auto_execute is True
+        assert handoff.next_actions[0].args["role"] == "reviewer"
+
+    async def test_developer_variant_is_unchanged(self) -> None:
+        from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, pr_number=42)
+        ctx.project_dir = Path("/tmp/test-handoff")
+        ctx.task_run_id = 1
+        step = HandoffToReviewerStep()
+
+        with (
+            patch("sova.core.steps._handoff_helpers.write_handoff", new_callable=AsyncMock) as mock_db,
+            patch("sova.core.steps._handoff_helpers.write_handoff_file"),
+            patch("sova.core.steps._handoff_helpers.notify"),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert mock_db.call_args[0][1].phase == "develop"

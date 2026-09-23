@@ -949,6 +949,57 @@ class TestAutoHandoff:
         mock_start.assert_not_awaited()
         mock_clear.assert_called_once_with(agent.project_dir, issue=agent.issue)
 
+    async def test_auto_handoff_spawns_rereview_when_verdict_is_addressed(self) -> None:
+        """The address-review pipeline now ends by handing off to the Reviewer. At that
+        point get_sova_review_verdict() reports "addressed" (a review exists, but an
+        address cycle completed after it), which the stale-review guard must read as
+        "re-review the new head", not as a duplicate review to suppress."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = AgentState(run_id=9, issue="90", role="developer", process=MagicMock())
+
+        handoff = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="90",
+            pr_number=15,
+            branch="feat/test",
+            summary="Findings addressed, re-review",
+            next_actions=[
+                HandoffAction(
+                    id="review",
+                    label="Review",
+                    mode="agent",
+                    args={"issue": "90", "pr": 15, "role": "reviewer"},
+                    auto_execute=True,
+                ),
+            ],
+        )
+
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value={"has_sova_review": True, "verdict": "addressed"},
+            ),
+            patch.object(
+                agent_lifecycle, "start_agent", new_callable=AsyncMock, return_value={"status": "started"}
+            ) as mock_start,
+            patch("sova.dashboard.services.handoff_service.clear_handoff"),
+            patch(
+                "sova.config.loader.load_config",
+                return_value=MagicMock(pipeline=MagicMock(max_address_review_cycles=0)),
+            ),
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_start.assert_awaited_once_with("90", role="reviewer", pr_number=15, slug=None)
+
 
 class TestAutoHandoffMemoryGate:
     async def test_memory_block_stops_auto_handoff(self) -> None:

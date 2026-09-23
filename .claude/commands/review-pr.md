@@ -26,8 +26,10 @@ Gather all PR data in parallel:
 # Metadata
 gh pr view <PR_NUMBER> --json title,body,author,state,additions,deletions,files,commits,reviewRequests,labels,baseRefName,headRefName,headRefOid,statusCheckRollup
 
-# Full diff
-gh pr diff <PR_NUMBER>
+# Full diff (also saved: Step 7 needs it to place inline comments).
+# Temp files are per-PR: several reviews can run concurrently on one machine,
+# and a shared path would pair one PR's findings with another PR's diff.
+gh pr diff <PR_NUMBER> | tee "/tmp/sova-review-<PR_NUMBER>-diff.txt"
 
 # Commits
 gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/commits --jq '.[] | "\(.sha) \(.commit.message)"'
@@ -126,7 +128,7 @@ Review across these dimensions, in priority order. Reference `AGENTS.md` and `do
 Collect your findings into a JSON object. Save it to a temporary file:
 
 ```bash
-cat > /tmp/sova-review-findings.json <<'REVIEW_JSON'
+cat > "/tmp/sova-review-<PR_NUMBER>-findings.json" <<'REVIEW_JSON'
 {
   "findings": [
     {
@@ -156,7 +158,7 @@ REVIEW_JSON
 Format the review body through the shared SOVA formatter:
 
 ```bash
-REVIEW_BODY=$(python3 -c "import sys; from sova.roles._review_format import format_from_json; print(format_from_json(sys.stdin.read()))" < /tmp/sova-review-findings.json) || REVIEW_BODY=""
+REVIEW_BODY=$(python3 -c "import sys; from sova.roles._review_format import format_from_json; print(format_from_json(sys.stdin.read()))" < "/tmp/sova-review-<PR_NUMBER>-findings.json") || REVIEW_BODY=""
 ```
 
 The formatter produces: `<!-- sova-review: {verdict} sha={sha} -->` marker, `## Review:` heading, severity-sorted findings with `[LABEL N/10]` scores, `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity (7+ = block, any lower non-zero severity = revise, no findings = approve).
@@ -173,19 +175,61 @@ Use the event that matches your verdict:
 - **Request changes** verdict: use `event=REQUEST_CHANGES`
 - **Comment only** verdict: use `event=COMMENT`
 
+Post findings as **inline review comments**, not just a summary body. Every
+finding that lands on a line present in the diff becomes its own review thread,
+which is what makes the remaining work trackable: the dashboard counts
+unresolved threads, so a PR shows at a glance which findings are still open and
+an address cycle closes them one by one. A body-only review leaves nothing to
+resolve. Findings that do not map to a diff line stay in the body.
+
+The payload is built by the same SOVA helper the Reviewer role uses, so a
+command-driven review and an autonomous one produce identical output:
+
 ```bash
-# Set EVENT based on your verdict above
-gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews \
-  -f event=$EVENT \
-  -f body="$(cat <<'EOF'
-[REVIEW BODY]
-EOF
-)"
+# Set EVENT based on your verdict above: APPROVE, REQUEST_CHANGES or COMMENT
+export EVENT=REQUEST_CHANGES
+
+build_payload() {
+  EVENT="$1" python3 -c "import os, sys; from sova.roles._review_comments import build_review_payload_from_json; print(build_review_payload_from_json(open(sys.argv[1]).read(), open(sys.argv[2]).read(), os.environ['EVENT']))" \
+    "/tmp/sova-review-<PR_NUMBER>-findings.json" "/tmp/sova-review-<PR_NUMBER>-diff.txt" \
+    > "/tmp/sova-review-<PR_NUMBER>-payload.json"
+}
+
+build_payload "$EVENT"
+gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "/tmp/sova-review-<PR_NUMBER>-payload.json"
 ```
 
-**Self-review fallback**: GitHub rejects `APPROVE` and `REQUEST_CHANGES` on your own PRs (HTTP 422). If the API returns 422 with a message containing "your own pull request", retry with `event=COMMENT` and append a note: `(Posted as comment -- GitHub does not allow self-reviews with formal approval/rejection state.)` For other 422 errors, report the failure instead of silently falling back.
+Three fallbacks, in order, each mirroring what the Reviewer role does:
 
-Report the review URL after posting.
+1. **Self-review** (422 mentioning "your own pull request"): GitHub rejects
+   `APPROVE` and `REQUEST_CHANGES` on your own PR. This path is not a rare
+   corner case: it fires on every self-review. Rebuild with `build_payload
+   COMMENT`, then append the required note to the payload's `body` field
+   before retrying:
+   ```bash
+   build_payload COMMENT
+   P="/tmp/sova-review-<PR_NUMBER>-payload.json"
+   python3 -c "import json, sys; d=json.load(open(sys.argv[1])); d['body']+='\n\n(Posted as comment -- GitHub does not allow self-reviews with formal approval/rejection state.)'; json.dump(d, open(sys.argv[1],'w'))" "$P"
+   gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "$P"
+   ```
+2. **Rejected inline comment** (422 naming a line or position): one finding
+   pointed at a line GitHub will not accept. Strip the comments and retry so the
+   review still lands:
+   ```bash
+   P="/tmp/sova-review-<PR_NUMBER>-payload.json"
+   python3 -c "import json, sys; d=json.load(open(sys.argv[1])); d['comments']=[]; json.dump(d, open(sys.argv[1],'w'))" "$P"
+   gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "$P"
+   ```
+3. **Helper unavailable** (SOVA not importable or the diff file missing, so the
+   payload file is empty or invalid JSON): fall back to the body-only form,
+   using the `REVIEW_BODY` from Step 6:
+   ```bash
+   gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews -f event="$EVENT" -f body="$REVIEW_BODY"
+   ```
+
+For any other 422, report the failure instead of silently falling back.
+
+Report the review URL and the inline comment count after posting.
 
 ## Cross-References
 

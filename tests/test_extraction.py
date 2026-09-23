@@ -392,7 +392,7 @@ def test_address_review_pipeline_includes_extract_memory() -> None:
 
     names = [s.name for s in get_address_review_steps()]
     assert "extract_memory" in names
-    assert names.index("extract_memory") == names.index("handoff_to_user") - 1
+    assert names.index("extract_memory") == names.index("handoff_to_reviewer") - 1
 
 
 # ---------------------------------------------------------------------------

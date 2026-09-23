@@ -238,11 +238,14 @@ This command runs as a headless agent. You MUST execute every step below through
 
     ```bash
     HEAD_SHA=$(git rev-parse HEAD)
+    # Round number is computed, never guessed: one more than the address
+    # summaries already posted on this PR (a fourth round once got labelled
+    # "Round 1" when the count was left to judgement).
+    ROUND=$(( $(gh api "repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews?per_page=100" \
+      --jq '[.[] | select((.body // "") | startswith("<!-- sova-addressed"))] | length') + 1 ))
     gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews \
       -f event=COMMENT \
-      -f body="$(printf '<!-- sova-addressed: sha=%s -->\n\n' "$HEAD_SHA"; cat <<'EOF'
-    ## Address Review: Round N
-
+      -f body="$(printf '<!-- sova-addressed: sha=%s -->\n\n## Address Review: Round %s\n\n' "$HEAD_SHA" "$ROUND"; cat <<'EOF'
     | # | Finding | Action |
     |---|---------|--------|
     | 1 | `file:line`: short description | Fixed: what changed. |
@@ -251,7 +254,7 @@ This command runs as a headless agent. You MUST execute every step below through
     )"
     ```
 
-    Round N counts earlier `sova-addressed` reviews on this PR plus one. Keep the Action column SHORT and DIRECT. No filler words, no emojis.
+    Keep the Action column SHORT and DIRECT. No filler words, no emojis.
 
 15. **Dismiss bot CHANGES_REQUESTED reviews** (mandatory when any bot review is in CHANGES_REQUESTED state after addressing findings):
 
@@ -268,14 +271,35 @@ This command runs as a headless agent. You MUST execute every step below through
 
     **Never dismiss human reviews**: only bot reviews (`user.type == "Bot"`) whose findings have been addressed.
 
-16. **Request bot re-review** (if bot comments were addressed):
+16. **Request bot re-review** (only if bot comments were addressed AND the cycle cap allows it). Every re-review trigger produces a fresh round of bot findings and a new address run, so an uncapped loop burns tokens on both sides. The cap is the same `pipeline.max_address_review_cycles` that bounds the autonomous address-review pipeline (default 2; 0 means unlimited). Read it from the primary checkout's SOVA database (this command usually runs inside a worktree).
+
+    This block is self-contained: each bash invocation is a fresh shell, so it
+    recomputes the round rather than reusing step 14's variable. Step 14 has
+    already posted this round's summary, so the marker count now equals the
+    round just completed. Both values are forced to digits before any numeric
+    comparison, since the setting is stored as JSON (a string value would
+    arrive quoted) and `sqlite3` may not be installed at all.
+
     ```bash
-    # Sourcery AI
-    gh pr comment <PR_NUMBER> --body "@sourcery-ai review"
-    # CodeRabbit
-    gh pr comment <PR_NUMBER> --body "@coderabbitai review"
+    SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+    RAW=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
+      "SELECT value FROM project_settings WHERE key='pipeline.max_address_review_cycles';" 2>/dev/null || true)
+    MAX_CYCLES=$(printf '%s' "$RAW" | tr -cd '0-9')
+    MAX_CYCLES=${MAX_CYCLES:-2}
+    ROUND=$(gh api "repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews?per_page=100" \
+      --jq '[.[] | select((.body // "") | startswith("<!-- sova-addressed"))] | length')
+    ROUND=$(printf '%s' "$ROUND" | tr -cd '0-9')
+    ROUND=${ROUND:-1}
+    if [ "$MAX_CYCLES" -eq 0 ] || [ "$ROUND" -lt "$MAX_CYCLES" ]; then
+      # Sourcery AI
+      gh pr comment <PR_NUMBER> --body "@sourcery-ai review"
+      # CodeRabbit
+      gh pr comment <PR_NUMBER> --body "@coderabbitai review"
+    else
+      echo "Bot re-review skipped: address cycle cap reached ($ROUND of $MAX_CYCLES)"
+    fi
     ```
-    Only request re-review for bots whose comments were actually addressed.
+    Only request re-review for bots whose comments were actually addressed. When the cap skips the trigger, say so in the step 17 summary so the next reviewer knows the cap ended the loop, not a clean pass.
 
 17. **Print summary**:
     - Table: | Comment | Source | Score | Action |

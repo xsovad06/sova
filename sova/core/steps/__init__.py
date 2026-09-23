@@ -72,8 +72,12 @@ def get_developer_steps() -> list[BaseStep]:
 def get_address_review_steps() -> list[BaseStep]:
     """Return the step list for a Developer respawned to address review findings.
 
-    Picks up from the review findings, fixes them, pushes, and hands
-    off to the user for final review.
+    Picks up from the review findings, fixes them, pushes, and hands off
+    to the Reviewer for a re-review of the new head, so the loop reaches an
+    approving verdict (which the sova_reviewed integration gate requires)
+    without a human click. The reviewer -> developer direction is bounded by
+    pipeline.max_address_review_cycles; a project that wants the old manual
+    stop can set [pipelines] address_review to end with handoff_to_user.
     """
     return [
         EnsureWorktreeStep(),
@@ -85,7 +89,7 @@ def get_address_review_steps() -> list[BaseStep]:
         MonitorCIStep(),
         ResolveExternalReviewsStep(),
         ExtractMemoryStep(),
-        HandoffToUserStep(),
+        HandoffToReviewerStep(),
     ]
 
 

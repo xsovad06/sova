@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from sova.adapters.base import Task
 from sova.roles._review_format import (
+    format_from_data,
     format_review_body,
     severity_label,
     verdict_from_severities,
@@ -79,15 +80,16 @@ def _format_addressed_findings(findings: list[dict] | None) -> str:
     # Group by source
     by_source: dict[str, list[dict]] = {}
     for f in findings:
-        source = f.get("source", "unknown")
+        source = f.get("source") or ("sova-review" if "description" in f else "unknown")
         by_source.setdefault(source, []).append(f)
 
     lines = [
-        "## Already Addressed by Static Tools",
-        "The following issues were already detected and addressed by external tools "
-        "before this review. Focus your review on complementary dimensions that static "
-        "tools cannot catch: logic correctness, architecture, edge cases, concurrency, "
-        "and design intent.",
+        "## Already Addressed in Earlier Rounds",
+        "The following findings were raised by an earlier SOVA review round or by "
+        "external tools and have since been addressed on this PR. Verify each fix "
+        "landed rather than re-reporting the finding, and focus the rest of the "
+        "review on complementary dimensions those rounds could not cover: logic correctness, "
+        "architecture, edge cases, concurrency, and design intent.",
         "",
     ]
     for source, items in sorted(by_source.items()):
@@ -95,8 +97,11 @@ def _format_addressed_findings(findings: list[dict] | None) -> str:
         for item in items:
             severity = item.get("severity", "?")
             tool_id = item.get("tool_id", "")
-            file_path = item.get("file_path", "unknown")
-            msg = item.get("message", "")
+            # External-tool findings carry file_path/message; SOVA review
+            # findings (addressed by the address-review pipeline) carry
+            # file/description.
+            file_path = item.get("file_path") or item.get("file") or "unknown"
+            msg = item.get("message") or item.get("description") or ""
             tool_tag = f" [{tool_id}]" if tool_id else ""
             lines.append(f"- [{severity}]{tool_tag} `{file_path}`: {msg}")
         lines.append("")
@@ -405,6 +410,74 @@ def _format_review_body(
 ) -> str:
     """Format the review body for the PR review API (with inline comments)."""
     return _format_findings_body(findings, summary, sha=sha)
+
+
+def _coerce_int(value: object) -> int | None:
+    """Read an integer out of LLM-authored JSON, or None when it is not one.
+
+    ``bool`` is rejected explicitly because it subclasses ``int``: a ``true``
+    line number would otherwise resolve to line 1 and attach a finding to an
+    unrelated line.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _finding_from_dict(raw: dict) -> ReviewFinding:
+    """Build a ReviewFinding from the /review-pr command's JSON finding shape.
+
+    Defensive about types because the JSON is authored by an LLM: an unusable
+    line yields None (the finding stays in the body) and an unusable severity
+    yields 0, rather than raising and losing the whole review at the post step.
+    """
+    severity = _coerce_int(raw.get("severity"))
+    return ReviewFinding(
+        file=str(raw.get("file") or ""),
+        severity=0 if severity is None else severity,
+        category=str(raw.get("category") or ""),
+        description=str(raw.get("description") or ""),
+        suggestion=str(raw.get("suggestion") or ""),
+        line=_coerce_int(raw.get("line")),
+    )
+
+
+def build_review_payload_from_json(json_text: str, diff_text: str, event: str) -> str:
+    """Build a complete GitHub PR review payload (body plus inline comments) as JSON.
+
+    Gives the /review-pr command the same output as ReviewerRole._post_review():
+    every finding that lands on a line present on the RIGHT side of the diff
+    becomes its own inline review comment, and therefore its own resolvable
+    thread. Without this the command posted only a summary body, so a
+    command-driven review left nothing per-finding to resolve and the
+    unresolved-thread count could not be used to track what still needs
+    addressing. Findings that do not map to a diff line stay in the body only.
+
+    ``diff_text`` is the PR diff (``gh pr diff``). ``event`` is APPROVE,
+    REQUEST_CHANGES or COMMENT. Returns a JSON string for ``gh api --input``.
+
+    For CLI use from the /review-pr command::
+
+        python3 -c "import os, sys; \
+            from sova.roles._review_comments import build_review_payload_from_json; \
+            print(build_review_payload_from_json(open(sys.argv[1]).read(), \
+                open(sys.argv[2]).read(), os.environ['EVENT']))" findings.json diff.txt
+    """
+    from sova.git.diff import parse_diff_lines
+
+    data = json.loads(json_text)
+    # Non-dict entries are dropped once, before either half is built, so the
+    # body and the inline comments always describe the same set of findings.
+    raw_findings = [f for f in data.get("findings", []) if isinstance(f, dict)]
+    data["findings"] = raw_findings
+    inline_comments, _ = _build_review_comments(
+        [_finding_from_dict(f) for f in raw_findings], parse_diff_lines(diff_text)
+    )
+    return json.dumps({"body": format_from_data(data), "event": event, "comments": inline_comments})
 
 
 def _build_review_comments(

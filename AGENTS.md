@@ -193,7 +193,7 @@ Examples:
 
 ### Role Chaining and Circuit Breaker
 
-Agents chain autonomously: Developer -> Reviewer -> Developer (address review). The address-review circuit breaker prevents infinite bot re-review loops (e.g., CodeRabbit repeatedly requesting changes). It counts completed address-review runs by querying `TaskRun` records with an `address_review` `StepExecution`, filtered by issue and PR number. When the count reaches `pipeline.max_address_review_cycles` (default 2, 0=unlimited), auto-execution is blocked and a manual-only handoff is written so the dashboard shows "Address Review (manual)" and "Integrate PR" buttons. See `.claude/rules/architecture.md` for full details.
+Agents chain autonomously: Developer -> Reviewer -> Developer (address review) -> Reviewer (re-review). The address-review circuit breaker prevents infinite bot re-review loops (e.g., CodeRabbit repeatedly requesting changes). It counts completed address cycles for a PR: a `developer` run with an `address_review` `StepExecution`, or a `command:address-pr` run, so both the autonomous pipeline and the `/address-pr` command consume the same budget. When the count reaches `pipeline.max_address_review_cycles` (default 2, 0=unlimited), auto-execution is blocked and a manual-only handoff is written so the dashboard shows "Address Review (manual)" and "Integrate PR" buttons; the supervisor's own `SPAWN_ADDRESS_PR`/`SPAWN_ADDRESS_REVIEW` actions are blocked by the same gate. See `.claude/rules/architecture.md` for full details.
 
 ## Development Workflow
 - **SSH**: repo-level `core.sshCommand` is configured for the personal key

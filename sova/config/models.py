@@ -474,7 +474,7 @@ class PipelineDefinitions(BaseSettings):
             "monitor_ci",
             "resolve_external_reviews",
             "extract_memory",
-            "handoff_to_user",
+            "handoff_to_reviewer",
         ]
     )
     researcher: list[str] = Field(default_factory=lambda: ["fetch_task", "research", "spec", "extract_memory"])
@@ -843,6 +843,7 @@ class SupervisorConfig(BaseSettings):
     auto_research: bool = False
     auto_develop: bool = False
     auto_address_review: bool = False
+    auto_review: bool = False
     auto_integrate: bool = False
     auto_rebase: bool = False
     require_approval: bool = True
