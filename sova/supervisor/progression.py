@@ -64,6 +64,8 @@ class ProgressionAction(StrEnum):
     SPAWN_DEVELOPER = "spawn_developer"
     SPAWN_INTEGRATE = "spawn_integrate"
     SPAWN_ADDRESS_REVIEW = "spawn_address_review"
+    SPAWN_REVIEWER = "spawn_reviewer"
+    SPAWN_ADDRESS_PR = "spawn_address_pr"
     WAIT = "wait"
     BLOCKED = "blocked"
     SPAWN_REBASE = "spawn_rebase"
@@ -88,18 +90,52 @@ _ACTION_TO_ROLE: dict[ProgressionAction, str] = {
     ProgressionAction.SPAWN_DEVELOPER: "developer",
     ProgressionAction.SPAWN_INTEGRATE: "command:integrate-pr",
     ProgressionAction.SPAWN_ADDRESS_REVIEW: "developer",
+    ProgressionAction.SPAWN_REVIEWER: "reviewer",
+    ProgressionAction.SPAWN_ADDRESS_PR: "command:address-pr",
+}
+
+# Actions carried out by a Claude Code command rather than an agent role.
+# These MUST be spawned via start_command(), not start_agent(): start_agent()
+# passes its role straight to `sova run --role`, and dispatch() resolves that
+# through get_role_async(), which only knows the built-in and DB-backed roles
+# and raises "Unknown role: 'command:integrate-pr'". The spawned agent was then
+# left to improvise the workflow from a failed CLI call. start_command() sends
+# the real slash command instead, and produces the same `command:{name}` role
+# string that count_address_review_runs() and _address_cycle_completed_since()
+# match on. The _ACTION_TO_ROLE entries above stay for display and logging.
+_ACTION_TO_COMMAND: dict[ProgressionAction, str] = {
+    ProgressionAction.SPAWN_INTEGRATE: "integrate-pr",
+    ProgressionAction.SPAWN_ADDRESS_PR: "address-pr",
 }
 
 # Map resolve_next_action()'s Resolution.action_id to a ProgressionAction and the
-# SupervisorConfig flag gating it. Unmapped or None action_ids (review_pr,
-# address_pr, or no action at all) fall back to CHECKPOINT_NEEDED: the resolver
-# decides what the action would be, config decides whether the supervisor may
-# actually take it.
+# SupervisorConfig flag gating it. Every action_id the resolver can emit is
+# mapped, so a PR is never parked at CHECKPOINT_NEEDED merely because its next
+# step is a (re-)review or an external-findings pass; only a None action_id
+# (agent running, merged, draft, CI running) falls back to CHECKPOINT_NEEDED.
+# The resolver decides what the action would be, config decides whether the
+# supervisor may actually take it.
 _ACTION_ID_TO_PROGRESSION: dict[str, tuple[ProgressionAction, str]] = {
     "integrate": (ProgressionAction.SPAWN_INTEGRATE, "auto_integrate"),
     "address_review": (ProgressionAction.SPAWN_ADDRESS_REVIEW, "auto_address_review"),
+    "address_pr": (ProgressionAction.SPAWN_ADDRESS_PR, "auto_address_review"),
+    "review_pr": (ProgressionAction.SPAWN_REVIEWER, "auto_review"),
     "rebase": (ProgressionAction.SPAWN_REBASE, "auto_rebase"),
 }
+
+# Actions that consume an address cycle and are therefore bounded by the
+# address-review circuit breaker (pipeline.max_address_review_cycles).
+_ADDRESS_CYCLE_ACTIONS = frozenset({ProgressionAction.SPAWN_ADDRESS_REVIEW, ProgressionAction.SPAWN_ADDRESS_PR})
+
+# Actions that need the issue's open PR number resolved before execution.
+_PR_SCOPED_ACTIONS = frozenset(
+    {
+        ProgressionAction.SPAWN_INTEGRATE,
+        ProgressionAction.SPAWN_ADDRESS_REVIEW,
+        ProgressionAction.SPAWN_ADDRESS_PR,
+        ProgressionAction.SPAWN_REVIEWER,
+    }
+)
 
 # Actions that should trigger issue assignment on spawn (development work, not post-work).
 _ASSIGN_ACTIONS = frozenset(
@@ -554,12 +590,16 @@ class TaskProgressionEngine:
                 return {"error": f"Project path is not registered: {self._project_dir}"}
             kwargs["slug"] = slug
 
-        if decision.action in (ProgressionAction.SPAWN_INTEGRATE, ProgressionAction.SPAWN_ADDRESS_REVIEW):
+        if decision.action in _PR_SCOPED_ACTIONS:
             pr_info = await self._find_pr_for_issue(decision.issue_number) if not decision.pr_number else None
             pr_number = decision.pr_number or (pr_info.number if pr_info else None)
             if pr_number is None:
                 return {"error": f"No open PR found for issue #{decision.issue_number}"}
             kwargs["pr_number"] = pr_number
+
+        command = _ACTION_TO_COMMAND.get(decision.action)
+        if command is not None:
+            return await self._execute_command_decision(decision, command, kwargs)
 
         if self._config.supervisor.respect_ownership and decision.action in _ASSIGN_ACTIONS and role:
             try:
@@ -587,6 +627,29 @@ class TaskProgressionEngine:
             role=role,
         )
         result = await start_agent(**kwargs)
+        if "error" not in result:
+            invalidate_graph_cache(self._repo_cache_key)
+        return result
+
+    async def _execute_command_decision(self, decision: ProgressionDecision, command: str, kwargs: dict) -> dict:
+        """Spawn a Claude Code command for a command-backed decision.
+
+        Mirrors execute_decision()'s tail for the start_agent() path: same log
+        line, same graph-cache invalidation, same result shape.
+        """
+        from sova.dashboard.services.agent_lifecycle import start_command
+
+        log.info(
+            "progression.execute",
+            issue=decision.issue_number,
+            action=decision.action.value,
+            command=command,
+        )
+        result = await start_command(
+            command,
+            args={"issue": kwargs["issue"], "pr": kwargs["pr_number"]},
+            slug=kwargs.get("slug"),
+        )
         if "error" not in result:
             invalidate_graph_cache(self._repo_cache_key)
         return result
@@ -954,7 +1017,7 @@ class TaskProgressionEngine:
                     role="developer",
                 )
             )
-        if candidate == ProgressionAction.SPAWN_ADDRESS_REVIEW:
+        if candidate in _ADDRESS_CYCLE_ACTIONS:
             cb_pr = (refined_pr_info.number if refined_pr_info else None) or discovered_pr
             cb_block = await check_address_review_circuit_breaker_gate(
                 issue_number,
@@ -1091,7 +1154,8 @@ class TaskProgressionEngine:
                 else ProgressionAction.CHECKPOINT_NEEDED
             )
         if state == TaskState.IN_REVIEW:
-            if self._config.supervisor.auto_integrate or self._config.supervisor.auto_address_review:
+            sup = self._config.supervisor
+            if sup.auto_integrate or sup.auto_address_review or sup.auto_review:
                 return ProgressionAction.SPAWN_INTEGRATE
             return ProgressionAction.CHECKPOINT_NEEDED
         if state == TaskState.BACKLOG:

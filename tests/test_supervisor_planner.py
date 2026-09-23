@@ -119,6 +119,8 @@ class TestValidActions:
             "spawn_developer",
             "spawn_integrate",
             "spawn_address_review",
+            "spawn_address_pr",
+            "spawn_reviewer",
             "spawn_rebase",
             "reset_stale_state",
         }

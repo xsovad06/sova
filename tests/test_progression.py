@@ -1186,9 +1186,12 @@ class TestExecuteDecision:
 
     @pytest.mark.asyncio
     @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
-    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
-    async def test_spawn_integrate_needs_pr(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
-        mock_start.return_value = {"run_id": 3}
+    @patch("sova.dashboard.services.agent_lifecycle.start_command", new_callable=AsyncMock)
+    async def test_spawn_integrate_needs_pr(self, mock_command: AsyncMock, _slug: MagicMock) -> None:
+        """Integrate is a Claude Code command, so it must be spawned via start_command().
+        start_agent() would pass role="command:integrate-pr" to `sova run --role`, which
+        dispatch() cannot resolve ("Unknown role"), leaving the agent to improvise."""
+        mock_command.return_value = {"run_id": 3}
         engine = _make_engine()
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         decision = ProgressionDecision(
@@ -1198,7 +1201,7 @@ class TestExecuteDecision:
             reason="Ready",
         )
         result = await engine.execute_decision(decision)
-        mock_start.assert_called_once_with(issue="20", role="command:integrate-pr", pr_number=55, slug="test-project")
+        mock_command.assert_awaited_once_with("integrate-pr", args={"issue": "20", "pr": 55}, slug="test-project")
         assert result["run_id"] == 3
 
     @pytest.mark.asyncio
@@ -3054,7 +3057,7 @@ class TestOwnershipGate:
         mock_adapter.assign.assert_awaited_once_with("42", "developer")
 
     @pytest.mark.asyncio
-    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    @patch("sova.dashboard.services.agent_lifecycle.start_command", new_callable=AsyncMock)
     @patch("sova.config.registry.find_slug_for_path")
     async def test_execute_decision_skips_assign_for_integrate(
         self, mock_slug: MagicMock, mock_start: AsyncMock
@@ -4427,3 +4430,179 @@ class TestReviewGatePassesPrData:
         mock_gate.assert_called_once()
         call_kwargs = mock_gate.call_args
         assert call_kwargs.kwargs.get("pr_data") is None
+
+
+# ---------------------------------------------------------------------------
+# Autonomous review loop: review_pr / address_pr are real supervisor actions
+# ---------------------------------------------------------------------------
+
+
+def _addressed_verdict() -> dict:
+    return {
+        "has_sova_review": True,
+        "verdict": "addressed",
+        "finding_count": 0,
+        "reviewed_at": "2026-01-01",
+        "run_status": "done",
+        "review_head_sha": None,
+    }
+
+
+class TestReviewLoopActionMapping:
+    """review_pr and address_pr used to fall to CHECKPOINT_NEEDED, parking every PR
+    whose findings had just been addressed (or whose bot threads were open) until a
+    human clicked Review or Address. Both are now mapped, each behind its own flag."""
+
+    def test_every_resolver_action_id_is_mapped(self) -> None:
+        from sova.supervisor.progression import _ACTION_ID_TO_PROGRESSION
+
+        assert set(_ACTION_ID_TO_PROGRESSION) == {"integrate", "address_review", "address_pr", "review_pr", "rebase"}
+        assert _ACTION_ID_TO_PROGRESSION["review_pr"] == (ProgressionAction.SPAWN_REVIEWER, "auto_review")
+        assert _ACTION_ID_TO_PROGRESSION["address_pr"] == (ProgressionAction.SPAWN_ADDRESS_PR, "auto_address_review")
+
+    def test_role_mapping_for_new_actions(self) -> None:
+        from sova.supervisor.progression import _ACTION_TO_ROLE
+
+        assert _ACTION_TO_ROLE[ProgressionAction.SPAWN_REVIEWER] == "reviewer"
+        assert _ACTION_TO_ROLE[ProgressionAction.SPAWN_ADDRESS_PR] == "command:address-pr"
+
+    def test_in_review_auto_review_only_returns_candidate(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=False, auto_review=True))
+        assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.SPAWN_INTEGRATE
+
+    @pytest.mark.asyncio
+    async def test_addressed_verdict_with_auto_review_spawns_reviewer(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_review=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=10, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value=_addressed_verdict(),
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_REVIEWER
+        assert pr is not None and pr.number == 10
+
+    @pytest.mark.asyncio
+    async def test_addressed_verdict_without_auto_review_is_checkpoint(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_address_review=True, auto_review=False))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=10, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value=_addressed_verdict(),
+        ):
+            action, _ = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
+
+    @pytest.mark.asyncio
+    async def test_no_review_with_auto_review_spawns_reviewer(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_review=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=10, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value={"has_sova_review": False, "verdict": None},
+        ):
+            action, _ = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_REVIEWER
+
+    @pytest.mark.asyncio
+    async def test_addressed_but_external_changes_spawns_address_pr(self) -> None:
+        """PR #1070: CodeRabbit posted CHANGES_REQUESTED after the address round. The
+        external rule must win over the addressed route and land on /address-pr."""
+        engine = _make_engine(SupervisorConfig(auto_review=True, auto_address_review=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=10, url=""))
+        engine._fetch_enriched_pr = AsyncMock(
+            return_value=_green_enriched_pr(computed_state="changes_requested", thread_total=2, thread_resolved=0)
+        )
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value=_addressed_verdict(),
+        ):
+            action, _ = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_ADDRESS_PR
+
+    @pytest.mark.asyncio
+    async def test_external_changes_without_auto_address_review_is_checkpoint(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_review=True, auto_address_review=False))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=10, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr(computed_state="changes_requested"))
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value=_addressed_verdict(),
+        ):
+            action, _ = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
+
+
+class TestExecuteDecisionReviewLoop:
+    @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    async def test_spawn_reviewer_passes_pr_number(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
+        mock_start.return_value = {"run_id": 7}
+        engine = _make_engine()
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        decision = ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_REVIEWER, reason="Re-review")
+        result = await engine.execute_decision(decision)
+        mock_start.assert_called_once_with(issue="42", role="reviewer", pr_number=55, slug="test-project")
+        assert result["run_id"] == 7
+
+    @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
+    @patch("sova.dashboard.services.agent_lifecycle.start_command", new_callable=AsyncMock)
+    async def test_spawn_address_pr_runs_the_command(self, mock_command: AsyncMock, _slug: MagicMock) -> None:
+        """The command name (not the role string) is passed, so start_command() records
+        the run as role "command:address-pr", which is exactly what
+        count_address_review_runs() matches on for the circuit breaker."""
+        mock_command.return_value = {"run_id": 8}
+        engine = _make_engine()
+        decision = ProgressionDecision(
+            issue_number=42, action=ProgressionAction.SPAWN_ADDRESS_PR, reason="External findings", pr_number=55
+        )
+        result = await engine.execute_decision(decision)
+        mock_command.assert_awaited_once_with("address-pr", args={"issue": "42", "pr": 55}, slug="test-project")
+        assert result["run_id"] == 8
+
+    @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    async def test_command_actions_never_reach_start_agent(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
+        """Regression guard: start_agent() forwards its role to `sova run --role`, which
+        cannot dispatch a command: role. Every command-backed action must bypass it."""
+        from sova.supervisor.progression import _ACTION_TO_COMMAND
+
+        engine = _make_engine()
+        for action in _ACTION_TO_COMMAND:
+            with patch(
+                "sova.dashboard.services.agent_lifecycle.start_command",
+                new_callable=AsyncMock,
+                return_value={"run_id": 1},
+            ):
+                await engine.execute_decision(
+                    ProgressionDecision(issue_number=42, action=action, reason="x", pr_number=55)
+                )
+        mock_start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spawn_reviewer_without_pr_errors(self) -> None:
+        engine = _make_engine()
+        engine._find_pr_for_issue = AsyncMock(return_value=None)
+        decision = ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_REVIEWER, reason="Re-review")
+        result = await engine.execute_decision(decision)
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_spawn_address_pr_is_bounded_by_circuit_breaker(self) -> None:
+        """The /address-pr command path re-triggers the bot each round, so it must
+        consume the same cycle budget as the pipeline path."""
+        from sova.supervisor.progression import _ADDRESS_CYCLE_ACTIONS
+
+        assert ProgressionAction.SPAWN_ADDRESS_PR in _ADDRESS_CYCLE_ACTIONS
+        assert ProgressionAction.SPAWN_ADDRESS_REVIEW in _ADDRESS_CYCLE_ACTIONS

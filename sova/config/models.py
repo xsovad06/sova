@@ -843,6 +843,7 @@ class SupervisorConfig(BaseSettings):
     auto_research: bool = False
     auto_develop: bool = False
     auto_address_review: bool = False
+    auto_review: bool = False
     auto_integrate: bool = False
     auto_rebase: bool = False
     require_approval: bool = True

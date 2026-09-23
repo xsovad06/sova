@@ -50,6 +50,8 @@ _VALID_ACTIONS = frozenset(
         "spawn_developer",
         "spawn_integrate",
         "spawn_address_review",
+        "spawn_address_pr",
+        "spawn_reviewer",
         "spawn_rebase",
         "reset_stale_state",
     }
@@ -95,7 +97,7 @@ Respond with a JSON object (no markdown fences, no commentary):
 }}
 
 Valid action types: spawn_researcher, spawn_developer, spawn_integrate,
-spawn_address_review, spawn_rebase, reset_stale_state.
+spawn_address_review, spawn_address_pr, spawn_reviewer, spawn_rebase, reset_stale_state.
 
 Rules:
 - Only include actions that make sense given available resources

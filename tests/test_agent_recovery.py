@@ -2996,3 +2996,41 @@ class TestHasAddressCycleSince:
         monkeypatch.setattr("sova.db.session.get_session", lambda **_kw: (_ for _ in ()).throw(RuntimeError("db down")))
 
         assert not await has_address_cycle_since(datetime.now(timezone.utc), "1065", pr_number=1063)
+
+
+class TestCountAddressReviewRuns:
+    """count_address_review_runs() feeds both circuit breakers (supervisor gate and
+    auto-handoff). It must count the same two run shapes as
+    _address_cycle_completed_since(), scoped on the PR (NULL issue included)."""
+
+    async def _seed(self, pr: int) -> None:
+        session = await get_session()
+        async with session.begin():
+            initial_dev = TaskRun(issue_number="200", role="developer", status="done", pr_number=pr)
+            session.add(initial_dev)
+            pipeline_cycle = TaskRun(issue_number="200", role="developer", status="done", pr_number=pr)
+            session.add(pipeline_cycle)
+            await session.flush()
+            session.add(StepExecution(task_run_id=pipeline_cycle.id, step_name="address_review", status="done"))
+            session.add(StepExecution(task_run_id=initial_dev.id, step_name="create_pr", status="done"))
+            # Command cycle started before the PR body linked its issue (#1066).
+            session.add(TaskRun(issue_number=None, role="command:address-pr", status="done", pr_number=pr))
+            # Still running: not a completed cycle.
+            session.add(TaskRun(issue_number="200", role="command:address-pr", status="running", pr_number=pr))
+            # Different PR: out of scope.
+            session.add(TaskRun(issue_number="200", role="command:address-pr", status="done", pr_number=pr + 1))
+            # Same PR number recorded against another issue: out of scope (issue isolation).
+            session.add(TaskRun(issue_number="201", role="command:address-pr", status="done", pr_number=pr))
+
+    async def test_counts_pipeline_and_command_cycles_for_the_pr(self) -> None:
+        from sova.supervisor.gates.utils import count_address_review_runs
+
+        await self._seed(pr=3000)
+        assert await count_address_review_runs("200", 3000, Path("/tmp/unused")) == 2
+
+    async def test_initial_developer_run_without_address_step_is_not_a_cycle(self) -> None:
+        from sova.supervisor.gates.utils import count_address_review_runs
+
+        await self._seed(pr=3001)
+        # Only the run that actually executed address_review and the finished command run count.
+        assert await count_address_review_runs("200", 3001, Path("/tmp/unused")) == 2
