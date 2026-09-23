@@ -330,6 +330,16 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     chain.append("sova_verdict_stale")
     # No direct match: a stale verdict falls through to "no current review" (below).
 
+    # External change requests and unresolved threads are concrete work that a
+    # re-review or first review would only re-discover, so they are evaluated
+    # before the "addressed" and "no review" routes to review_pr. A fresh bot
+    # CHANGES_REQUESTED posted after an address cycle used to be hidden behind
+    # PR_REVIEW_ADDRESSED and the PR sat with a Review button while two
+    # unresolved threads gated integration.
+    chain.append("external_changes_or_unresolved_threads")
+    if facts.external_changes_requested or facts.thread_signal in ("pending", "unknown"):
+        return Resolution(WorkItemState.PR_EXTERNAL_CHANGES, "address_pr", tuple(chain))
+
     chain.append("sova_verdict_addressed")
     if facts.sova_verdict_addressed:
         return Resolution(WorkItemState.PR_REVIEW_ADDRESSED, "review_pr", tuple(chain))
@@ -338,10 +348,6 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     if facts.sova_verdict is None or verdict_stale:
         state = WorkItemState.PR_SOVA_PENDING if facts.external_reviews_enabled else WorkItemState.PR_AWAITING_REVIEW
         return Resolution(state, "review_pr", tuple(chain))
-
-    chain.append("external_changes_or_unresolved_threads")
-    if facts.external_changes_requested or facts.thread_signal in ("pending", "unknown"):
-        return Resolution(WorkItemState.PR_EXTERNAL_CHANGES, "address_pr", tuple(chain))
 
     chain.append("ready_to_merge")
     if not _unmet_merge_conditions(facts):
