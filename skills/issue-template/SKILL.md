@@ -162,13 +162,13 @@ The same markdown headings apply. The Jira adapter converts the body through
 and checkboxes survive the round trip and the quality scorer runs on them
 unchanged. Five differences:
 
-- **Write the body as literal markdown text, not with Jira's rich-text editor.**
-  `_extract_text()` reads only the text nodes directly under a block, so a
-  bullet list built with the editor's list control is dropped entirely on the
-  way back out. An `## Acceptance Criteria` section written that way returns as
-  a bare heading with no `- [ ]` left in it, which fails `has_acceptance_criteria`
-  and therefore `meets_threshold()` at any threshold. Typing `- [ ]` as plain
-  text inside a paragraph survives.
+- **Every form of list survives.** `_extract_text()` walks the ADF tree
+  recursively, so the editor's bullet, numbered, and checkbox controls all come
+  back out with their items intact, a checkbox keeps its ticked or unticked
+  state, a nested list keeps its indentation, and a `- [ ]` typed as plain text
+  inside a paragraph keeps exactly one marker rather than gaining a second. An
+  `## Acceptance Criteria` section written any of those ways satisfies
+  `has_acceptance_criteria`.
 - Put the summary in Jira's `summary` field. Do not repeat it as an `#` heading
   inside the body.
 - Use issue keys such as `PROJ-123` in `## Dependencies`. `parse_dependencies()`
