@@ -142,6 +142,34 @@ def format_review_body(
     return "\n".join(lines)
 
 
+def normalize_sha(value: object) -> str | None:
+    """Normalize a review's commit anchor, or None when it is unusable.
+
+    Lowercased so the anchor compares equal to the lowercase head sha GitHub
+    reports; a case mismatch would read as a stale verdict. An unknown or
+    malformed anchor leaves the marker unanchored (fresh, never stale) rather
+    than embedding a value the dashboard cannot parse.
+    """
+    if isinstance(value, str) and SHA_RE.fullmatch(value):
+        return value.lower()
+    return None
+
+
+def format_from_data(data: dict) -> str:
+    """Format an already-parsed review payload as a markdown review body.
+
+    Shared by format_from_json() and by build_review_payload_from_json(), which
+    needs the parsed findings anyway to place inline comments, so the body and
+    the comments are always built from the same parse of the same data.
+    """
+    return format_review_body(
+        data.get("findings", []),
+        data.get("summary", ""),
+        data.get("positives"),
+        sha=normalize_sha(data.get("sha")),
+    )
+
+
 def format_from_json(json_text: str) -> str:
     """Parse JSON review data and format as markdown review body.
 
@@ -150,19 +178,4 @@ def format_from_json(json_text: str) -> str:
         python3 -c "import sys; from sova.roles._review_format import format_from_json; \\
             print(format_from_json(sys.stdin.read()))" < /tmp/review.json
     """
-    data = json.loads(json_text)
-    sha = data.get("sha")
-    if isinstance(sha, str) and SHA_RE.fullmatch(sha):
-        # Lowercased so the anchor compares equal to the lowercase head sha
-        # GitHub reports; a case mismatch would read as a stale verdict.
-        sha = sha.lower()
-    else:
-        # An unknown or malformed anchor leaves the marker unanchored (fresh,
-        # never stale) rather than embedding a value the dashboard cannot parse.
-        sha = None
-    return format_review_body(
-        data.get("findings", []),
-        data.get("summary", ""),
-        data.get("positives"),
-        sha=sha,
-    )
+    return format_from_data(json.loads(json_text))

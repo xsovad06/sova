@@ -565,3 +565,102 @@ class TestExtractSpecSections:
 
     def test_empty_content(self) -> None:
         assert _extract_spec_sections("") == {}
+
+
+class TestBuildReviewPayloadFromJson:
+    """The /review-pr command posts the same inline comments as ReviewerRole, so a
+    command-driven review leaves one resolvable thread per finding to track."""
+
+    DIFF = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,3 @@\n context\n+added two\n+added three\n"
+
+    def _payload(self, findings: list[dict], event: str = "REQUEST_CHANGES") -> dict:
+        import json
+
+        from sova.roles._review_comments import build_review_payload_from_json
+
+        raw = json.dumps({"findings": findings, "summary": "sum", "sha": "b" * 40})
+        return json.loads(build_review_payload_from_json(raw, self.DIFF, event))
+
+    def test_finding_on_a_diff_line_becomes_an_inline_comment(self) -> None:
+        payload = self._payload(
+            [{"file": "a.py", "line": 3, "severity": 8, "category": "bug", "description": "boom", "suggestion": "fix"}]
+        )
+        assert payload["event"] == "REQUEST_CHANGES"
+        assert payload["comments"] == [
+            {"path": "a.py", "line": 3, "side": "RIGHT", "body": "**[CRITICAL] bug**: boom\n\n**Suggestion**: fix"}
+        ]
+
+    def test_finding_off_the_diff_stays_body_only(self) -> None:
+        payload = self._payload(
+            [{"file": "a.py", "line": 999, "severity": 4, "category": "style", "description": "far", "suggestion": ""}]
+        )
+        assert payload["comments"] == []
+        assert "far" in payload["body"]
+
+    def test_body_matches_the_shared_formatter_and_keeps_every_finding(self) -> None:
+        import json
+
+        from sova.roles._review_format import format_from_json
+
+        findings = [
+            {"file": "a.py", "line": 2, "severity": 6, "category": "bug", "description": "inline", "suggestion": ""},
+            {"file": "z.py", "line": None, "severity": 3, "category": "docs", "description": "bodyonly"},
+        ]
+        raw = json.dumps({"findings": findings, "summary": "sum", "sha": "b" * 40})
+        payload = self._payload(findings)
+        assert payload["body"] == format_from_json(raw)
+        assert "inline" in payload["body"]
+        assert "bodyonly" in payload["body"]
+        assert len(payload["comments"]) == 1
+
+    def test_malformed_line_values_never_raise(self) -> None:
+        """The findings JSON is LLM-authored: a bool, a string or a missing line
+        must degrade to a body-only finding rather than crash the post step."""
+        payload = self._payload(
+            [
+                {"file": "a.py", "line": True, "severity": 5, "category": "bug", "description": "boolline"},
+                {"file": "a.py", "line": "3", "severity": 5, "category": "bug", "description": "strline"},
+                {"file": "a.py", "severity": 5, "category": "bug", "description": "noline"},
+            ]
+        )
+        # Only the numeric string resolves to a diff line; the bool is rejected.
+        assert [c["line"] for c in payload["comments"]] == [3]
+        assert all(t in payload["body"] for t in ("boolline", "strline", "noline"))
+
+    def test_non_dict_findings_are_dropped_from_both_halves(self) -> None:
+        """A stray non-dict entry must not reach either half. Dropping it only from
+        the comments would leave the body describing a finding with no thread."""
+        import json
+
+        from sova.roles._review_comments import build_review_payload_from_json
+
+        raw = json.dumps(
+            {
+                "findings": [
+                    "not a finding",
+                    {"file": "a.py", "line": 2, "severity": 5, "category": "bug", "description": "real"},
+                ],
+                "summary": "sum",
+                "sha": "b" * 40,
+            }
+        )
+        payload = json.loads(build_review_payload_from_json(raw, self.DIFF, "COMMENT"))
+        assert len(payload["comments"]) == 1
+        assert "real" in payload["body"]
+        assert "not a finding" not in payload["body"]
+        assert "**1 finding**" in payload["body"]
+
+    def test_no_findings_yields_an_approve_body_and_no_comments(self) -> None:
+        payload = self._payload([], event="APPROVE")
+        assert payload["comments"] == []
+        assert payload["body"].startswith("<!-- sova-review: approve")
+
+    def test_malformed_sha_leaves_the_marker_unanchored(self) -> None:
+        """Matches format_from_json: an unusable anchor must not be embedded."""
+        import json
+
+        from sova.roles._review_comments import build_review_payload_from_json
+
+        raw = json.dumps({"findings": [], "summary": "s", "sha": "not-a-sha"})
+        payload = json.loads(build_review_payload_from_json(raw, self.DIFF, "COMMENT"))
+        assert payload["body"].splitlines()[0] == "<!-- sova-review: approve -->"
