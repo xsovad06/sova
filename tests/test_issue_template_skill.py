@@ -264,11 +264,12 @@ class TestJiraRoundTrip:
         assert score.total == 8, f"ADF round-trip degraded the body to {score.total}/8: {score}"
         assert score.meets_threshold()
 
-    def test_rich_editor_bullet_list_loses_the_checkboxes(self) -> None:
-        """Pins the trap the skill's Jira section warns about.
+    def test_rich_editor_bullet_list_keeps_the_checkboxes(self) -> None:
+        """A rich-editor bulletList must survive the ADF round trip.
 
-        _extract_text() reads only text nodes directly under a block, so a
-        bulletList's nested listItem/paragraph text never surfaces.
+        _extract_text() walks the node tree recursively, so a bulletList's
+        nested listItem/paragraph text surfaces instead of being dropped.
+        A listItem whose text already opens with a marker keeps exactly one.
         """
         heading = {
             "type": "heading",
@@ -285,5 +286,6 @@ class TestJiraRoundTrip:
             "content": [heading, {"type": "bulletList", "content": [item]}],
         }
         restored = JiraAdapter._extract_text(adf)
-        assert "- [ ]" not in restored
-        assert not compute_quality_score(restored).has_acceptance_criteria
+        assert "- [ ] a criterion" in restored
+        assert "- - [ ]" not in restored
+        assert compute_quality_score(restored).has_acceptance_criteria

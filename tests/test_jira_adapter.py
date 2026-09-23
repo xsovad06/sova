@@ -18,6 +18,7 @@ from sova.adapters.jira import (
     _STATE_LABELS,
     JiraAdapter,
 )
+from sova.roles.triage import compute_quality_score
 
 
 def _adapter(
@@ -34,6 +35,30 @@ def _adapter(
         state_transitions=state_transitions,
         status_mapping=status_mapping,
     )
+
+
+def _paragraph(text: str) -> dict:
+    """Build an ADF paragraph node wrapping a single text node."""
+    return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+
+
+def _bullet_list(*items: str, ordered: bool = False) -> dict:
+    """Build an ADF bulletList/orderedList, one paragraph per list item."""
+    return {
+        "type": "orderedList" if ordered else "bulletList",
+        "content": [{"type": "listItem", "content": [_paragraph(item)]} for item in items],
+    }
+
+
+def _task_list(*items: tuple[str, str]) -> dict:
+    """Build an ADF taskList, one (state, text) pair per taskItem."""
+    return {
+        "type": "taskList",
+        "content": [
+            {"type": "taskItem", "attrs": {"state": state}, "content": [{"type": "text", "text": text}]}
+            for state, text in items
+        ],
+    }
 
 
 def _issue_json(
@@ -140,6 +165,461 @@ class TestExtractText:
         result = JiraAdapter._extract_text(adf)
         assert "Line 1" in result
         assert "Line 2" in result
+
+    def test_heading_prefix(self) -> None:
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "heading",
+                    "attrs": {"level": 2},
+                    "content": [{"type": "text", "text": "Acceptance Criteria"}],
+                },
+            ],
+        }
+        assert JiraAdapter._extract_text(adf) == "## Acceptance Criteria"
+
+    def test_bullet_list(self) -> None:
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [_bullet_list("First item", "Second item")],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "First item" in result
+        assert "Second item" in result
+
+    def test_ordered_list(self) -> None:
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [_bullet_list("Step one", "Step two", ordered=True)],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "Step one" in result
+        assert "Step two" in result
+
+    def test_heading_followed_by_bullet_list(self) -> None:
+        """The common shape of a Scope or Acceptance Criteria section."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "heading",
+                    "attrs": {"level": 2},
+                    "content": [{"type": "text", "text": "Scope"}],
+                },
+                _bullet_list("In scope item", "Out of scope item"),
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "## Scope" in result
+        assert "In scope item" in result
+        assert "Out of scope item" in result
+        # The heading must not be glued onto the first list item.
+        assert "ScopeIn scope item" not in result
+
+    def test_nested_list_inside_list_item(self) -> None:
+        """A list nested inside a listItem must not be dropped either."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                _paragraph("Outer item"),
+                                _bullet_list("Inner item"),
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "Outer item" in result
+        assert "Inner item" in result
+
+    def test_list_items_are_separated(self) -> None:
+        """Adjacent items must not run together into one unreadable token."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [_bullet_list("alpha", "beta")],
+        }
+        assert "alphabeta" not in JiraAdapter._extract_text(adf)
+
+    def test_multi_paragraph_list_item(self) -> None:
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [_paragraph("First para"), _paragraph("Second para")],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "First para" in result
+        assert "Second para" in result
+
+    def test_list_item_with_existing_marker_is_not_double_prefixed(self) -> None:
+        """Jira's rich editor keeps a hand-typed marker inside the listItem."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [_bullet_list("- [ ] a criterion")],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "- [ ] a criterion" in result
+        assert "- - [ ]" not in result
+
+    def test_ordered_marker_inside_list_item_is_not_double_prefixed(self) -> None:
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [_bullet_list("1. first", ordered=True)],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "1. first" in result
+        assert "- 1. first" not in result
+
+    def test_plain_list_item_still_gets_a_marker(self) -> None:
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [_bullet_list("plain item")],
+        }
+        assert "- plain item" in JiraAdapter._extract_text(adf)
+
+    def test_block_without_content_key(self) -> None:
+        """A childless block (rule, mediaSingle) must not raise."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "rule"},
+                _paragraph("After the rule"),
+            ],
+        }
+        assert "After the rule" in JiraAdapter._extract_text(adf)
+
+    def test_hard_break_becomes_a_newline(self) -> None:
+        """A hardBreak is an intentional line break, not a word join."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "second"},
+                    ],
+                },
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "firstsecond" not in result
+        assert "first\nsecond" in result
+
+    def test_mention_keeps_the_display_name(self) -> None:
+        """A mention carries its text in attrs, not in a child text node."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "cc "},
+                        {"type": "mention", "attrs": {"text": "@Damian"}},
+                        {"type": "text", "text": " please review"},
+                    ],
+                },
+            ],
+        }
+        assert "cc @Damian please review" in JiraAdapter._extract_text(adf)
+
+    def test_emoji_keeps_its_shortcode(self) -> None:
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "emoji", "attrs": {"text": ":tada:"}}]},
+            ],
+        }
+        assert ":tada:" in JiraAdapter._extract_text(adf)
+
+    def test_table_cell_content_is_preserved(self) -> None:
+        """Jira tables are common in specs; their cells must not be dropped."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [_paragraph("Method")],
+                                },
+                                {
+                                    "type": "tableCell",
+                                    "content": [_paragraph("GET")],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "Method" in result
+        assert "GET" in result
+
+    def test_deeply_nested_document_does_not_raise(self) -> None:
+        """A malformed or hostile payload must degrade, not exhaust the stack."""
+        node: dict = _paragraph("deep")
+        for _ in range(500):
+            node = {"type": "bulletList", "content": [{"type": "listItem", "content": [node]}]}
+        result = JiraAdapter._extract_text({"type": "doc", "content": [node]})
+        assert isinstance(result, str)
+
+    def test_non_dict_child_is_skipped(self) -> None:
+        """A malformed content entry must not crash the walk."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": ["not-a-node", {"type": "text", "text": "kept"}]},
+            ],
+        }
+        assert "kept" in JiraAdapter._extract_text(adf)
+
+    def test_null_content_is_tolerated(self) -> None:
+        """An explicit null content value must be treated as no children."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": None},
+                _paragraph("Survivor"),
+            ],
+        }
+        assert "Survivor" in JiraAdapter._extract_text(adf)
+
+    def test_task_list_items_get_checkbox_markers(self) -> None:
+        """Jira's editor checkbox control emits taskList, not bulletList.
+
+        Without a marker the items concatenate into one token and the quality
+        scorer's acceptance-criteria check fails, which is the same data loss
+        the bulletList fix addresses.
+        """
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [_task_list(("TODO", "first criterion"), ("DONE", "second criterion"))],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "- [ ] first criterion" in result
+        assert "- [x] second criterion" in result
+        assert "criterionsecond" not in result
+
+    def test_task_list_acceptance_criteria_satisfies_the_scorer(self) -> None:
+        """The end-to-end shape an author writes with the checkbox control."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "heading",
+                    "attrs": {"level": 2},
+                    "content": [{"type": "text", "text": "Acceptance Criteria"}],
+                },
+                _task_list(("TODO", "a criterion"), ("TODO", "another criterion")),
+            ],
+        }
+        assert compute_quality_score(JiraAdapter._extract_text(adf)).has_acceptance_criteria
+
+    def test_task_item_without_state_is_treated_as_open(self) -> None:
+        """A missing or unrecognized attrs.state must not lose the marker."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "taskList",
+                    "content": [{"type": "taskItem", "content": [{"type": "text", "text": "no state"}]}],
+                },
+            ],
+        }
+        assert "- [ ] no state" in JiraAdapter._extract_text(adf)
+
+    def test_nested_list_is_indented_one_level(self) -> None:
+        """A nested list must read as nested markdown, not flatten into its parent."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [_paragraph("Outer"), _bullet_list("Inner")],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "- Outer" in result
+        assert "  - Inner" in result
+
+    def test_nested_list_does_not_emit_blank_lines(self) -> None:
+        """A block whose last child was a block must not add a second newline."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [_paragraph("Outer A"), _bullet_list("A1", "A2")],
+                        },
+                        {"type": "listItem", "content": [_paragraph("Outer B")]},
+                    ],
+                },
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "\n\n" not in result
+        assert result == "- Outer A\n  - A1\n  - A2\n- Outer B"
+
+    def test_indented_item_with_typed_marker_keeps_its_indent(self) -> None:
+        """Dropping the generated marker must not also drop the nesting indent."""
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [_paragraph("Outer"), _bullet_list("- [ ] typed")],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "  - [ ] typed" in result
+        assert "- - [ ]" not in result
+
+    def test_depth_cap_emits_a_visible_truncation_notice(self) -> None:
+        """A truncated body must be distinguishable from a short one."""
+        node: dict = _paragraph("deep")
+        for _ in range(150):
+            node = {"type": "bulletList", "content": [{"type": "listItem", "content": [node]}]}
+        result = JiraAdapter._extract_text({"type": "doc", "content": [node]}, issue_key="PROJ-1")
+        assert "truncated" in result
+        assert "deep" not in result
+
+    def test_null_heading_level_does_not_raise(self) -> None:
+        """An explicit null level must not crash the multiply in the heading marker.
+
+        dict.get(key, default) only applies the default when the key is
+        missing, so a present-but-null "level" reaches the string multiply
+        unguarded unless it is coerced first.
+        """
+        adf = {
+            "type": "doc",
+            "content": [
+                {"type": "heading", "attrs": {"level": None}, "content": [{"type": "text", "text": "h"}]},
+            ],
+        }
+        assert JiraAdapter._extract_text(adf) == "# h"
+
+    def test_string_heading_level_does_not_raise(self) -> None:
+        adf = {
+            "type": "doc",
+            "content": [
+                {"type": "heading", "attrs": {"level": "2"}, "content": [{"type": "text", "text": "h"}]},
+            ],
+        }
+        assert JiraAdapter._extract_text(adf) == "# h"
+
+    def test_out_of_range_heading_level_is_clamped(self) -> None:
+        adf = {
+            "type": "doc",
+            "content": [
+                {"type": "heading", "attrs": {"level": 99}, "content": [{"type": "text", "text": "h"}]},
+            ],
+        }
+        assert JiraAdapter._extract_text(adf) == "###### h"
+
+    def test_boolean_heading_level_is_not_mistaken_for_an_int(self) -> None:
+        """bool is an int subclass in Python; True/False are not real ADF levels."""
+        adf = {
+            "type": "doc",
+            "content": [
+                {"type": "heading", "attrs": {"level": True}, "content": [{"type": "text", "text": "h"}]},
+            ],
+        }
+        assert JiraAdapter._extract_text(adf) == "# h"
+
+    def test_null_text_node_does_not_raise(self) -> None:
+        """A present-but-null text value must not crash the walk or drop siblings.
+
+        The failure is not only the eventual "".join(parts): the very next
+        node's end_line() call reads parts[-1] and raises AttributeError on
+        None before join is ever reached.
+        """
+        adf = {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": None}]},
+                _paragraph("Survivor"),
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "Survivor" in result
+
+    def test_null_mention_text_does_not_raise(self) -> None:
+        """attrs.text can be null the same way a text node's text can."""
+        adf = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "mention", "attrs": {"text": None}},
+                        {"type": "text", "text": "after"},
+                    ],
+                },
+            ],
+        }
+        result = JiraAdapter._extract_text(adf)
+        assert "after" in result
 
 
 class TestParseIssue:
