@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import itertools
 import re
 from urllib.parse import quote
 
@@ -15,6 +16,81 @@ from sova.utils.logging import get_logger
 log = get_logger(component="adapter.jira")
 
 _MAX_USER_SEARCH_RESULTS = 10
+
+# ADF node types that end a line when flattened to text. Inline nodes
+# (text, emoji, mention, hardBreak) are excluded so they stay on their line.
+_ADF_BLOCK_TYPES = frozenset({"heading", "paragraph", "listItem", "taskItem", "blockquote", "codeBlock"})
+
+# ADF node types that carry a list marker and indent their nested content.
+# taskItem is what Jira's editor emits for its checkbox control, which is the
+# usual way an "## Acceptance Criteria" section is written in the rich editor.
+_ADF_LIST_ITEM_TYPES = frozenset({"listItem", "taskItem"})
+
+# Inline ADF nodes whose display text lives in attrs rather than a child text
+# node: a mention renders as "@Name" and an emoji as ":thumbsup:".
+_ADF_ATTR_TEXT_TYPES = frozenset({"mention", "emoji"})
+
+# A list item whose own text already opens with a bullet, ordered, or checkbox
+# marker, which Jira's rich editor produces when the author typed it by hand.
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+
+# Indent applied per level of list nesting, so a nested list reads as nested
+# markdown rather than flattening into its parent.
+_ADF_LIST_INDENT = "  "
+
+# Marker emitted for a taskItem, keyed by its attrs.state. Jira uses DONE for a
+# ticked box; anything else (TODO, or a value this does not recognize) is open.
+_ADF_TASK_MARKERS = {"DONE": "- [x] "}
+_ADF_TASK_MARKER_DEFAULT = "- [ ] "
+
+# Depth ceiling for the ADF walk. Real Jira content nests a handful of levels;
+# this only stops a malformed or hostile payload from exhausting the stack,
+# since the document is untrusted input from an external system.
+_ADF_MAX_DEPTH = 100
+
+# Emitted in place of a subtree the depth cap refused to walk, so a truncated
+# body is distinguishable from a short one by whoever reads it downstream.
+_ADF_TRUNCATION_NOTICE = "[content truncated: ADF nesting depth exceeded]"
+
+# ADF's own heading node only ever carries 1 through 6, matching HTML h1-h6.
+# Anything else is a malformed payload rather than a real heading level.
+_ADF_MIN_HEADING_LEVEL = 1
+_ADF_MAX_HEADING_LEVEL = 6
+
+
+def _starts_with_marker(parts: list[str], start: int) -> bool:
+    """Report whether the text from ``start`` onward opens with a list marker."""
+    for part in itertools.islice(parts, start, None):
+        if not part:
+            continue
+        return bool(_LIST_MARKER_RE.match(part))
+    return False
+
+
+def _coerce_text(value: object) -> str:
+    """Return ``value`` if it is a string, else ``""``.
+
+    ADF is untrusted input from an external system: a ``text`` or ``attrs.text``
+    field can be ``null`` (or any other non-string JSON value) despite the key
+    being present, which ``dict.get(key, default)`` does not catch since the
+    default only applies when the key is missing. An unguarded ``None`` here
+    does not fail at the eventual ``"".join(parts)`` as it first appears: the
+    very next node's ``end_line()`` call reads ``parts[-1].endswith("\\n")`` and
+    raises ``AttributeError`` on ``None`` before ``join`` is ever reached.
+    """
+    return value if isinstance(value, str) else ""
+
+
+def _coerce_heading_level(value: object) -> int:
+    """Return ``value`` clamped to ADF's 1-6 heading range, or 1 if unusable.
+
+    ``bool`` is excluded even though it is an ``int`` subclass: a heading level
+    of ``True``/``False`` is not a real ADF value and would otherwise silently
+    pass the ``isinstance(value, int)`` check.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(_ADF_MIN_HEADING_LEVEL, min(_ADF_MAX_HEADING_LEVEL, value))
+    return _ADF_MIN_HEADING_LEVEL
 
 
 def _is_exact_identity_match(query: str, result: dict) -> bool:
@@ -450,7 +526,7 @@ class JiraAdapter(TaskAdapter):
             return []
         bodies: list[str] = []
         for comment in response.json().get("comments", []):
-            text = self._extract_text(comment.get("body"))
+            text = self._extract_text(comment.get("body"), issue_key=issue_key)
             if text:
                 bodies.append(text)
         return bodies
@@ -600,7 +676,7 @@ class JiraAdapter(TaskAdapter):
         return Task(
             id=number,
             title=fields.get("summary", ""),
-            body=self._extract_text(fields.get("description")),
+            body=self._extract_text(fields.get("description"), issue_key=key),
             state=state,
             labels=labels,
             assignees=[assignee["displayName"]] if assignee else [],
@@ -621,18 +697,86 @@ class JiraAdapter(TaskAdapter):
         )
 
     @staticmethod
-    def _extract_text(description: dict | None) -> str:
+    def _extract_text(description: dict | None, issue_key: str = "") -> str:
+        """Flatten an ADF document to plain text.
+
+        Walks the node tree recursively: ADF nests list content several levels
+        deep (``bulletList`` -> ``listItem`` -> ``paragraph`` -> ``text``), so a
+        single-level scan silently drops every list, which on a bullet-heavy
+        ticket is most of the body.
+
+        ``issue_key`` is used only to identify the ticket in the depth-cap
+        warning, so an operator seeing one can tell which ticket lost content.
+        """
         if not description:
             return ""
+
         parts: list[str] = []
-        for block in description.get("content", []):
-            if block.get("type") == "heading":
-                level = block.get("attrs", {}).get("level", 1)
-                parts.append("#" * level + " ")
-            for inline in block.get("content", []):
-                if inline.get("type") == "text":
-                    parts.append(inline.get("text", ""))
+
+        def end_line() -> None:
+            """Terminate the current line, collapsing a run of blank lines.
+
+            A block node whose last child was itself a block has already had a
+            newline emitted on its behalf, so appending unconditionally would
+            leave a stray blank line after every nested list and multi-paragraph
+            list item.
+            """
+            if parts and parts[-1].endswith("\n"):
+                return
             parts.append("\n")
+
+        def walk(node: dict, depth: int, list_depth: int) -> None:
+            if depth > _ADF_MAX_DEPTH:
+                log.warning("jira.adf_depth_exceeded", max_depth=_ADF_MAX_DEPTH, issue_key=issue_key)
+                end_line()
+                parts.append(_ADF_TRUNCATION_NOTICE)
+                end_line()
+                return
+
+            node_type = node.get("type")
+            attrs = node.get("attrs") or {}
+            marker_at = -1
+            child_list_depth = list_depth
+
+            if node_type == "heading":
+                parts.append("#" * _coerce_heading_level(attrs.get("level")) + " ")
+            elif node_type in _ADF_LIST_ITEM_TYPES:
+                # Indent by nesting level so a nested list still reads as nested
+                # markdown instead of flattening into its parent's level.
+                marker_at = len(parts)
+                marker = (
+                    _ADF_TASK_MARKERS.get(attrs.get("state"), _ADF_TASK_MARKER_DEFAULT)
+                    if node_type == "taskItem"
+                    else "- "
+                )
+                parts.append(_ADF_LIST_INDENT * list_depth + marker)
+                child_list_depth = list_depth + 1
+            elif node_type == "text":
+                parts.append(_coerce_text(node.get("text")))
+            elif node_type == "hardBreak":
+                parts.append("\n")
+            elif node_type in _ADF_ATTR_TEXT_TYPES:
+                # mention and emoji carry their display text in attrs, not in a
+                # child text node, so skipping them drops the name outright.
+                parts.append(_coerce_text(attrs.get("text")))
+
+            for child in node.get("content") or []:
+                if isinstance(child, dict):
+                    walk(child, depth + 1, child_list_depth)
+
+            # Jira's rich editor turns a typed "- [ ] x" into a list item whose
+            # text still reads "- [ ] x". Re-prefixing would yield "- - [ ] x",
+            # so keep only the indent when the item already supplies a marker.
+            if marker_at >= 0 and _starts_with_marker(parts, marker_at + 1):
+                parts[marker_at] = _ADF_LIST_INDENT * list_depth
+
+            # Block-level nodes terminate a line; inline nodes never do.
+            if node_type in _ADF_BLOCK_TYPES:
+                end_line()
+
+        for block in description.get("content") or []:
+            if isinstance(block, dict):
+                walk(block, 1, 0)
         return "".join(parts).strip()
 
     async def _set_state_label(self, issue_key: str, new_state: TaskState) -> None:
