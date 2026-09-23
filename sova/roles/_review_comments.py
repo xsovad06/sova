@@ -79,15 +79,16 @@ def _format_addressed_findings(findings: list[dict] | None) -> str:
     # Group by source
     by_source: dict[str, list[dict]] = {}
     for f in findings:
-        source = f.get("source", "unknown")
+        source = f.get("source") or ("sova-review" if "description" in f else "unknown")
         by_source.setdefault(source, []).append(f)
 
     lines = [
-        "## Already Addressed by Static Tools",
-        "The following issues were already detected and addressed by external tools "
-        "before this review. Focus your review on complementary dimensions that static "
-        "tools cannot catch: logic correctness, architecture, edge cases, concurrency, "
-        "and design intent.",
+        "## Already Addressed in Earlier Rounds",
+        "The following findings were raised by an earlier SOVA review round or by "
+        "external tools and have since been addressed on this PR. Verify each fix "
+        "landed rather than re-reporting the finding, and focus the rest of the "
+        "review on complementary dimensions those rounds could not cover: logic correctness, "
+        "architecture, edge cases, concurrency, and design intent.",
         "",
     ]
     for source, items in sorted(by_source.items()):
@@ -95,8 +96,11 @@ def _format_addressed_findings(findings: list[dict] | None) -> str:
         for item in items:
             severity = item.get("severity", "?")
             tool_id = item.get("tool_id", "")
-            file_path = item.get("file_path", "unknown")
-            msg = item.get("message", "")
+            # External-tool findings carry file_path/message; SOVA review
+            # findings (addressed by the address-review pipeline) carry
+            # file/description.
+            file_path = item.get("file_path") or item.get("file") or "unknown"
+            msg = item.get("message") or item.get("description") or ""
             tool_tag = f" [{tool_id}]" if tool_id else ""
             lines.append(f"- [{severity}]{tool_tag} `{file_path}`: {msg}")
         lines.append("")

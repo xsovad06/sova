@@ -474,7 +474,7 @@ class PipelineDefinitions(BaseSettings):
             "monitor_ci",
             "resolve_external_reviews",
             "extract_memory",
-            "handoff_to_user",
+            "handoff_to_reviewer",
         ]
     )
     researcher: list[str] = Field(default_factory=lambda: ["fetch_task", "research", "spec", "extract_memory"])

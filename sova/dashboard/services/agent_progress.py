@@ -70,6 +70,15 @@ async def _resolve_pipelines(project_dir: Path | None) -> dict[str, list[str]]:
     return resolved
 
 
+# Steps that appear only in the address-review pipeline, used to recognise that
+# variant from a step name alone. handoff_to_user is kept because a project can
+# still configure it as the address pipeline's terminal step, but the built-in
+# pipeline now ends with handoff_to_reviewer, which the developer pipeline also
+# ends with. That last step is therefore ambiguous and falls through to the
+# developer variant: a cosmetic step-bar discrepancy (index 17/17 instead of
+# 10/10, same "Handoff" label) lasting only the final seconds of the run.
+# Resolving it properly needs the run's step history or a variant column on
+# TaskRun, neither of which is worth a per-poll DB read here.
 _ADDRESS_REVIEW_ONLY = frozenset(
     {"ensure_worktree", "rebase", "address_review", "rearrange_commits", "handoff_to_user"}
 )

@@ -1,4 +1,12 @@
-"""Step: Handoff to Reviewer -- write handoff for the Reviewer role to pick up."""
+"""Step: Handoff to Reviewer: write handoff for the Reviewer role to pick up.
+
+Terminal step of both the developer pipeline (first review of a new PR) and
+the address-review pipeline (re-review of the head that carries the fixes).
+The re-review closes the loop autonomously: the sova_reviewed integration gate
+needs an approving verdict on the current head, and an address cycle alone
+only ever yields "addressed". The Reviewer -> Developer direction is bounded
+by pipeline.max_address_review_cycles in _process_auto_handoff().
+"""
 
 from __future__ import annotations
 
@@ -16,10 +24,21 @@ class HandoffToReviewerStep(BaseStep):
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         label = ctx.display_label
-        log.info("step.handoff_to_reviewer", label=label, pr=ctx.pr_number, confidence=ctx.confidence_score)
+        rereview = ctx.pipeline_variant == "address_review"
+        log.info(
+            "step.handoff_to_reviewer",
+            label=label,
+            pr=ctx.pr_number,
+            confidence=ctx.confidence_score,
+            rereview=rereview,
+        )
 
         auto = ctx.config.pipeline.auto_handoff
-        review_description = f"Spawn Reviewer agent to review PR #{ctx.pr_number}"
+        review_description = (
+            f"Spawn Reviewer agent to re-review PR #{ctx.pr_number} after the address cycle"
+            if rereview
+            else f"Spawn Reviewer agent to review PR #{ctx.pr_number}"
+        )
         actions: list[HandoffAction] = []
 
         confidence = ctx.config.confidence
@@ -68,17 +87,33 @@ class HandoffToReviewerStep(BaseStep):
             ),
         )
 
+        if rereview:
+            addressed = len(ctx.addressed_review_findings)
+            phase = "address_review"
+            summary = f"PR #{ctx.pr_number} findings addressed ({addressed}), handing to Reviewer for re-review"
+            agent_summary = f"Review findings addressed for {label}, PR #{ctx.pr_number} ready for re-review"
+            notification_message = f"PR #{ctx.pr_number} findings addressed, handing to Reviewer"
+            notification_subtitle = f"Address review finished {label}"
+            result_summary = f"Handed off to Reviewer for re-review (PR #{ctx.pr_number})"
+        else:
+            phase = "develop"
+            summary = f"PR #{ctx.pr_number} ready for review (CI passed)"
+            agent_summary = f"Development complete for {label}, PR #{ctx.pr_number} created with passing CI"
+            notification_message = f"PR #{ctx.pr_number} passed CI, handing to Reviewer"
+            notification_subtitle = f"Developer finished {label}"
+            result_summary = f"Handed off to Reviewer (PR #{ctx.pr_number})"
+
         return await write_step_handoff(
             ctx,
             role="developer",
-            phase="develop",
-            summary=f"PR #{ctx.pr_number} ready for review (CI passed)",
-            agent_summary=(f"Development complete for {label}, PR #{ctx.pr_number} created with passing CI"),
+            phase=phase,
+            summary=summary,
+            agent_summary=agent_summary,
             next_action="review",
             actions=actions,
-            notification_message=f"PR #{ctx.pr_number} passed CI, handing to Reviewer",
-            notification_subtitle=f"Developer finished {label}",
-            result_summary=f"Handed off to Reviewer (PR #{ctx.pr_number})",
+            notification_message=notification_message,
+            notification_subtitle=notification_subtitle,
+            result_summary=result_summary,
         )
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:

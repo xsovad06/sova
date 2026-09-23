@@ -500,7 +500,17 @@ class TestBuildReviewPrompt:
     def test_addressed_findings_included(self) -> None:
         addressed = [{"source": "ruff", "file_path": "a.py", "message": "unused"}]
         prompt = _build_review_prompt(_task(), "diff", ["f.py"], addressed_findings=addressed)
-        assert "Already Addressed by Static Tools" in prompt
+        assert "Already Addressed in Earlier Rounds" in prompt
+        assert "### ruff (1 finding)" in prompt
+        assert "`a.py`: unused" in prompt
+
+    def test_addressed_sova_review_findings_use_pipeline_shape(self) -> None:
+        """AddressReviewStep records file/description (not file_path/message), and no
+        source: the re-review prompt must still render them, grouped as sova-review."""
+        addressed = [{"file": "b.py", "line": 7, "severity": 6, "category": "bug", "description": "off by one"}]
+        prompt = _build_review_prompt(_task(), "diff", ["f.py"], addressed_findings=addressed)
+        assert "### sova-review (1 finding)" in prompt
+        assert "- [6] `b.py`: off by one" in prompt
 
     def test_empty_body_no_description(self) -> None:
         prompt = _build_review_prompt(_task(body=""), "diff", ["f.py"])

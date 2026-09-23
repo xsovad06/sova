@@ -131,6 +131,7 @@ class DeveloperRole(AgentRole):
         except ValueError as exc:
             return _pipeline_config_error(exc)
 
+        ctx.pipeline_variant = "address_review"
         engine = WorkflowEngine(steps=steps, ctx=ctx)
         workflow_result = await engine.run()
 
@@ -138,7 +139,7 @@ class DeveloperRole(AgentRole):
             log.info("developer.address_review.done", label=ctx.display_label)
             return RoleResult(
                 success=True,
-                summary=f"Review findings addressed for PR #{ctx.pr_number}, handed off to user",
+                summary=f"Review findings addressed for PR #{ctx.pr_number}, handed off for re-review",
                 output_state=TaskState.IN_REVIEW,
             )
 
