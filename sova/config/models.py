@@ -140,7 +140,20 @@ class AgentConfig(BaseSettings):
     fallback_models: list[str] = Field(default_factory=list)
     max_budget: Decimal = Field(Decimal("10.00"), gt=0)
     max_issue_budget: Decimal = Field(Decimal("50.00"), gt=0)
+    # Legacy flat timeout. No longer read by WorkflowEngine._step_timeout (see
+    # step_timeout_normal/_complex below); still read directly by steps that
+    # invoke the LLM outside the engine's hard timeout (research, self_review,
+    # spec, simplify, rearrange_commits, confidence_score, address_review) and
+    # by sova/mcp/tools.py.
     step_timeout: int = Field(1800, gt=0)
+    # Per-tier bases read by WorkflowEngine._step_timeout() for every step
+    # except develop (see DevelopConfig.step_timeout_normal/_complex) and
+    # monitor_ci (ci.max_wait + 120, unaffected by tier). Defaults match the
+    # old step_timeout base and its COMPLEX multiplier. A project that had
+    # customized the legacy step_timeout does not have that customization
+    # carried over automatically; it must also set these fields explicitly.
+    step_timeout_normal: int = Field(1800, gt=0)
+    step_timeout_complex: int = Field(2700, gt=0)
     skip_manual_test: bool = True
     auto_approve_fixes: bool = False
     env_passthrough: list[str] = Field(default_factory=list)
@@ -236,7 +249,18 @@ class DevelopConfig(BaseSettings):
     guard_test_weakening: bool = True
     max_fix_time: int = Field(1800, gt=0)
     fix_timeout: int = Field(600, gt=0)
+    # Legacy flat timeout. Still read directly by DevelopStep for its own
+    # /develop invocation timeout (deliberately not tier-aware: the widened
+    # complex-tier headroom on step_timeout_complex below must reach the
+    # inner check/fix loop, not just the LLM call itself).
     step_timeout: int = Field(2400, gt=0)
+    # Per-tier bases for the develop step's outer hard timeout, read by
+    # WorkflowEngine._step_timeout(). Deliberately NOT clamped by
+    # agent.step_timeout_normal/_complex: the step-specific knob is more
+    # specific and must win (see the regression documented on
+    # WorkflowEngine._step_timeout).
+    step_timeout_normal: int = Field(2400, gt=0)
+    step_timeout_complex: int = Field(3600, gt=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DEVELOP_")
 
@@ -816,8 +840,9 @@ class RunawayConfig(BaseSettings):
     go blind against a provider that always reports cost_usd=0. Each limit
     disables independently at 0, unlike the budget fields (gt=0), because a
     deployment that never enables a non-Anthropic provider should see no
-    behavior change. Wall clock is scaled by task complexity (see
-    WorkflowEngine._step_timeout's multiplier) so a legitimate EPIC-complexity
+    behavior change. Wall clock is scaled by task complexity (via
+    sova.llm.complexity.complexity_multiplier, applied in
+    WorkflowEngine._check_runaway_guard) so a legitimate EPIC-complexity
     run is not paused by the flat default ceiling. max_llm_calls backstops
     retry/fix loops that burn LLM calls inside a single step's execute()
     without incrementing steps_completed (MonitorCIStep's CI-fix loop,

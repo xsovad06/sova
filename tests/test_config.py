@@ -1543,3 +1543,37 @@ def test_codex_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.Monke
     cfg = load_config(tmp_path)
     assert cfg.codex.model == "override-model"
     assert cfg.codex.sandbox == "workspace-write"
+
+
+def test_agent_step_timeout_tier_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SOVA_AGENT_STEP_TIMEOUT_* env vars override TOML/database agent settings.
+
+    Without an "agent" entry in _apply_env_overrides(), SOVA_AGENT_STEP_TIMEOUT_NORMAL
+    and SOVA_AGENT_STEP_TIMEOUT_COMPLEX had no effect once [agent] was present in
+    sova.toml, since ProjectConfig(**merged) only ever saw the stored TOML values.
+    """
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text("[agent]\nstep_timeout_normal = 1800\nstep_timeout_complex = 2700\n")
+    monkeypatch.setenv("SOVA_AGENT_STEP_TIMEOUT_NORMAL", "1200")
+    monkeypatch.setenv("SOVA_AGENT_STEP_TIMEOUT_COMPLEX", "3300")
+
+    cfg = load_config(tmp_path)
+    assert cfg.agent.step_timeout_normal == 1200
+    assert cfg.agent.step_timeout_complex == 3300
+
+
+def test_develop_step_timeout_tier_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SOVA_DEVELOP_STEP_TIMEOUT_* env vars override TOML/database develop settings.
+
+    Without a "develop" entry in _apply_env_overrides(), SOVA_DEVELOP_STEP_TIMEOUT_NORMAL
+    and SOVA_DEVELOP_STEP_TIMEOUT_COMPLEX had no effect once [develop] was present in
+    sova.toml, since ProjectConfig(**merged) only ever saw the stored TOML values.
+    """
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text("[develop]\nstep_timeout_normal = 2400\nstep_timeout_complex = 3600\n")
+    monkeypatch.setenv("SOVA_DEVELOP_STEP_TIMEOUT_NORMAL", "1500")
+    monkeypatch.setenv("SOVA_DEVELOP_STEP_TIMEOUT_COMPLEX", "4200")
+
+    cfg = load_config(tmp_path)
+    assert cfg.develop.step_timeout_normal == 1500
+    assert cfg.develop.step_timeout_complex == 4200

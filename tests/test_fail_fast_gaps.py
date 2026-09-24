@@ -98,11 +98,18 @@ def mock_ctx(tmp_path, mock_config):
 
 
 class TestDevelopStepTimeout:
-    """Tests for develop-specific step timeout."""
+    """Tests for develop-specific step timeout.
+
+    _step_timeout() dispatches on step_timeout_normal/step_timeout_complex,
+    not the legacy step_timeout field (kept for backward compatibility but
+    no longer read by this method).
+    """
 
     @pytest.mark.asyncio
     async def test_develop_uses_custom_timeout(self, mock_ctx, mock_config):
-        """Develop step should use develop.step_timeout."""
+        """Develop step should use develop.step_timeout_normal at normal tier."""
+        mock_config.develop.step_timeout_normal = 1200
+        mock_config.agent.step_timeout_normal = 1800
         engine = WorkflowEngine(steps=[], ctx=mock_ctx)
 
         assert engine._step_timeout("develop") == 1200
@@ -111,7 +118,7 @@ class TestDevelopStepTimeout:
 
     @pytest.mark.asyncio
     async def test_develop_timeout_not_capped_at_agent_timeout(self, mock_ctx, mock_config):
-        """develop.step_timeout above agent.step_timeout must be honoured.
+        """develop.step_timeout_normal above agent.step_timeout_normal must be honoured.
 
         This deliberately reverses the original fail-fast clamp: capping
         develop at agent.step_timeout meant a project that raised
@@ -120,7 +127,8 @@ class TestDevelopStepTimeout:
         discarded. The global ceiling is runaway.max_run_wall_clock_seconds
         (applied by _effective_step_timeout), not agent.step_timeout.
         """
-        mock_config.develop.step_timeout = 2400
+        mock_config.develop.step_timeout_normal = 2400
+        mock_config.agent.step_timeout_normal = 1800
         engine = WorkflowEngine(steps=[], ctx=mock_ctx)
 
         assert engine._step_timeout("develop") == 2400

@@ -271,6 +271,26 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
         ],
     )
 
+    _apply_nested_env_overrides(
+        merged,
+        "agent",
+        "SOVA_AGENT_",
+        [
+            ("step_timeout_normal", "SOVA_AGENT_STEP_TIMEOUT_NORMAL"),
+            ("step_timeout_complex", "SOVA_AGENT_STEP_TIMEOUT_COMPLEX"),
+        ],
+    )
+
+    _apply_nested_env_overrides(
+        merged,
+        "develop",
+        "SOVA_DEVELOP_",
+        [
+            ("step_timeout_normal", "SOVA_DEVELOP_STEP_TIMEOUT_NORMAL"),
+            ("step_timeout_complex", "SOVA_DEVELOP_STEP_TIMEOUT_COMPLEX"),
+        ],
+    )
+
 
 def _apply_nested_env_overrides(
     merged: dict[str, Any],

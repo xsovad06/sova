@@ -254,8 +254,26 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta(
         "agent.step_timeout",
-        "Step timeout (s)",
-        "Maximum seconds per pipeline step before killing the agent (must be > 0)",
+        "Step timeout, legacy (s)",
+        "Legacy flat step timeout. Superseded by the per-tier fields below for pipeline step hard "
+        "timeouts; still used by steps that invoke the LLM outside the engine timeout (research, "
+        "spec, self-review). Independent of the per-tier fields; not inherited by them (must be > 0)",
+        "agent",
+        "number",
+    ),
+    SettingMeta(
+        "agent.step_timeout_normal",
+        "Step timeout, normal tier (s)",
+        "Hard timeout for non-develop steps on TRIVIAL/SIMPLE/MODERATE complexity issues. "
+        "Does not apply to monitor_ci, which always uses ci.max_wait + 120",
+        "agent",
+        "number",
+    ),
+    SettingMeta(
+        "agent.step_timeout_complex",
+        "Step timeout, complex tier (s)",
+        "Hard timeout for non-develop steps on COMPLEX/EPIC complexity issues. "
+        "Does not apply to monitor_ci, which always uses ci.max_wait + 120",
         "agent",
         "number",
     ),
@@ -539,8 +557,24 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta(
         "develop.step_timeout",
-        "Step timeout (s)",
-        "Develop-specific step timeout (defaults to 1200s; capped at agent.step_timeout)",
+        "Step timeout, legacy (s)",
+        "Timeout for the develop step's own /develop LLM invocation. Independent of the per-tier "
+        "fields below (which govern only the step's outer hard timeout); not inherited by them",
+        "develop",
+        "number",
+    ),
+    SettingMeta(
+        "develop.step_timeout_normal",
+        "Step timeout, normal tier (s)",
+        "Develop step's outer hard timeout on TRIVIAL/SIMPLE/MODERATE complexity issues, NOT capped "
+        "by agent.step_timeout_normal",
+        "develop",
+        "number",
+    ),
+    SettingMeta(
+        "develop.step_timeout_complex",
+        "Step timeout, complex tier (s)",
+        "Develop step's outer hard timeout on COMPLEX/EPIC complexity issues, NOT capped by agent.step_timeout_complex",
         "develop",
         "number",
     ),
