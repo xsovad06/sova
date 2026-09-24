@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import httpx
@@ -160,9 +161,47 @@ async def configure_project(req: ConfigureRequest) -> dict:
     return {"status": "ok", "config_source": "database", "slug": slug}
 
 
+_SKILL_FILENAME_RE = re.compile(r"^[^/\\]+/SKILL\.md$")
+
+
+def _is_safe_sync_filename(name: str) -> bool:
+    """Reject path traversal or absolute paths in a client-supplied filename.
+
+    Allows the ``{skill}/SKILL.md`` form already used by the manifest; any
+    other path separator or ``..`` component is rejected.
+    """
+    if not name or ".." in name or name.startswith(("/", "\\")):
+        return False
+    if "/" in name or "\\" in name:
+        return bool(_SKILL_FILENAME_RE.match(name))
+    return True
+
+
+def _validate_sync_filenames(names: list[str] | None, *, field_name: str) -> None:
+    if names is None:
+        return
+    invalid = [n for n in names if not _is_safe_sync_filename(n)]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}: {invalid}")
+
+
+class SyncCommandsRequest(BaseModel):
+    filenames: list[str] | None = None
+    guideline_filenames: list[str] | None = None
+
+
 @router.post("/setup/commands/sync")
-async def sync_commands() -> dict[str, object]:
-    """Sync canonical SOVA commands and guidelines into the active project."""
+async def sync_commands(req: SyncCommandsRequest | None = None) -> dict[str, object]:
+    """Sync canonical SOVA commands and guidelines into the active project.
+
+    With no body (or an empty body), syncs everything, matching the original
+    behaviour. A body naming ``filenames`` and/or ``guideline_filenames``
+    restricts the sync to that explicit subset, applying ``force=True`` to
+    those files (the caller has already reviewed and accepted the conflict).
+    Omitting ``guideline_filenames`` from a present body means "no guideline
+    changes", not "all guideline changes": a selective request must name
+    what it wants.
+    """
     from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
     from sova.commands.distribution import UpdateResult, update_commands, update_guidelines
     from sova.commands.manifest import read_manifest
@@ -178,18 +217,55 @@ async def sync_commands() -> dict[str, object]:
     except (FileNotFoundError, ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=f"Failed to load project config: {e}") from e
 
-    commands_dir = project_dir / ".claude" / "commands"
-    commands_dir.mkdir(parents=True, exist_ok=True)
+    cmd_filenames = req.filenames if req is not None else None
+    guideline_filenames = req.guideline_filenames if req is not None else None
+    _validate_sync_filenames(cmd_filenames, field_name="filenames")
+    _validate_sync_filenames(guideline_filenames, field_name="guideline_filenames")
 
-    cmd_result = await asyncio.to_thread(update_commands, canonical_dir, commands_dir, cfg)
+    # A present body must name what it wants: selecting only `guideline_filenames`
+    # means "skip commands" for the same reason omitting `guideline_filenames` means
+    # "skip guidelines" (see docstring). A body with neither field set (no body, or
+    # an empty `{}`) is a "sync everything" request, not a selective one.
+    no_selection = req is None or (cmd_filenames is None and guideline_filenames is None)
+    should_sync_commands = no_selection or cmd_filenames is not None
+
+    commands_dir = project_dir / ".claude" / "commands"
+    if should_sync_commands:
+        # A selective sync with an explicit empty `filenames` list is a no-op for
+        # commands (see _update_files: an empty allow-list returns immediately
+        # without touching target_dir). Skip creating the directory in that case
+        # so a pure no-op selective sync has no side effect on a project that
+        # never had a commands directory. A full sync (cmd_filenames is None) or
+        # a non-empty selection still ensures the directory exists up front.
+        if cmd_filenames is None or cmd_filenames:
+            commands_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd_result = await asyncio.to_thread(
+            update_commands,
+            canonical_dir,
+            commands_dir,
+            cfg,
+            force=cmd_filenames is not None,
+            filenames=cmd_filenames,
+        )
+    else:
+        cmd_result = UpdateResult()
 
     # Only sync guidelines if they were previously installed (manifest exists).
     # Without this guard, syncing installs SOVA-framework-specific templates
     # into projects that never opted into managed guidelines.
     rules_dir = project_dir / ".claude" / "rules"
-    if rules_dir.is_dir() and read_manifest(rules_dir) is not None:
+    sync_guidelines = no_selection or guideline_filenames is not None
+    if sync_guidelines and rules_dir.is_dir() and read_manifest(rules_dir) is not None:
         guidelines_dir = get_guidelines_dir()
-        guide_result = await asyncio.to_thread(update_guidelines, guidelines_dir, rules_dir, cfg)
+        guide_result = await asyncio.to_thread(
+            update_guidelines,
+            guidelines_dir,
+            rules_dir,
+            cfg,
+            force=guideline_filenames is not None,
+            filenames=guideline_filenames,
+        )
     else:
         guide_result = UpdateResult()
 

@@ -88,7 +88,7 @@ def _parse_command_file(path: Path) -> CommandEntry | None:
     """Parse a command markdown file and extract frontmatter metadata."""
     try:
         content = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         log.warning("commands.read_error", path=str(path))
         return None
 

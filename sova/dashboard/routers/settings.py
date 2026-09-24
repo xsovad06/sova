@@ -515,6 +515,39 @@ async def installation_status() -> dict[str, object]:
         raise HTTPException(status_code=500, detail="Failed to check installation status") from exc
 
 
+@router.get(
+    "/settings/installation/diff",
+    responses={
+        400: {"description": "No active project"},
+        500: {"description": "Failed to build installation diff"},
+    },
+)
+async def installation_diff() -> dict[str, object]:
+    """Build a per-file diff (forward + reverse) for the review-changes modal."""
+    from sova.config.loader import load_config
+    from sova.dashboard.services.settings_service import build_installation_diff
+
+    project_dir = get_project_dir()
+    if not project_dir or not project_dir.is_dir():
+        raise HTTPException(status_code=400, detail="No active project")
+
+    try:
+        cfg = load_config(project_dir)
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to load project config: {exc}") from exc
+
+    try:
+        diff = await asyncio.to_thread(build_installation_diff, project_dir, cfg)
+    except Exception as exc:  # noqa: BLE001 (route boundary translates unexpected failures to HTTP 500)
+        log.warning("settings.installation.diff.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to build installation diff") from exc
+
+    return {
+        "source_available": diff.source_available,
+        "files": [asdict(f) for f in diff.files],
+    }
+
+
 @router.get("/settings/invariants", responses={500: {"description": "Failed to fetch invariants"}})
 async def list_invariants() -> dict:
     """List invariant scripts."""

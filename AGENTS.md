@@ -120,6 +120,7 @@ This project uses **GitHub Issues** with a project board.
 - **Line length**: 120 max
 - **Formatter**: Ruff (lint + format) when available
 - **Falsy-default trap**: never use `x or default` when `x` can be a legitimate falsy non-`None` value (`0`, `""`, `[]`, `False`). It silently discards the real value. Use `x if x is not None else default` or an explicit membership/identity check instead.
+- **Reading text files: always specify `encoding="utf-8"` and catch `(OSError, UnicodeDecodeError)`**: bare `path.read_text()` uses the platform default encoding, and `UnicodeDecodeError` is not a subclass of `OSError`, so an `except OSError` guard alone still crashes on a non-UTF-8 file. This applies to any "read a file, return `None` on failure" helper, and equally to any read inside a loop over many files where one bad file must not abort the whole batch. Confirmed three times: `sova/core/steps/spec.py` (PR #680), `sova/dashboard/services/settings_service.py:_read_text_or_none()` (PR #1070), and `sova/commands/distribution.py:_reverse_diff_files()` (issue #695, a per-file loop where the guard `continue`s past the unreadable file instead of returning `None`).
 
 ### Code Patterns: Markdown (commands, personas, knowledge)
 - **Frontmatter**: commands use YAML frontmatter (`name`, `description`, `user-invocable`)

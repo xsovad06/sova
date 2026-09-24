@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -500,3 +501,373 @@ class TestGetConfigAndPersona:
 
         with patch("sova.knowledge.personas.detect_persona", side_effect=OSError("unreadable")):
             assert get_detected_persona(tmp_path) is None
+
+
+class TestBuildInstallationDiff:
+    """Tests for settings_service.build_installation_diff()."""
+
+    @pytest.fixture
+    def canonical_dir(self, tmp_path: Path) -> Path:
+        cmd_dir = tmp_path / "canonical" / "commands"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Develop.\nuser-invocable: true\ncategory: core\n---\n\nDevelop it.\n"
+        )
+        (cmd_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Standup.\nuser-invocable: true\ncategory: management\n---\n\nStand up.\n"
+        )
+        return cmd_dir
+
+    @pytest.fixture
+    def project_dir(self, tmp_path: Path) -> Path:
+        project = tmp_path / "project"
+        (project / ".claude" / "commands").mkdir(parents=True)
+        return project
+
+    @pytest.fixture
+    def cfg(self):
+        from sova.config.models import ProjectConfig
+
+        return ProjectConfig()
+
+    def _patch_canonical(self, monkeypatch, canonical_dir: Path) -> None:
+        monkeypatch.setattr("sova.commands.catalog.get_canonical_dir", lambda: canonical_dir)
+
+    def test_source_unavailable_when_canonical_dir_missing(self, monkeypatch, project_dir, cfg) -> None:
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        monkeypatch.setattr("sova.commands.catalog.get_canonical_dir", lambda: Path("/nonexistent/canonical/dir"))
+
+        result = build_installation_diff(project_dir, cfg)
+        assert result.source_available is False
+        assert result.files == []
+
+    def test_new_command_not_yet_installed(self, monkeypatch, canonical_dir, project_dir, cfg) -> None:
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+
+        result = build_installation_diff(project_dir, cfg)
+        names_by_status = {f.filename: f.status for f in result.files}
+        assert names_by_status["develop.md"] == "new"
+        assert names_by_status["standup.md"] == "new"
+
+        entry = next(f for f in result.files if f.filename == "develop.md")
+        assert entry.category == "command"
+        assert entry.local_content is None
+        assert "Develop it." in entry.canonical_content
+
+    def test_upstream_only_when_canonical_changed_and_local_untouched(
+        self, monkeypatch, canonical_dir, project_dir, cfg
+    ) -> None:
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (canonical_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Develop.\nuser-invocable: true\ncategory: core\n---\n\nNew develop.\n"
+        )
+
+        result = build_installation_diff(project_dir, cfg)
+        entry = next(f for f in result.files if f.filename == "develop.md")
+        assert entry.status == "upstream_only"
+        assert "New develop." in entry.canonical_content
+        assert "Develop it." in entry.local_content
+
+    def test_conflict_when_both_canonical_and_local_changed(self, monkeypatch, canonical_dir, project_dir, cfg) -> None:
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (commands_dir / "develop.md").write_text("# Locally customized\n")
+        (canonical_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Develop.\nuser-invocable: true\ncategory: core\n---\n\nNew develop.\n"
+        )
+
+        result = build_installation_diff(project_dir, cfg)
+        entry = next(f for f in result.files if f.filename == "develop.md")
+        assert entry.status == "conflict"
+        assert "New develop." in entry.canonical_content
+        assert "Locally customized" in entry.local_content
+
+    def test_local_modified_when_only_local_changed(self, monkeypatch, canonical_dir, project_dir, cfg) -> None:
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (commands_dir / "develop.md").write_text("# Locally customized only\n")
+
+        result = build_installation_diff(project_dir, cfg)
+        entry = next(f for f in result.files if f.filename == "develop.md")
+        assert entry.status == "local_modified"
+
+    def test_removed_when_canonical_no_longer_has_file(self, monkeypatch, canonical_dir, project_dir, cfg) -> None:
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (canonical_dir / "standup.md").unlink()
+
+        result = build_installation_diff(project_dir, cfg)
+        entry = next(f for f in result.files if f.filename == "standup.md")
+        assert entry.status == "removed"
+        assert entry.canonical_content is None
+        assert "Stand up." in entry.local_content
+
+    def test_local_only_unmanaged_file(self, monkeypatch, canonical_dir, project_dir, cfg) -> None:
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (commands_dir / "agent-resume.md").write_text("# SOVA-only command\n")
+
+        result = build_installation_diff(project_dir, cfg)
+        entry = next(f for f in result.files if f.filename == "agent-resume.md")
+        assert entry.status == "local_only"
+        assert entry.canonical_content is None
+        assert "SOVA-only command" in entry.local_content
+
+    def test_deleted_locally_file_is_local_only(self, monkeypatch, canonical_dir, project_dir, cfg) -> None:
+        """A file deleted from disk locally surfaces as "local_only" per the spec's
+        seven-value status contract, not a separate "deleted_locally" status."""
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (commands_dir / "develop.md").unlink()
+
+        result = build_installation_diff(project_dir, cfg)
+        entry = next(f for f in result.files if f.filename == "develop.md")
+        assert entry.status == "local_only"
+        assert entry.canonical_content is None
+        assert entry.local_content is None
+
+    def test_canonical_removed_and_locally_modified_is_removed_not_conflict(
+        self, monkeypatch, canonical_dir, project_dir, cfg
+    ) -> None:
+        """A file removed from the canonical source that the user also modified (not
+        deleted) locally must surface as "removed", not "conflict": it no longer
+        exists in source_files, so a checked "conflict" would silently no-op on
+        Apply instead of performing the sync the checkbox implies."""
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (canonical_dir / "standup.md").unlink()
+        (commands_dir / "standup.md").write_text("# Locally customized before removal\n")
+
+        result = build_installation_diff(project_dir, cfg)
+        entry = next(f for f in result.files if f.filename == "standup.md")
+        assert entry.status == "removed"
+        assert entry.canonical_content is None
+        assert "Locally customized before removal" in entry.local_content
+
+    def test_new_canonical_file_colliding_with_unmanaged_local_is_a_single_conflict(
+        self, monkeypatch, canonical_dir, project_dir, cfg
+    ) -> None:
+        """A brand-new canonical file sharing a name with an existing unmanaged local file
+        must not be reported as a safe "new" install (which would silently overwrite the
+        local file) and must not appear twice (once as "new", once as "local_only")."""
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (commands_dir / "new-thing.md").write_text("# My own local command\n")
+        (canonical_dir / "new-thing.md").write_text(
+            "---\nname: new-thing\ndescription: New.\nuser-invocable: true\ncategory: core\n---\n\nCanonical.\n"
+        )
+
+        result = build_installation_diff(project_dir, cfg)
+        matches = [f for f in result.files if f.filename == "new-thing.md"]
+        assert len(matches) == 1
+        entry = matches[0]
+        assert entry.status == "conflict"
+        assert "My own local command" in entry.local_content
+        assert "Canonical." in entry.canonical_content
+
+    def test_new_canonical_file_colliding_with_local_file_without_manifest_is_conflict(
+        self, monkeypatch, canonical_dir, project_dir, cfg
+    ) -> None:
+        """Without a manifest (no prior install), reverse.unmanaged is always empty
+        (_reverse_diff_files returns early), so the unmanaged_local check alone can't
+        catch a same-named local file. A direct is_file() check on target_dir must
+        still classify it as a conflict, not silently overwrite it as "new"."""
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        commands_dir.mkdir(parents=True, exist_ok=True)
+        (commands_dir / "develop.md").write_text("# Pre-existing local file, never installed\n")
+
+        result = build_installation_diff(project_dir, cfg)
+        matches = [f for f in result.files if f.filename == "develop.md"]
+        assert len(matches) == 1
+        entry = matches[0]
+        assert entry.status == "conflict"
+        assert "Pre-existing local file" in entry.local_content
+
+    def test_canonical_removed_with_empty_local_file_still_reports_removed(
+        self, monkeypatch, canonical_dir, project_dir, cfg
+    ) -> None:
+        """A canonical file removed upstream must surface as "removed" even when the
+        installed file happens to be empty, which would otherwise make the equal-content
+        shortcut (both sides "") misclassify it as clean and hide the removal."""
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (canonical_dir / "standup.md").unlink()
+        (commands_dir / "standup.md").write_text("")
+
+        result = build_installation_diff(project_dir, cfg)
+        entry = next(f for f in result.files if f.filename == "standup.md")
+        assert entry.status == "removed"
+        assert entry.canonical_content is None
+
+    def test_removed_upstream_and_deleted_locally_is_a_single_entry(
+        self, monkeypatch, canonical_dir, project_dir, cfg
+    ) -> None:
+        """A file removed from the canonical source that the user also deleted locally
+        must not appear twice (once as "removed", once as "local_only")."""
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (canonical_dir / "standup.md").unlink()
+        (commands_dir / "standup.md").unlink()
+
+        result = build_installation_diff(project_dir, cfg)
+        matches = [f for f in result.files if f.filename == "standup.md"]
+        assert len(matches) == 1
+        assert matches[0].status == "removed"
+
+    def test_upstream_changed_and_deleted_locally_is_a_single_entry(
+        self, monkeypatch, canonical_dir, project_dir, cfg
+    ) -> None:
+        """A tracked file the upstream changed that the user also deleted locally
+        must not appear twice (once as "upstream_only", once as "local_only")."""
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        (canonical_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Develop.\nuser-invocable: true\ncategory: core\n---\n\nNew develop.\n"
+        )
+        (commands_dir / "develop.md").unlink()
+
+        result = build_installation_diff(project_dir, cfg)
+        matches = [f for f in result.files if f.filename == "develop.md"]
+        assert len(matches) == 1
+        assert matches[0].status == "upstream_only"
+        assert matches[0].local_content is None
+
+    def test_render_equal_content_is_omitted_as_clean(self, monkeypatch, canonical_dir, project_dir, cfg) -> None:
+        """A hash-drifted file whose rendered canonical content matches local exactly is clean, not a conflict."""
+        from sova.commands.distribution import install_commands
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+        commands_dir = project_dir / ".claude" / "commands"
+        install_commands(canonical_dir, commands_dir, cfg)
+
+        rendered = (canonical_dir / "develop.md").read_text()
+        # Local disk content now differs from the manifest hash (drift is detected),
+        # but it is byte-identical to what a sync would write.
+        (commands_dir / "develop.md").write_text(rendered)
+        # Force a manifest/hash mismatch without changing the rendered content by
+        # tampering with the manifest hash directly.
+        import json
+
+        manifest_path = commands_dir / ".sova-manifest.json"
+        data = json.loads(manifest_path.read_text())
+        data["commands"]["develop.md"]["hash"] = "deadbeefdeadbeef"
+        manifest_path.write_text(json.dumps(data))
+
+        result = build_installation_diff(project_dir, cfg)
+        assert all(f.filename != "develop.md" for f in result.files)
+
+    def test_guidelines_excluded_when_never_installed(self, monkeypatch, canonical_dir, project_dir, cfg) -> None:
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+
+        result = build_installation_diff(project_dir, cfg)
+        assert all(f.category != "guideline" for f in result.files)
+
+    def test_guidelines_included_when_previously_installed(self, monkeypatch, canonical_dir, project_dir, cfg) -> None:
+        from sova.commands.distribution import install_guidelines
+        from sova.dashboard.services.settings_service import build_installation_diff
+
+        self._patch_canonical(monkeypatch, canonical_dir)
+
+        guidelines_dir = project_dir.parent / "guidelines_src"
+        guidelines_dir.mkdir()
+        (guidelines_dir / "security.md").write_text("# Security\n")
+        monkeypatch.setattr("sova.commands.catalog.get_guidelines_dir", lambda: guidelines_dir)
+
+        rules_dir = project_dir / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        (guidelines_dir / "security.md").write_text("# Updated security\n")
+
+        result = build_installation_diff(project_dir, cfg)
+        entry = next(f for f in result.files if f.filename == "security.md")
+        assert entry.category == "guideline"
+        assert entry.status == "upstream_only"
+
+
+class TestReadTextOrNone:
+    """Tests for settings_service._read_text_or_none()."""
+
+    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import _read_text_or_none
+
+        assert _read_text_or_none(tmp_path / "does-not-exist.md") is None
+
+    def test_valid_utf8_file_returns_content(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import _read_text_or_none
+
+        path = tmp_path / "file.md"
+        path.write_text("hello\n", encoding="utf-8")
+        assert _read_text_or_none(path) == "hello\n"
+
+    def test_non_utf8_file_returns_none_instead_of_raising(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import _read_text_or_none
+
+        path = tmp_path / "binary.md"
+        path.write_bytes(b"\xff\xfe\x00\x01invalid-utf8")
+        assert _read_text_or_none(path) is None
