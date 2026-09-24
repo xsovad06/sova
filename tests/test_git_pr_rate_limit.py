@@ -109,6 +109,106 @@ class TestFindPrForIssueTracking:
         assert tracker.should_skip()
 
 
+class TestFindPrForIssueChecked:
+    """find_pr_for_issue_checked should distinguish a lookup failure from 'no PR found'."""
+
+    def setup_method(self) -> None:
+        from sova.git import pr as pr_module
+        from sova.supervisor import github_quota
+
+        github_quota._trackers.clear()
+        pr_module._find_pr_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_find_pr_checked_raises_on_total_failure(self) -> None:
+        from sova.git.pr import PRLookupError, find_pr_for_issue_checked
+
+        rate_limited = ShellResult(returncode=1, stdout="", stderr="API rate limit exceeded")
+        with patch("sova.git.pr.run", new_callable=AsyncMock, return_value=rate_limited):
+            with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
+                with pytest.raises(PRLookupError):
+                    await find_pr_for_issue_checked("42", repo="owner/repo", github_user="testuser")
+
+        tracker = get_github_quota_tracker("testuser")
+        assert tracker.should_skip()
+
+    @pytest.mark.asyncio
+    async def test_find_pr_checked_returns_none_on_confirmed_empty(self) -> None:
+        from sova.git.pr import find_pr_for_issue_checked
+
+        empty = ShellResult(returncode=0, stdout="[]", stderr="")
+        with patch("sova.git.pr.run", new_callable=AsyncMock, return_value=empty):
+            with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
+                result = await find_pr_for_issue_checked("42", repo="owner/repo", github_user="testuser")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_find_pr_checked_raises_when_only_body_search_fails(self) -> None:
+        """A PR linked only in its body is invisible to the branch search, so a failed body
+        search plus an empty branch search must not be read as a confirmed negative."""
+        from sova.git.pr import PRLookupError, find_pr_for_issue_checked
+
+        body_failed = ShellResult(returncode=1, stdout="", stderr="network error")
+        branch_empty = ShellResult(returncode=0, stdout="[]", stderr="")
+        side_effect = [body_failed, branch_empty, branch_empty, branch_empty]
+        with patch("sova.git.pr.run", new_callable=AsyncMock, side_effect=side_effect):
+            with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
+                with pytest.raises(PRLookupError):
+                    await find_pr_for_issue_checked("42", repo="owner/repo", github_user="testuser")
+
+        tracker = get_github_quota_tracker("testuser")
+        assert not tracker.should_skip()
+
+    @pytest.mark.asyncio
+    async def test_find_pr_checked_raises_when_only_branch_search_fails(self) -> None:
+        """A PR linked only by branch naming is invisible to the body search, so an empty
+        body search plus a failed branch search must not be read as a confirmed negative."""
+        from sova.git.pr import PRLookupError, find_pr_for_issue_checked
+
+        body_empty = ShellResult(returncode=0, stdout="[]", stderr="")
+        branch_failed = ShellResult(returncode=1, stdout="", stderr="network error")
+        side_effect = [body_empty, branch_failed, branch_failed, branch_failed]
+        with patch("sova.git.pr.run", new_callable=AsyncMock, side_effect=side_effect):
+            with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
+                with pytest.raises(PRLookupError):
+                    await find_pr_for_issue_checked("42", repo="owner/repo", github_user="testuser")
+
+    @pytest.mark.asyncio
+    async def test_find_pr_checked_raises_when_one_of_three_branch_prefixes_fails(self) -> None:
+        """A confirmed negative requires every branch prefix search to succeed: a match on
+        the one unchecked prefix would otherwise be missed."""
+        from sova.git.pr import PRLookupError, find_pr_for_issue_checked
+
+        body_empty = ShellResult(returncode=0, stdout="[]", stderr="")
+        branch_empty = ShellResult(returncode=0, stdout="[]", stderr="")
+        branch_failed = ShellResult(returncode=1, stdout="", stderr="network error")
+        with patch(
+            "sova.git.pr.run",
+            new_callable=AsyncMock,
+            side_effect=[body_empty, branch_empty, branch_failed, branch_empty],
+        ):
+            with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
+                with pytest.raises(PRLookupError):
+                    await find_pr_for_issue_checked("42", repo="owner/repo", github_user="testuser")
+
+    @pytest.mark.asyncio
+    async def test_find_pr_checked_raises_on_invalid_body_search_json(self) -> None:
+        """Invalid JSON from a successful body search is a failure, not a confirmed empty."""
+        from sova.git.pr import PRLookupError, find_pr_for_issue_checked
+
+        body_bad_json = ShellResult(returncode=0, stdout="not json", stderr="")
+        branch_empty = ShellResult(returncode=0, stdout="[]", stderr="")
+        with patch(
+            "sova.git.pr.run",
+            new_callable=AsyncMock,
+            side_effect=[body_bad_json, branch_empty, branch_empty, branch_empty],
+        ):
+            with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
+                with pytest.raises(PRLookupError):
+                    await find_pr_for_issue_checked("42", repo="owner/repo", github_user="testuser")
+
+
 class TestGetReviewThreadCountsTracking:
     """get_review_thread_counts should feed the rate limit tracker."""
 

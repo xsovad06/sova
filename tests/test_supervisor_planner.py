@@ -123,6 +123,7 @@ class TestValidActions:
             "spawn_reviewer",
             "spawn_rebase",
             "reset_stale_state",
+            "repair_to_in_review",
         }
         assert _VALID_ACTIONS == expected
 
