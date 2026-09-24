@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.commands.distribution import DiffResult, ReverseDiffResult
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.settings")
 
@@ -350,3 +357,223 @@ def get_detected_persona(project_dir: Path | None = None) -> str | None:
     except (OSError, ValueError):
         log.warning("settings.persona_detect_failed", project_dir=str(project_dir), exc_info=True)
         return None
+
+
+# Installation diff (review-changes modal) ----------------------------------
+
+
+@dataclass
+class FileDiff:
+    """A single file's drift status for the installation review modal."""
+
+    filename: str
+    category: str  # "command" | "guideline"
+    status: str  # conflict, local_modified, upstream_only, new, removed, local_only
+    canonical_content: str | None = None
+    local_content: str | None = None
+
+
+@dataclass
+class InstallationDiff:
+    """Combined forward + reverse diff, ready for the settings review modal."""
+
+    source_available: bool = True
+    files: list[FileDiff] = field(default_factory=list)
+
+
+def _read_rendered_or_none(path: Path, variables: dict[str, str]) -> str | None:
+    """Read and render a canonical source file, returning None if missing/unreadable."""
+    from sova.commands.templates import render_command
+
+    text = read_text_or_none(path)
+    if text is None:
+        return None
+    return render_command(text, variables)
+
+
+def _build_category_diffs(
+    category: str,
+    source_dir: Path,
+    target_dir: Path,
+    diff: DiffResult,
+    reverse: ReverseDiffResult,
+    variables: dict[str, str],
+) -> list[FileDiff]:
+    """Merge a forward DiffResult and reverse ReverseDiffResult into FileDiff entries.
+
+    Each filename appears at most once in the result, in priority order:
+    reverse.modified (conflict/local_modified/removed) > diff.changed
+    (upstream_only) > diff.new (new, or conflict on a name collision) >
+    diff.removed (removed) > reverse.unmanaged (local_only) >
+    reverse.deleted (local_only). The forward diff and reverse diff are
+    computed independently and can name the same file for unrelated reasons
+    (an unmanaged local file sharing a name with a newly-added canonical
+    file; a tracked file the upstream changed that the user also deleted
+    locally; a file both removed upstream and deleted locally), so later
+    branches skip any filename already handled. Without this, the same
+    filename could appear twice with conflicting statuses, and a name
+    collision between a brand-new canonical file and a pre-existing
+    unmanaged local file would be reported as a safe "new" install
+    (``local_content=None``, checked by default) even though applying it
+    would silently overwrite the local file.
+
+    A reverse.modified entry whose canonical file was removed upstream
+    (``canonical_removed=True``) is classified as "removed", not "conflict":
+    the file no longer exists in ``source_files``, so ``_update_files()``'s
+    allow-list filter would silently no-op if it were presented as a
+    checkable, syncable conflict.
+    """
+    entries: list[FileDiff] = []
+    handled: set[str] = set()
+    unmanaged_local = set(reverse.unmanaged)
+
+    def _add(filename: str, status: str, canonical_content: str | None, local_content: str | None) -> None:
+        handled.add(filename)
+        entries.append(
+            FileDiff(
+                filename=filename,
+                category=category,
+                status=status,
+                canonical_content=canonical_content,
+                local_content=local_content,
+            )
+        )
+
+    for drift in reverse.modified:
+        handled.add(drift.filename)
+        if drift.canonical_removed:
+            # The canonical file was removed upstream (not just changed), so it is
+            # no longer present in source_files: presenting this as a syncable
+            # "conflict" would be a silent no-op if the user applied it. Match the
+            # diff.removed shape instead (informational, canonical_content=None).
+            # Checked before the equal-content shortcut below: an empty local file
+            # and the placeholder canonical_content="" both compare equal, which
+            # would otherwise mask a real upstream removal as "clean".
+            status = "removed"
+            canonical_content = None
+        elif drift.local_content == drift.canonical_content:
+            # Hash-based drift detection fired, but the rendered canonical content is
+            # byte-identical to what's on disk: a sync would be a no-op, so this is
+            # clean rather than a conflict.
+            continue
+        else:
+            status = "conflict" if drift.upstream_also_changed else "local_modified"
+            canonical_content = drift.canonical_content
+        _add(drift.filename, status, canonical_content, drift.local_content)
+
+    def _rendered_content(filename: str) -> str | None:
+        # diff.rendered is populated by _diff_files() as a byproduct of the hash
+        # comparison it already performs, so this avoids a second read+render of
+        # the canonical file. Fall back to a direct read for callers (tests, or a
+        # DiffResult built by hand) that don't populate it.
+        cached = diff.rendered.get(filename)
+        if cached is not None:
+            return cached
+        return _read_rendered_or_none(source_dir / filename, variables)
+
+    for filename in diff.changed:
+        if filename in handled:
+            continue
+        _add(
+            filename,
+            "upstream_only",
+            _rendered_content(filename),
+            read_text_or_none(target_dir / filename),
+        )
+
+    for filename in diff.new:
+        if filename in handled:
+            continue
+        if filename in unmanaged_local or (target_dir / filename).is_file():
+            # A local file with this name already exists but was never
+            # installed by SOVA: syncing it would silently overwrite the
+            # local file, so this is a conflict, not a clean "new" install.
+            # The direct is_file() check covers the no-manifest case, where
+            # reverse.unmanaged is always empty (_reverse_diff_files() returns
+            # early without a manifest) but a same-named local file can still
+            # exist on disk.
+            rendered_canonical = _rendered_content(filename)
+            local_content = read_text_or_none(target_dir / filename)
+            if rendered_canonical is not None and rendered_canonical == local_content:
+                # The unmanaged local file is byte-identical to the rendered
+                # canonical content: a sync would be a no-op, so this is clean
+                # rather than a conflict, mirroring the reverse.modified check above.
+                handled.add(filename)
+                continue
+            _add(filename, "conflict", rendered_canonical, local_content)
+            continue
+        _add(filename, "new", _rendered_content(filename), None)
+
+    for filename in diff.removed:
+        if filename in handled:
+            continue
+        _add(filename, "removed", None, read_text_or_none(target_dir / filename))
+
+    for filename in reverse.unmanaged:
+        if filename in handled:
+            continue
+        _add(filename, "local_only", None, read_text_or_none(target_dir / filename))
+
+    for filename in reverse.deleted:
+        if filename in handled:
+            continue
+        _add(filename, "local_only", None, None)
+
+    return entries
+
+
+def build_installation_diff(project_dir: Path, cfg: ProjectConfig) -> InstallationDiff:
+    """Build a per-file diff merging upstream changes and local drift.
+
+    Read-only: computes status for every non-clean command and guideline file
+    without writing anything. Returns ``source_available=False`` when the
+    canonical commands source directory doesn't exist (e.g. a non-editable
+    pip install), since every file would otherwise misleadingly look drifted.
+    """
+    from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
+    from sova.commands.distribution import (
+        diff_commands,
+        diff_guidelines,
+        reverse_diff_commands,
+        reverse_diff_guidelines,
+    )
+    from sova.commands.manifest import read_manifest
+    from sova.commands.templates import build_variables
+
+    canonical_dir = get_canonical_dir()
+    if not canonical_dir.is_dir():
+        log.warning("settings.installation_diff.no_canonical_dir", path=str(canonical_dir))
+        return InstallationDiff(source_available=False, files=[])
+
+    variables = build_variables(cfg)
+    files: list[FileDiff] = []
+
+    commands_dir = project_dir / ".claude" / "commands"
+    files.extend(
+        _build_category_diffs(
+            "command",
+            canonical_dir,
+            commands_dir,
+            diff_commands(canonical_dir, commands_dir, cfg),
+            reverse_diff_commands(canonical_dir, commands_dir, cfg),
+            variables,
+        )
+    )
+
+    # Only diff guidelines if they were previously installed (manifest exists),
+    # matching the guard in POST /setup/commands/sync.
+    rules_dir = project_dir / ".claude" / "rules"
+    if rules_dir.is_dir() and read_manifest(rules_dir) is not None:
+        guidelines_dir = get_guidelines_dir()
+        files.extend(
+            _build_category_diffs(
+                "guideline",
+                guidelines_dir,
+                rules_dir,
+                diff_guidelines(guidelines_dir, rules_dir, cfg),
+                reverse_diff_guidelines(guidelines_dir, rules_dir, cfg),
+                variables,
+            )
+        )
+
+    return InstallationDiff(source_available=True, files=files)

@@ -19,6 +19,7 @@ from sova.commands.manifest import (
 )
 from sova.commands.templates import build_variables, render_command
 from sova.config.models import ProjectConfig
+from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
 log = get_logger(component="commands.distribution")
@@ -48,6 +49,12 @@ class DiffResult:
     changed: list[str] = field(default_factory=list)
     new: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
+    # Rendered canonical content for every entry in `changed`/`new`, keyed by
+    # filename. Populated as a byproduct of the hash comparison this function
+    # already performs, so callers that need the content for display (e.g. the
+    # settings review modal) don't have to read and render the file a second
+    # time.
+    rendered: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -58,6 +65,7 @@ class DriftEntry:
     canonical_content: str
     local_content: str
     upstream_also_changed: bool = False
+    canonical_removed: bool = False
 
 
 @dataclass
@@ -118,8 +126,19 @@ def _update_files(
     variables: dict[str, str],
     *,
     force: bool = False,
+    filenames: list[str] | None = None,
 ) -> UpdateResult:
-    """Incrementally update installed files with conflict detection."""
+    """Incrementally update installed files with conflict detection.
+
+    ``filenames``, when not ``None``, restricts the update to that explicit
+    subset of ``source_files`` (an empty list means "update nothing").
+    """
+    if filenames is not None:
+        allowed = set(filenames)
+        source_files = [(filename, path) for filename, path in source_files if filename in allowed]
+        if not source_files:
+            return UpdateResult()
+
     manifest = read_manifest(target_dir)
     result = UpdateResult()
 
@@ -143,13 +162,39 @@ def _update_files(
             result.updated += 1
             continue
 
-        if manifest_entry.hash == new_hash:
+        if not force and manifest_entry.hash == new_hash:
+            # Canonical hasn't changed since the manifest was last written, and this
+            # isn't a forced (explicitly selected) sync: nothing to update, and
+            # nothing to repair (the manifest already reflects canonical). Checked
+            # before touching the local file at all, so a 'Sync All' (force=False)
+            # only reads/hashes local files whose canonical source actually changed,
+            # matching the pre-repair fast path. A forced sync (the review-modal's
+            # selective restore of a locally-modified or locally-deleted file) still
+            # needs to check local drift even when canonical is unchanged, since
+            # force means "restore this file" regardless of whether canonical moved.
             result.skipped += 1
             continue
 
-        if target_path.exists() and not force:
-            installed_hash = file_hash(target_path.read_text(encoding="utf-8"))
-            if installed_hash != manifest_entry.hash:
+        file_exists = target_path.is_file()
+        local_text = read_text_or_none(target_path)
+        installed_hash = file_hash(local_text) if local_text is not None else None
+
+        if installed_hash == new_hash:
+            # Local file already matches the new canonical content (e.g. the user
+            # applied the upstream change by hand, or there's no local drift for
+            # this forced sync to restore): nothing to write, but repair the stale
+            # manifest hash so a future non-force sync doesn't derive a false
+            # conflict from it.
+            if manifest_entry.hash != new_hash:
+                update_manifest(target_dir, filename, new_hash)
+            result.skipped += 1
+            continue
+
+        if not force:
+            # An existing file that can't be verified against the manifest (unreadable
+            # encoding, permission error) must be treated as a conflict, not silently
+            # overwritten: only a genuinely missing file falls through to a clean write.
+            if file_exists and (installed_hash is None or installed_hash != manifest_entry.hash):
                 result.conflicts.append(filename)
                 continue
 
@@ -186,13 +231,18 @@ def update_commands(
     *,
     include_autonomous: bool = True,
     force: bool = False,
+    filenames: list[str] | None = None,
 ) -> UpdateResult:
-    """Update installed commands incrementally."""
+    """Update installed commands incrementally.
+
+    ``filenames``, when not ``None``, restricts the update to that explicit
+    subset of discovered commands (an empty list means "update nothing").
+    """
     commands = discover(canonical_dir)
     files = [(cmd.path.name, cmd.path) for cmd in commands if include_autonomous or cmd.category != "autonomous"]
     skipped = len(commands) - len(files)
 
-    result = _update_files(files, target_dir, build_variables(cfg), force=force)
+    result = _update_files(files, target_dir, build_variables(cfg), force=force, filenames=filenames)
     result.skipped += skipped
     return result
 
@@ -217,15 +267,26 @@ def _diff_files(
     for filename, source_path in source_files:
         canonical_names.add(filename)
 
-        content = source_path.read_text(encoding="utf-8")
+        content = read_text_or_none(source_path)
+        if content is None:
+            # An unreadable canonical file (corrupted install, bad checkout, a
+            # non-UTF-8 edit) must not abort the whole diff. Skip it: it's
+            # already in canonical_names, so it won't be misreported as
+            # "removed" either. It simply doesn't appear as changed/new until
+            # it becomes readable again.
+            log.warning("commands.diff.unreadable_canonical_file", filename=filename)
+            continue
+
         rendered = render_command(content, variables)
         new_hash = file_hash(rendered)
 
         entry = manifest.commands.get(filename)
         if entry is None:
             result.new.append(filename)
+            result.rendered[filename] = rendered
         elif entry.hash != new_hash:
             result.changed.append(filename)
+            result.rendered[filename] = rendered
 
     for filename, entry in manifest.commands.items():
         if entry.managed and filename not in canonical_names:
@@ -262,21 +323,32 @@ def _reverse_diff_files(
             result.deleted.append(filename)
             continue
 
-        local_content = target_path.read_text(encoding="utf-8")
+        local_content = read_text_or_none(target_path)
+        if local_content is None:
+            log.warning("commands.reverse_diff.unreadable_local_file", filename=filename)
+            continue
         local_hash = file_hash(local_content)
 
         if local_hash == entry.hash:
             continue
 
         canonical_path = canonical_lookup.get(filename)
-        if canonical_path is not None and canonical_path.is_file():
-            raw_canonical = canonical_path.read_text(encoding="utf-8")
-            canonical_content = render_command(raw_canonical, variables)
-            canonical_hash = file_hash(canonical_content)
-            upstream_also_changed = canonical_hash != entry.hash
-        else:
-            canonical_content = ""
-            upstream_also_changed = True
+        canonical_removed = canonical_path is None or not canonical_path.is_file()
+        canonical_content = ""
+        upstream_also_changed = True
+        if not canonical_removed:
+            raw_canonical = read_text_or_none(canonical_path)
+            if raw_canonical is None:
+                # An unreadable canonical file degrades the same way a removed
+                # one does: there's nothing to diff it against, so treat it as
+                # "removed" rather than letting the exception abort the whole
+                # reverse diff.
+                log.warning("commands.reverse_diff.unreadable_canonical_file", filename=filename)
+                canonical_removed = True
+            else:
+                canonical_content = render_command(raw_canonical, variables)
+                canonical_hash = file_hash(canonical_content)
+                upstream_also_changed = canonical_hash != entry.hash
 
         result.modified.append(
             DriftEntry(
@@ -284,6 +356,7 @@ def _reverse_diff_files(
                 canonical_content=canonical_content,
                 local_content=local_content,
                 upstream_also_changed=upstream_also_changed,
+                canonical_removed=canonical_removed,
             )
         )
 
@@ -370,15 +443,18 @@ def update_guidelines(
     cfg: ProjectConfig,
     *,
     force: bool = False,
+    filenames: list[str] | None = None,
 ) -> UpdateResult:
-    """Update installed guidelines incrementally."""
+    """Update installed guidelines incrementally.
+
+    ``filenames``, when not ``None``, restricts the update to that explicit
+    subset of collected guidelines (an empty list means "update nothing").
+    """
     files = _collect_guidelines(guidelines_dir)
     if not files:
-        if read_manifest(target_dir) is None:
-            return UpdateResult()
         return UpdateResult()
 
-    return _update_files(files, target_dir, build_variables(cfg), force=force)
+    return _update_files(files, target_dir, build_variables(cfg), force=force, filenames=filenames)
 
 
 def _collect_skills(skills_dir: Path) -> list[tuple[str, Path]]:

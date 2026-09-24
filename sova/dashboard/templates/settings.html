@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Settings - SOVA{% endblock %}
 {% block content %}
+{% from "_icons.html" import icon %}
 <h2 class="text-2xl font-semibold mb-6">Settings</h2>
 
 <!-- Capacity recommendation (loaded async) -->
@@ -20,6 +21,33 @@
 <!-- All settings in a responsive two-column grid -->
 <div id="config-groups" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6 items-start">
   <p class="text-gray-500 text-sm lg:col-span-2">Loading configuration...</p>
+</div>
+
+<!-- Review changes modal -->
+<div id="review-changes-modal" class="sova-modal-backdrop">
+  <div class="sova-modal-dialog flex flex-col" style="max-width: 56rem; max-height: 85vh">
+    <div class="flex items-center gap-3 px-5 py-4 border-b border-gray-700/40 shrink-0">
+      <div class="w-7 h-7 rounded-md bg-accent/10 flex items-center justify-center shrink-0 text-accent">
+        {{ icon("document-text", "w-4 h-4") }}
+      </div>
+      <div class="min-w-0">
+        <h3 class="text-sm font-semibold text-white leading-tight">Review Changes</h3>
+        <p class="text-xs text-gray-500 leading-tight mt-0.5">Select which files to sync</p>
+      </div>
+    </div>
+
+    <div id="review-changes-body" class="px-5 py-4 space-y-3 overflow-y-auto grow">
+      <p class="text-gray-500 text-sm">Loading...</p>
+    </div>
+
+    <div class="flex items-center justify-between gap-2 px-5 py-3 border-t border-gray-700/40 shrink-0">
+      <span id="review-changes-status" class="text-xs text-gray-500"></span>
+      <div class="flex items-center gap-2">
+        <button type="button" onclick="closeReviewChangesModal()" class="sova-btn text-gray-400 hover:text-gray-200">Cancel</button>
+        <button type="button" onclick="applySelectedChanges()" id="apply-selected-btn" class="sova-btn sova-btn-primary">Apply selected</button>
+      </div>
+    </div>
+  </div>
 </div>
 {% endblock %}
 
@@ -632,29 +660,12 @@ async function loadInstallationStatus() {
       html += '<div class="text-sm text-accent-yellow font-medium mb-2">' +
         data.total_updates + ' update' + (data.total_updates !== 1 ? 's' : '') + ' available</div>';
 
-      var cmdCount = data.commands.changed.length + data.commands.new.length + data.commands.removed.length;
-      var guideCount = data.guidelines.changed.length + data.guidelines.new.length + data.guidelines.removed.length;
-
-      if (cmdCount > 0) {
-        var parts = [];
-        if (data.commands.changed.length > 0) parts.push(data.commands.changed.length + ' changed');
-        if (data.commands.new.length > 0) parts.push(data.commands.new.length + ' new');
-        if (data.commands.removed.length > 0) parts.push(data.commands.removed.length + ' removed');
-        html += '<div class="text-xs text-gray-400 mb-1">Commands: ' + parts.join(', ') + '</div>';
-      }
-
-      if (guideCount > 0) {
-        var gparts = [];
-        if (data.guidelines.changed.length > 0) gparts.push(data.guidelines.changed.length + ' changed');
-        if (data.guidelines.new.length > 0) gparts.push(data.guidelines.new.length + ' new');
-        if (data.guidelines.removed.length > 0) gparts.push(data.guidelines.removed.length + ' removed');
-        html += '<div class="text-xs text-gray-400 mb-1">Guidelines: ' + gparts.join(', ') + '</div>';
-      }
-
       html += '<div class="mt-3 flex items-center gap-3">' +
-        '<button type="button" id="btn-sync-installation" onclick="syncInstallation()" ' +
+        '<button type="button" onclick="openReviewChangesModal()" ' +
           'class="px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">' +
-          'Sync Now</button>' +
+          'Review changes</button>' +
+        '<button type="button" id="btn-sync-installation" onclick="syncInstallation()" ' +
+          'class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Sync All</button>' +
         '<span id="sync-installation-status" class="text-xs text-gray-500"></span>' +
       '</div>';
     } else {
@@ -691,7 +702,7 @@ async function syncInstallation() {
         status.className = 'text-xs text-accent-red';
       }
       btn.disabled = false;
-      btn.textContent = 'Sync Now';
+      btn.textContent = 'Sync All';
       return;
     }
     var data = await res.json();
@@ -734,9 +745,290 @@ async function syncInstallation() {
       status.className = 'text-xs text-accent-red';
     }
     btn.disabled = false;
-    btn.textContent = 'Sync Now';
+    btn.textContent = 'Sync All';
   }
 }
+
+var STATUS_META = {
+  conflict: { label: 'Conflict', badgeClass: 'bg-accent-red/20 text-accent-red', checkable: true, defaultChecked: false },
+  local_modified: {
+    label: 'Locally modified',
+    badgeClass: 'bg-accent-yellow/20 text-accent-yellow',
+    checkable: false,
+    defaultChecked: false,
+  },
+  upstream_only: { label: 'Update available', badgeClass: 'bg-accent/20 text-accent', checkable: true, defaultChecked: true },
+  new: { label: 'New', badgeClass: 'bg-accent-green/20 text-accent-green', checkable: true, defaultChecked: true },
+  removed: { label: 'Removed upstream', badgeClass: 'bg-gray-600/30 text-gray-400', checkable: false, defaultChecked: false },
+  local_only: { label: 'Local only', badgeClass: 'bg-gray-600/30 text-gray-400', checkable: false, defaultChecked: false },
+};
+
+var LINE_DIFF_MAX_CELLS = 250000;
+
+function diffMiddleLines(oldLines, newLines) {
+  var m = oldLines.length;
+  var n = newLines.length;
+  if (m === 0 && n === 0) return [];
+  if (m === 0) return newLines.map(function (t) { return { type: 'add', text: t }; });
+  if (n === 0) return oldLines.map(function (t) { return { type: 'remove', text: t }; });
+  if (m * n > LINE_DIFF_MAX_CELLS) {
+    return oldLines
+      .map(function (t) { return { type: 'remove', text: t }; })
+      .concat(newLines.map(function (t) { return { type: 'add', text: t }; }));
+  }
+
+  var dp = new Array(m + 1);
+  var i;
+  for (i = 0; i <= m; i++) dp[i] = new Int32Array(n + 1);
+  for (i = m - 1; i >= 0; i--) {
+    for (var j = n - 1; j >= 0; j--) {
+      dp[i][j] = oldLines[i] === newLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  var rows = [];
+  i = 0;
+  var j = 0;
+  while (i < m && j < n) {
+    if (oldLines[i] === newLines[j]) {
+      rows.push({ type: 'context', text: oldLines[i] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      rows.push({ type: 'remove', text: oldLines[i] });
+      i++;
+    } else {
+      rows.push({ type: 'add', text: newLines[j] });
+      j++;
+    }
+  }
+  while (i < m) {
+    rows.push({ type: 'remove', text: oldLines[i] });
+    i++;
+  }
+  while (j < n) {
+    rows.push({ type: 'add', text: newLines[j] });
+    j++;
+  }
+  return rows;
+}
+
+function computeLineDiff(oldText, newText) {
+  var oldLines = (oldText === null || oldText === undefined) ? [] : oldText.split('\n');
+  var newLines = (newText === null || newText === undefined) ? [] : newText.split('\n');
+
+  var start = 0;
+  var maxStart = Math.min(oldLines.length, newLines.length);
+  while (start < maxStart && oldLines[start] === newLines[start]) start++;
+
+  var oldEnd = oldLines.length;
+  var newEnd = newLines.length;
+  while (oldEnd > start && newEnd > start && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+    oldEnd--;
+    newEnd--;
+  }
+
+  var rows = [];
+  var i;
+  for (i = 0; i < start; i++) rows.push({ type: 'context', text: oldLines[i] });
+  rows = rows.concat(diffMiddleLines(oldLines.slice(start, oldEnd), newLines.slice(start, newEnd)));
+  for (i = oldEnd; i < oldLines.length; i++) rows.push({ type: 'context', text: oldLines[i] });
+  return rows;
+}
+
+function renderDiffRows(oldText, newText) {
+  if (oldText == null && newText == null) {
+    return '<div class="text-xs text-gray-600 italic px-2 py-1">Content unavailable</div>';
+  }
+  if (oldText === '' && newText === '') {
+    return '<div class="text-xs text-gray-600 italic px-2 py-1">Empty file</div>';
+  }
+  var rows = computeLineDiff(oldText, newText);
+  return rows
+    .map(function (row) {
+      var prefix = row.type === 'add' ? '+' : row.type === 'remove' ? '-' : ' ';
+      var rowClass =
+        row.type === 'add'
+          ? 'bg-accent-green/10 text-accent-green'
+          : row.type === 'remove'
+            ? 'bg-accent-red/10 text-accent-red'
+            : 'text-gray-500';
+      return '<div class="' + rowClass + ' px-2 whitespace-pre-wrap break-words">' + escapeHtml(prefix + ' ' + row.text) + '</div>';
+    })
+    .join('');
+}
+
+function fileDiffSectionHtml(file) {
+  var meta = STATUS_META[file.status] || {
+    label: file.status,
+    badgeClass: 'bg-gray-600/30 text-gray-400',
+    checkable: false,
+    defaultChecked: false,
+  };
+  var checkboxHtml = meta.checkable
+    ? '<input type="checkbox" class="review-file-checkbox" data-filename="' + escapeHtml(file.filename) + '" ' +
+      'data-category="' + escapeHtml(file.category) + '" ' +
+      'aria-label="' + escapeHtml('Sync ' + file.filename) + '"' + (meta.defaultChecked ? ' checked' : '') + '>'
+    : '<span class="inline-block w-4"></span>';
+
+  return (
+    '<div class="border border-gray-700/30 rounded-lg overflow-hidden">' +
+      '<div class="flex items-center gap-2 px-3 py-2 bg-surface-hover/20">' +
+        checkboxHtml +
+        '<span class="text-sm font-mono text-gray-200 truncate">' + escapeHtml(file.filename) + '</span>' +
+        '<span class="text-xs px-1.5 py-0.5 rounded ' + meta.badgeClass + '">' + escapeHtml(meta.label) + '</span>' +
+        '<span class="text-xs text-gray-600 ml-auto">' + escapeHtml(file.category) + '</span>' +
+      '</div>' +
+      '<div class="max-h-56 overflow-y-auto font-mono text-xs py-1" tabindex="0" role="region" ' +
+        'aria-label="' + escapeHtml('Diff for ' + file.filename) + '">' +
+        (file.status === 'local_only' || file.status === 'removed'
+          ? '<div class="text-xs text-gray-600 italic px-2 py-1">' +
+            (file.status === 'removed'
+              ? 'Removed from canonical source: local copy is left untouched'
+              : file.local_content === null
+                ? 'File was removed from disk locally'
+                : 'Not managed by SOVA: left untouched') +
+            '</div>'
+          : renderDiffRows(file.local_content, file.canonical_content)) +
+      '</div>' +
+    '</div>'
+  );
+}
+
+var reviewChangesTrigger = null;
+var reviewChangesRequestId = 0;
+
+function reviewChangesFocusableElements(modal) {
+  return Array.prototype.slice.call(modal.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]):not([type="hidden"]), [tabindex="0"]'
+  ));
+}
+
+async function openReviewChangesModal() {
+  var modal = document.getElementById('review-changes-modal');
+  var body = document.getElementById('review-changes-body');
+  var status = document.getElementById('review-changes-status');
+  if (!modal || !body) return;
+
+  reviewChangesTrigger = document.activeElement;
+  var requestId = ++reviewChangesRequestId;
+  body.innerHTML = '<p class="text-gray-500 text-sm">Loading...</p>';
+  if (status) status.textContent = '';
+  modal.classList.add('sova-modal-visible');
+  var initialFocus = reviewChangesFocusableElements(modal)[0];
+  if (initialFocus) initialFocus.focus();
+
+  try {
+    var data = await fetchAPI(apiUrl('/settings/installation/diff'));
+    if (requestId !== reviewChangesRequestId) return;
+    if (!data.source_available) {
+      body.innerHTML = '<p class="text-gray-500 text-sm">Canonical command source not found (non-editable install).</p>';
+      return;
+    }
+    if (!data.files || data.files.length === 0) {
+      body.innerHTML = '<p class="text-gray-500 text-sm">No changes to review.</p>';
+      return;
+    }
+    body.innerHTML = data.files.map(fileDiffSectionHtml).join('');
+  } catch (e) {
+    if (requestId !== reviewChangesRequestId) return;
+    body.innerHTML = '<p class="text-gray-500 text-sm">Failed to load changes: ' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function closeReviewChangesModal() {
+  var modal = document.getElementById('review-changes-modal');
+  if (modal) modal.classList.remove('sova-modal-visible');
+  reviewChangesRequestId++;
+  if (reviewChangesTrigger && document.contains(reviewChangesTrigger)) {
+    reviewChangesTrigger.focus();
+  }
+  reviewChangesTrigger = null;
+}
+
+async function applySelectedChanges() {
+  var modal = document.getElementById('review-changes-modal');
+  if (!modal) return;
+
+  var filenames = [];
+  var guidelineFilenames = [];
+  modal.querySelectorAll('.review-file-checkbox:checked').forEach(function (cb) {
+    if (cb.dataset.category === 'guideline') {
+      guidelineFilenames.push(cb.dataset.filename);
+    } else {
+      filenames.push(cb.dataset.filename);
+    }
+  });
+
+  if (filenames.length === 0 && guidelineFilenames.length === 0) {
+    showToast('Select at least one file to sync', 'warning');
+    return;
+  }
+
+  var btn = document.getElementById('apply-selected-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Applying...';
+  }
+
+  try {
+    var res = await fetch(apiUrl('/setup/commands/sync'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filenames: filenames, guideline_filenames: guidelineFilenames }),
+    });
+    if (!res.ok) {
+      var err = await res.json();
+      showToast(err.detail || 'Failed to apply changes', 'error');
+      return;
+    }
+    var data = await res.json();
+    var total = (data.commands.updated || 0) + (data.guidelines.updated || 0);
+    showToast(total + ' file' + (total !== 1 ? 's' : '') + ' synced', 'success');
+    closeReviewChangesModal();
+    loadInstallationStatus();
+  } catch (e) {
+    showToast('Failed to apply changes: ' + e.message, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Apply selected';
+    }
+  }
+}
+
+document.getElementById('review-changes-modal').addEventListener('click', function (e) {
+  if (e.target === this) closeReviewChangesModal();
+});
+
+document.addEventListener('keydown', function (e) {
+  var modal = document.getElementById('review-changes-modal');
+  if (!modal || !modal.classList.contains('sova-modal-visible')) return;
+
+  if (e.key === 'Escape') {
+    closeReviewChangesModal();
+    return;
+  }
+  if (e.key !== 'Tab') return;
+
+  var focusable = reviewChangesFocusableElements(modal);
+  if (!focusable.length) {
+    e.preventDefault();
+    return;
+  }
+  var first = focusable[0];
+  var last = focusable[focusable.length - 1];
+  if (!modal.contains(document.activeElement) || focusable.indexOf(document.activeElement) === -1) {
+    e.preventDefault();
+    first.focus();
+  } else if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+});
 
 async function loadPersonaPreview() {
   var container = document.getElementById('persona-preview');

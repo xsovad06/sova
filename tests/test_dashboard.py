@@ -5329,6 +5329,172 @@ class TestLLMSettingsAPI:
         assert data["insufficient_data"] is False
         assert Decimal(str(data["projected_monthly_usd"])) > 0
 
+    async def test_installation_diff_source_unavailable(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.commands.catalog.get_canonical_dir", lambda: tmp_path / "nonexistent")
+
+        resp = await client.get("/api/settings/installation/diff")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source_available"] is False
+        assert data["files"] == []
+
+    async def test_installation_diff_returns_files(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        canonical_dir = tmp_path / "canonical"
+        canonical_dir.mkdir()
+        (canonical_dir / "new-cmd.md").write_text(
+            "---\nname: new-cmd\ndescription: New.\nuser-invocable: true\ncategory: core\n---\n\nNew.\n"
+        )
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude" / "commands").mkdir(parents=True)
+
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: project_dir)
+        monkeypatch.setattr("sova.commands.catalog.get_canonical_dir", lambda: canonical_dir)
+
+        resp = await client.get("/api/settings/installation/diff")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source_available"] is True
+        entry = next(f for f in data["files"] if f["filename"] == "new-cmd.md")
+        assert entry["status"] == "new"
+        assert entry["category"] == "command"
+        assert entry["local_content"] is None
+
+    async def test_installation_diff_unreadable_managed_file_not_500(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        """A single non-UTF-8 managed local file must not 500 the whole diff.
+
+        Regression test for a CRITICAL review finding: _reverse_diff_files()
+        used to read every managed local file with no error guard, so one
+        corrupted file (BOM, stray byte, editor corruption) raised
+        UnicodeDecodeError and broke the installation-review modal for the
+        entire project. The endpoint must still return 200 with the other
+        (unrelated, unaffected) files intact.
+        """
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        canonical_dir = tmp_path / "canonical"
+        canonical_dir.mkdir()
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Show standup.\nuser-invocable: true\n"
+            "category: management\n---\n\nStandup.\n"
+        )
+        project_dir = tmp_path / "project"
+        commands_dir = project_dir / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: project_dir)
+        monkeypatch.setattr("sova.commands.catalog.get_canonical_dir", lambda: canonical_dir)
+
+        install_commands(canonical_dir, commands_dir, ProjectConfig())
+        (commands_dir / "standup.md").write_bytes(b"\xff\xfe not valid utf-8")
+
+        # Added to canonical only after installation, so it's unrelated new upstream
+        # content, not something the corrupted local file could affect.
+        (canonical_dir / "new-cmd.md").write_text(
+            "---\nname: new-cmd\ndescription: New.\nuser-invocable: true\ncategory: core\n---\n\nNew.\n"
+        )
+
+        resp = await client.get("/api/settings/installation/diff")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source_available"] is True
+        filenames = [f["filename"] for f in data["files"]]
+        assert "standup.md" not in filenames
+        entry = next(f for f in data["files"] if f["filename"] == "new-cmd.md")
+        assert entry["status"] == "new"
+
+    async def test_installation_diff_unreadable_canonical_file_not_500(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        """A single non-UTF-8 canonical source file must not 500 the whole diff.
+
+        Regression test for a HIGH review finding: the CRITICAL fix above only
+        hardened the managed *local* file read. The adjacent *canonical* source
+        reads in _diff_files() and _reverse_diff_files() were still unguarded, so
+        a single corrupted canonical file (bad checkout, non-UTF-8 edit) raised
+        UnicodeDecodeError uncaught and produced the same blanket 500 on every
+        request, since _diff_files() reads every canonical file unconditionally.
+        The endpoint must still return 200 with the other (unrelated, unaffected)
+        files intact. Commands are discovered via discover(), which parses
+        frontmatter from every canonical file up front and already skips unreadable
+        ones (catalog._parse_command_file), so the corrupted file surfaces here as
+        "removed" (indistinguishable from a file deleted upstream) rather than
+        raising or vanishing silently.
+        """
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        canonical_dir = tmp_path / "canonical"
+        canonical_dir.mkdir()
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Show standup.\nuser-invocable: true\n"
+            "category: management\n---\n\nStandup.\n"
+        )
+        project_dir = tmp_path / "project"
+        commands_dir = project_dir / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: project_dir)
+        monkeypatch.setattr("sova.commands.catalog.get_canonical_dir", lambda: canonical_dir)
+
+        install_commands(canonical_dir, commands_dir, ProjectConfig())
+
+        # Corrupt the canonical source after install. The local copy is left
+        # untouched (matches the manifest hash), so this exercises only the
+        # forward diff's unguarded canonical read (_diff_files) and the reverse
+        # diff's early hash-match skip, not the "local drift" DriftEntry path
+        # (covered separately by test_unreadable_canonical_file_treated_as_removed
+        # in tests/test_commands.py).
+        (canonical_dir / "standup.md").write_bytes(b"\xff\xfe not valid utf-8")
+
+        # Added to canonical only after corruption, so it's unrelated new upstream
+        # content unaffected by the corrupted canonical file.
+        (canonical_dir / "new-cmd.md").write_text(
+            "---\nname: new-cmd\ndescription: New.\nuser-invocable: true\ncategory: core\n---\n\nNew.\n"
+        )
+
+        resp = await client.get("/api/settings/installation/diff")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source_available"] is True
+        standup_entry = next(f for f in data["files"] if f["filename"] == "standup.md")
+        assert standup_entry["status"] == "removed"
+        entry = next(f for f in data["files"] if f["filename"] == "new-cmd.md")
+        assert entry["status"] == "new"
+
+    async def test_installation_diff_no_project(self, client: AsyncClient, monkeypatch) -> None:
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: None)
+        resp = await client.get("/api/settings/installation/diff")
+        assert resp.status_code == 400
+        assert "No active project" in resp.json()["detail"]
+
+    async def test_installation_diff_bad_config(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: tmp_path)
+        with patch(
+            "sova.config.loader.load_config",
+            side_effect=FileNotFoundError("sova.toml not found"),
+        ):
+            resp = await client.get("/api/settings/installation/diff")
+        assert resp.status_code == 400
+        assert "Failed to load project config" in resp.json()["detail"]
+
+    async def test_installation_diff_unexpected_error(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: tmp_path)
+        with patch(
+            "sova.dashboard.services.settings_service.build_installation_diff",
+            side_effect=RuntimeError("boom"),
+        ):
+            resp = await client.get("/api/settings/installation/diff")
+        assert resp.status_code == 500
+        assert "Failed to build installation diff" in resp.json()["detail"]
+
 
 class TestAgentRuntimeSettingsAPI:
     """Tests for the agent runtime test-connection endpoint."""
@@ -5518,6 +5684,149 @@ class TestSetupAPI:
         assert resp.status_code == 400
         assert "Failed to load project config" in resp.json()["detail"]
 
+    async def test_sync_commands_filenames_restricts_and_forces(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        from sova.commands.distribution import UpdateResult
+
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+
+        captured: dict = {}
+
+        def fake_update_commands(canonical_dir, target_dir, cfg, **kwargs):
+            captured.update(kwargs)
+            return UpdateResult(updated=1)
+
+        monkeypatch.setattr("sova.commands.distribution.update_commands", fake_update_commands)
+
+        resp = await client.post("/api/setup/commands/sync", json={"filenames": ["develop.md"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["commands"]["updated"] == 1
+        assert captured["filenames"] == ["develop.md"]
+        assert captured["force"] is True
+
+    async def test_sync_commands_empty_filenames_updates_nothing(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+
+        captured: dict = {}
+
+        def fake_update_commands(canonical_dir, target_dir, cfg, **kwargs):
+            captured.update(kwargs)
+            from sova.commands.distribution import UpdateResult
+
+            return UpdateResult()
+
+        monkeypatch.setattr("sova.commands.distribution.update_commands", fake_update_commands)
+
+        resp = await client.post("/api/setup/commands/sync", json={"filenames": []})
+        assert resp.status_code == 200
+        assert resp.json()["commands"]["updated"] == 0
+        assert captured["filenames"] == []
+
+    async def test_sync_commands_rejects_path_traversal_filename(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+
+        resp = await client.post("/api/setup/commands/sync", json={"filenames": ["../../etc/passwd"]})
+        assert resp.status_code == 400
+        assert "Invalid filenames" in resp.json()["detail"]
+
+    async def test_sync_commands_rejects_absolute_path_filename(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+
+        resp = await client.post("/api/setup/commands/sync", json={"guideline_filenames": ["/etc/passwd"]})
+        assert resp.status_code == 400
+        assert "Invalid guideline_filenames" in resp.json()["detail"]
+
+    async def test_sync_commands_omitted_guideline_filenames_skips_guidelines(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        """A present body that omits guideline_filenames must not sync guidelines, even if installed."""
+        from sova.commands.distribution import UpdateResult
+        from sova.commands.manifest import create_manifest
+
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        create_manifest(rules_dir, {})
+
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "sova.commands.distribution.update_commands",
+            lambda *a, **kw: UpdateResult(updated=1),
+        )
+
+        def fail_if_called(*_a, **_kw):
+            raise AssertionError("update_guidelines must not be called")
+
+        monkeypatch.setattr("sova.commands.distribution.update_guidelines", fail_if_called)
+
+        resp = await client.post("/api/setup/commands/sync", json={"filenames": ["develop.md"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["guidelines"]["updated"] == 0
+
+    async def test_sync_commands_omitted_filenames_skips_commands(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        """A present body that omits filenames must not sync commands, mirroring the
+        guideline_filenames omission rule: a present body must name what it wants."""
+        from sova.commands.distribution import UpdateResult
+        from sova.commands.manifest import create_manifest
+
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        create_manifest(rules_dir, {})
+
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+
+        def fail_if_called(*_a, **_kw):
+            raise AssertionError("update_commands must not be called")
+
+        monkeypatch.setattr("sova.commands.distribution.update_commands", fail_if_called)
+        monkeypatch.setattr(
+            "sova.commands.distribution.update_guidelines",
+            lambda *a, **kw: UpdateResult(updated=1),
+        )
+
+        resp = await client.post("/api/setup/commands/sync", json={"guideline_filenames": ["security.md"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["commands"]["updated"] == 0
+        assert data["guidelines"]["updated"] == 1
+
+    async def test_sync_commands_empty_body_syncs_guidelines_like_no_body(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        """An empty JSON body ({}) must be treated the same as no body at all: both
+        mean "sync everything", not a selective request that skips guidelines."""
+        from sova.commands.distribution import UpdateResult
+        from sova.commands.manifest import create_manifest
+
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        create_manifest(rules_dir, {})
+
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "sova.commands.distribution.update_commands",
+            lambda *a, **kw: UpdateResult(updated=1),
+        )
+        monkeypatch.setattr(
+            "sova.commands.distribution.update_guidelines",
+            lambda *a, **kw: UpdateResult(updated=2),
+        )
+
+        resp = await client.post("/api/setup/commands/sync", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["guidelines"]["updated"] == 2
+
     async def test_create_milestones_returns_404_for_missing_dir(self, client: AsyncClient) -> None:
         resp = await client.post(
             "/api/setup/milestones/create",
@@ -5525,6 +5834,76 @@ class TestSetupAPI:
         )
         assert resp.status_code == 404
         assert "Directory not found" in resp.json()["detail"]
+
+
+class TestSyncFilenameValidation:
+    """Direct unit coverage for the path-traversal guard, independent of the endpoint."""
+
+    def test_accepts_legitimate_filename(self) -> None:
+        from sova.dashboard.routers.setup import _is_safe_sync_filename
+
+        assert _is_safe_sync_filename("develop.md") is True
+
+    def test_rejects_relative_traversal(self) -> None:
+        from sova.dashboard.routers.setup import _is_safe_sync_filename
+
+        assert _is_safe_sync_filename("../../etc/passwd") is False
+
+    def test_rejects_bare_dotdot(self) -> None:
+        from sova.dashboard.routers.setup import _is_safe_sync_filename
+
+        assert _is_safe_sync_filename("..") is False
+
+    def test_rejects_leading_forward_slash(self) -> None:
+        from sova.dashboard.routers.setup import _is_safe_sync_filename
+
+        assert _is_safe_sync_filename("/etc/passwd") is False
+
+    def test_rejects_leading_backslash(self) -> None:
+        from sova.dashboard.routers.setup import _is_safe_sync_filename
+
+        assert _is_safe_sync_filename("\\windows\\system32") is False
+
+    def test_rejects_filename_merely_containing_dotdot_substring(self) -> None:
+        """Documents a known limitation: ``".." in name`` matches any substring, not
+        just a path traversal component, so a legitimate filename like ``v1..2.md``
+        is rejected even though it contains no path separator. Not a security bug
+        (fails closed), but this pins the current, possibly-overly-strict behavior
+        so a future regex change is a deliberate decision, not an accident.
+        """
+        from sova.dashboard.routers.setup import _is_safe_sync_filename
+
+        assert _is_safe_sync_filename("v1..2.md") is False
+
+    def test_accepts_skill_md_pattern(self) -> None:
+        """The ``{skill}/SKILL.md`` exception is accepted by the validator even though
+        this endpoint never syncs skills: ``update_commands``/``update_guidelines``
+        only ever pass command/guideline filenames through, so this shape can never
+        actually be matched against real candidates in practice.
+        """
+        from sova.dashboard.routers.setup import _is_safe_sync_filename
+
+        assert _is_safe_sync_filename("my-skill/SKILL.md") is True
+
+    def test_rejects_skill_pattern_with_extra_path_segment(self) -> None:
+        from sova.dashboard.routers.setup import _is_safe_sync_filename
+
+        assert _is_safe_sync_filename("a/b/SKILL.md") is False
+
+    def test_validate_sync_filenames_none_is_noop(self) -> None:
+        from sova.dashboard.routers.setup import _validate_sync_filenames
+
+        _validate_sync_filenames(None, field_name="filenames")  # must not raise
+
+    def test_validate_sync_filenames_raises_on_invalid(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.setup import _validate_sync_filenames
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_sync_filenames(["ok.md", "../evil.md"], field_name="filenames")
+        assert exc_info.value.status_code == 400
+        assert "../evil.md" in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -12404,6 +12783,27 @@ class TestInstallationAPI:
         assert "guidelines" in data
         assert "updated" in data["commands"]
         assert "updated" in data["guidelines"]
+
+    async def test_installation_diff_returns_200(self, install_client: AsyncClient) -> None:
+        resp = await install_client.get("/api/settings/installation/diff")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source_available"] is True
+        assert isinstance(data["files"], list)
+
+        entry = next(f for f in data["files"] if f["filename"] == "standup.md")
+        assert entry["status"] == "new"
+        assert entry["category"] == "command"
+        assert entry["local_content"] is None
+        assert entry["canonical_content"]
+
+    async def test_sync_with_filenames_updates_selected_and_skips_guidelines(self, install_client: AsyncClient) -> None:
+        """A selective sync body only touches the named commands and leaves guidelines alone."""
+        resp = await install_client.post("/api/setup/commands/sync", json={"filenames": ["standup.md"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["commands"]["updated"] == 1
+        assert data["guidelines"]["updated"] == 0
 
 
 # ---------------------------------------------------------------------------

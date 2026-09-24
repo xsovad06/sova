@@ -438,6 +438,54 @@ class TestDistribution:
         assert len(result.conflicts) >= 1
         assert "standup.md" in result.conflicts
 
+    def test_update_non_utf8_local_file_does_not_raise(self, canonical_dir: Path, target_dir: Path) -> None:
+        """update_commands() must not crash reading a locally-corrupted (non-UTF-8) managed file."""
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        # Corrupt the installed file with invalid UTF-8 bytes.
+        (target_dir / "standup.md").write_bytes(b"\xff\xfe not valid utf-8")
+
+        # Source also changed, so the file is a candidate for update.
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Updated standup.\nuser-invocable: true\ncategory: management\n---\n\n"
+            "New standup.\n"
+        )
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"], force=True)
+        assert result.updated == 1
+        assert (target_dir / "standup.md").read_text(encoding="utf-8").endswith("New standup.\n")
+
+    def test_update_non_utf8_local_file_is_conflict_when_not_forced(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """A locally-corrupted (unreadable) managed file must be reported as a conflict,
+
+        not silently overwritten, when force=False (including the default body-less
+        "Sync All" flow).
+        """
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        original_bytes = b"\xff\xfe not valid utf-8"
+        (target_dir / "standup.md").write_bytes(original_bytes)
+
+        # Source also changed, so the file is a candidate for update.
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Updated standup.\nuser-invocable: true\ncategory: management\n---\n\n"
+            "New standup.\n"
+        )
+
+        result = update_commands(canonical_dir, target_dir, cfg, force=False)
+        assert "standup.md" in result.conflicts
+        assert (target_dir / "standup.md").read_bytes() == original_bytes
+
     def test_diff_commands(self, canonical_dir: Path, target_dir: Path) -> None:
         """diff_commands() shows what changed since last install."""
         from sova.commands.distribution import diff_commands, install_commands
@@ -470,6 +518,57 @@ class TestDistribution:
         diff = diff_commands(canonical_dir, target_dir, cfg)
         assert "new-cmd.md" in diff.new
 
+    def test_diff_unreadable_canonical_file_skipped_not_raised(self, canonical_dir: Path, target_dir: Path) -> None:
+        """A canonical command file with invalid UTF-8 bytes is skipped, not raised.
+
+        Regression test: diff_commands() must not let UnicodeDecodeError propagate
+        from a single corrupted canonical file (bad checkout, non-UTF-8 edit), since
+        that would fail the whole diff (and the dashboard's installation-review
+        endpoint). Commands are discovered via discover(), which parses frontmatter
+        from every canonical file up front and already skips unreadable ones (see
+        catalog._parse_command_file), so a corrupted canonical command file is
+        indistinguishable from one deleted upstream and surfaces as "removed"
+        (the pre-existing, non-crashing classification for "not present in the
+        current discover() scan"), rather than raising.
+        """
+        from sova.commands.distribution import diff_commands, install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (canonical_dir / "develop.md").write_bytes(b"\xff\xfe not valid utf-8")
+
+        diff = diff_commands(canonical_dir, target_dir, cfg)
+        assert "develop.md" not in diff.changed
+        assert "develop.md" not in diff.new
+        assert "develop.md" in diff.removed
+
+    def test_diff_unreadable_canonical_guideline_skipped_not_raised(
+        self, guidelines_dir: Path, rules_dir: Path
+    ) -> None:
+        """A canonical guideline file with invalid UTF-8 bytes is skipped, not raised.
+
+        Regression test: unlike commands (pre-filtered by discover()'s own
+        frontmatter parse, see the sibling command test above), guidelines are
+        collected by a plain glob with no read (_collect_guidelines()), so this
+        exercises _diff_files()'s own unreadable-canonical-file guard directly: the
+        filename stays out of new/changed/removed entirely, since it's still added
+        to canonical_names before the failed read.
+        """
+        from sova.commands.distribution import diff_guidelines, install_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        (guidelines_dir / "security.md").write_bytes(b"\xff\xfe not valid utf-8")
+
+        diff = diff_guidelines(guidelines_dir, rules_dir, cfg)
+        assert "security.md" not in diff.changed
+        assert "security.md" not in diff.new
+        assert "security.md" not in diff.removed
+
     def test_list_commands(self, canonical_dir: Path, target_dir: Path) -> None:
         """list_commands() shows canonical and local commands."""
         from sova.commands.distribution import install_commands, list_commands
@@ -487,6 +586,226 @@ class TestDistribution:
 
         assert "develop.md" in managed_names
         assert "my-custom.md" in local_names
+
+
+class TestUpdateFilenamesAllowList:
+    def test_filenames_restricts_to_subset(self, canonical_dir: Path, target_dir: Path) -> None:
+        """update_commands() with filenames only updates the named subset."""
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (canonical_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Updated.\nuser-invocable: true\ncategory: core\n---\n\nNew develop.\n"
+        )
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Updated.\nuser-invocable: true\ncategory: management\n---\n\n"
+            "New standup.\n"
+        )
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["develop.md"])
+
+        assert result.updated == 1
+        assert "New develop." in (target_dir / "develop.md").read_text()
+        assert "New standup." not in (target_dir / "standup.md").read_text()
+
+    def test_empty_filenames_updates_nothing(self, canonical_dir: Path, target_dir: Path) -> None:
+        """update_commands() with filenames=[] is an explicit empty selection."""
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (canonical_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Updated.\nuser-invocable: true\ncategory: core\n---\n\nNew develop.\n"
+        )
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=[])
+
+        assert result.updated == 0
+        assert "New develop." not in (target_dir / "develop.md").read_text()
+
+    def test_empty_filenames_on_fresh_target_creates_no_manifest(self, canonical_dir: Path, target_dir: Path) -> None:
+        """An explicit empty selection on a never-installed target must not create a manifest."""
+        from sova.commands.distribution import update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=[])
+
+        assert result.updated == 0
+        assert not (target_dir / ".sova-manifest.json").exists()
+
+    def test_unknown_filename_is_a_noop(self, canonical_dir: Path, target_dir: Path) -> None:
+        """A filenames entry not present in the canonical source updates nothing for it."""
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["does-not-exist.md"])
+
+        assert result.updated == 0
+
+    def test_filenames_with_force_overrides_conflict(self, canonical_dir: Path, target_dir: Path) -> None:
+        """filenames + force=True updates a locally modified file instead of flagging a conflict."""
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Locally customized\n")
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Updated.\nuser-invocable: true\ncategory: management\n---\n\n"
+            "New standup.\n"
+        )
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"], force=True)
+
+        assert result.updated == 1
+        assert result.conflicts == []
+        assert "New standup." in (target_dir / "standup.md").read_text()
+
+    def test_filenames_with_force_restores_local_edit_when_canonical_unchanged(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """force=True restores a locally-modified file even when canonical hasn't changed.
+
+        Selective sync (the review-changes modal) presents a locally-modified
+        file as a "local_modified" conflict the user can accept, which sends
+        force=True. The canonical file itself may not have changed since
+        install: the old "canonical unchanged" skip fired before force was
+        ever consulted, silently no-opping the restore.
+        """
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Locally customized\n")
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"], force=True)
+
+        assert result.updated == 1
+        assert result.conflicts == []
+        assert "# Locally customized" not in (target_dir / "standup.md").read_text()
+
+    def test_filenames_with_force_restores_locally_deleted_when_canonical_unchanged(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """force=True restores a locally-deleted file even when canonical hasn't changed."""
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").unlink()
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"], force=True)
+
+        assert result.updated == 1
+        assert result.conflicts == []
+        assert (target_dir / "standup.md").is_file()
+
+    def test_force_with_no_local_drift_is_a_noop_skip(self, canonical_dir: Path, target_dir: Path) -> None:
+        """force=True on a file with no local drift and no canonical change still skips."""
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"], force=True)
+
+        assert result.updated == 0
+        assert result.skipped >= 1
+        assert result.conflicts == []
+
+    def test_force_no_op_skip_repairs_stale_manifest_hash(self, canonical_dir: Path, target_dir: Path) -> None:
+        """force=True on a no-op skip (installed content already matches canonical)
+        still repairs a stale manifest hash, so a later non-force sync doesn't
+        keep reporting a conflict for a file that is actually already clean.
+        """
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.commands.manifest import read_manifest, update_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        # Simulate a stale manifest entry: the installed file already matches
+        # canonical content, but the manifest still records an old hash.
+        update_manifest(target_dir, "standup.md", "stale-hash-does-not-match-content")
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"], force=True)
+
+        assert result.updated == 0
+        assert result.skipped >= 1
+        assert result.conflicts == []
+
+        manifest = read_manifest(target_dir)
+        assert manifest is not None
+        assert manifest.commands["standup.md"].hash != "stale-hash-does-not-match-content"
+
+        # A subsequent non-force sync must no longer see this as a conflict.
+        rerun = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"])
+        assert rerun.conflicts == []
+
+    def test_non_force_repairs_stale_manifest_when_content_already_matches(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """A non-force sync must also repair a stale manifest hash when the
+        installed file already matches canonical content, not just report a
+        conflict. Without this, "Sync All" (non-force) reports a false
+        conflict for a file the review modal cannot even surface, because
+        _build_category_diffs already classifies it as clean.
+        """
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.commands.manifest import read_manifest, update_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        # Simulate a stale manifest entry: the installed file already matches
+        # canonical content, but the manifest still records an old hash (e.g.
+        # a prior sync crashed between write_text and update_manifest).
+        update_manifest(target_dir, "standup.md", "stale-hash-does-not-match-content")
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"])
+
+        assert result.updated == 0
+        assert result.skipped >= 1
+        assert result.conflicts == []
+
+        manifest = read_manifest(target_dir)
+        assert manifest is not None
+        assert manifest.commands["standup.md"].hash != "stale-hash-does-not-match-content"
+
+    def test_guidelines_filenames_restricts_to_subset(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """update_guidelines() with filenames only updates the named subset."""
+        from sova.commands.distribution import install_guidelines, update_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        (guidelines_dir / "security.md").write_text("# Updated security\n")
+        (guidelines_dir / "testing.md").write_text("# Updated testing\n")
+
+        result = update_guidelines(guidelines_dir, rules_dir, cfg, filenames=["security.md"])
+
+        assert result.updated == 1
+        assert "Updated security" in (rules_dir / "security.md").read_text()
+        assert "Updated testing" not in (rules_dir / "testing.md").read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -1027,6 +1346,97 @@ class TestReverseDiff:
         entry = next(e for e in result.modified if e.filename == "standup.md")
         assert entry.upstream_also_changed is True
         assert entry.canonical_content == ""
+        assert entry.canonical_removed is True
+
+    def test_unreadable_local_file_skipped_not_raised(self, canonical_dir: Path, target_dir: Path) -> None:
+        """A managed local file with invalid UTF-8 bytes is skipped, not raised.
+
+        Regression test: reverse_diff_commands() must not let UnicodeDecodeError
+        propagate from a single corrupted managed file, since that would fail the
+        whole diff (and the dashboard's installation-review endpoint) instead of
+        just omitting the one unreadable entry.
+        """
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_bytes(b"\xff\xfe not valid utf-8")
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        assert "standup.md" not in [e.filename for e in result.modified]
+
+    def test_unreadable_canonical_file_treated_as_removed(self, canonical_dir: Path, target_dir: Path) -> None:
+        """A canonical source file with invalid UTF-8 bytes degrades like canonical_removed=True.
+
+        Regression test: reverse_diff_commands() must not let UnicodeDecodeError
+        propagate from a corrupted canonical file, since that would fail the whole
+        diff (and the dashboard's installation-review endpoint). There's nothing to
+        diff the local drift against, so it's treated the same as an upstream
+        removal rather than aborting.
+        """
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Modified locally\n")
+        (canonical_dir / "standup.md").write_bytes(b"\xff\xfe not valid utf-8")
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        entry = next(e for e in result.modified if e.filename == "standup.md")
+        assert entry.canonical_removed is True
+        assert entry.canonical_content == ""
+        assert entry.upstream_also_changed is True
+
+    def test_unreadable_canonical_guideline_treated_as_removed(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """A canonical guideline file with invalid UTF-8 bytes degrades like canonical_removed=True.
+
+        Regression test: unlike commands (whose corrupted canonical file is already
+        filtered out by discover() before _reverse_diff_files() ever sees it, so
+        canonical_removed=True is reached via the pre-existing "not in
+        canonical_lookup" branch, see the sibling command test above), guidelines
+        are collected by a plain glob with no pre-read, so this exercises
+        _reverse_diff_files()'s own read-guard branch directly: the try/except
+        around raw_canonical = canonical_path.read_text(...).
+        """
+        from sova.commands.distribution import install_guidelines, reverse_diff_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        (rules_dir / "security.md").write_text("# Locally modified\n")
+        (guidelines_dir / "security.md").write_bytes(b"\xff\xfe not valid utf-8")
+
+        result = reverse_diff_guidelines(guidelines_dir, rules_dir, cfg)
+        entry = next(e for e in result.modified if e.filename == "security.md")
+        assert entry.canonical_removed is True
+        assert entry.canonical_content == ""
+        assert entry.upstream_also_changed is True
+
+    def test_canonical_still_present_is_not_canonical_removed(self, canonical_dir: Path, target_dir: Path) -> None:
+        """canonical_removed distinguishes "upstream changed" from "upstream removed":
+        both set upstream_also_changed=True, but only the latter means the filename
+        is gone from source_files and a "sync" of it would be a no-op."""
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Modified locally\n")
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Standup.\nuser-invocable: true\n"
+            "category: management\n---\n\nAlso changed upstream.\n"
+        )
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        entry = next(e for e in result.modified if e.filename == "standup.md")
+        assert entry.upstream_also_changed is True
+        assert entry.canonical_removed is False
 
     def test_reverse_diff_guidelines(self, tmp_path: Path) -> None:
         """reverse_diff_guidelines() works for guidelines (same engine)."""
