@@ -1437,6 +1437,105 @@ class TestAssessStep:
         assert result.success
 
 
+class TestAssessStepDivergence:
+    """AssessStep must fail a doomed run in seconds when local HEAD has
+    already diverged from origin/{branch}, instead of discovering the
+    conflict at push time after a full develop cycle."""
+
+    async def test_noop_when_branch_name_empty(self) -> None:
+        """A fresh developer run has no branch yet; the check must not run."""
+        from sova.core.steps.assess import AssessStep
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.RESEARCHED
+        ctx = _make_ctx(adapter=adapter, branch_name="")
+        step = AssessStep()
+
+        with patch("sova.core.steps.assess.check_branch_divergence", new_callable=AsyncMock) as mock_check:
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_check.assert_not_awaited()
+
+    async def test_fails_when_diverged(self) -> None:
+        from sova.core.steps.assess import AssessStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.RESEARCHED
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42", worktree_dir=Path("/tmp/worktree"))
+        step = AssessStep()
+
+        with patch(
+            "sova.core.steps.assess.check_branch_divergence",
+            new_callable=AsyncMock,
+            return_value=DivergenceCheck(status=DivergenceStatus.DIVERGED, remote_sha="deadbeef", head_sha="cafe"),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "deadbeef" in result.error
+        assert "cafe" in result.error
+
+    async def test_proceeds_when_ancestor(self) -> None:
+        from sova.core.steps.assess import AssessStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.RESEARCHED
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42", worktree_dir=Path("/tmp/worktree"))
+        step = AssessStep()
+
+        with patch(
+            "sova.core.steps.assess.check_branch_divergence",
+            new_callable=AsyncMock,
+            return_value=DivergenceCheck(status=DivergenceStatus.ANCESTOR, remote_sha="aaa", head_sha="bbb"),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+
+    async def test_proceeds_when_check_errors(self) -> None:
+        """A failed check (shallow clone, git unreachable) must not be
+        misread as a divergence; the run proceeds normally."""
+        from sova.core.steps.assess import AssessStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.RESEARCHED
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42", worktree_dir=Path("/tmp/worktree"))
+        step = AssessStep()
+
+        with patch(
+            "sova.core.steps.assess.check_branch_divergence",
+            new_callable=AsyncMock,
+            return_value=DivergenceCheck(status=DivergenceStatus.ERROR, detail="shallow clone"),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+
+    async def test_skips_check_when_worktree_dir_unresolved(self) -> None:
+        """branch_name can be populated on a resumed run whose worktree_path
+        no longer exists on disk, leaving working_dir falling back to
+        project_dir (the main checkout). Running the check there would
+        compare origin/{branch} against the wrong ref, so it must be skipped
+        rather than guessed at."""
+        from sova.core.steps.assess import AssessStep
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.RESEARCHED
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        assert ctx.worktree_dir is None
+        step = AssessStep()
+
+        with patch("sova.core.steps.assess.check_branch_divergence", new_callable=AsyncMock) as mock_check:
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_check.assert_not_awaited()
+
+
 class TestWorktreeStep:
     async def test_creates_worktree(self) -> None:
         from sova.core.steps.create_worktree import WorktreeStep
@@ -7223,11 +7322,19 @@ class TestDevelopStepExecute:
 class TestPushStepExecute:
     async def test_execute_calls_git_push(self) -> None:
         from sova.core.steps.push import PushStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
 
         ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
         step = PushStep()
 
-        with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                return_value=DivergenceCheck(status=DivergenceStatus.ANCESTOR, remote_sha="aaa", head_sha="bbb"),
+            ),
+        ):
             result = await step.execute(ctx)
 
         assert result.success
@@ -7235,28 +7342,132 @@ class TestPushStepExecute:
         mock_push.assert_awaited_once_with(
             "feat/test",
             force=False,
+            lease_sha=None,
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
             no_verify=False,
         )
 
-    async def test_execute_force_with_lease_when_pr_exists(self) -> None:
+    async def test_execute_plain_push_on_first_push(self) -> None:
+        """No remote ref (first push of a new branch) must resolve to a plain push."""
         from sova.core.steps.push import PushStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"), pr_number=42)
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
         step = PushStep()
 
-        with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                return_value=DivergenceCheck(status=DivergenceStatus.NO_REMOTE_REF),
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_push.assert_awaited_once_with(
+            "feat/test",
+            force=False,
+            lease_sha=None,
+            set_upstream=True,
+            cwd=Path("/tmp/worktree"),
+            no_verify=False,
+        )
+
+    async def test_execute_plain_push_when_divergence_check_errors(self) -> None:
+        """A failed divergence check (unreachable git, shallow clone) must fall
+        through to a plain push rather than guessing at force."""
+        from sova.core.steps.push import PushStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                return_value=DivergenceCheck(status=DivergenceStatus.ERROR, detail="fetch failed"),
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_push.assert_awaited_once_with(
+            "feat/test",
+            force=False,
+            lease_sha=None,
+            set_upstream=True,
+            cwd=Path("/tmp/worktree"),
+            no_verify=False,
+        )
+
+    async def test_execute_force_with_lease_when_diverged(self) -> None:
+        from sova.core.steps.push import PushStep
+        from sova.dashboard.services.feed_service import FeedEventSeverity
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                return_value=DivergenceCheck(status=DivergenceStatus.DIVERGED, remote_sha="deadbeef", head_sha="cafe"),
+            ),
+            patch(
+                "sova.core.steps.push.git_ops.list_dropped_commits",
+                new_callable=AsyncMock,
+                return_value=["deadbee dropped commit"],
+            ),
+            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True) as mock_emit,
+        ):
             result = await step.execute(ctx)
 
         assert result.success
         mock_push.assert_awaited_once_with(
             "feat/test",
             force=True,
+            lease_sha="deadbeef",
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
             no_verify=False,
         )
+        mock_emit.assert_called_once()
+        _, emit_kwargs = mock_emit.call_args
+        assert emit_kwargs["severity"] == FeedEventSeverity.warning
+
+    async def test_execute_emits_info_when_force_push_drops_nothing(self) -> None:
+        from sova.core.steps.push import PushStep
+        from sova.dashboard.services.feed_service import FeedEventSeverity
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock),
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                return_value=DivergenceCheck(status=DivergenceStatus.DIVERGED, remote_sha="deadbeef", head_sha="cafe"),
+            ),
+            patch(
+                "sova.core.steps.push.git_ops.list_dropped_commits",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True) as mock_emit,
+        ):
+            await step.execute(ctx)
+
+        _, emit_kwargs = mock_emit.call_args
+        assert emit_kwargs["severity"] == FeedEventSeverity.info
 
     async def test_execute_skips_hooks_when_budget_critically_low(self) -> None:
         """When dollar budget is critically low, Push must skip the pre-push
@@ -7266,19 +7477,28 @@ class TestPushStepExecute:
         LLM-call pressure must never disable validation on its own."""
         from sova.config.models import AgentConfig
         from sova.core.steps.push import PushStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
 
         config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
         ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"), config=config)
         ctx.cost_usd = Decimal("9.50")  # 5% remaining, below the 8% skip-hooks threshold
         step = PushStep()
 
-        with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                return_value=DivergenceCheck(status=DivergenceStatus.ANCESTOR, remote_sha="aaa", head_sha="bbb"),
+            ),
+        ):
             result = await step.execute(ctx)
 
         assert result.success
         mock_push.assert_awaited_once_with(
             "feat/test",
             force=False,
+            lease_sha=None,
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
             no_verify=True,
@@ -7300,16 +7520,161 @@ class TestPushStepExecute:
 
     async def test_execute_handles_push_failure(self) -> None:
         from sova.core.steps.push import PushStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
 
         ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
         step = PushStep()
 
-        with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                return_value=DivergenceCheck(status=DivergenceStatus.ANCESTOR, remote_sha="aaa", head_sha="bbb"),
+            ),
+        ):
             mock_push.side_effect = RuntimeError("Permission denied")
             result = await step.execute(ctx)
 
         assert not result.success
         assert "Permission denied" in result.error
+
+    async def test_execute_retries_once_on_rejection_when_lease_unchanged(self) -> None:
+        """A force push rejected due to a transient failure (the fresh
+        divergence check on retry observes the SAME remote SHA as the first
+        attempt) is re-evaluated once and retried with that unchanged lease,
+        not repeated identically."""
+        from sova.core.steps.push import PushStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        divergence_results = [
+            DivergenceCheck(status=DivergenceStatus.DIVERGED, remote_sha="same-sha", head_sha="bbb"),
+            DivergenceCheck(status=DivergenceStatus.DIVERGED, remote_sha="same-sha", head_sha="bbb"),
+        ]
+
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                side_effect=divergence_results,
+            ),
+            patch(
+                "sova.core.steps.push.git_ops.list_dropped_commits",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True),
+        ):
+            mock_push.side_effect = [RuntimeError("! [rejected] (stale info)"), None]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert mock_push.await_count == 2
+        second_call_kwargs = mock_push.call_args_list[1].kwargs
+        assert second_call_kwargs["force"] is True
+        assert second_call_kwargs["lease_sha"] == "same-sha"
+
+    async def test_execute_aborts_retry_when_remote_moved(self) -> None:
+        """A force push rejected because a concurrent writer landed a real
+        commit must never retry with a freshly re-derived lease: that lease
+        would be trivially satisfied by the very commit that caused the
+        rejection, silently discarding it. The retry's own divergence check
+        observing a different remote SHA than the first attempt must abort
+        with a clear error instead of pushing again."""
+        from sova.core.steps.push import PushStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        divergence_results = [
+            DivergenceCheck(status=DivergenceStatus.DIVERGED, remote_sha="stale-sha", head_sha="bbb"),
+            DivergenceCheck(status=DivergenceStatus.DIVERGED, remote_sha="fresh-sha", head_sha="bbb"),
+        ]
+
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                side_effect=divergence_results,
+            ),
+            patch(
+                "sova.core.steps.push.git_ops.list_dropped_commits",
+                new_callable=AsyncMock,
+            ) as mock_dropped,
+            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True) as mock_emit,
+        ):
+            mock_push.side_effect = [RuntimeError("! [rejected] (stale info)"), None]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "stale-sha" in result.error
+        assert "fresh-sha" in result.error
+        mock_push.assert_awaited_once()
+        mock_dropped.assert_not_awaited()
+        mock_emit.assert_not_called()
+
+    async def test_execute_plain_push_rejection_fails_without_escalating(self) -> None:
+        """A plain push (original decision was ANCESTOR, not DIVERGED) that
+        gets rejected means a concurrent writer landed a real commit between
+        the check and the push. This must surface as a clear error on the
+        first attempt, never escalate to a force push."""
+        from sova.core.steps.push import PushStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                return_value=DivergenceCheck(status=DivergenceStatus.ANCESTOR, remote_sha="aaa", head_sha="bbb"),
+            ),
+        ):
+            mock_push.side_effect = RuntimeError("! [rejected] (non-fast-forward)")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "rejected" in result.error.lower()
+        mock_push.assert_awaited_once()
+        assert mock_push.await_args.kwargs["force"] is False
+
+    async def test_execute_surfaces_error_when_retry_also_rejected(self) -> None:
+        """A concurrent writer refusing both attempts must surface as a clear
+        error, never fall back to a bare force push."""
+        from sova.core.steps.push import PushStep
+        from sova.git.branch import DivergenceCheck, DivergenceStatus
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with (
+            patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.core.steps.push.git_ops.check_branch_divergence",
+                new_callable=AsyncMock,
+                return_value=DivergenceCheck(status=DivergenceStatus.DIVERGED, remote_sha="aaa", head_sha="bbb"),
+            ),
+            patch(
+                "sova.core.steps.push.git_ops.list_dropped_commits",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("sova.dashboard.services.feed_service.emit_safe", autospec=True),
+        ):
+            mock_push.side_effect = RuntimeError("! [rejected] (stale info)")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "rejected" in result.error.lower()
+        assert mock_push.await_count == 2
 
     async def test_validate_output_passes_with_commits(self) -> None:
         from sova.core.steps.push import PushStep

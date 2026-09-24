@@ -14,9 +14,11 @@ from sova.git.operations import (
     CheckConclusion,
     CheckStatus,
     CICheck,
+    DivergenceStatus,
     PRInfo,
     PRStatus,
     assign_pr,
+    check_branch_divergence,
     commit,
     create_branch,
     create_pr,
@@ -31,6 +33,8 @@ from sova.git.operations import (
     get_pr_files,
     get_pr_head_sha,
     get_pr_status,
+    is_push_rejection,
+    list_dropped_commits,
     push,
     rebase,
     rebase_with_conflict_resolution,
@@ -559,6 +563,152 @@ class TestPush:
                 await push("", cwd=Path("/repo"))
 
             mock_run.assert_not_awaited()
+
+    async def test_pushes_with_force_and_lease_sha(self) -> None:
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", force=True, lease_sha="deadbeef", cwd=Path("/repo"))
+
+            call_args = mock_run.call_args[0]
+            assert "--force-with-lease=feat/login:deadbeef" in call_args
+            assert "--force-with-lease" not in call_args
+
+    async def test_pushes_with_force_and_lease_and_set_upstream(self) -> None:
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", force=True, lease_sha="deadbeef", set_upstream=True, cwd=Path("/repo"))
+
+            call_args = mock_run.call_args[0]
+            assert call_args == (
+                "git",
+                "push",
+                "-u",
+                "origin",
+                "feat/login",
+                "--force-with-lease=feat/login:deadbeef",
+            )
+
+
+class TestIsPushRejection:
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "! [rejected] main -> main (non-fast-forward)",
+            "hint: Updates were rejected because the remote contains work",
+            "! [rejected] feat/x -> feat/x (fetch first)",
+            "! [rejected] feat/x -> feat/x (stale info)",
+            "NON-FAST-FORWARD",
+        ],
+    )
+    def test_matches_known_rejection_phrasing(self, detail: str) -> None:
+        assert is_push_rejection(detail) is True
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "Permission denied (publickey)",
+            "Command failed: git push\nExit code: 128\nstderr: fatal: could not read Username",
+            "",
+        ],
+    )
+    def test_does_not_match_unrelated_failures(self, detail: str) -> None:
+        assert is_push_rejection(detail) is False
+
+
+class TestCheckBranchDivergence:
+    async def test_ancestor_when_remote_reachable_from_head(self) -> None:
+        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_ok(stdout="remote-sha\n"),  # rev-parse FETCH_HEAD
+                _shell_ok(stdout="head-sha\n"),  # rev-parse HEAD
+                ShellResult(returncode=0, stdout="", stderr=""),  # merge-base --is-ancestor (true)
+            ]
+
+            result = await check_branch_divergence("feat/login", cwd=Path("/repo"))
+
+            assert result.status == DivergenceStatus.ANCESTOR
+            assert result.remote_sha == "remote-sha"
+            assert result.head_sha == "head-sha"
+
+    async def test_diverged_when_remote_not_reachable_from_head(self) -> None:
+        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),
+                _shell_ok(stdout="remote-sha\n"),
+                _shell_ok(stdout="head-sha\n"),
+                ShellResult(returncode=1, stdout="", stderr=""),  # merge-base --is-ancestor (false)
+            ]
+
+            result = await check_branch_divergence("feat/login", cwd=Path("/repo"))
+
+            assert result.status == DivergenceStatus.DIVERGED
+            assert result.remote_sha == "remote-sha"
+            assert result.head_sha == "head-sha"
+
+    async def test_no_remote_ref_on_first_push(self) -> None:
+        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="fatal: couldn't find remote ref feat/login")
+
+            result = await check_branch_divergence("feat/login", cwd=Path("/repo"))
+
+            assert result.status == DivergenceStatus.NO_REMOTE_REF
+            assert result.remote_sha is None
+
+    async def test_error_on_unrelated_fetch_failure(self) -> None:
+        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="fatal: unable to access remote")
+
+            result = await check_branch_divergence("feat/login", cwd=Path("/repo"))
+
+            assert result.status == DivergenceStatus.ERROR
+
+    async def test_error_when_rev_parse_fails(self) -> None:
+        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),
+                _shell_fail(stderr="fatal: ambiguous argument 'FETCH_HEAD'"),
+                _shell_ok(stdout="head-sha\n"),
+            ]
+
+            result = await check_branch_divergence("feat/login", cwd=Path("/repo"))
+
+            assert result.status == DivergenceStatus.ERROR
+
+    async def test_error_when_merge_base_fails_unexpectedly(self) -> None:
+        """A non-0/1 merge-base exit code (e.g. shallow clone) must be treated
+        as an inconclusive error, never as 'diverged'."""
+        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),
+                _shell_ok(stdout="remote-sha\n"),
+                _shell_ok(stdout="head-sha\n"),
+                ShellResult(returncode=128, stdout="", stderr="fatal: no merge base"),
+            ]
+
+            result = await check_branch_divergence("feat/login", cwd=Path("/repo"))
+
+            assert result.status == DivergenceStatus.ERROR
+
+
+class TestListDroppedCommits:
+    async def test_returns_commit_lines(self) -> None:
+        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="abc1234 fix thing\ndef5678 another fix\n")
+
+            dropped = await list_dropped_commits("head-sha", "remote-sha", cwd=Path("/repo"))
+
+            assert dropped == ["abc1234 fix thing", "def5678 another fix"]
+
+    async def test_returns_empty_list_on_failure(self) -> None:
+        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="fatal: bad object")
+
+            dropped = await list_dropped_commits("head-sha", "remote-sha", cwd=Path("/repo"))
+
+            assert dropped == []
 
 
 # ---------------------------------------------------------------------------
