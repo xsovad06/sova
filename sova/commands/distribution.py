@@ -19,6 +19,7 @@ from sova.commands.manifest import (
 )
 from sova.commands.templates import build_variables, render_command
 from sova.config.models import ProjectConfig
+from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
 log = get_logger(component="commands.distribution")
@@ -161,28 +162,35 @@ def _update_files(
             result.updated += 1
             continue
 
+        if not force and manifest_entry.hash == new_hash:
+            # Canonical hasn't changed since the manifest was last written, and this
+            # isn't a forced (explicitly selected) sync: nothing to update, and
+            # nothing to repair (the manifest already reflects canonical). Checked
+            # before touching the local file at all, so a 'Sync All' (force=False)
+            # only reads/hashes local files whose canonical source actually changed,
+            # matching the pre-repair fast path. A forced sync (the review-modal's
+            # selective restore of a locally-modified or locally-deleted file) still
+            # needs to check local drift even when canonical is unchanged, since
+            # force means "restore this file" regardless of whether canonical moved.
+            result.skipped += 1
+            continue
+
         file_exists = target_path.is_file()
-        try:
-            installed_hash = file_hash(target_path.read_text(encoding="utf-8")) if file_exists else None
-        except (OSError, UnicodeDecodeError):
-            installed_hash = None
+        local_text = read_text_or_none(target_path)
+        installed_hash = file_hash(local_text) if local_text is not None else None
 
         if installed_hash == new_hash:
-            # Already matches canonical: nothing to write in either mode. Repair a
-            # stale manifest hash here too, so a non-force sync doesn't derive a
-            # false conflict from a manifest write that failed after this file's
-            # content already converged with canonical (e.g. a prior sync crashed
-            # between write_text and update_manifest, or the user applied the
-            # upstream change by hand).
+            # Local file already matches the new canonical content (e.g. the user
+            # applied the upstream change by hand, or there's no local drift for
+            # this forced sync to restore): nothing to write, but repair the stale
+            # manifest hash so a future non-force sync doesn't derive a false
+            # conflict from it.
             if manifest_entry.hash != new_hash:
                 update_manifest(target_dir, filename, new_hash)
             result.skipped += 1
             continue
 
         if not force:
-            if manifest_entry.hash == new_hash:
-                result.skipped += 1
-                continue
             # An existing file that can't be verified against the manifest (unreadable
             # encoding, permission error) must be treated as a conflict, not silently
             # overwritten: only a genuinely missing file falls through to a clean write.
@@ -259,15 +267,14 @@ def _diff_files(
     for filename, source_path in source_files:
         canonical_names.add(filename)
 
-        try:
-            content = source_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        content = read_text_or_none(source_path)
+        if content is None:
             # An unreadable canonical file (corrupted install, bad checkout, a
             # non-UTF-8 edit) must not abort the whole diff. Skip it: it's
             # already in canonical_names, so it won't be misreported as
             # "removed" either. It simply doesn't appear as changed/new until
             # it becomes readable again.
-            log.warning("commands.diff.unreadable_canonical_file", filename=filename, exc_info=True)
+            log.warning("commands.diff.unreadable_canonical_file", filename=filename)
             continue
 
         rendered = render_command(content, variables)
@@ -316,10 +323,9 @@ def _reverse_diff_files(
             result.deleted.append(filename)
             continue
 
-        try:
-            local_content = target_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            log.warning("commands.reverse_diff.unreadable_local_file", filename=filename, exc_info=True)
+        local_content = read_text_or_none(target_path)
+        if local_content is None:
+            log.warning("commands.reverse_diff.unreadable_local_file", filename=filename)
             continue
         local_hash = file_hash(local_content)
 
@@ -331,14 +337,13 @@ def _reverse_diff_files(
         canonical_content = ""
         upstream_also_changed = True
         if not canonical_removed:
-            try:
-                raw_canonical = canonical_path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            raw_canonical = read_text_or_none(canonical_path)
+            if raw_canonical is None:
                 # An unreadable canonical file degrades the same way a removed
                 # one does: there's nothing to diff it against, so treat it as
                 # "removed" rather than letting the exception abort the whole
                 # reverse diff.
-                log.warning("commands.reverse_diff.unreadable_canonical_file", filename=filename, exc_info=True)
+                log.warning("commands.reverse_diff.unreadable_canonical_file", filename=filename)
                 canonical_removed = True
             else:
                 canonical_content = render_command(raw_canonical, variables)

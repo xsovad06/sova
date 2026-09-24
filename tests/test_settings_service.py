@@ -851,23 +851,29 @@ class TestBuildInstallationDiff:
 
 
 class TestReadTextOrNone:
-    """Tests for settings_service._read_text_or_none()."""
+    """Tests for the shared sova.utils.files.read_text_or_none() helper.
+
+    settings_service.py, sova/commands/distribution.py's _diff_files(),
+    _reverse_diff_files(), and _update_files() all use this one implementation
+    instead of hand-rolling the same try/except (OSError, UnicodeDecodeError)
+    read pattern independently.
+    """
 
     def test_missing_file_returns_none(self, tmp_path: Path) -> None:
-        from sova.dashboard.services.settings_service import _read_text_or_none
+        from sova.utils.files import read_text_or_none
 
-        assert _read_text_or_none(tmp_path / "does-not-exist.md") is None
+        assert read_text_or_none(tmp_path / "does-not-exist.md") is None
 
     def test_valid_utf8_file_returns_content(self, tmp_path: Path) -> None:
-        from sova.dashboard.services.settings_service import _read_text_or_none
+        from sova.utils.files import read_text_or_none
 
         path = tmp_path / "file.md"
         path.write_text("hello\n", encoding="utf-8")
-        assert _read_text_or_none(path) == "hello\n"
+        assert read_text_or_none(path) == "hello\n"
 
     def test_non_utf8_file_returns_none_instead_of_raising(self, tmp_path: Path) -> None:
-        from sova.dashboard.services.settings_service import _read_text_or_none
+        from sova.utils.files import read_text_or_none
 
         path = tmp_path / "binary.md"
         path.write_bytes(b"\xff\xfe\x00\x01invalid-utf8")
-        assert _read_text_or_none(path) is None
+        assert read_text_or_none(path) is None

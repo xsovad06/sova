@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -380,21 +381,11 @@ class InstallationDiff:
     files: list[FileDiff] = field(default_factory=list)
 
 
-def _read_text_or_none(path: Path) -> str | None:
-    """Read a file's text content, returning None if it doesn't exist or can't be read."""
-    if not path.is_file():
-        return None
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-
-
 def _read_rendered_or_none(path: Path, variables: dict[str, str]) -> str | None:
     """Read and render a canonical source file, returning None if missing/unreadable."""
     from sova.commands.templates import render_command
 
-    text = _read_text_or_none(path)
+    text = read_text_or_none(path)
     if text is None:
         return None
     return render_command(text, variables)
@@ -468,15 +459,7 @@ def _build_category_diffs(
         else:
             status = "conflict" if drift.upstream_also_changed else "local_modified"
             canonical_content = drift.canonical_content
-        entries.append(
-            FileDiff(
-                filename=drift.filename,
-                category=category,
-                status=status,
-                canonical_content=canonical_content,
-                local_content=drift.local_content,
-            )
-        )
+        _add(drift.filename, status, canonical_content, drift.local_content)
 
     def _rendered_content(filename: str) -> str | None:
         # diff.rendered is populated by _diff_files() as a byproduct of the hash
@@ -495,7 +478,7 @@ def _build_category_diffs(
             filename,
             "upstream_only",
             _rendered_content(filename),
-            _read_text_or_none(target_dir / filename),
+            read_text_or_none(target_dir / filename),
         )
 
     for filename in diff.new:
@@ -510,7 +493,7 @@ def _build_category_diffs(
             # early without a manifest) but a same-named local file can still
             # exist on disk.
             rendered_canonical = _rendered_content(filename)
-            local_content = _read_text_or_none(target_dir / filename)
+            local_content = read_text_or_none(target_dir / filename)
             if rendered_canonical is not None and rendered_canonical == local_content:
                 # The unmanaged local file is byte-identical to the rendered
                 # canonical content: a sync would be a no-op, so this is clean
@@ -524,12 +507,12 @@ def _build_category_diffs(
     for filename in diff.removed:
         if filename in handled:
             continue
-        _add(filename, "removed", None, _read_text_or_none(target_dir / filename))
+        _add(filename, "removed", None, read_text_or_none(target_dir / filename))
 
     for filename in reverse.unmanaged:
         if filename in handled:
             continue
-        _add(filename, "local_only", None, _read_text_or_none(target_dir / filename))
+        _add(filename, "local_only", None, read_text_or_none(target_dir / filename))
 
     for filename in reverse.deleted:
         if filename in handled:
