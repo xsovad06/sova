@@ -23,7 +23,7 @@ from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.dashboard.services.work_state import _build_pr_facts, resolve_next_action
 from sova.dashboard.services.work_verdict import resolve_sova_verdict
 from sova.db.models import SupervisorDecision
-from sova.git.pr import PRInfo
+from sova.git.pr import PRInfo, find_pr_for_issue_checked
 from sova.supervisor.dependency_graph import (
     DependencyGraph,
     build_dependency_graph,
@@ -71,6 +71,7 @@ class ProgressionAction(StrEnum):
     SPAWN_REBASE = "spawn_rebase"
     CHECKPOINT_NEEDED = "checkpoint_needed"
     RESET_STALE_STATE = "reset_stale_state"
+    REPAIR_TO_IN_REVIEW = "repair_to_in_review"
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +239,7 @@ class TaskProgressionEngine:
         if decision.action in NON_ACTIONABLE_ACTIONS or decision.action in (
             ProgressionAction.SPAWN_REBASE,
             ProgressionAction.RESET_STALE_STATE,
+            ProgressionAction.REPAIR_TO_IN_REVIEW,
         ):
             return remaining_slots, remaining_quota
         remaining_slots -= 1
@@ -566,6 +568,9 @@ class TaskProgressionEngine:
         if decision.action == ProgressionAction.RESET_STALE_STATE:
             return await self._execute_stale_reset(decision.issue_number)
 
+        if decision.action == ProgressionAction.REPAIR_TO_IN_REVIEW:
+            return await self._execute_repair_to_in_review(decision.issue_number, decision.pr_number)
+
         if decision.action == ProgressionAction.SPAWN_REBASE:
             from sova.supervisor.rebase import attempt_auto_rebase
 
@@ -723,6 +728,46 @@ class TaskProgressionEngine:
             log.warning("stale_reset.failed", issue=issue_number, exc_info=True)
             return {"error": f"Failed to reset stale state for #{issue_number}"}
 
+    async def _execute_repair_to_in_review(self, issue_number: int, pr_number: int | None) -> dict:
+        """Execute a REPAIR_TO_IN_REVIEW decision: transition forward instead of rolling back.
+
+        Companion to ``_execute_stale_reset``: an IN_PROGRESS issue with no
+        live agent but an already-open PR must not be reset (that would
+        discard finished work and spawn a duplicate developer run). Instead
+        it is carried forward to IN_REVIEW so subsequent cycles evaluate it
+        via the normal ``_refine_in_review_action`` path.
+
+        Both conditions the decision was based on (issue still IN_PROGRESS,
+        no live agent) are rechecked immediately before the transition: the
+        decision may be stale by the time it executes, e.g. a manual
+        ``/agents/start`` request racing in between and spawning an agent.
+        """
+        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+
+        try:
+            current_state = await self._adapter.get_state(str(issue_number))
+            if current_state != TaskState.IN_PROGRESS:
+                log.info("repair_to_in_review.skipped_state_changed", issue=issue_number, state=current_state)
+                return {"skipped": True, "issue": issue_number, "reason": "Issue state changed"}
+            alive_block = await check_already_running(issue_number, self._session_factory)
+            if alive_block:
+                log.info("repair_to_in_review.skipped_agent_alive", issue=issue_number, detail=alive_block.detail)
+                return {"skipped": True, "issue": issue_number, "reason": alive_block.detail}
+            await self._adapter.transition_state(str(issue_number), TaskState.IN_REVIEW)
+            invalidate_graph_cache(self._repo_cache_key)
+            emit_safe(
+                f"Repaired stale IN_PROGRESS: #{issue_number}",
+                severity=FeedEventSeverity.warning,
+                detail=f"Open PR #{pr_number} already exists; transitioned to IN_REVIEW instead of resetting",
+                category="supervisor",
+                metadata={"issue": issue_number, "pr_number": pr_number},
+            )
+            log.info("repair_to_in_review.completed", issue=issue_number, pr_number=pr_number)
+            return {"repaired": True, "issue": issue_number, "pr_number": pr_number}
+        except Exception:  # noqa: BLE001 (fail-open: repair transition spans adapter and DB calls)
+            log.warning("repair_to_in_review.failed", issue=issue_number, exc_info=True)
+            return {"error": f"Failed to repair stale state for #{issue_number}"}
+
     def _all_children_done(self, children: list[int], graph: DependencyGraph) -> bool:
         """Check if all child issues are in DONE state."""
         for child_id in children:
@@ -835,6 +880,7 @@ class TaskProgressionEngine:
                     action=ProgressionAction.WAIT,
                     reason=f"Agent still active for IN_PROGRESS #{issue_number}: {alive_block.detail}",
                 )
+
             if precomputed_rate_limit is _NOT_COMPUTED:
                 rate_limit_block = check_github_rate_limit_gate(self._adapter.github_user)
             else:
@@ -852,6 +898,35 @@ class TaskProgressionEngine:
                     reason=f"Rate limited: {rate_limit_block.detail}",
                     blocked_by=(rate_limit_block,),
                 )
+
+            if self._adapter.repo:
+                try:
+                    pr_info = await find_pr_for_issue_checked(
+                        str(issue_number),
+                        repo=self._adapter.repo,
+                        github_user=self._adapter.github_user,
+                    )
+                except Exception:  # noqa: BLE001 (fail-open: an unconfirmed PR lookup must not reset)
+                    log.info("evaluate_single.pr_check_failed", issue=issue_number, exc_info=True)
+                    return ProgressionDecision(
+                        issue_number=issue_number,
+                        action=ProgressionAction.WAIT,
+                        reason=f"Could not confirm PR status for IN_PROGRESS #{issue_number}",
+                    )
+
+                if pr_info is not None:
+                    log.info(
+                        "evaluate_single.repair_to_in_review",
+                        issue=issue_number,
+                        pr_number=pr_info.number,
+                    )
+                    return ProgressionDecision(
+                        issue_number=issue_number,
+                        action=ProgressionAction.REPAIR_TO_IN_REVIEW,
+                        reason=f"IN_PROGRESS #{issue_number} has open PR #{pr_info.number}: repairing to IN_REVIEW",
+                        pr_number=pr_info.number,
+                    )
+
             log.info(
                 "evaluate_single.ready",
                 issue=issue_number,

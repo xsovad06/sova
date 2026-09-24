@@ -195,13 +195,54 @@ async def assign_pr(pr_number: int, *, assignee: str, repo: str, github_user: st
         log.warning("git.assign_pr.failed", pr=pr_number, stderr=result.stderr[:200])
 
 
-async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") -> PRInfo | None:
-    """Find an open PR linked to an issue via gh CLI search.
+class PRLookupError(RuntimeError):
+    """Raised by :func:`find_pr_for_issue_checked` when the lookup could not be confirmed.
 
-    Searches for PRs whose body contains 'Closes #N' (or variants) and
-    verifies the match to avoid false positives from free-text search.
-    Falls back to branch name search for JIRA issues where the body
-    contains 'RHCLOUD-N' instead of '#N'.
+    Distinct from "no PR found": every underlying search (body and branch, or
+    a quota-forced skip) failed, so the negative result is not trustworthy.
+    """
+
+
+async def _find_pr_for_issue_impl(
+    issue_num: str, *, repo: str, env: dict[str, str], github_user: str
+) -> tuple[PRInfo | None, bool]:
+    """Search for an open PR linked to an issue. Returns (result, failed).
+
+    ``failed=True`` means the search could not be confirmed one way or the
+    other (shell/API failure, or a quota-forced skip) and the accompanying
+    ``None`` must not be read as "confirmed no PR".
+    """
+    body_result = await _search_prs_by_body(issue_num, repo=repo, env=env, github_user=github_user)
+    if isinstance(body_result, PRInfo):
+        return body_result, False
+
+    from sova.supervisor.github_quota import get_github_quota_tracker
+
+    if get_github_quota_tracker(github_user).should_skip():
+        return None, True
+
+    branch_result = await _search_prs_by_branch(issue_num, repo=repo, env=env, github_user=github_user)
+    if isinstance(branch_result, PRInfo):
+        return branch_result, False
+
+    # Confirmed empty only when both searches actually succeeded: a PR linked
+    # only via body text is invisible to the branch search and vice versa, so
+    # either one failing leaves the other's empty result unconfirmed.
+    body_ok = body_result is not _SEARCH_FAILED
+    branch_ok = branch_result is not _SEARCH_FAILED
+    if body_ok and branch_ok:
+        return None, False
+    return None, True
+
+
+async def _find_pr_for_issue_cached(
+    issue_id: str, *, repo: str, github_user: str, raise_on_failure: bool
+) -> PRInfo | None:
+    """Shared cache/lookup path for find_pr_for_issue() and find_pr_for_issue_checked().
+
+    Only a confirmed result (found or confirmed-empty) is cached; a failed
+    lookup is never cached, so the next call re-checks rather than treating
+    the failure as a stable 90s negative result.
     """
     issue_num = issue_id.lstrip("#").strip()
     cache_key = (repo, github_user, issue_num)
@@ -212,29 +253,37 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
 
     log.info("git.find_pr_for_issue", issue=issue_id, repo=repo)
     env = await resolve_gh_env(github_user)
-
-    body_result = await _search_prs_by_body(issue_num, repo=repo, env=env, github_user=github_user)
-    if isinstance(body_result, PRInfo):
-        _find_pr_cache[cache_key] = (now, body_result)
-        return body_result
-
-    from sova.supervisor.github_quota import get_github_quota_tracker
-
-    if get_github_quota_tracker(github_user).should_skip():
-        _find_pr_cache[cache_key] = (now, None)
+    result, failed = await _find_pr_for_issue_impl(issue_num, repo=repo, env=env, github_user=github_user)
+    if failed:
+        if raise_on_failure:
+            raise PRLookupError(f"Could not confirm PR lookup for issue {issue_id!r} in repo {repo!r}")
         return None
 
-    branch_result = await _search_prs_by_branch(issue_num, repo=repo, env=env, github_user=github_user)
-    if isinstance(branch_result, PRInfo):
-        _find_pr_cache[cache_key] = (now, branch_result)
-        return branch_result
+    _find_pr_cache[cache_key] = (now, result)
+    return result
 
-    # Only cache negative result when at least one search succeeded
-    body_ok = body_result is not _SEARCH_FAILED
-    branch_ok = branch_result is not _SEARCH_FAILED
-    if body_ok or branch_ok:
-        _find_pr_cache[cache_key] = (now, None)
-    return None
+
+async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") -> PRInfo | None:
+    """Find an open PR linked to an issue via gh CLI search.
+
+    Searches for PRs whose body contains 'Closes #N' (or variants) and
+    verifies the match to avoid false positives from free-text search.
+    Falls back to branch name search for JIRA issues where the body
+    contains 'RHCLOUD-N' instead of '#N'.
+
+    Returns ``None`` both when no PR is found and when the lookup itself
+    failed; use :func:`find_pr_for_issue_checked` when the caller must
+    distinguish the two.
+    """
+    return await _find_pr_for_issue_cached(issue_id, repo=repo, github_user=github_user, raise_on_failure=False)
+
+
+async def find_pr_for_issue_checked(issue_id: str, *, repo: str, github_user: str = "") -> PRInfo | None:
+    """Like :func:`find_pr_for_issue`, but raises :class:`PRLookupError` instead of
+    silently returning ``None`` when the lookup could not be confirmed. Shares
+    the same 90-second TTL cache, so no new uncached GitHub API call is added.
+    """
+    return await _find_pr_for_issue_cached(issue_id, repo=repo, github_user=github_user, raise_on_failure=True)
 
 
 async def _search_prs_by_body(
@@ -268,11 +317,11 @@ async def _search_prs_by_body(
 async def _search_prs_by_branch(
     issue_num: str, *, repo: str, env: dict[str, str], github_user: str = ""
 ) -> PRInfo | None | object:
-    """Return PRInfo on match, None on successful empty search, _SEARCH_FAILED if all lookups fail."""
-    any_succeeded = False
+    """Return PRInfo on match, None only when every prefix lookup succeeds with no match,
+    _SEARCH_FAILED if any prefix lookup fails (a confirmed negative requires all three:
+    a match on an unchecked prefix would otherwise be missed)."""
 
     async def _lookup(prefix: str) -> PRInfo | None | object:
-        nonlocal any_succeeded
         result = await run(
             "gh",
             "pr",
@@ -296,7 +345,6 @@ async def _search_prs_by_branch(
             prs = json.loads(result.stdout)
         except json.JSONDecodeError:
             return _SEARCH_FAILED
-        any_succeeded = True
         if prs:
             return PRInfo.from_gh_json(prs[0])
         return None
@@ -305,16 +353,16 @@ async def _search_prs_by_branch(
     found = next((r for r in results if isinstance(r, PRInfo)), None)
     if found:
         return found
-    if not any_succeeded:
+    if any(r is _SEARCH_FAILED for r in results):
         return _SEARCH_FAILED
     return None
 
 
-def _match_pr_results(stdout: str, issue_num: str) -> PRInfo | None:
+def _match_pr_results(stdout: str, issue_num: str) -> PRInfo | None | object:
     try:
         prs = json.loads(stdout)
     except json.JSONDecodeError:
-        return None
+        return _SEARCH_FAILED
 
     link_pattern = re.compile(rf"(?:closes|fixes|resolves)\s+#?{re.escape(issue_num)}\b", re.IGNORECASE)
     branch_pattern = f"issue-{issue_num}"
