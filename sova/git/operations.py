@@ -10,6 +10,15 @@ from sova.git.branch import (
     _SUSPICIOUS_PATHS as _SUSPICIOUS_PATHS,
 )
 from sova.git.branch import (
+    DivergenceCheck as DivergenceCheck,
+)
+from sova.git.branch import (
+    DivergenceStatus as DivergenceStatus,
+)
+from sova.git.branch import (
+    check_branch_divergence as check_branch_divergence,
+)
+from sova.git.branch import (
     commit as commit,
 )
 from sova.git.branch import (
@@ -17,6 +26,12 @@ from sova.git.branch import (
 )
 from sova.git.branch import (
     get_current_branch as get_current_branch,
+)
+from sova.git.branch import (
+    is_push_rejection as is_push_rejection,
+)
+from sova.git.branch import (
+    list_dropped_commits as list_dropped_commits,
 )
 from sova.git.branch import (
     push as push,

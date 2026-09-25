@@ -17,6 +17,7 @@ from __future__ import annotations
 from sova.adapters.base import TaskState
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.git.operations import DivergenceStatus, check_branch_divergence
 from sova.git.pr import find_pr_for_issue, get_pr_branch
 from sova.llm.client import resolve_model
 from sova.llm.complexity import assess_complexity
@@ -31,6 +32,23 @@ class AssessStep(BaseStep):
     name = "assess"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
+        if ctx.branch_name:
+            if ctx.worktree_dir:
+                diverged = await self._check_divergence(ctx)
+                if diverged is not None:
+                    return diverged
+            else:
+                # working_dir falls back to project_dir when no worktree is
+                # resolved (e.g. a resumed run whose worktree_path no longer
+                # exists on disk). Running the check there would compare
+                # origin/{branch} against the main checkout's HEAD instead of
+                # the actual feature branch, so skip rather than guess.
+                log.warning(
+                    "step.assess.divergence_check_skipped_no_worktree",
+                    issue=ctx.issue_number,
+                    branch=ctx.branch_name,
+                )
+
         task = await ctx.adapter.get_task(ctx.issue_number)
         ctx.task = task
         state = await ctx.adapter.get_state(ctx.issue_number)
@@ -105,6 +123,37 @@ class AssessStep(BaseStep):
                 )
 
         return StepResult(success=True, summary=f"Issue #{ctx.issue_number} is in {state} state")
+
+    async def _check_divergence(self, ctx: ExecutionContext) -> StepResult | None:
+        """Fail fast when local HEAD has diverged from origin/{branch}.
+
+        Catches a branch a human (or another process) has also pushed to
+        before the pipeline spends up to the full step timeout developing on
+        top of it. Only a confirmed divergence fails the run; an absent
+        remote ref, a clean ancestor relationship, or a failed check
+        (shallow clone, git unreachable) are all no-ops -- recovery is left
+        to a human or the supervisor, not guessed at here.
+        """
+        divergence = await check_branch_divergence(ctx.branch_name, cwd=ctx.working_dir)
+        if divergence.status != DivergenceStatus.DIVERGED:
+            return None
+
+        log.warning(
+            "step.assess.branch_diverged",
+            issue=ctx.issue_number,
+            branch=ctx.branch_name,
+            remote_sha=divergence.remote_sha,
+            head_sha=divergence.head_sha,
+        )
+        return StepResult(
+            success=False,
+            summary=f"Branch {ctx.branch_name} has diverged from origin",
+            error=(
+                f"Local HEAD ({divergence.head_sha}) is not a descendant of "
+                f"origin/{ctx.branch_name} ({divergence.remote_sha}). Another push has moved "
+                "the remote branch; rebase or resolve manually before continuing."
+            ),
+        )
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         return GateCheckResult(passed=True)
