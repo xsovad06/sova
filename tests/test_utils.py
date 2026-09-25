@@ -290,6 +290,291 @@ class TestResolveGhEnv:
 
 
 # ---------------------------------------------------------------------------
+# check_push_permission
+# ---------------------------------------------------------------------------
+
+
+class TestCheckPushPermission:
+    @pytest.fixture(autouse=True)
+    def _clear_push_permission_cache(self):
+        from sova.utils.gh import _push_permission_cache
+
+        _push_permission_cache.clear()
+        yield
+        _push_permission_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_returns_unknown_when_no_repo(self) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+
+        result = await check_push_permission("")
+        assert result.permission is PushPermission.UNKNOWN
+        assert result.checked_as is None
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_returns_allowed_when_push_true(self, mock_run: AsyncMock) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=0, stdout="true\n", stderr="")
+
+        result = await check_push_permission("owner/repo")
+
+        assert result.permission is PushPermission.ALLOWED
+        mock_run.assert_called_once_with(
+            "gh", "api", "repos/owner/repo", "--jq", ".permissions.push", env=None, timeout=15
+        )
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_returns_denied_when_push_false(self, mock_run: AsyncMock) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=0, stdout="false\n", stderr="")
+
+        result = await check_push_permission("owner/repo")
+        assert result.permission is PushPermission.DENIED
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_returns_denied_on_404(self, mock_run: AsyncMock) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=1, stdout="", stderr="HTTP 404: Not Found")
+
+        result = await check_push_permission("owner/repo")
+        assert result.permission is PushPermission.DENIED
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_returns_unknown_on_other_api_failure(self, mock_run: AsyncMock) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=1, stdout="", stderr="network error")
+
+        result = await check_push_permission("owner/repo")
+        assert result.permission is PushPermission.UNKNOWN
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_returns_unknown_when_gh_not_installed(self, mock_run: AsyncMock) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+
+        mock_run.side_effect = FileNotFoundError("gh not found")
+
+        result = await check_push_permission("owner/repo")
+        assert result.permission is PushPermission.UNKNOWN
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_returns_unknown_on_missing_permissions_key(self, mock_run: AsyncMock) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        # --jq on a permissions object missing "push" emits nothing to stdout but exits 0
+        mock_run.return_value = ShellResult(returncode=0, stdout="\n", stderr="")
+
+        result = await check_push_permission("owner/repo")
+        assert result.permission is PushPermission.UNKNOWN
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock)
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_uses_resolved_env_for_github_user(self, mock_run: AsyncMock, mock_env: AsyncMock) -> None:
+        from sova.utils.gh import check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_env.return_value = {"GH_TOKEN": "abc"}
+        mock_run.return_value = ShellResult(returncode=0, stdout="true\n", stderr="")
+
+        result = await check_push_permission("owner/repo", github_user="xsovad06")
+
+        mock_env.assert_called_once_with("xsovad06")
+        assert result.checked_as == "xsovad06"
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock)
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_checked_as_none_when_token_resolution_fails(self, mock_run: AsyncMock, mock_env: AsyncMock) -> None:
+        """A github_user is configured but resolve_gh_env can't get a token for it
+        (never `gh auth login`'d on this machine, expired/revoked cached token). The
+        API call then runs under whatever env it was given (None -> ambient-active gh
+        account), so checked_as must NOT report the configured user as having been
+        checked."""
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_env.return_value = None
+        mock_run.return_value = ShellResult(returncode=0, stdout="false\n", stderr="")
+
+        result = await check_push_permission("owner/repo", github_user="xsovad06")
+
+        mock_run.assert_called_once_with(
+            "gh", "api", "repos/owner/repo", "--jq", ".permissions.push", env=None, timeout=15
+        )
+        assert result.permission is PushPermission.DENIED
+        assert result.checked_as is None
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_denied_only_on_http_404_not_broad_not_found_text(self, mock_run: AsyncMock) -> None:
+        """A jq/query error mentioning 'not found' in unrelated prose must not be
+        misread as a definitive access denial (the fail-open guarantee's weakest
+        link): only gh's literal 'HTTP 404' failure shape is a real 404."""
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=1, stdout="", stderr='jq: error: "push" key not found in object')
+
+        result = await check_push_permission("owner/repo")
+        assert result.permission is PushPermission.UNKNOWN
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_skips_api_call_for_ssh_remote(self, mock_run: AsyncMock) -> None:
+        """check_push_permission() verifies a GitHub REST API token, which has no
+        bearing on SSH push auth. Skip the API call entirely for an SSH remote
+        rather than reporting a verdict for an auth path the real push won't use."""
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        def fake_run(*args: str, **kwargs: object) -> ShellResult:
+            if args[:3] == ("git", "remote", "get-url"):
+                return ShellResult(returncode=0, stdout="git@github.com:owner/repo.git\n", stderr="")
+            raise AssertionError(f"unexpected call: {args}")
+
+        mock_run.side_effect = fake_run
+
+        result = await check_push_permission("owner/repo", cwd="/tmp/repo")
+
+        assert result.permission is PushPermission.UNKNOWN
+        mock_run.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_checks_api_for_https_remote(self, mock_run: AsyncMock) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        def fake_run(*args: str, **kwargs: object) -> ShellResult:
+            if args[:3] == ("git", "remote", "get-url"):
+                return ShellResult(returncode=0, stdout="https://github.com/owner/repo.git\n", stderr="")
+            return ShellResult(returncode=0, stdout="true\n", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        result = await check_push_permission("owner/repo", cwd="/tmp/repo")
+
+        assert result.permission is PushPermission.ALLOWED
+        assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_caches_confirmed_result_across_calls(self, mock_run: AsyncMock) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=0, stdout="false\n", stderr="")
+
+        first = await check_push_permission("owner/repo")
+        second = await check_push_permission("owner/repo")
+
+        assert first.permission is PushPermission.DENIED
+        assert second.permission is PushPermission.DENIED
+        mock_run.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_does_not_cache_unknown_result(self, mock_run: AsyncMock) -> None:
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=1, stdout="", stderr="network error")
+
+        first = await check_push_permission("owner/repo")
+        second = await check_push_permission("owner/repo")
+
+        assert first.permission is PushPermission.UNKNOWN
+        assert second.permission is PushPermission.UNKNOWN
+        assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock)
+    async def test_returns_unknown_when_gh_not_installed_for_configured_user(self, mock_env: AsyncMock) -> None:
+        """resolve_gh_env(github_user) itself raises OSError (gh binary
+        missing) before the API-call try/except is ever reached. This must
+        still fail open like every other gh-unavailable path, not propagate
+        out of check_push_permission and crash SyncStep."""
+        from sova.utils.gh import PushPermission, check_push_permission
+
+        mock_env.side_effect = FileNotFoundError("gh")
+
+        result = await check_push_permission("owner/repo", github_user="xsovad06")
+
+        assert result.permission is PushPermission.UNKNOWN
+        assert result.checked_as is None
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock)
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_cache_keyed_by_checked_identity_not_requested_user(
+        self, mock_run: AsyncMock, mock_env: AsyncMock
+    ) -> None:
+        """A confirmed result for an unresolved configured user must be
+        cached under the ambient identity's key, not the configured
+        (unexercised) user's key: otherwise a later call for that same
+        configured user, made after its credentials actually resolve, could
+        incorrectly reuse a verdict that reflects a different account."""
+        from sova.utils.gh import PushPermission, check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_env.return_value = None
+        mock_run.return_value = ShellResult(returncode=0, stdout="false\n", stderr="")
+
+        first = await check_push_permission("owner/repo", github_user="xsovad06")
+        assert first.permission is PushPermission.DENIED
+        assert first.checked_as is None
+        assert mock_run.call_count == 1
+
+        # Same configured user, now resolving successfully: must not reuse
+        # the ambient-identity cache entry from the call above.
+        mock_env.return_value = {"GH_TOKEN": "abc"}
+        mock_run.return_value = ShellResult(returncode=0, stdout="true\n", stderr="")
+
+        second = await check_push_permission("owner/repo", github_user="xsovad06")
+        assert second.permission is PushPermission.ALLOWED
+        assert second.checked_as == "xsovad06"
+        assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.github_quota.track_rate_limit")
+    @patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock)
+    @patch("sova.utils.gh.run", new_callable=AsyncMock)
+    async def test_rate_limit_tracked_under_checked_identity_not_configured_user(
+        self, mock_run: AsyncMock, mock_env: AsyncMock, mock_track: AsyncMock
+    ) -> None:
+        """When token resolution for a configured github_user fails, the API call
+        actually runs under the ambient account, so the quota hit must not be
+        credited to the unexercised configured identity (the same misattribution
+        bug this PR fixed for the user-facing error message)."""
+        from sova.utils.gh import check_push_permission
+        from sova.utils.shell import ShellResult
+
+        mock_env.return_value = None
+        mock_run.return_value = ShellResult(returncode=0, stdout="true\n", stderr="")
+
+        await check_push_permission("owner/repo", github_user="xsovad06")
+
+        mock_track.assert_called_once()
+        _, identity = mock_track.call_args.args
+        assert identity == ""
+
+
+# ---------------------------------------------------------------------------
 # check_git_identity
 # ---------------------------------------------------------------------------
 
