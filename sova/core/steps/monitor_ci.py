@@ -359,6 +359,7 @@ class MonitorCIStep(BaseStep):
                     force=True,
                     set_upstream=True,
                     cwd=ctx.working_dir,
+                    github_user=ctx.config.github_user,
                 )
             except RuntimeError as exc:
                 log.error("step.monitor_ci.push_failed", error=str(exc), exc_info=True)
