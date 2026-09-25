@@ -85,13 +85,20 @@ def stop(
 ) -> None:
     """Stop the running SOVA server."""
     from sova.config.loader import load_config
-    from sova.scheduler.server import stop_server
+    from sova.scheduler.server import StopResult, _is_port_listening, stop_server
 
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
 
-    if stop_server(config, project_dir=resolved_dir):
+    result = stop_server(config, project_dir=resolved_dir)
+    if result is StopResult.STOPPED:
         console.print("[green]Server stopped.[/green]")
+    elif result is StopResult.FAILED:
+        console.print("[red]Server did not stop; the process may still be alive.[/red]")
+        raise typer.Exit(code=1)
+    elif _is_port_listening(config.server.host, config.server.port):
+        console.print(f"[red]Server did not stop; still listening on {config.server.host}:{config.server.port}.[/red]")
+        raise typer.Exit(code=1)
     else:
         console.print("[yellow]Server is not running.[/yellow]")
 
@@ -102,7 +109,7 @@ def status(
 ) -> None:
     """Show the SOVA server status."""
     from sova.config.loader import load_config
-    from sova.scheduler.server import read_pid_file
+    from sova.scheduler.server import _is_port_listening, read_pid_file
 
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
@@ -110,6 +117,11 @@ def status(
 
     if pid is not None:
         console.print(f"[green]Server is running (PID {pid}).[/green]")
+    elif _is_port_listening(config.server.host, config.server.port):
+        console.print(
+            f"[yellow]Server appears to be running on {config.server.host}:{config.server.port}, "
+            "but no PID file was found (orphaned).[/yellow]"
+        )
     else:
         console.print("[dim]Server is not running.[/dim]")
 
@@ -127,13 +139,23 @@ def restart(
 ) -> None:
     """Restart the SOVA server (stop, then start)."""
     from sova.config.loader import load_config
-    from sova.scheduler.server import stop_server
+    from sova.scheduler.server import StopResult, _is_port_listening, stop_server
 
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
 
-    if stop_server(config, project_dir=resolved_dir):
+    result = stop_server(config, project_dir=resolved_dir)
+    if result is StopResult.STOPPED:
         console.print("[yellow]Stopped running server.[/yellow]")
+    elif result is StopResult.FAILED:
+        console.print("[red]Could not stop the running server; the process may still be alive. Aborting restart.[/red]")
+        raise typer.Exit(code=1)
+    elif _is_port_listening(config.server.host, config.server.port):
+        console.print(
+            f"[red]Could not stop the running server; still listening on "
+            f"{config.server.host}:{config.server.port}. Aborting restart.[/red]"
+        )
+        raise typer.Exit(code=1)
     else:
         console.print("[dim]No server was running.[/dim]")
 

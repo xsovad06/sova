@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import socket
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from enum import Enum
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -24,6 +26,16 @@ log = get_logger(component="scheduler.server")
 
 # PID file location for server status/stop commands
 _DEFAULT_PID_DIR = Path.home() / ".config" / "sova"
+
+# stop_server() waits this long after SIGTERM before escalating to SIGKILL,
+# then this long after SIGKILL before giving up. Total bounded wait stays
+# comfortably under systemd's default TimeoutStopSec (90s).
+_SIGTERM_TIMEOUT_SECONDS = 10.0
+_SIGKILL_TIMEOUT_SECONDS = 5.0
+_POLL_INTERVAL_SECONDS = 0.3
+
+# Timeout for the port-listening probe used as a fallback liveness signal.
+_PORT_PROBE_TIMEOUT_SECONDS = 1.0
 
 
 async def query_digest_stats(
@@ -384,6 +396,27 @@ def _resolve_default_pid_path(project_dir: Path | None = None) -> Path:
     return _DEFAULT_PID_DIR / "sova-server.pid"
 
 
+def _resolve_pid_path(config: ProjectConfig | None, project_dir: Path | None) -> Path:
+    """Resolve the PID file path from config or project_dir, matching SOVAServer."""
+    if config and config.server.pid_file:
+        return Path(config.server.pid_file)
+    return _resolve_default_pid_path(project_dir)
+
+
+def _is_port_listening(host: str, port: int, timeout: float = _PORT_PROBE_TIMEOUT_SECONDS) -> bool:
+    """Check whether something is accepting connections on host:port.
+
+    Used as a fallback liveness signal when the PID file is missing or stale,
+    so an orphaned server (alive, listening, but PID file lost) is not
+    silently reported as stopped.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def read_pid_file(
     config: ProjectConfig | None = None,
     *,
@@ -393,10 +426,7 @@ def read_pid_file(
 
     Returns the PID if the file exists and the process is alive, else None.
     """
-    if config and config.server.pid_file:
-        pid_path = Path(config.server.pid_file)
-    else:
-        pid_path = _resolve_default_pid_path(project_dir)
+    pid_path = _resolve_pid_path(config, project_dir)
 
     if not pid_path.exists():
         return None
@@ -406,36 +436,114 @@ def read_pid_file(
     except (ValueError, OSError):
         return None
 
+    # Reject non-positive PIDs: os.kill(0, ...) targets the caller's own
+    # process group and os.kill(-1, ...) targets every process the caller
+    # owns, so a corrupt PID file containing 0 or a negative value must
+    # never reach a signal call.
+    if pid <= 0:
+        return None
+
     # Check if process is alive
     try:
         os.kill(pid, 0)
         return pid
-    except OSError:
+    except ProcessLookupError:
         # Process is dead, clean up stale PID file
         try:
             pid_path.unlink(missing_ok=True)
         except OSError:
             pass
         return None
+    except PermissionError:
+        # Process exists but we can't signal it: still alive, not stale.
+        return pid
+
+
+def _wait_for_pid_death(pid: int, timeout: float, poll_interval: float = _POLL_INTERVAL_SECONDS) -> bool:
+    """Poll until the process is confirmed dead or the timeout elapses.
+
+    Note: this cannot distinguish "the original process is still running"
+    from "the PID was reaped and reassigned to an unrelated process"
+    (a pre-existing race inherent to PID-based liveness checks).
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll_interval)
+
+
+class StopResult(str, Enum):
+    """Outcome of a stop_server() attempt.
+
+    A plain bool cannot distinguish "nothing to stop" from "tried and
+    failed": both collapsed to False, so a process that hung after already
+    closing its listening socket (the #996 scenario) was reported as
+    "not running" by callers that fell back to a port probe to tell the
+    two apart. FAILED means the process may still be alive even though it
+    is no longer listening; callers must never treat it as NOT_RUNNING.
+    """
+
+    STOPPED = "stopped"
+    NOT_RUNNING = "not_running"
+    FAILED = "failed"
 
 
 def stop_server(
     config: ProjectConfig | None = None,
     *,
     project_dir: Path | None = None,
-) -> bool:
-    """Send SIGTERM to the running server process.
+) -> StopResult:
+    """Stop the running server process, confirming it actually exits.
 
-    Returns True if a signal was sent, False if no server was running.
+    Sends SIGTERM and waits for the process to die. If it is still alive
+    after ``_SIGTERM_TIMEOUT_SECONDS``, escalates to SIGKILL and waits again.
+    The PID file is removed only once termination is confirmed.
+
+    Returns ``StopResult.STOPPED`` once termination is confirmed,
+    ``StopResult.NOT_RUNNING`` when there is no live PID to signal, and
+    ``StopResult.FAILED`` when a signal could not be delivered or the
+    process survived both SIGTERM and SIGKILL within their timeouts.
     """
     pid = read_pid_file(config, project_dir=project_dir)
+    pid_path = _resolve_pid_path(config, project_dir)
+
     if pid is None:
-        return False
+        host = config.server.host if config else "127.0.0.1"
+        port = config.server.port if config else 8111
+        if _is_port_listening(host, port):
+            log.warning("server.stop_orphaned", host=host, port=port)
+        return StopResult.NOT_RUNNING
 
     try:
         os.kill(pid, signal.SIGTERM)
-        log.info("server.stopped", pid=pid)
-        return True
     except OSError:
         log.warning("server.stop_failed", pid=pid, exc_info=True)
-        return False
+        return StopResult.FAILED
+
+    log.info("server.sigterm_sent", pid=pid)
+    if _wait_for_pid_death(pid, _SIGTERM_TIMEOUT_SECONDS):
+        log.info("server.stopped", pid=pid)
+        pid_path.unlink(missing_ok=True)
+        return StopResult.STOPPED
+
+    log.warning("server.sigterm_timeout", pid=pid, timeout=_SIGTERM_TIMEOUT_SECONDS)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        log.warning("server.sigkill_failed", pid=pid, exc_info=True)
+        return StopResult.FAILED
+
+    if _wait_for_pid_death(pid, _SIGKILL_TIMEOUT_SECONDS):
+        log.info("server.stopped", pid=pid, escalated=True)
+        pid_path.unlink(missing_ok=True)
+        return StopResult.STOPPED
+
+    log.error("server.stop_gave_up", pid=pid)
+    return StopResult.FAILED

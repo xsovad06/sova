@@ -240,9 +240,12 @@ This command runs as a headless agent. You MUST execute every step below through
     HEAD_SHA=$(git rev-parse HEAD)
     # Round number is computed, never guessed: one more than the address
     # summaries already posted on this PR (a fourth round once got labelled
-    # "Round 1" when the count was left to judgement).
-    ROUND=$(( $(gh api "repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews?per_page=100" \
-      --jq '[.[] | select((.body // "") | startswith("<!-- sova-addressed"))] | length') + 1 ))
+    # "Round 1" when the count was left to judgement). --paginate is required:
+    # per_page=100 alone still caps the count at 100 reviews on a long-lived PR.
+    # Each page is jq-filtered separately, so print one line per match (not a
+    # per-page length) and count lines across all pages with wc -l.
+    ROUND=$(( $(gh api --paginate "repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews?per_page=100" \
+      --jq '.[] | select((.body // "") | startswith("<!-- sova-addressed")) | .id' | wc -l | tr -d ' ') + 1 ))
     gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews \
       -f event=COMMENT \
       -f body="$(printf '<!-- sova-addressed: sha=%s -->\n\n## Address Review: Round %s\n\n' "$HEAD_SHA" "$ROUND"; cat <<'EOF'
@@ -286,20 +289,28 @@ This command runs as a headless agent. You MUST execute every step below through
       "SELECT value FROM project_settings WHERE key='pipeline.max_address_review_cycles';" 2>/dev/null || true)
     MAX_CYCLES=$(printf '%s' "$RAW" | tr -cd '0-9')
     MAX_CYCLES=${MAX_CYCLES:-2}
-    ROUND=$(gh api "repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews?per_page=100" \
-      --jq '[.[] | select((.body // "") | startswith("<!-- sova-addressed"))] | length')
+    # --paginate --jq filters each page separately, so count matching lines
+    # across all pages with wc -l rather than summing per-page lengths.
+    ROUND=$(gh api --paginate "repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews?per_page=100" \
+      --jq '.[] | select((.body // "") | startswith("<!-- sova-addressed")) | .id' | wc -l)
     ROUND=$(printf '%s' "$ROUND" | tr -cd '0-9')
     ROUND=${ROUND:-1}
     if [ "$MAX_CYCLES" -eq 0 ] || [ "$ROUND" -lt "$MAX_CYCLES" ]; then
-      # Sourcery AI
-      gh pr comment <PR_NUMBER> --body "@sourcery-ai review"
-      # CodeRabbit
-      gh pr comment <PR_NUMBER> --body "@coderabbitai review"
+      # Gate each mention independently: only ping a bot whose own findings
+      # were actually addressed this round. Requesting a review from a bot
+      # that posted nothing just spends one of its hourly review quota slots
+      # for no reason.
+      if [ "$SOURCERY_ADDRESSED" = "1" ]; then
+        gh pr comment <PR_NUMBER> --body "@sourcery-ai review"
+      fi
+      if [ "$CODERABBIT_ADDRESSED" = "1" ]; then
+        gh pr comment <PR_NUMBER> --body "@coderabbitai review"
+      fi
     else
       echo "Bot re-review skipped: address cycle cap reached ($ROUND of $MAX_CYCLES)"
     fi
     ```
-    Only request re-review for bots whose comments were actually addressed. When the cap skips the trigger, say so in the step 17 summary so the next reviewer knows the cap ended the loop, not a clean pass.
+    Set `SOURCERY_ADDRESSED=1` / `CODERABBIT_ADDRESSED=1` based on whether step 4-6 addressed at least one finding from that bot on this PR; leave a variable unset (or `0`) when the bot posted no comments this round. Only request re-review for bots whose comments were actually addressed. When the cap skips the trigger, say so in the step 17 summary so the next reviewer knows the cap ended the loop, not a clean pass.
 
 17. **Print summary**:
     - Table: | Comment | Source | Score | Action |
