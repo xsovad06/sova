@@ -300,9 +300,10 @@ class WorkflowEngine:
         actually catches retry/fix loops burning calls inside a single step's
         execute() (MonitorCIStep's CI-fix loop, AddressReviewStep's consensus
         loop) without ever incrementing steps_completed: invisible to the
-        step-count guard alone. Wall clock is scaled by task complexity (the
-        same multiplier _step_timeout applies) so a legitimate EPIC run isn't
-        paused by a limit sized for the default tier. ``steps_completed`` is
+        step-count guard alone. Wall clock is scaled by task complexity (via
+        sova.llm.complexity.complexity_multiplier, which _step_timeout no
+        longer applies) so a legitimate EPIC run isn't paused by a limit sized
+        for the default tier. ``steps_completed`` is
         bounded by ``len(self._steps)`` within a single run (retries produce one
         record, and the engine never loops), so ``max_run_steps`` is a ceiling
         for future longer pipelines rather than an active guard on today's
@@ -789,33 +790,44 @@ class WorkflowEngine:
     def _step_timeout(self, step_name: str) -> int:
         """Return the hard timeout in seconds for a given step.
 
-        monitor_ci gets ci.max_wait + a 120s grace period;
-        develop uses develop.step_timeout;
-        all other steps use agent.step_timeout.
+        monitor_ci gets ci.max_wait + a 120s grace period, unaffected by
+        complexity tier: no per-tier base and no multiplier, unlike every
+        other step below (behavior change from the old flat-multiplier
+        scheme, where monitor_ci was scaled like everything else).
 
-        develop.step_timeout is authoritative, deliberately NOT clamped by
-        agent.step_timeout: the step-specific knob is the more specific
-        setting and must win. Taking min() of the two silently discarded any
-        develop.step_timeout raised above agent.step_timeout's 1800s default,
-        so a project that raised it to 3000 still had develop steps killed at
-        exactly 1800s (and 2700s once the COMPLEX multiplier applied) with no
-        indication the configured value was being ignored.
+        develop and all other steps select between an explicit "normal" and
+        "complex" base timeout per sova.llm.complexity.ComplexityTier, via the
+        shared sova.llm.complexity.tier_timeout dispatch: TRIVIAL/SIMPLE/MODERATE
+        (and unset/unknown complexity) use the normal-tier base, COMPLEX/EPIC use
+        the complex-tier base. This is the step's outer hard timeout only;
+        DevelopStep's own /develop invocation deliberately stays on the flat
+        legacy develop.step_timeout, not this per-tier base, so the widened
+        complex-tier headroom reaches the inner check/fix loop rather than being
+        consumable entirely by the LLM call itself. No
+        multiplier is applied on top of the selected base. That scheme
+        (sova.llm.complexity.complexity_multiplier) is still used by the
+        wall-clock runaway guard (_check_runaway_guard, _effective_step_timeout)
+        but is no longer read here, since a single base tuned for "normal"
+        issues can't serve both TRIVIAL and COMPLEX tasks well under
+        multiplication alone: raising the base over-times TRIVIAL tasks,
+        lowering it under-times COMPLEX ones.
 
-        Complexity multiplier (shared with the wall-clock runaway guard via
-        sova.llm.complexity.complexity_multiplier): COMPLEX issues get 1.5x
-        timeout, EPIC get 2.0x, capped at 3.0x (max multiplier). Applied to
-        the final computed value so all paths benefit.
+        develop.step_timeout_normal/_complex are authoritative, deliberately
+        NOT clamped by agent.step_timeout_normal/_complex: the step-specific
+        knob is the more specific setting and must win. Taking min() of the
+        two would silently discard any develop timeout raised above the
+        agent default, reintroducing the exact bug fixed by removing that
+        clamp (a project that raised develop.step_timeout to 3000 still had
+        develop steps killed at agent.step_timeout's 1800s default with no
+        indication the configured value was being ignored).
         """
-        from sova.llm.complexity import complexity_multiplier
+        from sova.llm.complexity import tier_timeout
 
         if step_name == "monitor_ci":
-            base = self._ctx.config.ci.max_wait + 120
-        elif step_name == "develop":
-            base = self._ctx.config.develop.step_timeout
-        else:
-            base = self._ctx.config.agent.step_timeout
+            return self._ctx.config.ci.max_wait + 120
 
-        return int(base * complexity_multiplier(self._ctx.complexity))
+        cfg = self._ctx.config.develop if step_name == "develop" else self._ctx.config.agent
+        return tier_timeout(self._ctx.complexity, cfg.step_timeout_normal, cfg.step_timeout_complex)
 
     def _effective_step_timeout(self, step_name: str) -> tuple[int, bool]:
         """Return ``(timeout_seconds, capped_by_runaway)`` for the active attempt.

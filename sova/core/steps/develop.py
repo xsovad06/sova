@@ -310,7 +310,8 @@ class DevelopStep(BaseStep):
         and (when known) the step's own remaining hard-timeout budget. A
         worst-case cycle (check_timeout + fix_timeout, plus a fixed buffer for
         the non-LLM overhead between them: git diff/status calls, ruff, commit)
-        must still fit inside what is left of develop.step_timeout, otherwise
+        must still fit inside what is left of the develop step's per-tier hard
+        timeout (develop.step_timeout_normal/_complex), otherwise
         the outer WorkflowEngine hard timeout would kill the step mid-cycle,
         reporting the generic "step_hard_timeout" instead of this loop's own
         diagnostic summary, and starving whatever pipeline steps run after

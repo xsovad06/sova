@@ -969,7 +969,7 @@ class TestWorkflowEngine:
             async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
                 return GateCheckResult(passed=True)
 
-        config = ProjectConfig(agent={"step_timeout": 1})
+        config = ProjectConfig(agent={"step_timeout_normal": 1})
         ctx = _make_ctx(config=config)
         step = SlowStep()
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -3699,17 +3699,19 @@ class TestWorkflowDB:
         assert timeout == ctx.config.ci.max_wait + 120
 
     async def test_step_timeout_regular_step(self) -> None:
-        """_step_timeout returns develop.step_timeout for develop step, agent.step_timeout for others."""
+        """_step_timeout reads the per-tier fields, not the legacy step_timeout ones.
+
+        Asserting against develop.step_timeout/agent.step_timeout would pass by
+        coincidence today (the *_normal defaults are numerically equal to them)
+        while testing nothing, and would break silently if either default moved.
+        """
         ctx = _make_ctx()
+        ctx.config.develop.step_timeout_normal = 1234
+        ctx.config.agent.step_timeout_normal = 567
         engine = WorkflowEngine(steps=[], ctx=ctx)
 
-        # develop uses develop.step_timeout
-        timeout = engine._step_timeout("develop")
-        assert timeout == ctx.config.develop.step_timeout
-
-        # other steps use agent.step_timeout
-        timeout = engine._step_timeout("commit")
-        assert timeout == ctx.config.agent.step_timeout
+        assert engine._step_timeout("develop") == 1234
+        assert engine._step_timeout("commit") == 567
 
     async def test_write_output_flushes_when_needed(self) -> None:
         """_write_output calls flush() when should_flush() returns True."""
@@ -7106,11 +7108,15 @@ class TestConfidenceScoreStep:
 
 
 class TestDevelopStepExecute:
-    async def test_execute_calls_develop_command(self) -> None:
+    @pytest.mark.parametrize("tier", [None, "simple", "complex", "epic"])
+    async def test_execute_calls_develop_command(self, tier: str | None) -> None:
         from sova.core.steps.develop import DevelopStep
+        from sova.llm.complexity import ComplexityTier
         from sova.llm.models import LLMResult
 
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx.complexity = ComplexityTier(tier) if tier is not None else None
+        ctx.config.develop.step_timeout = 999
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke:
@@ -7131,6 +7137,13 @@ class TestDevelopStepExecute:
         mock_invoke.assert_awaited_once()
         assert mock_invoke.call_args.kwargs["args"] == "42"
         assert mock_invoke.call_args.kwargs["task_type"] == "develop"
+        # DevelopStep's own /develop invocation deliberately stays on the flat
+        # legacy develop.step_timeout, regardless of complexity tier: making
+        # it tier-aware would let a COMPLEX run's /develop invocation consume
+        # the entire widened per-tier hard timeout, leaving the inner
+        # check/fix loop no headroom (the exact starvation failure the
+        # per-tier hard timeout was introduced to fix).
+        assert mock_invoke.call_args.kwargs["timeout"] == 999
 
     async def test_execute_handles_runtime_error(self) -> None:
         from sova.core.steps.develop import DevelopStep

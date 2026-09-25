@@ -148,14 +148,33 @@ def _score_file_count(file_count: int) -> ComplexityTier:
     return ComplexityTier.EPIC
 
 
-# Timeout/budget scaling by complexity tier, shared by WorkflowEngine._step_timeout
-# (per-step hard timeouts) and the wall-clock runaway guard, so a legitimate
-# COMPLEX/EPIC run is never killed by a limit sized for the default tier.
+# Timeout/budget scaling by complexity tier, used by the wall-clock runaway
+# guard (WorkflowEngine._check_runaway_guard) so a legitimate COMPLEX/EPIC run
+# is never paused by a limit sized for the default tier. Per-step hard timeouts
+# no longer use this: WorkflowEngine._step_timeout selects an explicit per-tier
+# base instead (see docs/performance-guidelines.md).
 _COMPLEXITY_MULTIPLIERS: dict[ComplexityTier, float] = {
     ComplexityTier.COMPLEX: 1.5,
     ComplexityTier.EPIC: 2.0,
 }
 _MAX_COMPLEXITY_MULTIPLIER = 3.0
+
+# Tiers that resolve to the "complex" per-step timeout base. COMPLEX and EPIC
+# deliberately share one base: EPIC is rare enough that a third tier is not
+# warranted today (see docs/performance-guidelines.md).
+_COMPLEX_TIMEOUT_TIERS = frozenset({ComplexityTier.COMPLEX, ComplexityTier.EPIC})
+
+
+def tier_timeout(tier: ComplexityTier | None, normal: int, complex_tier: int) -> int:
+    """Select the per-tier step timeout base for *tier*.
+
+    COMPLEX and EPIC resolve to *complex_tier*; every other tier, plus an
+    unassessed ``None``, resolves to *normal*. Used by
+    WorkflowEngine._step_timeout for each step's outer hard timeout.
+    DevelopStep's inner ``/develop`` invocation deliberately does not use
+    this dispatch; it stays on the flat legacy ``develop.step_timeout``.
+    """
+    return complex_tier if tier in _COMPLEX_TIMEOUT_TIERS else normal
 
 
 def complexity_multiplier(tier: ComplexityTier | None) -> float:

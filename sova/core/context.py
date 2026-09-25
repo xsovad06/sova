@@ -239,9 +239,10 @@ class ExecutionContext:
 
         Falls back to 1.0 (no constraint) when the guard is disabled (limit 0)
         or when no run has started (``run_started_at`` unset, e.g. outside
-        WorkflowEngine). Uses the same complexity multiplier as
-        WorkflowEngine._step_timeout so a legitimate COMPLEX/EPIC run does not
-        read as more resource-constrained than a run sized for it actually is.
+        WorkflowEngine). Uses the same complexity multiplier as the wall-clock
+        runaway guard (WorkflowEngine._check_runaway_guard) so a legitimate
+        COMPLEX/EPIC run does not read as more resource-constrained than a run
+        sized for it actually is.
         """
         from sova.llm.complexity import complexity_multiplier
 

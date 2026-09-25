@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.exc import InvalidRequestError, StatementError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -422,7 +422,10 @@ def _run_to_dict(run: TaskRun) -> dict:
         if summary is not None:
             result["peak_cpu_percent"] = float(summary.peak_cpu_percent)
             result["peak_memory_rss_bytes"] = summary.peak_memory_rss_bytes
-    except InvalidRequestError:
+    except (InvalidRequestError, StatementError):
+        # A lazy load outside the async greenlet context (e.g. MissingGreenlet)
+        # surfaces wrapped as StatementError, not InvalidRequestError, when it
+        # occurs during actual statement execution rather than attribute access.
         logger.warning("work.run_to_dict.resource_summary_not_loaded, run_id=%s", run.id, exc_info=True)
     return result
 
