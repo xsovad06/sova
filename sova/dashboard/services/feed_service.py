@@ -91,6 +91,11 @@ class FeedService:
         # Holds references to in-flight persistence tasks so they are not
         # garbage-collected before they finish (asyncio only holds weak refs).
         self._pending_persist: set[asyncio.Task[None]] = set()
+        # Serializes DB writes: concurrent AsyncSessions can share a single
+        # underlying DBAPI connection (e.g. SQLite's StaticPool for in-memory
+        # test databases), where interleaved transactions from unserialized
+        # concurrent commits can silently drop or reorder writes.
+        self._persist_lock = asyncio.Lock()
 
     async def init_counter(self, project_dir: Path | None = None) -> None:
         """Advance the in-memory id counter past the DB max id at startup.
@@ -179,7 +184,7 @@ class FeedService:
             from sova.db.models import FeedEventRecord
             from sova.db.session import get_session
 
-            async with await get_session(project_dir) as session:
+            async with self._persist_lock, await get_session(project_dir) as session:
                 record = FeedEventRecord(
                     id=event.id,  # keep the in-memory id and DB id in one space
                     severity=event.severity.value,

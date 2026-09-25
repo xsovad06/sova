@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from decimal import Decimal
@@ -158,13 +157,20 @@ async def setup_db():
 
 
 @pytest.fixture
-def feed_service():
+async def feed_service():
     """Provide a fresh FeedService for each test."""
     import sova.dashboard.services.feed_service as mod
 
     svc = FeedService()
     mod._feed_service = svc
     yield svc
+    # Drain any background persistence tasks a test scheduled via emit()
+    # but never awaited (e.g. tests that only assert on the in-memory
+    # buffer/SSE path). Without this, a task still mid-commit can race the
+    # autouse setup_db fixture's close_db() -> engine.dispose(), which
+    # raises a raw KeyError from the SQLite StaticPool's internal state
+    # rather than anything emit()'s own try/except can catch.
+    await svc.drain_persist()
     mod._feed_service = None
 
 
@@ -265,7 +271,7 @@ class TestFeedPersistence:
     async def test_emit_persists_to_db(self, feed_service: FeedService) -> None:
         feed_service.emit("Persisted event", category="agent", metadata={"run_id": 7})
         # The DB write is scheduled as a background task; let it run.
-        await asyncio.sleep(0.05)
+        await feed_service.drain_persist()
         events, has_more = await feed_service.history_page(limit=50)
         assert has_more is False
         assert len(events) == 1
@@ -277,7 +283,7 @@ class TestFeedPersistence:
     async def test_history_page_returns_oldest_first(self, feed_service: FeedService) -> None:
         for i in range(5):
             feed_service.emit(f"Event {i}")
-        await asyncio.sleep(0.05)
+            await feed_service.drain_persist()
         events, _ = await feed_service.history_page(limit=50)
         titles = [e["title"] for e in events]
         assert titles == ["Event 0", "Event 1", "Event 2", "Event 3", "Event 4"]
@@ -286,7 +292,7 @@ class TestFeedPersistence:
     async def test_history_page_pagination_before_id(self, feed_service: FeedService) -> None:
         for i in range(5):
             feed_service.emit(f"Event {i}")
-        await asyncio.sleep(0.05)
+            await feed_service.drain_persist()
         # First page: newest 2.
         page1, has_more1 = await feed_service.history_page(limit=2)
         assert has_more1 is True
@@ -314,7 +320,7 @@ class TestFeedPersistence:
         # The next emitted event must not collide with the persisted id.
         event = feed_service.emit("after restart")
         assert event.id > 500
-        await asyncio.sleep(0.05)
+        await feed_service.drain_persist()
         events, _ = await feed_service.history_page(limit=50)
         # Both the seeded row and the new event are present, ordered by id.
         titles = [e["title"] for e in events]
@@ -324,7 +330,7 @@ class TestFeedPersistence:
     async def test_init_counter_only_advances(self, feed_service: FeedService) -> None:
         # No rows yet: emit advances the counter beyond the DB max.
         e1 = feed_service.emit("first")
-        await asyncio.sleep(0.05)
+        await feed_service.drain_persist()
         # Seeding from a DB whose max is below the current counter must not rewind.
         await feed_service.init_counter()
         e2 = feed_service.emit("second")
@@ -367,7 +373,7 @@ class TestFeedPersistence:
 async def test_feed_history_before_id_endpoint(client: AsyncClient, feed_service: FeedService) -> None:
     for i in range(4):
         feed_service.emit(f"Event {i}")
-    await asyncio.sleep(0.05)
+        await feed_service.drain_persist()
     resp = await client.get("/api/feed/history?before_id=1000&limit=2")
     assert resp.status_code == 200
     data = resp.json()
@@ -398,7 +404,7 @@ async def test_feed_history_gap_fill_backfills_from_db(client: AsyncClient, feed
 
     for i in range(6):
         feed_service.emit(f"Event {i}")
-    await asyncio.sleep(0.05)
+        await feed_service.drain_persist()
 
     first_event_id = 1
     resp = await client.get(f"/api/feed/history?since_id={first_event_id}")
@@ -433,7 +439,7 @@ async def test_feed_history_gap_multi_page_backfill(client: AsyncClient, feed_se
 
     for i in range(8):
         feed_service.emit(f"Event {i}")
-    await asyncio.sleep(0.05)
+        await feed_service.drain_persist()
 
     first_event_id = 1
     resp = await client.get(f"/api/feed/history?since_id={first_event_id}&limit=2")
