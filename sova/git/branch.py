@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, run_checked, subprocess_error
 
@@ -171,6 +172,7 @@ async def push(
     set_upstream: bool = False,
     cwd: Path | None = None,
     no_verify: bool = False,
+    github_user: str | None = None,
 ) -> None:
     """Push a branch to origin.
 
@@ -179,6 +181,13 @@ async def push(
     has moved origin past the observed SHA causes the push to be refused
     instead of silently overwritten. Without a ``lease_sha``, falls back to
     a bare ``--force-with-lease``.
+
+    When *github_user* is given, resolves its GH_TOKEN via ``resolve_gh_env``
+    and passes it as the subprocess env, so the actual push authenticates as
+    the same identity ``check_push_permission()`` preflighted in SyncStep
+    (relevant for HTTPS remotes using gh's git-credential helper, which
+    honors GH_TOKEN; a no-op for SSH remotes and CLI invocations that don't
+    already carry a matching GH_TOKEN in the ambient env otherwise).
     """
     if not branch:
         raise RuntimeError("Cannot push: branch name is empty")
@@ -196,7 +205,18 @@ async def push(
     if no_verify:
         args.append("--no-verify")
 
-    await run_checked(*args, cwd=cwd)
+    try:
+        env = await resolve_gh_env(github_user) if github_user else None
+    except OSError:
+        # gh not installed: fall back to the ambient env rather than
+        # blocking a push that could still succeed via an independently
+        # configured HTTPS credential helper or SSH key. Callers only
+        # catch RuntimeError from this function, so an uncaught OSError
+        # here would crash the step instead of falling through to git's
+        # own auth.
+        log.debug("git.push_gh_env_resolve_failed", branch=branch, exc_info=True)
+        env = None
+    await run_checked(*args, cwd=cwd, env=env)
 
 
 class DivergenceStatus(StrEnum):

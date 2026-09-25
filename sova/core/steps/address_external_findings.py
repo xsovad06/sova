@@ -207,6 +207,7 @@ class AddressExternalFindingsStep(BaseStep):
                     force=True,
                     set_upstream=True,
                     cwd=ctx.working_dir,
+                    github_user=ctx.config.github_user,
                 )
             except RuntimeError:
                 log.warning("step.address_external_findings.push_failed", exc_info=True)

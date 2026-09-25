@@ -568,6 +568,8 @@ class TestCreatePRStepThrottledInternals:
             result = await step._create_pr_throttled(ctx, "title", "body")
         assert result.success is False
         assert "timed out" in result.summary.lower()
+        assert result.error is not None
+        assert "99" in result.error
 
     async def test_throttled_poll_success(self) -> None:
         """When poll returns CREATED with pr_number, step succeeds."""
@@ -645,6 +647,46 @@ class TestCreatePRStepThrottledInternals:
             result = await step._create_pr_throttled(ctx, "title", "body")
         assert result.success is False
         assert "API rate limit" in result.summary
+        assert result.error == "API rate limit"
+
+    async def test_throttled_poll_failed_status_null_error_message(self) -> None:
+        """When error_message is present but None, falls back to a message naming the queue entry."""
+        from unittest.mock import MagicMock
+
+        from sova.config.models import CodeRabbitQuotaConfig, ProjectConfig
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.db.models import PRQueueStatus
+
+        step = CreatePRStep()
+        ctx = MagicMock()
+        ctx.display_label = "#42"
+        ctx.branch_name = "feat/42"
+        ctx.has_issue = True
+        ctx.issue_number = "42"
+        ctx.task_run_id = 1
+        ctx.project_dir = "/tmp"
+        ctx.config = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
+        ctx.base_branch = "main"
+        ctx.repo = "owner/repo"
+        ctx.working_dir = "/tmp"
+        ctx.pr_number = None
+        ctx.pr_url = ""
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.begin = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(), __aexit__=AsyncMock()))
+
+        poll_result = {"status": PRQueueStatus.FAILED, "pr_number": None, "error_message": None}
+        with (
+            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=mock_session),
+            patch("sova.supervisor.pr_throttle.enqueue", new_callable=AsyncMock, return_value=99),
+            patch("sova.supervisor.pr_throttle.poll_until_created", new_callable=AsyncMock, return_value=poll_result),
+        ):
+            result = await step._create_pr_throttled(ctx, "title", "body")
+        assert result.success is False
+        assert result.error is not None
+        assert "99" in result.error
 
 
 class TestCreatePRStepThrottle:
