@@ -19,6 +19,8 @@ pr_github_user = "your-github-username"
 
 Replace `/Users/<username>` with your actual home directory path, or use the default token location at `~/.config/sova/google_token.pickle`.
 
+Verify the result with `sova doctor`: it prints one row per configured provider (skipped entirely when `awareness.enabled` is false). A provider that is authorized and reachable shows `ok`; one whose optional dependency is missing, or that has no valid credentials yet, shows why. `sova doctor` never opens the OAuth consent browser, so run `sova briefing` for the initial authorization.
+
 ## Provider Overview
 
 | Provider | Description | Requires |
@@ -182,6 +184,11 @@ Run `sova config set awareness.enabled true` or use the dashboard settings page.
 1. Delete the old token: `rm ~/.config/sova/google_token.pickle`
 2. Run `sova briefing` again to trigger the OAuth flow
 3. Authorize the app in your browser
+4. Confirm with `sova doctor` that the `awareness: gmail` row now reports `ok`
+
+`sova doctor` and the dashboard provider status panel only probe existing
+credentials; they never start the consent flow. Until `sova briefing` has run
+once, they report the provider as not configured.
 
 ### "pr_status: no oauth token found for github.com account X"
 
