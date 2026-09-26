@@ -529,12 +529,34 @@ class TestServerCLI:
         runner = CliRunner()
         # status() must be patched at its function-local import site (sova.scheduler.server),
         # not sova.cli.commands.server, because it re-imports read_pid_file on every call.
-        with patch("sova.scheduler.server.read_pid_file", return_value=None) as mock_read_pid:
+        # _is_port_listening is also patched so the test never depends on real machine state
+        # (e.g. a dev dashboard actually listening on the default port).
+        with (
+            patch("sova.scheduler.server.read_pid_file", return_value=None) as mock_read_pid,
+            patch("sova.scheduler.server._is_port_listening", return_value=False),
+        ):
             result = runner.invoke(app, ["server", "status", "--project", str(tmp_path)])
         mock_read_pid.assert_called_once_with(ANY, project_dir=tmp_path)
         assert result.exit_code == 0, result.output
         assert result.exception is None
         assert "not running" in result.output.lower() or "stopped" in result.output.lower()
+
+    def test_server_status_shows_orphaned_when_port_listening(self, tmp_path: Path) -> None:
+        """status() reports an orphaned server when the PID file is gone but the port is live."""
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+
+        runner = CliRunner()
+        with (
+            patch("sova.scheduler.server.read_pid_file", return_value=None),
+            patch("sova.scheduler.server._is_port_listening", return_value=True) as mock_listening,
+        ):
+            result = runner.invoke(app, ["server", "status", "--project", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        assert "orphaned" in result.output.lower()
+        assert mock_listening.called
 
     def test_server_status_shows_running(self, tmp_path: Path) -> None:
         from typer.testing import CliRunner
@@ -935,11 +957,51 @@ class TestReadPidFile:
         pid_file.write_text("99999999")
         config = _make_config(server={"pid_file": str(pid_file)})
 
-        with patch("sova.scheduler.server.os.kill", side_effect=OSError("No such process")):
+        with patch("sova.scheduler.server.os.kill", side_effect=ProcessLookupError("No such process")):
             result = read_pid_file(config)
 
         assert result is None
         assert not pid_file.exists(), "stale PID file should be removed"
+
+    def test_read_pid_file_permission_error_treated_as_alive(self, tmp_path: Path) -> None:
+        """EPERM means the process exists but we can't signal it: still alive, keep the PID file."""
+        from sova.scheduler.server import read_pid_file
+
+        pid_file = tmp_path / "eperm.pid"
+        pid_file.write_text("99999999")
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        with patch("sova.scheduler.server.os.kill", side_effect=PermissionError("EPERM")):
+            result = read_pid_file(config)
+
+        assert result == 99999999
+        assert pid_file.exists(), "PID file must not be removed when the process is still alive"
+
+    def test_read_pid_file_rejects_negative_pid(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        pid_file = tmp_path / "negative.pid"
+        pid_file.write_text("-1")
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        with patch("sova.scheduler.server.os.kill") as mock_kill:
+            result = read_pid_file(config)
+
+        assert result is None
+        assert not mock_kill.called, "a non-positive PID must never be signalled"
+
+    def test_read_pid_file_rejects_zero_pid(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        pid_file = tmp_path / "zero.pid"
+        pid_file.write_text("0")
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        with patch("sova.scheduler.server.os.kill") as mock_kill:
+            result = read_pid_file(config)
+
+        assert result is None
+        assert not mock_kill.called, "a non-positive PID must never be signalled"
 
     def test_read_pid_file_no_config_uses_default(self, tmp_path: Path) -> None:
         from sova.scheduler.server import read_pid_file
@@ -964,31 +1026,50 @@ class TestStopServer:
     """Tests for sova.scheduler.server.stop_server module-level function."""
 
     def test_stop_server_no_running_server(self, tmp_path: Path) -> None:
-        from sova.scheduler.server import stop_server
+        from sova.scheduler.server import StopResult, stop_server
 
         config = _make_config(server={"pid_file": str(tmp_path / "missing.pid")})
-        assert stop_server(config) is False
+        with patch("sova.scheduler.server._is_port_listening", return_value=False):
+            assert stop_server(config) is StopResult.NOT_RUNNING
+
+    def test_stop_server_orphaned_port_listening_returns_not_running(self, tmp_path: Path) -> None:
+        """No PID file, but something is bound to the configured port: still can't signal it."""
+        from sova.scheduler.server import StopResult, stop_server
+
+        config = _make_config(server={"pid_file": str(tmp_path / "missing.pid")})
+        with patch("sova.scheduler.server._is_port_listening", return_value=True) as mock_listening:
+            result = stop_server(config)
+
+        assert result is StopResult.NOT_RUNNING
+        assert mock_listening.called
 
     def test_stop_server_sends_sigterm(self, tmp_path: Path) -> None:
-        from sova.scheduler.server import stop_server
+        from sova.scheduler.server import StopResult, stop_server
 
         pid_file = tmp_path / "server.pid"
         pid_file.write_text(str(os.getpid()))
         config = _make_config(server={"pid_file": str(pid_file)})
 
-        with patch("sova.scheduler.server.os.kill") as mock_kill:
-            # read_pid_file sends signal 0 to check alive, stop_server sends SIGTERM
-            mock_kill.return_value = None
+        call_count = 0
+
+        def kill_side_effect(pid: int, sig: int) -> None:
+            # Dies on the first liveness poll after SIGTERM is sent.
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 3:
+                raise ProcessLookupError("No such process")
+
+        with patch("sova.scheduler.server.os.kill", side_effect=kill_side_effect):
             result = stop_server(config)
 
-        assert result is True
-        # Verify signal 0 (liveness check) was sent first, then SIGTERM
-        assert len(mock_kill.call_args_list) == 2
-        assert mock_kill.call_args_list[0][0] == (os.getpid(), 0)
-        assert mock_kill.call_args_list[1][0] == (os.getpid(), signal.SIGTERM)
+        assert result is StopResult.STOPPED
+        # call 1: read_pid_file's liveness check (alive). call 2: SIGTERM. call 3: post-SIGTERM
+        # liveness poll (dead).
+        assert call_count == 3
+        assert not pid_file.exists(), "PID file should be removed once death is confirmed"
 
-    def test_stop_server_kill_fails_returns_false(self, tmp_path: Path) -> None:
-        from sova.scheduler.server import stop_server
+    def test_stop_server_sigterm_send_fails_returns_failed(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import StopResult, stop_server
 
         pid_file = tmp_path / "server.pid"
         pid_file.write_text(str(os.getpid()))
@@ -1005,7 +1086,134 @@ class TestStopServer:
         with patch("sova.scheduler.server.os.kill", side_effect=kill_side_effect):
             result = stop_server(config)
 
+        assert result is StopResult.FAILED
+        assert pid_file.exists(), "PID file must not be removed when the signal was never delivered"
+
+    def test_stop_server_sigterm_timeout_then_sigkill_succeeds(self, tmp_path: Path) -> None:
+        """Process ignores SIGTERM but dies once SIGKILL is sent."""
+        from sova.scheduler.server import StopResult, stop_server
+
+        pid_file = tmp_path / "server.pid"
+        pid_file.write_text(str(os.getpid()))
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        killed = {"value": False}
+
+        def kill_side_effect(pid: int, sig: int) -> None:
+            if sig == signal.SIGKILL:
+                killed["value"] = True
+                return
+            if sig == signal.SIGTERM:
+                return
+            # signal 0: liveness check
+            if killed["value"]:
+                raise ProcessLookupError("No such process")
+
+        with (
+            patch("sova.scheduler.server.os.kill", side_effect=kill_side_effect),
+            patch("sova.scheduler.server._SIGTERM_TIMEOUT_SECONDS", 0.05),
+            patch("sova.scheduler.server._SIGKILL_TIMEOUT_SECONDS", 0.5),
+            patch("sova.scheduler.server._POLL_INTERVAL_SECONDS", 0.01),
+        ):
+            result = stop_server(config)
+
+        assert result is StopResult.STOPPED
+        assert not pid_file.exists()
+
+    def test_stop_server_sigterm_and_sigkill_both_ignored(self, tmp_path: Path) -> None:
+        """Process survives both SIGTERM and SIGKILL within their timeouts: give up, return FAILED."""
+        from sova.scheduler.server import StopResult, stop_server
+
+        pid_file = tmp_path / "server.pid"
+        pid_file.write_text(str(os.getpid()))
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        with (
+            patch("sova.scheduler.server.os.kill", return_value=None),
+            patch("sova.scheduler.server._SIGTERM_TIMEOUT_SECONDS", 0.02),
+            patch("sova.scheduler.server._SIGKILL_TIMEOUT_SECONDS", 0.02),
+            patch("sova.scheduler.server._POLL_INTERVAL_SECONDS", 0.01),
+        ):
+            result = stop_server(config)
+
+        assert result is StopResult.FAILED
+        assert pid_file.exists(), "PID file must be kept when the process could not be confirmed dead"
+
+    def test_stop_server_sigkill_send_fails_returns_failed(self, tmp_path: Path) -> None:
+        """SIGTERM times out, and the SIGKILL send itself fails (e.g. permission denied)."""
+        from sova.scheduler.server import StopResult, stop_server
+
+        pid_file = tmp_path / "server.pid"
+        pid_file.write_text(str(os.getpid()))
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        def kill_side_effect(pid: int, sig: int) -> None:
+            if sig == signal.SIGKILL:
+                raise OSError("Permission denied")
+            # SIGTERM send and liveness polls succeed (process stays alive)
+
+        with (
+            patch("sova.scheduler.server.os.kill", side_effect=kill_side_effect),
+            patch("sova.scheduler.server._SIGTERM_TIMEOUT_SECONDS", 0.02),
+            patch("sova.scheduler.server._POLL_INTERVAL_SECONDS", 0.01),
+        ):
+            result = stop_server(config)
+
+        assert result is StopResult.FAILED
+        assert pid_file.exists()
+
+    def test_stop_server_rejects_non_positive_pid(self, tmp_path: Path) -> None:
+        """A PID file containing 0 or a negative value must never reach a signal call."""
+        from sova.scheduler.server import StopResult, stop_server
+
+        pid_file = tmp_path / "server.pid"
+        pid_file.write_text("0")
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        with (
+            patch("sova.scheduler.server.os.kill") as mock_kill,
+            patch("sova.scheduler.server._is_port_listening", return_value=False),
+        ):
+            result = stop_server(config)
+
+        assert result is StopResult.NOT_RUNNING
+        assert not mock_kill.called, "a non-positive PID must never be signalled"
+
+    def test_wait_for_pid_death_permission_error_treated_as_alive(self) -> None:
+        """EPERM means the process exists but we can't signal it: still alive, not dead."""
+        from sova.scheduler.server import _wait_for_pid_death
+
+        with patch("sova.scheduler.server.os.kill", side_effect=PermissionError("EPERM")):
+            result = _wait_for_pid_death(12345, timeout=0.05, poll_interval=0.01)
+
         assert result is False
+
+
+class TestIsPortListening:
+    """Tests for sova.scheduler.server._is_port_listening."""
+
+    def test_is_port_listening_true_when_bound(self) -> None:
+        import socket
+
+        from sova.scheduler.server import _is_port_listening
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            sock.listen(1)
+            port = sock.getsockname()[1]
+            assert _is_port_listening("127.0.0.1", port) is True
+
+    def test_is_port_listening_false_when_nothing_bound(self) -> None:
+        import socket
+
+        from sova.scheduler.server import _is_port_listening
+
+        # Find a free port, then close it immediately so nothing is listening.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+
+        assert _is_port_listening("127.0.0.1", port) is False
 
 
 # ---------------------------------------------------------------------------
@@ -1228,13 +1436,14 @@ class TestServerCLICommands:
         from typer.testing import CliRunner
 
         from sova.cli.commands.server import app
+        from sova.scheduler.server import StopResult
 
         runner = CliRunner()
         pid_file = tmp_path / "test.pid"
 
         # Mock both stop and start to avoid actual server startup
         with (
-            patch("sova.scheduler.server.stop_server", return_value=True) as mock_stop,
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.STOPPED) as mock_stop,
             patch("sova.scheduler.server.SOVAServer") as mock_server_class,
             patch("sova.config.loader.load_config") as mock_config,
             patch("sova.config.registry.has_projects", return_value=False),
@@ -1249,6 +1458,132 @@ class TestServerCLICommands:
             assert mock_stop.called
             # Should have created and run a new server
             assert mock_server.run.called
+
+    def test_restart_command_aborts_when_orphaned_and_port_still_listening(self, tmp_path: Path) -> None:
+        """restart aborts instead of starting a second server when the old one won't die."""
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+        from sova.scheduler.server import StopResult
+
+        runner = CliRunner()
+        pid_file = tmp_path / "test.pid"
+
+        with (
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.NOT_RUNNING),
+            patch("sova.scheduler.server._is_port_listening", return_value=True),
+            patch("sova.scheduler.server.SOVAServer") as mock_server_class,
+            patch("sova.config.loader.load_config") as mock_config,
+            patch("sova.config.registry.has_projects", return_value=False),
+        ):
+            mock_config.return_value = _make_config(server={"pid_file": str(pid_file)})
+            mock_server = MagicMock()
+            mock_server_class.return_value = mock_server
+
+            result = runner.invoke(app, ["restart", "--project", str(tmp_path)])
+
+            assert result.exit_code == 1
+            # Must not start a second server on top of the one still bound to the port.
+            assert not mock_server.run.called
+
+    def test_restart_command_aborts_when_stop_failed_even_if_port_not_listening(self, tmp_path: Path) -> None:
+        """A FAILED stop must abort restart even when the process is no longer listening.
+
+        Covers the #996 gap: a process that hangs after closing its listener is
+        not detectable via the port probe alone, so FAILED must short-circuit
+        before the port-listening fallback is ever consulted.
+        """
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+        from sova.scheduler.server import StopResult
+
+        runner = CliRunner()
+        pid_file = tmp_path / "test.pid"
+
+        with (
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.FAILED),
+            patch("sova.scheduler.server._is_port_listening", return_value=False),
+            patch("sova.scheduler.server.SOVAServer") as mock_server_class,
+            patch("sova.config.loader.load_config") as mock_config,
+            patch("sova.config.registry.has_projects", return_value=False),
+        ):
+            mock_config.return_value = _make_config(server={"pid_file": str(pid_file)})
+            mock_server = MagicMock()
+            mock_server_class.return_value = mock_server
+
+            result = runner.invoke(app, ["restart", "--project", str(tmp_path)])
+
+            assert result.exit_code == 1
+            assert not mock_server.run.called
+
+    def test_stop_command_reports_stopped(self, tmp_path: Path) -> None:
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+        from sova.scheduler.server import StopResult
+
+        runner = CliRunner()
+        with patch("sova.scheduler.server.stop_server", return_value=StopResult.STOPPED):
+            result = runner.invoke(app, ["server", "stop", "--project", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "stopped" in result.output.lower()
+
+    def test_stop_command_reports_not_running(self, tmp_path: Path) -> None:
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+        from sova.scheduler.server import StopResult
+
+        runner = CliRunner()
+        with (
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.NOT_RUNNING),
+            patch("sova.scheduler.server._is_port_listening", return_value=False),
+        ):
+            result = runner.invoke(app, ["server", "stop", "--project", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "not running" in result.output.lower()
+
+    def test_stop_command_reports_still_running_when_port_listening(self, tmp_path: Path) -> None:
+        """No live PID but something is bound to the configured port: exit nonzero, not 'stopped'."""
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+        from sova.scheduler.server import StopResult
+
+        runner = CliRunner()
+        with (
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.NOT_RUNNING),
+            patch("sova.scheduler.server._is_port_listening", return_value=True),
+        ):
+            result = runner.invoke(app, ["server", "stop", "--project", str(tmp_path)])
+        assert result.exit_code == 1
+        output = result.output.lower()
+        assert "stopped" not in output
+        assert "still listening" in output
+
+    def test_stop_command_reports_failed_even_if_port_not_listening(self, tmp_path: Path) -> None:
+        """stop_server() gave up: exit nonzero even when the port probe finds nothing.
+
+        This is the exact #996 gap CodeRabbit flagged: a process that hangs
+        after already closing its listening socket must not be reported as
+        "not running" just because the port fallback comes back clean.
+        """
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+        from sova.scheduler.server import StopResult
+
+        runner = CliRunner()
+        with (
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.FAILED),
+            patch("sova.scheduler.server._is_port_listening", return_value=False),
+        ):
+            result = runner.invoke(app, ["server", "stop", "--project", str(tmp_path)])
+        assert result.exit_code == 1
+        output = result.output.lower()
+        assert "not running" not in output
+        assert "stopped" not in output
 
     def test_digest_command_prints_summary(self, tmp_path: Path) -> None:
         """digest command queries DB and prints summary."""

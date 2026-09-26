@@ -23,13 +23,19 @@ PR: $ARGUMENTS
 Gather all PR data in parallel:
 
 ```bash
-# Metadata
+# Metadata (captures headRefOid, the commit this review is anchored to)
 gh pr view <PR_NUMBER> --json title,body,author,state,additions,deletions,files,commits,reviewRequests,labels,baseRefName,headRefName,headRefOid,statusCheckRollup
 
+# Run-unique artifact prefix, keyed on the head SHA just captured plus this
+# shell's own PID. Several reviews of the same PR can overlap on one machine
+# (a manual /review-pr racing an autonomous reviewer, or two retries), and a
+# path keyed only by PR number lets one run's diff/findings/payload overwrite
+# another's mid-flight. Fill in HEAD_SHA from the headRefOid field above.
+HEAD_SHA="<headRefOid from the metadata just fetched>"
+ARTIFACT_PREFIX="/tmp/sova-review-<PR_NUMBER>-${HEAD_SHA}-$$"
+
 # Full diff (also saved: Step 7 needs it to place inline comments).
-# Temp files are per-PR: several reviews can run concurrently on one machine,
-# and a shared path would pair one PR's findings with another PR's diff.
-gh pr diff <PR_NUMBER> | tee "/tmp/sova-review-<PR_NUMBER>-diff.txt"
+gh pr diff <PR_NUMBER> | tee "${ARTIFACT_PREFIX}-diff.txt"
 
 # Commits
 gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/commits --jq '.[] | "\(.sha) \(.commit.message)"'
@@ -45,9 +51,18 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | "\(.user.login
 
 # CI checks
 gh pr checks <PR_NUMBER>
+
+# Re-check headRefOid immediately after the diff fetch: the two are separate
+# requests, so a push landing between them means the saved diff no longer
+# matches the SHA captured above.
+CURRENT_SHA=$(gh pr view <PR_NUMBER> --json headRefOid --jq '.headRefOid')
 ```
 
 Extract: author, linked issue, `headRefOid` (the commit under review; it becomes the `sha` field in Step 6), whether AI-generated (bot prefixes, agent comments).
+
+If `CURRENT_SHA` differs from `HEAD_SHA`, the PR moved mid-fetch: restart this step from the top (re-fetch metadata and diff with a fresh `ARTIFACT_PREFIX`) so the saved SHA actually identifies the diff used to map findings.
+
+Every artifact path referenced in the rest of this command (Steps 6 and 7) is `${ARTIFACT_PREFIX}-{findings,diff,payload}.{json,txt}`, not a bare `/tmp/sova-review-<PR_NUMBER>-*` path. Reuse the exact `ARTIFACT_PREFIX` value established here for the remainder of this review run.
 
 **CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. CI issues are a separate concern -- the review's job is to evaluate code quality, correctness, and design. A PR with failing CI still needs its code reviewed.
 
@@ -128,7 +143,7 @@ Review across these dimensions, in priority order. Reference `AGENTS.md` and `do
 Collect your findings into a JSON object. Save it to a temporary file:
 
 ```bash
-cat > "/tmp/sova-review-<PR_NUMBER>-findings.json" <<'REVIEW_JSON'
+cat > "${ARTIFACT_PREFIX}-findings.json" <<'REVIEW_JSON'
 {
   "findings": [
     {
@@ -158,7 +173,7 @@ REVIEW_JSON
 Format the review body through the shared SOVA formatter:
 
 ```bash
-REVIEW_BODY=$(python3 -c "import sys; from sova.roles._review_format import format_from_json; print(format_from_json(sys.stdin.read()))" < "/tmp/sova-review-<PR_NUMBER>-findings.json") || REVIEW_BODY=""
+REVIEW_BODY=$(python3 -c "import sys; from sova.roles._review_format import format_from_json; print(format_from_json(sys.stdin.read()))" < "${ARTIFACT_PREFIX}-findings.json") || REVIEW_BODY=""
 ```
 
 The formatter produces: `<!-- sova-review: {verdict} sha={sha} -->` marker, `## Review:` heading, severity-sorted findings with `[LABEL N/10]` scores, `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity (7+ = block, any lower non-zero severity = revise, no findings = approve).
@@ -191,12 +206,12 @@ export EVENT=REQUEST_CHANGES
 
 build_payload() {
   EVENT="$1" python3 -c "import os, sys; from sova.roles._review_comments import build_review_payload_from_json; print(build_review_payload_from_json(open(sys.argv[1]).read(), open(sys.argv[2]).read(), os.environ['EVENT']))" \
-    "/tmp/sova-review-<PR_NUMBER>-findings.json" "/tmp/sova-review-<PR_NUMBER>-diff.txt" \
-    > "/tmp/sova-review-<PR_NUMBER>-payload.json"
+    "${ARTIFACT_PREFIX}-findings.json" "${ARTIFACT_PREFIX}-diff.txt" \
+    > "${ARTIFACT_PREFIX}-payload.json"
 }
 
 build_payload "$EVENT"
-gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "/tmp/sova-review-<PR_NUMBER>-payload.json"
+gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "${ARTIFACT_PREFIX}-payload.json"
 ```
 
 Three fallbacks, in order, each mirroring what the Reviewer role does:
@@ -208,15 +223,17 @@ Three fallbacks, in order, each mirroring what the Reviewer role does:
    before retrying:
    ```bash
    build_payload COMMENT
-   P="/tmp/sova-review-<PR_NUMBER>-payload.json"
+   P="${ARTIFACT_PREFIX}-payload.json"
    python3 -c "import json, sys; d=json.load(open(sys.argv[1])); d['body']+='\n\n(Posted as comment -- GitHub does not allow self-reviews with formal approval/rejection state.)'; json.dump(d, open(sys.argv[1],'w'))" "$P"
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "$P"
    ```
 2. **Rejected inline comment** (422 naming a line or position): one finding
    pointed at a line GitHub will not accept. Strip the comments and retry so the
-   review still lands:
+   review still lands. This only removes the inline placement: `build_payload`'s
+   `body` already lists every finding's full text regardless of whether it also
+   became an inline comment, so no finding disappears from the posted review.
    ```bash
-   P="/tmp/sova-review-<PR_NUMBER>-payload.json"
+   P="${ARTIFACT_PREFIX}-payload.json"
    python3 -c "import json, sys; d=json.load(open(sys.argv[1])); d['comments']=[]; json.dump(d, open(sys.argv[1],'w'))" "$P"
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "$P"
    ```

@@ -830,6 +830,100 @@ async def test_get_edges() -> None:
     assert len(edges) == 2
 
 
+async def test_bulk_create_edges_empty_pairs_returns_zero() -> None:
+    """_bulk_create_edges() short-circuits on an empty pair list."""
+    from sova.knowledge.graph import _bulk_create_edges
+
+    assert await _bulk_create_edges([]) == 0
+
+
+async def test_bulk_create_edges_creates_edges() -> None:
+    """_bulk_create_edges() creates one edge per valid, non-duplicate pair."""
+    from sova.knowledge.graph import _bulk_create_edges, get_edges
+    from sova.knowledge.memory import store
+
+    m1 = await store(category="learning", title="A", content="A", tags=[], embedding=None)
+    m2 = await store(category="learning", title="B", content="B", tags=[], embedding=None)
+    m3 = await store(category="learning", title="C", content="C", tags=[], embedding=None)
+
+    created = await _bulk_create_edges([(m1.id, m2.id, 0.9), (m1.id, m3.id, 0.8)])
+
+    assert created == 2
+    assert len(await get_edges(m1.id)) == 2
+
+
+async def test_bulk_create_edges_skips_invalid_memory_ids() -> None:
+    """_bulk_create_edges() drops pairs referencing a nonexistent memory."""
+    from sova.knowledge.graph import _bulk_create_edges, get_edges
+
+    m1, m2 = await _create_two_memories()
+
+    created = await _bulk_create_edges([(m1.id, m2.id, 0.9), (m1.id, 99999, 0.9)])
+
+    assert created == 1
+    assert len(await get_edges(m1.id)) == 1
+
+
+async def test_bulk_create_edges_skips_existing_duplicate() -> None:
+    """_bulk_create_edges() does not re-create an edge that already exists (either direction)."""
+    from sova.knowledge.graph import _bulk_create_edges, create_edge
+
+    m1, m2 = await _create_two_memories()
+    assert await create_edge(m2.id, m1.id, relation="relates_to") is not None
+
+    created = await _bulk_create_edges([(m1.id, m2.id, 0.9)])
+
+    assert created == 0
+
+
+async def test_bulk_create_edges_dedupes_within_batch() -> None:
+    """_bulk_create_edges() only creates one edge when the same pair appears twice in the batch."""
+    from sova.knowledge.graph import _bulk_create_edges, get_edges
+
+    m1, m2 = await _create_two_memories()
+
+    created = await _bulk_create_edges([(m1.id, m2.id, 0.9), (m2.id, m1.id, 0.8)])
+
+    assert created == 1
+    assert len(await get_edges(m1.id)) == 1
+
+
+async def test_bulk_create_edges_retries_individually_on_flush_conflict() -> None:
+    """A batch flush conflict falls back to per-edge create_edge() instead of dropping the whole batch.
+
+    A concurrent writer can insert one of the batch's pairs between the
+    existence check and the flush; the old behavior discarded every valid
+    edge in the batch when that happened, not just the conflicting one.
+    """
+    from unittest.mock import patch
+
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from sova.knowledge.graph import _bulk_create_edges, get_edges
+    from sova.knowledge.memory import store
+
+    m1 = await store(category="learning", title="A", content="A", tags=[], embedding=None)
+    m2 = await store(category="learning", title="B", content="B", tags=[], embedding=None)
+    m3 = await store(category="learning", title="C", content="C", tags=[], embedding=None)
+
+    original_flush = AsyncSession.flush
+    call_count = 0
+
+    async def flaky_flush(self, *args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise IntegrityError("insert", {}, Exception("simulated conflict"))
+        return await original_flush(self, *args, **kwargs)
+
+    with patch.object(AsyncSession, "flush", flaky_flush):
+        created = await _bulk_create_edges([(m1.id, m2.id, 0.9), (m1.id, m3.id, 0.8)])
+
+    assert created == 2
+    assert len(await get_edges(m1.id)) == 2
+
+
 # ---------------------------------------------------------------------------
 # graph.py -- neighbor traversal
 # ---------------------------------------------------------------------------

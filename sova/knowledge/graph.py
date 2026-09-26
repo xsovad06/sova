@@ -195,15 +195,88 @@ async def auto_link(memory_id: int) -> list[MemoryEdge]:
     return created
 
 
+async def _bulk_create_edges(pairs: list[tuple[int, int, float]]) -> int:
+    """Create many 'relates_to' edges in a single transaction.
+
+    Unlike create_edge(), this does one existence/duplicate check for the whole
+    batch instead of one round trip per edge, since discover_edges() can produce
+    thousands of candidate pairs from a single category and a per-edge session
+    made that scale badly enough to blow the test suite's timeout under load.
+    Falls back to skipping the batch on a race with a concurrent writer, mirroring
+    create_edge()'s own "duplicate -> no-op" behavior rather than raising.
+    """
+    if not pairs:
+        return 0
+
+    ids = {mem_id for id_a, id_b, _ in pairs for mem_id in (id_a, id_b)}
+    async with await get_session() as session:
+        async with session.begin():
+            valid_result = await session.execute(select(Memory.id).where(Memory.id.in_(ids)))
+            valid_ids = set(valid_result.scalars())
+
+            existing_result = await session.execute(
+                select(MemoryEdge.source_id, MemoryEdge.target_id).where(
+                    MemoryEdge.relation == "relates_to",
+                    MemoryEdge.source_id.in_(valid_ids),
+                    MemoryEdge.target_id.in_(valid_ids),
+                )
+            )
+            seen_pairs = {frozenset((s, t)) for s, t in existing_result.all()}
+
+            created = 0
+            for id_a, id_b, weight in pairs:
+                if id_a not in valid_ids or id_b not in valid_ids:
+                    continue
+                key = frozenset((id_a, id_b))
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                session.add(MemoryEdge(source_id=id_a, target_id=id_b, relation="relates_to", weight=weight))
+                created += 1
+
+            if created == 0:
+                return 0
+
+            try:
+                await session.flush()
+            except IntegrityError:
+                await session.rollback()
+                log.info("graph.bulk_create_conflict", attempted=created, exc_info=True)
+                return await _retry_edges_individually(pairs, valid_ids)
+
+    return created
+
+
+async def _retry_edges_individually(pairs: list[tuple[int, int, float]], valid_ids: set[int]) -> int:
+    """Fall back to one create_edge() call per pair after a batch flush conflict.
+
+    create_edge() already turns a duplicate into a no-op, so retrying this way
+    salvages every valid edge in the batch except the one that actually
+    conflicted, instead of discarding the whole batch as the bulk path did.
+    """
+    created = 0
+    for id_a, id_b, weight in pairs:
+        if id_a not in valid_ids or id_b not in valid_ids:
+            continue
+        try:
+            if await create_edge(id_a, id_b, relation="relates_to", weight=weight) is not None:
+                created += 1
+        except ValueError:
+            continue
+    return created
+
+
 async def _compare_category_batch(cat_memories: list[tuple[int, list[float]]]) -> int:
     """Compare memory pairs within a single category and create edges for similar ones.
 
     Receives list of (id, embedding) tuples (primitives extracted inside session).
-    Processes in batches of _DISCOVER_BATCH_SIZE to limit per-iteration work.
+    Processes in batches of _DISCOVER_BATCH_SIZE to limit per-iteration work, and
+    writes each batch's edges in one transaction via _bulk_create_edges().
     """
     created = 0
     for batch_start in range(0, len(cat_memories), _DISCOVER_BATCH_SIZE):
         batch_end = min(batch_start + _DISCOVER_BATCH_SIZE, len(cat_memories))
+        pairs: list[tuple[int, int, float]] = []
         for i in range(batch_start, batch_end):
             id_a, emb_a = cat_memories[i]
             for j in range(i + 1, batch_end):
@@ -211,9 +284,8 @@ async def _compare_category_batch(cat_memories: list[tuple[int, list[float]]]) -
                 score = cosine_similarity(emb_a, emb_b)
                 if score < AUTO_LINK_THRESHOLD:
                     continue
-                edge = await create_edge(id_a, id_b, relation="relates_to", weight=round(score, 4))
-                if edge is not None:
-                    created += 1
+                pairs.append((id_a, id_b, round(score, 4)))
+        created += await _bulk_create_edges(pairs)
     return created
 
 
