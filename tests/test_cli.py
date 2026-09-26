@@ -134,6 +134,122 @@ class TestAppHelp:
 
 
 # ---------------------------------------------------------------------------
+# Config command
+# ---------------------------------------------------------------------------
+
+
+class TestConfigCommand:
+    """`sova config set` is the CLI half of DB-backed configuration.
+
+    Five places in docs/ told users to run it years before it existed
+    (docs/awareness-setup.md, docs/jira-configuration-guide.md); sova.toml was
+    removed in #900, so without it the documented fallback for a list-typed
+    setting was hand-editing .claude/sova.db with sqlite3.
+    """
+
+    def test_bare_config_still_shows_the_table(self) -> None:
+        """Adding the subcommand must not break `sova config`."""
+        from sova.cli.app import app
+
+        with patch("sova.cli.commands.config.load_config", return_value=ProjectConfig(github_repo="owner/repo")):
+            result = runner.invoke(app, ["config"])
+
+        assert result.exit_code == 0
+        assert "owner/repo" in result.output
+
+    def test_set_persists_through_update_config(self, tmp_path: Path) -> None:
+        from sova.cli.app import app
+
+        with patch(
+            "sova.dashboard.services.settings_service.update_config",
+            new_callable=AsyncMock,
+            return_value={"status": "ok", "key": "agent.max_budget", "value": "25"},
+        ) as mock_update:
+            result = runner.invoke(app, ["config", "set", "agent.max_budget", "25", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert mock_update.await_args.kwargs["key"] == "agent.max_budget"
+        assert mock_update.await_args.kwargs["value"] == "25"
+
+    def test_set_reports_error_and_exits_nonzero(self, tmp_path: Path) -> None:
+        from sova.cli.app import app
+
+        with patch(
+            "sova.dashboard.services.settings_service.update_config",
+            new_callable=AsyncMock,
+            return_value={"error": "Unknown setting: 'nope.nope'"},
+        ):
+            result = runner.invoke(app, ["config", "set", "nope.nope", "x", "--project", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "Unknown setting" in result.output
+
+    def test_set_writes_a_list_value(self, tmp_path: Path, monkeypatch) -> None:
+        """The end-to-end path a user follows from docs/awareness-setup.md.
+
+        The module's in-memory SOVA_DATABASE_URL is dropped here: `set` runs
+        its own asyncio.run(), whose fresh connection would get its own empty
+        in-memory database rather than the one load_config() then reads.
+        """
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+
+        from sova.cli.app import app
+        from sova.config.loader import load_config
+
+        result = runner.invoke(app, ["config", "set", "awareness.providers", "gmail, gcal", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert load_config(tmp_path).awareness.providers == ["gmail", "gcal"]
+
+    def test_set_runs_with_an_unloadable_config(self, tmp_path: Path) -> None:
+        """`sova config set` is the repair tool, so a broken config must not abort it."""
+        from sova.cli.app import app
+
+        with (
+            patch("sova.cli.app._init_llm_provider", side_effect=RuntimeError("Invalid configuration")),
+            patch(
+                "sova.dashboard.services.settings_service.update_config",
+                new_callable=AsyncMock,
+                return_value={"status": "ok", "key": "llm.provider", "value": "claude_code"},
+            ) as mock_update,
+        ):
+            result = runner.invoke(app, ["config", "set", "llm.provider", "claude_code", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert mock_update.called
+
+    def test_set_redacts_secret_value_in_output(self, tmp_path: Path) -> None:
+        """A secret setting's value must never be echoed back to the console."""
+        from sova.cli.app import app
+
+        with patch(
+            "sova.dashboard.services.settings_service.update_config",
+            new_callable=AsyncMock,
+            return_value={"status": "ok", "key": "llm.api_key", "value": "sk-super-secret-token"},
+        ):
+            result = runner.invoke(
+                app, ["config", "set", "llm.api_key", "sk-super-secret-token", "--project", str(tmp_path)]
+            )
+
+        assert result.exit_code == 0
+        assert "sk-super-secret-token" not in result.output
+        assert "llm.api_key" in result.output
+
+    def test_bare_config_reports_a_broken_config_cleanly(self) -> None:
+        """Being config-tolerant must not turn an unloadable config into a traceback."""
+        from sova.cli.app import app
+
+        with (
+            patch("sova.cli.app._init_llm_provider", side_effect=RuntimeError("Invalid configuration")),
+            patch("sova.cli.commands.config.load_config", side_effect=RuntimeError("Invalid configuration")),
+        ):
+            result = runner.invoke(app, ["config"])
+
+        assert result.exit_code == 1
+        assert "Traceback" not in result.output
+
+
+# ---------------------------------------------------------------------------
 # Dashboard command
 # ---------------------------------------------------------------------------
 

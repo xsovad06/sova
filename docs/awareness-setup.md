@@ -4,20 +4,30 @@ The awareness subsystem aggregates information from Gmail, Google Calendar, GitH
 
 ## Quick Start
 
-Set the following via `sova config set` or the dashboard settings page (shown here in TOML form):
+Configuration lives in the project database (`.claude/sova.db`), not in a file.
+Set it from the CLI, or from the dashboard settings page under "Awareness":
 
-```toml
-[awareness]
-enabled = true
-providers = ["gmail", "gcal", "pr_status", "agent_runs"]
-gmail_token_path = "/Users/<username>/.config/sova/google_token.pickle"
-gmail_lookback_hours = 24
-gcal_calendars = ["primary"]
-gcal_lookahead_hours = 36
-pr_github_user = "your-github-username"
+```bash
+sova config set awareness.enabled true
+sova config set awareness.providers "gmail, gcal, pr_status, agent_runs"
+sova config set awareness.gmail_lookback_hours 24
+sova config set awareness.gcal_calendars primary
+sova config set awareness.gcal_lookahead_hours 36
+sova config set awareness.pr_github_user your-github-username
 ```
 
-Replace `/Users/<username>` with your actual home directory path, or use the default token location at `~/.config/sova/google_token.pickle`.
+List-valued settings (`providers`, `gcal_calendars`, `gmail_ignore_labels`,
+`reminders_lists`) accept either comma-separated text as above or a JSON array
+(`'["gmail", "gcal"]'`). Both forms work in the CLI and in the dashboard.
+
+`gmail_token_path` can stay unset: it defaults to `~/.config/sova/google_token.pickle`.
+Set it only to keep the token somewhere else:
+
+```bash
+sova config set awareness.gmail_token_path /Users/<username>/.config/sova/google_token.pickle
+```
+
+Inspect what is currently stored at any time with `sova config`.
 
 Verify the result with `sova doctor`: it prints one row per configured provider (skipped entirely when `awareness.enabled` is false). A provider that is authorized and reachable shows `ok`; one whose optional dependency is missing, or that has no valid credentials yet, shows why. `sova doctor` never opens the OAuth consent browser, so run `sova briefing` for the initial authorization.
 
@@ -250,13 +260,12 @@ Projects are tracked in `~/.config/sova/projects.json`. The briefing includes PR
 
 To exclude a project from PR/agent-run aggregation:
 
-```toml
-# In that project's sova.toml
-[awareness]
-enabled = false
+```bash
+sova config set awareness.enabled false --project /path/to/project
 ```
 
-This disables awareness for that project only. Other projects still contribute to the briefing.
+This disables awareness for that project only (the setting is stored in that
+project's own database). Other projects still contribute to the briefing.
 
 ## Related Documentation
 
