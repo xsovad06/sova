@@ -571,7 +571,7 @@ Make awareness deps optional so colleagues who don't want Google integration can
 | 4.1 | `--since` flag | Parse human-readable durations, pass to providers |
 | 4.2 | Dashboard settings page | Provider enable/disable toggles, OAuth status, re-auth button |
 | 4.3 | `sova doctor` integration | Check awareness providers in doctor output |
-| 4.4 | Documentation | README section, sova.toml.default update, setup guide for colleagues |
+| 4.4 | Documentation | README section, dashboard settings reference, setup guide for colleagues |
 
 ## 14. GitHub Issues to Create
 

@@ -53,7 +53,12 @@ Ticket workflow (branch naming, PR linking, etc.) is in AGENTS.md under "Develop
 SOVA uses **database-backed configuration** (`.claude/sova.db`) instead of `sova.toml`. The migration is automatic:
 
 - **First run**: `sova install /path/to/project` creates the database
-- **Manual edits**: use `sqlite3 .claude/sova.db` (all values stored as JSON; see troubleshooting below)
+- **Read**: `sova config` prints the current values
+- **Edit**: `sova config set <key> <value>`, or the dashboard settings page. Both go through the same
+  validation, so neither can persist a value that makes `load_config()` raise. List-valued keys accept
+  a JSON array or comma-separated text: `sova config set awareness.providers "gmail, gcal"`
+- **Last resort**: `sqlite3 .claude/sova.db` (all values stored as JSON; see troubleshooting below).
+  Prefer `sova config set`, which writes valid JSON for you
 - **Environment overrides**: `SOVA_GITHUB_REPO=owner/repo` (prefix with `SOVA_`, replace dots with underscores: `SOVA_AGENT_MODEL`)
 
 ### Troubleshooting Config Load Errors
@@ -66,7 +71,12 @@ If you see "Skipping setting 'X': invalid JSON value" when running commands:
    - Numbers: `123` or `1.5` (no quotes)
    - Arrays: `["item1","item2"]`
    - Booleans: `true` or `false` (no quotes)
-3. **Fix non-JSON values**: 
+3. **Fix non-JSON values** (`sova config set` is config-tolerant, so it still works when the config
+   no longer loads):
+   ```bash
+   sova config set agent.model your-string-value
+   ```
+   Or edit the row directly:
    ```bash
    sqlite3 .claude/sova.db "UPDATE project_settings SET value = '\"your-string-value\"' WHERE key = 'agent.model';"
    ```
@@ -114,14 +124,11 @@ If you installed RTK after running `sova install`, add the hook manually to `.cl
 
 ### Configuration
 
-RTK is enabled by default in `sova.toml`:
+RTK is enabled by default. Disable hook injection during `sova install` with:
 
-```toml
-[rtk]
-enabled = true
+```bash
+sova config set rtk.enabled false
 ```
-
-Set `enabled = false` to disable RTK hook injection during `sova install`.
 
 ### Verification
 

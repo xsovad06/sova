@@ -134,6 +134,122 @@ class TestAppHelp:
 
 
 # ---------------------------------------------------------------------------
+# Config command
+# ---------------------------------------------------------------------------
+
+
+class TestConfigCommand:
+    """`sova config set` is the CLI half of DB-backed configuration.
+
+    Five places in docs/ told users to run it years before it existed
+    (docs/awareness-setup.md, docs/jira-configuration-guide.md); sova.toml was
+    removed in #900, so without it the documented fallback for a list-typed
+    setting was hand-editing .claude/sova.db with sqlite3.
+    """
+
+    def test_bare_config_still_shows_the_table(self) -> None:
+        """Adding the subcommand must not break `sova config`."""
+        from sova.cli.app import app
+
+        with patch("sova.cli.commands.config.load_config", return_value=ProjectConfig(github_repo="owner/repo")):
+            result = runner.invoke(app, ["config"])
+
+        assert result.exit_code == 0
+        assert "owner/repo" in result.output
+
+    def test_set_persists_through_update_config(self, tmp_path: Path) -> None:
+        from sova.cli.app import app
+
+        with patch(
+            "sova.dashboard.services.settings_service.update_config",
+            new_callable=AsyncMock,
+            return_value={"status": "ok", "key": "agent.max_budget", "value": "25"},
+        ) as mock_update:
+            result = runner.invoke(app, ["config", "set", "agent.max_budget", "25", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert mock_update.await_args.kwargs["key"] == "agent.max_budget"
+        assert mock_update.await_args.kwargs["value"] == "25"
+
+    def test_set_reports_error_and_exits_nonzero(self, tmp_path: Path) -> None:
+        from sova.cli.app import app
+
+        with patch(
+            "sova.dashboard.services.settings_service.update_config",
+            new_callable=AsyncMock,
+            return_value={"error": "Unknown setting: 'nope.nope'"},
+        ):
+            result = runner.invoke(app, ["config", "set", "nope.nope", "x", "--project", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "Unknown setting" in result.output
+
+    def test_set_writes_a_list_value(self, tmp_path: Path, monkeypatch) -> None:
+        """The end-to-end path a user follows from docs/awareness-setup.md.
+
+        The module's in-memory SOVA_DATABASE_URL is dropped here: `set` runs
+        its own asyncio.run(), whose fresh connection would get its own empty
+        in-memory database rather than the one load_config() then reads.
+        """
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+
+        from sova.cli.app import app
+        from sova.config.loader import load_config
+
+        result = runner.invoke(app, ["config", "set", "awareness.providers", "gmail, gcal", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert load_config(tmp_path).awareness.providers == ["gmail", "gcal"]
+
+    def test_set_runs_with_an_unloadable_config(self, tmp_path: Path) -> None:
+        """`sova config set` is the repair tool, so a broken config must not abort it."""
+        from sova.cli.app import app
+
+        with (
+            patch("sova.cli.app._init_llm_provider", side_effect=RuntimeError("Invalid configuration")),
+            patch(
+                "sova.dashboard.services.settings_service.update_config",
+                new_callable=AsyncMock,
+                return_value={"status": "ok", "key": "llm.provider", "value": "claude_code"},
+            ) as mock_update,
+        ):
+            result = runner.invoke(app, ["config", "set", "llm.provider", "claude_code", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert mock_update.called
+
+    def test_set_redacts_secret_value_in_output(self, tmp_path: Path) -> None:
+        """A secret setting's value must never be echoed back to the console."""
+        from sova.cli.app import app
+
+        with patch(
+            "sova.dashboard.services.settings_service.update_config",
+            new_callable=AsyncMock,
+            return_value={"status": "ok", "key": "llm.api_key", "value": "sk-super-secret-token"},
+        ):
+            result = runner.invoke(
+                app, ["config", "set", "llm.api_key", "sk-super-secret-token", "--project", str(tmp_path)]
+            )
+
+        assert result.exit_code == 0
+        assert "sk-super-secret-token" not in result.output
+        assert "llm.api_key" in result.output
+
+    def test_bare_config_reports_a_broken_config_cleanly(self) -> None:
+        """Being config-tolerant must not turn an unloadable config into a traceback."""
+        from sova.cli.app import app
+
+        with (
+            patch("sova.cli.app._init_llm_provider", side_effect=RuntimeError("Invalid configuration")),
+            patch("sova.cli.commands.config.load_config", side_effect=RuntimeError("Invalid configuration")),
+        ):
+            result = runner.invoke(app, ["config"])
+
+        assert result.exit_code == 1
+        assert "Traceback" not in result.output
+
+
+# ---------------------------------------------------------------------------
 # Dashboard command
 # ---------------------------------------------------------------------------
 
@@ -1546,6 +1662,198 @@ class TestDoctorHelpers:
         mock_create.assert_called_once_with("codex", codex=codex_cfg)
         assert len(checks) == 1
         assert checks[0][1] is True
+
+    async def test_check_awareness_providers_disabled(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_awareness_providers
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.awareness.enabled = False
+            checks = await _check_awareness_providers(tmp_path)
+
+        assert checks == []
+
+    async def test_check_awareness_providers_none_configured(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_awareness_providers
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.awareness.enabled = True
+            mock_cfg.return_value.awareness.providers = []
+            checks = await _check_awareness_providers(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0][0] == "awareness providers"
+        assert checks[0][1] is True
+        assert checks[0][3] is False
+
+    async def test_check_awareness_providers_healthy(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_awareness_providers
+
+        mock_provider = MagicMock()
+        mock_provider.name = "agent_runs"
+        mock_provider.health_check = AsyncMock(return_value=(True, "SOVA Agent Runs: ok"))
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.awareness.create_providers", return_value=[mock_provider]),
+        ):
+            mock_cfg.return_value.awareness.enabled = True
+            mock_cfg.return_value.awareness.providers = ["agent_runs"]
+
+            checks = await _check_awareness_providers(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0][0] == "awareness: agent_runs"
+        assert checks[0][1] is True
+        assert checks[0][3] is False
+
+    async def test_check_awareness_providers_unhealthy(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_awareness_providers
+
+        mock_provider = MagicMock()
+        mock_provider.name = "gmail"
+        mock_provider.health_check = AsyncMock(return_value=(False, "Gmail: not configured"))
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.awareness.create_providers", return_value=[mock_provider]),
+        ):
+            mock_cfg.return_value.awareness.enabled = True
+            mock_cfg.return_value.awareness.providers = ["gmail"]
+
+            checks = await _check_awareness_providers(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0][1] is False
+        assert "not configured" in checks[0][2]
+
+    async def test_check_awareness_providers_missing_dependency(self, tmp_path: Path) -> None:
+        """A configured provider absent from the registry (e.g. missing optional dep)."""
+        from sova.cli.commands.doctor import _check_awareness_providers
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.awareness.create_providers", return_value=[]),
+        ):
+            mock_cfg.return_value.awareness.enabled = True
+            mock_cfg.return_value.awareness.providers = ["gmail"]
+
+            checks = await _check_awareness_providers(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0][0] == "awareness: gmail"
+        assert checks[0][1] is False
+        assert "missing optional dependency" in checks[0][2]
+
+    async def test_check_awareness_providers_health_check_raises(self, tmp_path: Path) -> None:
+        """One provider raising must not hide the others or fail the whole check."""
+        from sova.cli.commands.doctor import _check_awareness_providers
+
+        broken = MagicMock()
+        broken.name = "gmail"
+        broken.health_check = AsyncMock(side_effect=ConnectionError("unreachable"))
+        healthy = MagicMock()
+        healthy.name = "agent_runs"
+        healthy.health_check = AsyncMock(return_value=(True, "SOVA Agent Runs: ok"))
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.awareness.create_providers", return_value=[broken, healthy]),
+        ):
+            mock_cfg.return_value.awareness.enabled = True
+            mock_cfg.return_value.awareness.providers = ["gmail", "agent_runs"]
+
+            checks = await _check_awareness_providers(tmp_path)
+
+        assert [(c[0], c[1]) for c in checks] == [
+            ("awareness: gmail", False),
+            ("awareness: agent_runs", True),
+        ]
+        assert "unreachable" in checks[0][2]
+
+    async def test_check_awareness_providers_generic_exception(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_awareness_providers
+
+        with patch("sova.config.loader.load_config", side_effect=FileNotFoundError("no config")):
+            checks = await _check_awareness_providers(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0][1] is False
+
+    async def test_check_awareness_providers_timeout_reported_as_failed_check(self, tmp_path: Path) -> None:
+        """A hung provider must time out instead of blocking `sova doctor` forever."""
+        import asyncio
+
+        from sova.cli.commands.doctor import _check_awareness_providers
+
+        async def _hangs() -> tuple[bool, str]:
+            await asyncio.sleep(999)
+            return True, "unreachable"
+
+        fake_provider = MagicMock()
+        fake_provider.name = "gmail"
+        fake_provider.health_check = _hangs
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.awareness.create_providers", return_value=[fake_provider]),
+            patch("sova.cli.commands.doctor._AWARENESS_HEALTH_CHECK_TIMEOUT", 0.05),
+        ):
+            mock_cfg.return_value.awareness.enabled = True
+            mock_cfg.return_value.awareness.providers = ["gmail"]
+
+            checks = await _check_awareness_providers(tmp_path)
+
+        assert len(checks) == 1
+        name, passed, detail, required = checks[0]
+        assert name == "awareness: gmail"
+        assert passed is False
+        assert required is False
+
+    async def test_check_awareness_providers_reports_exception_not_cancellation(self, tmp_path: Path) -> None:
+        """A BaseException branch must not swallow CancelledError as a failed check."""
+        import asyncio
+
+        from sova.cli.commands.doctor import _check_awareness_providers
+
+        async def _raises_value_error() -> tuple[bool, str]:
+            raise ValueError("boom")
+
+        async def _raises_cancelled() -> tuple[bool, str]:
+            raise asyncio.CancelledError()
+
+        provider_ok = MagicMock()
+        provider_ok.name = "gmail"
+        provider_ok.health_check = _raises_value_error
+
+        provider_cancelled = MagicMock()
+        provider_cancelled.name = "gcal"
+        provider_cancelled.health_check = _raises_cancelled
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.awareness.create_providers", return_value=[provider_ok]),
+        ):
+            mock_cfg.return_value.awareness.enabled = True
+            mock_cfg.return_value.awareness.providers = ["gmail"]
+
+            checks = await _check_awareness_providers(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0][0] == "awareness: gmail"
+        assert checks[0][1] is False
+        assert "boom" in checks[0][2]
+
+        # A CancelledError raised from health_check must propagate, not be
+        # reported as a failed check row.
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.awareness.create_providers", return_value=[provider_cancelled]),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            mock_cfg.return_value.awareness.enabled = True
+            mock_cfg.return_value.awareness.providers = ["gcal"]
+
+            await _check_awareness_providers(tmp_path)
 
 
 # ---------------------------------------------------------------------------

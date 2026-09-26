@@ -38,7 +38,9 @@ class CalendarProvider(AwarenessProvider):
             return False
 
         try:
-            creds = authenticate_google(self.config)
+            # interactive=False: a configuration probe must never open the
+            # browser consent flow (sova doctor, dashboard status panel).
+            creds = authenticate_google(self.config, interactive=False)
             if not getattr(creds, "valid", False):
                 return False
 

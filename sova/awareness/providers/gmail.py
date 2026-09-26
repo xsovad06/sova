@@ -129,7 +129,9 @@ class GmailProvider(AwarenessProvider):
             _log.debug("gmail.google_libs_missing")
             return False
         try:
-            authenticate_google(self.config)
+            # interactive=False: a configuration probe must never open the
+            # browser consent flow (sova doctor, dashboard status panel).
+            authenticate_google(self.config, interactive=False)
             return True
         except Exception:  # noqa: BLE001 (Google API client surfaces arbitrary transport and auth errors)
             _log.debug("gmail.auth_failed", exc_info=True)

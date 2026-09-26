@@ -115,10 +115,15 @@ function toggleSecret(uid) {
   if (btn) btn.setAttribute('aria-label', showing ? 'Show secret' : 'Hide secret');
 }
 
+// Lists are edited as free text (JSON array or comma-separated); the backend
+// parses either form. Objects have no single-line representation, so they stay
+// read-only until a dedicated editor exists.
+var _LIST_INPUT_HINT = 'JSON array or comma-separated, e.g. ["gmail", "gcal"] or gmail, gcal';
+
 function renderSettingRow(s) {
   var isBool = (s.value_type === 'boolean' || s.value === true || s.value === false);
-  var isStructured = (s.value_type === 'list' || s.value_type === 'object');
-  var editable = !isBool && !isStructured;
+  var isObject = (s.value_type === 'object');
+  var editable = !isBool && !isObject;
   var valHtml = formatValue(s.value, s.value_type, s.key);
   var descHtml = s.description
     ? '<div class="text-xs text-gray-600 mt-0.5">' + escapeHtml(s.description) + '</div>'
@@ -348,14 +353,24 @@ async function toggleBool(key, checked) {
   }
 }
 
+// Render a stored value as the text the edit input shows. An empty list becomes
+// an empty string so the format placeholder stays visible; every other
+// non-string value is JSON, which _cast_list()/_cast_value() parse back.
+// editConfig() and the blur no-change check must share this, or blurring an
+// untouched empty list would look like an edit and fire a pointless save.
+function _rawToInputString(raw) {
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw) && raw.length === 0) return '';
+  return JSON.stringify(raw);
+}
+
 function editConfig(key) {
   var span = document.querySelector('.config-val[data-key="' + key + '"]');
   if (!span || span.querySelector('input')) return;
 
   var currentVal;
   if (span.dataset.raw) {
-    var raw = JSON.parse(span.dataset.raw);
-    currentVal = (typeof raw === 'string') ? raw : JSON.stringify(raw);
+    currentVal = _rawToInputString(JSON.parse(span.dataset.raw));
   } else {
     currentVal = span.textContent.trim();
   }
@@ -380,6 +395,10 @@ function editConfig(key) {
   }
   input.value = currentVal;
   input.className = 'sova-input text-xs py-1';
+  if (fieldType === 'list') {
+    input.placeholder = _LIST_INPUT_HINT;
+    input.title = _LIST_INPUT_HINT;
+  }
 
   // Add datalist for model field with suggested values
   if (key === 'agent.model') {
@@ -404,8 +423,7 @@ function editConfig(key) {
   input.onblur = function() {
     if (saving) return;
     var newVal = input.value;
-    var origRaw = span.dataset.raw ? JSON.parse(span.dataset.raw) : '';
-    var origStr = (typeof origRaw === 'string') ? origRaw : JSON.stringify(origRaw);
+    var origStr = span.dataset.raw ? _rawToInputString(JSON.parse(span.dataset.raw)) : '';
     if (newVal !== origStr) {
       saving = true;
       saveConfig(key, newVal, span, input);

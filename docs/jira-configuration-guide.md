@@ -387,7 +387,8 @@ permission to track its own state correctly.
 Complete working example based on a real Jira Cloud project:
 
 ```toml
-# sova.toml
+# Settings shown in TOML form; they live in the project database.
+# Apply each with `sova config set <key> <value>`.
 
 github_repo = "org/my-project"
 github_user = "my-github-user"
