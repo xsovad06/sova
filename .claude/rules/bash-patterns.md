@@ -49,6 +49,7 @@ main "$@"
 - **readlink -f**: not available on macOS by default. Use `cd "$(dirname "$0")" && pwd` pattern instead.
 - **Arrays**: `"${arr[@]+"${arr[@]}"}"` for safe expansion of potentially empty arrays.
 - **Broken pipe with `pipefail`**: `sed ... | head -N` causes SIGPIPE when `head` closes early, which `set -o pipefail` treats as failure. Use `sed`'s quit command instead: `sed -n '...; Nq'` to limit output without a pipe.
+- **A failing command piped straight into a counter (`wc -l`) or `|| true` silently reports zero/partial instead of erroring**: `cmd | wc -l` takes the exit status of `wc -l` (always 0), not `cmd`, so a failed `gh api`/`curl`/etc. upstream of the pipe is invisible and counts as "no matches" instead of "unknown". The same masking happens with `output=$(cmd) || true`: a failure partway through a paginated call can still have printed a complete early page to stdout, and `|| true` preserves that partial output as if it were the full answer. Capture the command's own exit status explicitly (`if ! out=$(cmd); then handle-failure; fi`) before ever counting or trusting its output, especially in any decision that gates a retry cap or a cycle limit. Confirmed twice: `commands/address-pr.md`'s round-counter (PR #1082) and the docs-only CI detector (PR #1015, `.github/scripts/detect-code-changes.sh`).
 
 ## ShellCheck
 All bash scripts must pass `shellcheck` with no warnings. Common suppressions:
