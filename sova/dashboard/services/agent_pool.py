@@ -58,6 +58,10 @@ class AgentState:
     # time from AgentRuntime.create_stream_parser(). None for runtimes with no
     # per-process state (Claude Code, Aider), which parse inline instead.
     stream_parser: StreamParser | None = None
+    # Resolved once at spawn time from AgentRuntime.stream_reader_drain_timeout()
+    # when stream_parser is not None; None means the runtime declared no
+    # tuning of its own and the caller should use its own default.
+    stream_reader_drain_timeout: float | None = None
     # Set when the runtime's own stream reports a terminal failure (e.g.
     # Codex's turn.failed/error), so a nonzero exit code is never required to
     # detect it. Consumed by _wait_and_finalize() to prevent a terminal

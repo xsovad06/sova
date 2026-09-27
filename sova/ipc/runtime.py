@@ -269,6 +269,19 @@ class AgentRuntime(ABC):
         """
         return None
 
+    def stream_reader_drain_timeout(self) -> float | None:
+        """Seconds to wait for the output reader to drain a per-process parser.
+
+        Only meaningful for a runtime that overrides ``create_stream_parser()``:
+        such a runtime's terminal failure may arrive as a stream event rather
+        than an exit code, so the caller needs to know how long to wait for
+        that event to be read before giving up. Returning ``None`` (the
+        default) means this runtime has no tuning of its own and the caller
+        should fall back to its own default. Resolved once at spawn time and
+        cached on the caller's process state, not re-read on every finalize.
+        """
+        return None
+
     def transform_prompt(self, prompt: str) -> str:
         """Transform a prompt before passing to the runtime.
 
@@ -677,6 +690,9 @@ class CodexRuntime(AgentRuntime):
 
     def create_stream_parser(self) -> StreamParser:
         return CodexStreamParser()
+
+    def stream_reader_drain_timeout(self) -> float:
+        return self._config.reader_drain_timeout
 
     async def check_available(self) -> tuple[bool, str]:
         available, version_detail = await _check_cli_available("codex", "npm install -g @openai/codex")

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.models import CodexConfig
 from sova.dashboard.services.agent_context import (
     _resolve_issue_from_pr,
 )
@@ -40,9 +41,14 @@ _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 _DB_TERMINAL_POLL_INTERVAL = 30.0
 
 # Upper bound on how long finalization waits for the output reader to finish
-# draining an already-exited process. Only applies to runtimes whose failures
-# are reported through the stream (see _drain_stream_reader).
-_READER_DRAIN_TIMEOUT = 10.0
+# draining an already-exited process, used when the spawning runtime declared
+# no timeout of its own (AgentRuntime.stream_reader_drain_timeout() returned
+# None). Only applies to runtimes whose failures are reported through the
+# stream (see _drain_stream_reader). Derived from CodexConfig's own field
+# default rather than a second hardcoded literal, since Codex is currently
+# the only runtime that sets stream_reader_drain_timeout() and a config
+# default drifting from this fallback would be confusing to debug.
+_READER_DRAIN_TIMEOUT = CodexConfig.model_fields["reader_drain_timeout"].default
 
 
 async def _crash_recovery_cleanup(agent: AgentState) -> None:
@@ -324,13 +330,22 @@ async def _wait_with_terminal_check(agent: AgentState) -> int:
 
 
 def _resolve_reader_drain_timeout(agent: AgentState) -> float:
-    """Read codex.reader_drain_timeout, falling back to the module default on any config error."""
-    try:
-        from sova.config.loader import load_config
+    """Return the drain timeout resolved at spawn time, or the module default.
 
-        return load_config(agent.project_dir).codex.reader_drain_timeout
-    except Exception:  # noqa: BLE001 (a config load failure must not block finalization)
-        return _READER_DRAIN_TIMEOUT
+    ``agent.stream_reader_drain_timeout`` is set once, at spawn time, from
+    ``AgentRuntime.stream_reader_drain_timeout()`` (see sova/ipc/runtime.py) --
+    never read here from config, so finalization never blocks the event loop
+    on a TOML+DB load. ``None`` means the spawning runtime declared no tuning
+    of its own (every runtime except Codex today), so the module default
+    applies.
+    """
+    return agent.stream_reader_drain_timeout if agent.stream_reader_drain_timeout is not None else _READER_DRAIN_TIMEOUT
+
+
+def _log_if_task_failed(task: asyncio.Task, run_id: int | None) -> None:
+    """Log a completed task's exception, if any, without re-raising it."""
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        log.warning("finalize.reader_task_failed", run_id=run_id, exc_info=exc)
 
 
 async def _drain_stream_reader(agent: AgentState) -> None:
@@ -350,16 +365,21 @@ async def _drain_stream_reader(agent: AgentState) -> None:
     finalization continues on the exit code alone.
     """
     task = agent.reader_task
-    if task is None or task.done():
+    if task is None:
+        return
+    if task.done():
+        # The reader finished before we got here (e.g. it crashed before
+        # _wait_and_finalize reached this point). Still surface its
+        # exception: an already-completed task must not be treated as
+        # "nothing to check" just because there is nothing left to await.
+        _log_if_task_failed(task, agent.run_id)
         return
     timeout = _resolve_reader_drain_timeout(agent)
     done, _pending = await asyncio.wait({task}, timeout=timeout)
     if not done:
         log.warning("finalize.reader_drain_timeout", run_id=agent.run_id)
         return
-    finished_task = next(iter(done))
-    if not finished_task.cancelled() and (exc := finished_task.exception()) is not None:
-        log.warning("finalize.reader_task_failed", run_id=agent.run_id, exc_info=exc)
+    _log_if_task_failed(next(iter(done)), agent.run_id)
 
 
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:

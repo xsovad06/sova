@@ -1030,6 +1030,17 @@ class TestAgentRuntimeABC:
 
         assert AiderRuntime().create_stream_parser() is None
 
+    def test_claude_code_stream_reader_drain_timeout_defaults_to_none(self) -> None:
+        """No per-process parser: the caller falls back to its own default, no config lookup here."""
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        assert ClaudeCodeRuntime().stream_reader_drain_timeout() is None
+
+    def test_aider_stream_reader_drain_timeout_defaults_to_none(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        assert AiderRuntime().stream_reader_drain_timeout() is None
+
     def test_create_runtime_claude_code(self) -> None:
         from sova.ipc.runtime import ClaudeCodeRuntime, create_runtime
 
@@ -1709,6 +1720,16 @@ class TestCodexRuntime:
         rt = CodexRuntime()
         parser = rt.create_stream_parser()
         assert isinstance(parser, CodexStreamParser)
+
+    def test_stream_reader_drain_timeout_reads_codex_config(self) -> None:
+        """The dashboard's drain bound comes from CodexConfig, resolved via the runtime, not a
+        config lookup at finalize time.
+        """
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime(config=CodexConfig(reader_drain_timeout=42.0))
+        assert rt.stream_reader_drain_timeout() == 42.0
 
     def test_create_stream_parser_returns_a_fresh_instance_each_call(self) -> None:
         """A new instance per spawn, never the runtime's own shared ``_parser``.
