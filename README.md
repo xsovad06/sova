@@ -141,9 +141,9 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 
 ## Configuration
 
-**Note**: SOVA now uses database-backed configuration (`.claude/sova.db`). While `sova.toml` is still supported for backward compatibility during migration, new installations should use the dashboard Settings page or `SOVA_*` environment variables. See [Configuration Troubleshooting](CLAUDE.md#configuration) for details on the database format and migration.
+**Note**: SOVA uses database-backed configuration (`.claude/sova.db`). Edit it with `sova config set <key> <value>`, the dashboard Settings page, or `SOVA_*` environment variables. A legacy `sova.toml` is still read once and auto-migrated into the database if one is present. See [Configuration Troubleshooting](CLAUDE.md#configuration) for details.
 
-The legacy `sova.toml` format is shown below for reference. Minimal example (required fields only):
+The settings are shown below in TOML form for reference (this is a rendering of the stored keys, not a file SOVA writes). Minimal example (required fields only):
 
 ```toml
 github_repo = "owner/repo"
