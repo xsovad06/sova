@@ -558,11 +558,68 @@ class TestPush:
             assert "--no-verify" not in call_args
 
     async def test_rejects_empty_branch(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock):
             with pytest.raises(RuntimeError, match="branch name is empty"):
                 await push("", cwd=Path("/repo"))
 
-            mock_run.assert_not_awaited()
+    async def test_pushes_with_no_github_user_leaves_env_none(self) -> None:
+        """No github_user configured: push must inherit the ambient env
+        unchanged, matching pre-existing behavior."""
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", cwd=Path("/repo"))
+
+            assert mock_run.call_args.kwargs["env"] is None
+
+    async def test_pushes_resolves_gh_token_for_configured_user(self) -> None:
+        """A configured github_user must resolve its GH_TOKEN and forward it
+        as the push subprocess's env, so the real `git push` authenticates
+        as the same identity check_push_permission() preflighted (relevant
+        for HTTPS remotes via gh's git-credential helper, which honors
+        GH_TOKEN), instead of silently falling back to whatever ambient
+        credential resolves at push time."""
+        resolved_env = {"GH_TOKEN": "token-for-alice"}
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.resolve_gh_env", new_callable=AsyncMock, return_value=resolved_env) as mock_resolve,
+        ):
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", cwd=Path("/repo"), github_user="alice")
+
+            mock_resolve.assert_awaited_once_with("alice")
+            assert mock_run.call_args.kwargs["env"] == resolved_env
+
+    async def test_pushes_falls_back_to_ambient_env_when_token_unresolved(self) -> None:
+        """resolve_gh_env() returns None when token resolution fails (e.g.
+        the configured user was never `gh auth login`-ed here); push must
+        still proceed under the ambient identity rather than fail."""
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", cwd=Path("/repo"), github_user="alice")
+
+            assert mock_run.call_args.kwargs["env"] is None
+
+    async def test_pushes_falls_back_to_ambient_env_when_gh_not_installed(self) -> None:
+        """resolve_gh_env() raises OSError (via run()'s create_subprocess_exec)
+        when the gh binary is missing. Callers of push() only catch
+        RuntimeError, so an uncaught OSError here would crash the whole step
+        instead of letting git push through an independently configured HTTPS
+        credential helper or SSH key."""
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.resolve_gh_env", new_callable=AsyncMock, side_effect=FileNotFoundError("gh")),
+        ):
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", cwd=Path("/repo"), github_user="alice")
+
+            assert mock_run.call_args.kwargs["env"] is None
 
     async def test_pushes_with_force_and_lease_sha(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:

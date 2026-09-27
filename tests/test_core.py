@@ -1292,6 +1292,177 @@ class TestSyncStep:
         assert "user.name" in result.error
         assert result.error.startswith("Missing git config: user.name.")
 
+    async def test_fails_with_configured_user_when_push_permission_denied(self) -> None:
+        """When github_user is configured and its token was actually used for the
+        check, report that identity, not whatever gh account happens to be
+        ambient-active."""
+        from sova.core.steps.sync import SyncStep
+        from sova.utils.gh import PushPermission, PushPermissionCheck
+
+        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo", github_user="xsovad06"))
+        step = SyncStep()
+
+        with (
+            _mock_git_identity_ok(),
+            patch(
+                "sova.core.steps.sync.check_push_permission",
+                new_callable=AsyncMock,
+                return_value=PushPermissionCheck(PushPermission.DENIED, checked_as="xsovad06"),
+            ),
+            patch(
+                "sova.core.steps.sync.get_active_gh_user",
+                new_callable=AsyncMock,
+                return_value="some-other-user",
+            ) as mock_active_user,
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "xsovad06" in result.error
+        assert "some-other-user" not in result.error
+        assert "owner/repo" in result.error
+        mock_active_user.assert_not_awaited()
+
+    async def test_fails_with_active_user_when_no_user_configured(self) -> None:
+        from sova.core.steps.sync import SyncStep
+        from sova.utils.gh import PushPermission, PushPermissionCheck
+
+        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo"))
+        step = SyncStep()
+
+        with (
+            _mock_git_identity_ok(),
+            patch(
+                "sova.core.steps.sync.check_push_permission",
+                new_callable=AsyncMock,
+                return_value=PushPermissionCheck(PushPermission.DENIED, checked_as=None),
+            ),
+            patch(
+                "sova.core.steps.sync.get_active_gh_user",
+                new_callable=AsyncMock,
+                return_value="ambient-user",
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "ambient-user" in result.error
+
+    async def test_fails_with_active_user_when_configured_user_token_unresolved(self) -> None:
+        """A github_user is configured, but token resolution for it failed (e.g. that
+        account was never `gh auth login`'d on this machine), so the API call actually
+        ran under whatever account is ambient-active. The error must name that account,
+        not the configured one, since the configured identity's credentials were never
+        exercised."""
+        from sova.core.steps.sync import SyncStep
+        from sova.utils.gh import PushPermission, PushPermissionCheck
+
+        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo", github_user="xsovad06"))
+        step = SyncStep()
+
+        with (
+            _mock_git_identity_ok(),
+            patch(
+                "sova.core.steps.sync.check_push_permission",
+                new_callable=AsyncMock,
+                # checked_as=None signals token resolution for "xsovad06" failed, so the
+                # call ran under whatever account is ambient-active instead.
+                return_value=PushPermissionCheck(PushPermission.DENIED, checked_as=None),
+            ),
+            patch(
+                "sova.core.steps.sync.get_active_gh_user",
+                new_callable=AsyncMock,
+                return_value="ambient-user",
+            ) as mock_active_user,
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "ambient-user" in result.error
+        assert "xsovad06" not in result.error
+        mock_active_user.assert_awaited_once()
+
+    async def test_fails_with_unknown_account_when_nothing_resolves(self) -> None:
+        from sova.core.steps.sync import SyncStep
+        from sova.utils.gh import PushPermission, PushPermissionCheck
+
+        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo"))
+        step = SyncStep()
+
+        with (
+            _mock_git_identity_ok(),
+            patch(
+                "sova.core.steps.sync.check_push_permission",
+                new_callable=AsyncMock,
+                return_value=PushPermissionCheck(PushPermission.DENIED, checked_as=None),
+            ),
+            patch("sova.core.steps.sync.get_active_gh_user", new_callable=AsyncMock, return_value=None),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "(unknown account)" in result.error
+
+    async def test_proceeds_when_push_permission_allowed(self) -> None:
+        from sova.core.steps.sync import SyncStep
+        from sova.utils.gh import PushPermission, PushPermissionCheck
+
+        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo", base_branch="main"))
+        step = SyncStep()
+
+        with (
+            _mock_git_identity_ok(),
+            patch(
+                "sova.core.steps.sync.check_push_permission",
+                new_callable=AsyncMock,
+                return_value=PushPermissionCheck(PushPermission.ALLOWED),
+            ) as mock_check,
+            patch("sova.core.steps.sync.git_ops") as mock_ops,
+        ):
+            mock_ops.sync_branch = AsyncMock()
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_check.assert_awaited_once_with("owner/repo", github_user="", cwd=ctx.project_dir)
+
+    async def test_proceeds_when_push_permission_unknown(self) -> None:
+        from sova.core.steps.sync import SyncStep
+        from sova.utils.gh import PushPermission, PushPermissionCheck
+
+        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo", base_branch="main"))
+        step = SyncStep()
+
+        with (
+            _mock_git_identity_ok(),
+            patch(
+                "sova.core.steps.sync.check_push_permission",
+                new_callable=AsyncMock,
+                return_value=PushPermissionCheck(PushPermission.UNKNOWN),
+            ),
+            patch("sova.core.steps.sync.git_ops") as mock_ops,
+        ):
+            mock_ops.sync_branch = AsyncMock()
+            result = await step.execute(ctx)
+
+        assert result.success
+
+    async def test_skips_push_permission_check_when_no_repo(self) -> None:
+        from sova.core.steps.sync import SyncStep
+
+        ctx = _make_ctx(config=ProjectConfig(github_repo="", base_branch="main"))
+        step = SyncStep()
+
+        with (
+            _mock_git_identity_ok(),
+            patch("sova.core.steps.sync.check_push_permission", new_callable=AsyncMock) as mock_check,
+            patch("sova.core.steps.sync.git_ops") as mock_ops,
+        ):
+            mock_ops.sync_branch = AsyncMock()
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_check.assert_not_awaited()
+
 
 class TestAssessStep:
     async def test_researched_issue_passes(self) -> None:
@@ -7359,6 +7530,7 @@ class TestPushStepExecute:
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
             no_verify=False,
+            github_user=ctx.config.github_user,
         )
 
     async def test_execute_plain_push_on_first_push(self) -> None:
@@ -7387,6 +7559,7 @@ class TestPushStepExecute:
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
             no_verify=False,
+            github_user=ctx.config.github_user,
         )
 
     async def test_execute_plain_push_when_divergence_check_errors(self) -> None:
@@ -7416,6 +7589,7 @@ class TestPushStepExecute:
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
             no_verify=False,
+            github_user=ctx.config.github_user,
         )
 
     async def test_execute_force_with_lease_when_diverged(self) -> None:
@@ -7450,6 +7624,7 @@ class TestPushStepExecute:
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
             no_verify=False,
+            github_user=ctx.config.github_user,
         )
         mock_emit.assert_called_once()
         _, emit_kwargs = mock_emit.call_args
@@ -7515,6 +7690,7 @@ class TestPushStepExecute:
             set_upstream=True,
             cwd=Path("/tmp/worktree"),
             no_verify=True,
+            github_user=ctx.config.github_user,
         )
 
     async def test_execute_rejects_empty_branch_name(self) -> None:

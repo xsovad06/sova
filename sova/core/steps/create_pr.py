@@ -310,7 +310,11 @@ class CreatePRStep(BaseStep):
 
         result = await poll_until_created(_session_factory, entry_id)
         if result is None:
-            return StepResult(success=False, summary="PR creation timed out in queue")
+            return StepResult(
+                success=False,
+                summary="PR creation timed out in queue",
+                error=f"Timed out waiting for queue entry {entry_id} to be processed",
+            )
 
         from sova.db.models import PRQueueStatus
 
@@ -319,8 +323,9 @@ class CreatePRStep(BaseStep):
             ctx.pr_url = result.get("pr_url", "")
             return StepResult(success=True, summary=f"Created PR #{result['pr_number']} (throttled)")
 
-        error = result.get("error_message", "Unknown error")
-        return StepResult(success=False, summary=f"PR creation failed in queue: {error}")
+        error_message = result.get("error_message")
+        error = error_message if error_message is not None else f"Unknown error (queue entry {entry_id})"
+        return StepResult(success=False, summary=f"PR creation failed in queue: {error}", error=error)
 
     async def _try_adopt_existing_pr(self, ctx: ExecutionContext) -> StepResult | None:
         if not ctx.has_issue:
