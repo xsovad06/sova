@@ -157,7 +157,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "llm.api_key",
         "API key",
-        "API key for the anthropic provider. Stored in the database, never in sova.toml. "
+        "API key for the anthropic provider. Stored in the project database as plaintext JSON text. "
         "Leave blank to use the ANTHROPIC_API_KEY environment variable",
         "llm",
         "secret",
@@ -229,7 +229,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "agent.runtime",
         "Agent runtime",
-        "Coding agent backend to use (see sova.toml [agent] for available runtimes)",
+        "Coding agent backend that runs pipeline steps",
         "agent",
         "select",
         options=("claude-code", "aider", "codex"),
@@ -378,24 +378,21 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "pipelines.developer",
         "Developer pipeline steps",
-        "Ordered step names for the Developer pipeline. Empty falls back to the built-in default. "
-        "Edit via [pipelines] in sova.toml",
+        "Ordered step names for the Developer pipeline. Empty falls back to the built-in default",
         "pipelines",
         "list",
     ),
     SettingMeta(
         "pipelines.address_review",
         "Address-review pipeline steps",
-        "Ordered step names for the address-review pipeline. Empty falls back to the built-in default. "
-        "Edit via [pipelines] in sova.toml",
+        "Ordered step names for the address-review pipeline. Empty falls back to the built-in default",
         "pipelines",
         "list",
     ),
     SettingMeta(
         "pipelines.researcher",
         "Researcher pipeline steps",
-        "Ordered step names for the Researcher pipeline. Empty falls back to the built-in default. "
-        "Edit via [pipelines] in sova.toml",
+        "Ordered step names for the Researcher pipeline. Empty falls back to the built-in default",
         "pipelines",
         "list",
     ),

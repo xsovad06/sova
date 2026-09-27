@@ -194,6 +194,57 @@ class TestUpdateConfigIntegration:
         assert toml_file.read_text() == original
 
 
+class TestListSettingRoundTrip:
+    """A list-typed setting must survive update_config -> DB -> load_config.
+
+    The dashboard renders these fields as editable text inputs (see
+    tests/test_settings_template.py), so the value arrives as a string and
+    must come back out of load_config() as a real list. awareness.providers
+    is the concrete case: it decides which providers run, and before
+    sova.toml was removed it was only ever set by hand-editing that file.
+    """
+
+    async def test_json_array_round_trips_to_config(self, tmp_path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import update_config
+
+        result = await update_config(tmp_path, key="awareness.providers", value='["gmail", "gcal"]')
+        assert result.get("status") == "ok"
+
+        assert load_config(tmp_path).awareness.providers == ["gmail", "gcal"]
+
+    async def test_comma_separated_round_trips_to_config(self, tmp_path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import update_config
+
+        result = await update_config(tmp_path, key="awareness.providers", value="gmail, pr_status")
+        assert result.get("status") == "ok"
+
+        assert load_config(tmp_path).awareness.providers == ["gmail", "pr_status"]
+
+    async def test_emptying_a_list_persists_as_empty_list(self, tmp_path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import update_config
+
+        await update_config(tmp_path, key="awareness.providers", value="gmail")
+        result = await update_config(tmp_path, key="awareness.providers", value="")
+        assert result.get("status") == "ok"
+
+        assert load_config(tmp_path).awareness.providers == []
+
+    async def test_list_is_stored_as_json_not_a_bare_string(self, tmp_path) -> None:
+        """A bare string in a list column makes every load_config() for the project raise."""
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+
+        await update_config(tmp_path, key="awareness.providers", value="gmail, gcal")
+
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "awareness.providers")
+        assert db_value == ["gmail", "gcal"]
+
+
 class TestCrossFieldValidation:
     """A save must never persist a value that makes load_config() raise.
 
