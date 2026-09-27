@@ -61,6 +61,25 @@ async def test_is_configured_with_valid_credentials(mock_auth, _mock_build, awar
 @pytest.mark.asyncio
 @patch("sova.awareness.providers.gcal.build")
 @patch("sova.awareness.providers.gcal.authenticate_google")
+async def test_is_configured_never_starts_consent_flow(
+    mock_auth, _mock_build, awareness_config: AwarenessConfig
+) -> None:
+    """A probe (sova doctor, dashboard status) must not open the browser."""
+    from sova.awareness.providers.gcal import CalendarProvider
+
+    mock_creds = MagicMock()
+    mock_creds.valid = True
+    mock_creds.scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
+    mock_auth.return_value = mock_creds
+
+    await CalendarProvider(awareness_config).is_configured()
+
+    assert mock_auth.call_args.kwargs["interactive"] is False
+
+
+@pytest.mark.asyncio
+@patch("sova.awareness.providers.gcal.build")
+@patch("sova.awareness.providers.gcal.authenticate_google")
 async def test_is_configured_with_missing_credentials(
     mock_auth, _mock_build, awareness_config: AwarenessConfig
 ) -> None:

@@ -126,6 +126,18 @@ async def test_is_configured_auth_fails(mock_auth: MagicMock, gmail_provider: Gm
     assert await gmail_provider.is_configured() is False
 
 
+@pytest.mark.asyncio
+@patch("sova.awareness.providers.gmail._HAS_GOOGLE", True)
+@patch("sova.awareness.providers.gmail.authenticate_google")
+async def test_is_configured_never_starts_consent_flow(mock_auth: MagicMock, gmail_provider: GmailProvider) -> None:
+    """A probe (sova doctor, dashboard status) must not open the browser."""
+    mock_auth.return_value = MagicMock()
+
+    await gmail_provider.is_configured()
+
+    assert mock_auth.call_args.kwargs["interactive"] is False
+
+
 # ---------------------------------------------------------------------------
 # fetch_items()
 # ---------------------------------------------------------------------------

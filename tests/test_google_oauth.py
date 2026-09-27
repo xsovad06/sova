@@ -221,6 +221,50 @@ def test_new_flow_when_no_token(awareness_config: AwarenessConfig, token_path: P
 
 
 # ---------------------------------------------------------------------------
+# Non-interactive probe (sova doctor, provider health checks)
+# ---------------------------------------------------------------------------
+
+
+def test_non_interactive_never_starts_consent_flow(
+    awareness_config: AwarenessConfig, token_path: Path, creds_path: Path
+) -> None:
+    """A credential probe must raise rather than open the browser."""
+    with (
+        patch(f"{_MOD}._load_token", return_value=None),
+        patch(f"{_MOD}.InstalledAppFlow") as mock_flow_cls,
+        pytest.raises(FileNotFoundError, match="sova briefing"),
+    ):
+        authenticate_google(
+            awareness_config,
+            token_path=token_path,
+            credentials_path=creds_path,
+            interactive=False,
+        )
+
+    mock_flow_cls.from_client_secrets_file.assert_not_called()
+
+
+def test_non_interactive_returns_valid_cached_token(
+    awareness_config: AwarenessConfig, token_path: Path, creds_path: Path
+) -> None:
+    """An already-authorized machine still resolves without the flow."""
+    creds = _make_creds(valid=True)
+
+    with (
+        patch(f"{_MOD}._load_token", return_value=creds),
+        patch(f"{_MOD}.InstalledAppFlow", MagicMock()),
+    ):
+        result = authenticate_google(
+            awareness_config,
+            token_path=token_path,
+            credentials_path=creds_path,
+            interactive=False,
+        )
+
+    assert result is creds
+
+
+# ---------------------------------------------------------------------------
 # Token directory auto-creation (_save_token)
 # ---------------------------------------------------------------------------
 
