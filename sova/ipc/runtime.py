@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from pathlib import Path
+from typing import Protocol
 
 from sova.config.models import CodexConfig, ProjectConfig
 from sova.ipc.codex import CodexStreamParser
@@ -182,6 +183,19 @@ async def _spawn_agent_process(
     return AgentProcess(proc)
 
 
+class StreamParser(Protocol):
+    """A stateful parser scoped to one spawned process's output stream.
+
+    Matches ``CodexStreamParser.parse_line``'s shape exactly, so that class
+    satisfies this protocol without any adapter. A runtime whose output
+    format needs per-process state (a thread/session id, a terminal-event
+    latch) implements ``AgentRuntime.create_stream_parser()`` to hand the
+    caller a fresh instance instead of parsing through a shared one.
+    """
+
+    def parse_line(self, line: str) -> StreamEvent | None: ...
+
+
 class AgentRuntime(ABC):
     """Abstract interface for coding agent backends.
 
@@ -241,6 +255,19 @@ class AgentRuntime(ABC):
         Callers must skip a None rather than read it as end-of-stream.
         """
         ...
+
+    def create_stream_parser(self) -> StreamParser | None:
+        """Create a fresh stateful parser scoped to one spawned process.
+
+        The caller (the dashboard's output reader) invokes this once per
+        spawn and keeps the returned parser on that process's own state,
+        never sharing it with another concurrent agent. Returning ``None``
+        (the default) means this runtime's output format carries no
+        per-process state, so a caller falls back to ``parse_output()``
+        (or its own inline parsing) for every runtime that does not
+        override this.
+        """
+        return None
 
     def transform_prompt(self, prompt: str) -> str:
         """Transform a prompt before passing to the runtime.
@@ -570,13 +597,12 @@ class CodexRuntime(AgentRuntime):
     ever making a model request.
 
     ``parse_output()`` delegates to a ``CodexStreamParser`` held on this
-    runtime object, which maps Codex's JSONL lifecycle events onto
-    ``StreamEvent`` / ``LLMResult``. That parser is stateful and this
-    runtime is a module-level singleton (``get_runtime()``), so the
-    instance here is a single-stream convenience only: anyone wiring Codex
-    into the dashboard's stream tailer must construct one parser per
-    spawned process instead of reusing it. ``sova/ipc/codex.py`` documents
-    why that is latent today and what the follow-up must do.
+    runtime object. That parser is stateful and this runtime is a
+    module-level singleton (``get_runtime()``), so ``parse_output()`` is a
+    single-stream convenience only, unsafe to use for two concurrent Codex
+    agents. ``create_stream_parser()`` is what the dashboard's stream tailer
+    actually calls; ``sova/ipc/codex.py`` documents both the parser's own
+    semantics and why a fresh instance per spawned process is required.
 
     Parity gap tracked by epic #940, not yet closed here: the prompt does
     not carry ``_HEADLESS_PREAMBLE`` (which is written for Claude Code and
@@ -648,6 +674,9 @@ class CodexRuntime(AgentRuntime):
 
     def parse_output(self, line: str) -> StreamEvent | None:
         return self._parser.parse_line(line)
+
+    def create_stream_parser(self) -> StreamParser:
+        return CodexStreamParser()
 
     async def check_available(self) -> tuple[bool, str]:
         available, version_detail = await _check_cli_available("codex", "npm install -g @openai/codex")

@@ -178,6 +178,11 @@ class CodexConfig(BaseSettings):
     # spawn surface must never grant Codex unrestricted filesystem/network
     # access.
     sandbox: Literal["read-only", "workspace-write"] = "workspace-write"
+    # Upper bound (seconds) on how long dashboard finalization waits for the
+    # output reader to drain a Codex process's terminal JSONL event after
+    # exit, before falling back to the exit code alone. See
+    # sova/dashboard/services/agent_finalize.py:_drain_stream_reader.
+    reader_drain_timeout: float = Field(10.0, gt=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CODEX_")
 

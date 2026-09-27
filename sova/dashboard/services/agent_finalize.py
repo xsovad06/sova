@@ -39,6 +39,11 @@ _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 
 _DB_TERMINAL_POLL_INTERVAL = 30.0
 
+# Upper bound on how long finalization waits for the output reader to finish
+# draining an already-exited process. Only applies to runtimes whose failures
+# are reported through the stream (see _drain_stream_reader).
+_READER_DRAIN_TIMEOUT = 10.0
+
 
 async def _crash_recovery_cleanup(agent: AgentState) -> None:
     """Clean up branch and issue state when merge succeeded but agent crashed."""
@@ -318,6 +323,45 @@ async def _wait_with_terminal_check(agent: AgentState) -> int:
             return rc if rc is not None else -1
 
 
+def _resolve_reader_drain_timeout(agent: AgentState) -> float:
+    """Read codex.reader_drain_timeout, falling back to the module default on any config error."""
+    try:
+        from sova.config.loader import load_config
+
+        return load_config(agent.project_dir).codex.reader_drain_timeout
+    except Exception:  # noqa: BLE001 (a config load failure must not block finalization)
+        return _READER_DRAIN_TIMEOUT
+
+
+async def _drain_stream_reader(agent: AgentState) -> None:
+    """Wait for the output reader to finish consuming an exited process's output.
+
+    Only meaningful for runtimes with a per-process stream parser (Codex),
+    whose terminal failure arrives as a JSONL event rather than as an exit
+    code. The reader tails the output file on a poll interval, so that event
+    (the last line written before the process exits) is normally still unread
+    when ``process.wait()`` returns. Reading ``agent.stream_failure`` without
+    waiting would therefore observe ``None`` in the ordinary case and let a
+    stream-reported failure finalize as success.
+
+    The reader is never cancelled here: it terminates on its own once the
+    process has exited and the output is drained, and cancelling it would
+    discard captured output. A drain that overruns the bound is logged and
+    finalization continues on the exit code alone.
+    """
+    task = agent.reader_task
+    if task is None or task.done():
+        return
+    timeout = _resolve_reader_drain_timeout(agent)
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        log.warning("finalize.reader_drain_timeout", run_id=agent.run_id)
+        return
+    finished_task = next(iter(done))
+    if not finished_task.cancelled() and (exc := finished_task.exception()) is not None:
+        log.warning("finalize.reader_task_failed", run_id=agent.run_id, exc_info=exc)
+
+
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     """Wait for the process to exit, then finalize the DB record."""
     from sova.dashboard.services.agent_handoff import _process_auto_handoff
@@ -344,6 +388,24 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                         pass
         raise
     run_id = agent.run_id
+
+    # A runtime stream parser (e.g. Codex's) may report a terminal failure
+    # event (turn.failed/error) through the JSONL stream rather than through
+    # the exit code. The reader has to have consumed that event before it can
+    # be read here, so drain it first; see _drain_stream_reader.
+    if agent.stream_parser is not None:
+        await _drain_stream_reader(agent)
+
+    # Only act when the exit code alone would otherwise report success: a
+    # nonzero exit code already finalizes as "failed" below, and re-acting
+    # here would double-report the same failure.
+    if agent.stream_failure and exit_code == 0:
+        log.warning(
+            "finalize.stream_reported_failure",
+            run_id=run_id,
+            detail=agent.stream_failure,
+        )
+        exit_code = 1
 
     status = "done" if exit_code == 0 else "failed"
 

@@ -20,6 +20,7 @@ from sova.utils.logging import get_logger
 if TYPE_CHECKING:
     from sova.dashboard.services.output_service import OutputWriter
     from sova.ipc.control import AgentProcess, FileAgentProcess
+    from sova.ipc.runtime import StreamParser
     from sova.monitoring.collector import ResourceCollector
     from sova.monitoring.writer import ResourceWriter
 
@@ -53,6 +54,18 @@ class AgentState:
     resource_collector: ResourceCollector | None = None
     resource_writer: ResourceWriter | None = None
     resource_flush_task: asyncio.Task | None = None
+    # Per-process runtime stream parser (e.g. CodexStreamParser), set at spawn
+    # time from AgentRuntime.create_stream_parser(). None for runtimes with no
+    # per-process state (Claude Code, Aider), which parse inline instead.
+    stream_parser: StreamParser | None = None
+    # Set when the runtime's own stream reports a terminal failure (e.g.
+    # Codex's turn.failed/error), so a nonzero exit code is never required to
+    # detect it. Consumed by _wait_and_finalize() to prevent a terminal
+    # stream failure from ever finalizing as success.
+    stream_failure: str | None = None
+    # Runtime-reported session/thread id (e.g. Codex's thread id), recorded
+    # for diagnostics only. Never implies a turn was resumed.
+    runtime_session_id: str | None = None
 
 
 @dataclass
