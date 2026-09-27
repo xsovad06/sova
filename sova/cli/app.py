@@ -7,12 +7,12 @@ from typing import Annotated, Optional
 
 import typer
 from rich.console import Console
-from rich.table import Table
 
 import sova
 from sova.cli.commands.admin import cleanup, costs, status
 from sova.cli.commands.briefing import briefing
 from sova.cli.commands.commands import app as commands_app
+from sova.cli.commands.config import config_app
 from sova.cli.commands.doctor import doctor
 from sova.cli.commands.harden import harden
 from sova.cli.commands.mcp import app as mcp_app
@@ -53,6 +53,9 @@ app.command(name="maintain-pr")(maintain_pr)
 app.command(name="review-pr")(review_pr)
 app.command(name="learn-from-pr")(learn_from_pr)
 
+# Configuration
+app.add_typer(config_app, name="config")
+
 # Migration
 app.command(name="migrate-config")(migrate_config)
 
@@ -83,8 +86,9 @@ console = Console(stderr=True)
 
 # Commands that must still run when the project config is unloadable. `sova
 # doctor` exists to diagnose exactly that state and already reports config
-# failures as failed checks rather than crashing.
-_CONFIG_TOLERANT_COMMANDS = frozenset({"doctor"})
+# failures as failed checks rather than crashing; `sova config set` is how the
+# operator repairs the offending key, so it must not be aborted by it either.
+_CONFIG_TOLERANT_COMMANDS = frozenset({"doctor", "config"})
 
 
 def _init_llm_provider() -> None:
@@ -124,31 +128,6 @@ def main(
             typer.echo(f"Continuing: 'sova {ctx.invoked_subcommand}' runs without an LLM provider.", err=True)
             return
         raise typer.Exit(code=1) from exc
-
-
-@app.command()
-def config(
-    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
-) -> None:
-    """Show the current configuration."""
-    cfg = load_config(project)
-    table = Table(title="SOVA Configuration", show_header=True)
-    table.add_column("Setting", style="cyan")
-    table.add_column("Value", style="green")
-
-    table.add_row("github_repo", cfg.github_repo or "(not set)")
-    table.add_row("github_user", cfg.github_user or "(not set)")
-    table.add_row("base_branch", cfg.base_branch)
-    table.add_row("task_source", cfg.task_source.type)
-    table.add_row("agent.model", cfg.agent.model)
-    table.add_row("agent.max_budget", str(cfg.agent.max_budget))
-    table.add_row("review.enabled", str(cfg.review.enabled))
-    table.add_row("review.max_rounds", str(cfg.review.max_rounds))
-    table.add_row("roles.default", cfg.roles.default)
-    table.add_row("commit.format", cfg.commit.format)
-    table.add_row("triage.auto_label", str(cfg.triage.auto_label))
-
-    console.print(table)
 
 
 @app.command(name="init-db")

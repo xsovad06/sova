@@ -188,13 +188,21 @@ def authenticate_google(
     *,
     token_path: Path | None = None,
     credentials_path: Path | None = None,
+    interactive: bool = True,
 ) -> Credentials:
     """Authenticate with Google APIs and return a Credentials object.
 
     Checks for an existing token, refreshes if expired, or runs the
     browser-based OAuth consent flow when no valid token is available.
 
-    Raises FileNotFoundError if the credentials JSON is missing.
+    Pass interactive=False from read-only credential checks (provider
+    health checks, `sova doctor`, the dashboard provider status panel):
+    the browser consent flow opens a local server and blocks until the
+    user authorizes, which must never happen behind a diagnostic call.
+    A FileNotFoundError is raised instead when no usable token exists.
+
+    Raises FileNotFoundError if the credentials JSON is missing, or if
+    no usable token exists and interactive is False.
     Raises ValueError if a token path is outside allowed directories.
     """
     if InstalledAppFlow is None:
@@ -217,5 +225,8 @@ def authenticate_google(
         refreshed = _try_refresh_expired_token(creds, resolved_token)
         if refreshed is not None:
             return refreshed
+
+    if not interactive:
+        raise FileNotFoundError(f"No usable Google token at {resolved_token}. Run `sova briefing` to authorize.")
 
     return _run_oauth_flow(resolved_creds, resolved_token)

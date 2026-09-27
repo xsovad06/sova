@@ -25,6 +25,11 @@ console = Console(stderr=True)
 # Type alias for check tuples: (name, passed, detail, required)
 _Check = tuple[str, bool, str, bool]
 
+# Bounds each awareness provider health check so a single hung provider
+# (e.g. a stalled Gmail or Calendar network call) can't block `sova doctor`
+# indefinitely.
+_AWARENESS_HEALTH_CHECK_TIMEOUT = 15
+
 
 def doctor(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
@@ -51,6 +56,7 @@ async def _doctor(project: Path | None) -> None:
     checks.extend(await _check_llm_provider(project_dir))
     checks.extend(await _check_ollama(project_dir))
     checks.extend(await _check_agent_runtime(project_dir))
+    checks.extend(await _check_awareness_providers(project_dir))
 
     _render_results(checks)
 
@@ -347,6 +353,60 @@ async def _check_agent_runtime(project_dir: Path) -> list[_Check]:
         checks.append((_LABEL, available, f"{runtime_type}: {detail}", True))
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
         checks.append((_LABEL, False, str(exc)[:80], False))
+    return checks
+
+
+async def _check_awareness_providers(project_dir: Path) -> list[_Check]:
+    """Check configured awareness provider health (Gmail, Calendar, etc.).
+
+    Skipped entirely when awareness.enabled is false, so projects that
+    don't use the subsystem see no noise. A provider name in config that
+    isn't in the registry (e.g. its optional dependency isn't installed)
+    is reported separately from providers that instantiated but can't
+    reach their source.
+    """
+    checks: list[_Check] = []
+    try:
+        from sova.awareness import create_providers
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        if not cfg.awareness.enabled:
+            return checks
+
+        if not cfg.awareness.providers:
+            checks.append(("awareness providers", True, "no providers configured", False))
+            return checks
+
+        providers = create_providers(cfg.awareness)
+        found_names = {p.name for p in providers}
+        for name in cfg.awareness.providers:
+            if name not in found_names:
+                detail = "unavailable: unknown name, missing optional dependency, or init failed"
+                checks.append((f"awareness: {name}", False, detail, False))
+
+        # Concurrent with per-provider isolation, mirroring
+        # dashboard/services/awareness_service.py:get_provider_statuses(). Each
+        # check is time-boxed so one hung provider (e.g. a stalled Gmail or
+        # Calendar network call) can't block `sova doctor` indefinitely.
+        results = await asyncio.gather(
+            *(asyncio.wait_for(p.health_check(), timeout=_AWARENESS_HEALTH_CHECK_TIMEOUT) for p in providers),
+            return_exceptions=True,
+        )
+        for provider, result in zip(providers, results):
+            if isinstance(result, BaseException):
+                # Only report real failures as a check row; KeyboardInterrupt/
+                # CancelledError must keep propagating, not be swallowed as a
+                # provider health failure.
+                if not isinstance(result, Exception):
+                    raise result
+                detail = str(result) or type(result).__name__
+                checks.append((f"awareness: {provider.name}", False, detail[:80], False))
+                continue
+            ok, detail = result
+            checks.append((f"awareness: {provider.name}", ok, detail, False))
+    except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
+        checks.append(("awareness providers", False, str(exc)[:80], False))
     return checks
 
 
