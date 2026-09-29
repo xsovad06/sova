@@ -1716,3 +1716,91 @@ class TestDriftCLI:
             commands_app, ["backport", "standup.md", "--kind", "invalid", "--project", str(project_root)]
         )
         assert result.exit_code == 1
+
+
+class TestSymlinkedEntriesAreNeverWrittenThrough:
+    """A symlinked installed entry must not send the render to the link's target.
+
+    Path.write_text follows symlinks, so a project that shares a command via a
+    symlink into ~/.claude/commands (the pattern _copy2_skip_identical in
+    sova/git/worktree.py documents) had that shared file silently overwritten by
+    any install or sync, with the symlink left pointing at corrupted content and
+    the manifest recording the write as successful. Issue #1094.
+    """
+
+    def test_install_leaves_the_link_target_untouched(self, canonical_dir: Path, target_dir: Path) -> None:
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        shared = target_dir.parent / "shared-develop.md"
+        shared.write_text("SHARED GLOBAL COMMAND\n", encoding="utf-8")
+        (target_dir / "develop.md").symlink_to(shared)
+
+        install_commands(canonical_dir, target_dir, ProjectConfig(lint_cmd="ruff check ."))
+
+        assert shared.read_text(encoding="utf-8") == "SHARED GLOBAL COMMAND\n"
+
+    def test_install_replaces_the_symlink_with_a_regular_file(self, canonical_dir: Path, target_dir: Path) -> None:
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        shared = target_dir.parent / "shared-develop.md"
+        shared.write_text("SHARED GLOBAL COMMAND\n", encoding="utf-8")
+        (target_dir / "develop.md").symlink_to(shared)
+
+        install_commands(canonical_dir, target_dir, ProjectConfig(lint_cmd="ruff check ."))
+
+        installed = target_dir / "develop.md"
+        assert not installed.is_symlink()
+        assert "ruff check ." in installed.read_text(encoding="utf-8")
+
+    def test_replacement_is_logged(self, canonical_dir: Path, target_dir: Path) -> None:
+        """Undoing a deliberate symlink must not be silent."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        shared = target_dir.parent / "shared-develop.md"
+        shared.write_text("SHARED GLOBAL COMMAND\n", encoding="utf-8")
+        (target_dir / "develop.md").symlink_to(shared)
+
+        with patch("sova.commands.distribution.log.warning") as mock_warning:
+            install_commands(canonical_dir, target_dir, ProjectConfig())
+
+        events = [call.args[0] for call in mock_warning.call_args_list if call.args]
+        assert "commands.symlink_replaced" in events
+
+    def test_update_leaves_the_link_target_untouched(self, canonical_dir: Path, target_dir: Path) -> None:
+        """The update path writes too, so it needs the same guard as install."""
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(lint_cmd="ruff check .")
+        install_commands(canonical_dir, target_dir, cfg)
+
+        # Re-point an installed, manifest-tracked entry at a shared file, then
+        # change canonical so the update actually rewrites it.
+        shared = target_dir.parent / "shared-develop.md"
+        shared.write_text("SHARED GLOBAL COMMAND\n", encoding="utf-8")
+        installed = target_dir / "develop.md"
+        installed.unlink()
+        installed.symlink_to(shared)
+        (canonical_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Develop a feature.\n---\n\nUpdated: `{{ lint_cmd }}`.\n",
+            encoding="utf-8",
+        )
+
+        update_commands(canonical_dir, target_dir, cfg, force=True)
+
+        assert shared.read_text(encoding="utf-8") == "SHARED GLOBAL COMMAND\n"
+
+    def test_regular_file_write_is_unchanged(self, canonical_dir: Path, target_dir: Path) -> None:
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        (target_dir / "develop.md").write_text("stale content\n", encoding="utf-8")
+
+        install_commands(canonical_dir, target_dir, ProjectConfig(lint_cmd="ruff check ."))
+
+        assert "ruff check ." in (target_dir / "develop.md").read_text(encoding="utf-8")

@@ -95,6 +95,33 @@ class ListResult:
     local: list[ListEntry] = field(default_factory=list)
 
 
+def _write_rendered(target_path: Path, rendered: str) -> None:
+    """Write *rendered* to *target_path*, never through a symlink.
+
+    ``Path.write_text`` follows symlinks, so an installed entry that is a symlink
+    sent the render to the link's target instead of into the target directory.
+    Projects do symlink commands to share them (see ``_copy2_skip_identical`` in
+    ``sova/git/worktree.py``, which documents a command "kept in sync across
+    projects via a symlink into ``~/.claude/commands``"), and those shared files
+    were silently overwritten by any install or sync, with the symlink left in
+    place pointing at corrupted content and the manifest recording success.
+
+    Unlinking first guarantees the write lands inside the target directory. The
+    entry becomes a regular file, so the sharing is undone rather than honoured;
+    that is logged, since the alternative is destroying a file the caller never
+    named. Issue #1094.
+    """
+    if target_path.is_symlink():
+        try:
+            resolved = target_path.resolve()
+        except OSError:
+            resolved = target_path
+        log.warning("commands.symlink_replaced", path=str(target_path), pointed_at=str(resolved))
+        target_path.unlink()
+
+    target_path.write_text(rendered, encoding="utf-8")
+
+
 def _install_files(
     source_files: list[tuple[str, Path]],
     target_dir: Path,
@@ -112,7 +139,7 @@ def _install_files(
 
         target_path = target_dir / filename
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(rendered, encoding="utf-8")
+        _write_rendered(target_path, rendered)
         hashes[filename] = file_hash(rendered)
         result.installed += 1
 
@@ -157,7 +184,7 @@ def _update_files(
 
         if manifest_entry is None:
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(rendered, encoding="utf-8")
+            _write_rendered(target_path, rendered)
             update_manifest(target_dir, filename, new_hash)
             result.updated += 1
             continue
@@ -199,7 +226,7 @@ def _update_files(
                 continue
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(rendered, encoding="utf-8")
+        _write_rendered(target_path, rendered)
         update_manifest(target_dir, filename, new_hash)
         result.updated += 1
 
