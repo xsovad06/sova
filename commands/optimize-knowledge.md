@@ -21,35 +21,35 @@ Focus: $ARGUMENTS
 
 Auto-discover all knowledge layers. Read every file found.
 
-**Layer 1 -- Shared knowledge** (cross-project):
+**Layer 1: Shared knowledge** (cross-project):
 ```bash
 ls ~/.claude/shared-knowledge/*.md 2>/dev/null
 ```
 
-**Layer 2 -- Project rules** (stable patterns):
+**Layer 2: Project rules** (stable patterns):
 ```bash
 ls .claude/rules/*.md 2>/dev/null
 ```
 
-**Layer 3 -- Agent memory** (accumulated learnings):
+**Layer 3: Agent memory** (accumulated learnings):
 ```bash
 ls .claude/agent-memory/*.md 2>/dev/null
 ```
 
-**Layer 4 -- Auto-memory** (user preferences, feedback, project state):
+**Layer 4: Auto-memory** (user preferences, feedback, project state):
 ```bash
 # Find the project memory directory
 find ~/.claude/projects/ -maxdepth 2 -name "MEMORY.md" -path "*/memory/*" 2>/dev/null
 # Then list all files in that directory
 ```
 
-**Layer 5 -- Skills/commands**:
+**Layer 5: Skills/commands**:
 ```bash
 ls .claude/commands/*.md 2>/dev/null
 ls ~/.claude/commands/*.md 2>/dev/null
 ```
 
-**Layer 6 -- Project instructions**:
+**Layer 6: Project instructions**:
 ```bash
 cat CLAUDE.md 2>/dev/null | head -5
 ```
@@ -74,13 +74,13 @@ For each skill:
 For each knowledge entry:
 - **Is it still true?** Verify claims about file paths, function names, branch names against current code.
 - **Is it too specific?** One-time fixes that will never recur don't belong in long-term memory.
-- **Is it duplicated?** Same lesson in multiple layers -- consolidate to the most appropriate layer.
+- **Is it duplicated?** Same lesson in multiple layers, so consolidate to the most appropriate layer.
 
 #### 2c. Layer health
 
 Check each layer for:
 - **Size**: agent-memory files should be under 200 lines each. Project memories should be concise.
-- **Empty stubs**: files with just a header and no content -- delete them.
+- **Empty stubs**: files with just a header and no content, so delete them.
 - **Orphaned references**: MEMORY.md links to files that don't exist.
 
 ### Phase 3: Report
@@ -91,7 +91,7 @@ Organize findings into three sections:
 
 For each finding:
 - Which skill to modify
-- What to add/change (be specific -- include the text)
+- What to add/change (be specific and include the text)
 - Which knowledge source backs this up
 - Expected impact (prevents bug class / improves consistency / removes friction)
 
@@ -127,9 +127,9 @@ If `$ARGUMENTS` specifies a focus area (e.g., "skills only", "cleanup only", "sp
 
 ## Rules
 
-- Do NOT delete knowledge without verifying it's obsolete -- check current code
-- Do NOT bloat skills with boilerplate -- keep additions concise and actionable
+- Do NOT delete knowledge without verifying it's obsolete: check current code
+- Do NOT bloat skills with boilerplate: keep additions concise and actionable
 - Prioritize by real impact, not completeness
 - The goal is better Claude output, not more documentation
-- Present findings before making changes -- never auto-implement
+- Present findings before making changes: never auto-implement
 - NEVER use emojis in any output
