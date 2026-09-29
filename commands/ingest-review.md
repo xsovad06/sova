@@ -29,14 +29,14 @@ Parse structured review findings from TaskRun records and update agent memory.
    # Find the reviewer run's handoff data
    python3 -c "
    import asyncio, json, os
-   os.environ.setdefault('SOVA_DATABASE_URL', 'sqlite+aiosqlite://.claude/sova.db')
+   os.environ.setdefault('SOVA_DATABASE_URL', 'sqlite+aiosqlite:///.claude/sova.db')
    from sova.db.session import init_db, get_session
    from sova.db.models import TaskRun
    from sqlalchemy import select
 
    async def main():
        await init_db(run_migrations=False)
-       async with get_session() as session:
+       async with await get_session() as session:
            stmt = select(TaskRun).where(
                TaskRun.pr_number == <PR_NUMBER>,
                TaskRun.role.in_(['reviewer', 'command:review-pr']),
