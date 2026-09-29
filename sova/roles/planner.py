@@ -125,7 +125,7 @@ class PlannerRole(AgentRole):
             vision=vision or "(no VISION.md found)",
         )
 
-        # Invoke LLM
+        # Invoke LLM (no explicit timeout: inherits cfg.llm.cli_timeout via _resolve_timeout())
         try:
             from sova.llm.client import invoke
 
@@ -134,7 +134,6 @@ class PlannerRole(AgentRole):
                 task_type="planner",
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 10,
-                timeout=180,
             )
             ctx.add_cost(result.cost_usd)
         except Exception as exc:  # noqa: BLE001 (LLM failure is reported as a failed RoleResult, not a crash)

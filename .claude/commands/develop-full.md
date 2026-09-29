@@ -41,7 +41,7 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
    - If found with `Status: draft`: warn the user: "Draft spec exists at {filename} but is not approved. Run `/spec {issue}` to review and approve it, or proceed without spec guidance." Wait for user confirmation before continuing.
    - If not found: continue silently. Specs are optional -- not every task needs one.
 7. Identify which module(s) this work touches and read relevant source code.
-8. **Check current branch** -- if on main/master, create a feature branch before developing:
+8. **Check current branch**: if on main/master, create a feature branch before developing:
    ```bash
    BRANCH=$(git branch --show-current)
    if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
@@ -56,7 +56,7 @@ Follow the `/develop` command workflow:
 1. **Write tests first** -- define expected behavior before implementation.
 2. **Implement the solution** -- follow existing codebase conventions.
 3. **Scout check** -- for every file touched, fix pre-existing issues you notice (failing tests, lint warnings, dead code, obvious bugs). Keep fixes small and low-risk.
-4. **Run the full CI-equivalent checks**: `{{ check_cmd }}`. This covers linting, tests, formatting, invariants, and any other CI checks.
+4. **Run the full CI-equivalent checks**: `make check`. This covers linting, tests, formatting, invariants, and any other CI checks.
 5. If any check fails, fix and re-run (up to 3 attempts).
 
 ### Phase 2: Self-Review

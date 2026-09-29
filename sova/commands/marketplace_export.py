@@ -82,6 +82,37 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
         "Read the project's own config file, if present, to check `[task_source] type`.",
     ),
     (re.compile(r"Check `sova\.toml` for"), "Check the project's own config file, if present, for"),
+    # Commands outside SELECTED_COMMANDS do not ship with the plugin, so an
+    # instruction naming one is a dead end for a standalone user. Rewrite each to
+    # describe the action instead. `/verify-local` needs no entry: the canonical
+    # text already guards it with "If the project has a `/verify-local` command"
+    # and "Skip if no `/verify-local` command exists".
+    (
+        re.compile(r"Run the `/review-pr` workflow against this PR to review the actual diff that will be merged:"),
+        "Review the actual diff that will be merged, as a senior engineer would:",
+    ),
+    (
+        re.compile(r"Execute the full `/review-pr` analysis \(fetch diff, read files, deep analysis\)"),
+        "Fetch the diff, read every changed file, and analyse it deeply",
+    ),
+    (re.compile(r"Run the `/address-pr` workflow to fix the findings:"), "Fix the findings:"),
+    (re.compile(r"Status: ready for /integrate-pr"), "Status: ready to merge"),
+    (
+        re.compile(r"Run `/review` or `/review-full` to catch issues before pushing"),
+        "Run `/review` to catch issues before pushing",
+    ),
+    (
+        re.compile(r"`/develop-full` -> `/review-full` -> `/pr` -> `/integrate-pr`"),
+        "`/develop` -> `/review` -> `/pr`",
+    ),
+    (
+        re.compile(r"Run `/integrate-pr` for merge, cleanup, and knowledge extraction"),
+        "merge the PR, delete the branch, and capture anything learned",
+    ),
+    (
+        re.compile(r"NEVER merge the PR: that happens via `/integrate-pr` or `/approve-merge`"),
+        "NEVER merge the PR yourself unless the user explicitly asks",
+    ),
 ]
 
 

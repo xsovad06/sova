@@ -118,7 +118,6 @@ class GenerateTasksStep(BaseStep):
                 task_type=ctx.routing_task_type(self.TASK_TYPE),
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 5,
-                timeout=180,
             )
             ctx.add_usage(result)
         except Exception as exc:  # noqa: BLE001 (any LLM or transport failure becomes a failed StepResult)

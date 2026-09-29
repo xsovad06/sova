@@ -5644,7 +5644,7 @@ class TestPlannerRole:
         ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
 
         mock_result = LLMResult(text=llm_response, model="test", cost_usd=Decimal("0.01"))
-        with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
+        with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)) as mock_invoke:
             role = PlannerRole()
             result = await role.execute(ctx)
 
@@ -5652,6 +5652,26 @@ class TestPlannerRole:
         assert "2 tasks" in result.summary
         assert len(result.findings) == 2
         assert "feat(cli): add health check command" in result.findings[0]
+        assert "timeout" not in mock_invoke.call_args.kwargs
+
+    async def test_execute_passes_no_explicit_timeout_regardless_of_configured_value(self) -> None:
+        from unittest.mock import patch
+
+        from sova.config.models import LLMConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.planner import PlannerRole
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.return_value = []
+        config = ProjectConfig(llm=LLMConfig(cli_timeout=1800))
+        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="", config=config)
+
+        mock_result = LLMResult(text="[]", model="test", cost_usd=Decimal("0.005"))
+        with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)) as mock_invoke:
+            role = PlannerRole()
+            await role.execute(ctx)
+
+        assert "timeout" not in mock_invoke.call_args.kwargs
 
     async def test_execute_empty_response(self) -> None:
         from unittest.mock import patch

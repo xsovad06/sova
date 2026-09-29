@@ -32,18 +32,26 @@ finding must reference concrete code, files, or patterns in THIS codebase.
 ### Step 1: Staleness check
 
 Before generating a new audit, check if `docs/HEALTH-AUDIT.md` already exists.
-If it does, read the `audit-tracker` comment and check issue status:
+If it does, read the `audit-tracker` comment and check issue status. Fetch the
+complete set of open issues, not just the first page: `gh issue list`
+defaults to 30 results, and a tracked issue past that default would be
+misread as closed:
 
 ```bash
-gh issue list --state open --json number --jq '.[].number'
+gh issue list --state open --limit 1000 --json number --jq '.[].number'
 ```
 
 Compare against the tracked issue numbers:
 - **All issues closed** -> delete the file, inform the user that the previous
-  audit cycle is complete, then proceed with the new audit.
+  audit cycle is complete, then proceed with the new audit as a **full audit**.
 - **Some issues still open** -> warn the user that N issues from the previous
-  audit are still open, list them, and ask whether to proceed with a fresh
-  audit (which will overwrite) or abort.
+  audit are still open, list them, and ask the user to choose one of:
+  - **Full audit**: overwrite the prior report with a fresh full analysis.
+  - **Incremental audit**: re-analyze only areas changed since the last audit,
+    preserving still-open findings for unchanged areas.
+  - **Abort**.
+
+  Record the chosen mode (`full` or `incremental`): Step 4 depends on it.
 
 ### Step 2: Discover the project
 
@@ -85,31 +93,39 @@ grep -rc "def test_" tests/ apps/*/tests/ 2>/dev/null | awk -F: '{s+=$2} END {pr
 
 ### Step 3: Run checks
 
-Run the project's test and lint commands to verify current health. Discover
-the right commands by checking `Makefile`, `package.json` scripts, or CI
-config. Common commands by project type:
-- Python: `make check`, or `make test` + `make lint`
-- Node: `npm test` + `npm run lint`
-- Rust: `cargo test` + `cargo clippy`
+Run the project's test and lint commands to verify current health:
+- `make test` for tests
+- `make lint` for linting
+- `make check` for a single CI-equivalent target, when the project has one
+
+If those targets do not exist, discover the real commands from `Makefile`,
+`package.json` scripts, or CI config. Typical shapes by ecosystem:
+- Node: `npm test` plus `npm run lint`
+- Rust: `cargo test` plus `cargo clippy`
+- Go: `go test ./...` plus `golangci-lint run`
 
 ### Step 4: Incremental mode check
 
-If a previous `docs/HEALTH-AUDIT.md` exists and the user chose to proceed
-(Step 1), determine which areas changed since the last audit:
+Use the mode recorded in Step 1. A previous `docs/HEALTH-AUDIT.md` existing is
+not itself sufficient to select incremental mode: the user may have chosen
+a full audit specifically to overwrite it.
+
+For **incremental audits** (user explicitly chose incremental in Step 1),
+determine which areas changed since the last audit:
 
 ```bash
 # Find the commit closest to the last audit date (from the file header)
 git log --after="<last-audit-date>" --oneline --stat | head -100
 ```
 
-For **incremental audits**:
 - Re-analyze only modules/apps with changes since the last audit date.
 - Preserve findings for unchanged areas from the previous report if they are
   still open issues.
 - Still produce the full scorecard and executive summary (these reflect current state).
 
-For **full audits** (no previous audit, or user chose to overwrite):
-- Proceed with Step 5 as a full analysis.
+For **full audits** (no previous audit, all previous issues closed, or the
+user explicitly chose to overwrite):
+- Proceed with Step 5 as a full analysis, ignoring any prior report.
 
 ### Step 5: Parallel codebase walk
 
@@ -180,9 +196,9 @@ After the agents complete (or partially fail):
 
 1. **Collect** all findings from the completed agents. If any agent failed,
    note the gap and continue with available results.
-2. **Deduplicate** -- findings may overlap (e.g., both Agent A and Agent B flag
+2. **Deduplicate**: findings may overlap (e.g., both Agent A and Agent B flag
    the same god file). Merge duplicates, keeping the most detailed evidence.
-3. **Verify** -- spot-check 5-10 key findings with targeted `grep`, `wc -l`, or
+3. **Verify**: spot-check 5-10 key findings with targeted `grep`, `wc -l`, or
    `Read` commands. Confirm file sizes, line counts, missing indexes, etc.
    Discard any finding that cannot be verified.
 4. **Score** the 10 dimensions based on verified findings and strengths.
