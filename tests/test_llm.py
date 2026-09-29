@@ -1155,9 +1155,19 @@ class TestTaskTypeKeys:
 
 class TestResolveTaskTypeModel:
     def test_unrouted_task_type_keeps_model(self) -> None:
+        """No cfg passed: the sentinel path loads config, finds no route, keeps the model.
+
+        ``load_config`` is patched rather than left to resolve on its own. Without
+        the patch this reads whatever ``.claude/sova.db`` the cwd resolves to, so a
+        developer with ``llm.routing.triage`` configured got that route back and the
+        assertion failed while CI passed (issue #1092). The patch keeps the
+        ``_CFG_UNSET`` loading branch under test without depending on the machine.
+        """
+        from sova.config.models import ProjectConfig
         from sova.llm.client import _resolve_task_type_model
 
-        assert _resolve_task_type_model("opus", "triage") == "opus"
+        with patch("sova.config.loader.load_config", return_value=ProjectConfig()):
+            assert _resolve_task_type_model("opus", "triage") == "opus"
 
     def test_no_task_type_returns_model(self) -> None:
         from sova.llm.client import _resolve_task_type_model
