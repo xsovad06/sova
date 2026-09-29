@@ -23,7 +23,7 @@ If unclear, check `git diff --name-only` to see which modules have changes.
 
 ### Step 2: Run Linter
 
-Run the project's lint command: `{{ lint_cmd }}`
+Run the project's lint command: `make lint`
 
 If linter fails:
 - Analyze the errors
@@ -32,7 +32,7 @@ If linter fails:
 
 ### Step 3: Run Tests
 
-Run the project's test command: `{{ test_cmd }}`
+Run the project's test command: `make test`
 
 If tests fail:
 - Analyze the test failures
