@@ -228,13 +228,14 @@ class TestGenerateTasksStep:
         ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test summary"))
 
         step = GenerateTasksStep()
-        with patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=llm_result):
+        with patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke:
             result = await step.execute(ctx)
 
         assert result.success
         assert len(ctx.plan_result.proposed_tasks) == 2
         assert ctx.plan_result.proposed_tasks[0].title == "feat(cli): add export command"
         assert result.cost_usd == Decimal("0.01")
+        assert all("timeout" not in call.kwargs for call in mock_invoke.call_args_list)
 
     @pytest.mark.asyncio
     async def test_generate_tags_task_type_and_suppresses_it_during_fallback(self) -> None:
