@@ -54,7 +54,7 @@ class TestFallbackModelPassthrough:
         """ClaudeCodeProvider should include --fallback-model flag when fallback_model is provided."""
         from sova.llm.providers.claude_code import _build_args
 
-        args = _build_args("test prompt", model="opus", fallback_model="sonnet")
+        args = _build_args(model="opus", fallback_model="sonnet")
 
         assert "--model" in args
         assert "opus" in args
@@ -65,7 +65,7 @@ class TestFallbackModelPassthrough:
         """ClaudeCodeProvider should NOT include --fallback-model flag when fallback_model is None."""
         from sova.llm.providers.claude_code import _build_args
 
-        args = _build_args("test prompt", model="opus", fallback_model=None)
+        args = _build_args(model="opus", fallback_model=None)
 
         assert "--model" in args
         assert "opus" in args

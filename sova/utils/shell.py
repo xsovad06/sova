@@ -19,6 +19,13 @@ log = get_logger(component="shell")
 # delays beyond ~1s indicate uninterruptible kernel I/O (e.g., deleted mount).
 _KILL_TIMEOUT_SECONDS = 5
 
+# Bounds the stdin write for long-lived spawns (write_stdin_and_close). A
+# stall here would mean the child is not reading stdin at all, since it
+# needs the prompt before it can produce any output; the timeout exists so
+# such a CLI build degrades to a logged warning instead of hanging the
+# spawn path forever.
+_STDIN_WRITE_TIMEOUT_SECONDS = 30
+
 
 @dataclass
 class ShellResult:
@@ -107,6 +114,59 @@ async def run(
         log.debug("shell.failed", cmd=args[0], returncode=proc.returncode, stderr=stderr[:200])
 
     return ShellResult(returncode=proc.returncode or 0, stdout=stdout, stderr=stderr)
+
+
+async def write_stdin_and_close(proc: asyncio.subprocess.Process, data: str) -> None:
+    """Write ``data`` to a long-lived subprocess's stdin, then close it (EOF).
+
+    For spawn paths that keep the process handle alive for streaming (unlike
+    ``run()``, which pipes stdin through ``communicate()`` in one shot).
+    Encodes as UTF-8 and awaits ``drain()`` (never a bare ``write()``, which
+    would truncate or hang on a prompt larger than the pipe buffer) under a
+    bounded timeout.
+
+    A missing ``proc.stdin`` (inherited stdin, or a test double with none
+    configured) is a no-op. Delivery cannot be confirmed complete on a
+    broken pipe or a drain timeout: the child is killed and reaped (mirroring
+    ``run()``'s own timeout handling above) rather than left running on a
+    truncated prompt, and the failure is only logged, not raised, so the
+    caller's existing exit-code/stderr handling (the killed child now exits
+    non-zero) still produces the real diagnostic. Cancellation of the
+    awaiting task is different: the child is killed and reaped the same way,
+    but ``CancelledError`` is always re-raised (never swallowed), since the
+    caller has not yet received a process wrapper to track or clean it up
+    otherwise.
+    """
+    if proc.stdin is None:
+        return
+    try:
+        async with asyncio.timeout(_STDIN_WRITE_TIMEOUT_SECONDS):
+            proc.stdin.write(data.encode("utf-8"))
+            await proc.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        log.warning("shell.stdin_write_broken_pipe", pid=getattr(proc, "pid", None), exc_info=True)
+        await _kill_and_reap(proc)
+    except TimeoutError:
+        log.warning("shell.stdin_write_timeout", pid=getattr(proc, "pid", None), exc_info=True)
+        await _kill_and_reap(proc)
+    except asyncio.CancelledError:
+        await _kill_and_reap(proc)
+        raise
+    finally:
+        proc.stdin.close()
+
+
+async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort kill+wait for a child whose stdin delivery could not be confirmed."""
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return
+    try:
+        async with asyncio.timeout(_KILL_TIMEOUT_SECONDS):
+            await proc.wait()
+    except TimeoutError:
+        log.warning("shell.stdin_kill_timeout", pid=getattr(proc, "pid", None))
 
 
 async def run_checked(

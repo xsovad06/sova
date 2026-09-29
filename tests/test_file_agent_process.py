@@ -9,6 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from sova.ipc.control import ExitClassification
 
 
+def _stdin_mock() -> MagicMock:
+    """A stdin mock shaped like a real StreamWriter: write/close are sync, drain is async."""
+    stdin = MagicMock()
+    stdin.drain = AsyncMock()
+    return stdin
+
+
 class TestFileAgentProcessInit:
     def test_stores_file_paths(self, tmp_path: Path) -> None:
         from sova.ipc.control import FileAgentProcess
@@ -353,6 +360,7 @@ class TestRuntimeFileOutput:
         mock_proc = AsyncMock()
         mock_proc.pid = 42
         mock_proc.returncode = None
+        mock_proc.stdin = _stdin_mock()
 
         rt = ClaudeCodeRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
@@ -378,6 +386,7 @@ class TestRuntimeFileOutput:
         mock_proc.returncode = None
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
 
         rt = ClaudeCodeRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc):
@@ -445,6 +454,7 @@ class TestRuntimeFileOutput:
         mock_proc = AsyncMock()
         mock_proc.pid = 42
         mock_proc.returncode = None
+        mock_proc.stdin = _stdin_mock()
 
         rt = ClaudeCodeRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc):

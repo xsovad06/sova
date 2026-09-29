@@ -12,13 +12,14 @@ from pathlib import Path
 # Aliased to the provider's historical name: imported as `_build_args` by
 # tests/test_llm.py and tests/test_model_fallback_cli.py.
 from sova.llm.cli_args import build_claude_cli_args as _build_args
+from sova.llm.cli_args import write_system_prompt_file
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import LLMInvocationError, classify_error
 from sova.llm.models import CostSource, LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider, ProviderCapabilities
 from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
-from sova.utils.shell import ShellResult, run
+from sova.utils.shell import ShellResult, run, write_stdin_and_close
 
 log = get_logger(component="llm.provider.claude_code")
 
@@ -69,18 +70,28 @@ class ClaudeCodeProvider(LLMProvider):
         system_prompt: str | None = None,
         max_tokens: int | None = None,
     ) -> LLMResult:
-        args = _build_args(
-            prompt,
-            model=model,
-            fallback_model=fallback_model,
-            max_budget_usd=max_budget_usd,
-            output_format="json",
-            system_prompt=system_prompt,
-        )
+        system_prompt_path = write_system_prompt_file(system_prompt) if system_prompt else None
+        try:
+            args = _build_args(
+                model=model,
+                fallback_model=fallback_model,
+                max_budget_usd=max_budget_usd,
+                output_format="json",
+                system_prompt_file=system_prompt_path,
+            )
 
-        log.info("llm.invoke", model=model, prompt_len=len(prompt))
+            log.info("llm.invoke", model=model, prompt_len=len(prompt))
 
-        result = await run(*args, cwd=cwd, timeout=timeout, env=scrub_agent_env(passthrough=configured_passthrough()))
+            result = await run(
+                *args,
+                cwd=cwd,
+                timeout=timeout,
+                env=scrub_agent_env(passthrough=configured_passthrough()),
+                stdin=prompt,
+            )
+        finally:
+            if system_prompt_path is not None:
+                system_prompt_path.unlink(missing_ok=True)
 
         # Try to parse output first - Claude CLI may exit 1 for fallback warnings
         # but still produce valid JSON output. Only attempt this when stderr is empty
@@ -411,14 +422,17 @@ async def _start_streaming_process(
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
 ) -> asyncio.subprocess.Process:
-    args = _build_args(prompt, model=model, max_budget_usd=max_budget_usd, output_format="stream-json")
+    args = _build_args(model=model, max_budget_usd=max_budget_usd, output_format="stream-json")
 
     log.info("llm.stream", model=model, prompt_len=len(prompt))
 
-    return await asyncio.create_subprocess_exec(
+    proc = await asyncio.create_subprocess_exec(
         *args,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
         env=scrub_agent_env(passthrough=configured_passthrough()),
     )
+    await write_stdin_and_close(proc, prompt)
+    return proc
