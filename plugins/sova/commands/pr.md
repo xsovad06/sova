@@ -167,15 +167,15 @@ These phases run after the PR is created/updated. They enable autonomous operati
     - **CI still pending after max wait**: report current status and the PR URL. Suggest the user check back later.
 
 16. **Self-review the PR diff**:
-    Run the `/review-pr` workflow against this PR to review the actual diff that will be merged:
+    Review the actual diff that will be merged, as a senior engineer would:
     1. Fetch the PR number from the branch
-    2. Execute the full `/review-pr` analysis (fetch diff, read files, deep analysis)
+    2. Fetch the diff, read every changed file, and analyse it deeply
     3. Post the review on GitHub
     4. If the verdict has no findings >= 3/10: skip step 17, go to step 18
     5. If there are findings >= 3/10: continue to step 17
 
 17. **Address review findings**:
-    Run the `/address-pr` workflow to fix the findings:
+    Fix the findings:
     1. Score and address each finding (fix or acknowledge)
     2. Commit fixes
     3. Reply to review comments on GitHub
@@ -191,21 +191,21 @@ These phases run after the PR is created/updated. They enable autonomous operati
     PR: <url>
     CI: passed (attempt N)
     Review: approved / N findings addressed
-    Status: ready for /integrate-pr
+    Status: ready to merge
     ```
 
 ## Cross-References
 
-- **Before this**: Run `/review` or `/review-full` to catch issues before pushing
-- **Full workflow**: `/develop-full` -> `/review-full` -> `/pr` -> `/integrate-pr`
-- **After merge**: Run `/integrate-pr` for merge, cleanup, and knowledge extraction
+- **Before this**: Run `/review` to catch issues before pushing
+- **Full workflow**: `/develop` -> `/review` -> `/pr`
+- **After merge**: merge the PR, delete the branch, and capture anything learned
 - **Need to reorganize commits first?** Run `/rearrange-commits`
 
 ## Rules
 
 - If the branch has no commits ahead of main and no uncommitted changes, inform the user
 - All commits on the branch will be analyzed to generate the PR description
-- NEVER merge the PR: that happens via `/integrate-pr` or `/approve-merge`
+- NEVER merge the PR yourself unless the user explicitly asks
 - Use `--force-with-lease` for force pushes, never `--force`
 - NEVER skip CI checks or use `--no-verify`
 - If CI fails 3 times, stop and ask the user for guidance
