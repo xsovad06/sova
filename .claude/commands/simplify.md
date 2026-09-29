@@ -38,7 +38,7 @@ For each changed file, read the **entire file** and check:
 Apply each simplification directly. After changes, verify tests still pass:
 
 ```bash
-{{ check_cmd }}
+make check
 ```
 
 If a simplification is risky, skip it -- only apply safe, clear improvements.

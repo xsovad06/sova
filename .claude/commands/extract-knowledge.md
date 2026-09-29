@@ -60,7 +60,7 @@ Before writing anything:
 ### 4. Write Knowledge
 
 **For `.claude/rules/*.md` (Tier 1):**
-- Follow the existing structure and formatting of the target file. Write concise entries with bold labels, then the lesson. These are always loaded -- keep entries actionable and specific to this project.
+- Follow the existing structure and formatting of the target file. Write concise entries with bold labels, then the lesson. These are always loaded, so keep entries actionable and specific to this project.
 
 **For `.claude/agent-memory/` (Tier 2):**
 - One line per pattern -- bold label, then the lesson

@@ -114,7 +114,7 @@ Create a pull request for the current branch using the project's standard PR tem
    - If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), include `Closes #42` in the body
 
 8. **Run preflight CI checks locally** before pushing:
-   Run the full CI-equivalent checks: `the project's CI-equivalent check command (see its Makefile, package.json scripts, or CI config)`. This must pass before any push: it covers linting, tests, formatting, invariants, and any other checks the CI pipeline enforces. Fix any failures before proceeding.
+   Run the full CI-equivalent checks: `the project's CI-equivalent check command (see its Makefile, package.json scripts, or CI config)`. This must pass before any push; it covers linting, tests, formatting, invariants, and any other checks the CI pipeline enforces. Fix any failures before proceeding.
 
 9. **Push the branch**:
    - New PR: `git push -u origin $(git branch --show-current)`
@@ -144,11 +144,61 @@ Create a pull request for the current branch using the project's standard PR tem
 
 12. **Return the PR URL** to the user.
 
+### Post-Push: CI + Self-Review
+
+These phases run after the PR is created/updated. They enable autonomous operation (push-to-ready-to-merge in one command).
+
+13. **Visual verification** (if applicable):
+    If the project has a `/verify-local` command AND changes affect UI (templates, CSS, JS, views, but not test-only or migration-only), follow the `/verify-local` procedure. If verification reveals issues, fix them, commit the fix (amend into the relevant commit or add a new commit), and push (`git push --force-with-lease`) before proceeding to step 14: otherwise CI runs against the old commit and step 16 reviews a diff that doesn't contain the fix. Skip if no `/verify-local` command exists.
+
+14. **Wait for CI pipeline**:
+    Capture the commit CI must validate, then poll until a run for that exact
+    commit appears and completes: `--limit 1` alone can return an unrelated
+    or stale run (another workflow, or the new run not yet registered):
+    ```bash
+    HEAD_SHA=$(git rev-parse HEAD)
+    gh run list --branch $(git branch --show-current) --json databaseId,status,conclusion,headSha,workflowName --jq --arg sha "$HEAD_SHA" '[.[] | select(.headSha == $sha)]'
+    ```
+    If `gh run watch` is available, use it against the matched run's `databaseId`. Otherwise poll every 30 seconds until a run matching `$HEAD_SHA` appears and completes. Max wait: 15 minutes.
+
+15. **Handle CI result**:
+    - **CI passes**: continue to step 16.
+    - **CI fails**: fetch logs (`gh run view <run_id> --log-failed`), analyze, fix, amend to the relevant commit, force push (`--force-with-lease`), go back to step 14 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
+    - **CI still pending after max wait**: report current status and the PR URL. Suggest the user check back later.
+
+16. **Self-review the PR diff**:
+    Run the `/review-pr` workflow against this PR to review the actual diff that will be merged:
+    1. Fetch the PR number from the branch
+    2. Execute the full `/review-pr` analysis (fetch diff, read files, deep analysis)
+    3. Post the review on GitHub
+    4. If the verdict has no findings >= 3/10: skip step 17, go to step 18
+    5. If there are findings >= 3/10: continue to step 17
+
+17. **Address review findings**:
+    Run the `/address-pr` workflow to fix the findings:
+    1. Score and address each finding (fix or acknowledge)
+    2. Commit fixes
+    3. Reply to review comments on GitHub
+    4. Resolve threads
+    5. Force push: `git push --force-with-lease`
+    6. Wait for CI again (go back to step 14 logic, max 3 total CI cycles across the entire run)
+
+18. **Report**:
+    ```
+    ## PR Summary
+
+    Branch: <branch>
+    PR: <url>
+    CI: passed (attempt N)
+    Review: approved / N findings addressed
+    Status: ready for /integrate-pr
+    ```
+
 ## Cross-References
 
-- **Before this**: Run `/review` to catch issues before pushing
-- **Full workflow**: `/develop-full` includes this as the final step
-- **After merge**: Run `/after-merge` for cleanup
+- **Before this**: Run `/review` or `/review-full` to catch issues before pushing
+- **Full workflow**: `/develop-full` -> `/review-full` -> `/pr` -> `/integrate-pr`
+- **After merge**: Run `/integrate-pr` for merge, cleanup, and knowledge extraction
 - **Need to reorganize commits first?** Run `/rearrange-commits`
 
 ## Rules
@@ -158,6 +208,7 @@ Create a pull request for the current branch using the project's standard PR tem
 - NEVER merge the PR: that happens via `/integrate-pr` or `/approve-merge`
 - Use `--force-with-lease` for force pushes, never `--force`
 - NEVER skip CI checks or use `--no-verify`
+- If CI fails 3 times, stop and ask the user for guidance
 - Do NOT ask for or request reviewers: the user handles reviews themselves
 - NEVER include AI references in commits or PRs
 - NEVER use emojis in any output

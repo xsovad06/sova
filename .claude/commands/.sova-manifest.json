@@ -2,15 +2,19 @@
   "version": 1,
   "commands": {
     "address-pr.md": {
-      "hash": "c21a234370149e88",
+      "hash": "d557998381e3368c",
       "managed": true
     },
     "after-merge.md": {
-      "hash": "417632ed910f1dd7",
+      "hash": "b1464e7140ce29a8",
       "managed": true
     },
     "agent-readiness.md": {
       "hash": "672e8477a151f44c",
+      "managed": true
+    },
+    "audit-instructions.md": {
+      "hash": "21269b1b559266a5",
       "managed": true
     },
     "debug.md": {
@@ -22,15 +26,15 @@
       "managed": true
     },
     "develop-full.md": {
-      "hash": "a160f79990b481d7",
+      "hash": "30843251442debf5",
       "managed": true
     },
     "develop.md": {
-      "hash": "9e6b242648e7a924",
+      "hash": "4d3f799d7f783be2",
       "managed": true
     },
     "extract-knowledge.md": {
-      "hash": "76c19d7b76c1b820",
+      "hash": "55c7ff39ce7f93ee",
       "managed": true
     },
     "find-task.md": {
@@ -38,15 +42,15 @@
       "managed": true
     },
     "health-audit.md": {
-      "hash": "bb57ae7d2936f806",
+      "hash": "1fc9e2bacdccf840",
       "managed": true
     },
     "ingest-review.md": {
-      "hash": "e9aef78ed5b133d2",
+      "hash": "45c1ec15104549df",
       "managed": true
     },
     "integrate-pr.md": {
-      "hash": "c0ef3a5b2397232f",
+      "hash": "713e5a5eb7fca168",
       "managed": true
     },
     "issue.md": {
@@ -58,27 +62,39 @@
       "managed": true
     },
     "optimize-knowledge.md": {
-      "hash": "80f37a791824a2b3",
+      "hash": "a036a9552fa690ea",
       "managed": true
     },
     "pr.md": {
-      "hash": "65e6eb74261d8a4f",
+      "hash": "48519f597bcf5258",
       "managed": true
     },
     "rearrange-commits.md": {
-      "hash": "635bafd1fe2fd4f4",
+      "hash": "649f7adbe1a585c2",
+      "managed": true
+    },
+    "research.md": {
+      "hash": "18b0c79685eaf1a6",
       "managed": true
     },
     "review-full.md": {
-      "hash": "6db9d94aae527d21",
+      "hash": "55cefed4f1cb024b",
       "managed": true
     },
     "review-pr.md": {
-      "hash": "95a364d666e3b7f6",
+      "hash": "e9ea0e7e8e76259b",
       "managed": true
     },
     "review.md": {
-      "hash": "31e9b7661bf2394b",
+      "hash": "3b5f579bfc71ecda",
+      "managed": true
+    },
+    "simplify.md": {
+      "hash": "e2a36b55e86ca1ee",
+      "managed": true
+    },
+    "spec.md": {
+      "hash": "aee08a4cd3ee7f2a",
       "managed": true
     },
     "standup.md": {
@@ -90,27 +106,11 @@
       "managed": true
     },
     "test.md": {
-      "hash": "4830d5ab4f7fe129",
+      "hash": "4078cf1be5bb0054",
       "managed": true
     },
     "update-docs.md": {
       "hash": "d36d8e26e79f87d4",
-      "managed": true
-    },
-    "spec.md": {
-      "hash": "f9377c8521702037",
-      "managed": true
-    },
-    "research.md": {
-      "hash": "2ef7bef3717d6370",
-      "managed": true
-    },
-    "simplify.md": {
-      "hash": "f9fae2f288fa89c3",
-      "managed": true
-    },
-    "audit-instructions.md": {
-      "hash": "21269b1b559266a5",
       "managed": true
     }
   }

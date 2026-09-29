@@ -15,9 +15,16 @@ Parse structured review findings from TaskRun records and update agent memory.
 
 ## Instructions
 
-1. Get the PR number from `$ARGUMENTS`. If empty, ask the user.
+1. Get the PR number from `$ARGUMENTS`. If empty, ask the user. **Validate it
+   is a positive integer before using it anywhere below**: reject non-numeric
+   input and ask the user to clarify rather than passing raw argument text
+   into generated code. `<PR_NUMBER>` in every snippet in this command means
+   this validated integer, never the raw `$ARGUMENTS` text.
 
-2. Query the database for reviewer TaskRun records linked to this PR:
+2. Query the database for reviewer TaskRun records linked to this PR. Substitute
+   the validated integer for `<PR_NUMBER>`: it becomes part of a Python
+   expression evaluated via `python3 -c`, so unvalidated text here is a code
+   injection risk, not just a bad query:
    ```bash
    # Find the reviewer run's handoff data
    python3 -c "
@@ -55,13 +62,17 @@ Parse structured review findings from TaskRun records and update agent memory.
    - `description`: what the issue is
    - `suggestion`: how to fix it
 
-5. Also fetch external review comments (CodeRabbit, human reviewers):
+5. Also fetch external review comments (CodeRabbit, human reviewers). Review
+   bodies and inline (line-anchored) comments come from two different sources:
+   `gh pr view` only returns top-level review bodies, and inline comments must
+   be fetched separately via the PR review-comments API:
    ```bash
-   gh pr view <PR_NUMBER> --json reviews,comments --jq '.reviews[] | {author: .author.login, state: .state, body: .body}'
+   gh pr view <PR_NUMBER> --json reviews,comments --jq '.reviews[] | {author: .author.login, state: .state, body: .body}, .comments[] | {author: .author.login, body: .body}'
+   gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/comments --jq '.[] | {author: .user.login, path: .path, line: .line, body: .body}'
    ```
 
 6. Classify findings into memory categories:
-   - **Severity >= 7**: likely a "common_mistake" -- check `.claude/agent-memory/cookbook.md` for existing entries
+   - **Severity >= 7**: likely a "common_mistake", so check `.claude/agent-memory/cookbook.md` for existing entries
    - **Severity 4-6 with "style" or "naming" category**: "style preference"
    - **Repeated patterns across findings**: "review pattern" worth codifying
    - **Test-related findings**: "test coverage gap"

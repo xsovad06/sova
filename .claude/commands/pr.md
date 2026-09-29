@@ -20,7 +20,7 @@ Create a pull request for the current branch using the project's standard PR tem
    - **Stash any uncommitted changes first** (if any): `git stash push -m "Pre-rebase stash"`
    - **Fetch latest**: `git fetch origin`
    - **Update local main**: `git checkout main && git pull origin main` (adjust branch name if project uses `master`)
-   - **Check for local-only main commits**: `git rev-list --count origin/main..main` -- if non-zero, warn the user: "local main is N commits ahead of origin/main -- these will leak into PR scope. Run `git reset --hard origin/main` to fix."
+   - **Check for local-only main commits**: `git rev-list --count origin/main..main`. If non-zero, warn the user: "local main is N commits ahead of origin/main; these will leak into PR scope. Run `git reset --hard origin/main` to fix."
    - **Switch back to feature branch**: `git checkout -`
    - **Rebase onto updated main**: `git rebase main`
    - **Handle rebase conflicts** (if any): Inform the user and help resolve them
@@ -100,7 +100,7 @@ Create a pull request for the current branch using the project's standard PR tem
    - If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), include `Closes #42` in the body
 
 8. **Run preflight CI checks locally** before pushing:
-   Run the full CI-equivalent checks: `{{ check_cmd }}`. This must pass before any push -- it covers linting, tests, formatting, invariants, and any other checks the CI pipeline enforces. Fix any failures before proceeding.
+   Run the full CI-equivalent checks: `make check`. This must pass before any push; it covers linting, tests, formatting, invariants, and any other checks the CI pipeline enforces. Fix any failures before proceeding.
 
 9. **Push the branch**:
    - New PR: `git push -u origin $(git branch --show-current)`
@@ -110,18 +110,16 @@ Create a pull request for the current branch using the project's standard PR tem
 10. **Create or update PR**:
     ```bash
     # New PR (--assignee @me ensures creator is always assigned)
-    PR_URL=$(gh pr create --assignee @me --title "THE_TITLE" --body "$(cat <<'EOF'
+    gh pr create --assignee @me --title "THE_TITLE" --body "$(cat <<'EOF'
     [THE BODY]
     EOF
-    )")
+    )"
 
     # Update existing PR
     gh pr edit <PR_NUMBER> --title "THE_TITLE" --body "$(cat <<'EOF'
     [THE BODY]
     EOF
     )"
-
-    PR_NUM=$(gh pr view --json number --jq '.number' 2>/dev/null || echo "")
     ```
 
 11. **Trigger CodeRabbit review** (if configured):
@@ -137,14 +135,17 @@ Create a pull request for the current branch using the project's standard PR tem
 These phases run after the PR is created/updated. They enable autonomous operation (push-to-ready-to-merge in one command).
 
 13. **Visual verification** (if applicable):
-    If the project has a `/verify-local` command AND changes affect UI (templates, CSS, JS, views -- not test-only or migration-only), follow the `/verify-local` procedure. If verification reveals issues, fix them, re-run CI, and retry. Skip if no `/verify-local` command exists.
+    If the project has a `/verify-local` command AND changes affect UI (templates, CSS, JS, views, but not test-only or migration-only), follow the `/verify-local` procedure. If verification reveals issues, fix them, commit the fix (amend into the relevant commit or add a new commit), and push (`git push --force-with-lease`) before proceeding to step 14: otherwise CI runs against the old commit and step 16 reviews a diff that doesn't contain the fix. Skip if no `/verify-local` command exists.
 
 14. **Wait for CI pipeline**:
-    Poll CI status until it completes:
+    Capture the commit CI must validate, then poll until a run for that exact
+    commit appears and completes: `--limit 1` alone can return an unrelated
+    or stale run (another workflow, or the new run not yet registered):
     ```bash
-    gh run list --branch $(git branch --show-current) --limit 1 --json databaseId,status,conclusion
+    HEAD_SHA=$(git rev-parse HEAD)
+    gh run list --branch $(git branch --show-current) --json databaseId,status,conclusion,headSha,workflowName --jq --arg sha "$HEAD_SHA" '[.[] | select(.headSha == $sha)]'
     ```
-    If `gh run watch` is available, use it. Otherwise poll every 30 seconds. Max wait: 15 minutes.
+    If `gh run watch` is available, use it against the matched run's `databaseId`. Otherwise poll every 30 seconds until a run matching `$HEAD_SHA` appears and completes. Max wait: 15 minutes.
 
 15. **Handle CI result**:
     - **CI passes**: continue to step 16.
@@ -190,10 +191,10 @@ These phases run after the PR is created/updated. They enable autonomous operati
 
 - If the branch has no commits ahead of main and no uncommitted changes, inform the user
 - All commits on the branch will be analyzed to generate the PR description
-- NEVER merge the PR -- that happens via `/integrate-pr`
+- NEVER merge the PR: that happens via `/integrate-pr` or `/approve-merge`
 - Use `--force-with-lease` for force pushes, never `--force`
 - NEVER skip CI checks or use `--no-verify`
 - If CI fails 3 times, stop and ask the user for guidance
-- Do NOT ask for or request reviewers -- the user handles reviews themselves
+- Do NOT ask for or request reviewers: the user handles reviews themselves
 - NEVER include AI references in commits or PRs
 - NEVER use emojis in any output
