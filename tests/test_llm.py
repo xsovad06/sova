@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from decimal import Decimal
@@ -171,13 +172,14 @@ class TestInvoke:
         assert result.output_tokens == 50
         assert result.session_id == "test-session-id"
 
-        # Verify CLI args
+        # Verify CLI args: prompt is sent via stdin, never on argv
         call_args = mock_run.call_args[0]
         assert "claude" in call_args
         assert "-p" in call_args
-        assert "Say hello" in call_args
+        assert "Say hello" not in call_args
         assert "--output-format" in call_args
         assert "json" in call_args
+        assert mock_run.call_args.kwargs.get("stdin") == "Say hello"
 
     async def test_invoke_with_model(self, mock_run: AsyncMock) -> None:
         from sova.llm.client import invoke
@@ -568,10 +570,11 @@ class TestInvokeCommand:
         call_args = mock_run.call_args[0]
         assert "claude" in call_args
         assert "-p" in call_args
-        # The prompt should contain the command
-        prompt_idx = call_args.index("-p") + 1
-        assert "/develop" in call_args[prompt_idx]
-        assert "42" in call_args[prompt_idx]
+        # The prompt is sent via stdin, never on argv, and should contain the command
+        stdin_prompt = mock_run.call_args.kwargs.get("stdin")
+        assert stdin_prompt is not None
+        assert "/develop" in stdin_prompt
+        assert "42" in stdin_prompt
 
     async def test_invoke_command_no_args(self, mock_run: AsyncMock) -> None:
         from sova.llm.client import invoke_command
@@ -585,9 +588,7 @@ class TestInvokeCommand:
 
         await invoke_command("/review")
 
-        call_args = mock_run.call_args[0]
-        prompt_idx = call_args.index("-p") + 1
-        assert "/review" in call_args[prompt_idx]
+        assert "/review" in mock_run.call_args.kwargs.get("stdin", "")
 
     async def test_invoke_command_timeout(self, mock_run: AsyncMock) -> None:
         """Test that asyncio.timeout context manager enforces timeout."""
@@ -2363,6 +2364,88 @@ class TestClaudeCodeProvider:
         assert "--model" in call_args
         assert "sonnet" in call_args
 
+    async def test_invoke_sends_prompt_via_stdin_not_argv(self, mock_run: AsyncMock) -> None:
+        """The prompt must never appear on argv; it is sent over stdin instead."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=0,
+            stdout=_make_cli_json(),
+            stderr="",
+        )
+
+        provider = ClaudeCodeProvider()
+        await provider.invoke("secret prompt text")
+
+        call_args = mock_run.call_args[0]
+        assert "secret prompt text" not in call_args
+        assert mock_run.call_args.kwargs.get("stdin") == "secret prompt text"
+
+    async def test_invoke_with_system_prompt_writes_temp_file_not_argv(
+        self, mock_run: AsyncMock, tmp_path: Path
+    ) -> None:
+        """The system prompt must never appear on argv either; it goes to a temp file."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=0, stdout=_make_cli_json(), stderr="")
+
+        sp_path = tmp_path / "sova-system-prompt-test.txt"
+        with patch("sova.llm.providers.claude_code.write_system_prompt_file", return_value=sp_path) as mock_write:
+            provider = ClaudeCodeProvider()
+            await provider.invoke("Hello", system_prompt="Be a planner")
+
+        mock_write.assert_called_once_with("Be a planner")
+        call_args = mock_run.call_args[0]
+        assert "--system-prompt-file" in call_args
+        idx = call_args.index("--system-prompt-file")
+        assert call_args[idx + 1] == str(sp_path)
+        assert "--system-prompt" not in call_args
+        assert "Be a planner" not in call_args
+
+    async def test_invoke_deletes_system_prompt_temp_file_after_call(self, mock_run: AsyncMock, tmp_path: Path) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=0, stdout=_make_cli_json(), stderr="")
+
+        sp_path = tmp_path / "sova-system-prompt-cleanup.txt"
+        sp_path.write_text("temp", encoding="utf-8")
+        with patch("sova.llm.providers.claude_code.write_system_prompt_file", return_value=sp_path):
+            provider = ClaudeCodeProvider()
+            await provider.invoke("Hello", system_prompt="Be a planner")
+
+        assert not sp_path.exists()
+
+    async def test_invoke_deletes_system_prompt_temp_file_even_on_failure(
+        self, mock_run: AsyncMock, tmp_path: Path
+    ) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        mock_run.side_effect = RuntimeError("boom")
+
+        sp_path = tmp_path / "sova-system-prompt-fail.txt"
+        sp_path.write_text("temp", encoding="utf-8")
+        with patch("sova.llm.providers.claude_code.write_system_prompt_file", return_value=sp_path):
+            provider = ClaudeCodeProvider()
+            with pytest.raises(RuntimeError):
+                await provider.invoke("Hello", system_prompt="Be a planner")
+
+        assert not sp_path.exists()
+
+    async def test_invoke_without_system_prompt_does_not_write_temp_file(self, mock_run: AsyncMock) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=0, stdout=_make_cli_json(), stderr="")
+
+        with patch("sova.llm.providers.claude_code.write_system_prompt_file") as mock_write:
+            provider = ClaudeCodeProvider()
+            await provider.invoke("Hello")
+
+        mock_write.assert_not_called()
+
     async def test_invoke_streaming(self, mock_run: AsyncMock) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
 
@@ -2433,8 +2516,13 @@ class TestClaudeCodeProvider:
         alongside -p plus --output-format stream-json."""
         from sova.llm.providers.claude_code import _start_streaming_process
 
+        mock_proc = AsyncMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.drain = AsyncMock()
         with patch(
-            "sova.llm.providers.claude_code.asyncio.create_subprocess_exec", new_callable=AsyncMock
+            "sova.llm.providers.claude_code.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=mock_proc,
         ) as mock_exec:
             await _start_streaming_process("hello")
 
@@ -2442,6 +2530,27 @@ class TestClaudeCodeProvider:
         assert "--verbose" in call_args
         assert "--output-format" in call_args
         assert "stream-json" in call_args
+
+    async def test_start_streaming_process_sends_prompt_via_stdin_not_argv(self) -> None:
+        """The prompt must never appear on argv; it is written to stdin and the pipe closed."""
+        from sova.llm.providers.claude_code import _start_streaming_process
+
+        mock_proc = AsyncMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.drain = AsyncMock()
+        with patch(
+            "sova.llm.providers.claude_code.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=mock_proc,
+        ) as mock_exec:
+            await _start_streaming_process("secret prompt text")
+
+        call_args = mock_exec.call_args[0]
+        assert "secret prompt text" not in call_args
+        assert mock_exec.call_args.kwargs.get("stdin") is asyncio.subprocess.PIPE
+        mock_proc.stdin.write.assert_called_once_with(b"secret prompt text")
+        mock_proc.stdin.drain.assert_awaited_once()
+        mock_proc.stdin.close.assert_called_once()
 
     async def test_check_available(self) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider

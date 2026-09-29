@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,6 +16,12 @@ def _mock_proc(pid: int = 100, *, with_streams: bool = False) -> AsyncMock:
     if with_streams:
         proc.stdout = AsyncMock()
         proc.stderr = AsyncMock()
+    # Shaped like a real StreamWriter: write/close are sync, drain is async.
+    # Only ClaudeCodeRuntime.spawn() writes a stdin payload, but every
+    # runtime shares _spawn_agent_process()/_spawn_with_file_output(), so
+    # every mock proc needs this to avoid an unawaited-coroutine warning.
+    proc.stdin = MagicMock()
+    proc.stdin.drain = AsyncMock()
     return proc
 
 
