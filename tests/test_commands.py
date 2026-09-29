@@ -1795,6 +1795,33 @@ class TestSymlinkedEntriesAreNeverWrittenThrough:
 
         assert shared.read_text(encoding="utf-8") == "SHARED GLOBAL COMMAND\n"
 
+    def test_write_outside_the_target_directory_is_refused(self, target_dir: Path) -> None:
+        """The containment guarantee is enforced, not merely assumed of callers.
+
+        A filename is always a single component from a directory listing, so this
+        cannot trigger through normal flow; it fails loudly rather than skipping
+        the file, which would leave the manifest recording a hash for something
+        never written. SonarCloud flagged the unguarded helper as a path-traversal
+        sink (pythonsecurity:S2083).
+        """
+        from sova.commands.distribution import _write_rendered
+
+        escaped = target_dir / ".." / "escaped.md"
+        with pytest.raises(ValueError, match="refusing to write outside"):
+            _write_rendered(target_dir, escaped, "content")
+
+        assert not (target_dir.parent / "escaped.md").exists()
+
+    def test_write_inside_a_subdirectory_is_allowed(self, target_dir: Path) -> None:
+        """Skills install as `<name>/SKILL.md`, so nested destinations must pass."""
+        from sova.commands.distribution import _write_rendered
+
+        nested = target_dir / "my-skill" / "SKILL.md"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        _write_rendered(target_dir, nested, "skill body")
+
+        assert nested.read_text(encoding="utf-8") == "skill body"
+
     def test_regular_file_write_is_unchanged(self, canonical_dir: Path, target_dir: Path) -> None:
         from sova.commands.distribution import install_commands
         from sova.config.models import ProjectConfig
