@@ -522,6 +522,36 @@ class TestEnsureClaudeArtifactsNeverOverwritesTracked:
         assert (worktree / ".claude" / "commands" / "tracked.md").read_text() == "BRANCH"
         assert (worktree / ".claude" / "commands" / "fresh.md").read_text() == "PRIMARY FRESH"
 
+    def test_tracked_but_deleted_file_is_restored(self, tmp_path: Path) -> None:
+        """Tracking protects existing content, not a gap.
+
+        A destination the branch tracks but that is missing from disk has nothing
+        to preserve, so it must be copied. Skipping it leaves the gap permanent,
+        and ensure_worktree_usable() (issue #976) treats an unrepairable
+        .claude/commands as fatal and falls back to running the agent in the
+        primary checkout, which is precisely what both it and this function exist
+        to prevent.
+        """
+        from sova.git.worktree import ensure_claude_artifacts
+
+        project = tmp_path / "project"
+        (project / ".claude" / "commands").mkdir(parents=True)
+        (project / ".claude" / "commands" / "develop.md").write_text("PRIMARY COMMAND")
+
+        worktree = self._repo(tmp_path)
+        (worktree / ".claude" / "commands").mkdir(parents=True)
+        installed = worktree / ".claude" / "commands" / "develop.md"
+        installed.write_text("BRANCH VERSION")
+        self._git(worktree, "add", ".claude/commands/develop.md")
+        self._git(worktree, "commit", "-qm", "branch command")
+
+        # Still tracked in the index, but gone from disk: the issue-976 scenario.
+        installed.unlink()
+
+        ensure_claude_artifacts(project, worktree)
+
+        assert installed.read_text() == "PRIMARY COMMAND"
+
     def test_falls_back_to_copying_when_git_is_unavailable(self, tmp_path: Path) -> None:
         """A failed `git ls-files` must not skip a worktree's setup entirely."""
         from sova.git.worktree import ensure_claude_artifacts

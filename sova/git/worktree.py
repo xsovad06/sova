@@ -470,11 +470,22 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     tracked = _tracked_paths(worktree_path)
 
     def _ignore_tracked(directory: str, names: list[str]) -> set[str]:
-        """copytree ignore callback: skip entries the worktree already tracks."""
+        """copytree ignore callback: skip entries the worktree tracks AND still has.
+
+        A tracked destination that is missing from disk is deliberately NOT
+        skipped. Tracking means the branch owns that content, which is why an
+        existing file must not be overwritten, but an absent one has nothing to
+        preserve and copying it is the repair a caller asked for. Skipping it
+        instead leaves the gap permanent, and ``ensure_worktree_usable()`` treats
+        an unrepairable ``.claude/commands`` as fatal and falls back to running
+        the agent in the primary checkout, which is the failure mode both that
+        function and this one exist to prevent (issues #976, #1090).
+        """
         skipped: set[str] = set()
         base = Path(directory).relative_to(claude_src.parent)
+        dest_dir = worktree_path / base
         for name in names:
-            if (base / name).as_posix() in tracked:
+            if (base / name).as_posix() in tracked and (dest_dir / name).exists():
                 skipped.add(name)
         return skipped
 
@@ -495,7 +506,9 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     for filename in _CLAUDE_FILES:
         src = claude_src / filename
         if src.is_file():
-            if f".claude/{filename}" in tracked:
+            # Same rule as _ignore_tracked: tracked and present means the branch
+            # owns it, tracked but absent means there is nothing to preserve.
+            if f".claude/{filename}" in tracked and (claude_dst / filename).exists():
                 continue
             try:
                 shutil.copy2(src, claude_dst / filename)
