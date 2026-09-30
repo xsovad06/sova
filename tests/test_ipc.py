@@ -1492,6 +1492,25 @@ class TestClaudeCodeRuntime:
         assert "/compact" in preamble_lower
         assert "context" in preamble_lower
 
+    async def test_spawn_read_only_has_no_effect_on_argv_or_stdin(self, tmp_path: Path) -> None:
+        """Claude Code has no sandbox mechanism: read_only is accepted but changes nothing."""
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE, ClaudeCodeRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 105
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
+
+        runtime = ClaudeCodeRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await runtime.spawn("my prompt", tmp_path, read_only=True)
+
+        args = mock_exec.call_args[0]
+        assert "--sandbox" not in args
+        mock_proc.stdin.write.assert_called_once_with((_HEADLESS_PREAMBLE + "my prompt").encode("utf-8"))
+
 
 class TestSpawnDirect:
     async def test_spawn_direct_creates_subprocess(self) -> None:
@@ -1531,12 +1550,16 @@ class TestSpawnDirect:
         assert fp.pid == 78
 
     def test_pipeline_roles_set(self) -> None:
+        """developer/researcher/planner use spawn_direct(); every other role goes through
+        runtime.spawn() (reviewer, custom, and every command:* role)."""
         from sova.ipc.runtime import _PIPELINE_ROLES
 
         assert "developer" in _PIPELINE_ROLES
         assert "researcher" in _PIPELINE_ROLES
         assert "planner" in _PIPELINE_ROLES
         assert "reviewer" not in _PIPELINE_ROLES
+        assert "custom" not in _PIPELINE_ROLES
+        assert "command:review-pr" not in _PIPELINE_ROLES
 
 
 class TestAiderRuntime:
@@ -1672,11 +1695,29 @@ class TestAiderRuntime:
         mock_log.warning.assert_called_once()
         assert mock_log.warning.call_args[0][0] == "aider.budget_not_enforced"
 
+    async def test_spawn_read_only_has_no_effect_on_argv(self) -> None:
+        """Aider has no sandbox mechanism: read_only is accepted but changes nothing."""
+        from sova.ipc.runtime import AiderRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 100
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = AiderRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await rt.spawn("fix bug", Path("/tmp"), read_only=True)
+
+        args = mock_exec.call_args[0]
+        assert "--sandbox" not in args
+        assert "fix bug" in args
+
 
 class TestCodexRuntime:
     async def test_spawn_builds_correct_args(self) -> None:
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 55
@@ -1699,11 +1740,11 @@ class TestCodexRuntime:
         assert "--model" in args
         model_idx = args.index("--model")
         assert args[model_idx + 1] == "gpt-5-codex"
-        assert args[-1] == "fix the bug"
+        assert args[-1] == _HEADLESS_PREAMBLE_CODEX + "fix the bug"
         assert "--full-auto" not in args
 
     async def test_spawn_without_model_omits_flag(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 56
@@ -1718,7 +1759,7 @@ class TestCodexRuntime:
         assert ap.pid == 56
         args = mock_exec.call_args[0]
         assert "--model" not in args
-        assert args[-1] == "do something"
+        assert args[-1] == _HEADLESS_PREAMBLE_CODEX + "do something"
 
     async def test_spawn_ignores_caller_supplied_model(self) -> None:
         """CodexRuntime uses ``codex.model`` exclusively, never the caller's model.
@@ -1744,7 +1785,18 @@ class TestCodexRuntime:
         assert args[model_idx + 1] == "gpt-5-codex"
         assert "claude-opus-4-6" not in args
 
-    async def test_spawn_uses_configured_sandbox(self) -> None:
+    @pytest.mark.parametrize(
+        ("configured_sandbox", "read_only", "expected"),
+        [
+            ("read-only", False, "read-only"),
+            ("workspace-write", False, "workspace-write"),
+            ("workspace-write", True, "read-only"),
+            # Already read-only: read_only=True must not append a second --sandbox pair.
+            ("read-only", True, "read-only"),
+        ],
+    )
+    async def test_spawn_sandbox_resolution(self, configured_sandbox: str, read_only: bool, expected: str) -> None:
+        """read_only=True forces --sandbox read-only; otherwise codex.sandbox is used verbatim."""
         from sova.config.models import CodexConfig
         from sova.ipc.runtime import CodexRuntime
 
@@ -1754,16 +1806,45 @@ class TestCodexRuntime:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        rt = CodexRuntime(config=CodexConfig(sandbox="read-only"))
+        rt = CodexRuntime(config=CodexConfig(sandbox=configured_sandbox))
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await rt.spawn("do something", Path("/tmp"))
+            await rt.spawn("do something", Path("/tmp"), read_only=read_only)
 
         args = mock_exec.call_args[0]
-        sandbox_idx = args.index("--sandbox")
-        assert args[sandbox_idx + 1] == "read-only"
+        assert args.count("--sandbox") == 1
+        assert args[args.index("--sandbox") + 1] == expected
+
+    def test_transform_prompt_prepends_codex_preamble(self) -> None:
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+
+        rt = CodexRuntime()
+        assert rt.transform_prompt("fix the bug") == _HEADLESS_PREAMBLE_CODEX + "fix the bug"
+
+    def test_codex_preamble_is_provider_neutral_subset_of_claude_preamble(self) -> None:
+        """Codex gets the shared guardrails but not Claude Code's /compact-specific tail."""
+        from sova.ipc.runtime import (
+            _HEADLESS_PREAMBLE_CLAUDE_TAIL,
+            _HEADLESS_PREAMBLE_CODEX,
+            _HEADLESS_PREAMBLE_CORE,
+            _HEADLESS_PREAMBLE_EXECUTE_SUFFIX,
+        )
+
+        codex_lower = _HEADLESS_PREAMBLE_CODEX.lower()
+        assert "pipeline boundary" in codex_lower
+        assert "do not create pull requests" in codex_lower
+        assert "do not push" in codex_lower
+        assert "do not commit" in codex_lower
+        assert "command interpretation" in codex_lower
+        assert "worktree conflict recovery" in codex_lower
+        assert "no background waiting" in codex_lower
+        assert "/compact" not in codex_lower
+        assert "context management" not in codex_lower
+        assert _HEADLESS_PREAMBLE_CODEX == _HEADLESS_PREAMBLE_CORE + _HEADLESS_PREAMBLE_EXECUTE_SUFFIX
+        assert "/compact" in _HEADLESS_PREAMBLE_CLAUDE_TAIL.lower()
 
     async def test_spawn_passes_prompt_verbatim_without_shell(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        """No shell escaping/quoting is applied; only the guardrail preamble is prepended."""
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 57
@@ -1777,10 +1858,11 @@ class TestCodexRuntime:
             await rt.spawn(prompt, Path("/tmp"))
 
         args = mock_exec.call_args[0]
-        assert args[-1] == prompt
+        assert args[-1] == _HEADLESS_PREAMBLE_CODEX + prompt
 
     async def test_spawn_prompt_with_leading_dash_uses_separator(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        """The "--" separator is present unconditionally, regardless of the prompt's content."""
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 61
@@ -1794,8 +1876,56 @@ class TestCodexRuntime:
             await rt.spawn(prompt, Path("/tmp"))
 
         args = mock_exec.call_args[0]
-        assert args[-1] == prompt
+        assert args[-1] == _HEADLESS_PREAMBLE_CODEX + prompt
         assert args[-2] == "--"
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "fix the failing test, no bash block here",
+            "```bash\nsova run 7\n",  # unterminated fence
+            "``bash\nsova run 7\n```",  # malformed fence marker
+        ],
+    )
+    def test_transform_prompt_handles_missing_or_malformed_bash_block(self, prompt: str) -> None:
+        """Unlike AiderRuntime, CodexRuntime does not parse for a fenced bash block: it
+        always prepends the guardrail preamble verbatim, so an absent or malformed block
+        must still yield a non-empty prompt that carries the caller's original text."""
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+
+        rt = CodexRuntime()
+        result = rt.transform_prompt(prompt)
+
+        assert result
+        assert prompt in result
+        assert result == _HEADLESS_PREAMBLE_CODEX + prompt
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "fix the failing test, no bash block here",
+            "```bash\nsova run 7\n",  # unterminated fence
+        ],
+    )
+    async def test_spawn_handles_missing_or_malformed_bash_block(self, prompt: str) -> None:
+        """spawn() must still place a usable, non-empty prompt on argv when the caller's
+        prompt lacks a well-formed fenced bash block."""
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 62
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await rt.spawn(prompt, Path("/tmp"))
+
+        args = mock_exec.call_args[0]
+        assert args[-1]
+        assert prompt in args[-1]
+        assert args[-1] == _HEADLESS_PREAMBLE_CODEX + prompt
 
     def test_parse_output_plain_text(self) -> None:
         from sova.ipc.runtime import CodexRuntime
@@ -2516,6 +2646,19 @@ class TestMockRuntime:
         await rt.spawn("second", "/tmp")
         assert len(rt.spawned_processes) == 2
         assert rt.last_prompt == "second"
+
+    @pytest.mark.asyncio
+    async def test_records_read_only_flag(self) -> None:
+        """MockRuntime exposes the read_only kwarg so a caller's sandbox
+        decision (e.g. start_agent's reviewer rule) is assertable."""
+        rt = self.MockRuntime()
+        assert rt.last_read_only is None
+
+        await rt.spawn("read the code", "/tmp", read_only=True)
+        assert rt.last_read_only is True
+
+        await rt.spawn("edit the code", "/tmp")
+        assert rt.last_read_only is False
 
     def test_parse_output(self) -> None:
         rt = self.MockRuntime()

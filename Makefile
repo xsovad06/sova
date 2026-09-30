@@ -41,6 +41,9 @@ test-runtime: ## Run runtime, stress, and chaos tests (manual)
 test-all: ## Run ALL tests including runtime/stress/chaos
 	$(PYTEST) tests/ -v --timeout=120
 
+test-codex-smoke: ## Run the opt-in Codex CLI smoke test (requires: codex CLI installed and logged in)
+	SOVA_CODEX_SMOKE=1 $(PYTEST) tests/runtime/test_codex_smoke.py -v -m codex_smoke
+
 # ── Linting ───────────────────────────────────────────────────
 
 lint: lint-bash lint-py ## Run all linters

@@ -143,6 +143,7 @@ class MockRuntime(AgentRuntime):
         self._should_hang = should_hang
         self._spawned: list[MockAgentProcess] = []
         self._last_prompt: str | None = None
+        self._last_read_only: bool | None = None
 
     @property
     def name(self) -> str:
@@ -159,8 +160,10 @@ class MockRuntime(AgentRuntime):
         max_budget_usd: Decimal | None = None,
         output_dir: Path | None = None,
         run_label: str | None = None,
+        read_only: bool = False,
     ) -> MockAgentProcess:
         self._last_prompt = prompt
+        self._last_read_only = read_only
         process = MockAgentProcess(
             stdout_lines_data=list(self._stdout_lines) if self._stdout_lines else None,
             stderr_lines_data=list(self._stderr_lines) if self._stderr_lines else None,
@@ -187,3 +190,7 @@ class MockRuntime(AgentRuntime):
     @property
     def last_prompt(self) -> str | None:
         return self._last_prompt
+
+    @property
+    def last_read_only(self) -> bool | None:
+        return self._last_read_only

@@ -33,7 +33,10 @@ log = get_logger(component="ipc.runtime")
 _VERSION_CHECK_TIMEOUT = 5.0
 _SUBPROCESS_LINE_LIMIT = 10 * 1024 * 1024  # 10 MB -- agent JSON lines can exceed 64 KB default
 
-_HEADLESS_PREAMBLE = (
+# Provider-neutral guardrails shared by every headless runtime: pipeline
+# boundary, literal command execution, worktree conflict recovery, and the
+# no-background-waiting contract. None of this text assumes a specific CLI.
+_HEADLESS_PREAMBLE_CORE = (
     "[HEADLESS MODE] You are running as an autonomous agent with no "
     "human operator. Do not ask for confirmation or pose questions. "
     "Proceed with file edits, test runs, and any other actions "
@@ -45,7 +48,7 @@ _HEADLESS_PREAMBLE = (
     "step fails, exit immediately so the pipeline can handle retries. "
     "Never attempt to complete remaining pipeline steps on your own.\n\n"
     "COMMAND INTERPRETATION: When the instruction below contains a "
-    "```bash``` code block with a CLI command (e.g., `sova run 42`), "
+    "```bash``` code block with a CLI command, "
     "you MUST execute that exact command in your bash shell. Do NOT "
     "interpret the command as a natural language task description. "
     "Do NOT try to implement the work yourself. The command is a "
@@ -61,13 +64,27 @@ _HEADLESS_PREAMBLE = (
     "stop to 'wait' for it. Run it as a single synchronous foreground "
     "command that blocks until it finishes, and keep issuing tool calls "
     "until the entire task is actually complete.\n\n"
+)
+
+# Claude Code-specific: references /compact, a Claude Code CLI command with
+# no equivalent in other runtimes. Only ClaudeCodeRuntime uses this.
+_HEADLESS_PREAMBLE_CLAUDE_TAIL = (
     "CONTEXT MANAGEMENT: Monitor your context window usage. When "
     "context grows large (after reading many files or long outputs), "
     "use /compact proactively to free space. Prefer reading specific "
     "file sections (line ranges) over entire files. Summarize long "
     "command outputs before continuing.\n\n"
-    "Execute the following instruction exactly as specified:\n\n"
 )
+
+_HEADLESS_PREAMBLE_EXECUTE_SUFFIX = "Execute the following instruction exactly as specified:\n\n"
+
+# Byte-identical to the pre-split constant: ClaudeCodeRuntime.spawn() must
+# see no behavioral change from this split.
+_HEADLESS_PREAMBLE = _HEADLESS_PREAMBLE_CORE + _HEADLESS_PREAMBLE_CLAUDE_TAIL + _HEADLESS_PREAMBLE_EXECUTE_SUFFIX
+
+# Codex gets the provider-neutral core only, no Claude-specific tail. See
+# CodexRuntime.transform_prompt().
+_HEADLESS_PREAMBLE_CODEX = _HEADLESS_PREAMBLE_CORE + _HEADLESS_PREAMBLE_EXECUTE_SUFFIX
 
 
 _SOVA_AGENT_ENV_KEY = "SOVA_AGENT_RUN"
@@ -223,6 +240,7 @@ class AgentRuntime(ABC):
         max_budget_usd: Decimal | None = None,
         output_dir: Path | None = None,
         run_label: str | None = None,
+        read_only: bool = False,
     ) -> AgentProcess | FileAgentProcess:
         """Spawn a coding agent process.
 
@@ -238,6 +256,21 @@ class AgentRuntime(ABC):
                 pipes and return AgentProcess (backward compat).
             run_label: Filename prefix for output files (e.g., the run ID).
                 Required when output_dir is set.
+            read_only: When True, the runtime must prevent the process from
+                modifying the working directory, if it has a mechanism to do
+                so. A runtime with no such mechanism (ClaudeCodeRuntime,
+                AiderRuntime today) accepts the flag and no-ops: the caller's
+                prompt-level guardrails are the only enforcement for those.
+                CodexRuntime maps this onto ``codex exec --sandbox
+                read-only``, which the process cannot be talked out of.
+
+                Caller beware: a sandbox is blunter than "do not edit source
+                files". Codex's ``read-only`` profile denies every write and
+                disables network access for the whole process tree, so a
+                prompt that runs ``sova run`` under it cannot write
+                ``.claude/sova.db``, write a handoff file, or reach the
+                GitHub API. Pass True only for a prompt that genuinely needs
+                nothing but reads.
 
         Returns:
             An AgentProcess (pipe-based) or FileAgentProcess (file-based).
@@ -283,12 +316,18 @@ class AgentRuntime(ABC):
         return None
 
     def transform_prompt(self, prompt: str) -> str:
-        """Transform a prompt before passing to the runtime.
+        """Rewrite a caller-supplied prompt into the form this runtime needs.
 
-        The default implementation returns the prompt unchanged. Runtimes
-        that cannot execute shell commands (e.g., Aider) should override
-        this to detect shell-command-formatted prompts and extract the
-        task description.
+        The default implementation returns the prompt unchanged. The two
+        current overrides use it for unrelated purposes: ``AiderRuntime``
+        detects a shell-command-formatted prompt and extracts the bare
+        command (Aider cannot execute shell commands), while ``CodexRuntime``
+        prepends its provider-neutral headless guardrail preamble.
+
+        Each runtime's own ``spawn()`` is the only caller: a prompt reaching
+        ``spawn()`` is always the untransformed one. Never call this and then
+        pass the result to ``spawn()``, or a transformation that prepends
+        (``CodexRuntime``) is applied twice.
         """
         return prompt
 
@@ -320,7 +359,10 @@ class ClaudeCodeRuntime(AgentRuntime):
         max_budget_usd: Decimal | None = None,
         output_dir: Path | None = None,
         run_label: str | None = None,
+        read_only: bool = False,
     ) -> AgentProcess | FileAgentProcess:
+        # Claude Code has no sandboxed read-only mode; read_only is advisory
+        # only (the caller's prompt is the sole enforcement).
         args = build_claude_cli_args(
             model=model,
             fallback_model=fallback_model,
@@ -432,7 +474,10 @@ class AiderRuntime(AgentRuntime):
         max_budget_usd: Decimal | None = None,
         output_dir: Path | None = None,
         run_label: str | None = None,
+        read_only: bool = False,
     ) -> AgentProcess | FileAgentProcess:
+        # Aider has no sandboxed read-only mode; read_only is advisory only
+        # (the caller's prompt is the sole enforcement).
         transformed = self.transform_prompt(prompt)
 
         # If the prompt was a sova CLI command, execute it directly
@@ -596,8 +641,9 @@ class CodexRuntime(AgentRuntime):
     """Runtime that spawns Codex CLI processes.
 
     Codex (https://developers.openai.com/codex/) is OpenAI's coding agent
-    CLI. Invoked non-interactively via ``codex exec`` with JSON Lines
-    output and an explicit ``workspace-write`` sandbox.
+    CLI. Invoked non-interactively via ``codex exec`` with JSON Lines output
+    and an explicit ``--sandbox`` policy, resolved per spawn (see
+    ``spawn()``'s ``read_only`` handling below) rather than hardcoded.
 
     Credential handling: local setup should rely on Codex's own keyring
     storage (``codex login`` / ``cli_auth_credentials_store = "keyring"``);
@@ -617,15 +663,39 @@ class CodexRuntime(AgentRuntime):
     actually calls; ``sova/ipc/codex.py`` documents both the parser's own
     semantics and why a fresh instance per spawned process is required.
 
-    Parity gap tracked by epic #940, not yet closed here: the prompt does
-    not carry ``_HEADLESS_PREAMBLE`` (which is written for Claude Code and
-    references its ``/compact`` command), so SOVA's pipeline-boundary
-    guardrails are absent.
+    ``transform_prompt()`` prepends ``_HEADLESS_PREAMBLE_CODEX``, the
+    provider-neutral subset of Claude Code's ``_HEADLESS_PREAMBLE`` (pipeline
+    boundary, literal command execution, worktree conflict recovery,
+    no-background-waiting; the ``/compact``-referencing CONTEXT MANAGEMENT
+    section is Claude Code-specific and is deliberately omitted). This closes
+    the pipeline-boundary guardrail gap that used to be tracked here against
+    epic #940 (issue #946).
+
+    Known residual, still deferred to epic #940: the transformed prompt is
+    still placed on ``codex exec``'s argv (see ``spawn()`` below), not
+    delivered via stdin the way ``ClaudeCodeRuntime`` does. This widens the
+    known ``ps``/``pkill -f`` argv-visibility hazard (see
+    ``sova/llm/cli_args.py``) since the guardrail preamble makes the argv
+    string longer; moving Codex prompt delivery to stdin changes the spawn
+    contract and is scoped to epic #940, not this issue. The preamble's
+    COMMAND INTERPRETATION clause deliberately avoids embedding a literal
+    ``sova run N``-shaped example for exactly this reason (a fixed example
+    substring would put every Codex agent's argv inside reach of a
+    ``pkill -f`` matching it, including a ``command:*`` run whose own
+    prompt never mentions sova at all). The caller's own prompt text still
+    ends up on argv regardless: a non-pipeline role (reviewer, custom) spawned
+    through this runtime wraps its command in a ``sova run ...`` invocation
+    (``agent_lifecycle.py``'s ``cmd_parts``), so that literal substring still
+    reaches argv for those roles even with the static example gone. Never
+    reap SOVA processes by matching prompt text.
 
     Model and sandbox policy come from ``CodexConfig`` (``[codex]`` in
     ``sova.toml``), passed in at construction via ``create_runtime(codex=...)``.
     The caller-supplied ``model`` argument to ``spawn()`` is a Claude model id
     resolved from ``agent.model`` and is never forwarded to ``codex exec``.
+    ``spawn(read_only=True)`` overrides ``codex.sandbox`` to ``"read-only"``
+    for that one call, regardless of the configured default; it never appends
+    a second ``--sandbox`` pair.
     """
 
     def __init__(self, config: CodexConfig | None = None) -> None:
@@ -635,6 +705,15 @@ class CodexRuntime(AgentRuntime):
     @property
     def name(self) -> str:
         return "codex"
+
+    def transform_prompt(self, prompt: str) -> str:
+        """Prepend the provider-neutral headless guardrail preamble.
+
+        See ``_HEADLESS_PREAMBLE_CODEX`` and the class docstring above for
+        why this is a subset of Claude Code's ``_HEADLESS_PREAMBLE`` rather
+        than the same text.
+        """
+        return _HEADLESS_PREAMBLE_CODEX + prompt
 
     async def spawn(
         self,
@@ -647,6 +726,7 @@ class CodexRuntime(AgentRuntime):
         max_budget_usd: Decimal | None = None,
         output_dir: Path | None = None,
         run_label: str | None = None,
+        read_only: bool = False,
     ) -> AgentProcess | FileAgentProcess:
         if fallback_model is not None:
             log.warning(
@@ -662,18 +742,30 @@ class CodexRuntime(AgentRuntime):
                 hint="Codex CLI does not support budget caps; cost is not limited",
             )
 
-        args: list[str] = ["codex", "exec", "--json", "--sandbox", self._config.sandbox]
+        sandbox = "read-only" if read_only else self._config.sandbox
+        args: list[str] = ["codex", "exec", "--json", "--sandbox", sandbox]
 
         codex_model = self._config.model
         if codex_model:
             args.extend(["--model", codex_model])
 
-        # "--" is required: codex exec takes PROMPT as a positional argument
-        # (clap-based parser), so a prompt starting with "-" would otherwise
-        # be misread as an unrecognized option.
-        args.extend(["--", prompt])
+        transformed_prompt = self.transform_prompt(prompt)
 
-        log.info("codex.spawn", cwd=str(cwd), model=codex_model, prompt_len=len(prompt))
+        # "--" is passed unconditionally: codex exec takes PROMPT as a
+        # positional argument (clap-based parser), so an argv value starting
+        # with "-" would be misread as an unrecognized option. The preamble
+        # prepended above happens to make that impossible today, but the
+        # separator must not depend on the preamble's first character.
+        args.extend(["--", transformed_prompt])
+
+        log.info(
+            "codex.spawn",
+            cwd=str(cwd),
+            model=codex_model,
+            prompt_len=len(transformed_prompt),
+            read_only=read_only,
+            sandbox=sandbox,
+        )
 
         return await _spawn_agent_process(
             args,
@@ -712,7 +804,18 @@ class CodexRuntime(AgentRuntime):
 # ---------------------------------------------------------------------------
 # Direct subprocess spawn (bypasses Claude Code intermediary)
 # ---------------------------------------------------------------------------
-
+#
+# Role launch-path classification (issue #946), intentional, not incidental:
+#   developer, researcher, planner -> spawn_direct(). Each runs `sova run` as
+#       a plain subprocess; the WorkflowEngine inside that subprocess resolves
+#       its own LLM provider calls, so wrapping it in an AgentRuntime would
+#       add a redundant second agent process, a second bill, and reintroduce
+#       the 600s-timeout class of failure spawn_direct() exists to eliminate.
+#   reviewer, custom, command:* -> runtime.spawn(), via the configured
+#       AgentRuntime (Claude Code, Aider, or Codex). These are not
+#       pipeline-driven: reviewer and custom-role runs, and every
+#       dashboard-triggered slash command, execute inside a single autonomous
+#       agent session.
 _PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})
 
 
