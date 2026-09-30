@@ -703,7 +703,7 @@ def create_app(
 
         watchdog: AgentWatchdog | None = None
         if cfg.watchdog.enabled and not is_multi:
-            watchdog = _AgentWatchdog(config=cfg.watchdog, project_dir=resolved)
+            watchdog = _AgentWatchdog(config=cfg.watchdog, project_dir=resolved, memory_guard=cfg.memory_guard)
             watchdog.start()
             _daemon_components.setdefault(str(resolved), {})
             _daemon_components[str(resolved)]["watchdog"] = watchdog

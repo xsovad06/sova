@@ -95,13 +95,13 @@ async def skip_phase(lifecycle_id: int, phase: str) -> dict:
 
 @router.post("/{lifecycle_id}/phase/{phase}/restart")
 async def restart_phase(lifecycle_id: int, phase: str) -> dict:
-    """Restart a failed phase."""
+    """Restart a failed or stopped phase."""
     if phase not in _VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"Invalid phase: {phase}")
     async with await get_session() as session, session.begin():
         record = await lifecycle_service.restart_phase(session, lifecycle_id, phase)
         if record is None:
-            raise HTTPException(status_code=400, detail="No failed phase to restart")
+            raise HTTPException(status_code=400, detail="No failed or stopped phase to restart")
         return {"status": "restart_ready", "phase": phase}
 
 

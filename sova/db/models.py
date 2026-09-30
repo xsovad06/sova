@@ -55,6 +55,11 @@ class TaskRun(Base):
     output_file_path: Mapped[str | None] = mapped_column(String(500))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # NULL means "unknown" (pre-existing row, or a process that exited normally).
+    # Set to the TerminationRecord.cause (e.g. "manual_stop", "watchdog kill
+    # signal name") for a deliberate stop, or "external_signal" for a
+    # signal-shaped exit with no local record. Never treat NULL as "external".
+    termination_reason: Mapped[str | None] = mapped_column(String(50))
 
     step_executions: Mapped[list["StepExecution"]] = relationship(back_populates="task_run")
     failure_records: Mapped[list["FailureRecord"]] = relationship(back_populates="task_run")

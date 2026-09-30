@@ -41,13 +41,19 @@ _A2A_TO_SOVA: dict[str, TaskStatus] = {
 def sova_status_to_a2a(status: str | TaskStatus) -> str:
     """Map a SOVA TaskStatus to the corresponding A2A task state.
 
-    Handles non-enum status strings (e.g. "interrupted") that are set directly
-    on TaskRun records by the dashboard recovery system.
+    Handles non-enum status strings (e.g. "interrupted", "stopped") that are
+    set directly on TaskRun records by the dashboard recovery/control system,
+    not by the WorkflowEngine's TaskStatus state machine.
     """
     if isinstance(status, str):
         try:
             status = TaskStatus(status)
         except ValueError:
+            if status == "stopped":
+                # A deliberate stop, not a failure: A2A's "canceled" state
+                # fits better than "failed" and matches how a2a_to_sova_status
+                # maps an inbound cancel request (see _A2A_TO_SOVA above).
+                return "canceled"
             return "failed" if status in ("interrupted",) else "working"
     return _SOVA_TO_A2A[status]
 

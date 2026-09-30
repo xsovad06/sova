@@ -632,46 +632,19 @@ class WorkflowEngine:
     async def _preserve_partial_work_on_timeout(self, step_name: str) -> bool:
         """Commit staged changes on timeout to preserve partial work.
 
-        Returns True if partial work was committed, False otherwise.
+        Returns True if partial work was committed, False otherwise. No-op
+        before a worktree exists (e.g. during sync/assess, or for roles that
+        never create one): ctx.working_dir falls back to project_dir in that
+        window, and committing there could capture the operator's own
+        uncommitted edits on whatever branch they have checked out in the
+        primary checkout.
         """
-        from sova.utils.shell import run
-
-        # Guard: ensure we're in a valid git repo
-        work_dir = self._ctx.worktree_dir or self._ctx.working_dir
-        if not work_dir:
-            log.debug("workflow.timeout.no_working_dir")
+        if self._ctx.worktree_dir is None:
             return False
 
-        if not (work_dir / ".git").exists():
-            log.debug("workflow.timeout.not_a_git_repo")
-            return False
+        from sova.git.worktree import commit_partial_work
 
-        # Check for staged changes (git add -u only stages tracked files)
-        try:
-            add_result = await run("git", "add", "-u", cwd=work_dir)
-            if not add_result.success:
-                log.debug("workflow.timeout.add_failed", error=add_result.stderr)
-                return False
-
-            # Check if there's anything to commit
-            diff_result = await run("git", "diff", "--cached", "--quiet", cwd=work_dir)
-            if diff_result.returncode == 0:
-                # Exit code 0 means no staged changes
-                log.debug("workflow.timeout.no_staged_changes")
-                return False
-
-            # Commit partial work
-            commit_msg = f"wip: partial work from {step_name} (timeout)"
-            commit_result = await run("git", "commit", "-m", commit_msg, cwd=work_dir)
-            if commit_result.success:
-                log.info("workflow.timeout.partial_work_committed", step=step_name)
-                return True
-            else:
-                log.warning("workflow.timeout.commit_failed", error=commit_result.stderr)
-                return False
-        except (RuntimeError, OSError):
-            log.warning("workflow.timeout.partial_work_failed", step=step_name, exc_info=True)
-            return False
+        return await commit_partial_work(self._ctx.worktree_dir, f"{step_name} (timeout)")
 
     async def _persist_step_result(
         self, step_exec_id: int, result: StepResult, elapsed_ms: int, step_name: str
@@ -895,7 +868,7 @@ class WorkflowEngine:
         async with await get_session(self._ctx.project_dir) as session:
             from sqlalchemy import func, select
 
-            _TERMINAL = ("done", "failed", "rejected", "interrupted", "paused")
+            _TERMINAL = ("done", "failed", "rejected", "interrupted", "paused", "stopped")
             stmt = (
                 select(func.coalesce(func.sum(TaskRun.total_cost_usd), Decimal("0")))
                 .where(TaskRun.issue_number == self._ctx.issue_number)

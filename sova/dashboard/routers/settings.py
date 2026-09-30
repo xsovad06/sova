@@ -331,6 +331,7 @@ _RELOAD_PREFIX_MAP: dict[str, str] = {
     "supervisor.": "supervisor",
     "oversight.": "oversight",
     "watchdog.": "watchdog",
+    "memory_guard.": "watchdog",
     "pr_monitor.": "pr_monitor",
     "coderabbit_quota.": "coderabbit_quota",
     "integration.": "integration",
@@ -362,7 +363,7 @@ async def _dispatch_config_reload(
     elif target == "watchdog":
         wd = components.get("watchdog")
         if wd is not None:
-            wd.reload_config(cfg.watchdog)
+            wd.reload_config(cfg.watchdog, cfg.memory_guard)
     elif target == "pr_monitor":
         for mon in components.get("pr_monitors", []):
             mon.reload_config(cfg.pr_monitor, cfg.notification)

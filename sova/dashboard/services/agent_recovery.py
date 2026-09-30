@@ -828,7 +828,7 @@ async def get_sova_review_verdict(
             # First: look for runs WITH handoff_json (authoritative source).
             filters = [
                 TaskRun.role.in_(["reviewer", "command:review-pr"]),
-                TaskRun.status.in_(["done", "failed", "interrupted"]),
+                TaskRun.status.in_(["done", "failed", "interrupted", "stopped"]),
                 TaskRun.handoff_json.isnot(None),
                 *scope,
             ]

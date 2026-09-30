@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import time
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import TYPE_CHECKING, Annotated, Optional
 
 import typer
 from rich.console import Console
 
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.core.context import ExecutionContext
 
 console = Console(stderr=True)
 log = get_logger(component="cli.run")
@@ -33,18 +37,26 @@ def run_issue(
     if not issue and not role:
         console.print("[red]Either an issue number or --role is required.[/red]")
         raise typer.Exit(code=2)
-    asyncio.run(
-        _run_workflow(
-            issue or "",
-            project_dir=project,
-            role_name=role,
-            force=force,
-            budget_override=budget_override,
-            resume_run_id=resume,
-            pr_number=pr,
-            task_run_id=run_id,
+    try:
+        asyncio.run(
+            _run_workflow(
+                issue or "",
+                project_dir=project,
+                role_name=role,
+                force=force,
+                budget_override=budget_override,
+                resume_run_id=resume,
+                pr_number=pr,
+                task_run_id=run_id,
+            )
         )
-    )
+    except asyncio.CancelledError:
+        # Terminated by SIGTERM (see _install_sigterm_handler). Exit with the
+        # conventional 128+signal code so a parent process observes a
+        # signal-shaped exit even though the handler intercepted the signal
+        # itself (see normalize_signal_exit() in sova.ipc.control).
+        console.print("[yellow]Workflow terminated (SIGTERM)[/yellow]")
+        raise typer.Exit(code=128 + signal.SIGTERM) from None
 
 
 async def _run_workflow(
@@ -121,7 +133,13 @@ async def _run_workflow(
     else:
         console.print(f"[bold]Starting workflow for {ctx.display_label}[/bold]")
 
-    role, result = await dispatch(ctx, role_name=role_name, config=config.roles)
+    _install_sigterm_handler(task_run_id)
+
+    try:
+        role, result = await dispatch(ctx, role_name=role_name, config=config.roles)
+    except asyncio.CancelledError:
+        await asyncio.shield(_handle_sigterm_shutdown(ctx, task_run_id))
+        raise
 
     if result.success:
         console.print(f"[green]Workflow completed ({role.name}): {result.summary}[/green]")
@@ -130,6 +148,70 @@ async def _run_workflow(
     else:
         console.print(f"[red]Workflow failed ({role.name}): {result.error}[/red]")
         raise typer.Exit(code=1)
+
+
+async def _handle_sigterm_shutdown(ctx: ExecutionContext, task_run_id: int | None) -> None:
+    """Best-effort cleanup during the SIGTERM->SIGKILL grace period.
+
+    Commits any staged partial work so a terminated process does not lose
+    in-progress edits, and (when this run is DB-tracked via --run-id) records
+    elapsed cost so a delayed or absent external finalizer still sees
+    accurate numbers. Status is deliberately left untouched here: whichever
+    process classifies the final exit (the dashboard's _finalize_task_run,
+    or the liveness sweep for a standalone run with no dashboard) decides
+    "stopped" vs "interrupted" vs "failed" from the exit code and any
+    TerminationRecord, not this handler.
+
+    Only commits when ctx.worktree_dir is already set. Before create_worktree
+    runs (e.g. during sync/assess, or for roles that never create a
+    worktree), ctx.working_dir falls back to project_dir, the primary
+    checkout; committing there could capture the operator's own uncommitted
+    edits on whatever branch they have checked out.
+    """
+    from sova.git.worktree import commit_partial_work
+
+    if ctx.worktree_dir is not None:
+        await commit_partial_work(ctx.worktree_dir, "sigterm")
+
+    if task_run_id is None:
+        return
+
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(ctx.project_dir) as session, session.begin():
+            task_run = await session.get(TaskRun, task_run_id)
+            if task_run is not None:
+                task_run.total_cost_usd = ctx.cost_usd
+    except Exception:  # noqa: BLE001 (best-effort cleanup during shutdown must not raise)
+        log.warning("run.sigterm_db_update_failed", run_id=task_run_id, exc_info=True)
+
+
+def _install_sigterm_handler(task_run_id: int | None) -> None:
+    """Cancel the running workflow task when SIGTERM arrives.
+
+    Lets the caller catch asyncio.CancelledError around dispatch() and run
+    _handle_sigterm_shutdown() within the grace period before the parent
+    (or OS) escalates to SIGKILL. add_signal_handler is POSIX-only; on a
+    platform where it is unavailable, the signal falls back to the default
+    disposition (immediate termination), same as before this feature existed.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        main_task = asyncio.current_task()
+    except RuntimeError:
+        return
+
+    def _on_sigterm() -> None:
+        log.warning("run.sigterm_received", run_id=task_run_id)
+        if main_task is not None:
+            main_task.cancel()
+
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
+    except (NotImplementedError, RuntimeError):
+        log.debug("run.sigterm_handler_unavailable")
 
 
 async def _load_checkpoint(run_id: int, issue: str) -> dict:
@@ -152,7 +234,7 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
             if issue and task_run.issue_number and task_run.issue_number != issue.lstrip("#").strip():
                 return {"error": f"Run #{run_id} is for issue #{task_run.issue_number}, not #{issue}"}
 
-            resumable = {"paused", "failed", "interrupted", "done", "awaiting_approval"}
+            resumable = {"paused", "failed", "interrupted", "done", "awaiting_approval", "stopped"}
             if task_run.status not in resumable:
                 return {"error": f"Run #{run_id} has status '{task_run.status}' (must be {', '.join(resumable)})"}
 
