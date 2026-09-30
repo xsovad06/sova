@@ -6,7 +6,7 @@ Separated from agent_lifecycle to keep DB logic focused and testable.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -74,7 +74,7 @@ def _memory_snapshot_text() -> str | None:
         return None
 
 
-def _build_exit_failure_message(exit_code: int, output_lines: Iterable[str], current_step: str | None) -> str:
+def _build_exit_failure_message(exit_code: int, output_lines: Sequence[str], current_step: str | None) -> str:
     """Build an enriched failure message for a process that exited nonzero with no structured LLM error.
 
     Includes a bounded tail of captured output and the last recorded step name instead of
