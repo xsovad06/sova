@@ -1135,6 +1135,13 @@ class TestAgentRuntimeABC:
         set_runtime(ClaudeCodeRuntime())
 
 
+def _stdin_mock() -> MagicMock:
+    """A stdin mock shaped like a real StreamWriter: write/close are sync, drain is async."""
+    stdin = MagicMock()
+    stdin.drain = AsyncMock()
+    return stdin
+
+
 class TestClaudeCodeRuntime:
     async def test_spawn_delegates_to_agent_process(self) -> None:
         from sova.ipc.runtime import ClaudeCodeRuntime
@@ -1144,6 +1151,7 @@ class TestClaudeCodeRuntime:
         mock_proc.returncode = None
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
 
         rt = ClaudeCodeRuntime()
         with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
@@ -1225,6 +1233,7 @@ class TestClaudeCodeRuntime:
         mock_proc.returncode = None
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
 
         runtime = ClaudeCodeRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
@@ -1246,6 +1255,7 @@ class TestClaudeCodeRuntime:
         mock_proc.returncode = None
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
 
         runtime = ClaudeCodeRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
@@ -1265,15 +1275,19 @@ class TestClaudeCodeRuntime:
         mock_proc.returncode = None
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
 
         runtime = ClaudeCodeRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
             await runtime.spawn("my prompt", tmp_path)
 
+        # The prompt is never on argv; -p takes no positional value here.
         args = mock_exec.call_args[0]
-        # -p flag value should be preamble + prompt
         p_idx = args.index("-p")
-        assert args[p_idx + 1] == _HEADLESS_PREAMBLE + "my prompt"
+        assert args[p_idx + 1] == "--output-format"
+
+        # The preamble + prompt is written to stdin instead.
+        mock_proc.stdin.write.assert_called_once_with((_HEADLESS_PREAMBLE + "my prompt").encode("utf-8"))
 
     async def test_spawn_includes_required_cli_flags(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import ClaudeCodeRuntime
@@ -1283,6 +1297,7 @@ class TestClaudeCodeRuntime:
         mock_proc.returncode = None
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
 
         runtime = ClaudeCodeRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
@@ -1311,6 +1326,7 @@ class TestClaudeCodeRuntime:
         mock_proc.returncode = None
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
 
         runtime = ClaudeCodeRuntime()
         with (
@@ -1932,6 +1948,7 @@ class TestCodexRuntime:
             mock_proc.returncode = None
             mock_proc.stdout = AsyncMock()
             mock_proc.stderr = AsyncMock()
+            mock_proc.stdin = _stdin_mock()
 
             rt = runtime_cls()
             with (

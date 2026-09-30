@@ -97,3 +97,123 @@ class TestShellKillTimeout:
 
         mock_proc.kill.assert_called_once()
         mock_proc.wait.assert_called_once()
+
+
+class TestWriteStdinAndClose:
+    """Test write_stdin_and_close's happy path and swallowed-error paths."""
+
+    async def test_noop_when_stdin_is_none(self) -> None:
+        """Inherited stdin (or a test double with none configured) is a no-op."""
+        from sova.utils.shell import write_stdin_and_close
+
+        mock_proc = MagicMock()
+        mock_proc.stdin = None
+
+        await write_stdin_and_close(mock_proc, "hello")
+
+    async def test_writes_drains_and_closes_on_success(self) -> None:
+        from sova.utils.shell import write_stdin_and_close
+
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.drain = AsyncMock()
+
+        await write_stdin_and_close(mock_proc, "hello")
+
+        mock_proc.stdin.write.assert_called_once_with(b"hello")
+        mock_proc.stdin.drain.assert_awaited_once()
+        mock_proc.stdin.close.assert_called_once()
+
+    async def test_broken_pipe_is_swallowed_and_child_is_killed(self) -> None:
+        """A pipe that breaks before the write completes is logged, not raised.
+
+        Delivery could not be confirmed, so the child (which may have only
+        received a truncated prompt) is killed and reaped rather than left
+        running, matching ``run()``'s own timeout-kill pattern.
+        """
+        from sova.utils.shell import write_stdin_and_close
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 999
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.drain = AsyncMock(side_effect=BrokenPipeError)
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock()
+
+        await write_stdin_and_close(mock_proc, "hello")
+
+        mock_proc.stdin.close.assert_called_once()
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_awaited_once()
+
+    async def test_connection_reset_is_swallowed_and_child_is_killed(self) -> None:
+        from sova.utils.shell import write_stdin_and_close
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 999
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.drain = AsyncMock(side_effect=ConnectionResetError)
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock()
+
+        await write_stdin_and_close(mock_proc, "hello")
+
+        mock_proc.stdin.close.assert_called_once()
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_awaited_once()
+
+    async def test_timeout_is_swallowed_and_child_is_killed(self) -> None:
+        """A write that never drains (child not reading stdin) times out, not hangs."""
+        from sova.utils.shell import write_stdin_and_close
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 999
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.drain = AsyncMock(side_effect=TimeoutError)
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock()
+
+        await write_stdin_and_close(mock_proc, "hello")
+
+        mock_proc.stdin.close.assert_called_once()
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_awaited_once()
+
+    async def test_kill_already_dead_process_is_a_noop(self) -> None:
+        """A process that already exited (e.g. the broken pipe's own cause) is fine to kill twice."""
+        from sova.utils.shell import write_stdin_and_close
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 999
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.drain = AsyncMock(side_effect=BrokenPipeError)
+        mock_proc.kill = MagicMock(side_effect=ProcessLookupError)
+        mock_proc.wait = AsyncMock()
+
+        await write_stdin_and_close(mock_proc, "hello")
+
+        mock_proc.stdin.close.assert_called_once()
+        mock_proc.wait.assert_not_awaited()
+
+    async def test_cancelled_error_kills_child_and_still_propagates(self) -> None:
+        """Cancellation must never be swallowed, but the child must not leak untracked.
+
+        The caller has not yet received a process wrapper (``AgentProcess`` /
+        ``FileAgentProcess``) when cancellation interrupts the drain, so this
+        is the only place that can clean up the already-spawned child.
+        """
+        from sova.utils.shell import write_stdin_and_close
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 999
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.drain = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock()
+
+        with pytest.raises(asyncio.CancelledError):
+            await write_stdin_and_close(mock_proc, "hello")
+
+        mock_proc.stdin.close.assert_called_once()
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_awaited_once()
