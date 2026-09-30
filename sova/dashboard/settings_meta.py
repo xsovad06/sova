@@ -157,8 +157,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "llm.api_key",
         "API key",
-        "API key for the anthropic provider. Stored in the project database as plaintext JSON text. "
-        "Leave blank to use the ANTHROPIC_API_KEY environment variable",
+        "API key for the anthropic provider. Stored in the OS keychain when available, otherwise "
+        "in the project database as plaintext. Leave blank to use the ANTHROPIC_API_KEY environment variable",
         "llm",
         "secret",
     ),
@@ -2066,21 +2066,32 @@ _REGISTRY: list[SettingMeta] = [
 
 _META_BY_KEY: dict[str, SettingMeta] = {m.key: m for m in _REGISTRY}
 
+# Every setting whose value must never be displayed or returned in plaintext.
+SECRET_KEYS: frozenset[str] = frozenset(m.key for m in _REGISTRY if m.value_type == "secret")
+
 
 def get_meta(key: str) -> SettingMeta | None:
     """Look up metadata for a config key."""
     return _META_BY_KEY.get(key)
 
 
-def get_grouped_config(flat_config: dict) -> list[dict]:
+def get_grouped_config(flat_config: dict, secret_locations: dict[str, str] | None = None) -> list[dict]:
     """Transform a flat config dict into grouped sections with metadata.
 
     Returns a list of group dicts:
       [{"id": "agent", "label": "Agent", "settings": [...]}, ...]
 
     Each setting in a group has: key, label, description, value, value_type, raw_key.
+    A ``value_type="secret"`` entry additionally carries ``secret_location``
+    ("keyring"/"database"/"unset", from ``secret_locations``) and
+    ``keyring_capable`` (whether this key is actually resolved through the
+    keyring; see ``keyring_store.RESOLVED_SECRET_KEYS``), which the settings
+    page uses to decide whether to offer a "Move to keychain" action.
     Settings without a registered group go into "other".
     """
+    from sova.llm import keyring_store
+
+    secret_locations = secret_locations or {}
     groups: dict[str, list[dict]] = {}
 
     for key in sorted(flat_config.keys()):
@@ -2101,6 +2112,9 @@ def get_grouped_config(flat_config: dict) -> list[dict]:
                 "requires_restart": meta.requires_restart,
                 "options": list(meta.options),
             }
+            if meta.value_type == "secret":
+                entry["secret_location"] = secret_locations.get(key, "unset")
+                entry["keyring_capable"] = key in keyring_store.RESOLVED_SECRET_KEYS
         else:
             group_id = _infer_group(key)
             entry = {

@@ -114,6 +114,34 @@ class TestSettingMeta:
             assert gid in GROUP_ORDER, f"GROUPS contains '{gid}' not in GROUP_ORDER"
 
 
+class TestGetGroupedConfigSecrets:
+    def test_secret_location_defaults_to_unset(self) -> None:
+        groups = get_grouped_config({"llm.api_key": "••••••••"})
+        setting = next(s for g in groups for s in g["settings"] if s["key"] == "llm.api_key")
+        assert setting["secret_location"] == "unset"
+
+    def test_secret_location_passed_through(self) -> None:
+        groups = get_grouped_config({"llm.api_key": "••••••••"}, secret_locations={"llm.api_key": "keyring"})
+        setting = next(s for g in groups for s in g["settings"] if s["key"] == "llm.api_key")
+        assert setting["secret_location"] == "keyring"
+
+    def test_keyring_capable_true_for_resolved_key(self) -> None:
+        groups = get_grouped_config({"llm.api_key": "••••••••"})
+        setting = next(s for g in groups for s in g["settings"] if s["key"] == "llm.api_key")
+        assert setting["keyring_capable"] is True
+
+    def test_keyring_capable_false_for_unresolved_secret(self) -> None:
+        groups = get_grouped_config({"mcp.token_secret": "••••••••"})
+        setting = next(s for g in groups for s in g["settings"] if s["key"] == "mcp.token_secret")
+        assert setting["keyring_capable"] is False
+
+    def test_non_secret_setting_has_no_secret_fields(self) -> None:
+        groups = get_grouped_config({"agent.model": "opus"})
+        setting = next(s for g in groups for s in g["settings"] if s["key"] == "agent.model")
+        assert "secret_location" not in setting
+        assert "keyring_capable" not in setting
+
+
 class TestGetGroupedConfig:
     def test_empty_config(self) -> None:
         result = get_grouped_config({})

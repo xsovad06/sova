@@ -101,6 +101,9 @@ def set_setting(
     meta = _META_BY_KEY.get(key)
     if meta is not None and meta.value_type == "secret":
         console.print(f"[green]{key} = (secret, updated)[/green]")
+        warning = result.get("warning")
+        if warning:
+            console.print(f"[yellow]{warning}[/yellow]")
         return
 
     console.print(f"[green]{key} = {value}[/green]")

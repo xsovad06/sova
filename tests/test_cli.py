@@ -235,6 +235,28 @@ class TestConfigCommand:
         assert "sk-super-secret-token" not in result.output
         assert "llm.api_key" in result.output
 
+    def test_set_prints_keyring_fallback_warning(self, tmp_path: Path) -> None:
+        """update_config()'s plaintext-fallback warning must reach the console."""
+        from sova.cli.app import app
+
+        with patch(
+            "sova.dashboard.services.settings_service.update_config",
+            new_callable=AsyncMock,
+            return_value={
+                "status": "ok",
+                "key": "llm.api_key",
+                "value": "sk-super-secret-token",
+                "warning": "OS keyring unavailable; stored in the project database as plaintext",
+            },
+        ):
+            result = runner.invoke(
+                app, ["config", "set", "llm.api_key", "sk-super-secret-token", "--project", str(tmp_path)]
+            )
+
+        assert result.exit_code == 0
+        assert "OS keyring unavailable" in result.output
+        assert "sk-super-secret-token" not in result.output
+
     def test_set_warns_when_running_server_wont_pick_up_the_change(self, tmp_path: Path) -> None:
         """`sova config set` runs in its own process, so it cannot dispatch the
         live-reload a running `sova server`/dashboard would apply for itself.

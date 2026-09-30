@@ -371,6 +371,290 @@ class TestSecretMaskRoundTrip:
         assert "api_key" not in toml_content
 
 
+class TestSecretKeyringRouting:
+    """update_config()/get_config() routing for keyring-backed secrets (llm.api_key)."""
+
+    async def test_write_uses_keyring_when_available(self, tmp_path) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret", return_value=True) as mock_set,
+        ):
+            result = await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+
+        assert result.get("status") == "ok"
+        assert "warning" not in result
+        mock_set.assert_called_once_with("llm.api_key", "sk-ant-real")
+
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "llm.api_key")
+        assert db_value == keyring_store.SENTINEL
+
+    async def test_write_falls_back_to_plaintext_when_keyring_unavailable(self, tmp_path) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+        from sova.llm import keyring_store
+
+        with patch.object(keyring_store, "is_keyring_available", return_value=False):
+            result = await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+
+        assert result.get("status") == "ok"
+        assert result.get("warning") == "OS keyring unavailable; stored in the project database as plaintext"
+
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "llm.api_key")
+        assert db_value == "sk-ant-real"
+
+    async def test_write_falls_back_to_plaintext_when_keyring_set_fails(self, tmp_path) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret", return_value=False),
+        ):
+            result = await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+
+        assert result.get("warning") == "OS keyring write failed; stored in the project database as plaintext"
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "llm.api_key")
+        assert db_value == "sk-ant-real"
+
+    async def test_empty_value_clears_keyring_and_db(self, tmp_path) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "delete_secret") as mock_delete,
+        ):
+            result = await update_config(tmp_path, key="llm.api_key", value="")
+
+        assert result.get("status") == "ok"
+        assert "warning" not in result
+        mock_delete.assert_called_once_with("llm.api_key")
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "llm.api_key")
+        assert db_value == ""
+
+    async def test_clear_warns_when_keyring_delete_fails(self, tmp_path) -> None:
+        """A real delete failure (locked keychain, backend error) must not report plain success.
+
+        The database row is still cleared, but the old key may still live in
+        the keyring; silently reporting success would defeat a user's
+        deliberate fallback to ANTHROPIC_API_KEY.
+        """
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "delete_secret", return_value=False),
+        ):
+            result = await update_config(tmp_path, key="llm.api_key", value="")
+
+        assert result.get("status") == "ok"
+        assert result.get("warning") == (
+            "Could not confirm the OS keychain entry was removed; the old key may still be used"
+        )
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "llm.api_key")
+        assert db_value == ""
+
+    async def test_non_keyring_backed_secret_stays_plaintext_even_when_keyring_available(self, tmp_path) -> None:
+        """A secret setting outside RESOLVED_SECRET_KEYS is never moved to the keyring."""
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret") as mock_set,
+        ):
+            result = await update_config(tmp_path, key="mcp.token_secret", value="hmac-secret")
+
+        assert result.get("status") == "ok"
+        assert "warning" not in result
+        mock_set.assert_not_called()
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "mcp.token_secret")
+        assert db_value == "hmac-secret"
+
+
+class TestGetConfigMasking:
+    """get_config() must never return a real secret value."""
+
+    async def test_secret_is_masked(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import _SECRET_MASK_PLACEHOLDER, get_config, update_config
+
+        await update_config(tmp_path, key="llm.api_key", value="sk-ant-super-secret")
+        flat = get_config(tmp_path)
+        assert flat["llm.api_key"] == _SECRET_MASK_PLACEHOLDER
+        assert "sk-ant-super-secret" not in str(flat)
+
+    async def test_unset_secret_is_not_masked(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import get_config
+
+        flat = get_config(tmp_path)
+        assert not flat.get("llm.api_key")
+
+    async def test_sentinel_secret_is_masked_not_leaked(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import _SECRET_MASK_PLACEHOLDER, get_config, update_config
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret", return_value=True),
+        ):
+            await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+
+        flat = get_config(tmp_path)
+        assert flat["llm.api_key"] == _SECRET_MASK_PLACEHOLDER
+        assert keyring_store.SENTINEL not in str(flat)
+
+    async def test_raw_config_exposes_real_value(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import _get_raw_config, update_config
+
+        await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+        raw = _get_raw_config(tmp_path)
+        assert raw["llm.api_key"] == "sk-ant-real"
+
+
+class TestGetSecretLocations:
+    async def test_unset_is_unset(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import get_secret_locations
+
+        locations = get_secret_locations(tmp_path)
+        assert locations["llm.api_key"] == "unset"
+
+    async def test_plaintext_db_value_is_database(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import get_secret_locations, update_config
+        from sova.llm import keyring_store
+
+        with patch.object(keyring_store, "is_keyring_available", return_value=False):
+            await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+
+        locations = get_secret_locations(tmp_path)
+        assert locations["llm.api_key"] == "database"
+
+    async def test_keyring_stored_value_is_keyring(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import get_secret_locations, update_config
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret", return_value=True),
+        ):
+            await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+
+        locations = get_secret_locations(tmp_path)
+        assert locations["llm.api_key"] == "keyring"
+
+    async def test_config_load_failure_returns_empty(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import get_secret_locations
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+            assert get_secret_locations(tmp_path) == {}
+
+
+class TestMigrateSecretToKeyring:
+    async def test_migrates_plaintext_value(self, tmp_path) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import migrate_secret_to_keyring, update_config
+        from sova.db.session import get_session
+        from sova.llm import keyring_store
+
+        with patch.object(keyring_store, "is_keyring_available", return_value=False):
+            await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "migrate_plaintext_to_keyring", return_value=True) as mock_migrate,
+        ):
+            result = await migrate_secret_to_keyring(tmp_path, "llm.api_key")
+
+        assert result.get("status") == "ok"
+        mock_migrate.assert_called_once_with("llm.api_key", "sk-ant-real")
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "llm.api_key")
+        assert db_value == keyring_store.SENTINEL
+
+    async def test_readback_failure_leaves_db_untouched(self, tmp_path) -> None:
+        """A failed round-trip must never lose the plaintext value."""
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import migrate_secret_to_keyring, update_config
+        from sova.db.session import get_session
+        from sova.llm import keyring_store
+
+        with patch.object(keyring_store, "is_keyring_available", return_value=False):
+            await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "migrate_plaintext_to_keyring", return_value=False),
+        ):
+            result = await migrate_secret_to_keyring(tmp_path, "llm.api_key")
+
+        assert "error" in result
+        async with await get_session(project_dir=tmp_path) as session:
+            db_value = await get_setting(session, "llm.api_key")
+        assert db_value == "sk-ant-real"
+
+    async def test_rejects_non_secret_key(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import migrate_secret_to_keyring
+
+        result = await migrate_secret_to_keyring(tmp_path, "agent.max_budget")
+        assert "error" in result
+
+    async def test_rejects_key_outside_resolved_secret_keys(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import migrate_secret_to_keyring
+        from sova.llm import keyring_store
+
+        with patch.object(keyring_store, "is_keyring_available", return_value=True):
+            result = await migrate_secret_to_keyring(tmp_path, "mcp.token_secret")
+        assert "error" in result
+
+    async def test_rejects_when_keyring_unavailable(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import migrate_secret_to_keyring
+        from sova.llm import keyring_store
+
+        with patch.object(keyring_store, "is_keyring_available", return_value=False):
+            result = await migrate_secret_to_keyring(tmp_path, "llm.api_key")
+        assert "error" in result
+
+    async def test_rejects_when_nothing_stored(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import migrate_secret_to_keyring
+        from sova.llm import keyring_store
+
+        with patch.object(keyring_store, "is_keyring_available", return_value=True):
+            result = await migrate_secret_to_keyring(tmp_path, "llm.api_key")
+        assert "error" in result
+
+    async def test_rejects_when_already_in_keyring(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import migrate_secret_to_keyring, update_config
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret", return_value=True),
+        ):
+            await update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+            result = await migrate_secret_to_keyring(tmp_path, "llm.api_key")
+        assert "error" in result
+
+
 class TestSaveSettingToToml:
     """Tests for _save_setting_to_toml error paths."""
 
@@ -536,6 +820,44 @@ class TestSettingsRouterErrors:
         data = resp.json()
         assert "error" in data
         assert "number" in data["error"]
+
+    async def test_get_config_grouped_reports_keyring_available(self, client, monkeypatch) -> None:
+        from sova.llm import keyring_store
+
+        monkeypatch.setattr("sova.dashboard.services.settings_service.get_config", lambda *_a, **_kw: {})
+        monkeypatch.setattr("sova.dashboard.services.settings_service.get_secret_locations", lambda *_a, **_kw: {})
+        monkeypatch.setattr(keyring_store, "is_keyring_available", lambda: True)
+
+        resp = await client.get("/api/settings/config/grouped")
+        assert resp.status_code == 200
+        assert resp.json()["keyring_available"] is True
+
+    async def test_migrate_secret_success(self, client, monkeypatch) -> None:
+        async def fake_migrate(*_a, **_kw):
+            return {"status": "ok", "key": "llm.api_key"}
+
+        monkeypatch.setattr("sova.dashboard.services.settings_service.migrate_secret_to_keyring", fake_migrate)
+        resp = await client.post("/api/settings/config/migrate-secret", json={"key": "llm.api_key"})
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok", "key": "llm.api_key"}
+
+    async def test_migrate_secret_reports_error(self, client, monkeypatch) -> None:
+        async def fake_migrate(*_a, **_kw):
+            return {"error": "OS keyring is not available on this machine"}
+
+        monkeypatch.setattr("sova.dashboard.services.settings_service.migrate_secret_to_keyring", fake_migrate)
+        resp = await client.post("/api/settings/config/migrate-secret", json={"key": "llm.api_key"})
+        assert resp.status_code == 200
+        assert "error" in resp.json()
+
+    async def test_migrate_secret_server_error(self, client, monkeypatch) -> None:
+        async def raise_generic(*_a, **_kw):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr("sova.dashboard.services.settings_service.migrate_secret_to_keyring", raise_generic)
+        resp = await client.post("/api/settings/config/migrate-secret", json={"key": "llm.api_key"})
+        assert resp.status_code == 500
+        assert resp.json()["detail"] == "Failed to migrate secret"
 
 
 class TestGetConfigAndPersona:
