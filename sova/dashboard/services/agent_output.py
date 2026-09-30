@@ -13,6 +13,7 @@ from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from sova.dashboard.services.agent_pool import AgentState
+    from sova.ipc.runtime import StreamParser
 
 log = get_logger(component="dashboard.output")
 
@@ -86,10 +87,54 @@ async def _read_output(agent: AgentState) -> None:
             log.debug("output_reader.error_line_write_failed", run_id=agent.run_id, exc_info=True)
 
 
+def _parse_runtime_stream_line(line: str, agent: AgentState, parser: StreamParser) -> str:
+    """Extract readable text from a line via a per-process runtime stream parser.
+
+    Used for runtimes (currently only Codex) that expose a stateful
+    ``create_stream_parser()`` result on ``agent.stream_parser``, so their
+    own event format never needs to be understood here. The parser is passed
+    in rather than read off *agent* so this function never has to assume the
+    caller already proved it is set. A terminal failure result sets
+    ``agent.stream_failure`` rather than raising, so ``_wait_and_finalize()``
+    can downgrade even a zero exit code.
+
+    Terminal-event deduplication (so a duplicate ``turn.completed``/
+    ``turn.failed`` never surfaces twice) is enforced entirely inside
+    ``CodexStreamParser.parse_line()``'s own internal latch; this function
+    has no ``terminal_result`` attribute to consult and only ever reads the
+    ``stop_reason`` of the single ``StreamEvent`` returned for this line.
+    """
+    event = parser.parse_line(line)
+    if event is None:
+        return ""
+    if event.type != "result" or event.result is None:
+        return event.text or ""
+
+    result = event.result
+    if result.session_id:
+        agent.runtime_session_id = result.session_id
+    if result.stop_reason == "error":
+        agent.stream_failure = result.text or "runtime reported a terminal failure"
+        return f"\n--- Result [error]: {agent.stream_failure} ---"
+
+    # ``result.text`` is the last agent message, already emitted as its own
+    # content event, so echoing it would duplicate. A token summary marks the
+    # end of the turn in the log viewer the way the Claude path's cost marker
+    # does, without repeating content.
+    return f"\n--- Result [tokens: {result.input_tokens} in / {result.output_tokens} out] ---"
+
+
 def _parse_stream_line(line: str, agent: AgentState) -> str:
-    """Extract readable text from a Claude stream-json line."""
+    """Extract readable text from an agent output line.
+
+    Delegates to the agent's own per-process runtime parser when it has one
+    (Codex); otherwise parses Claude Code's stream-json format inline.
+    """
     if not line.strip():
         return ""
+
+    if agent.stream_parser is not None:
+        return _parse_runtime_stream_line(line, agent, agent.stream_parser)
 
     try:
         data = json.loads(line)
