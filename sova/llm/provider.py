@@ -14,7 +14,14 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent
+from sova.llm.models import (
+    CURATED_MODELS,
+    BatchRequest,
+    BatchResult,
+    LLMResult,
+    ModelInfo,
+    StreamEvent,
+)
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -191,6 +198,26 @@ class LLMProvider(ABC):
                 log.warning("llm.batch_item_failed", custom_id=req.custom_id, error=str(exc), exc_info=True)
                 results.append(BatchResult(request=req, error=str(exc)))
         return results
+
+    # Stays async with no internal await: callers always `await` this method
+    # polymorphically without knowing the concrete provider type, and the
+    # three overriding implementations (LiteLLM, Anthropic API, Claude Code)
+    # do perform real async I/O, so the signature must match across all of
+    # them for interface parity.
+    async def list_available_models(self, *, allow_probe: bool = True) -> list[ModelInfo]:  # NOSONAR(S7503)
+        """Return the models this provider knows how to reach.
+
+        Concrete default (not abstract) so existing and third-party provider
+        subclasses keep working without implementing enumeration: it returns
+        the curated static list unconditionally, doing no network or
+        subprocess work of its own. Providers capable of real discovery
+        override this.
+
+        ``allow_probe`` lets a latency- or cost-sensitive caller (a dashboard
+        poll, a doctor smoke pass) request the curated answer with zero extra
+        work; providers that never probe, including this default, ignore it.
+        """
+        return list(CURATED_MODELS)
 
     def normalize_model_name(self, model: str) -> str:
         """Map generic model tiers (fast/smart/cheap) to provider-specific IDs.

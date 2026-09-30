@@ -26,7 +26,15 @@ from sova.llm.errors import (
     is_fallback_eligible,
     resolve_error_category,
 )
-from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent, resolve_model_alias
+from sova.llm.models import (
+    CURATED_MODELS,
+    BatchRequest,
+    BatchResult,
+    LLMResult,
+    ModelInfo,
+    StreamEvent,
+    resolve_model_alias,
+)
 
 # Module-level, unlike get_provider()'s lazy per-call ClaudeCodeProvider import:
 # reload_provider() is the chokepoint tests patch as sova.llm.client.create_provider,
@@ -235,6 +243,12 @@ _DEADLINE_SAFETY_MARGIN = 0.95
 # without restarting the process.
 _UNAVAILABLE_TTL_SECONDS = 300.0
 
+# Enumeration results (list_available_models()) are a positive, relatively
+# stable fact, unlike the reactive negative cache above: a deployment's model
+# catalog does not change mid-session, so this stays separate from
+# _UNAVAILABLE_TTL_SECONDS rather than inheriting its fast-expiry lifetime.
+_ENUMERATION_TTL_SECONDS = 1800.0
+
 # (provider, model, next_hop, timeout, max_budget_usd) -> result. Lets invoke()
 # and invoke_command() share one chain walk without the loop knowing which
 # provider call it drives. The provider is threaded through explicitly (not
@@ -263,9 +277,17 @@ class ModelAvailabilityCache:
     never break all LLM calls in the process.
     """
 
-    def __init__(self, ttl_seconds: float = _UNAVAILABLE_TTL_SECONDS) -> None:
+    def __init__(
+        self,
+        ttl_seconds: float = _UNAVAILABLE_TTL_SECONDS,
+        enumeration_ttl_seconds: float = _ENUMERATION_TTL_SECONDS,
+    ) -> None:
         self._ttl = ttl_seconds
         self._expiry: dict[tuple[str, str], float] = {}
+        self._enumeration_ttl = enumeration_ttl_seconds
+        self._enumeration: dict[str, tuple[float, list[ModelInfo]]] = {}
+        self._probe_outcomes: dict[tuple[str, str], tuple[float, bool]] = {}
+        self._enumeration_locks: dict[str, asyncio.Lock] = {}
 
     def mark_unavailable(self, identity: str, model: str | None) -> None:
         """Record *model* as unavailable on *identity* for the TTL. ``None`` has no identity."""
@@ -286,9 +308,69 @@ class ModelAvailabilityCache:
             return False
         return True
 
+    def get_enumeration(self, identity: str) -> list[ModelInfo] | None:
+        """Return the cached enumeration result for *identity*, or None if absent/expired.
+
+        A fresh list each time, never the stored one: the cached result is
+        handed straight back to callers by ``list_available_models()``, and a
+        caller that sorts or filters the list in place would otherwise corrupt
+        every later read for the whole enumeration TTL. ``ModelInfo`` is frozen,
+        so a shallow copy is enough.
+        """
+        entry = self._enumeration.get(identity)
+        if entry is None:
+            return None
+        expiry, models = entry
+        if time.monotonic() >= expiry:
+            del self._enumeration[identity]
+            return None
+        return list(models)
+
+    def set_enumeration(self, identity: str, models: list[ModelInfo]) -> None:
+        """Cache *models* as the enumeration result for *identity* for the enumeration TTL."""
+        self._enumeration[identity] = (time.monotonic() + self._enumeration_ttl, list(models))
+
+    def get_probe_outcome(self, identity: str, model: str) -> bool | None:
+        """Return a cached per-model probe outcome for *identity*, or None if absent/expired."""
+        key = (identity, model)
+        entry = self._probe_outcomes.get(key)
+        if entry is None:
+            return None
+        expiry, available = entry
+        if time.monotonic() >= expiry:
+            del self._probe_outcomes[key]
+            return None
+        return available
+
+    def set_probe_outcome(self, identity: str, model: str, available: bool) -> None:
+        """Cache a per-model probe outcome for *identity*.
+
+        A working model keeps the full enumeration TTL: that a model answers is
+        a stable positive fact about the deployment. A failing probe gets the
+        short reactive TTL instead (the same lifetime ``mark_unavailable()``
+        uses), because a whole-list wipeout is read as an outage:
+        ``cached_enumeration()`` deliberately serves the curated fallback
+        without caching it so the next call retries, and pinning the negative
+        probe answers for the full enumeration TTL would leave that retry with
+        nothing to re-probe and silently defeat it.
+        """
+        ttl = self._enumeration_ttl if available else self._ttl
+        self._probe_outcomes[(identity, model)] = (time.monotonic() + ttl, available)
+
+    def enumeration_lock(self, identity: str) -> asyncio.Lock:
+        """Return a per-identity lock so concurrent enumeration calls single-flight."""
+        lock = self._enumeration_locks.get(identity)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._enumeration_locks[identity] = lock
+        return lock
+
     def reset(self) -> None:
         """Drop every entry (used by tests to avoid cross-test leakage)."""
         self._expiry.clear()
+        self._enumeration.clear()
+        self._probe_outcomes.clear()
+        self._enumeration_locks.clear()
 
 
 _availability_cache = ModelAvailabilityCache()
@@ -302,6 +384,36 @@ def get_availability_cache() -> ModelAvailabilityCache:
 def reset_availability_cache() -> None:
     """Clear the process-local availability cache (for testing)."""
     _availability_cache.reset()
+
+
+async def cached_enumeration(
+    identity: str,
+    compute: Callable[[], Awaitable[list[ModelInfo] | None]],
+) -> list[ModelInfo]:
+    """Run *compute* at most once per *identity* per TTL, single-flighted.
+
+    Every provider that implements ``list_available_models()`` needs the same
+    check-cache / take-per-identity-lock / re-check / compute / store sequence,
+    so it lives here next to the cache rather than being hand-rolled per
+    provider. A ``compute`` returning ``None`` means "enumeration failed":
+    ``CURATED_MODELS`` is returned and nothing is cached, so the next call
+    retries instead of pinning the fallback for the whole TTL.
+    """
+    cache = get_availability_cache()
+    cached = cache.get_enumeration(identity)
+    if cached is not None:
+        return cached
+
+    async with cache.enumeration_lock(identity):
+        cached = cache.get_enumeration(identity)
+        if cached is not None:
+            return cached
+
+        computed = await compute()
+        if computed is None:
+            return list(CURATED_MODELS)
+        cache.set_enumeration(identity, computed)
+        return computed
 
 
 def _normalize_model(model: str | None) -> str | None:

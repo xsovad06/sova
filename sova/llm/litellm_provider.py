@@ -10,17 +10,146 @@ Requires the optional ``litellm`` dependency::
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import ipaddress
+import os
 import time
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import urlsplit
 
+import httpx
+
+from sova.llm.client import cached_enumeration
 from sova.llm.errors import LLMError, ProviderUnavailableError, classify_exception
-from sova.llm.models import CostSource, LLMResult, StreamEvent, is_local_model_id
+from sova.llm.gcp_auth import VertexTokenProvider
+from sova.llm.models import (
+    CURATED_MODELS,
+    CostSource,
+    LLMResult,
+    ModelFamily,
+    ModelInfo,
+    StreamEvent,
+    classify_model_family,
+    is_local_model_id,
+    model_tier_for_id,
+)
 from sova.llm.provider import LLMProvider, ProviderCapabilities, _measure_ms
 from sova.utils.logging import get_logger
 
 log = get_logger(component="llm.litellm")
+
+# Enumeration sources (Vertex publisher catalog, Ollama /api/tags, an
+# OpenAI-compatible /v1/models) are all best-effort discovery, not the model
+# invocation path, so they get their own short bound distinct from
+# _DEFAULT_TIMEOUT below.
+_ENUMERATION_HTTP_TIMEOUT = 10.0
+
+# Every publisher this provider knows how to enumerate on Vertex AI. "openai"
+# is included because Vertex's openai publisher serves gpt-oss (open weight)
+# models, filtered below to exclude any proprietary GPT/o-series entry.
+_VERTEX_PUBLISHERS: tuple[str, ...] = ("anthropic", "google", "openai")
+
+# Page size for the Vertex publisher-models API. Only the first page is read:
+# a catalog larger than this is silently truncated rather than paged, which is
+# acceptable here in a way it would not be for a count-based gate (see the
+# reviewThreads truncation rule in .claude/rules/architecture.md), because a
+# short enumeration list only degrades a suggestion, never a decision.
+_VERTEX_PAGE_SIZE = 1000
+
+_OLLAMA_DEFAULT_BASE = "http://localhost:11434"
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _credential_safe_target(url: str) -> bool:
+    """Return True when *url* may carry a bearer credential.
+
+    A plaintext credential must never leave the machine over an unencrypted
+    channel: safe when the scheme is ``https`` (the wire is encrypted end to
+    end) or when the host resolves to loopback (the request never leaves the
+    machine even over plain HTTP, e.g. a local OpenAI-compatible shim). An
+    unparseable host is treated as unsafe, the fail-closed direction.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme == "https":
+        return True
+    host = (parsed.hostname or "").strip("[]")
+    if host in _LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+async def _fetch_json_entries(
+    url: str,
+    key: str,
+    log_event: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, int] | None = None,
+) -> list[dict]:
+    """GET *url* and return the dict entries of its ``data[key]`` list.
+
+    Shared by every enumeration source (Vertex publisher catalog, Ollama
+    ``/api/tags``, an OpenAI-compatible ``/v1/models``): all three are
+    best-effort discovery, so an unreachable or malformed source contributes
+    nothing rather than raising.
+
+    Every layer of the payload is shape-checked rather than trusted, because
+    ``api_base`` is operator-supplied and an OpenAI-compatible endpoint is an
+    arbitrary third-party server: a top-level scalar, a ``data[key]`` that is
+    not a list, or a non-dict entry inside it would each otherwise reach a
+    caller's ``entry.get(...)`` as an ``AttributeError`` that escapes this
+    module's never-raise contract (the same "valid JSON is not necessarily a
+    JSON object" trap documented in .claude/rules/architecture.md).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=_ENUMERATION_HTTP_TIMEOUT) as client:
+            resp = await client.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:  # noqa: BLE001 (enumeration is advisory: a failed source yields no models, never an error)
+        log.debug(log_event, url=url, exc_info=True)
+        return []
+    if not isinstance(data, dict):
+        return []
+    entries = data.get(key, [])
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _vertex_project_id() -> str:
+    """Return the configured Vertex AI project, or "" when Vertex is not in use."""
+    return os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID", "").strip()
+
+
+def _vertex_region() -> str:
+    """Return the Vertex AI region the publisher catalog should be read from."""
+    return os.environ.get("CLOUD_ML_REGION", "us-east5")
+
+
+def _dedup_models(models: list[ModelInfo]) -> list[ModelInfo]:
+    """Keep the first entry for each id, in encounter order."""
+    by_id: dict[str, ModelInfo] = {}
+    for model in models:
+        by_id.setdefault(model.id, model)
+    return list(by_id.values())
+
+
+def _vertex_model_id(entry: dict) -> str:
+    """Extract the bare model id from a Vertex PublisherModel's ``name`` field.
+
+    ``name`` is formatted ``publishers/{publisher}/models/{model}``.
+    """
+    name = str(entry.get("name") or "")
+    return name.rsplit("/", 1)[-1] if name else ""
+
 
 try:
     import litellm  # type: ignore[import-untyped]
@@ -116,6 +245,7 @@ class LiteLLMProvider(LLMProvider):
         # provider is constructed (e.g. reload_provider()) rather than needing
         # an explicit reset hook.
         self._warned_unpriced_models: set[str] = set()
+        self._vertex_token_provider = VertexTokenProvider()
 
     async def invoke(
         self,
@@ -194,6 +324,200 @@ class LiteLLMProvider(LLMProvider):
             start = time.monotonic()
             async for event in self._stream(self.fallback_model, prompt, start):
                 yield event
+
+    async def list_available_models(self, *, allow_probe: bool = True) -> list[ModelInfo]:
+        """Enumerate reachable models across every configured backend.
+
+        Attempts Vertex AI (if ``ANTHROPIC_VERTEX_PROJECT_ID`` is set),
+        Ollama (if ``self.model`` targets it), and an OpenAI-compatible
+        endpoint (if ``self.api_base`` is set and the model doesn't already
+        identify a local or Vertex target). Falls back to the curated static
+        list when none of those are configured or all of them fail.
+        """
+        if not allow_probe:
+            return list(CURATED_MODELS)
+
+        return await cached_enumeration(self._enumeration_identity(), self._enumerate_all_backends)
+
+    async def _enumerate_all_backends(self) -> list[ModelInfo] | None:
+        # Each source returns None when it is not configured at all, so
+        # "configured but produced nothing" is read off the outcomes rather
+        # than from a second copy of the three configuration conditions.
+        #
+        # Gathered rather than awaited in sequence: the sources are independent
+        # and each is bounded by _ENUMERATION_HTTP_TIMEOUT, so running them one
+        # after another would multiply that bound by the number configured for
+        # no benefit. return_exceptions=True keeps this module's never-raise
+        # contract intact even if a source grows an unguarded failure path, and
+        # such a raise maps to [] (configured, produced nothing), never to None
+        # (not configured): the former retries on the next call, while the
+        # latter would cache the curated fallback as this deployment's answer.
+        results = await asyncio.gather(
+            self._enumerate_vertex(),
+            self._enumerate_ollama(),
+            self._enumerate_openai_compatible(),
+            return_exceptions=True,
+        )
+        outcomes: list[list[ModelInfo] | None] = []
+        for outcome in results:
+            if isinstance(outcome, BaseException):
+                log.debug("llm.litellm.enumeration_source_failed", error=str(outcome))
+                outcomes.append([])
+            else:
+                outcomes.append(outcome)
+        models = [model for outcome in outcomes if outcome for model in outcome]
+        if models:
+            return _dedup_models(models)
+        if any(outcome is not None for outcome in outcomes):
+            # Something was configured and produced nothing, so this is an
+            # outage (ADC expired, Ollama daemon down, api_base unreachable),
+            # not a fact about the deployment. None makes cached_enumeration()
+            # serve the curated fallback without pinning it for the whole TTL,
+            # so the next call retries instead of reporting a stale catalog.
+            return None
+        # Nothing to enumerate at all: the curated list is this deployment's
+        # stable answer, so it is safe to cache.
+        return list(CURATED_MODELS)
+
+    def _enumeration_identity(self) -> str:
+        """Return the enumeration cache key for this provider's deployment.
+
+        May differ from ``client._provider_identity()`` (the config-derived
+        key for the reactive negative cache): every vendor-alias provider
+        type (litellm, vertex, openai, ollama, hybrid) constructs this same
+        class, so this key is derived from what the instance actually knows
+        (model, api_base) rather than the config section name. A mismatch
+        only means the enumeration cache misses a sharing opportunity with
+        the fallback loop's negative cache, never a correctness failure.
+
+        The Vertex project and region are part of the key even though they
+        come from the environment rather than the instance: they select which
+        publisher catalog ``_enumerate_vertex()`` reads, so two deployments
+        differing only in those would otherwise share one cached catalog.
+
+        ``OPENAI_API_KEY`` is folded in the same way, as a SHA-256
+        fingerprint rather than the raw key (matching
+        ``_anthropic_api_enumeration_identity()``'s never-leaks-the-key
+        contract): ``_enumerate_openai_compatible()`` resolves this same env
+        var at call time, so two different accounts hitting the same
+        ``api_base`` would otherwise share one cached catalog for up to the
+        enumeration TTL.
+        """
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        key_fingerprint = hashlib.sha256(api_key.encode()).hexdigest()[:12] if api_key else ""
+        return f"litellm:{self.model}:{self.api_base or ''}:{key_fingerprint}:{_vertex_project_id()}:{_vertex_region()}"
+
+    async def _enumerate_vertex(self) -> list[ModelInfo] | None:
+        """Read the Vertex publisher catalog, or None when Vertex is not configured."""
+        if not _vertex_project_id():
+            return None
+
+        try:
+            token = await self._vertex_token_provider.get_token()
+        except Exception:  # noqa: BLE001 (ADC unavailable/google-auth missing: fall back to curated, never raise)
+            log.debug("llm.litellm.vertex_token_failed", exc_info=True)
+            return []
+
+        region = _vertex_region()
+        domain = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
+        outcomes = await asyncio.gather(
+            *(self._fetch_vertex_publisher(domain, token, publisher) for publisher in _VERTEX_PUBLISHERS),
+            return_exceptions=True,
+        )
+        models: list[ModelInfo] = []
+        for publisher, outcome in zip(_VERTEX_PUBLISHERS, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                log.debug("llm.litellm.vertex_publisher_failed", publisher=publisher, error=str(outcome))
+                continue
+            models.extend(outcome)
+        return models
+
+    async def _fetch_vertex_publisher(self, domain: str, token: str, publisher: str) -> list[ModelInfo]:
+        entries = await _fetch_json_entries(
+            f"https://{domain}/v1beta1/publishers/{publisher}/models",
+            "publisherModels",
+            # Distinct from the gather's llm.litellm.vertex_publisher_failed
+            # below, which reports a publisher task raising rather than an
+            # HTTP/payload failure this helper already absorbed.
+            "llm.litellm.vertex_publisher_fetch_failed",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"pageSize": _VERTEX_PAGE_SIZE},
+        )
+
+        models: list[ModelInfo] = []
+        for entry in entries:
+            model_id = _vertex_model_id(entry)
+            if not model_id:
+                continue
+            family = classify_model_family(model_id)
+            # Vertex's openai publisher serves gpt-oss (open weight) models
+            # only; a proprietary GPT/o-series entry must never be reported
+            # as reachable through a credential that does not grant it.
+            if publisher == "openai" and family is not ModelFamily.OPENAI_OSS:
+                continue
+            models.append(
+                ModelInfo(
+                    id=model_id,
+                    family=family,
+                    tier=model_tier_for_id(model_id),
+                    display_name=str(entry.get("displayName") or model_id),
+                    source="vertex",
+                )
+            )
+        return models
+
+    async def _enumerate_ollama(self) -> list[ModelInfo] | None:
+        """Read Ollama's tag list, or None when the model does not target Ollama."""
+        if not self.model.startswith("ollama/"):
+            return None
+        base = (self.api_base or _OLLAMA_DEFAULT_BASE).rstrip("/")
+        entries = await _fetch_json_entries(f"{base}/api/tags", "models", "llm.litellm.ollama_enumeration_failed")
+
+        models: list[ModelInfo] = []
+        for entry in entries:
+            name = str(entry.get("name") or entry.get("model") or "")
+            if not name:
+                continue
+            models.append(
+                ModelInfo(id=f"ollama/{name}", family=ModelFamily.LOCAL, tier="", display_name=name, source="ollama")
+            )
+        return models
+
+    async def _enumerate_openai_compatible(self) -> list[ModelInfo] | None:
+        """Read an OpenAI-compatible /v1/models list, or None when no such endpoint applies."""
+        if not self.api_base or self.model.startswith(("ollama/", "vertex_ai/")):
+            return None
+        base = self.api_base.rstrip("/")
+        prefix = base if base.endswith("/v1") else f"{base}/v1"
+        url = f"{prefix}/models"
+        # Same credential source the LiteLLM invocation itself resolves this
+        # endpoint's key from (see docs/model-selection-migration-guide.md,
+        # "OpenAI"); an unauthenticated probe against a key-protected
+        # endpoint gets a 401, which _fetch_json_entries silently turns into
+        # an empty list, so enumeration never caches and keeps retrying.
+        headers = None
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if api_key and _credential_safe_target(url):
+            headers = {"Authorization": f"Bearer {api_key}"}
+        entries = await _fetch_json_entries(
+            url, "data", "llm.litellm.openai_compatible_enumeration_failed", headers=headers
+        )
+
+        models: list[ModelInfo] = []
+        for entry in entries:
+            model_id = str(entry.get("id") or "")
+            if not model_id:
+                continue
+            models.append(
+                ModelInfo(
+                    id=model_id,
+                    family=classify_model_family(model_id),
+                    tier=model_tier_for_id(model_id),
+                    display_name=model_id,
+                    source="openai_compatible",
+                )
+            )
+        return models
 
     async def _stream(
         self,
