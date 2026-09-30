@@ -313,7 +313,7 @@ async def _wait_with_terminal_check(agent: AgentState) -> int:
                 pid=agent.process.pid,
             )
             try:
-                await agent.process.stop(timeout=5.0)
+                await agent.process.stop(timeout=5.0, cause="hang_cleanup", requester="finalize_watchdog")
             except Exception:  # noqa: BLE001 (fall through to SIGKILL regardless of why the graceful stop failed)
                 log.warning("finalize.graceful_stop_failed", run_id=agent.run_id, exc_info=True)
                 try:

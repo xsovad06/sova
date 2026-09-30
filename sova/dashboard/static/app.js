@@ -81,10 +81,11 @@ var STATUS_COLORS = {
   rejected:          { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
   paused:            { dot: 'bg-accent-purple',   text: 'text-accent-purple',    bg: 'bg-accent-purple/20' },
   interrupted:       { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
+  stopped:           { dot: 'bg-accent-purple',   text: 'text-accent-purple',    bg: 'bg-accent-purple/20' },
   running:           { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
 };
 
-var _STATUS_TERMINAL = { done: 1, failed: 1, rejected: 1, interrupted: 1, paused: 1, awaiting_approval: 1 };
+var _STATUS_TERMINAL = { done: 1, failed: 1, rejected: 1, interrupted: 1, paused: 1, awaiting_approval: 1, stopped: 1 };
 var _STUCK_THRESHOLD_S = 300;
 
 var _STEP_LABELS = {
@@ -1291,11 +1292,12 @@ function prStateBadgeColor(state) {
 }
 
 var PHASE_STATUS_COLORS = {
-  completed: { bg: 'bg-accent-green', text: 'text-accent-green', ring: 'ring-accent-green/30' },
-  active:    { bg: 'bg-accent',       text: 'text-accent',       ring: 'ring-accent/30' },
-  failed:    { bg: 'bg-accent-red',   text: 'text-accent-red',   ring: 'ring-accent-red/30' },
-  skipped:   { bg: 'bg-gray-600',     text: 'text-gray-500',     ring: 'ring-gray-600/30' },
-  'default': { bg: 'bg-gray-700',     text: 'text-gray-500',     ring: 'ring-gray-700/30' },
+  completed: { bg: 'bg-accent-green',  text: 'text-accent-green',  ring: 'ring-accent-green/30' },
+  active:    { bg: 'bg-accent',        text: 'text-accent',        ring: 'ring-accent/30' },
+  failed:    { bg: 'bg-accent-red',    text: 'text-accent-red',    ring: 'ring-accent-red/30' },
+  stopped:   { bg: 'bg-accent-purple', text: 'text-accent-purple', ring: 'ring-accent-purple/30' },
+  skipped:   { bg: 'bg-gray-600',      text: 'text-gray-500',      ring: 'ring-gray-600/30' },
+  'default': { bg: 'bg-gray-700',      text: 'text-gray-500',      ring: 'ring-gray-700/30' },
 };
 
 function phaseStatusColors(status) {

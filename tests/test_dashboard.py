@@ -2085,6 +2085,39 @@ class TestDuplicateAgentPrevention:
 
         assert result is None
 
+    async def test_recover_pr_number_includes_stopped_runs(self) -> None:
+        """A manually-stopped developer run (issue #978) with a pr_number must still
+
+        be recoverable: before the "stopped" status existed, a deliberately-stopped
+        run exited nonzero and was classified "interrupted"/"failed", both of which
+        this query already covered.
+        """
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import _recover_last_pr_number
+
+        async with await get_session() as session:
+            async with session.begin():
+                session.add(
+                    TaskRun(
+                        issue_number="345",
+                        role="developer",
+                        status="stopped",
+                        termination_reason="manual_stop",
+                        pr_number=373,
+                    )
+                )
+
+        original = get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+            result = await _recover_last_pr_number("345", Path("/tmp/proj"))
+
+        assert result == 373
+
     async def test_start_command_rejects_duplicate_issue(self) -> None:
         """start_command() should reject if the same issue already has an active agent."""
         from unittest.mock import MagicMock, patch

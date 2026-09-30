@@ -1642,6 +1642,61 @@ class TestCleanupWorktree:
             assert "remove" in call_args
 
 
+class TestCommitPartialWork:
+    """commit_partial_work() (issue #978): shared by WorkflowEngine timeout preservation
+    and the sova run SIGTERM handler."""
+
+    async def test_commits_staged_changes(self, tmp_path: Path) -> None:
+        from sova.git.worktree import commit_partial_work
+        from sova.utils.shell import run
+
+        await run("git", "init", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("initial")
+        await run("git", "add", "test.txt", cwd=tmp_path)
+        await run("git", "commit", "-m", "initial", cwd=tmp_path)
+
+        test_file.write_text("modified")
+
+        result = await commit_partial_work(tmp_path, "sigterm")
+
+        assert result is True
+        log_result = await run("git", "log", "--oneline", "-1", cwd=tmp_path)
+        assert "wip: partial work from sigterm" in log_result.stdout
+
+    async def test_no_staged_changes_returns_false(self, tmp_path: Path) -> None:
+        from sova.git.worktree import commit_partial_work
+        from sova.utils.shell import run
+
+        await run("git", "init", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("initial")
+        await run("git", "add", "test.txt", cwd=tmp_path)
+        await run("git", "commit", "-m", "initial", cwd=tmp_path)
+
+        result = await commit_partial_work(tmp_path, "sigterm")
+
+        assert result is False
+
+    async def test_not_a_git_repo_returns_false(self, tmp_path: Path) -> None:
+        from sova.git.worktree import commit_partial_work
+
+        result = await commit_partial_work(tmp_path, "sigterm")
+
+        assert result is False
+
+    async def test_none_work_dir_returns_false(self) -> None:
+        from sova.git.worktree import commit_partial_work
+
+        result = await commit_partial_work(None, "sigterm")
+
+        assert result is False
+
+
 class TestListWorktrees:
     async def test_lists_worktrees(self) -> None:
         worktree_output = "/repo 0000000 [main]\n/repo/.claude/worktrees/42 abc1234 [feat/login]\n"

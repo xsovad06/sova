@@ -94,6 +94,8 @@ function renderPhaseRail(data) {
       html += '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
     } else if (status === 'failed') {
       html += '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>';
+    } else if (status === 'stopped') {
+      html += '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1" stroke-width="2"/></svg>';
     } else if (status === 'active' || isCurrent) {
       html += '<div class="w-2.5 h-2.5 rounded-full ' + style.bg + '"></div>';
     } else {
@@ -174,7 +176,7 @@ function renderPhaseDetail(data, phase) {
   var lifecycleId = data.id;
 
   if (lifecycleId && !data.reconstructed) {
-    if (status === 'failed') {
+    if (status === 'failed' || status === 'stopped') {
       actions += '<button onclick="restartPhase(\'' + phase + '\')" class="px-3 py-1.5 text-xs bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">Restart Phase</button>';
     }
     if (status !== 'completed' && status !== 'skipped') {

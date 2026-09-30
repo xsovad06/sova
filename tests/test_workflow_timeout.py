@@ -228,7 +228,7 @@ class TestPartialWorkPreservation:
         assert "wip:" not in log_result.stdout
 
     async def test_preserve_partial_work_not_a_git_repo(self, tmp_path: Path) -> None:
-        """When working_dir is not a git repo, returns False."""
+        """When worktree_dir is not a git repo, returns False."""
         from sova.config.loader import load_config
 
         non_git_dir = tmp_path / "not_git"
@@ -245,11 +245,36 @@ class TestPartialWorkPreservation:
             issue_number="123",
             role="developer",
         )
+        ctx.worktree_dir = non_git_dir
 
         engine = WorkflowEngine(steps=[], ctx=ctx)
         result = await engine._preserve_partial_work_on_timeout("develop")
 
         assert result is False
+
+    async def test_preserve_partial_work_no_worktree_skips_commit(self, tmp_path: Path) -> None:
+        """Before a worktree exists, no-ops rather than committing in the primary checkout."""
+        from sova.config.loader import load_config
+
+        (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
+        cfg = load_config(tmp_path)
+        adapter = MagicMock()
+        adapter.repo = "test/repo"
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=cfg,
+            adapter=adapter,
+            issue_number="123",
+            role="developer",
+        )
+        assert ctx.worktree_dir is None
+
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock()) as mock_commit:
+            result = await engine._preserve_partial_work_on_timeout("sync")
+
+        assert result is False
+        mock_commit.assert_not_awaited()
 
     async def test_timeout_sets_partial_work_flag(self, ctx: ExecutionContext, tmp_path: Path) -> None:
         """Step timeout sets partial_work=True in StepResult when work was committed."""

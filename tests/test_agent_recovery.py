@@ -437,6 +437,33 @@ class TestAgentRecoveryDirect:
         assert result["finding_count"] == 0
         assert result["reviewed_at"] is not None
 
+    async def test_sova_review_verdict_found_for_stopped_reviewer_run(self) -> None:
+        """A manually-stopped reviewer run (issue #978) must still surface its verdict.
+
+        Before the "stopped" status existed, a deliberately-stopped run exited
+        nonzero and was classified "failed", which this query already covered.
+        Excluding "stopped" would silently make a stopped reviewer's findings
+        invisible to the single canonical verdict-assembly path.
+        """
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="106",
+                    role="reviewer",
+                    status="stopped",
+                    termination_reason="manual_stop",
+                    handoff_json={"next_action": "approve", "pending_findings": []},
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("106")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+
     async def test_sova_review_verdict_no_run_review_head_sha_none(self) -> None:
         from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 

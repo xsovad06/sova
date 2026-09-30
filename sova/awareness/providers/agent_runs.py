@@ -32,7 +32,12 @@ _QUERY_TIMEOUT_SECONDS = 5.0
 _ROW_LIMIT = 200
 
 # Statuses that classify a run as NEEDS_ATTENTION with urgency 2.
-_NEEDS_ATTENTION_STATUSES = frozenset({"failed", "rejected", "interrupted"})
+# "stopped" (issue #978) covers both a manual dashboard stop and a watchdog
+# kill (step timeout, zombie process, memory pressure): before that status
+# existed, every one of these exited nonzero and surfaced here as "failed",
+# so watchdog interventions must keep surfacing rather than silently
+# downgrading to informational now that they carry a more specific status.
+_NEEDS_ATTENTION_STATUSES = frozenset({"failed", "rejected", "interrupted", "stopped"})
 
 # Statuses where a run is waiting on human action, classified as NEEDS_ATTENTION urgency 1.
 _WAITING_STATUSES = frozenset({"awaiting_approval", "paused"})
@@ -204,7 +209,7 @@ def _classify(status: str, handoff: dict) -> tuple[ItemCategory, int]:
     return ItemCategory.INFORMATIONAL, 0
 
 
-_TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused", "awaiting_approval"})
+_TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused", "awaiting_approval", "stopped"})
 
 
 def _extract_outcome(

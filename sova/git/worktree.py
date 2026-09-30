@@ -21,6 +21,49 @@ log = get_logger(component="git.worktree")
 WORKTREE_DIR = ".claude/worktrees"
 
 
+async def commit_partial_work(work_dir: Path | None, reason: str) -> bool:
+    """Commit staged changes in *work_dir* with a WIP message, if any.
+
+    Shared by ``WorkflowEngine``'s step-timeout preservation and the
+    ``sova run`` SIGTERM handler, so both paths preserve in-progress edits
+    the same way instead of losing them when a step is aborted or the
+    process is terminated. Only tracked files are staged (``git add -u``);
+    new untracked files are not committed. Returns True if partial work was
+    committed, False otherwise (no working dir, not a git repo, nothing
+    staged, or the commit itself failed).
+    """
+    if not work_dir:
+        log.debug("worktree.partial_work.no_working_dir", reason=reason)
+        return False
+
+    if not (work_dir / ".git").exists():
+        log.debug("worktree.partial_work.not_a_git_repo", reason=reason)
+        return False
+
+    try:
+        add_result = await run("git", "add", "-u", cwd=work_dir)
+        if not add_result.success:
+            log.debug("worktree.partial_work.add_failed", reason=reason, error=add_result.stderr)
+            return False
+
+        # Exit code 0 from `git diff --cached --quiet` means no staged changes.
+        diff_result = await run("git", "diff", "--cached", "--quiet", cwd=work_dir)
+        if diff_result.returncode == 0:
+            log.debug("worktree.partial_work.no_staged_changes", reason=reason)
+            return False
+
+        commit_msg = f"wip: partial work from {reason}"
+        commit_result = await run("git", "commit", "-m", commit_msg, cwd=work_dir)
+        if commit_result.success:
+            log.info("worktree.partial_work.committed", reason=reason)
+            return True
+        log.warning("worktree.partial_work.commit_failed", reason=reason, error=commit_result.stderr)
+        return False
+    except (RuntimeError, OSError):
+        log.warning("worktree.partial_work.failed", reason=reason, exc_info=True)
+        return False
+
+
 @dataclass
 class WorktreeInfo:
     """Information about a created worktree."""
@@ -256,7 +299,7 @@ async def check_worktree_active_agent(worktree_path: Path, *, project_dir: Path 
         # no TaskRun tracking means no agent could own this worktree.
         return None
 
-    _TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "paused"})
+    _TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "paused", "stopped"})
     resolved = str(worktree_path.resolve())
 
     try:
