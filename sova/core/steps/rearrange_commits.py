@@ -20,6 +20,19 @@ from sova.utils.shell import run
 
 _IGNORABLE_UNTRACKED_RE = re.compile(r"^\.claude/|^\.sova/")
 
+# Pathspecs excluded from the "did the agent leave work uncommitted?" checks.
+# `.claude/` and `.sova/` hold agent infrastructure the pipeline itself writes
+# into the worktree (ensure_claude_artifacts mirrors commands, rules and skills
+# from the primary checkout on every run), so churn there is inherited state,
+# never the agent's own output. Counting it made every address-review run pause
+# whenever the primary checkout was dirty: 17 gate failures before #1090.
+# _IGNORABLE_UNTRACKED_RE above already applies the same rule to untracked
+# files, and DevelopStep._NON_SUBSTANTIVE_RE applies it to change detection.
+_EXCLUDED_PATHSPECS = (
+    ":(exclude).claude/",
+    ":(exclude).sova/",
+)
+
 log = get_logger(component="step.rearrange_commits")
 
 
@@ -56,12 +69,8 @@ class RearrangeCommitsStep(BaseStep):
         if not has_commits:
             return GateCheckResult(passed=False, reason="No commits ahead of base after rearranging")
 
-        diff_result = await run(
-            "git", "diff", "--stat", "HEAD", "--", ".", ":(exclude).claude/agent-memory/", cwd=ctx.working_dir
-        )
-        staged = await run(
-            "git", "diff", "--cached", "--stat", "--", ".", ":(exclude).claude/agent-memory/", cwd=ctx.working_dir
-        )
+        diff_result = await run("git", "diff", "--stat", "HEAD", "--", ".", *_EXCLUDED_PATHSPECS, cwd=ctx.working_dir)
+        staged = await run("git", "diff", "--cached", "--stat", "--", ".", *_EXCLUDED_PATHSPECS, cwd=ctx.working_dir)
         has_uncommitted = bool(
             (diff_result.success and diff_result.stdout.strip()) or (staged.success and staged.stdout.strip())
         )
