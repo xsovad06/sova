@@ -39,6 +39,30 @@ def _isolate_sova_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Run each test from an empty directory so the repo's own config cannot leak.
+
+    ``load_config(None)`` falls back to ``Path.cwd()``, which under pytest is the
+    repository root, so any unscoped config load reads the developer's real
+    ``.claude/sova.db``. A machine with, e.g., ``llm.routing.triage`` configured
+    then fails assertions that assume an unrouted task type, while CI (which has
+    no such file) stays green: the same tree passes in one place and fails in the
+    other, and CI cannot catch it.
+
+    This is the sibling of ``_isolate_sova_env`` above, one layer down: that
+    fixture strips ambient ``SOVA_*`` env vars for the same reason. Chdir rather
+    than patching ``load_config`` keeps production semantics intact, since a
+    directory with no config source legitimately yields defaults.
+
+    Tests that need a real project directory already pass ``tmp_path`` or an
+    explicit path; none depend on the process cwd being the checkout (verified by
+    running the full suite from an unrelated directory: identical collection,
+    zero failures).
+    """
+    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
+
+
+@pytest.fixture(autouse=True)
 def _reset_log_dedup() -> None:
     """Clear sova.utils.log_dedup state so one test's warning can't suppress another's.
 

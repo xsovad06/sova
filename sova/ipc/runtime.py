@@ -24,7 +24,7 @@ from sova.llm.cli_args import build_claude_cli_args
 from sova.llm.models import LLMResult, StreamEvent
 from sova.utils.env import ANTHROPIC_CREDENTIAL_VARS, configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
-from sova.utils.shell import run
+from sova.utils.shell import run, write_stdin_and_close
 
 log = get_logger(component="ipc.runtime")
 
@@ -144,6 +144,7 @@ async def _spawn_agent_process(
     *,
     extra_scrub: Iterable[str] = (),
     extra_env: Mapping[str, str] | None = None,
+    stdin_payload: str | None = None,
 ) -> AgentProcess | FileAgentProcess:
     """Spawn ``args`` in the scrubbed agent environment.
 
@@ -154,14 +155,21 @@ async def _spawn_agent_process(
 
     ``extra_scrub``/``extra_env`` are per-spawn overrides layered on top of
     the shared scrub; see ``_inject_agent_marker()``.
+
+    ``stdin_payload``, when set, is written to the child's stdin and the
+    pipe is then closed (EOF), instead of the default of inheriting this
+    process's stdin. Only ``ClaudeCodeRuntime.spawn()`` sets it today (the
+    prompt, since the Claude CLI reads it from stdin rather than argv); every
+    other caller leaves it ``None`` and keeps inheriting stdin unchanged.
     """
     agent_env = _inject_agent_marker(env, extra_scrub=extra_scrub, extra_env=extra_env)
 
     if output_dir is not None:
-        return await _spawn_with_file_output(args, cwd, agent_env, output_dir, run_label)
+        return await _spawn_with_file_output(args, cwd, agent_env, output_dir, run_label, stdin_payload=stdin_payload)
 
     proc = await asyncio.create_subprocess_exec(
         *args,
+        stdin=asyncio.subprocess.PIPE if stdin_payload is not None else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
@@ -169,6 +177,8 @@ async def _spawn_agent_process(
         limit=_SUBPROCESS_LINE_LIMIT,
         start_new_session=True,
     )
+    if stdin_payload is not None:
+        await write_stdin_and_close(proc, stdin_payload)
     return AgentProcess(proc)
 
 
@@ -272,7 +282,6 @@ class ClaudeCodeRuntime(AgentRuntime):
         run_label: str | None = None,
     ) -> AgentProcess | FileAgentProcess:
         args = build_claude_cli_args(
-            _HEADLESS_PREAMBLE + prompt,
             model=model,
             fallback_model=fallback_model,
             max_budget_usd=max_budget_usd,
@@ -281,7 +290,9 @@ class ClaudeCodeRuntime(AgentRuntime):
 
         log.info("process.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
 
-        return await _spawn_agent_process(args, cwd, env, output_dir, run_label)
+        return await _spawn_agent_process(
+            args, cwd, env, output_dir, run_label, stdin_payload=_HEADLESS_PREAMBLE + prompt
+        )
 
     def parse_output(self, line: str) -> StreamEvent | None:
         stripped = line.strip()
@@ -696,12 +707,19 @@ async def _spawn_with_file_output(
     env: dict[str, str] | None,
     output_dir: Path,
     run_label: str,
+    *,
+    stdin_payload: str | None = None,
 ) -> FileAgentProcess:
     """Spawn a subprocess with stdout/stderr redirected to files.
 
     Creates ``{output_dir}/{run_label}.stdout`` and ``.stderr``, opens them
     for writing, and passes the file descriptors to the subprocess. Returns
     a ``FileAgentProcess`` that tails these files for streaming.
+
+    ``stdin_payload``, when set, is written after the process is created and
+    the stdout/stderr file descriptors are already closed (the ``with``
+    block above only guards those two files; ``proc.stdin`` stays valid
+    afterwards).
     """
     if not run_label:
         raise ValueError("run_label is required when output_dir is set")
@@ -711,12 +729,16 @@ async def _spawn_with_file_output(
     with open(stdout_path, "wb") as stdout_fh, open(stderr_path, "wb") as stderr_fh:  # NOSONAR
         proc = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.PIPE if stdin_payload is not None else None,
             stdout=stdout_fh,
             stderr=stderr_fh,
             cwd=cwd,
             env=env,
             start_new_session=True,
         )
+
+    if stdin_payload is not None:
+        await write_stdin_and_close(proc, stdin_payload)
 
     return FileAgentProcess(proc, stdout_path=stdout_path, stderr_path=stderr_path)
 
