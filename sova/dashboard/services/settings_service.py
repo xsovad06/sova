@@ -38,8 +38,38 @@ def _get_update_lock(project_dir: Path | None) -> asyncio.Lock:
     return lock
 
 
-def get_config(project_dir: Path | None = None) -> dict:
-    """Load project config as a flat dict for the settings page."""
+def get_config(project_dir: Path | None = None, *, raw: dict | None = None) -> dict:
+    """Load project config as a flat dict for the settings page.
+
+    Every ``value_type="secret"`` setting (per ``settings_meta``) is replaced
+    with a fixed-length mask placeholder when set: the real value must never
+    reach the settings API response, even masked client-side, since that is
+    still exposure. Callers that need the real value (secret migration,
+    resolving a live credential) use ``_get_raw_config()`` directly instead.
+
+    *raw* lets a caller that already loaded ``_get_raw_config()`` (e.g. to
+    also call ``get_secret_locations()``) pass it in and avoid a second
+    ``load_config()`` round trip; by default it is loaded here.
+    """
+    from sova.dashboard.settings_meta import SECRET_KEYS
+
+    result = dict(raw) if raw is not None else _get_raw_config(project_dir)
+    if "_error" in result:
+        return result
+
+    for key in SECRET_KEYS:
+        if result.get(key):
+            result[key] = _SECRET_MASK_PLACEHOLDER
+    return result
+
+
+def _get_raw_config(project_dir: Path | None = None) -> dict:
+    """Load project config as a flat dict, secrets included in plaintext.
+
+    Internal helper. Anything reaching the settings API or another external
+    surface must go through ``get_config()`` instead, which masks every
+    ``value_type="secret"`` key.
+    """
     from sova.config.loader import load_config
 
     try:
@@ -52,6 +82,36 @@ def get_config(project_dir: Path | None = None) -> dict:
     result: dict = {}
     _flatten_dict("", cfg.model_dump(), result)
     return result
+
+
+def get_secret_locations(project_dir: Path | None = None, *, raw: dict | None = None) -> dict[str, str]:
+    """Return ``{key: "keyring"|"database"|"unset"}`` for every secret setting.
+
+    Read-only/diagnostic: drives the settings page's "Move to keychain"
+    action. Never exposes the underlying value.
+
+    *raw* lets a caller that already loaded ``_get_raw_config()`` pass it in
+    and avoid a second ``load_config()`` round trip; by default it is loaded
+    here.
+    """
+    from sova.dashboard.settings_meta import SECRET_KEYS
+    from sova.llm import keyring_store
+
+    if raw is None:
+        raw = _get_raw_config(project_dir)
+    if "_error" in raw:
+        return {}
+
+    locations: dict[str, str] = {}
+    for key in SECRET_KEYS:
+        value = raw.get(key)
+        if value == keyring_store.SENTINEL:
+            locations[key] = "keyring"
+        elif value:
+            locations[key] = "database"
+        else:
+            locations[key] = "unset"
+    return locations
 
 
 def _flatten_dict(prefix: str, obj: dict, result: dict, registered: frozenset[str] | None = None) -> None:
@@ -111,22 +171,110 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
         if consistency_error:
             return {"error": consistency_error}
 
+        # Secrets are DB-only: never written to sova.toml in plaintext.
+        if meta.value_type == "secret":
+            db_ok, warning = await _save_secret(project_dir, key, str(cast))
+            if not db_ok:
+                return {"error": "Failed to persist setting (DB unavailable)"}
+            result = {"status": "ok", "key": key, "value": value}
+            if warning:
+                result["warning"] = warning
+            return result
+
         db_ok = await _save_setting_to_db(project_dir, key, cast)
         if not db_ok:
             log.warning("settings.db_write_failed", key=key)
 
-    # Secrets are DB-only: never written to sova.toml in plaintext.
-    if meta.value_type == "secret":
-        if not db_ok:
-            return {"error": "Failed to persist setting (DB unavailable)"}
-    else:
-        toml_ok = _save_setting_to_toml(project_dir, key, cast)
-        if not toml_ok:
-            log.debug("settings.toml_write_skipped", key=key)
-        if not db_ok and not toml_ok:
-            return {"error": "Failed to persist setting (neither DB nor TOML available)"}
+    toml_ok = _save_setting_to_toml(project_dir, key, cast)
+    if not toml_ok:
+        log.debug("settings.toml_write_skipped", key=key)
+    if not db_ok and not toml_ok:
+        return {"error": "Failed to persist setting (neither DB nor TOML available)"}
 
     return {"status": "ok", "key": key, "value": value}
+
+
+async def _save_secret(project_dir: Path | None, key: str, value: str) -> tuple[bool, str | None]:
+    """Persist a secret, preferring the OS keyring over a plaintext database row.
+
+    An empty value clears the secret entirely (keyring entry deleted, database
+    row cleared) rather than falling back to plaintext storage of nothing, so
+    the user can deliberately fall back to an environment-variable credential.
+
+    Only ``key in keyring_store.RESOLVED_SECRET_KEYS`` is actually routed
+    through the keyring: every other ``value_type="secret"`` setting keeps
+    today's plaintext-database behaviour, since moving its storage without
+    also updating its one read site to call ``resolve_secret()`` would
+    silently replace a working credential with the literal sentinel string.
+
+    Returns ``(db_ok, warning)``; ``warning`` is set when a keyring-backed key
+    fell back to plaintext because the keyring write did not succeed (no
+    backend, or a backend that refused the write), or when a clear could not
+    confirm the keyring entry was actually removed.
+    """
+    from sova.llm import keyring_store
+
+    if key not in keyring_store.RESOLVED_SECRET_KEYS:
+        return await _save_setting_to_db(project_dir, key, value), None
+
+    if not value:
+        deleted = keyring_store.delete_secret(key)
+        db_ok = await _save_setting_to_db(project_dir, key, "")
+        if not deleted and keyring_store.is_keyring_available():
+            # A real delete failure (locked keychain, backend error, permission
+            # denied), not just "no backend". The database row is cleared, but
+            # the old key may still live in the keyring and would be picked up
+            # again by resolve_secret() on the next read, silently defeating
+            # the user's intent to fall back to ANTHROPIC_API_KEY.
+            return db_ok, "Could not confirm the OS keychain entry was removed; the old key may still be used"
+        return db_ok, None
+
+    if keyring_store.set_secret(key, value):
+        return await _save_setting_to_db(project_dir, key, keyring_store.SENTINEL), None
+
+    db_ok = await _save_setting_to_db(project_dir, key, value)
+    if keyring_store.is_keyring_available():
+        return db_ok, "OS keyring write failed; stored in the project database as plaintext"
+    return db_ok, "OS keyring unavailable; stored in the project database as plaintext"
+
+
+async def migrate_secret_to_keyring(project_dir: Path | None, key: str) -> dict:
+    """Move an already plaintext-stored secret into the OS keyring.
+
+    Explicit user action only (the settings page "Move to keychain" button):
+    never triggered automatically on config load, startup, or migration.
+    Fails without touching the database if the keyring write can't be
+    confirmed by reading it back, so a partial migration never leaves the
+    secret in neither place.
+    """
+    from sova.dashboard.settings_meta import _META_BY_KEY
+    from sova.llm import keyring_store
+
+    meta = _META_BY_KEY.get(key)
+    if meta is None or meta.value_type != "secret":
+        return {"error": f"'{key}' is not a secret setting"}
+    if key not in keyring_store.RESOLVED_SECRET_KEYS:
+        return {"error": f"'{key}' does not support keychain storage yet"}
+    if not keyring_store.is_keyring_available():
+        return {"error": "OS keyring is not available on this machine"}
+
+    async with _get_update_lock(project_dir):
+        raw = _get_raw_config(project_dir)
+        current = raw.get(key)
+        if not current or current == keyring_store.SENTINEL:
+            return {"error": f"'{key}' is not currently stored in the database as plaintext"}
+
+        if not keyring_store.migrate_plaintext_to_keyring(key, str(current)):
+            return {"error": "Failed to write the secret to the OS keyring"}
+
+        db_ok = await _save_setting_to_db(project_dir, key, keyring_store.SENTINEL)
+        if not db_ok:
+            return {
+                "error": "Secret written to the OS keyring, but the database update failed; "
+                "retry or repair the database row manually"
+            }
+
+    return {"status": "ok", "key": key}
 
 
 async def _save_setting_to_db(project_dir: Path | None, key: str, value: object) -> bool:
@@ -174,6 +322,7 @@ def _save_setting_to_toml(project_dir: Path | None, key: str, value: object) -> 
 
 
 _SECRET_MASK_CHARS = frozenset("*•·")
+_SECRET_MASK_PLACEHOLDER = "••••••••"
 
 
 def _is_masked_secret(value: str) -> bool:
@@ -274,6 +423,10 @@ def _cast_value(value: str, value_type: str = "string") -> object:
     """
     if value_type == "list":
         return _cast_list(value)
+    if value_type == "secret":
+        # A secret must never be coerced to bool/int/float just because it
+        # happens to look like one (an all-digit token, a "true"-shaped value).
+        return value
     if value.lower() in ("true", "false"):
         return value.lower() == "true"
     try:

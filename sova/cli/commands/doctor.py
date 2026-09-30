@@ -54,6 +54,7 @@ async def _doctor(project: Path | None) -> None:
     checks.extend(await _check_sova_config(project_dir))
     checks.extend(_check_install_completeness(project_dir))
     checks.extend(await _check_llm_provider(project_dir))
+    checks.extend(await _check_keyring_secrets(project_dir))
     checks.extend(await _check_ollama(project_dir))
     checks.extend(await _check_agent_runtime(project_dir))
     checks.extend(await _check_awareness_providers(project_dir))
@@ -269,6 +270,38 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
         checks.append(("llm provider", available, f"{provider_type}: {detail}", True))
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
         checks.append(("llm provider", False, str(exc)[:80], False))
+    return checks
+
+
+async def _check_keyring_secrets(project_dir: Path) -> list[_Check]:
+    """Report a sentinel-without-entry mismatch for any keyring-backed secret.
+
+    Only emits a row when something is actionable: a secret's database value
+    is the keyring sentinel but no matching OS keychain entry can be read
+    back (deleted from the keychain, or the database was copied to another
+    machine without it). A healthy resolution (or a secret that was never
+    moved to the keyring) is silent.
+    """
+    checks: list[_Check] = []
+    try:
+        from sova.dashboard.services.settings_service import get_secret_locations
+        from sova.llm import keyring_store
+
+        for key, location in get_secret_locations(project_dir).items():
+            if location != "keyring":
+                continue
+            if keyring_store.get_secret(key):
+                continue
+            checks.append(
+                (
+                    f"keyring: {key}",
+                    False,
+                    "sentinel present in the database but no matching OS keychain entry was found",
+                    False,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
+        checks.append(("keyring secrets", False, str(exc)[:80], False))
     return checks
 
 

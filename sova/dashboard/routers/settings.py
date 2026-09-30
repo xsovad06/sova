@@ -178,6 +178,10 @@ class ConfigUpdateRequest(BaseModel):
     value: str | bool | int | float
 
 
+class SecretKeyRequest(BaseModel):
+    key: str
+
+
 @router.get("/settings/config", responses={500: {"description": "Failed to fetch configuration"}})
 async def get_config() -> dict:
     """Get the current project configuration (flat, for backward compat)."""
@@ -196,14 +200,37 @@ async def get_config() -> dict:
 )
 async def get_config_grouped() -> dict:
     """Get configuration organized into labeled groups with descriptions."""
+    from sova.llm import keyring_store
+
     try:
         project_dir = get_project_dir()
-        flat = settings_service.get_config(project_dir)
-        return {"groups": get_grouped_config(flat)}
+        raw = settings_service._get_raw_config(project_dir)
+        flat = settings_service.get_config(project_dir, raw=raw)
+        locations = settings_service.get_secret_locations(project_dir, raw=raw)
+        groups = get_grouped_config(flat, secret_locations=locations)
+        return {"groups": groups, "keyring_available": keyring_store.is_keyring_available()}
     except Exception as exc:  # noqa: BLE001 (route boundary translates config/pydantic/IO errors to HTTP 500)
         log.warning("settings.config.grouped.error", exc_info=True)
         detail = _extract_validation_detail(exc)
         raise HTTPException(status_code=500, detail=detail) from None
+
+
+@router.post(
+    "/settings/config/migrate-secret",
+    responses={500: {"description": "Failed to migrate secret"}},
+)
+async def migrate_secret_to_keyring(req: SecretKeyRequest) -> dict:
+    """Move an already plaintext-stored secret into the OS keyring.
+
+    Explicit action only, triggered by the settings page "Move to keychain"
+    button; never run automatically.
+    """
+    try:
+        project_dir = get_project_dir()
+        return await settings_service.migrate_secret_to_keyring(project_dir, req.key)
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
+        log.warning("settings.config.migrate_secret.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to migrate secret") from exc
 
 
 class _AvailabilityCheckable(Protocol):
@@ -374,9 +401,9 @@ async def _dispatch_config_reload(
         for mqm in components.get("merge_queue_monitors", []):
             mqm.reload_config(cfg.integration, cfg.notification)
     elif target == "llm":
-        from sova.llm.client import reload_provider
+        from sova.llm.client import reload_provider_async
 
-        reload_provider(cfg)
+        await reload_provider_async(cfg)
     elif target == "runtime":
         from sova.ipc.runtime import reload_runtime
 

@@ -20,6 +20,10 @@ Every `gh` CLI call in `sova/adapters/github.py` and `sova/git/pr.py` passes `en
 
 `jira_api_token` in `sova/config/models.py` uses `Field("", repr=False)` to suppress from Pydantic repr, preventing accidental logging. Store as `SOVA_TASK_JIRA_API_TOKEN` env var. See [JIRA Configuration Guide](jira-configuration-guide.md) for full setup.
 
+### LLM API Key (Anthropic provider)
+
+`llm.api_key` is resolved through the optional OS keyring (`sova/llm/keyring_store.py`, wraps the `keyring` package behind an import guard) before falling back to the plaintext `project_settings` database row, then `ANTHROPIC_API_KEY`. When a keyring backend is available, the settings layer (`sova/dashboard/services/settings_service.py`) moves a newly-saved key into the keyring and replaces the database row with a non-secret sentinel (`keyring_store.SENTINEL`); resolution happens once, at `create_provider()`'s anthropic branch (`sova/llm/provider.py`), not in `load_config()`, so the key never re-enters `cfg.model_dump()`. `get_config()` masks every `value_type="secret"` setting with a fixed placeholder before it can reach the settings API response. Only `key in keyring_store.RESOLVED_SECRET_KEYS` (today: `llm.api_key` alone) is actually routed through the keyring: every other `value_type="secret"` setting (Jira token, SMTP credentials, webhook secrets, MCP token secret, telemetry hub token) still reads its plaintext database value directly at its one consumption site, and moving its storage without updating that site would silently replace a working credential with the sentinel string. An existing plaintext key is never migrated automatically; the dashboard's "Move to keychain" action (`POST /settings/config/migrate-secret`) is the only way to relocate one, and it verifies the keyring write by reading it back before clearing the database row.
+
 ### Codex/OpenAI Authentication
 
 Codex CLI owns its own credential storage; SOVA never reads, copies, masks, or persists it. Two distinct auth paths:
