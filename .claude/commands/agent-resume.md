@@ -65,7 +65,7 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | "\(.user.login
 
 **CI is pending** (and `wait_for=ci`):
 
-Poll CI in a loop using the following bash command. The loop uses 30 iterations x 30s = 15 minutes (matching default `ci.max_wait=900s`). Adjust iteration count if `ci.max_wait` or `ci.poll_interval` are customized in `sova.toml`. Requires gh CLI v2.32+ (for the `bucket` field).
+Poll CI in a loop using the following bash command. The loop uses 30 iterations x 30s = 15 minutes (matching default `ci.max_wait=900s`). Adjust iteration count if `ci.max_wait` or `ci.poll_interval` are customized in the project config. Requires gh CLI v2.32+ (for the `bucket` field).
 
 ```bash
 # Poll CI checks in a loop (30 iterations x 30s = 15 minutes max)

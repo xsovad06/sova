@@ -17,11 +17,11 @@ Fetch and analyze a task from the project tracker.
 
 1. Get the issue number or ticket key from `$ARGUMENTS`. If empty, ask the user.
 
-2. Determine the task source by reading `sova.toml` (if it exists) and checking `[task_source] type`.
+2. Determine the task source by running `sova config` and reading the `task_source` row (configuration lives in `.claude/sova.db`, not in a file).
 
 3. Fetch the task:
 
-   **GitHub** (default, or no sova.toml):
+   **GitHub** (the default):
    ```bash
    gh issue view $ARGUMENTS --json number,title,state,assignees,labels,milestone,body,comments
    ```

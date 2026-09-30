@@ -102,7 +102,7 @@ Create a pull request for the current branch using the project's standard PR tem
 
    **Link the issue in the PR body** based on the task source:
 
-   Read the project's own config file, if present, to check `[task_source] type`.
+   Determine the task source (GitHub, Jira, or other) from the project's own config or conventions.
 
    **JIRA** (`type = "jira"`):
    - Do NOT use `Closes #N`, `Fixes #N`, or `Resolves #N` (those are GitHub Issue syntax)
@@ -137,7 +137,7 @@ Create a pull request for the current branch using the project's standard PR tem
     ```
 
 11. **Trigger CodeRabbit review** (if configured):
-    Check the project's own config file, if present, for `[external_reviews.coderabbit] trigger_review = true`. If enabled and the PR was newly created (not an update), post a comment to trigger CodeRabbit:
+    If the project uses an automated reviewer such as CodeRabbit and the PR was newly created (not an update), post a comment to trigger CodeRabbit:
     ```bash
     gh pr comment "$PR_NUM" --body "@coderabbitai review"
     ```
