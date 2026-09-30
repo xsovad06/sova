@@ -95,6 +95,58 @@ class ListResult:
     local: list[ListEntry] = field(default_factory=list)
 
 
+def _write_rendered(target_dir: Path, target_path: Path, rendered: str) -> None:
+    """Write *rendered* into *target_dir* at *target_path*, never through a symlink.
+
+    ``Path.write_text`` follows symlinks, so an installed entry that is a symlink
+    sent the render to the link's target instead of into the target directory.
+    Projects do symlink commands to share them (see ``_copy2_skip_identical`` in
+    ``sova/git/worktree.py``, which documents a command "kept in sync across
+    projects via a symlink into ``~/.claude/commands``"), and those shared files
+    were silently overwritten by any install or sync, with the symlink left in
+    place pointing at corrupted content and the manifest recording success.
+
+    Unlinking first guarantees the write lands inside the target directory. The
+    entry becomes a regular file, so the sharing is undone rather than honoured;
+    that is logged, since the alternative is destroying a file the caller never
+    named. Issue #1094.
+    """
+    if target_path.is_symlink():
+        try:
+            resolved = target_path.resolve()
+        except OSError:
+            resolved = target_path
+        log.warning("commands.symlink_replaced", path=str(target_path), pointed_at=str(resolved))
+        target_path.unlink()
+
+    # Enforce the containment this function exists to guarantee, rather than
+    # leaving it as an assumption about the callers. Checked after the unlink so
+    # the literal destination is validated, not a symlink's target. A filename
+    # here is always a single path component from a directory listing, so a
+    # violation means a collector was changed to emit a traversal; that is a
+    # programming error and must fail loudly rather than skip the file and leave
+    # the manifest recording a hash for something never written. Mirrors the
+    # is_relative_to guard in _copy_worktree_files (sova/git/worktree.py).
+    base = target_dir.resolve()
+    destination = target_path.resolve()
+    if destination != base and not destination.is_relative_to(base):
+        log.error("commands.write.path_traversal", path=str(target_path), base=str(base))
+        raise ValueError(f"refusing to write outside {base}: {target_path}")
+
+    # Write through the validated path rather than the original argument, so the
+    # check above and the use below are the same variable.
+    #
+    # NOSONAR: S2083 flags this as path traversal because `rendered` (the command
+    # body) is tainted, not the destination. Sonar's own flow names `rendered` as
+    # the malicious value, and it reaches this call as file *content*, never as a
+    # path segment. The destination is a single path component from a directory
+    # listing, joined to an operator-chosen target directory and checked against
+    # it by is_relative_to() immediately above, so writing tainted payload bytes
+    # to it cannot traverse paths. Same reasoning and same rule as the marker in
+    # sova/utils/mcp_config.py.
+    destination.write_text(rendered, encoding="utf-8")  # NOSONAR
+
+
 def _install_files(
     source_files: list[tuple[str, Path]],
     target_dir: Path,
@@ -112,7 +164,7 @@ def _install_files(
 
         target_path = target_dir / filename
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(rendered, encoding="utf-8")
+        _write_rendered(target_dir, target_path, rendered)
         hashes[filename] = file_hash(rendered)
         result.installed += 1
 
@@ -157,7 +209,7 @@ def _update_files(
 
         if manifest_entry is None:
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(rendered, encoding="utf-8")
+            _write_rendered(target_dir, target_path, rendered)
             update_manifest(target_dir, filename, new_hash)
             result.updated += 1
             continue
@@ -199,7 +251,7 @@ def _update_files(
                 continue
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(rendered, encoding="utf-8")
+        _write_rendered(target_dir, target_path, rendered)
         update_manifest(target_dir, filename, new_hash)
         result.updated += 1
 
