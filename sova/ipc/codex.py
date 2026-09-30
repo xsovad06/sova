@@ -18,16 +18,17 @@ and ``thread.started`` lift that latch, so a thread running several turns
 reports each one rather than only the first. One instance therefore
 belongs to exactly one Codex process's output stream.
 
-``CodexRuntime`` does **not** satisfy that today and cannot, because
-``AgentRuntime.parse_output()`` takes only a line with no process identity
-and the runtime itself is a module-level singleton (``get_runtime()``): its
+``CodexRuntime.parse_output()`` does **not** satisfy that on its own,
+because it delegates to a single parser held on the runtime object, and the
+runtime itself is a module-level singleton (``get_runtime()``): that
 convenience parser is shared by every concurrent Codex agent, so their
-thread IDs and terminal latches would interleave. That is latent, not live:
-``AgentConfig.runtime`` does offer ``codex``, but nothing calls
-``parse_output()`` in production yet. Whoever wires Codex into the
-dashboard's stream tailer (``sova/dashboard/services/agent_output.py``)
-must construct a ``CodexStreamParser`` per spawned process there rather
-than reuse the runtime's; that wiring is a separate epic #940 follow-up.
+thread IDs and terminal latches would interleave. ``AgentRuntime`` instead
+exposes ``create_stream_parser()``, which ``CodexRuntime`` overrides to
+return a brand-new ``CodexStreamParser`` on every call. The dashboard's
+stream tailer (``sova/dashboard/services/agent_output.py``) calls it once
+per spawned process and keeps the result on that process's own
+``AgentState``, so each agent's thread id, last message, and terminal
+latch stay isolated from every other concurrent agent.
 """
 
 from __future__ import annotations

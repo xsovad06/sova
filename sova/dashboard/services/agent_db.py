@@ -305,6 +305,21 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                 if cost > 0:
                     task_run.total_cost_usd = cost
 
+                if isinstance(agent.runtime_session_id, str) and agent.runtime_session_id:
+                    # Diagnostics only: merged under a dedicated key rather than
+                    # overwriting assessment_json, which confidence scoring may
+                    # already have populated. Reassigned wholesale (not mutated
+                    # in place) so SQLAlchemy's JSON change tracking sees it.
+                    # Written before the terminal-status early return below:
+                    # for a run the inner `sova run` already finalized (the
+                    # common path for a spawned pipeline role, see the
+                    # --run-id passthrough in architecture.md), that return
+                    # fires first, so anything after it never records the id.
+                    task_run.assessment_json = {
+                        **(task_run.assessment_json or {}),
+                        "runtime": {"session_id": agent.runtime_session_id},
+                    }
+
                 if task_run.status in _TERMINAL_STATUSES:
                     await _handle_terminal_status(task_run, file_handoff, session, run_id)
                     return False

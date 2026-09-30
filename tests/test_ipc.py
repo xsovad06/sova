@@ -1127,6 +1127,28 @@ class TestAgentRuntimeABC:
         rt = AiderRuntime()
         assert rt.name == "aider"
 
+    def test_claude_code_create_stream_parser_defaults_to_none(self) -> None:
+        """No per-process state to isolate: the dashboard falls back to inline parsing."""
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        assert ClaudeCodeRuntime().create_stream_parser() is None
+
+    def test_aider_create_stream_parser_defaults_to_none(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        assert AiderRuntime().create_stream_parser() is None
+
+    def test_claude_code_stream_reader_drain_timeout_defaults_to_none(self) -> None:
+        """No per-process parser: the caller falls back to its own default, no config lookup here."""
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        assert ClaudeCodeRuntime().stream_reader_drain_timeout() is None
+
+    def test_aider_stream_reader_drain_timeout_defaults_to_none(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        assert AiderRuntime().stream_reader_drain_timeout() is None
+
     def test_create_runtime_claude_code(self) -> None:
         from sova.ipc.runtime import ClaudeCodeRuntime, create_runtime
 
@@ -1798,6 +1820,60 @@ class TestCodexRuntime:
         assert event.type == "result"
         assert event.result is not None
         assert event.result.session_id == "thread-abc"
+
+    def test_create_stream_parser_returns_codex_stream_parser(self) -> None:
+        from sova.ipc.codex import CodexStreamParser
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        parser = rt.create_stream_parser()
+        assert isinstance(parser, CodexStreamParser)
+
+    def test_stream_reader_drain_timeout_reads_codex_config(self) -> None:
+        """The dashboard's drain bound comes from CodexConfig, resolved via the runtime, not a
+        config lookup at finalize time.
+        """
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime(config=CodexConfig(reader_drain_timeout=42.0))
+        assert rt.stream_reader_drain_timeout() == 42.0
+
+    def test_create_stream_parser_returns_a_fresh_instance_each_call(self) -> None:
+        """A new instance per spawn, never the runtime's own shared ``_parser``.
+
+        This is what makes concurrent Codex agents safe: each spawn gets an
+        isolated parser rather than sharing the runtime singleton's state.
+        """
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        first = rt.create_stream_parser()
+        second = rt.create_stream_parser()
+
+        assert first is not second
+        assert first is not rt._parser
+        assert second is not rt._parser
+
+    def test_create_stream_parser_instances_do_not_share_state(self) -> None:
+        """Two spawns' parsers must not leak thread id or terminal latch into each other."""
+        import json
+
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        parser_a = rt.create_stream_parser()
+        parser_b = rt.create_stream_parser()
+
+        parser_a.parse_line(json.dumps({"type": "thread.started", "thread_id": "thread-a"}))
+        event_a = parser_a.parse_line(json.dumps({"type": "turn.completed", "usage": {}}))
+
+        event_b = parser_b.parse_line(json.dumps({"type": "turn.completed", "usage": {}}))
+
+        assert event_a is not None and event_a.result is not None
+        assert event_a.result.session_id == "thread-a"
+        assert event_b is not None and event_b.result is not None
+        assert event_b.result.session_id == ""
 
     def test_parse_output_empty(self) -> None:
         from sova.ipc.runtime import CodexRuntime

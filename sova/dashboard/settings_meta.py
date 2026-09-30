@@ -315,6 +315,14 @@ _REGISTRY: list[SettingMeta] = [
         "select",
         options=("read-only", "workspace-write"),
     ),
+    SettingMeta(
+        "codex.reader_drain_timeout",
+        "Codex reader drain timeout (s)",
+        "How long dashboard finalization waits for a Codex run's output reader to drain its "
+        "terminal JSONL event after process exit, before falling back to the exit code alone",
+        "agent",
+        "number",
+    ),
     # Runaway Guards (cost-independent backstops for R6)
     SettingMeta(
         "runaway.max_run_wall_clock_seconds",

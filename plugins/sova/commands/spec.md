@@ -36,9 +36,9 @@ Produce a structured specification document for a task before development starts
 
 If `$ARGUMENTS` is a text description (not a number or ticket key), use it directly as the problem statement and skip to Step 2.
 
-Determine the task source by reading the project's own config file, if present, and checking `[task_source] type`.
+Determine the task source (GitHub, Jira, or other) from the project's own config or conventions.
 
-**GitHub** (default, or no such config file):
+**GitHub** (the default):
 ```bash
 gh issue view $ARGUMENTS --json number,title,body,labels,milestone
 ```

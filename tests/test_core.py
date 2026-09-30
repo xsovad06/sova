@@ -3457,6 +3457,92 @@ class TestRearrangeCommitsStep:
         assert not gate.passed
         assert "Untracked" in gate.reason
 
+    async def test_validate_excludes_agent_infrastructure_pathspecs(self) -> None:
+        """The diff checks must exclude .claude/ and .sova/ entirely.
+
+        ensure_claude_artifacts() mirrors .claude/{commands,rules,skills} from the
+        primary checkout into every worktree on every run, so churn there is
+        inherited state rather than the agent's output. Counting it paused every
+        address-review run whenever the primary checkout was dirty (issue #1090).
+        """
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat(core): something\n"),  # log
+                MagicMock(success=True, stdout=""),  # diff --stat
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # status --porcelain
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+        unstaged_argv = mock_run.await_args_list[1].args
+        staged_argv = mock_run.await_args_list[2].args
+        for argv in (unstaged_argv, staged_argv):
+            assert ":(exclude).claude/" in argv
+            assert ":(exclude).sova/" in argv
+
+    async def test_validate_passes_with_only_inherited_claude_dirt(self, tmp_path: Path) -> None:
+        """Against a real repo: modified tracked .claude/ files must not fail the gate."""
+        import subprocess
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True)
+
+        git("init", "-q")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "t")
+        (tmp_path / "src.py").write_text("x = 1\n")
+        (tmp_path / ".claude" / "commands").mkdir(parents=True)
+        (tmp_path / ".claude" / "commands" / "develop.md").write_text("original\n")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        git("branch", "-M", "main")
+        git("checkout", "-qb", "feature")
+        (tmp_path / "src.py").write_text("x = 2\n")
+        git("commit", "-qam", "feat(core): real work")
+
+        # Inherited dirt only: a tracked .claude/ file mirrored from the primary checkout.
+        (tmp_path / ".claude" / "commands" / "develop.md").write_text("rendered by a sync\n")
+
+        ctx = _make_ctx(worktree_dir=tmp_path)  # config.base_branch defaults to "main"
+        gate = await RearrangeCommitsStep().validate_output(ctx)
+
+        assert gate.passed, gate.reason
+
+    async def test_validate_still_fails_on_genuine_uncommitted_source(self, tmp_path: Path) -> None:
+        """The gate must keep catching real work the rearrange left uncommitted."""
+        import subprocess
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True)
+
+        git("init", "-q")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "t")
+        (tmp_path / "src.py").write_text("x = 1\n")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        git("branch", "-M", "main")
+        git("checkout", "-qb", "feature")
+        (tmp_path / "src.py").write_text("x = 2\n")
+        git("commit", "-qam", "feat(core): real work")
+        (tmp_path / "src.py").write_text("x = 3  # left behind\n")
+
+        ctx = _make_ctx(worktree_dir=tmp_path)  # config.base_branch defaults to "main"
+        gate = await RearrangeCommitsStep().validate_output(ctx)
+
+        assert not gate.passed
+        assert "Uncommitted" in gate.reason
+
     async def test_validate_fails_when_no_commits(self) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 

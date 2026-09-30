@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -445,3 +446,123 @@ class TestCreateWorktreeCopyFiles:
                 Path("/repo") / WORKTREE_DIR / "42",
                 ["sova.toml"],
             )
+
+
+class TestEnsureClaudeArtifactsNeverOverwritesTracked:
+    """A destination the worktree's branch tracks must survive an artifact sync.
+
+    ensure_claude_artifacts() exists to supply .claude/ content a worktree would
+    otherwise lack. It used to overwrite unconditionally via copytree's
+    dirs_exist_ok, which replaced a branch's committed .claude/rules/*.md with
+    the primary checkout's copy: the agent then committed that revert as its own
+    change (issue #1090, observed on PR #1085). The same overwrite propagated a
+    dirty primary checkout's .claude/commands/ into every worktree, where
+    RearrangeCommitsStep's gate read it as the agent's uncommitted work.
+    """
+
+    @staticmethod
+    def _git(cwd: Path, *args: str) -> None:
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+    def _repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "wt"
+        repo.mkdir()
+        self._git(repo, "init", "-q")
+        self._git(repo, "config", "user.email", "t@example.com")
+        self._git(repo, "config", "user.name", "t")
+        return repo
+
+    def test_tracked_rules_file_is_not_overwritten(self, tmp_path: Path) -> None:
+        from sova.git.worktree import ensure_claude_artifacts
+
+        project = tmp_path / "project"
+        (project / ".claude" / "rules").mkdir(parents=True)
+        (project / ".claude" / "rules" / "architecture.md").write_text("PRIMARY VERSION")
+
+        worktree = self._repo(tmp_path)
+        (worktree / ".claude" / "rules").mkdir(parents=True)
+        (worktree / ".claude" / "rules" / "architecture.md").write_text("BRANCH VERSION")
+        self._git(worktree, "add", ".claude/rules/architecture.md")
+        self._git(worktree, "commit", "-qm", "branch doc")
+
+        ensure_claude_artifacts(project, worktree)
+
+        assert (worktree / ".claude" / "rules" / "architecture.md").read_text() == "BRANCH VERSION"
+
+    def test_untracked_file_is_still_copied(self, tmp_path: Path) -> None:
+        """The gitignored case this function exists for must keep working."""
+        from sova.git.worktree import ensure_claude_artifacts
+
+        project = tmp_path / "project"
+        (project / ".claude" / "commands").mkdir(parents=True)
+        (project / ".claude" / "commands" / "develop.md").write_text("PRIMARY COMMAND")
+
+        worktree = self._repo(tmp_path)
+
+        ensure_claude_artifacts(project, worktree)
+
+        assert (worktree / ".claude" / "commands" / "develop.md").read_text() == "PRIMARY COMMAND"
+
+    def test_tracked_and_untracked_siblings_are_handled_independently(self, tmp_path: Path) -> None:
+        from sova.git.worktree import ensure_claude_artifacts
+
+        project = tmp_path / "project"
+        (project / ".claude" / "commands").mkdir(parents=True)
+        (project / ".claude" / "commands" / "tracked.md").write_text("PRIMARY")
+        (project / ".claude" / "commands" / "fresh.md").write_text("PRIMARY FRESH")
+
+        worktree = self._repo(tmp_path)
+        (worktree / ".claude" / "commands").mkdir(parents=True)
+        (worktree / ".claude" / "commands" / "tracked.md").write_text("BRANCH")
+        self._git(worktree, "add", ".claude/commands/tracked.md")
+        self._git(worktree, "commit", "-qm", "branch command")
+
+        ensure_claude_artifacts(project, worktree)
+
+        assert (worktree / ".claude" / "commands" / "tracked.md").read_text() == "BRANCH"
+        assert (worktree / ".claude" / "commands" / "fresh.md").read_text() == "PRIMARY FRESH"
+
+    def test_tracked_but_deleted_file_is_restored(self, tmp_path: Path) -> None:
+        """Tracking protects existing content, not a gap.
+
+        A destination the branch tracks but that is missing from disk has nothing
+        to preserve, so it must be copied. Skipping it leaves the gap permanent,
+        and ensure_worktree_usable() (issue #976) treats an unrepairable
+        .claude/commands as fatal and falls back to running the agent in the
+        primary checkout, which is precisely what both it and this function exist
+        to prevent.
+        """
+        from sova.git.worktree import ensure_claude_artifacts
+
+        project = tmp_path / "project"
+        (project / ".claude" / "commands").mkdir(parents=True)
+        (project / ".claude" / "commands" / "develop.md").write_text("PRIMARY COMMAND")
+
+        worktree = self._repo(tmp_path)
+        (worktree / ".claude" / "commands").mkdir(parents=True)
+        installed = worktree / ".claude" / "commands" / "develop.md"
+        installed.write_text("BRANCH VERSION")
+        self._git(worktree, "add", ".claude/commands/develop.md")
+        self._git(worktree, "commit", "-qm", "branch command")
+
+        # Still tracked in the index, but gone from disk: the issue-976 scenario.
+        installed.unlink()
+
+        ensure_claude_artifacts(project, worktree)
+
+        assert installed.read_text() == "PRIMARY COMMAND"
+
+    def test_falls_back_to_copying_when_git_is_unavailable(self, tmp_path: Path) -> None:
+        """A failed `git ls-files` must not skip a worktree's setup entirely."""
+        from sova.git.worktree import ensure_claude_artifacts
+
+        project = tmp_path / "project"
+        (project / ".claude" / "commands").mkdir(parents=True)
+        (project / ".claude" / "commands" / "develop.md").write_text("PRIMARY COMMAND")
+
+        worktree = tmp_path / "not-a-repo"
+        worktree.mkdir()
+
+        ensure_claude_artifacts(project, worktree)
+
+        assert (worktree / ".claude" / "commands" / "develop.md").read_text() == "PRIMARY COMMAND"

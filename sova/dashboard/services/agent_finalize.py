@@ -12,6 +12,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.models import CodexConfig
 from sova.dashboard.services.agent_context import (
     _resolve_issue_from_pr,
 )
@@ -38,6 +39,16 @@ log = get_logger(component="dashboard.control")
 _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 
 _DB_TERMINAL_POLL_INTERVAL = 30.0
+
+# Upper bound on how long finalization waits for the output reader to finish
+# draining an already-exited process, used when the spawning runtime declared
+# no timeout of its own (AgentRuntime.stream_reader_drain_timeout() returned
+# None). Only applies to runtimes whose failures are reported through the
+# stream (see _drain_stream_reader). Derived from CodexConfig's own field
+# default rather than a second hardcoded literal, since Codex is currently
+# the only runtime that sets stream_reader_drain_timeout() and a config
+# default drifting from this fallback would be confusing to debug.
+_READER_DRAIN_TIMEOUT = CodexConfig.model_fields["reader_drain_timeout"].default
 
 
 async def _crash_recovery_cleanup(agent: AgentState) -> None:
@@ -318,6 +329,59 @@ async def _wait_with_terminal_check(agent: AgentState) -> int:
             return rc if rc is not None else -1
 
 
+def _resolve_reader_drain_timeout(agent: AgentState) -> float:
+    """Return the drain timeout resolved at spawn time, or the module default.
+
+    ``agent.stream_reader_drain_timeout`` is set once, at spawn time, from
+    ``AgentRuntime.stream_reader_drain_timeout()`` (see sova/ipc/runtime.py) --
+    never read here from config, so finalization never blocks the event loop
+    on a TOML+DB load. ``None`` means the spawning runtime declared no tuning
+    of its own (every runtime except Codex today), so the module default
+    applies.
+    """
+    return agent.stream_reader_drain_timeout if agent.stream_reader_drain_timeout is not None else _READER_DRAIN_TIMEOUT
+
+
+def _log_if_task_failed(task: asyncio.Task, run_id: int | None) -> None:
+    """Log a completed task's exception, if any, without re-raising it."""
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        log.warning("finalize.reader_task_failed", run_id=run_id, exc_info=exc)
+
+
+async def _drain_stream_reader(agent: AgentState) -> None:
+    """Wait for the output reader to finish consuming an exited process's output.
+
+    Only meaningful for runtimes with a per-process stream parser (Codex),
+    whose terminal failure arrives as a JSONL event rather than as an exit
+    code. The reader tails the output file on a poll interval, so that event
+    (the last line written before the process exits) is normally still unread
+    when ``process.wait()`` returns. Reading ``agent.stream_failure`` without
+    waiting would therefore observe ``None`` in the ordinary case and let a
+    stream-reported failure finalize as success.
+
+    The reader is never cancelled here: it terminates on its own once the
+    process has exited and the output is drained, and cancelling it would
+    discard captured output. A drain that overruns the bound is logged and
+    finalization continues on the exit code alone.
+    """
+    task = agent.reader_task
+    if task is None:
+        return
+    if task.done():
+        # The reader finished before we got here (e.g. it crashed before
+        # _wait_and_finalize reached this point). Still surface its
+        # exception: an already-completed task must not be treated as
+        # "nothing to check" just because there is nothing left to await.
+        _log_if_task_failed(task, agent.run_id)
+        return
+    timeout = _resolve_reader_drain_timeout(agent)
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        log.warning("finalize.reader_drain_timeout", run_id=agent.run_id)
+        return
+    _log_if_task_failed(next(iter(done)), agent.run_id)
+
+
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     """Wait for the process to exit, then finalize the DB record."""
     from sova.dashboard.services.agent_handoff import _process_auto_handoff
@@ -344,6 +408,24 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                         pass
         raise
     run_id = agent.run_id
+
+    # A runtime stream parser (e.g. Codex's) may report a terminal failure
+    # event (turn.failed/error) through the JSONL stream rather than through
+    # the exit code. The reader has to have consumed that event before it can
+    # be read here, so drain it first; see _drain_stream_reader.
+    if agent.stream_parser is not None:
+        await _drain_stream_reader(agent)
+
+    # Only act when the exit code alone would otherwise report success: a
+    # nonzero exit code already finalizes as "failed" below, and re-acting
+    # here would double-report the same failure.
+    if agent.stream_failure and exit_code == 0:
+        log.warning(
+            "finalize.stream_reported_failure",
+            run_id=run_id,
+            detail=agent.stream_failure,
+        )
+        exit_code = 1
 
     status = "done" if exit_code == 0 else "failed"
 
