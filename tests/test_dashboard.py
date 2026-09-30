@@ -1536,8 +1536,9 @@ class TestDuplicateAgentPrevention:
         assert "--run-id" in cmd_parts
         assert "7" in cmd_parts
 
-    async def test_start_agent_uses_runtime_for_non_pipeline_roles(self) -> None:
-        """Non-pipeline roles (reviewer) still go through Claude runtime."""
+    @pytest.mark.parametrize("role", ["reviewer", "custom"])
+    async def test_start_agent_uses_runtime_for_non_pipeline_roles(self, role: str) -> None:
+        """Non-pipeline roles (reviewer, custom) go through runtime.spawn(), never spawn_direct()."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -1570,11 +1571,83 @@ class TestDuplicateAgentPrevention:
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
-            result = await start_agent("99", role="reviewer")
+            result = await start_agent("99", role=role)
 
         assert result["status"] == "started"
         mock_spawn_direct.assert_not_awaited()
         assert mock_spawn.call_args is not None, "runtime.spawn() was never called"
+
+    @pytest.mark.parametrize(("role", "expect_read_only"), [("reviewer", True), ("custom", False)])
+    async def test_start_agent_forces_read_only_only_for_reviewer(self, role: str, expect_read_only: bool) -> None:
+        """The reviewer role must never be able to modify the repository: runtime.spawn() is
+        called with read_only=True so a sandboxed runtime (Codex) enforces it. Every other
+        non-pipeline role keeps the pre-#946 default."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        mock_spawn = AsyncMock(return_value=mock_process)
+        mock_rt = MagicMock(spawn=mock_spawn)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99", role=role)
+
+        assert result["status"] == "started"
+        assert mock_spawn.call_args.kwargs["read_only"] is expect_read_only
+
+    async def test_start_agent_rejects_reviewer_under_codex_runtime(self) -> None:
+        """Codex's read-only sandbox blocks the writes (DB, handoff, GitHub API) the
+        reviewer's own `sova run` subprocess needs, so this combination must fail fast
+        with a clear diagnostic instead of spawning a run guaranteed to fail deep in
+        the pipeline."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_spawn = AsyncMock()
+        mock_rt = MagicMock(spawn=mock_spawn)
+        mock_rt.name = "codex"
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99", role="reviewer")
+
+        assert "error" in result
+        assert "codex" in result["error"].lower()
+        assert "reviewer" in result["error"].lower()
+        mock_spawn.assert_not_awaited()
+        mock_orphan.assert_awaited_once()
 
     async def test_start_agent_sets_stream_parser_from_runtime(self) -> None:
         """A non-pipeline spawn stores the runtime's per-process parser on AgentState."""

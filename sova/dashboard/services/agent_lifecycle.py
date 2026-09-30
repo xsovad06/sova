@@ -565,6 +565,28 @@ async def start_agent(
                     model = _resolve_config_model(project_dir)
                 fallback_model = _resolve_config_fallback_model(project_dir)
                 runtime = get_runtime()
+                # The reviewer role only reads and posts findings; it must
+                # never modify the repository. A runtime with a sandbox
+                # mechanism (CodexRuntime) enforces this; others accept the
+                # flag and no-op, relying on the prompt alone as before.
+                #
+                # CodexRuntime's `read-only` sandbox denies every write AND
+                # disables network access for the whole process tree, so it
+                # also blocks the writes and GitHub calls the reviewer's own
+                # `sova run` subprocess needs (DB, handoff file, GitHub API
+                # calls). There is no finer-grained Codex sandbox policy
+                # today, so rather than silently spawn a reviewer run that is
+                # guaranteed to fail deep in the pipeline, fail fast here with
+                # a clear diagnostic. Full rationale: see the #946 entry in
+                # .claude/rules/architecture.md.
+                if effective_role == "reviewer" and runtime.name == "codex":
+                    raise RuntimeError(
+                        "Codex runtime does not support the reviewer role: its "
+                        "read-only sandbox blocks the writes (database, handoff "
+                        "file, GitHub API) the reviewer's own `sova run` "
+                        'subprocess needs. Configure agent.runtime = "claude-code" '
+                        "for reviewer runs."
+                    )
                 process = await runtime.spawn(
                     prompt,
                     cwd,
@@ -573,11 +595,12 @@ async def start_agent(
                     fallback_model=fallback_model,
                     output_dir=output_dir,
                     run_label=str(run_id),
+                    read_only=effective_role == "reviewer",
                 )
-        except Exception:  # noqa: BLE001 (any spawn failure must finalize the run rather than leave it orphaned)
-            log.error("agent.spawn_failed", run_id=run_id, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 (any spawn failure must finalize the run rather than leave it orphaned)
+            log.error("agent.spawn_failed", run_id=run_id, error=str(exc), exc_info=True)
             await _finalize_orphaned_run(run_id, project_dir)
-            return {"error": "Failed to spawn agent process"}
+            return {"error": f"Failed to spawn agent process: {exc}"}
 
         stream_reader_drain_timeout = None
         if effective_role not in _PIPELINE_ROLES:
