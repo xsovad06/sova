@@ -528,6 +528,7 @@ async def start_agent(
         gh_env = merge_mcp_env(gh_env, run_id, project_dir)
         output_dir = project_dir / ".claude" / "agent-output"
 
+        stream_parser = None
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -563,7 +564,8 @@ async def start_agent(
                 if not model:
                     model = _resolve_config_model(project_dir)
                 fallback_model = _resolve_config_fallback_model(project_dir)
-                process = await get_runtime().spawn(
+                runtime = get_runtime()
+                process = await runtime.spawn(
                     prompt,
                     cwd,
                     env=gh_env,
@@ -576,6 +578,21 @@ async def start_agent(
             log.error("agent.spawn_failed", run_id=run_id, exc_info=True)
             await _finalize_orphaned_run(run_id, project_dir)
             return {"error": "Failed to spawn agent process"}
+
+        stream_reader_drain_timeout = None
+        if effective_role not in _PIPELINE_ROLES:
+            try:
+                stream_parser = runtime.create_stream_parser()
+            except Exception:  # noqa: BLE001 (parser creation failure must not orphan the already-running process)
+                log.warning("agent.create_stream_parser_failed", run_id=run_id, exc_info=True)
+                stream_parser = None
+            if stream_parser is not None:
+                try:
+                    stream_reader_drain_timeout = runtime.stream_reader_drain_timeout()
+                except Exception:  # noqa: BLE001 (timeout lookup failure must not discard an already-built parser)
+                    log.warning("agent.stream_reader_drain_timeout_failed", run_id=run_id, exc_info=True)
+                    stream_reader_drain_timeout = None
+
         pid = process.pid
         await _update_task_run_pid(run_id, pid, project_dir)
         await _update_task_run_output_path(run_id, str(output_dir / f"{run_id}.stdout"), project_dir)
@@ -596,6 +613,8 @@ async def start_agent(
             pre_run_sha=pre_run_sha,
             prompt=" ".join(cmd_parts),
             project_dir=project_dir,
+            stream_parser=stream_parser,
+            stream_reader_drain_timeout=stream_reader_drain_timeout,
         )
         pa.agents[run_id] = agent
 
@@ -728,9 +747,11 @@ async def start_command(
         gh_env = merge_mcp_env(gh_env, pre_run_id, project_dir)
         output_dir = project_dir / ".claude" / "agent-output"
 
+        stream_parser = None
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            process = await get_runtime().spawn(
+            runtime = get_runtime()
+            process = await runtime.spawn(
                 prompt,
                 cwd,
                 env=gh_env,
@@ -743,6 +764,21 @@ async def start_command(
             log.error("command.spawn_failed", command=command, issue=issue, error=str(exc), exc_info=True)
             await _finalize_orphaned_run(pre_run_id, project_dir)
             return {"error": f"Failed to spawn runtime: {exc}"}
+
+        stream_reader_drain_timeout = None
+        try:
+            stream_parser = runtime.create_stream_parser()
+        except Exception:  # noqa: BLE001 (parser creation failure must not orphan the already-running process)
+            log.warning("command.create_stream_parser_failed", command=command, run_id=pre_run_id, exc_info=True)
+            stream_parser = None
+        if stream_parser is not None:
+            try:
+                stream_reader_drain_timeout = runtime.stream_reader_drain_timeout()
+            except Exception:  # noqa: BLE001 (timeout lookup failure must not discard an already-built parser)
+                log.warning(
+                    "command.stream_reader_drain_timeout_failed", command=command, run_id=pre_run_id, exc_info=True
+                )
+                stream_reader_drain_timeout = None
 
         run_id = pre_run_id
         await _update_task_run_pid(run_id, process.pid, project_dir)
@@ -762,6 +798,8 @@ async def start_command(
             pre_run_sha=pre_run_sha,
             prompt=prompt,
             project_dir=project_dir,
+            stream_parser=stream_parser,
+            stream_reader_drain_timeout=stream_reader_drain_timeout,
         )
         pa.agents[run_id] = agent
 
