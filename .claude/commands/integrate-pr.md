@@ -409,7 +409,13 @@ Act on the result:
 
 ### Phase 5: Merge
 
-Read `sova.toml` to determine merge settings from the `[integration]` section:
+Resolve the merge settings through the config loader (they are not in the `sova config` table):
+
+```bash
+python3 -c "from pathlib import Path; from sova.config.loader import load_config; \
+i=load_config(Path('.')).integration; print(i.merge_method, i.delete_branch, i.post_merge_state)"
+```
+
 
 - `merge_method`: "auto" (repo default), "squash", "rebase", or "merge"
 - `delete_branch`: true/false (default true)
@@ -490,7 +496,7 @@ git worktree remove <WORKTREE_PATH> --force 2>/dev/null || true
 
 Handle the linked issue based on `post_merge_state` from `[integration]` config.
 
-**GitHub projects** (`task_source.type = "github"` or no `sova.toml`):
+**GitHub projects** (`task_source` is `github`, the default):
 
 - **"done"** (default): close the issue (`gh issue close <ISSUE_NUMBER>`)
 - **"on_qa"**: add `agent:on-qa` label, keep the issue open
@@ -498,11 +504,11 @@ Handle the linked issue based on `post_merge_state` from `[integration]` config.
 
 **Jira projects** (`task_source.type = "jira"`):
 
-Read the Jira connection settings from `sova.toml` (`[task_source]` section: `jira_base_url`, `jira_email`, `jira_api_token`, `jira_project_key`). Use the Jira REST API to transition the issue:
+The Jira connection settings resolve through the config loader as `cfg.task_source.jira_base_url`, `jira_email`, `jira_api_token`, and `jira_project_key`. Read them inside the script that calls Jira; never print `jira_api_token` to the terminal or into a log. Use the Jira REST API to transition the issue:
 
 - **"done"**: trigger a Jira workflow transition matching "Done", "Closed", "Resolved", or "Close"
 - **"on_qa"**: trigger a Jira workflow transition matching "On QA", "QA", "Verification", or "Ready for QA". Also add the `agent:on-qa` label.
-- Check `jira_state_transitions` in `sova.toml` for custom transition name overrides (e.g., `on_qa = "Move to QA"` takes priority over the defaults)
+- Check `cfg.task_source.jira_state_transitions` for custom transition name overrides (e.g., `on_qa = "Move to QA"` takes priority over the defaults)
 - If no matching transition is available on the Jira board, log a warning and skip
 
 Check for stale stashes that belong to the merged branch:

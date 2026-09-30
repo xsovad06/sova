@@ -68,7 +68,11 @@ Every artifact path referenced in the rest of this command (Steps 6 and 7) is `$
 
 ## 1.5. Catalog Existing Bot Findings (if external reviews are configured)
 
-Skip this step if the project does not use automated reviewers (no `[external_reviews]` section in `sova.toml`).
+Skip this step if the project does not use automated reviewers. Check with:
+```bash
+python3 -c "from pathlib import Path; from sova.config.loader import load_config; \
+c=load_config(Path('.')).external_reviews; print(c.enabled, c.tools)"
+```
 
 Before starting your own analysis, extract actionable findings already posted by automated reviewers (CodeRabbit, SonarCloud, Dependabot, etc.) from the reviews and inline comments fetched in Step 1. Identify bots by `user.type == "Bot"` or known bot logins.
 
