@@ -2434,7 +2434,7 @@ class TestStartCommandWorktreeResolution:
         The branch is still checked out at the discovered (but unusable) worktree
         path. Recomputing a fresh identity (issue_id/pr-N/sanitized branch name)
         and calling create_worktree() with it would try to add a second worktree
-        for a branch git already has checked out elsewhere -- and fail. The
+        for a branch git already has checked out elsewhere, and fail. The
         resolver must go straight to project_dir instead of attempting that.
         """
         from unittest.mock import AsyncMock, patch
