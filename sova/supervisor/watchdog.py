@@ -23,13 +23,20 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
-from sova.config.models import WatchdogConfig
+from sova.config.models import MemoryGuardConfig, WatchdogConfig
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.db.models import OutputLine, TaskRun
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
+
+try:
+    import psutil
+
+    _PSUTIL_AVAILABLE = True
+except ImportError:
+    _PSUTIL_AVAILABLE = False
 
 log = get_logger(component="supervisor.watchdog")
 
@@ -46,6 +53,7 @@ class AnomalySignal(StrEnum):
     STEP_TIMEOUT_WARN = "step_timeout_warn"
     STEP_TIMEOUT_KILL = "step_timeout_kill"
     ZOMBIE_PROCESS = "zombie_process"
+    MEMORY_PRESSURE = "memory_pressure"
 
 
 class WatchdogAction(StrEnum):
@@ -70,18 +78,23 @@ class AgentWatchdog:
         self,
         config: WatchdogConfig,
         project_dir: Path,
+        *,
+        memory_guard: MemoryGuardConfig | None = None,
     ) -> None:
         self._config = config
         self._project_dir = project_dir
+        self._memory_guard = memory_guard if memory_guard is not None else MemoryGuardConfig()
         self._cooldowns: dict[tuple[int, str], float] = {}
         # (run_id, step_name) -> monotonic time when that step was first seen
         self._step_started_at: dict[tuple[int, str], float] = {}
         self._task: asyncio.Task | None = None
         self._wake_event = asyncio.Event()
 
-    def reload_config(self, config: WatchdogConfig) -> None:
+    def reload_config(self, config: WatchdogConfig, memory_guard: MemoryGuardConfig | None = None) -> None:
         """Hot-reload config (called by settings router after TOML update)."""
         self._config = config
+        if memory_guard is not None:
+            self._memory_guard = memory_guard
         self._wake_event.set()
 
     async def _interruptible_sleep(self, delay: float) -> None:
@@ -149,6 +162,11 @@ class AgentWatchdog:
                     continue
                 self._record_cooldown(finding)
                 findings.append(finding)
+
+        mem_finding = self._check_memory_pressure(active_runs)
+        if mem_finding is not None and not self._is_on_cooldown(mem_finding):
+            self._record_cooldown(mem_finding)
+            findings.append(mem_finding)
 
         self._prune_cooldowns(active_run_ids)
 
@@ -330,6 +348,56 @@ class AgentWatchdog:
             )
         return None
 
+    def _check_memory_pressure(self, active_runs: list[TaskRun]) -> WatchdogFinding | None:
+        """Check system memory availability against ``[memory_guard]`` thresholds.
+
+        Runtime counterpart to the pre-spawn memory_pressure gate (see
+        ``sova.supervisor.gates.memory_pressure``): that gate only ever
+        evaluates a new spawn, so pressure that builds up while several
+        agents are already running goes unnoticed until something else acts
+        on it. Fails open (returns None) on any psutil error: pressure
+        detection must never block or crash the watchdog loop.
+        """
+        if not _PSUTIL_AVAILABLE or not self._memory_guard.enabled:
+            return None
+        try:
+            available_gb = psutil.virtual_memory().available / (1024**3)
+        except Exception:  # noqa: BLE001 (runtime check fails open on any psutil error)
+            log.debug("watchdog.memory_check_failed", exc_info=True)
+            return None
+
+        if available_gb >= self._memory_guard.block_threshold_gb:
+            return None
+
+        detail = (
+            f"System memory pressure: {available_gb:.2f}GB available < "
+            f"{self._memory_guard.block_threshold_gb:.2f}GB threshold"
+        )
+        metadata: dict[str, Any] = {"available_gb": round(available_gb, 2), "action": self._memory_guard.runtime_action}
+
+        if self._memory_guard.runtime_action != "stop_newest" or not active_runs:
+            # No specific run to blame: use the sentinel run_id 0 (never a
+            # real TaskRun.id) so cooldown tracking works without a target.
+            return WatchdogFinding(
+                run_id=0,
+                issue_number=None,
+                signal=AnomalySignal.MEMORY_PRESSURE,
+                action=WatchdogAction.WARN,
+                detail=detail,
+                metadata=metadata,
+            )
+
+        _epoch = datetime.min.replace(tzinfo=timezone.utc)
+        newest = max(active_runs, key=lambda r: _as_utc(r.started_at) if r.started_at else _epoch)
+        return WatchdogFinding(
+            run_id=newest.id,
+            issue_number=newest.issue_number,
+            signal=AnomalySignal.MEMORY_PRESSURE,
+            action=WatchdogAction.KILL,
+            detail=f"{detail}; stopping newest active run {newest.id}",
+            metadata=metadata,
+        )
+
     def _is_on_cooldown(self, finding: WatchdogFinding) -> bool:
         """Check if this (run_id, signal) pair is within cooldown window."""
         key = (finding.run_id, finding.signal.value)
@@ -345,8 +413,13 @@ class AgentWatchdog:
         self._cooldowns[key] = time.monotonic()
 
     def _prune_cooldowns(self, active_run_ids: set[int]) -> None:
-        """Remove cooldown and step-tracking entries for runs that are no longer active."""
-        stale_keys = [k for k in self._cooldowns if k[0] not in active_run_ids]
+        """Remove cooldown and step-tracking entries for runs that are no longer active.
+
+        run_id 0 is the memory-pressure sentinel (a system-wide condition
+        with no specific run), not a real TaskRun.id, so it is never pruned:
+        pruning it every cycle would defeat its cooldown entirely.
+        """
+        stale_keys = [k for k in self._cooldowns if k[0] not in active_run_ids and k[0] != 0]
         for k in stale_keys:
             del self._cooldowns[k]
         stale_step_keys = [k for k in self._step_started_at if k[0] not in active_run_ids]
@@ -401,6 +474,6 @@ class AgentWatchdog:
             detail=finding.detail,
         )
         try:
-            await stop_agent(run_id=finding.run_id)
+            await stop_agent(run_id=finding.run_id, cause=finding.signal.value, requester="watchdog")
         except Exception:  # noqa: BLE001 (kill is best-effort; the finding is recorded regardless)
             log.warning("watchdog.kill_failed", run_id=finding.run_id, exc_info=True)

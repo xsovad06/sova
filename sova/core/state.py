@@ -127,12 +127,16 @@ class PhaseStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    STOPPED = "stopped"
 
 
-PHASE_STATUS_TERMINAL = frozenset({PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.SKIPPED})
+PHASE_STATUS_TERMINAL = frozenset({PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.SKIPPED, PhaseStatus.STOPPED})
 
-# Terminal statuses for TaskRun records (shared across services)
-TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "paused", "awaiting_approval"})
+# Terminal statuses for TaskRun records (shared across services).
+# "stopped" is a deliberate stop (see sova.ipc.control.TerminationRecord),
+# distinct from "interrupted" (dead-PID recovery, orphaned runs) which is
+# always involuntary.
+TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "paused", "awaiting_approval", "stopped"})
 
 # Step statuses that count as completed progress (executed successfully or intentionally skipped).
 # Legacy runs used "passed"; current WorkflowEngine uses "done".

@@ -308,7 +308,7 @@ class ReviewerRole(AgentRole):
                     .where(
                         TaskRun.issue_number == issue,
                         TaskRun.role == "developer",
-                        TaskRun.status.in_(["done", "failed", "interrupted"]),
+                        TaskRun.status.in_(["done", "failed", "interrupted", "stopped"]),
                         TaskRun.handoff_json.isnot(None),
                     )
                     .order_by(TaskRun.started_at.desc())

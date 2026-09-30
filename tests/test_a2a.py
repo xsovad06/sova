@@ -191,6 +191,11 @@ class TestTaskMapping:
 
         assert sova_status_to_a2a("interrupted") == "failed"
 
+    def test_sova_status_to_a2a_stopped_string(self):
+        from sova.a2a.task_mapping import sova_status_to_a2a
+
+        assert sova_status_to_a2a("stopped") == "canceled"
+
     def test_task_run_to_a2a_task_with_handoff(self):
         from sova.a2a.task_mapping import task_run_to_a2a_task
 

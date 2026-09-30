@@ -1379,7 +1379,7 @@ var _logEventSource = null;
 var _logBackoffMs = 1000;
 var _LOG_BACKOFF_BASE = 1000;
 var _LOG_BACKOFF_MAX = 5000;
-var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted'];
+var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted', 'stopped'];
 var lastAgentFingerprint = null;
 var _lastActiveAgents = [];
 
@@ -2056,7 +2056,7 @@ function renderHistoryTable(tasks, targetId, showError) {
     tasks.map(function(t) {
       var colors = roleColor(t.role);
       var stepsText = t.total_steps_possible ? (t.steps_completed + '/' + t.total_steps_possible) : '--';
-      var canRerun = (t.status === 'failed' || t.status === 'interrupted') && t.issue_number;
+      var canRerun = (t.status === 'failed' || t.status === 'interrupted' || t.status === 'stopped') && t.issue_number;
       var rerunCell = canRerun
         ? '<td class="p-3 text-center"><button class="rerun-btn px-2 py-0.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" ' +
           'data-issue="' + escapeHtml(String(t.issue_number)) + '" data-role="' + escapeHtml(t.role || '') + '" data-pr="' + escapeHtml(String(parseInt(t.pr_number, 10) || '')) + '" ' +
@@ -2547,7 +2547,7 @@ function _connectAgentWs() {
           var curr = run.status;
           if (prev && prev !== curr && _STATUS_TERMINAL[curr] && curr !== 'paused') {
             var ref = run.issue ? '#' + run.issue : (run.pr_number ? 'PR #' + run.pr_number : 'Run ' + run.run_id);
-            var _notifTitles = { done: 'Agent completed', failed: 'Agent failed', interrupted: 'Agent interrupted', rejected: 'Agent rejected' };
+            var _notifTitles = { done: 'Agent completed', failed: 'Agent failed', interrupted: 'Agent interrupted', rejected: 'Agent rejected', stopped: 'Agent stopped' };
             var title = _notifTitles[curr] || 'Agent ' + curr;
             sendBrowserNotification('SOVA: ' + title, ref + ' (' + (run.role || 'agent') + ')');
           }

@@ -788,11 +788,19 @@ class HeadroomConfig(BaseSettings):
 
 
 class MemoryGuardConfig(BaseSettings):
-    """Pre-spawn memory availability gate (dashboard + supervisor)."""
+    """Memory availability gate: pre-spawn (dashboard + supervisor) and runtime (watchdog)."""
 
     enabled: bool = True
     warn_threshold_gb: float = Field(3.0, ge=1.0)
     block_threshold_gb: float = Field(1.5, ge=0.5)
+    # Runtime check inside the AgentWatchdog poll loop, evaluated against
+    # already-running agents (the pre-spawn gate above only ever sees new
+    # spawns). "warn" only emits a feed event; "stop_newest" additionally
+    # stops the most-recently-started active agent, labelled with cause
+    # "memory_pressure" so the capacity reason is recorded rather than
+    # inferred. Killing a running agent discards paid work, so this defaults
+    # to "warn": an operator opts into eviction explicitly.
+    runtime_action: Literal["warn", "stop_newest"] = "warn"
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_MEMORY_GUARD_")
 

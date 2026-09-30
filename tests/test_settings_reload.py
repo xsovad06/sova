@@ -780,6 +780,7 @@ class TestMatchReloadTarget:
         assert _match_reload_target("supervisor.enabled") == "supervisor"
         assert _match_reload_target("pr_monitor.poll_interval") == "pr_monitor"
         assert _match_reload_target("integration.merge_queue_timeout") == "integration"
+        assert _match_reload_target("memory_guard.runtime_action") == "watchdog"
 
     def test_runtime_prefix(self) -> None:
         from sova.dashboard.routers.settings import _match_reload_target
@@ -1039,7 +1040,7 @@ class TestReloadAllConfigs:
             err = await _reload_all_configs(project_dir, "watchdog.check_interval_seconds")
 
         assert err is None
-        wd.reload_config.assert_called_once_with(cfg.watchdog)
+        wd.reload_config.assert_called_once_with(cfg.watchdog, cfg.memory_guard)
 
     @pytest.mark.asyncio
     async def test_pr_monitor_key_dispatches_to_monitors(self) -> None:
