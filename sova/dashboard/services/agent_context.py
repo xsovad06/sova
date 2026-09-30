@@ -9,7 +9,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from sova.git.worktree import find_worktree_by_branch
+from sova.git.worktree import ensure_worktree_usable, find_worktree_by_branch
 from sova.utils.logging import get_logger
 from sova.utils.shell import run as run_shell
 
@@ -60,23 +60,63 @@ async def _resolve_issue_worktree(
     to project_dir only when no branch is known.
     """
     issue_id = issue.lstrip("#").strip()
+    probed_path: Path | None = None
     if issue_id and issue_id.isdigit():
         candidate = project_dir / _CLAUDE_DIR / "worktrees" / issue_id
-        if candidate.is_dir():
-            log.info("command.using_worktree", issue=issue_id, path=str(candidate))
-            return candidate
+        try:
+            candidate_is_dir = candidate.is_dir()
+        except OSError:
+            log.debug("command.worktree_candidate_probe_failed", issue=issue_id, exc_info=True)
+            candidate_is_dir = False
+        if candidate_is_dir:
+            probed_path = candidate
+            try:
+                usable = await ensure_worktree_usable(project_dir, candidate, branch=branch_name)
+            except OSError:
+                log.warning("command.worktree_usable_check_failed", issue=issue_id, exc_info=True)
+                usable = None
+            if usable is not None:
+                log.info("command.using_worktree", issue=issue_id, path=str(usable))
+                return usable
+            log.warning("command.worktree_unusable", issue=issue_id, path=str(candidate))
 
     if branch_name:
         branch_on_main = False
+        worktree_exists_but_unusable = False
         try:
             wt_path = await find_worktree_by_branch(branch_name, cwd=project_dir)
-            if wt_path is not None and wt_path.resolve() != project_dir.resolve():
-                log.info("command.using_branch_worktree", branch=branch_name, path=str(wt_path))
-                return wt_path
-            if wt_path is not None:
+            if wt_path is not None and probed_path is not None and wt_path.resolve() == probed_path.resolve():
+                # Already probed via the issue-id branch above and found
+                # unusable (or its probe failed): the issue-id worktree
+                # directory is conventionally the same path find_worktree_by_branch()
+                # would locate, so re-running ensure_worktree_usable() here would
+                # duplicate the git subprocess and any repopulate attempt for a
+                # result already known, and emit a second identical log event.
+                worktree_exists_but_unusable = True
+            elif wt_path is not None and wt_path.resolve() != project_dir.resolve():
+                usable = await ensure_worktree_usable(project_dir, wt_path, branch=branch_name)
+                if usable is not None:
+                    log.info("command.using_branch_worktree", branch=branch_name, path=str(usable))
+                    return usable
+                log.warning("command.branch_worktree_unusable", branch=branch_name, path=str(wt_path))
+                worktree_exists_but_unusable = True
+            elif wt_path is not None:
                 branch_on_main = True
-        except (RuntimeError, FileNotFoundError, subprocess.CalledProcessError):
+        except (RuntimeError, FileNotFoundError, subprocess.CalledProcessError, OSError):
             log.debug("command.branch_worktree_lookup_failed", branch=branch_name, exc_info=True)
+
+        if worktree_exists_but_unusable:
+            # The branch is still checked out at wt_path, which
+            # ensure_worktree_usable() could not repair. Falling through to the
+            # "create a fresh worktree" logic below would compute a new,
+            # independent identity (issue_id / pr-{N} / sanitized branch name)
+            # that generally does not match wt_path.name, so create_worktree()
+            # would try to add a second worktree for a branch already checked
+            # out elsewhere (git refuses), and the whole call would otherwise
+            # degrade to project_dir anyway, just via a confusing git error.
+            # Go there directly instead.
+            log.error("command.worktree_unusable_fallback_to_project_dir", branch=branch_name)
+            return project_dir
 
         # No existing worktree found -- create one for this branch so the agent
         # doesn't run in the main project directory and pollute its working tree.

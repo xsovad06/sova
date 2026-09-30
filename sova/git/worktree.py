@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
@@ -376,7 +377,18 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
 
 
 _CLAUDE_DIRS = ("commands", "rules", "agent-memory", "skills")
-_CLAUDE_FILES = ("CLAUDE.md", "settings.local.json", "settings.json")
+# CLAUDE.md lives at the project root, not under .claude/, and is handled
+# separately (root_claude_md) in both ensure_claude_artifacts() and
+# missing_claude_artifacts(); this tuple only covers files under .claude/.
+_CLAUDE_FILES = ("settings.local.json", "settings.json")
+
+# Artifacts whose absence blocks worktree reuse outright (returns ``None`` from
+# ``ensure_worktree_usable``). Everything else missing after a repopulate attempt
+# is logged but does not discard an otherwise-usable worktree: most projects don't
+# populate every optional directory, and an agent can still function without
+# ``rules``/``skills``/``agent-memory``/``CLAUDE.md``/settings files, but not
+# without slash commands.
+_CRITICAL_CLAUDE_ARTIFACTS = frozenset({".claude/commands"})
 
 
 def _copy2_skip_identical(src: str, dst: str, *, follow_symlinks: bool = True) -> str:
@@ -439,6 +451,237 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
 
 
 _copy_claude_artifacts = ensure_claude_artifacts
+
+
+def _is_file_safe(path: Path) -> bool:
+    """``Path.is_file()`` that treats any ``OSError`` (permission, broken mount) as ``False``."""
+    try:
+        return path.is_file()
+    except OSError:
+        log.debug("worktree.artifact_probe_failed", path=str(path), exc_info=True)
+        return False
+
+
+def _is_dir_safe(path: Path) -> bool:
+    """``Path.is_dir()`` that treats any ``OSError`` (permission, broken mount) as ``False``."""
+    try:
+        return path.is_dir()
+    except OSError:
+        log.debug("worktree.artifact_probe_failed", path=str(path), exc_info=True)
+        return False
+
+
+def _exists_safe(path: Path) -> bool:
+    """``Path.exists()`` that treats any ``OSError`` (permission, broken mount) as ``False``."""
+    try:
+        return path.exists()
+    except OSError:
+        log.debug("worktree.artifact_probe_failed", path=str(path), exc_info=True)
+        return False
+
+
+def _dir_entry_names(path: Path) -> set[str] | None:
+    """Return the entry names in *path*, or ``None`` if it isn't a readable directory.
+
+    Any ``OSError`` (permission denied, broken mount, race with deletion) is
+    treated the same as "not a directory" rather than propagating: callers
+    decide what "unreadable" means for their side of the comparison. An entry
+    that is a broken symlink (name resolves but target does not exist) is
+    excluded from the result, so it counts as missing on the destination side
+    of ``missing_claude_artifacts()``'s subset comparison rather than
+    satisfying it, matching ``_is_file_safe``'s symlink-following behavior for
+    the flat-file checks.
+    """
+    try:
+        if not path.is_dir():
+            return None
+        names: set[str] = set()
+        for entry in path.iterdir():
+            try:
+                if entry.is_symlink() and not entry.exists():
+                    continue
+            except OSError:
+                continue
+            names.add(entry.name)
+        return names
+    except OSError:
+        log.debug("worktree.artifact_probe_failed", path=str(path), exc_info=True)
+        return None
+
+
+def missing_claude_artifacts(project_dir: Path, worktree_path: Path) -> list[str]:
+    """Return the required ``.claude`` artifacts absent from *worktree_path*.
+
+    An artifact is required only when it exists (and is readable) in
+    *project_dir*: a project with no ``.claude/skills`` directory is never
+    reported unhealthy for lacking one in a worktree, and a source directory
+    this process cannot read is treated as not required (there is nothing to
+    repopulate from). A required directory is compared by entry name, not
+    just non-emptiness, so a worktree created before a new command file was
+    added to the project (present but incomplete) is still flagged, not just
+    a fully-empty or fully-missing one. Uses ``Path.is_dir()``/``is_file()``,
+    which follow symlinks, so a valid symlink (e.g. a command kept in sync via
+    a symlink into ``~/.claude/commands``) counts as present while a broken
+    one counts as missing: for entries inside a ``_CLAUDE_DIRS`` directory
+    this holds too, since ``_dir_entry_names()`` drops broken symlinks from
+    its listing before the subset comparison. Any filesystem error reading
+    the *worktree* side
+    (permission denied, broken mount) is treated as missing rather than
+    raised, fail-safe toward triggering a repopulate/recreate attempt.
+    """
+    missing: list[str] = []
+
+    root_claude_md = project_dir / "CLAUDE.md"
+    if _is_file_safe(root_claude_md) and not _is_file_safe(worktree_path / "CLAUDE.md"):
+        missing.append("CLAUDE.md")
+
+    claude_src = project_dir / ".claude"
+    try:
+        claude_src_is_dir = claude_src.is_dir()
+    except OSError:
+        log.debug("worktree.artifact_probe_failed", path=str(claude_src), exc_info=True)
+        claude_src_is_dir = False
+    if not claude_src_is_dir:
+        return missing
+
+    claude_dst = worktree_path / ".claude"
+    for dirname in _CLAUDE_DIRS:
+        src_names = _dir_entry_names(claude_src / dirname)
+        if src_names is None:
+            continue
+        dst_names = _dir_entry_names(claude_dst / dirname)
+        if dst_names is None or not src_names.issubset(dst_names):
+            missing.append(f".claude/{dirname}")
+
+    for filename in _CLAUDE_FILES:
+        src = claude_src / filename
+        if not _is_file_safe(src):
+            continue
+        dst = claude_dst / filename
+        if not _is_file_safe(dst):
+            missing.append(f".claude/{filename}")
+
+    return missing
+
+
+async def ensure_worktree_usable(
+    project_dir: Path,
+    worktree_path: Path,
+    *,
+    branch: str = "",
+    base_branch: str = "HEAD",
+) -> Path | None:
+    """Verify a worktree about to be reused is actually usable, repairing it if not.
+
+    A worktree about to be handed to an agent must exist on disk, still be a
+    live git worktree (its ``.git`` linkage can be pruned out from under it
+    while the directory survives), and carry the ``.claude`` artifacts an
+    agent needs. Missing artifacts are cheap to repopulate in place; a missing
+    directory or broken git linkage requires recreating the worktree via
+    :func:`create_worktree`, which needs a known branch.
+
+    Only a missing-and-unrepairable ``.claude/commands`` (see
+    :data:`_CRITICAL_CLAUDE_ARTIFACTS`) makes the worktree unusable outright:
+    an agent cannot run without slash commands, but can still function
+    without ``rules``/``skills``/``agent-memory``/``CLAUDE.md``/settings
+    files, so those are logged and otherwise ignored.
+
+    Returns the usable worktree path (unchanged, or freshly recreated), or
+    ``None`` if the worktree could not be made usable: callers should treat
+    this exactly like "no worktree found" and fall back accordingly.
+
+    ``create_worktree`` always rebuilds its target at the canonical
+    ``<project_dir>/.claude/worktrees/<name>`` location. When *worktree_path*
+    already lives there (the common case: the issue-id-keyed lookup in
+    ``_resolve_issue_worktree``), recreation happens in place. When it does
+    not (e.g. a worktree discovered via :func:`find_worktree_by_branch`,
+    which can point anywhere on disk, including one created manually or by
+    Claude Code's own ``EnterWorktree`` flow), recreating at the canonical
+    path would otherwise silently relocate the worktree and orphan the old
+    directory/registration, which the TTL-based
+    :func:`cleanup_stale_worktrees` never reclaims since it only scans the
+    canonical directory. The old path is explicitly cleaned up first so
+    nothing is left behind, and the relocation is logged so it stays
+    traceable.
+    """
+    needs_recreate = not _is_dir_safe(worktree_path)
+    if not needs_recreate:
+        # A missing ``.git`` marker must be checked directly, not inferred from
+        # the git command below: git's repository discovery walks upward
+        # through parent directories when the cwd has no ``.git`` of its own,
+        # and the canonical worktree location is nested directly under
+        # project_dir (which has its own ``.git``), so a worktree stripped of
+        # its ``.git`` file entirely would otherwise have this probe silently
+        # resolve to the *primary* checkout's repository and report success.
+        needs_recreate = not _exists_safe(worktree_path / ".git")
+    if not needs_recreate:
+        probe = await run("git", "rev-parse", "--git-dir", cwd=worktree_path)
+        needs_recreate = not probe.success
+
+    if needs_recreate:
+        if not branch:
+            log.error("worktree.reuse_unusable_no_branch", path=str(worktree_path))
+            return None
+        log.warning("worktree.reuse_unusable", path=str(worktree_path), branch=branch)
+
+        canonical_path = project_dir / WORKTREE_DIR / worktree_path.name
+        if worktree_path.resolve() != canonical_path.resolve():
+            log.warning(
+                "worktree.reuse_relocating",
+                old_path=str(worktree_path),
+                new_path=str(canonical_path),
+                branch=branch,
+            )
+            try:
+                await cleanup_worktree(worktree_path, cwd=project_dir)
+            except OSError:
+                log.warning("worktree.reuse_relocate_cleanup_failed", path=str(worktree_path), exc_info=True)
+
+        try:
+            info = await create_worktree(
+                issue_id=worktree_path.name,
+                branch=branch,
+                base_branch=base_branch,
+                project_dir=project_dir,
+            )
+        except (RuntimeError, OSError, ValueError):
+            log.error("worktree.reuse_recreate_failed", path=str(worktree_path), branch=branch, exc_info=True)
+            return None
+        log.info("worktree.reuse_recreated", path=str(info.path), branch=branch)
+        return info.path
+
+    missing = missing_claude_artifacts(project_dir, worktree_path)
+    if missing:
+        log.warning("worktree.reuse_missing_artifacts", path=str(worktree_path), missing=missing)
+        try:
+            # Runs the shutil-based copy off the event loop: repopulating
+            # several artifacts can mean a non-trivial shutil.copytree over
+            # .claude/{commands,rules,agent-memory,skills}, and this function
+            # runs on the dashboard's single event loop while a caller may be
+            # holding a spawn-serializing lock, so blocking it here would
+            # stall every other agent's output polling and API requests.
+            await asyncio.to_thread(ensure_claude_artifacts, project_dir, worktree_path)
+        except OSError:
+            log.error("worktree.reuse_repopulate_failed", path=str(worktree_path), exc_info=True)
+            return None
+        still_missing = missing_claude_artifacts(project_dir, worktree_path)
+        if still_missing:
+            critical_missing = [m for m in still_missing if m in _CRITICAL_CLAUDE_ARTIFACTS]
+            if critical_missing:
+                log.error(
+                    "worktree.reuse_artifacts_unrepairable",
+                    path=str(worktree_path),
+                    missing=still_missing,
+                    critical=critical_missing,
+                )
+                return None
+            log.warning(
+                "worktree.reuse_missing_noncritical_artifacts",
+                path=str(worktree_path),
+                missing=still_missing,
+            )
+
+    return worktree_path
 
 
 def _copy_worktree_files(project_dir: Path, worktree_path: Path, files: list[str]) -> None:
