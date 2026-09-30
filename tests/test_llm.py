@@ -3963,12 +3963,40 @@ class TestAnthropicAPIProvider:
         from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
 
-        with patch.dict(os.environ, {}, clear=False):
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("sova.llm.keyring_store.get_secret", return_value=None),
+        ):
             os.environ.pop("ANTHROPIC_API_KEY", None)
             provider = create_provider(LLMConfig(provider="anthropic", model="claude-opus-5", api_key="sk-from-config"))
 
         assert provider._api_key == "sk-from-config"
         assert provider._default_model == "claude-opus-5"
+
+    def test_create_provider_prefers_keyring_over_db_api_key(self, mock_anthropic: MagicMock) -> None:
+        """When the OS keyring holds the key, it wins over the plaintext db value."""
+        from sova.config.models import LLMConfig
+        from sova.llm.provider import create_provider
+
+        with patch("sova.llm.keyring_store.get_secret", return_value="sk-from-keyring"):
+            provider = create_provider(LLMConfig(provider="anthropic", api_key="sk-from-db"))
+
+        assert provider._api_key == "sk-from-keyring"
+
+    def test_create_provider_falls_back_to_db_when_sentinel_unresolvable(self, mock_anthropic: MagicMock) -> None:
+        """A sentinel db value with no matching keyring entry resolves to empty, not the sentinel."""
+        from sova.config.models import LLMConfig
+        from sova.llm.keyring_store import SENTINEL
+        from sova.llm.provider import create_provider
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("sova.llm.keyring_store.get_secret", return_value=None),
+        ):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            provider = create_provider(LLMConfig(provider="anthropic", api_key=SENTINEL))
+
+        assert provider._api_key == ""
 
     def test_create_provider_resolves_model_alias(self, mock_anthropic: MagicMock) -> None:
         """llm.model may be an alias name, not just a native ID."""

@@ -117,6 +117,22 @@ def reset_provider_warning_state() -> None:
     _last_warned_provider_type = None
 
 
+async def reload_provider_async(cfg: ProjectConfig) -> None:
+    """Async wrapper for ``reload_provider()``, safe to call from a request handler.
+
+    ``create_provider()``'s anthropic branch resolves ``llm.api_key`` through
+    ``keyring_store.resolve_secret()``, whose first call in the process probes
+    the OS keyring backend (``keyring.get_keyring()``), which can be slow on a
+    misconfigured or headless machine. Called synchronously, that probe blocks
+    the single-threaded event loop for every other concurrent request or
+    agent-poll during that first call. Offloaded to a worker thread so the
+    dashboard lifespan and the settings hot-reload path never pay for it
+    in-line; ``reload_provider()`` itself stays synchronous for the CLI
+    callback, which runs before any event loop exists.
+    """
+    await asyncio.to_thread(reload_provider, cfg)
+
+
 # ---------------------------------------------------------------------------
 # LLM invocation-count runaway guard (docs/model-selection-risk-assessment.md, R6)
 #

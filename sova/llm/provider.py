@@ -234,8 +234,10 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
         cfg: The project's ``llm`` config section. ``cfg.provider`` selects the
             backend; the remaining fields are read per backend (``model``,
             ``fallback_model`` and ``api_base`` for LiteLLM; ``model`` and
-            ``api_key`` for the Anthropic API, which falls back to the
-            ``ANTHROPIC_API_KEY`` env var when the key is empty). ``model`` and
+            ``api_key`` for the Anthropic API). ``api_key`` is resolved through
+            ``sova.llm.keyring_store.resolve_secret`` first (OS keyring, then
+            ``cfg.api_key`` as stored in the database), then falls back to the
+            ``ANTHROPIC_API_KEY`` env var when still empty. ``model`` and
             ``fallback_model`` are resolved through ``cfg.model_aliases`` first,
             so a deployment can point a generic tier name (e.g. ``"smart"``) at
             these fields exactly as it can at a per-call ``model=`` argument.
@@ -271,10 +273,12 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
 
     if cfg.provider == "anthropic":
         from sova.llm.client import resolve_alias
+        from sova.llm.keyring_store import resolve_secret
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
         model = resolve_alias(cfg.model, cfg.model_aliases) if cfg.model else cfg.model
-        return AnthropicAPIProvider(model=model or "", api_key=cfg.api_key)
+        api_key = resolve_secret("llm.api_key", cfg.api_key)
+        return AnthropicAPIProvider(model=model or "", api_key=api_key)
 
     available = ["claude-code", "litellm", "hybrid", "anthropic", "openai", "ollama", "vertex"]
     raise ValueError(f"Unknown LLM provider: {cfg.provider!r}. Available: {', '.join(available)}")

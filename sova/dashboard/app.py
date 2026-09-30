@@ -544,10 +544,10 @@ def create_app(
         # NOTE: in multi_project mode this uses the first resolved dir's config.
         # Per-project provider selection requires threading through ExecutionContext.
         from sova.ipc.runtime import reload_runtime
-        from sova.llm.client import reload_provider
+        from sova.llm.client import reload_provider_async
 
         cfg = _load_config_or_fail(resolved)
-        reload_provider(cfg)
+        await reload_provider_async(cfg)
         reload_runtime(cfg)
 
         from sova.core.output import cleanup_old_output
