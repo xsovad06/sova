@@ -1570,15 +1570,27 @@ class TestCopyClaudeArtifacts:
 
         claude = project / ".claude"
         claude.mkdir(parents=True)
-        (claude / "CLAUDE.md").write_text("project instructions")
         (claude / "settings.local.json").write_text("{}")
         (claude / "settings.json").write_text('{"hooks": {}}')
 
         _copy_claude_artifacts(project, worktree)
 
-        assert (worktree / ".claude" / "CLAUDE.md").read_text() == "project instructions"
         assert (worktree / ".claude" / "settings.local.json").read_text() == "{}"
         assert (worktree / ".claude" / "settings.json").read_text() == '{"hooks": {}}'
+
+    def test_does_not_copy_claude_dir_claude_md(self, tmp_path: Path) -> None:
+        """CLAUDE.md lives at the project root, not under .claude/; a stray .claude/CLAUDE.md is not an artifact."""
+        project = tmp_path / "project"
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        claude = project / ".claude"
+        claude.mkdir(parents=True)
+        (claude / "CLAUDE.md").write_text("not the real artifact")
+
+        _copy_claude_artifacts(project, worktree)
+
+        assert not (worktree / ".claude" / "CLAUDE.md").exists()
 
     def test_copies_root_claude_md(self, tmp_path: Path) -> None:
         project = tmp_path / "project"

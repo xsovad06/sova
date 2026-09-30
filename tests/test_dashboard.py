@@ -2229,6 +2229,11 @@ class TestStartCommandWorktreeResolution:
             patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_output._read_stderr", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_command_prompt", return_value="prompt"),
+            patch(
+                "sova.dashboard.services.agent_context.ensure_worktree_usable",
+                new_callable=AsyncMock,
+                return_value=worktree,
+            ),
         ):
             result = await start_command("address-pr", {"issue": "42", "pr": 10})
 
@@ -2289,11 +2294,18 @@ class TestStartCommandWorktreeResolution:
 
     async def test_resolve_issue_worktree_returns_worktree_path(self, tmp_path: Path) -> None:
         """_resolve_issue_worktree returns worktree path when directory exists."""
+        from unittest.mock import AsyncMock, patch
+
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
 
         worktree = tmp_path / ".claude" / "worktrees" / "42"
         worktree.mkdir(parents=True)
-        assert await _resolve_issue_worktree("42", tmp_path) == worktree
+        with patch(
+            "sova.dashboard.services.agent_context.ensure_worktree_usable",
+            new_callable=AsyncMock,
+            return_value=worktree,
+        ):
+            assert await _resolve_issue_worktree("42", tmp_path) == worktree
 
     async def test_resolve_issue_worktree_returns_project_dir_when_missing(self, tmp_path: Path) -> None:
         """_resolve_issue_worktree returns project_dir when no worktree exists."""
@@ -2309,11 +2321,87 @@ class TestStartCommandWorktreeResolution:
 
     async def test_resolve_issue_worktree_strips_hash(self, tmp_path: Path) -> None:
         """_resolve_issue_worktree strips leading # from issue number."""
+        from unittest.mock import AsyncMock, patch
+
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
 
         worktree = tmp_path / ".claude" / "worktrees" / "42"
         worktree.mkdir(parents=True)
-        assert await _resolve_issue_worktree("#42", tmp_path) == worktree
+        with patch(
+            "sova.dashboard.services.agent_context.ensure_worktree_usable",
+            new_callable=AsyncMock,
+            return_value=worktree,
+        ):
+            assert await _resolve_issue_worktree("#42", tmp_path) == worktree
+
+    async def test_resolve_issue_worktree_repopulates_missing_artifacts(self, tmp_path: Path) -> None:
+        """A reused issue-based worktree missing .claude artifacts gets them repopulated in place."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        (tmp_path / ".claude" / "commands").mkdir(parents=True)
+        (tmp_path / ".claude" / "commands" / "dev.md").write_text("cmd")
+        worktree = tmp_path / ".claude" / "worktrees" / "42"
+        worktree.mkdir(parents=True)
+        (worktree / ".git").touch()
+
+        git_dir_ok = AsyncMock()
+        git_dir_ok.success = True
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=git_dir_ok):
+            result = await _resolve_issue_worktree("42", tmp_path)
+
+        assert result == worktree
+        assert (worktree / ".claude" / "commands" / "dev.md").read_text() == "cmd"
+
+    async def test_resolve_issue_worktree_recreates_broken_worktree(self, tmp_path: Path) -> None:
+        """An issue-based worktree with broken git linkage is recreated when the branch is known."""
+        from dataclasses import dataclass
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        @dataclass
+        class FakeWorktreeInfo:
+            path: Path
+            branch: str
+            issue_id: str
+
+        worktree = tmp_path / ".claude" / "worktrees" / "42"
+        worktree.mkdir(parents=True)
+        fake_info = FakeWorktreeInfo(path=worktree, branch="feat/issue-42", issue_id="42")
+
+        git_dir_fail = AsyncMock()
+        git_dir_fail.success = False
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=git_dir_fail),
+            patch("sova.git.worktree.create_worktree", new_callable=AsyncMock, return_value=fake_info) as mock_create,
+        ):
+            result = await _resolve_issue_worktree("42", tmp_path, branch_name="feat/issue-42")
+
+        assert result == worktree
+        mock_create.assert_awaited_once_with(
+            issue_id="42",
+            branch="feat/issue-42",
+            base_branch="HEAD",
+            project_dir=tmp_path,
+        )
+
+    async def test_resolve_issue_worktree_unusable_no_branch_falls_back_to_project_dir(self, tmp_path: Path) -> None:
+        """An unusable issue-based worktree with no known branch falls back to project_dir."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        worktree = tmp_path / ".claude" / "worktrees" / "42"
+        worktree.mkdir(parents=True)
+
+        git_dir_fail = AsyncMock()
+        git_dir_fail.success = False
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=git_dir_fail):
+            result = await _resolve_issue_worktree("42", tmp_path)
+
+        assert result == tmp_path
 
     async def test_resolve_issue_worktree_branch_fallback(self, tmp_path: Path) -> None:
         """_resolve_issue_worktree falls back to branch-based lookup."""
@@ -2323,13 +2411,62 @@ class TestStartCommandWorktreeResolution:
 
         wt_path = tmp_path / "worktrees" / "feat-branch"
         wt_path.mkdir(parents=True)
-        with patch(
-            "sova.dashboard.services.agent_context.find_worktree_by_branch",
-            new_callable=AsyncMock,
-            return_value=wt_path,
+        with (
+            patch(
+                "sova.dashboard.services.agent_context.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=wt_path,
+            ),
+            patch(
+                "sova.dashboard.services.agent_context.ensure_worktree_usable",
+                new_callable=AsyncMock,
+                return_value=wt_path,
+            ),
         ):
             result = await _resolve_issue_worktree("standup", tmp_path, branch_name="feat/issue-99")
         assert result == wt_path
+
+    async def test_resolve_issue_worktree_branch_fallback_unusable_falls_back_to_project_dir(
+        self, tmp_path: Path
+    ) -> None:
+        """An unusable-but-existing branch worktree must not trigger a mismatched fresh create.
+
+        The branch is still checked out at the discovered (but unusable) worktree
+        path. Recomputing a fresh identity (issue_id/pr-N/sanitized branch name)
+        and calling create_worktree() with it would try to add a second worktree
+        for a branch git already has checked out elsewhere, and fail. The
+        resolver must go straight to project_dir instead of attempting that.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        stale_wt_path = tmp_path / "elsewhere" / "feat-branch"
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_context.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=stale_wt_path,
+            ),
+            patch(
+                "sova.dashboard.services.agent_context.ensure_worktree_usable",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.git.worktree.create_worktree",
+                new_callable=AsyncMock,
+            ) as mock_create,
+            patch("sova.dashboard.services.agent_context.run_shell", new_callable=AsyncMock) as mock_run_shell,
+        ):
+            result = await _resolve_issue_worktree("42", tmp_path, branch_name="feat/issue-42")
+
+        assert result == tmp_path
+        mock_create.assert_not_awaited()
+        # branch_on_main must stay False: the stale worktree is not the main repo,
+        # so no stash/checkout dance should be attempted either.
+        mock_run_shell.assert_not_awaited()
 
     async def test_resolve_issue_worktree_branch_fallback_filters_main(self, tmp_path: Path) -> None:
         """_resolve_issue_worktree skips branch worktree if it equals project_dir."""
@@ -6680,6 +6817,7 @@ class TestMergeAwareFinalization:
 
     async def test_start_command_passes_pr_number_to_task_run(self) -> None:
         """start_command should extract pr from args and pass to _create_task_run."""
+        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -6699,7 +6837,25 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            # Resolved explicitly rather than left to fall through
+            # _resolve_issue_worktree()'s real worktree-discovery logic against a
+            # bare MagicMock project_dir: that function now calls
+            # ensure_worktree_usable() (#1099), which does real filesystem/git
+            # probing no mock here simulates, and can legitimately fall back to
+            # returning project_dir itself, tripping start_command()'s own
+            # "cwd == project_dir" isolation-failure guard for a PR-scoped run.
+            patch.object(
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/fake-worktree-32"),
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+            patch(
+                "sova.dashboard.services.agent_context.ensure_worktree_usable",
+                new_callable=AsyncMock,
+                side_effect=lambda project_dir, worktree_path, **kwargs: worktree_path,
+            ),
         ):
             from sova.dashboard.services.agent_pool import ProjectAgents
 
@@ -6719,6 +6875,7 @@ class TestMergeAwareFinalization:
 
     async def test_start_command_sets_stream_parser_from_runtime(self) -> None:
         """start_command stores the runtime's per-process parser on AgentState, like start_agent."""
+        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -6741,6 +6898,14 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            # See the comment on the same patch in
+            # test_start_command_passes_pr_number_to_task_run above.
+            patch.object(
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/fake-worktree-32"),
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             from sova.dashboard.services.agent_pool import ProjectAgents
@@ -6766,6 +6931,7 @@ class TestMergeAwareFinalization:
         start_command() path: the subprocess is already running by the time
         create_stream_parser() is called, so raising here must not finalize the run as orphaned.
         """
+        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -6787,6 +6953,14 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
             patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+            # See the comment on the same patch in
+            # test_start_command_passes_pr_number_to_task_run above.
+            patch.object(
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/fake-worktree-32"),
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             from sova.dashboard.services.agent_pool import ProjectAgents
@@ -6811,6 +6985,7 @@ class TestMergeAwareFinalization:
         Mirrors test_start_agent_drain_timeout_failure_does_not_discard_parser for the
         start_command() path.
         """
+        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -6834,6 +7009,14 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
             patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+            # See the comment on the same patch in
+            # test_start_command_passes_pr_number_to_task_run above.
+            patch.object(
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/fake-worktree-32"),
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             from sova.dashboard.services.agent_pool import ProjectAgents
