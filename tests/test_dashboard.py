@@ -6784,6 +6784,7 @@ class TestMergeAwareFinalization:
 
     async def test_start_command_passes_pr_number_to_task_run(self) -> None:
         """start_command should extract pr from args and pass to _create_task_run."""
+        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -6803,6 +6804,19 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            # Resolved explicitly rather than left to fall through
+            # _resolve_issue_worktree()'s real worktree-discovery logic against a
+            # bare MagicMock project_dir: that function now calls
+            # ensure_worktree_usable() (#1099), which does real filesystem/git
+            # probing no mock here simulates, and can legitimately fall back to
+            # returning project_dir itself, tripping start_command()'s own
+            # "cwd == project_dir" isolation-failure guard for a PR-scoped run.
+            patch.object(
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/fake-worktree-32"),
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
             patch(
                 "sova.dashboard.services.agent_context.ensure_worktree_usable",
@@ -6828,6 +6842,7 @@ class TestMergeAwareFinalization:
 
     async def test_start_command_sets_stream_parser_from_runtime(self) -> None:
         """start_command stores the runtime's per-process parser on AgentState, like start_agent."""
+        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -6850,6 +6865,14 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            # See the comment on the same patch in
+            # test_start_command_passes_pr_number_to_task_run above.
+            patch.object(
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/fake-worktree-32"),
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             from sova.dashboard.services.agent_pool import ProjectAgents
@@ -6875,6 +6898,7 @@ class TestMergeAwareFinalization:
         start_command() path: the subprocess is already running by the time
         create_stream_parser() is called, so raising here must not finalize the run as orphaned.
         """
+        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -6896,6 +6920,14 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
             patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+            # See the comment on the same patch in
+            # test_start_command_passes_pr_number_to_task_run above.
+            patch.object(
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/fake-worktree-32"),
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             from sova.dashboard.services.agent_pool import ProjectAgents
@@ -6920,6 +6952,7 @@ class TestMergeAwareFinalization:
         Mirrors test_start_agent_drain_timeout_failure_does_not_discard_parser for the
         start_command() path.
         """
+        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -6943,6 +6976,14 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
             patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+            # See the comment on the same patch in
+            # test_start_command_passes_pr_number_to_task_run above.
+            patch.object(
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/fake-worktree-32"),
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             from sova.dashboard.services.agent_pool import ProjectAgents
