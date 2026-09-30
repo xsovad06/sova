@@ -102,7 +102,7 @@ Create a pull request for the current branch using the project's standard PR tem
 
    **Link the issue in the PR body** based on the task source:
 
-   Determine the task source by running `sova config` and reading the `task_source` row (configuration lives in `.claude/sova.db`, not in a file).
+   Determine the task source (GitHub, Jira, or other) from the project's own config or conventions.
 
    **JIRA** (`type = "jira"`):
    - Do NOT use `Closes #N`, `Fixes #N`, or `Resolves #N` (those are GitHub Issue syntax)
@@ -137,12 +137,7 @@ Create a pull request for the current branch using the project's standard PR tem
     ```
 
 11. **Trigger CodeRabbit review** (if configured):
-    This key is not in the `sova config` table, so resolve it through the config loader:
-    ```bash
-    python3 -c "from pathlib import Path; from sova.config.loader import load_config; \
-print(load_config(Path('.')).external_reviews.coderabbit.trigger_review)"
-    ```
-    If it prints `True` and the PR was newly created (not an update), post a comment to trigger CodeRabbit:
+    If the project uses an automated reviewer such as CodeRabbit and the PR was newly created (not an update), post a comment to trigger CodeRabbit:
     ```bash
     gh pr comment "$PR_NUM" --body "@coderabbitai review"
     ```

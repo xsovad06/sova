@@ -72,16 +72,6 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\{\{\s*test_cmd\s*\}\}"),
         "the project's test command (see its Makefile, package.json scripts, or CI config)",
     ),
-    (
-        re.compile(r"reading `sova\.toml` \(if it exists\) and checking"),
-        "reading the project's own config file, if present, and checking",
-    ),
-    (re.compile(r"or no sova\.toml"), "or no such config file"),
-    (
-        re.compile(r"Read `sova\.toml` to check `\[task_source\] type` if it exists\."),
-        "Read the project's own config file, if present, to check `[task_source] type`.",
-    ),
-    (re.compile(r"Check `sova\.toml` for"), "Check the project's own config file, if present, for"),
     # Commands outside SELECTED_COMMANDS do not ship with the plugin, so an
     # instruction naming one is a dead end for a standalone user. Rewrite each to
     # describe the action instead. `/verify-local` needs no entry: the canonical
@@ -112,6 +102,28 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(r"NEVER merge the PR: that happens via `/integrate-pr` or `/approve-merge`"),
         "NEVER merge the PR yourself unless the user explicitly asks",
+    ),
+    # A standalone plugin user has neither the `sova` CLI nor the importable
+    # sova package, so the SOVA-specific config lookups must become generic
+    # instructions. Dropped the four `sova.toml` patterns these replace: #1096
+    # rewrote that prose, so they matched nothing and silently did nothing.
+    (
+        re.compile(
+            r"Determine the task source by running `sova config` and reading the `task_source` row "
+            r"\(configuration lives in `\.claude/sova\.db`, not in a file\)\."
+        ),
+        "Determine the task source (GitHub, Jira, or other) from the project's own config or conventions.",
+    ),
+    (
+        re.compile(
+            r"This key is not in the `sova config` table, so resolve it through the config loader:\n"
+            r"    ```bash\n"
+            r"    python3 -c \"from pathlib import Path; from sova\.config\.loader import load_config; \\\n"
+            r"print\(load_config\(Path\('\.'\)\)\.external_reviews\.coderabbit\.trigger_review\)\"\n"
+            r"    ```\n"
+            r"    If it prints `True` and the PR"
+        ),
+        "If the project uses an automated reviewer such as CodeRabbit and the PR",
     ),
 ]
 
