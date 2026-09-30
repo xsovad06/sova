@@ -1576,6 +1576,184 @@ class TestDuplicateAgentPrevention:
         mock_spawn_direct.assert_not_awaited()
         assert mock_spawn.call_args is not None, "runtime.spawn() was never called"
 
+    async def test_start_agent_sets_stream_parser_from_runtime(self) -> None:
+        """A non-pipeline spawn stores the runtime's per-process parser on AgentState."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        mock_spawn = AsyncMock(return_value=mock_process)
+        sentinel_parser = object()
+        mock_rt = MagicMock(
+            spawn=mock_spawn,
+            create_stream_parser=MagicMock(return_value=sentinel_parser),
+            stream_reader_drain_timeout=MagicMock(return_value=42.0),
+        )
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99", role="reviewer")
+
+        assert result["status"] == "started"
+        assert pa.agents[7].stream_parser is sentinel_parser
+        # Resolved once at spawn time from the runtime, not re-read from config at finalize.
+        assert pa.agents[7].stream_reader_drain_timeout == 42.0
+
+    async def test_start_agent_create_stream_parser_failure_does_not_orphan_process(self) -> None:
+        """A parser-construction failure after a successful spawn must not be treated as a spawn failure.
+
+        The subprocess is already running by the time create_stream_parser() is called, so
+        raising here must not finalize the run as orphaned (which would leave a live, untracked
+        process with no liveness-sweep entry). The run should proceed with stream_parser=None.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        mock_spawn = AsyncMock(return_value=mock_process)
+        mock_rt = MagicMock(
+            spawn=mock_spawn,
+            create_stream_parser=MagicMock(side_effect=RuntimeError("bad codex jsonl schema")),
+        )
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99", role="reviewer")
+
+        assert result["status"] == "started"
+        assert pa.agents[7].stream_parser is None
+        mock_orphan.assert_not_awaited()
+
+    async def test_start_agent_drain_timeout_failure_does_not_discard_parser(self) -> None:
+        """A stream_reader_drain_timeout() failure must not discard an already-built parser.
+
+        create_stream_parser() and stream_reader_drain_timeout() are independent runtime
+        calls; a failure in the second must fall back to the module default timeout, not
+        wipe out the successfully constructed parser from the first.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        mock_spawn = AsyncMock(return_value=mock_process)
+        sentinel_parser = object()
+        mock_rt = MagicMock(
+            spawn=mock_spawn,
+            create_stream_parser=MagicMock(return_value=sentinel_parser),
+            stream_reader_drain_timeout=MagicMock(side_effect=RuntimeError("bad codex config")),
+        )
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99", role="reviewer")
+
+        assert result["status"] == "started"
+        assert pa.agents[7].stream_parser is sentinel_parser
+        assert pa.agents[7].stream_reader_drain_timeout is None
+        mock_orphan.assert_not_awaited()
+
+    async def test_start_agent_spawn_direct_leaves_stream_parser_none(self) -> None:
+        """Pipeline roles bypass the runtime entirely (spawn_direct), so there is no parser to attach."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        mock_spawn_direct = AsyncMock(return_value=mock_process)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "spawn_direct", mock_spawn_direct),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99")
+
+        assert result["status"] == "started"
+        assert pa.agents[7].stream_parser is None
+
     async def test_start_agent_cleans_up_on_spawn_failure(self) -> None:
         """If process spawn fails, the pre-created TaskRun should be marked failed."""
         from unittest.mock import AsyncMock, patch
@@ -6648,6 +6826,142 @@ class TestMergeAwareFinalization:
         mock_create.assert_awaited_once()
         assert mock_create.call_args.kwargs.get("pr_number") == 88
 
+    async def test_start_command_sets_stream_parser_from_runtime(self) -> None:
+        """start_command stores the runtime's per-process parser on AgentState, like start_agent."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        sentinel_parser = object()
+        mock_rt = MagicMock(
+            spawn=AsyncMock(return_value=mock_process),
+            create_stream_parser=MagicMock(return_value=sentinel_parser),
+            stream_reader_drain_timeout=MagicMock(return_value=42.0),
+        )
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents") as mock_gpa,
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            from sova.dashboard.services.agent_pool import ProjectAgents
+
+            pa = ProjectAgents()
+            pa.project_dir = MagicMock()
+            pa.project_dir.__truediv__ = MagicMock(return_value=MagicMock(is_file=MagicMock(return_value=False)))
+            mock_gpa.return_value = pa
+
+            result = await agent_lifecycle.start_command(
+                "integrate-pr",
+                args={"issue": "32", "pr": 88},
+            )
+
+        assert "error" not in result
+        assert pa.agents[99].stream_parser is sentinel_parser
+        assert pa.agents[99].stream_reader_drain_timeout == 42.0
+
+    async def test_start_command_create_stream_parser_failure_does_not_orphan_process(self) -> None:
+        """A parser-construction failure after a successful spawn must not be treated as a spawn failure.
+
+        Mirrors test_start_agent_create_stream_parser_failure_does_not_orphan_process for the
+        start_command() path: the subprocess is already running by the time
+        create_stream_parser() is called, so raising here must not finalize the run as orphaned.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        mock_rt = MagicMock(
+            spawn=AsyncMock(return_value=mock_process),
+            create_stream_parser=MagicMock(side_effect=RuntimeError("bad codex jsonl schema")),
+        )
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents") as mock_gpa,
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            from sova.dashboard.services.agent_pool import ProjectAgents
+
+            pa = ProjectAgents()
+            pa.project_dir = MagicMock()
+            pa.project_dir.__truediv__ = MagicMock(return_value=MagicMock(is_file=MagicMock(return_value=False)))
+            mock_gpa.return_value = pa
+
+            result = await agent_lifecycle.start_command(
+                "integrate-pr",
+                args={"issue": "32", "pr": 88},
+            )
+
+        assert "error" not in result
+        assert pa.agents[99].stream_parser is None
+        mock_orphan.assert_not_awaited()
+
+    async def test_start_command_drain_timeout_failure_does_not_discard_parser(self) -> None:
+        """A stream_reader_drain_timeout() failure must not discard an already-built parser.
+
+        Mirrors test_start_agent_drain_timeout_failure_does_not_discard_parser for the
+        start_command() path.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        sentinel_parser = object()
+        mock_rt = MagicMock(
+            spawn=AsyncMock(return_value=mock_process),
+            create_stream_parser=MagicMock(return_value=sentinel_parser),
+            stream_reader_drain_timeout=MagicMock(side_effect=RuntimeError("bad codex config")),
+        )
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents") as mock_gpa,
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            from sova.dashboard.services.agent_pool import ProjectAgents
+
+            pa = ProjectAgents()
+            pa.project_dir = MagicMock()
+            pa.project_dir.__truediv__ = MagicMock(return_value=MagicMock(is_file=MagicMock(return_value=False)))
+            mock_gpa.return_value = pa
+
+            result = await agent_lifecycle.start_command(
+                "integrate-pr",
+                args={"issue": "32", "pr": 88},
+            )
+
+        assert "error" not in result
+        assert pa.agents[99].stream_parser is sentinel_parser
+        assert pa.agents[99].stream_reader_drain_timeout is None
+        mock_orphan.assert_not_awaited()
+
     async def test_wait_and_finalize_overrides_failed_to_done_when_pr_merged(self) -> None:
         """_wait_and_finalize should mark status 'done' when integration cmd fails but PR is merged."""
         from pathlib import Path
@@ -6793,6 +7107,96 @@ class TestFinalizeTaskRunReturnValue:
         result = await _finalize_task_run(999999, exit_code=0, agent=mock_agent)
 
         assert result is False
+
+
+class TestFinalizeTaskRunRuntimeSessionId:
+    """_finalize_task_run merges a runtime session id into assessment_json, diagnostics only."""
+
+    async def _make_run(self, *, assessment_json=None, status: str = "running") -> int:
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="600", role="reviewer", status=status)
+                if assessment_json is not None:
+                    run.assessment_json = assessment_json
+                session.add(run)
+                await session.flush()
+                return run.id
+
+    def _agent(self, *, runtime_session_id):
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0.0
+        mock_agent.project_dir = None
+        mock_agent.issue = "600"
+        mock_agent.role = "reviewer"
+        mock_agent.runtime_session_id = runtime_session_id
+        return mock_agent
+
+    async def test_session_id_persisted_on_new_run(self) -> None:
+        from sova.dashboard.services.agent_db import _finalize_task_run
+
+        run_id = await self._make_run()
+        await _finalize_task_run(run_id, exit_code=0, agent=self._agent(runtime_session_id="thread-abc"))
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            assert task_run.assessment_json == {"runtime": {"session_id": "thread-abc"}}
+
+    async def test_session_id_merges_without_overwriting_existing_keys(self) -> None:
+        from sova.dashboard.services.agent_db import _finalize_task_run
+
+        run_id = await self._make_run(assessment_json={"confidence_score": 87})
+        await _finalize_task_run(run_id, exit_code=0, agent=self._agent(runtime_session_id="thread-xyz"))
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            assert task_run.assessment_json == {
+                "confidence_score": 87,
+                "runtime": {"session_id": "thread-xyz"},
+            }
+
+    async def test_empty_session_id_is_not_persisted(self) -> None:
+        """thread.started never arrived: no empty string written into assessment_json."""
+        from sova.dashboard.services.agent_db import _finalize_task_run
+
+        run_id = await self._make_run()
+        await _finalize_task_run(run_id, exit_code=0, agent=self._agent(runtime_session_id=""))
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            assert task_run.assessment_json is None
+
+    async def test_session_id_persisted_when_run_already_terminal(self) -> None:
+        """The inner `sova run` usually finalizes the TaskRun before the wrapper exits.
+
+        _finalize_task_run() then takes the _TERMINAL_STATUSES early return, so a
+        session id recorded after that branch would never reach the database. The
+        merge runs before the return precisely so this common path still keeps the
+        diagnostic id. Regression test for the gap CodeRabbit flagged on PR #1085.
+        """
+        from sova.dashboard.services.agent_db import _finalize_task_run
+
+        run_id = await self._make_run(status="done")
+        await _finalize_task_run(run_id, exit_code=0, agent=self._agent(runtime_session_id="thread-terminal"))
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            assert task_run.assessment_json == {"runtime": {"session_id": "thread-terminal"}}
+            assert task_run.status == "done"
+
+    async def test_non_string_session_id_is_not_persisted(self) -> None:
+        """A Mock attribute (unset in a test double) must never be written as a session id."""
+        from sova.dashboard.services.agent_db import _finalize_task_run
+
+        run_id = await self._make_run()
+        await _finalize_task_run(run_id, exit_code=0, agent=self._agent(runtime_session_id=object()))
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            assert task_run.assessment_json is None
 
 
 class TestWaitAndFinalizeGraphBroadcast:
@@ -10954,6 +11358,7 @@ class TestParseStreamLine:
 
         a = MagicMock()
         a.last_result_cost = None
+        a.stream_parser = None
         return a
 
     def test_empty_line(self) -> None:
@@ -11011,6 +11416,152 @@ class TestParseStreamLine:
 
         line = json.dumps({"type": "system", "data": {}})
         assert _parse_stream_line(line, self._agent()) == ""
+
+
+class TestParseStreamLineRuntimeParser:
+    """Tests for the agent.stream_parser delegation path in _parse_stream_line (Codex, etc.)."""
+
+    def _agent(self, stream_parser):
+        from unittest.mock import MagicMock
+
+        a = MagicMock()
+        a.last_result_cost = None
+        a.stream_parser = stream_parser
+        a.runtime_session_id = None
+        a.stream_failure = None
+        return a
+
+    def test_empty_line_never_reaches_stream_parser(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        parser = MagicMock()
+        assert _parse_stream_line("", self._agent(parser)) == ""
+        parser.parse_line.assert_not_called()
+
+    def test_content_event_returns_text(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.llm.models import StreamEvent
+
+        parser = MagicMock()
+        parser.parse_line.return_value = StreamEvent(type="content", text="hello from codex")
+        agent = self._agent(parser)
+
+        assert _parse_stream_line("some line", agent) == "hello from codex"
+        parser.parse_line.assert_called_once_with("some line")
+
+    def test_none_event_returns_empty(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        parser = MagicMock()
+        parser.parse_line.return_value = None
+
+        assert _parse_stream_line("no-op line", self._agent(parser)) == ""
+
+    def test_successful_result_event_records_session_id(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.llm.models import CostSource, LLMResult, StreamEvent
+
+        parser = MagicMock()
+        result = LLMResult(
+            text="final message",
+            model="",
+            cost_usd=Decimal("0"),
+            cost_source=CostSource.UNKNOWN,
+            session_id="thread-abc",
+            stop_reason="end_turn",
+        )
+        parser.parse_line.return_value = StreamEvent(type="result", text=result.text, result=result)
+        agent = self._agent(parser)
+
+        out = _parse_stream_line("turn.completed line", agent)
+
+        assert agent.runtime_session_id == "thread-abc"
+        assert agent.stream_failure is None
+        # Marks the end of the turn without echoing the last agent message,
+        # which was already emitted as its own content event.
+        assert out == "\n--- Result [tokens: 0 in / 0 out] ---"
+        assert "final message" not in out
+
+    def test_terminal_failure_sets_stream_failure(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.llm.models import CostSource, LLMResult, StreamEvent
+
+        parser = MagicMock()
+        result = LLMResult(
+            text="sandbox denied write access",
+            model="",
+            cost_usd=Decimal("0"),
+            cost_source=CostSource.UNKNOWN,
+            session_id="thread-xyz",
+            stop_reason="error",
+        )
+        parser.parse_line.return_value = StreamEvent(type="result", text=result.text, result=result)
+        agent = self._agent(parser)
+
+        out = _parse_stream_line("turn.failed line", agent)
+
+        assert agent.stream_failure == "sandbox denied write access"
+        assert agent.runtime_session_id == "thread-xyz"
+        assert "sandbox denied write access" in out
+
+    def test_successful_result_marker_reports_token_usage(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.llm.models import CostSource, LLMResult, StreamEvent
+
+        parser = MagicMock()
+        result = LLMResult(
+            text="done",
+            model="",
+            cost_usd=Decimal("0"),
+            cost_source=CostSource.UNKNOWN,
+            input_tokens=1200,
+            output_tokens=340,
+            stop_reason="end_turn",
+        )
+        parser.parse_line.return_value = StreamEvent(type="result", text=result.text, result=result)
+
+        out = _parse_stream_line("turn.completed line", self._agent(parser))
+
+        assert out == "\n--- Result [tokens: 1200 in / 340 out] ---"
+
+    def test_thread_never_started_leaves_session_id_unset(self) -> None:
+        """No thread.started event ever arrived: session_id stays empty and is not recorded."""
+        from decimal import Decimal
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.llm.models import CostSource, LLMResult, StreamEvent
+
+        parser = MagicMock()
+        result = LLMResult(
+            text="done",
+            model="",
+            cost_usd=Decimal("0"),
+            cost_source=CostSource.UNKNOWN,
+            session_id="",
+            stop_reason="end_turn",
+        )
+        parser.parse_line.return_value = StreamEvent(type="result", text=result.text, result=result)
+        agent = self._agent(parser)
+
+        _parse_stream_line("turn.completed line", agent)
+
+        assert agent.runtime_session_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -13546,6 +14097,353 @@ class TestWaitAndFinalizeOutputWriter:
 
         assert finalize_called == [61], "finalization must run even if close() fails"
         assert 61 not in pa.agents
+
+
+class TestWaitAndFinalizeStreamFailure:
+    """A runtime stream parser's terminal failure must never finalize as success."""
+
+    async def test_stream_failure_with_zero_exit_code_downgrades_to_failed(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+
+        agent = AgentState(
+            run_id=70,
+            issue="300",
+            role="reviewer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+            stream_failure="codex sandbox denied write access",
+        )
+
+        pa = ProjectAgents()
+        pa.agents[70] = agent
+
+        recorded_exit_codes = []
+
+        async def track_finalize(run_id, *, exit_code, agent):
+            recorded_exit_codes.append(exit_code)
+            return True
+
+        with (
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=track_finalize),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock) as mock_ah,
+            patch("sova.config.loader.load_config", side_effect=Exception("skip")),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        assert recorded_exit_codes == [1]
+        mock_ah.assert_not_awaited()
+        completed = pa.recently_completed[0]
+        assert completed.status == "failed"
+
+    async def test_stream_failure_with_nonzero_exit_code_no_double_downgrade(self) -> None:
+        """When the process already exited nonzero, the stream failure adds no extra action."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=1)
+
+        agent = AgentState(
+            run_id=71,
+            issue="301",
+            role="reviewer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+            stream_failure="codex sandbox denied write access",
+        )
+
+        pa = ProjectAgents()
+        pa.agents[71] = agent
+
+        recorded_exit_codes = []
+
+        async def track_finalize(run_id, *, exit_code, agent):
+            recorded_exit_codes.append(exit_code)
+            return True
+
+        with (
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=track_finalize),
+            patch.object(agent_finalize, "log") as mock_log,
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", side_effect=Exception("skip")),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        assert recorded_exit_codes == [1]
+        stream_warnings = [
+            c for c in mock_log.warning.call_args_list if c.args[:1] == ("finalize.stream_reported_failure",)
+        ]
+        assert stream_warnings == []
+
+    async def test_no_stream_failure_finalizes_as_success(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+
+        agent = AgentState(
+            run_id=72,
+            issue="302",
+            role="reviewer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[72] = agent
+
+        recorded_exit_codes = []
+
+        async def track_finalize(run_id, *, exit_code, agent):
+            recorded_exit_codes.append(exit_code)
+            return True
+
+        with (
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=track_finalize),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock) as mock_ah,
+            patch("sova.config.loader.load_config", side_effect=Exception("skip")),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        assert recorded_exit_codes == [0]
+        mock_ah.assert_awaited_once()
+        completed = pa.recently_completed[0]
+        assert completed.status == "done"
+
+    async def _finalize_with_late_reader(
+        self,
+        *,
+        run_id: int,
+        stream_parser,
+        reader_delay: float,
+        drain_timeout: float | None = None,
+    ) -> tuple[list[int], object, object]:
+        """Run _wait_and_finalize against an agent whose reader sets stream_failure late."""
+        import asyncio
+        import contextlib
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+
+        agent = AgentState(
+            run_id=run_id,
+            issue="303",
+            role="reviewer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+            stream_parser=stream_parser,
+        )
+
+        async def late_reader() -> None:
+            await asyncio.sleep(reader_delay)
+            agent.stream_failure = "codex turn.failed written just before exit"
+
+        agent.reader_task = asyncio.create_task(late_reader())
+
+        pa = ProjectAgents()
+        pa.agents[run_id] = agent
+
+        recorded_exit_codes: list[int] = []
+
+        async def track_finalize(run_id, *, exit_code, agent):
+            recorded_exit_codes.append(exit_code)
+            return True
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=track_finalize)
+            )
+            mock_log = stack.enter_context(patch.object(agent_finalize, "log"))
+            stack.enter_context(
+                patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock)
+            )
+            stack.enter_context(
+                patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock)
+            )
+            stack.enter_context(patch("sova.config.loader.load_config", side_effect=Exception("skip")))
+            if drain_timeout is not None:
+                stack.enter_context(patch.object(agent_finalize, "_READER_DRAIN_TIMEOUT", drain_timeout))
+
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        if not agent.reader_task.done():
+            agent.reader_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await agent.reader_task
+        return recorded_exit_codes, mock_log, agent
+
+    async def test_pending_reader_is_drained_before_stream_failure_is_read(self) -> None:
+        """The terminal JSONL event is normally still unread when process.wait() returns.
+
+        Without draining the reader first, ``stream_failure`` is observed as
+        ``None`` and a stream-reported failure finalizes as success.
+        """
+        from unittest.mock import MagicMock
+
+        exit_codes, _log, agent = await self._finalize_with_late_reader(
+            run_id=73,
+            stream_parser=MagicMock(),
+            reader_delay=0.05,
+        )
+
+        assert exit_codes == [1]
+        assert agent.stream_failure is not None
+
+    async def test_drain_is_skipped_when_runtime_has_no_stream_parser(self) -> None:
+        """Claude/Aider report failures via the exit code, so finalization must not wait on the reader."""
+        exit_codes, _log, _agent = await self._finalize_with_late_reader(
+            run_id=74,
+            stream_parser=None,
+            reader_delay=0.05,
+        )
+
+        assert exit_codes == [0]
+
+    async def test_drain_timeout_falls_back_to_the_exit_code(self) -> None:
+        """A reader that overruns the bound is logged; finalization proceeds rather than hanging."""
+        from unittest.mock import MagicMock
+
+        exit_codes, mock_log, _agent = await self._finalize_with_late_reader(
+            run_id=75,
+            stream_parser=MagicMock(),
+            reader_delay=5.0,
+            drain_timeout=0.01,
+        )
+
+        assert exit_codes == [0]
+        assert [c for c in mock_log.warning.call_args_list if c.args[:1] == ("finalize.reader_drain_timeout",)]
+
+    async def test_drain_logs_when_reader_task_raises(self) -> None:
+        """A reader task that crashes mid-drain must be logged, not silently treated as a clean drain."""
+        import asyncio
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from sova.dashboard.services import agent_finalize
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState(
+            run_id=76,
+            issue="304",
+            role="reviewer",
+            process=None,
+            project_dir=Path("/tmp/test-project"),
+            stream_parser=object(),
+        )
+
+        async def failing_reader() -> None:
+            raise RuntimeError("malformed jsonl line")
+
+        agent.reader_task = asyncio.create_task(failing_reader())
+
+        with patch.object(agent_finalize, "log") as mock_log:
+            await agent_finalize._drain_stream_reader(agent)
+
+        assert agent.reader_task.done()
+        assert [c for c in mock_log.warning.call_args_list if c.args[:1] == ("finalize.reader_task_failed",)]
+
+    async def test_drain_logs_when_reader_task_already_done_before_drain_starts(self) -> None:
+        """A reader task that crashed BEFORE _drain_stream_reader was ever called must still be
+        surfaced. The early ``task.done()`` guard must not return without checking the exception:
+        that would silently reintroduce the crashed-reader gap, only narrowed to this timing
+        window instead of the mid-drain window covered by test_drain_logs_when_reader_task_raises.
+        """
+        import asyncio
+        import contextlib
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from sova.dashboard.services import agent_finalize
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState(
+            run_id=79,
+            issue="307",
+            role="reviewer",
+            process=None,
+            project_dir=Path("/tmp/test-project"),
+            stream_parser=object(),
+        )
+
+        async def failing_reader() -> None:
+            raise RuntimeError("malformed jsonl line")
+
+        agent.reader_task = asyncio.create_task(failing_reader())
+        # Let the task actually run and crash before _drain_stream_reader is ever invoked,
+        # so task.done() is already True on entry.
+        with contextlib.suppress(RuntimeError):
+            await agent.reader_task
+        assert agent.reader_task.done()
+
+        with patch.object(agent_finalize, "log") as mock_log:
+            await agent_finalize._drain_stream_reader(agent)
+
+        assert [c for c in mock_log.warning.call_args_list if c.args[:1] == ("finalize.reader_task_failed",)]
+
+    async def test_resolve_reader_drain_timeout_uses_value_resolved_at_spawn_time(self) -> None:
+        """The drain bound comes from AgentState.stream_reader_drain_timeout (set once at spawn
+        time from AgentRuntime.stream_reader_drain_timeout()), not a config read on the hot path.
+        """
+        from pathlib import Path
+
+        from sova.dashboard.services import agent_finalize
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState(
+            run_id=77,
+            issue="305",
+            role="reviewer",
+            process=None,
+            project_dir=Path("/tmp/test-project"),
+            stream_reader_drain_timeout=42.0,
+        )
+
+        timeout = agent_finalize._resolve_reader_drain_timeout(agent)
+
+        assert timeout == 42.0
+
+    async def test_resolve_reader_drain_timeout_falls_back_when_unset(self) -> None:
+        """A runtime that declares no tuning of its own (stream_reader_drain_timeout=None) falls
+        back to the module default, with no config read involved.
+        """
+        from pathlib import Path
+
+        from sova.dashboard.services import agent_finalize
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState(
+            run_id=78,
+            issue="306",
+            role="reviewer",
+            process=None,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        timeout = agent_finalize._resolve_reader_drain_timeout(agent)
+
+        assert timeout == agent_finalize._READER_DRAIN_TIMEOUT
 
 
 class TestOutputReaderWriteLineFallback:

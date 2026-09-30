@@ -576,6 +576,22 @@ def test_codex_config_rejects_danger_full_access() -> None:
         CodexConfig(sandbox="danger-full-access")
 
 
+def test_codex_config_rejects_non_positive_reader_drain_timeout() -> None:
+    """A zero or negative reader_drain_timeout must fail validation.
+
+    asyncio.wait(timeout<=0) returns immediately as "timed out", so a
+    non-positive value would silently disable stream-failure detection on
+    every Codex agent exit rather than raising a loud config error.
+    """
+    from sova.config.models import CodexConfig
+
+    with pytest.raises(ValidationError):
+        CodexConfig(reader_drain_timeout=0)
+
+    with pytest.raises(ValidationError):
+        CodexConfig(reader_drain_timeout=-1.0)
+
+
 def test_codex_section_loaded_from_toml(tmp_path: Path) -> None:
     toml_content = """
 [codex]
@@ -1543,6 +1559,21 @@ def test_codex_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.Monke
     cfg = load_config(tmp_path)
     assert cfg.codex.model == "override-model"
     assert cfg.codex.sandbox == "workspace-write"
+
+
+def test_codex_reader_drain_timeout_env_override_beats_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SOVA_CODEX_READER_DRAIN_TIMEOUT overrides TOML/database codex settings.
+
+    Mirrors test_codex_env_overrides_beat_toml for the reader_drain_timeout
+    field, which is registered in the same _apply_nested_env_overrides() call
+    but had no dedicated regression test.
+    """
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text("[codex]\nreader_drain_timeout = 5.0\n")
+    monkeypatch.setenv("SOVA_CODEX_READER_DRAIN_TIMEOUT", "30.0")
+
+    cfg = load_config(tmp_path)
+    assert cfg.codex.reader_drain_timeout == 30.0
 
 
 def test_agent_step_timeout_tier_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

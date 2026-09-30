@@ -50,10 +50,9 @@ sova install "$tmp/smoke-test"
 ```
 
 Verify these artifacts exist:
-- `$tmp/smoke-test/sova.toml`
+- `$tmp/smoke-test/.claude/sova.db` (config is database-backed; `sova install` writes no TOML)
 - `$tmp/smoke-test/.claude/commands/` (non-empty)
 - `$tmp/smoke-test/.claude/agent-memory/MEMORY.md`
-- `$tmp/smoke-test/.claude/sova.db`
 
 Run doctor on the new project:
 ```bash

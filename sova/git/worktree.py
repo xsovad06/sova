@@ -6,6 +6,7 @@ import asyncio
 import os
 import re
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -381,6 +382,8 @@ _CLAUDE_DIRS = ("commands", "rules", "agent-memory", "skills")
 # separately (root_claude_md) in both ensure_claude_artifacts() and
 # missing_claude_artifacts(); this tuple only covers files under .claude/.
 _CLAUDE_FILES = ("settings.local.json", "settings.json")
+_LS_FILES_TIMEOUT_SECONDS = 10
+_NOT_A_REPO_RE = re.compile(r"not a git repository", re.IGNORECASE)
 
 # Artifacts whose absence blocks worktree reuse outright (returns ``None`` from
 # ``ensure_worktree_usable``). Everything else missing after a repopulate attempt
@@ -406,6 +409,39 @@ def _copy2_skip_identical(src: str, dst: str, *, follow_symlinks: bool = True) -
         return dst
 
 
+def _tracked_paths(worktree_path: Path) -> set[str]:
+    """Return paths under ``.claude/`` that the worktree's branch tracks.
+
+    Used to decide what :func:`ensure_claude_artifacts` must not overwrite. A
+    failure to ask git returns the empty set, preserving the historical
+    copy-everything behaviour rather than silently skipping a worktree's setup.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--", ".claude"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=_LS_FILES_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning("worktree.ls_files.failed", worktree=str(worktree_path), exc_info=True)
+        return set()
+    if result.returncode != 0:
+        # "not a git repository" is an expected condition, not a fault: the
+        # caller is then copying into a plain directory, where nothing is
+        # tracked and nothing can be clobbered. Only a real git failure is
+        # worth a warning, so a healthy run stays silent.
+        stderr = result.stderr.strip()
+        if _NOT_A_REPO_RE.search(stderr):
+            log.debug("worktree.ls_files.not_a_repo", worktree=str(worktree_path))
+        else:
+            log.warning("worktree.ls_files.failed", worktree=str(worktree_path), stderr=stderr[:200])
+        return set()
+    return {entry for entry in result.stdout.split("\0") if entry}
+
+
 def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     """Copy .claude/ artifacts that are gitignored but needed by agents.
 
@@ -414,9 +450,19 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     This copies the essential subset: never the database, worktrees dir, or
     ephemeral agent state.
 
-    Safe to call repeatedly (idempotent via ``dirs_exist_ok=True``).
-    Called at worktree creation and after operations that may destroy
-    ``.claude/`` (e.g. rebase stash pop conflicts).
+    A destination the worktree's own branch **tracks** is never overwritten. The
+    point of this function is to supply content a worktree would otherwise lack,
+    and a tracked file is content the branch already supplies, possibly a version
+    the branch deliberately changed. Overwriting it replaced the branch's
+    committed state with the primary checkout's on every call, which broke two
+    ways: a dirty primary checkout propagated its dirt into every worktree, where
+    ``RearrangeCommitsStep``'s gate read it as the agent's own uncommitted work
+    and paused the run; and a primary checkout on another branch silently
+    reverted the worktree's committed ``.claude/rules/*.md``, which the agent then
+    committed as its own change (issue #1090, seen on PR #1085).
+
+    Safe to call repeatedly. Called at worktree creation and after operations
+    that may destroy ``.claude/`` (e.g. rebase stash pop conflicts).
     """
     root_claude_md = project_dir / "CLAUDE.md"
     wt_claude_md = worktree_path / "CLAUDE.md"
@@ -433,17 +479,49 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     claude_dst = worktree_path / ".claude"
     claude_dst.mkdir(exist_ok=True)
 
+    tracked = _tracked_paths(worktree_path)
+
+    def _ignore_tracked(directory: str, names: list[str]) -> set[str]:
+        """copytree ignore callback: skip entries the worktree tracks AND still has.
+
+        A tracked destination that is missing from disk is deliberately NOT
+        skipped. Tracking means the branch owns that content, which is why an
+        existing file must not be overwritten, but an absent one has nothing to
+        preserve and copying it is the repair a caller asked for. Skipping it
+        instead leaves the gap permanent, and ``ensure_worktree_usable()`` treats
+        an unrepairable ``.claude/commands`` as fatal and falls back to running
+        the agent in the primary checkout, which is the failure mode both that
+        function and this one exist to prevent (issues #976, #1090).
+        """
+        skipped: set[str] = set()
+        base = Path(directory).relative_to(claude_src.parent)
+        dest_dir = worktree_path / base
+        for name in names:
+            if (base / name).as_posix() in tracked and (dest_dir / name).exists():
+                skipped.add(name)
+        return skipped
+
     for dirname in _CLAUDE_DIRS:
         src = claude_src / dirname
         if src.is_dir():
             try:
-                shutil.copytree(src, claude_dst / dirname, dirs_exist_ok=True, copy_function=_copy2_skip_identical)
+                shutil.copytree(
+                    src,
+                    claude_dst / dirname,
+                    dirs_exist_ok=True,
+                    copy_function=_copy2_skip_identical,
+                    ignore=_ignore_tracked,
+                )
             except OSError:
                 log.warning("worktree.copy_claude_dir.failed", dir=dirname, exc_info=True)
 
     for filename in _CLAUDE_FILES:
         src = claude_src / filename
         if src.is_file():
+            # Same rule as _ignore_tracked: tracked and present means the branch
+            # owns it, tracked but absent means there is nothing to preserve.
+            if f".claude/{filename}" in tracked and (claude_dst / filename).exists():
+                continue
             try:
                 shutil.copy2(src, claude_dst / filename)
             except OSError:

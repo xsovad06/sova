@@ -268,6 +268,7 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
         [
             ("model", "SOVA_CODEX_MODEL"),
             ("sandbox", "SOVA_CODEX_SANDBOX"),
+            ("reader_drain_timeout", "SOVA_CODEX_READER_DRAIN_TIMEOUT"),
         ],
     )
 
