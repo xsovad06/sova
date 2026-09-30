@@ -345,7 +345,7 @@ async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None
                     TaskRun.issue_number == issue,
                     TaskRun.role == "developer",
                     TaskRun.pr_number.is_not(None),
-                    TaskRun.status.in_({"interrupted", "failed", "paused"}),
+                    TaskRun.status.in_({"interrupted", "failed", "paused", "stopped"}),
                 )
                 .order_by(TaskRun.id.desc())
                 .limit(1)
@@ -623,8 +623,22 @@ async def start_agent(
     return {"status": "started", "pid": pid, "run_id": run_id}
 
 
-async def stop_agent(slug: str | None = None, *, run_id: int | None = None) -> dict:
-    """Stop a running agent process."""
+async def stop_agent(
+    slug: str | None = None,
+    *,
+    run_id: int | None = None,
+    cause: str = "manual_stop",
+    requester: str = "dashboard",
+) -> dict:
+    """Stop a running agent process.
+
+    ``cause``/``requester`` are recorded on the process wrapper's
+    ``TerminationRecord`` (see ``sova.ipc.control``) before the signal is
+    sent, so ``_finalize_task_run()`` can later tell a deliberate stop
+    (status "stopped") apart from an external kill. Defaults describe a
+    human-initiated dashboard stop; callers like the watchdog pass their own
+    cause (e.g. the anomaly signal name) and requester ("watchdog").
+    """
     pa = _get_project_agents(slug)
 
     async with pa._lock:
@@ -639,7 +653,7 @@ async def stop_agent(slug: str | None = None, *, run_id: int | None = None) -> d
             return {"status": "not_found", "message": f"No agent with run_id {run_id}"}
 
         pid = agent.process.pid
-        await agent.process.stop()
+        await agent.process.stop(cause=cause, requester=requester)
 
         pending: list[asyncio.Task[None]] = []
         if agent.reader_task and not agent.reader_task.done():

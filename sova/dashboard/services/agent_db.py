@@ -16,7 +16,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+from sova.ipc.control import normalize_signal_exit
 from sova.utils.logging import get_logger
+
+try:
+    import psutil
+
+    _PSUTIL_AVAILABLE = True
+except ImportError:
+    _PSUTIL_AVAILABLE = False
 
 log = get_logger(component="dashboard.agent_db")
 
@@ -24,6 +32,46 @@ _ERROR_MESSAGE_MAX_LENGTH = 2000
 _OUTPUT_TAIL_MAX_LINES = 20
 _OUTPUT_TAIL_MAX_CHARS = 500
 _OUTPUT_LINE_MAX_CHARS = 2000
+
+
+def _classify_exit_status(exit_code: int, agent: AgentState) -> tuple[str, str | None]:
+    """Classify a nonzero process exit into (status, termination_reason).
+
+    A ``TerminationRecord`` on the process wrapper means an in-process caller
+    (dashboard stop button, watchdog) sent the signal itself: the cause wins
+    regardless of the exact exit code, even if ``stop()`` escalated from
+    SIGTERM to SIGKILL along the way (the record still names the original
+    deliberate cause). With no record, a signal-shaped exit (either form --
+    see ``normalize_signal_exit()``) means something external killed the
+    process (OOM, `pkill`, a supervisor sending SIGTERM); an ordinary nonzero
+    exit with no signal shape is a plain application failure.
+    """
+    record = agent.process.termination_record if agent.process is not None else None
+    if record is not None:
+        return "stopped", record.cause
+    if normalize_signal_exit(exit_code) is not None:
+        return "interrupted", "external_signal"
+    return "failed", None
+
+
+def _memory_snapshot_text() -> str | None:
+    """Best-effort system memory snapshot for an external-signal exit.
+
+    Fails open (returns None) when psutil is unavailable or raises, so a
+    missing snapshot never blocks or fails finalization: it only means the
+    resulting error message carries less context for distinguishing an OOM
+    kill from an external stop while the machine was idle.
+    """
+    if not _PSUTIL_AVAILABLE:
+        return None
+    try:
+        mem = psutil.virtual_memory()
+        available_gb = mem.available / (1024**3)
+        total_gb = mem.total / (1024**3)
+        return f"memory at exit: {available_gb:.2f}GB available / {total_gb:.2f}GB total"
+    except Exception:  # noqa: BLE001 (snapshot is diagnostic only; any failure means "no snapshot")
+        log.debug("finalize.memory_snapshot_failed", exc_info=True)
+        return None
 
 
 def _build_exit_failure_message(exit_code: int, output_lines: Iterable[str], current_step: str | None) -> str:
@@ -135,7 +183,7 @@ async def _finalize_orphaned_run(run_id: int, project_dir: Path) -> None:
         log.warning("task_run.orphan_cleanup_failed", run_id=run_id, exc_info=True)
 
 
-_TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused", "awaiting_approval"})
+_TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused", "awaiting_approval", "stopped"})
 
 
 def _read_file_handoff(project_dir: Path, issue: str = "") -> dict | None:
@@ -175,7 +223,12 @@ def _emit_finalize_event(run_id: int, *, status: str, exit_code: int, agent: Age
     issue = agent.issue
     label = f"#{issue}" if issue else "Agent"
     role_label = (agent.role or "agent").capitalize()
-    sev = FeedEventSeverity.error if status == "failed" else FeedEventSeverity.success
+    if status in ("failed", "interrupted"):
+        sev = FeedEventSeverity.error
+    elif status == "stopped":
+        sev = FeedEventSeverity.warning
+    else:
+        sev = FeedEventSeverity.success
     emit_safe(
         f"{label} {role_label} {status}",
         severity=sev,
@@ -236,7 +289,10 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        status = "done" if exit_code == 0 else "failed"
+        if exit_code == 0:
+            status, termination_reason = "done", None
+        else:
+            status, termination_reason = _classify_exit_status(exit_code, agent)
         cost = Decimal(str(agent.last_result_cost)) if agent.last_result_cost else Decimal("0")
         file_handoff = _read_file_handoff(agent.project_dir, issue=agent.issue)
 
@@ -254,11 +310,15 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                     return False
 
                 task_run.status = status
+                task_run.termination_reason = termination_reason
                 task_run.ended_at = datetime.now(timezone.utc)
                 if exit_code != 0:
-                    task_run.error_message = _build_exit_failure_message(
-                        exit_code, agent.output_lines, task_run.current_step
-                    )
+                    message = _build_exit_failure_message(exit_code, agent.output_lines, task_run.current_step)
+                    if termination_reason == "external_signal":
+                        snapshot = _memory_snapshot_text()
+                        if snapshot:
+                            message = f"{message}; {snapshot}"[:_ERROR_MESSAGE_MAX_LENGTH]
+                    task_run.error_message = message
 
                 await _record_cost(task_run, run_id, cost, agent, session)
 
@@ -271,7 +331,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
         log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
         _emit_finalize_event(run_id, status=status, exit_code=exit_code, agent=agent, cost=cost)
 
-        if status in ("failed", "interrupted"):
+        if status in ("failed", "interrupted", "stopped"):
             from sova.dashboard.services.agent_recovery import rollback_issue_state
 
             try:

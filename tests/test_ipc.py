@@ -513,6 +513,114 @@ class TestAgentProcess:
         assert lines == []
 
 
+class TestTerminationRecord:
+    """Provenance attached to _BaseAgentProcess.stop() (issue #978)."""
+
+    async def test_stop_attaches_termination_record(self) -> None:
+        from sova.ipc.control import AgentProcess
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 1
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=0)
+
+        ap = AgentProcess(mock_proc)
+        assert ap.termination_record is None
+
+        await ap.stop(cause="manual_stop", requester="dashboard")
+
+        assert ap.termination_record is not None
+        assert ap.termination_record.cause == "manual_stop"
+        assert ap.termination_record.requester == "dashboard"
+        assert ap.termination_record.signal == 15
+
+    async def test_stop_defaults_cause_and_requester(self) -> None:
+        from sova.ipc.control import AgentProcess
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 1
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=0)
+
+        ap = AgentProcess(mock_proc)
+        await ap.stop()
+
+        assert ap.termination_record.cause == "manual_stop"
+        assert ap.termination_record.requester == ""
+
+    async def test_stop_on_already_exited_process_leaves_no_record(self) -> None:
+        """stop() returns immediately with no record when the process is not running."""
+        from sova.ipc.control import AgentProcess
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 1
+        mock_proc.returncode = 0
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.terminate = MagicMock()
+
+        ap = AgentProcess(mock_proc)
+        await ap.stop(cause="manual_stop", requester="dashboard")
+
+        assert ap.termination_record is None
+        mock_proc.terminate.assert_not_called()
+
+    async def test_stop_escalation_to_kill_preserves_cause_in_detail(self) -> None:
+        """The cause survives a SIGTERM->SIGKILL escalation; detail notes the escalation."""
+        from sova.ipc.control import AgentProcess
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 1
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(side_effect=[asyncio.TimeoutError, None])
+
+        ap = AgentProcess(mock_proc)
+        await ap.stop(timeout=0.01, cause="manual_stop", requester="dashboard")
+
+        mock_proc.kill.assert_called_once()
+        assert ap.termination_record.cause == "manual_stop"
+        assert "SIGKILL" in ap.termination_record.detail
+
+
+class TestNormalizeSignalExit:
+    """normalize_signal_exit() handles both exit-code forms (issue #978)."""
+
+    def test_negative_asyncio_convention(self) -> None:
+        from sova.ipc.control import normalize_signal_exit
+
+        assert normalize_signal_exit(-15) == 15
+        assert normalize_signal_exit(-9) == 9
+
+    def test_shell_128_plus_signal_convention(self) -> None:
+        from sova.ipc.control import normalize_signal_exit
+
+        assert normalize_signal_exit(143) == 15
+        assert normalize_signal_exit(137) == 9
+
+    def test_ordinary_exit_codes_are_not_signals(self) -> None:
+        from sova.ipc.control import normalize_signal_exit
+
+        assert normalize_signal_exit(0) is None
+        assert normalize_signal_exit(1) is None
+        assert normalize_signal_exit(127) is None
+
+    def test_out_of_range_128_plus_value_is_not_a_signal(self) -> None:
+        from sova.ipc.control import normalize_signal_exit
+
+        # 128 + 0 is not a valid signal number.
+        assert normalize_signal_exit(128) is None
+
+
 class TestExitClassification:
     async def test_classify_success(self) -> None:
         from sova.ipc.control import AgentProcess, ExitClassification

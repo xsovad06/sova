@@ -8,7 +8,9 @@ in the corresponding AgentRuntime implementation (see runtime.py).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import enum
+import signal
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,11 +31,48 @@ class ExitClassification(enum.StrEnum):
     CRASH = "crash"
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class TerminationRecord:
+    """Provenance for a deliberate ``stop()`` call, attached to the process wrapper.
+
+    Recorded at the point the signal is sent (not observed at exit), since by
+    the time the exit is noticed the sender is gone. ``cause`` identifies why
+    (e.g. "manual_stop", "memory_pressure", a watchdog anomaly signal name),
+    ``requester`` identifies who asked for it (e.g. "dashboard", "watchdog"),
+    and ``signal`` is the POSIX signal number actually sent. ``detail`` carries
+    free-form context, e.g. a note that the stop escalated to SIGKILL.
+    """
+
+    cause: str
+    requester: str
+    signal: int
+    detail: str = ""
+
+
+def normalize_signal_exit(returncode: int) -> int | None:
+    """Return the signal number if *returncode* represents a signal-terminated exit.
+
+    Handles both forms a caller may observe: asyncio's own convention (negative
+    return code, e.g. ``-15`` for SIGTERM) and the shell convention some wrapper
+    layers report instead (``128 + signal``, e.g. ``143`` for SIGTERM). Returns
+    ``None`` for an ordinary exit code (0 or a ``1``-``127`` application error),
+    which must never be misread as a signal.
+    """
+    if returncode < 0:
+        return -returncode
+    if returncode >= 128:
+        sig = returncode - 128
+        if 1 <= sig <= 64:
+            return sig
+    return None
+
+
 class _BaseAgentProcess:
     """Shared process-delegation logic for AgentProcess and FileAgentProcess."""
 
     def __init__(self, proc: asyncio.subprocess.Process) -> None:
         self._proc = proc
+        self.termination_record: TerminationRecord | None = None
 
     @property
     def pid(self) -> int:
@@ -51,18 +90,30 @@ class _BaseAgentProcess:
         await self._proc.wait()
         return self._proc.returncode
 
-    async def stop(self, timeout: float = 10.0) -> None:
+    async def stop(self, timeout: float = 10.0, *, cause: str = "manual_stop", requester: str = "") -> None:
+        """Terminate the process, recording why before the signal is sent.
+
+        ``cause``/``requester`` become a ``TerminationRecord`` on this wrapper
+        that ``_wait_and_finalize()`` reads once the process exits, so a
+        deliberate stop can be told apart from an external kill (OOM, `pkill`,
+        etc.) after the fact. Returns immediately with no record attached when
+        the process is already not running: there is nothing to attribute.
+        """
         if not self.is_running:
             return
 
-        log.info("process.stop", pid=self.pid)
+        log.info("process.stop", pid=self.pid, cause=cause, requester=requester)
+        self.termination_record = TerminationRecord(cause=cause, requester=requester, signal=int(signal.SIGTERM))
         self._proc.terminate()
 
         try:
             async with asyncio.timeout(timeout):
                 await self._proc.wait()
         except TimeoutError:
-            log.warning("process.kill", pid=self.pid)
+            log.warning("process.kill", pid=self.pid, cause=cause, requester=requester)
+            self.termination_record = dataclasses.replace(
+                self.termination_record, detail="escalated to SIGKILL after timeout"
+            )
             self._proc.kill()
             await self._proc.wait()
 

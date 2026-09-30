@@ -170,6 +170,26 @@ class TestPhaseTransitions:
             lc = await lifecycle_service.get_lifecycle(session, lc.id)
             assert lc.phase_status == PhaseStatus.FAILED
 
+    async def test_stop_phase(self, session: AsyncSession):
+        async with session.begin():
+            lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
+            await lifecycle_service.start_phase(session, lc.id, "development")
+            ok = await lifecycle_service.stop_phase(session, lc.id, "development")
+            assert ok
+            lc = await lifecycle_service.get_lifecycle(session, lc.id)
+            assert lc.phase_status == PhaseStatus.STOPPED
+
+    async def test_stop_phase_missing_lifecycle(self, session: AsyncSession):
+        async with session.begin():
+            ok = await lifecycle_service.stop_phase(session, 99999, "development")
+            assert ok is False
+
+    async def test_stop_phase_no_active_record(self, session: AsyncSession):
+        async with session.begin():
+            lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
+            ok = await lifecycle_service.stop_phase(session, lc.id, "review")
+            assert ok is False
+
     async def test_skip_phase(self, session: AsyncSession):
         async with session.begin():
             lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
@@ -183,6 +203,18 @@ class TestPhaseTransitions:
             lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
             await lifecycle_service.start_phase(session, lc.id, "review")
             await lifecycle_service.fail_phase(session, lc.id, "review", "Gate failed")
+            record = await lifecycle_service.restart_phase(session, lc.id, "review")
+            assert record is not None
+            lc = await lifecycle_service.get_lifecycle(session, lc.id)
+            assert lc.current_phase == "review"
+            assert lc.phase_status == PhaseStatus.PENDING
+
+    async def test_restart_phase_from_stopped(self, session: AsyncSession):
+        """A stopped phase is restartable, same as a failed one."""
+        async with session.begin():
+            lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
+            await lifecycle_service.start_phase(session, lc.id, "review")
+            await lifecycle_service.stop_phase(session, lc.id, "review")
             record = await lifecycle_service.restart_phase(session, lc.id, "review")
             assert record is not None
             lc = await lifecycle_service.get_lifecycle(session, lc.id)
@@ -729,6 +761,9 @@ class TestInferPhaseStatus:
     def test_interrupted_maps_to_failed(self):
         assert lifecycle_service._infer_phase_status("interrupted") == PhaseStatus.FAILED
 
+    def test_stopped_maps_to_stopped(self):
+        assert lifecycle_service._infer_phase_status("stopped") == PhaseStatus.STOPPED
+
     def test_running_maps_to_active(self):
         assert lifecycle_service._infer_phase_status("running") == PhaseStatus.ACTIVE
 
@@ -781,6 +816,29 @@ class TestFinalizePhaseFromRun:
         async with session.begin():
             lc = await lifecycle_service.get_lifecycle(session, lc.id)
             assert lc.phase_status == PhaseStatus.FAILED
+
+    async def test_finalize_stopped(self, session: AsyncSession):
+        """A deliberately-stopped run is not represented as PhaseStatus.FAILED."""
+        async with session.begin():
+            lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="stopped",
+                lifecycle_id=lc.id,
+            )
+            session.add(run)
+            await session.flush()
+            await lifecycle_service.start_phase(session, lc.id, "development", task_run_id=run.id)
+
+        # A signal-shaped exit code (e.g. 128 + SIGTERM) still classifies as
+        # stopped, not failed, since run.status is checked ahead of exit_code.
+        async with session.begin():
+            await lifecycle_service.finalize_phase_from_run(session, run.id, exit_code=143)
+
+        async with session.begin():
+            lc = await lifecycle_service.get_lifecycle(session, lc.id)
+            assert lc.phase_status == PhaseStatus.STOPPED
 
     async def test_finalize_no_run(self, session: AsyncSession):
         """Non-existent run_id is a no-op."""
@@ -1087,7 +1145,7 @@ class TestLifecycleRouter:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/development/restart")
             assert resp.status_code == 400
-            assert resp.json()["detail"] == "No failed phase to restart"
+            assert resp.json()["detail"] == "No failed or stopped phase to restart"
 
     async def test_restart_phase_success(self, app, session: AsyncSession):
         """Successfully restart a previously failed phase."""

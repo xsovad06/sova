@@ -8940,6 +8940,9 @@ class TestRunWorkflowOutcome:
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),
             patch("sova.roles.dispatcher.dispatch", new=AsyncMock(return_value=(role, role_result))),
+            # Avoid installing a real SIGTERM handler on the test event loop;
+            # that mechanism is covered on its own in TestInstallSigtermHandler.
+            patch("sova.cli.commands.run._install_sigterm_handler"),
         ):
             yield
 
@@ -8996,6 +8999,163 @@ class TestRunWorkflowOutcome:
 
         messages = [call.args[0] for call in mock_print.call_args_list]
         assert any("Workflow failed (researcher)" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# sova run SIGTERM handling (issue #978)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallSigtermHandler:
+    """_install_sigterm_handler() cancels the running task when SIGTERM arrives."""
+
+    async def test_registers_handler_that_cancels_current_task(self) -> None:
+        import signal
+
+        from sova.cli.commands.run import _install_sigterm_handler
+
+        loop = asyncio.get_running_loop()
+        registered = {}
+
+        def fake_add_signal_handler(sig, callback):
+            registered["sig"] = sig
+            registered["callback"] = callback
+
+        with patch.object(loop, "add_signal_handler", side_effect=fake_add_signal_handler):
+            _install_sigterm_handler(task_run_id=42)
+
+        assert registered["sig"] == signal.SIGTERM
+
+        task = asyncio.current_task()
+        with patch.object(task, "cancel") as mock_cancel:
+            registered["callback"]()
+        mock_cancel.assert_called_once()
+
+    async def test_unavailable_add_signal_handler_does_not_raise(self) -> None:
+        from sova.cli.commands.run import _install_sigterm_handler
+
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "add_signal_handler", side_effect=NotImplementedError):
+            _install_sigterm_handler(task_run_id=None)  # must not raise
+
+
+class TestHandleSigtermShutdown:
+    """_handle_sigterm_shutdown() (issue #978): partial-work commit + best-effort cost update."""
+
+    async def test_commits_partial_work_and_updates_cost(self) -> None:
+        from sova.cli.commands.run import _handle_sigterm_shutdown
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="978", role="developer", status="running")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        ctx = MagicMock()
+        ctx.worktree_dir = Path("/tmp/does-not-matter")
+        ctx.project_dir = None
+        ctx.cost_usd = Decimal("1.23")
+
+        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock(return_value=True)) as mock_commit:
+            await _handle_sigterm_shutdown(ctx, run_id)
+
+        mock_commit.assert_awaited_once_with(ctx.worktree_dir, "sigterm")
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.total_cost_usd == Decimal("1.23")
+
+    async def test_no_task_run_id_skips_db_update(self) -> None:
+        from sova.cli.commands.run import _handle_sigterm_shutdown
+
+        ctx = MagicMock()
+        ctx.worktree_dir = Path("/tmp/does-not-matter")
+
+        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock(return_value=False)) as mock_commit:
+            await _handle_sigterm_shutdown(ctx, None)
+
+        mock_commit.assert_awaited_once()
+
+    async def test_no_worktree_skips_commit(self) -> None:
+        """Before create_worktree runs, ctx.worktree_dir is None: never commit in the primary checkout."""
+        from sova.cli.commands.run import _handle_sigterm_shutdown
+
+        ctx = MagicMock()
+        ctx.worktree_dir = None
+
+        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock()) as mock_commit:
+            await _handle_sigterm_shutdown(ctx, None)
+
+        mock_commit.assert_not_awaited()
+
+    async def test_db_failure_during_shutdown_does_not_raise(self) -> None:
+        """Best-effort cleanup during shutdown must not raise, even on a broken session."""
+        from sova.cli.commands.run import _handle_sigterm_shutdown
+
+        ctx = MagicMock()
+        ctx.worktree_dir = Path("/tmp/does-not-matter")
+        ctx.project_dir = None
+        ctx.cost_usd = Decimal("0")
+
+        with (
+            patch("sova.git.worktree.commit_partial_work", new=AsyncMock(return_value=False)),
+            patch("sova.db.session.get_session", side_effect=RuntimeError("db unavailable")),
+        ):
+            await _handle_sigterm_shutdown(ctx, 999)  # must not raise
+
+
+class TestRunWorkflowCancellation:
+    """_run_workflow() catches CancelledError from dispatch(), cleans up, then re-raises."""
+
+    async def test_cancellation_runs_shutdown_handler_and_reraises(self, tmp_path: Path) -> None:
+        from sova.cli.commands.run import _run_workflow
+
+        shutdown_calls = []
+
+        async def fake_shutdown(ctx, task_run_id):
+            shutdown_calls.append(task_run_id)
+
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.db.session.init_db", new=AsyncMock()),
+            patch("sova.utils.logging.setup_logging"),
+            patch("sova.roles.dispatcher.dispatch", new=AsyncMock(side_effect=asyncio.CancelledError)),
+            patch("sova.cli.commands.run._install_sigterm_handler"),
+            patch("sova.cli.commands.run._handle_sigterm_shutdown", side_effect=fake_shutdown),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _run_workflow(
+                    "1",
+                    project_dir=tmp_path,
+                    role_name="researcher",
+                    force=False,
+                    task_run_id=77,
+                )
+
+        assert shutdown_calls == [77]
+
+    def test_run_issue_maps_cancellation_to_signal_shaped_exit_code(self) -> None:
+        """run_issue() exits 128+SIGTERM so a parent observes a signal-shaped exit."""
+        import signal
+
+        import typer
+
+        from sova.cli.commands.run import run_issue
+
+        def _raise_cancelled(coro):
+            coro.close()  # avoid a "coroutine was never awaited" warning
+            raise asyncio.CancelledError
+
+        with patch("sova.cli.commands.run.asyncio.run", side_effect=_raise_cancelled):
+            with pytest.raises(typer.Exit) as exc_info:
+                run_issue(issue="1")
+
+        assert exc_info.value.exit_code == 128 + signal.SIGTERM
 
 
 # ---------------------------------------------------------------------------

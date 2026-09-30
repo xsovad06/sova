@@ -1780,6 +1780,15 @@ _REGISTRY: list[SettingMeta] = [
         "agent_health",
         "number",
     ),
+    SettingMeta(
+        "memory_guard.runtime_action",
+        "Memory pressure runtime action",
+        "What the watchdog does when already-running agents push available memory below the "
+        "block threshold: warn only, or stop the most-recently-started agent (on by default: warn)",
+        "agent_health",
+        "select",
+        options=("warn", "stop_newest"),
+    ),
     # -- Agent Health: Watchdog --
     SettingMeta(
         "watchdog.enabled",

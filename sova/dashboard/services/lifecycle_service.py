@@ -283,6 +283,42 @@ async def fail_phase(
     return True
 
 
+async def stop_phase(
+    session: AsyncSession,
+    lifecycle_id: int,
+    phase: str,
+    error: str | None = None,
+) -> bool:
+    """Mark a phase as deliberately stopped, distinct from a failure.
+
+    Mirrors fail_phase() but records PhaseStatus.STOPPED so the lifecycle
+    view does not represent a deliberate stop (dashboard button, watchdog
+    memory eviction) as an application failure.
+    """
+    lifecycle = await session.get(IssueLifecycle, lifecycle_id)
+    if lifecycle is None:
+        return False
+
+    now = datetime.now(timezone.utc)
+
+    active = await _find_phase_records(session, lifecycle_id, phase, PhaseStatus.ACTIVE)
+    if not active:
+        log.warning("phase.no_active_record_to_stop", lifecycle_id=lifecycle_id, phase=phase)
+        return False
+
+    record = active[0]
+    record.status = PhaseStatus.STOPPED
+    record.error_message = error
+    record.completed_at = now
+
+    lifecycle.phase_status = PhaseStatus.STOPPED
+    lifecycle.updated_at = now
+
+    await session.flush()
+    log.info("phase.stopped", lifecycle_id=lifecycle_id, phase=phase, error=error)
+    return True
+
+
 async def skip_phase(
     session: AsyncSession,
     lifecycle_id: int,
@@ -325,12 +361,22 @@ async def restart_phase(
     lifecycle_id: int,
     phase: str,
 ) -> LifecyclePhaseRecord | None:
-    """Restart a failed phase with a new attempt."""
+    """Restart a failed or stopped phase with a new attempt."""
     lifecycle = await session.get(IssueLifecycle, lifecycle_id)
     if lifecycle is None:
         return None
 
-    failed = await _find_phase_records(session, lifecycle_id, phase, PhaseStatus.FAILED)
+    stmt = (
+        select(LifecyclePhaseRecord)
+        .where(
+            LifecyclePhaseRecord.lifecycle_id == lifecycle_id,
+            LifecyclePhaseRecord.phase == phase,
+            LifecyclePhaseRecord.status.in_([PhaseStatus.FAILED, PhaseStatus.STOPPED]),
+        )
+        .order_by(LifecyclePhaseRecord.id)
+    )
+    result = await session.execute(stmt)
+    failed = list(result.scalars().all())
     if not failed:
         log.warning("phase.no_failed_record_to_restart", lifecycle_id=lifecycle_id, phase=phase)
         return None
@@ -665,7 +711,12 @@ async def finalize_phase_from_run(
             lifecycle.branch_name = run.branch_name
 
     try:
-        if exit_code == 0:
+        if run.status == "stopped":
+            # Checked ahead of exit_code: a deliberate stop is not a
+            # completion or an application failure, even though the process
+            # itself may have exited with a nonzero (signal-shaped) code.
+            await stop_phase(session, run.lifecycle_id, phase, run.error_message)
+        elif exit_code == 0:
             await complete_phase(session, run.lifecycle_id, phase, cost)
         else:
             await fail_phase(session, run.lifecycle_id, phase, run.error_message)
@@ -715,6 +766,10 @@ def _infer_phase_status(run_status: str) -> str:
     """Map a TaskRun status to a PhaseStatus for reconstruction."""
     if run_status == "done":
         return PhaseStatus.COMPLETED
+    if run_status == "stopped":
+        # A deliberate stop, not an application failure: kept distinct so
+        # the reconstructed lifecycle view does not misrepresent it.
+        return PhaseStatus.STOPPED
     if run_status in ("failed", "rejected", "interrupted"):
         return PhaseStatus.FAILED
     return PhaseStatus.ACTIVE

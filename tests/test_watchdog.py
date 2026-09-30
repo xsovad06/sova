@@ -345,7 +345,7 @@ class TestExecuteFinding:
 
         with patch("sova.dashboard.services.agent_lifecycle.stop_agent", new_callable=AsyncMock) as mock_stop:
             await wd._execute_finding(finding)
-            mock_stop.assert_called_once_with(run_id=1)
+            mock_stop.assert_called_once_with(run_id=1, cause="pipeline_not_adopted", requester="watchdog")
 
 
 # ---------------------------------------------------------------------------
@@ -618,3 +618,113 @@ class TestConfigRegistration:
         ]
         for key in expected_keys:
             assert key in _META_BY_KEY, f"Missing settings meta for {key}"
+
+    def test_memory_guard_runtime_action_in_settings_meta(self) -> None:
+        from sova.dashboard.settings_meta import _META_BY_KEY
+
+        assert "memory_guard.runtime_action" in _META_BY_KEY
+
+
+# ---------------------------------------------------------------------------
+# Runtime memory pressure check (issue #978)
+# ---------------------------------------------------------------------------
+
+
+def _make_watchdog_with_memory_guard(**overrides: object) -> AgentWatchdog:
+    from sova.config.models import MemoryGuardConfig
+
+    defaults = {"enabled": True, "warn_threshold_gb": 3.0, "block_threshold_gb": 1.5, "runtime_action": "warn"}
+    defaults.update(overrides)
+    return AgentWatchdog(config=_make_config(), project_dir=Path("/fake"), memory_guard=MemoryGuardConfig(**defaults))
+
+
+def _mock_virtual_memory(available_gb: float) -> MagicMock:
+    mem = MagicMock()
+    mem.available = available_gb * (1024**3)
+    return mem
+
+
+class TestMemoryPressureCheck:
+    def test_returns_none_when_above_block_threshold(self) -> None:
+        wd = _make_watchdog_with_memory_guard(block_threshold_gb=1.5)
+        with patch("sova.supervisor.watchdog.psutil") as mock_psutil:
+            mock_psutil.virtual_memory.return_value = _mock_virtual_memory(4.0)
+            assert wd._check_memory_pressure([]) is None
+
+    def test_returns_none_when_disabled(self) -> None:
+        wd = _make_watchdog_with_memory_guard(enabled=False, block_threshold_gb=1.5)
+        with patch("sova.supervisor.watchdog.psutil") as mock_psutil:
+            mock_psutil.virtual_memory.return_value = _mock_virtual_memory(0.1)
+            assert wd._check_memory_pressure([]) is None
+
+    def test_warn_action_produces_warn_finding_with_sentinel_run_id(self) -> None:
+        wd = _make_watchdog_with_memory_guard(block_threshold_gb=1.5, runtime_action="warn")
+        with patch("sova.supervisor.watchdog.psutil") as mock_psutil:
+            mock_psutil.virtual_memory.return_value = _mock_virtual_memory(0.5)
+            finding = wd._check_memory_pressure([_make_run(run_id=7)])
+
+        assert finding is not None
+        assert finding.run_id == 0
+        assert finding.action == WatchdogAction.WARN
+        assert finding.signal == AnomalySignal.MEMORY_PRESSURE
+
+    def test_stop_newest_targets_most_recently_started_run(self) -> None:
+        wd = _make_watchdog_with_memory_guard(block_threshold_gb=1.5, runtime_action="stop_newest")
+        older = _make_run(run_id=1, started_at=datetime.now(timezone.utc) - timedelta(minutes=10))
+        newer = _make_run(run_id=2, started_at=datetime.now(timezone.utc))
+        with patch("sova.supervisor.watchdog.psutil") as mock_psutil:
+            mock_psutil.virtual_memory.return_value = _mock_virtual_memory(0.5)
+            finding = wd._check_memory_pressure([older, newer])
+
+        assert finding is not None
+        assert finding.run_id == 2
+        assert finding.action == WatchdogAction.KILL
+        assert finding.signal == AnomalySignal.MEMORY_PRESSURE
+
+    def test_stop_newest_with_no_active_runs_falls_back_to_warn(self) -> None:
+        wd = _make_watchdog_with_memory_guard(block_threshold_gb=1.5, runtime_action="stop_newest")
+        with patch("sova.supervisor.watchdog.psutil") as mock_psutil:
+            mock_psutil.virtual_memory.return_value = _mock_virtual_memory(0.5)
+            finding = wd._check_memory_pressure([])
+
+        assert finding is not None
+        assert finding.run_id == 0
+        assert finding.action == WatchdogAction.WARN
+
+    def test_fails_open_on_psutil_error(self) -> None:
+        wd = _make_watchdog_with_memory_guard(block_threshold_gb=1.5)
+        with patch("sova.supervisor.watchdog.psutil") as mock_psutil:
+            mock_psutil.virtual_memory.side_effect = RuntimeError("boom")
+            assert wd._check_memory_pressure([]) is None
+
+    def test_kill_finding_labels_cause_memory_pressure(self) -> None:
+        """The stop_agent() cause must be the constant 'memory_pressure' label."""
+        wd = _make_watchdog_with_memory_guard(block_threshold_gb=1.5, runtime_action="stop_newest")
+        with patch("sova.supervisor.watchdog.psutil") as mock_psutil:
+            mock_psutil.virtual_memory.return_value = _mock_virtual_memory(0.5)
+            finding = wd._check_memory_pressure([_make_run(run_id=9)])
+
+        assert finding.signal.value == "memory_pressure"
+
+
+class TestPruneCooldownsSentinel:
+    def test_memory_pressure_sentinel_survives_prune(self) -> None:
+        wd = _make_watchdog()
+        wd._cooldowns = {(0, "memory_pressure"): time.monotonic(), (1, "no_output_warn"): time.monotonic()}
+        wd._prune_cooldowns(set())  # no active runs at all
+        assert (0, "memory_pressure") in wd._cooldowns
+        assert (1, "no_output_warn") not in wd._cooldowns
+
+
+class TestReloadConfigMemoryGuard:
+    def test_reload_config_updates_memory_guard_when_given(self) -> None:
+        from sova.config.models import MemoryGuardConfig
+
+        wd = _make_watchdog_with_memory_guard(runtime_action="warn")
+        wd.reload_config(_make_config(), MemoryGuardConfig(runtime_action="stop_newest"))
+        assert wd._memory_guard.runtime_action == "stop_newest"
+
+    def test_reload_config_preserves_memory_guard_when_omitted(self) -> None:
+        wd = _make_watchdog_with_memory_guard(runtime_action="stop_newest")
+        wd.reload_config(_make_config())
+        assert wd._memory_guard.runtime_action == "stop_newest"

@@ -116,7 +116,7 @@
 
 {% block scripts %}
 <script>
-var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted'];
+var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted', 'stopped'];
 var _outputCursor = 0;
 var _outputPollTimer = null;
 var _outputTargetStep = null;
@@ -186,7 +186,7 @@ async function loadRunDetail() {
       '</div>';
     }
 
-    var restartable = ['failed', 'interrupted', 'paused'];
+    var restartable = ['failed', 'interrupted', 'paused', 'stopped'];
     var nonTerminal = ['running', 'developing', 'pending'];
     document.getElementById('actions-section').classList.remove('hidden');
     if (restartable.indexOf(run.status) !== -1) {
