@@ -9,7 +9,9 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import respx
 
 from sova.llm import ComplexityTier, assess_complexity
 from sova.llm.models import BatchRequest, LLMResult, StreamEvent
@@ -2632,6 +2634,17 @@ class _MockStreamChunk:
 
 
 class TestLiteLLMProvider:
+    @pytest.fixture(autouse=True)
+    def _reset_model_cache(self):
+        """The enumeration cache is a process global, and several tests in this
+        class share one identity (same model + api_base), so without this the
+        first to run would answer for the rest depending on ordering."""
+        from sova.llm.client import reset_availability_cache
+
+        reset_availability_cache()
+        yield
+        reset_availability_cache()
+
     @pytest.fixture
     def mock_litellm(self):
         """Mock litellm at module level so the import check passes."""
@@ -3164,6 +3177,401 @@ class TestLiteLLMProvider:
         assert available is True
         assert "1.0.0" in detail
 
+    async def test_list_available_models_allow_probe_false_skips_everything(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CURATED_MODELS
+
+        with patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "proj"}):
+            provider = LiteLLMProvider(model="claude-sonnet-4-6")
+            models = await provider.list_available_models(allow_probe=False)
+
+        assert models == list(CURATED_MODELS)
+
+    async def test_list_available_models_nothing_configured_returns_curated(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CURATED_MODELS
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_VERTEX_PROJECT_ID", None)
+            provider = LiteLLMProvider(model="claude-sonnet-4-6")
+            models = await provider.list_available_models()
+
+        assert models == list(CURATED_MODELS)
+
+    @respx.mock
+    async def test_list_available_models_vertex_success_filters_openai_publisher(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import ModelFamily
+
+        respx.get(url__regex=r".*/v1beta1/publishers/anthropic/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={"publisherModels": [{"name": "publishers/anthropic/models/claude-opus-5"}]},
+            )
+        )
+        respx.get(url__regex=r".*/v1beta1/publishers/google/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={"publisherModels": [{"name": "publishers/google/models/gemini-2.5-pro"}]},
+            )
+        )
+        respx.get(url__regex=r".*/v1beta1/publishers/openai/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "publisherModels": [
+                        {"name": "publishers/openai/models/gpt-oss-120b"},
+                        {"name": "publishers/openai/models/gpt-4o"},
+                    ]
+                },
+            )
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "proj"}):
+            provider = LiteLLMProvider(model="claude-sonnet-4-6")
+            with patch.object(provider._vertex_token_provider, "get_token", AsyncMock(return_value="tok")):
+                models = await provider.list_available_models()
+
+        ids = {m.id for m in models}
+        assert ids == {"claude-opus-5", "gemini-2.5-pro", "gpt-oss-120b"}
+        assert "gpt-4o" not in ids
+        assert next(m for m in models if m.id == "claude-opus-5").family == ModelFamily.ANTHROPIC
+        assert next(m for m in models if m.id == "gemini-2.5-pro").family == ModelFamily.GOOGLE
+        assert next(m for m in models if m.id == "gpt-oss-120b").family == ModelFamily.OPENAI_OSS
+        assert all(m.source == "vertex" for m in models)
+
+    @respx.mock
+    async def test_list_available_models_vertex_single_publisher_failure_is_non_fatal(
+        self, mock_litellm: MagicMock
+    ) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        respx.get(url__regex=r".*/v1beta1/publishers/anthropic/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={"publisherModels": [{"name": "publishers/anthropic/models/claude-opus-5"}]},
+            )
+        )
+        respx.get(url__regex=r".*/v1beta1/publishers/google/models").mock(return_value=httpx.Response(500))
+        respx.get(url__regex=r".*/v1beta1/publishers/openai/models").mock(
+            return_value=httpx.Response(200, json={"publisherModels": []})
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "proj"}):
+            provider = LiteLLMProvider(model="claude-sonnet-4-6")
+            with patch.object(provider._vertex_token_provider, "get_token", AsyncMock(return_value="tok")):
+                models = await provider.list_available_models()
+
+        assert {m.id for m in models} == {"claude-opus-5"}
+
+    async def test_list_available_models_vertex_token_unavailable_returns_curated(
+        self, mock_litellm: MagicMock
+    ) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CURATED_MODELS
+
+        with patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "proj"}):
+            provider = LiteLLMProvider(model="claude-sonnet-4-6")
+            with patch.object(
+                provider._vertex_token_provider,
+                "get_token",
+                AsyncMock(side_effect=ImportError("google-auth not installed")),
+            ):
+                models = await provider.list_available_models()
+
+        assert models == list(CURATED_MODELS)
+
+    @respx.mock
+    async def test_list_available_models_ollama_success(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import ModelFamily
+
+        respx.get("http://localhost:11434/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "llama3:latest"}]})
+        )
+
+        provider = LiteLLMProvider(model="ollama/llama3")
+        models = await provider.list_available_models()
+
+        assert len(models) == 1
+        assert models[0].id == "ollama/llama3:latest"
+        assert models[0].family == ModelFamily.LOCAL
+        assert models[0].source == "ollama"
+
+    @respx.mock
+    async def test_list_available_models_ollama_daemon_down_returns_curated(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CURATED_MODELS
+
+        respx.get("http://localhost:11434/api/tags").mock(side_effect=httpx.ConnectError("refused"))
+
+        provider = LiteLLMProvider(model="ollama/llama3")
+        models = await provider.list_available_models()
+
+        assert models == list(CURATED_MODELS)
+
+    @respx.mock
+    async def test_list_available_models_openai_compatible_success(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        respx.get("http://localhost:8000/v1/models").mock(
+            return_value=httpx.Response(200, json={"data": [{"id": "local-model-1"}]})
+        )
+
+        provider = LiteLLMProvider(model="local-model-1", api_base="http://localhost:8000/v1")
+        models = await provider.list_available_models()
+
+        assert len(models) == 1
+        assert models[0].id == "local-model-1"
+        assert models[0].source == "openai_compatible"
+
+    @respx.mock
+    async def test_list_available_models_openai_compatible_sends_bearer_on_loopback(
+        self, mock_litellm: MagicMock
+    ) -> None:
+        """A loopback endpoint still uses the same OPENAI_API_KEY credential
+        the LiteLLM invocation itself resolves this endpoint from: without
+        it, a key-protected probe gets 401'd, _fetch_json_entries silently
+        turns that into [], and enumeration never caches, retrying forever."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        route = respx.get("http://localhost:8000/v1/models").mock(
+            return_value=httpx.Response(200, json={"data": [{"id": "local-model-1"}]})
+        )
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"}):
+            provider = LiteLLMProvider(model="local-model-1", api_base="http://localhost:8000/v1")
+            models = await provider.list_available_models()
+
+        assert len(models) == 1
+        assert route.calls.last.request.headers["authorization"] == "Bearer sk-test-key"
+
+    @respx.mock
+    async def test_list_available_models_openai_compatible_no_key_sends_no_auth_header(
+        self, mock_litellm: MagicMock
+    ) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        route = respx.get("http://localhost:8000/v1/models").mock(
+            return_value=httpx.Response(200, json={"data": [{"id": "local-model-1"}]})
+        )
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENAI_API_KEY", None)
+            provider = LiteLLMProvider(model="local-model-1", api_base="http://localhost:8000/v1")
+            models = await provider.list_available_models()
+
+        assert len(models) == 1
+        assert "authorization" not in route.calls.last.request.headers
+
+    @respx.mock
+    async def test_list_available_models_openai_compatible_key_withheld_from_plaintext_remote(
+        self, mock_litellm: MagicMock
+    ) -> None:
+        """A non-loopback, non-HTTPS api_base must never receive the bearer
+        credential: plaintext HTTP to a remote host is not a safe channel for
+        it, unlike a loopback shim or an HTTPS endpoint."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        route = respx.get("http://models.example.com/v1/models").mock(
+            return_value=httpx.Response(200, json={"data": [{"id": "remote-model-1"}]})
+        )
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"}):
+            provider = LiteLLMProvider(model="remote-model-1", api_base="http://models.example.com/v1")
+            models = await provider.list_available_models()
+
+        assert len(models) == 1
+        assert "authorization" not in route.calls.last.request.headers
+
+    @respx.mock
+    async def test_enumeration_identity_scoped_by_openai_api_key(self, mock_litellm: MagicMock) -> None:
+        """Two accounts hitting the same api_base must not share one cached
+        catalog: _enumerate_openai_compatible() resolves OPENAI_API_KEY at
+        call time, so the cache key must change with it or a key rotation
+        serves the previous account's models for up to the enumeration TTL."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-account-a"}):
+            provider_a = LiteLLMProvider(model="local-model-1", api_base="http://localhost:8000/v1")
+            identity_a = provider_a._enumeration_identity()
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-account-b"}):
+            provider_b = LiteLLMProvider(model="local-model-1", api_base="http://localhost:8000/v1")
+            identity_b = provider_b._enumeration_identity()
+
+        assert identity_a != identity_b
+        assert "sk-account-a" not in identity_a
+        assert "sk-account-b" not in identity_b
+
+    @respx.mock
+    async def test_enumeration_identity_no_key_is_stable(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENAI_API_KEY", None)
+            provider = LiteLLMProvider(model="local-model-1", api_base="http://localhost:8000/v1")
+            identity = provider._enumeration_identity()
+
+        assert identity.startswith("litellm:local-model-1:http://localhost:8000/v1::")
+
+    @respx.mock
+    async def test_list_available_models_openai_compatible_skipped_for_local_model(
+        self, mock_litellm: MagicMock
+    ) -> None:
+        """api_base set, but the model ID already identifies an Ollama target:
+        /v1/models must never be attempted, only /api/tags."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        tags_route = respx.get("http://localhost:11434/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": []})
+        )
+        models_route = respx.get("http://localhost:11434/v1/models").mock(
+            return_value=httpx.Response(200, json={"data": [{"id": "should-not-be-fetched"}]})
+        )
+
+        provider = LiteLLMProvider(model="ollama/llama3", api_base="http://localhost:11434")
+        models = await provider.list_available_models()
+
+        assert tags_route.called
+        assert not models_route.called
+        assert all(m.id != "should-not-be-fetched" for m in models)
+
+    async def test_list_available_models_openai_compatible_skipped_for_vertex_model(
+        self, mock_litellm: MagicMock
+    ) -> None:
+        """A LiteLLM "vertex_ai/..." model ID must never trigger an OpenAI-
+        compatible /v1/models probe, even with api_base set: no HTTP call
+        of any kind should be attempted (unmocked respx raises on any call)."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CURATED_MODELS
+
+        with respx.mock:
+            provider = LiteLLMProvider(model="vertex_ai/gemini-2.5-pro", api_base="http://localhost:9999")
+            models = await provider.list_available_models()
+
+        assert models == list(CURATED_MODELS)
+
+    @respx.mock
+    async def test_list_available_models_dedup_keeps_first_occurrence(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        respx.get("http://localhost:11434/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "shared-model"}]})
+        )
+        respx.get("http://localhost:11434/v1/models").mock(
+            return_value=httpx.Response(200, json={"data": [{"id": "ollama/shared-model"}]})
+        )
+
+        provider = LiteLLMProvider(model="ollama/shared-model", api_base="http://localhost:11434")
+        models = await provider.list_available_models()
+
+        ids = [m.id for m in models]
+        assert ids.count("ollama/shared-model") == 1
+
+    @respx.mock
+    async def test_list_available_models_results_are_cached(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        route = respx.get("http://localhost:11434/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "llama3"}]})
+        )
+
+        provider = LiteLLMProvider(model="ollama/llama3")
+        first = await provider.list_available_models()
+        second = await provider.list_available_models()
+
+        assert first == second
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_configured_but_unreachable_fallback_is_not_cached(self, mock_litellm: MagicMock) -> None:
+        """A configured-but-down backend is an outage, not a fact about the
+        deployment, so the curated fallback must not be pinned for the TTL."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CURATED_MODELS
+
+        route = respx.get("http://localhost:11434/api/tags").mock(side_effect=httpx.ConnectError("refused"))
+
+        provider = LiteLLMProvider(model="ollama/llama3")
+        first = await provider.list_available_models()
+        second = await provider.list_available_models()
+
+        assert first == list(CURATED_MODELS)
+        assert second == list(CURATED_MODELS)
+        assert route.call_count == 2  # retried, not served from a cached fallback
+
+    async def test_nothing_configured_fallback_is_cached(self, mock_litellm: MagicMock) -> None:
+        """With no enumeration source configured at all, curated is the stable
+        answer for this deployment, so it is cached rather than recomputed."""
+        from sova.llm.client import get_availability_cache
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CURATED_MODELS
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_VERTEX_PROJECT_ID", None)
+            provider = LiteLLMProvider(model="claude-sonnet-4-6")
+            models = await provider.list_available_models()
+            cached = get_availability_cache().get_enumeration(provider._enumeration_identity())
+
+        assert models == list(CURATED_MODELS)
+        assert cached == list(CURATED_MODELS)
+
+    @respx.mock
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "not-an-object",
+            {"models": "not-a-list"},
+            {"models": ["bare-scalar", 7, None]},
+            {},
+        ],
+        ids=["scalar-body", "non-list-key", "non-dict-entries", "missing-key"],
+    )
+    async def test_malformed_enumeration_payload_yields_curated(self, mock_litellm: MagicMock, payload: object) -> None:
+        """An operator-supplied endpoint can return any shape; every layer is
+        checked so a caller's entry.get() can never raise an AttributeError."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CURATED_MODELS
+
+        respx.get("http://localhost:11434/api/tags").mock(return_value=httpx.Response(200, json=payload))
+
+        provider = LiteLLMProvider(model="ollama/llama3")
+        models = await provider.list_available_models()
+
+        assert models == list(CURATED_MODELS)
+
+    async def test_enumeration_source_raising_is_treated_as_an_outage(self, mock_litellm: MagicMock) -> None:
+        """A source growing an unguarded failure path must not escape
+        list_available_models(), and must map to "configured, produced nothing"
+        (retried) rather than "not configured" (curated cached for the TTL)."""
+        from sova.llm.client import get_availability_cache
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.models import CURATED_MODELS
+
+        provider = LiteLLMProvider(model="ollama/llama3")
+        with patch.object(provider, "_enumerate_ollama", AsyncMock(side_effect=RuntimeError("boom"))):
+            models = await provider.list_available_models()
+
+        assert models == list(CURATED_MODELS)
+        assert get_availability_cache().get_enumeration(provider._enumeration_identity()) is None
+
+    async def test_enumeration_identity_includes_vertex_project_and_region(self, mock_litellm: MagicMock) -> None:
+        """Vertex project/region select which publisher catalog is read, so two
+        deployments differing only in those must not share a cache entry."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(model="claude-sonnet-4-6")
+        with patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "proj-a", "CLOUD_ML_REGION": "us-east5"}):
+            first = provider._enumeration_identity()
+        with patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "proj-b", "CLOUD_ML_REGION": "us-east5"}):
+            second = provider._enumeration_identity()
+        with patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "proj-a", "CLOUD_ML_REGION": "europe-west1"}):
+            third = provider._enumeration_identity()
+
+        assert first != second
+        assert first != third
+
 
 # ---------------------------------------------------------------------------
 # _is_connection_error
@@ -3686,6 +4094,26 @@ class _MockAnthropicResponse:
         self.stop_reason = "end_turn"
 
 
+class _MockAnthropicModelEntry:
+    def __init__(self, id: str, display_name: str = "") -> None:  # noqa: A002 (mirrors the SDK's own field name)
+        self.id = id
+        self.display_name = display_name
+
+
+class _MockAnthropicModelsPage:
+    """Minimal async-iterable double for the SDK's AsyncPage[ModelInfo]."""
+
+    def __init__(self, models: list) -> None:
+        self._models = models
+
+    def __aiter__(self):
+        return self._agen()
+
+    async def _agen(self):
+        for m in self._models:
+            yield m
+
+
 class TestAnthropicAPIProvider:
     @pytest.fixture
     def mock_anthropic(self):
@@ -3722,7 +4150,9 @@ class TestAnthropicAPIProvider:
         assert caps.supports_cli_fallback is False
         assert caps.supports_budget_cap is False
         assert caps.reports_cost is False
-        assert caps.dynamic_models is False
+        # True since list_available_models() enumerates the account's real
+        # catalog via the SDK's models.list().
+        assert caps.dynamic_models is True
 
     async def test_invoke_basic(self, mock_anthropic: MagicMock) -> None:
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
@@ -4287,6 +4717,95 @@ class TestAnthropicAPIProvider:
         assert result.input_tokens == 100
         assert result.output_tokens == 50
         assert result.cost_usd > Decimal("0")
+
+    async def test_list_available_models_maps_sdk_results(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.client import reset_availability_cache
+        from sova.llm.models import ModelFamily
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.models.list = AsyncMock(
+            return_value=_MockAnthropicModelsPage(
+                [
+                    _MockAnthropicModelEntry("claude-opus-5", "Claude Opus 5"),
+                    _MockAnthropicModelEntry("mystery-model-9000"),
+                ]
+            )
+        )
+
+        reset_availability_cache()
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            models = await AnthropicAPIProvider().list_available_models()
+        reset_availability_cache()
+
+        assert {m.id for m in models} == {"claude-opus-5", "mystery-model-9000"}
+        opus = next(m for m in models if m.id == "claude-opus-5")
+        assert opus.family == ModelFamily.ANTHROPIC
+        assert opus.tier == "smart"
+        assert opus.display_name == "Claude Opus 5"
+        assert opus.source == "anthropic_api"
+        mystery = next(m for m in models if m.id == "mystery-model-9000")
+        assert mystery.family == ModelFamily.UNKNOWN
+        assert mystery.tier == ""
+        assert mystery.display_name == "mystery-model-9000"
+
+    async def test_list_available_models_allow_probe_false_skips_network(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.models.list = AsyncMock(side_effect=AssertionError("must not be called"))
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            models = await AnthropicAPIProvider().list_available_models(allow_probe=False)
+
+        assert models == list(CURATED_MODELS)
+        client.models.list.assert_not_called()
+
+    async def test_list_available_models_no_api_key_returns_curated(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+            models = await AnthropicAPIProvider(api_key="").list_available_models()
+
+        assert models == list(CURATED_MODELS)
+
+    async def test_list_available_models_sdk_failure_falls_back_to_curated(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.client import reset_availability_cache
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.models.list = AsyncMock(side_effect=RuntimeError("boom"))
+
+        reset_availability_cache()
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            models = await AnthropicAPIProvider().list_available_models()
+        reset_availability_cache()
+
+        assert models == list(CURATED_MODELS)
+
+    async def test_list_available_models_empty_catalog_is_not_cached(self, mock_anthropic: MagicMock) -> None:
+        """An authenticated account that lists no model at all is a service-side
+        anomaly, handled like the other providers' outage path: curated is
+        served, but never cached as this deployment's answer."""
+        from sova.llm.client import get_availability_cache, reset_availability_cache
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider, _anthropic_api_enumeration_identity
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.models.list = AsyncMock(return_value=_MockAnthropicModelsPage([]))
+
+        reset_availability_cache()
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            models = await AnthropicAPIProvider().list_available_models()
+            cached = get_availability_cache().get_enumeration(_anthropic_api_enumeration_identity("sk-test-key"))
+        reset_availability_cache()
+
+        assert models == list(CURATED_MODELS)
+        assert cached is None
+        assert client.models.list.await_count == 1
 
 
 class TestCreateProviderAnthropic:
@@ -5033,3 +5552,638 @@ class TestClaudeCodeGetAuthDetails:
         assert available is False
         assert details is None
         assert mock_run.await_count == 3  # no extra auth probe spawned for the now-stale data
+
+
+# ---------------------------------------------------------------------------
+# ModelInfo / ModelFamily / model classification (sova/llm/models.py)
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyModelFamily:
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("claude-opus-5", "anthropic"),
+            ("claude-sonnet-4-6", "anthropic"),
+            ("gemini-2.5-pro", "google"),
+            ("gpt-oss-120b", "openai-oss"),
+            ("gpt-4o", "openai"),
+            ("o3-mini", "openai"),
+            ("chatgpt-4o-latest", "openai"),
+            ("ollama/llama3", "local"),
+            ("vllm/mistral-7b", "local"),
+            ("mystery-model-9000", "unknown"),
+        ],
+    )
+    def test_classify(self, model_id: str, expected: str) -> None:
+        from sova.llm.models import classify_model_family
+
+        assert classify_model_family(model_id) == expected
+
+    def test_case_insensitive(self) -> None:
+        from sova.llm.models import ModelFamily, classify_model_family
+
+        assert classify_model_family("CLAUDE-OPUS-5") == ModelFamily.ANTHROPIC
+
+    def test_gpt_oss_not_classified_as_openai(self) -> None:
+        """The Vertex openai publisher only ever serves gpt-oss; it must never
+        collapse into the same family as a real GPT/o-series model."""
+        from sova.llm.models import ModelFamily, classify_model_family
+
+        assert classify_model_family("gpt-oss-20b") == ModelFamily.OPENAI_OSS
+        assert classify_model_family("gpt-4o") == ModelFamily.OPENAI
+        assert classify_model_family("gpt-oss-20b") != classify_model_family("gpt-4o")
+
+
+class TestModelTierForId:
+    def test_known_ids(self) -> None:
+        from sova.llm.models import model_tier_for_id
+
+        assert model_tier_for_id("claude-opus-5") == "smart"
+        assert model_tier_for_id("claude-sonnet-5") == "fast"
+        assert model_tier_for_id("claude-haiku-4-5-20251001") == "cheap"
+
+    def test_unknown_id_returns_empty_string(self) -> None:
+        from sova.llm.models import model_tier_for_id
+
+        assert model_tier_for_id("gpt-4o") == ""
+        assert model_tier_for_id("claude-fable-5") == ""
+
+
+class TestCuratedModels:
+    def test_all_entries_are_curated_anthropic(self) -> None:
+        from sova.llm.models import CURATED_MODELS, ModelFamily
+
+        assert len(CURATED_MODELS) > 0
+        for model in CURATED_MODELS:
+            assert model.family == ModelFamily.ANTHROPIC
+            assert model.source == "curated"
+            assert model.id
+
+    def test_includes_the_generic_tiers(self) -> None:
+        from sova.llm.models import CURATED_MODELS
+
+        tiers = {m.tier for m in CURATED_MODELS}
+        assert {"smart", "fast", "cheap"}.issubset(tiers)
+
+
+# ---------------------------------------------------------------------------
+# LLMProvider.list_available_models(): concrete ABC default
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_provider():
+    from sova.llm.provider import LLMProvider
+
+    class FakeProvider(LLMProvider):
+        async def invoke(self, prompt, **kwargs):
+            return LLMResult(text="fake", model="fake")
+
+        async def invoke_streaming(self, prompt, **kwargs):
+            yield StreamEvent(type="result", text="fake")
+
+        async def check_available(self):
+            return True, "fake"
+
+    return FakeProvider()
+
+
+class TestLLMProviderDefaultListAvailableModels:
+    async def test_default_returns_curated_list(self) -> None:
+        from sova.llm.models import CURATED_MODELS
+
+        models = await _make_fake_provider().list_available_models()
+        assert models == list(CURATED_MODELS)
+
+    async def test_default_ignores_allow_probe_false(self) -> None:
+        from sova.llm.models import CURATED_MODELS
+
+        models = await _make_fake_provider().list_available_models(allow_probe=False)
+        assert models == list(CURATED_MODELS)
+
+    def test_not_abstract(self) -> None:
+        """Do NOT make list_available_models() abstract: existing and
+        third-party LLMProvider subclasses that predate this method must keep
+        working without implementing it."""
+        from sova.llm.provider import LLMProvider
+
+        assert "list_available_models" not in LLMProvider.__abstractmethods__
+
+
+# ---------------------------------------------------------------------------
+# _credential_safe_target(): bearer credential channel gate
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialSafeTarget:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://api.example.com/v1/models",
+            "http://localhost:8000/v1/models",
+            "http://127.0.0.1:8000/v1/models",
+            "http://[::1]:8000/v1/models",
+        ],
+    )
+    def test_safe_targets(self, url: str) -> None:
+        from sova.llm.litellm_provider import _credential_safe_target
+
+        assert _credential_safe_target(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://models.example.com/v1/models",
+            "http://192.168.1.5:8000/v1/models",
+            "http://not a valid host/v1/models",
+        ],
+    )
+    def test_unsafe_targets(self, url: str) -> None:
+        from sova.llm.litellm_provider import _credential_safe_target
+
+        assert _credential_safe_target(url) is False
+
+
+# ---------------------------------------------------------------------------
+# ModelAvailabilityCache enumeration/probe-outcome storage
+# ---------------------------------------------------------------------------
+
+
+class TestModelAvailabilityCacheEnumeration:
+    def test_enumeration_round_trip(self) -> None:
+        from sova.llm.client import ModelAvailabilityCache
+        from sova.llm.models import CURATED_MODELS
+
+        cache = ModelAvailabilityCache()
+        assert cache.get_enumeration("id1") is None
+        cache.set_enumeration("id1", list(CURATED_MODELS))
+        assert cache.get_enumeration("id1") == list(CURATED_MODELS)
+
+    def test_enumeration_expires_after_its_own_ttl(self) -> None:
+        from sova.llm.client import ModelAvailabilityCache
+        from sova.llm.models import CURATED_MODELS
+
+        cache = ModelAvailabilityCache(enumeration_ttl_seconds=-1)
+        cache.set_enumeration("id1", list(CURATED_MODELS))
+        assert cache.get_enumeration("id1") is None
+
+    def test_probe_outcome_round_trip(self) -> None:
+        from sova.llm.client import ModelAvailabilityCache
+
+        cache = ModelAvailabilityCache()
+        assert cache.get_probe_outcome("id1", "model-a") is None
+        cache.set_probe_outcome("id1", "model-a", True)
+        assert cache.get_probe_outcome("id1", "model-a") is True
+        cache.set_probe_outcome("id1", "model-b", False)
+        assert cache.get_probe_outcome("id1", "model-b") is False
+
+    def test_probe_outcome_expires_after_its_own_ttl(self) -> None:
+        from sova.llm.client import ModelAvailabilityCache
+
+        cache = ModelAvailabilityCache(enumeration_ttl_seconds=-1)
+        cache.set_probe_outcome("id1", "model-a", True)
+        assert cache.get_probe_outcome("id1", "model-a") is None
+
+    def test_enumeration_ttl_is_independent_of_negative_cache_ttl(self) -> None:
+        """A new _ENUMERATION_TTL_SECONDS, separate from the reactive negative
+        cache's fast-expiry TTL: the two must never share a lifetime."""
+        from sova.llm.client import ModelAvailabilityCache
+
+        cache = ModelAvailabilityCache(ttl_seconds=-1, enumeration_ttl_seconds=10_000)
+        cache.mark_unavailable("id1", "model-a")
+        assert cache.is_unavailable("id1", "model-a") is False  # fast TTL already expired
+
+        cache.set_probe_outcome("id1", "model-a", True)
+        assert cache.get_probe_outcome("id1", "model-a") is True  # enumeration TTL still alive
+
+    def test_failed_probe_outcome_uses_the_short_negative_ttl(self) -> None:
+        """A whole-list probe wipeout makes cached_enumeration() serve curated
+        without caching it, precisely so the next call retries. Pinning the
+        negative probe answers for the long enumeration TTL would leave that
+        retry with nothing to re-probe, so failures expire on the short TTL."""
+        from sova.llm.client import ModelAvailabilityCache
+
+        cache = ModelAvailabilityCache(ttl_seconds=-1, enumeration_ttl_seconds=10_000)
+        cache.set_probe_outcome("id1", "works", True)
+        cache.set_probe_outcome("id1", "broken", False)
+
+        assert cache.get_probe_outcome("id1", "works") is True
+        assert cache.get_probe_outcome("id1", "broken") is None  # re-probed on the next pass
+
+    def test_enumeration_lock_is_stable_per_identity(self) -> None:
+        from sova.llm.client import ModelAvailabilityCache
+
+        cache = ModelAvailabilityCache()
+        lock1 = cache.enumeration_lock("id1")
+        lock2 = cache.enumeration_lock("id1")
+        lock3 = cache.enumeration_lock("id2")
+        assert lock1 is lock2
+        assert lock1 is not lock3
+
+    def test_reset_clears_enumeration_and_probe_state(self) -> None:
+        from sova.llm.client import ModelAvailabilityCache
+        from sova.llm.models import CURATED_MODELS
+
+        cache = ModelAvailabilityCache()
+        cache.set_enumeration("id1", list(CURATED_MODELS))
+        cache.set_probe_outcome("id1", "model-a", True)
+        cache.enumeration_lock("id1")
+
+        cache.reset()
+
+        assert cache.get_enumeration("id1") is None
+        assert cache.get_probe_outcome("id1", "model-a") is None
+
+    def test_get_enumeration_returns_a_copy(self) -> None:
+        """The cached list is handed straight to callers, so an in-place edit by
+        one caller must not corrupt every later read for the whole TTL."""
+        from sova.llm.client import ModelAvailabilityCache
+        from sova.llm.models import CURATED_MODELS
+
+        cache = ModelAvailabilityCache()
+        stored = list(CURATED_MODELS)
+        cache.set_enumeration("id1", stored)
+
+        stored.clear()  # the caller's own list must not reach into the cache
+        handed_out = cache.get_enumeration("id1")
+        assert handed_out == list(CURATED_MODELS)
+
+        handed_out.clear()  # nor must a mutation of what was handed out
+        assert cache.get_enumeration("id1") == list(CURATED_MODELS)
+
+
+# ---------------------------------------------------------------------------
+# VertexTokenProvider (sova/llm/gcp_auth.py)
+# ---------------------------------------------------------------------------
+
+
+class TestVertexTokenProvider:
+    async def test_import_error_when_google_auth_missing(self) -> None:
+        from sova.llm.gcp_auth import VertexTokenProvider
+
+        with patch.dict("sys.modules", {"google.auth": None, "google.auth.transport.requests": None}):
+            provider = VertexTokenProvider()
+            with pytest.raises(ImportError, match="google-auth"):
+                await provider.get_token()
+
+    @staticmethod
+    def _mocked_google_auth_modules(mock_google_auth: MagicMock) -> dict[str, MagicMock]:
+        """Build a sys.modules patch dict where attribute traversal (not just
+        the module cache) resolves correctly: ``import google.auth`` binds the
+        local name ``google`` to whatever sys.modules['google'] is, so the
+        ``.auth`` attribute on that object must be wired to the same mock
+        sys.modules['google.auth'] holds, not left to the real (auth-less)
+        namespace package or a second unrelated auto-generated MagicMock."""
+        mock_google = MagicMock()
+        mock_google.auth = mock_google_auth
+        return {
+            "google": mock_google,
+            "google.auth": mock_google_auth,
+            "google.auth.transport": mock_google_auth.transport,
+            "google.auth.transport.requests": mock_google_auth.transport.requests,
+        }
+
+    async def test_fetches_and_reuses_credentials(self) -> None:
+        from sova.llm.gcp_auth import VertexTokenProvider
+
+        mock_creds = MagicMock()
+        mock_creds.token = "tok-1"
+        mock_creds.expired = False
+
+        mock_google_auth = MagicMock()
+        mock_google_auth.default.return_value = (mock_creds, "proj")
+
+        with patch.dict("sys.modules", self._mocked_google_auth_modules(mock_google_auth)):
+            provider = VertexTokenProvider()
+            first = await provider.get_token()
+            second = await provider.get_token()
+
+        assert first == "tok-1"
+        assert second == "tok-1"
+        mock_google_auth.default.assert_called_once()  # credentials resolved once, then reused
+
+    async def test_refreshes_expired_credentials(self) -> None:
+        from sova.llm.gcp_auth import VertexTokenProvider
+
+        mock_creds = MagicMock()
+        mock_creds.token = ""
+        mock_creds.expired = True
+
+        def _refresh(request):
+            mock_creds.token = "refreshed-tok"
+            mock_creds.expired = False
+
+        mock_creds.refresh.side_effect = _refresh
+
+        mock_google_auth = MagicMock()
+        mock_google_auth.default.return_value = (mock_creds, "proj")
+
+        with patch.dict("sys.modules", self._mocked_google_auth_modules(mock_google_auth)):
+            provider = VertexTokenProvider()
+            token = await provider.get_token()
+
+        assert token == "refreshed-tok"
+        mock_creds.refresh.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# ClaudeCodeProvider.list_available_models()
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeCodeListAvailableModels:
+    @pytest.fixture(autouse=True)
+    def _reset_model_cache(self):
+        from sova.llm.client import reset_availability_cache
+
+        reset_availability_cache()
+        yield
+        reset_availability_cache()
+
+    @staticmethod
+    def _run_side_effect(available_ids: set[str] | None = None, logged_in: bool = True):
+        """Build an async run() replacement keyed off argv, not call order.
+
+        *available_ids*: None means every probed model succeeds; otherwise
+        only ids in the set report success.
+        """
+
+        async def _run(*args, **kwargs):
+            from sova.utils.shell import ShellResult
+
+            if "auth" in args:
+                if not logged_in:
+                    return ShellResult(returncode=0, stdout='{"loggedIn": false}', stderr="")
+                return ShellResult(
+                    returncode=0,
+                    stdout='{"loggedIn": true, "email": "dev@example.com", "subscriptionType": "max"}',
+                    stderr="",
+                )
+            if "--model" in args:
+                idx = args.index("--model")
+                model_id = args[idx + 1]
+                ok = available_ids is None or model_id in available_ids
+                return ShellResult(returncode=0 if ok else 1, stdout="{}", stderr="boom" if not ok else "")
+            return ShellResult(returncode=0, stdout="{}", stderr="")
+
+        return _run
+
+    async def test_allow_probe_false_returns_curated_without_running_anything(self) -> None:
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        mock_run = AsyncMock(side_effect=self._run_side_effect())
+        with patch("sova.llm.providers.claude_code.run", mock_run):
+            models = await ClaudeCodeProvider().list_available_models(allow_probe=False)
+
+        assert models == list(CURATED_MODELS)
+        assert mock_run.await_count == 0
+
+    async def test_not_authenticated_returns_curated_and_spends_no_probe_calls(self) -> None:
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        mock_run = AsyncMock(side_effect=self._run_side_effect(logged_in=False))
+        with patch("sova.llm.providers.claude_code.run", mock_run):
+            models = await ClaudeCodeProvider().list_available_models()
+
+        assert models == list(CURATED_MODELS)
+        assert mock_run.await_count == 1  # only the auth probe; never spent on model probes
+
+    async def test_authenticated_returns_only_working_models(self) -> None:
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        mock_run = AsyncMock(side_effect=self._run_side_effect(available_ids={"claude-opus-5", "claude-sonnet-5"}))
+        with patch("sova.llm.providers.claude_code.run", mock_run):
+            models = await ClaudeCodeProvider().list_available_models()
+
+        assert {m.id for m in models} == {"claude-opus-5", "claude-sonnet-5"}
+        assert all(m.source == "probed" for m in models)
+        assert mock_run.await_count == 1 + len(CURATED_MODELS)
+
+    async def test_probe_results_are_cached_across_calls(self) -> None:
+        """get_auth_details() re-probes auth on every call (it is a cheap local
+        read, not a billed network probe), but the identity it resolves to is
+        unchanged, so the per-model probe pass itself must not repeat."""
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        mock_run = AsyncMock(side_effect=self._run_side_effect())
+        with patch("sova.llm.providers.claude_code.run", mock_run):
+            provider = ClaudeCodeProvider()
+            first = await provider.list_available_models()
+            calls_after_first = mock_run.await_count
+            second = await provider.list_available_models()
+
+        assert first == second
+        assert calls_after_first == 1 + len(CURATED_MODELS)
+        assert mock_run.await_count == calls_after_first + 1  # +1 auth re-probe; no new model probes
+
+    async def test_concurrent_calls_single_flight(self) -> None:
+        """Two concurrent callers on the same identity trigger one model-probe
+        pass: each call independently re-probes auth to resolve its identity
+        (cheap, local, not single-flighted), but once both resolve to the same
+        identity, the per-model probing itself happens exactly once."""
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        call_count = 0
+        model_probe_count = 0
+        inner = self._run_side_effect()
+
+        async def _counting_run(*args, **kwargs):
+            nonlocal call_count, model_probe_count
+            call_count += 1
+            if "--model" in args:
+                model_probe_count += 1
+            await asyncio.sleep(0.01)
+            return await inner(*args, **kwargs)
+
+        with patch("sova.llm.providers.claude_code.run", _counting_run):
+            provider = ClaudeCodeProvider()
+            first, second = await asyncio.gather(
+                provider.list_available_models(),
+                provider.list_available_models(),
+            )
+
+        assert first == second
+        assert model_probe_count == len(CURATED_MODELS)  # single-flighted, not doubled
+        assert call_count == 2 + len(CURATED_MODELS)  # 2 independent auth probes + 1 model-probe pass
+
+    async def test_probe_subprocess_oserror_marks_only_that_model_unavailable(self) -> None:
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        async def _flaky_run(*args, **kwargs):
+            if "auth" in args:
+                return ShellResult(
+                    returncode=0,
+                    stdout='{"loggedIn": true, "email": "dev@example.com"}',
+                    stderr="",
+                )
+            if "--model" in args:
+                idx = args.index("--model")
+                if args[idx + 1] == "claude-opus-5":
+                    raise OSError("claude binary vanished")
+                return ShellResult(returncode=0, stdout="{}", stderr="")
+            return ShellResult(returncode=0, stdout="{}", stderr="")
+
+        with patch("sova.llm.providers.claude_code.run", _flaky_run):
+            models = await ClaudeCodeProvider().list_available_models()
+
+        assert "claude-opus-5" not in {m.id for m in models}
+        assert len(models) == len(CURATED_MODELS) - 1
+
+    async def test_different_accounts_get_independent_probed_sets(self) -> None:
+        """Identity is scoped by account email, so two ClaudeCodeProvider
+        instances logged in as different accounts never share a probed set."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        async def _run_for(email: str, working_id: str):
+            async def _run(*args, **kwargs):
+                if "auth" in args:
+                    return ShellResult(
+                        returncode=0,
+                        stdout=f'{{"loggedIn": true, "email": "{email}"}}',
+                        stderr="",
+                    )
+                idx = args.index("--model")
+                ok = args[idx + 1] == working_id
+                # A real unavailable-model failure carries stderr (or an
+                # is_error payload); a nonzero exit with clean JSON and empty
+                # stderr is what invoke() itself treats as a success, so
+                # simulating failure that way would not be a failure at all.
+                return ShellResult(returncode=0 if ok else 1, stdout="{}", stderr="" if ok else "model not found")
+
+            return _run
+
+        with patch("sova.llm.providers.claude_code.run", await _run_for("a@example.com", "claude-opus-5")):
+            models_a = await ClaudeCodeProvider().list_available_models()
+
+        with patch("sova.llm.providers.claude_code.run", await _run_for("b@example.com", "claude-sonnet-5")):
+            models_b = await ClaudeCodeProvider().list_available_models()
+
+        assert {m.id for m in models_a} == {"claude-opus-5"}
+        assert {m.id for m in models_b} == {"claude-sonnet-5"}
+
+    async def test_every_probe_failing_returns_curated_and_is_not_cached(self) -> None:
+        """A whole-list wipeout is a CLI/account outage, not "this account can
+        reach no models", so curated is served and never cached as empty."""
+        from sova.llm.client import get_availability_cache
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.claude_code import ClaudeCodeProvider, _claude_code_enumeration_identity
+
+        mock_run = AsyncMock(side_effect=self._run_side_effect(available_ids=set()))
+        with patch("sova.llm.providers.claude_code.run", mock_run):
+            models = await ClaudeCodeProvider().list_available_models()
+
+        identity = _claude_code_enumeration_identity({"email": "dev@example.com"})
+        assert models == list(CURATED_MODELS)
+        assert get_availability_cache().get_enumeration(identity) is None
+
+    async def test_probe_accepts_nonzero_exit_with_clean_json(self) -> None:
+        """invoke() treats a nonzero exit that still produced a clean JSON
+        result as success (fallback warnings do this), so a probe that rejected
+        it would drop a model invoke() would have used."""
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        async def _run(*args, **kwargs):
+            if "auth" in args:
+                return ShellResult(returncode=0, stdout='{"loggedIn": true, "email": "dev@example.com"}', stderr="")
+            return ShellResult(returncode=1, stdout='{"result": "hi", "total_cost_usd": 0}', stderr="")
+
+        with patch("sova.llm.providers.claude_code.run", _run):
+            models = await ClaudeCodeProvider().list_available_models()
+
+        assert {m.id for m in models} == {m.id for m in CURATED_MODELS}
+
+    async def test_probe_rejects_nonzero_exit_reporting_is_error(self) -> None:
+        from sova.llm.models import CURATED_MODELS
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        async def _run(*args, **kwargs):
+            if "auth" in args:
+                return ShellResult(returncode=0, stdout='{"loggedIn": true, "email": "dev@example.com"}', stderr="")
+            return ShellResult(returncode=1, stdout='{"is_error": true}', stderr="")
+
+        with patch("sova.llm.providers.claude_code.run", _run):
+            models = await ClaudeCodeProvider().list_available_models()
+
+        assert models == list(CURATED_MODELS)  # no model confirmed, so the fallback is served
+
+    async def test_account_switch_after_check_available_uses_fresh_identity(self) -> None:
+        """list_available_models() must not serve get_auth_details()'s cached
+        _last_auth_probe: that cache reflects whatever account check_available()
+        last saw on this instance, and can go stale the moment the CLI account
+        is switched afterward. Enumeration has to key its cache (and store any
+        probe results) under the account that is active right now, not a
+        possibly-stale prior identity, or it can return (or populate) the
+        previous account's catalog under the current one's name."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider, _claude_code_enumeration_identity
+        from sova.utils.shell import ShellResult
+
+        current_email = "a@example.com"
+
+        async def _run(*args, **kwargs):
+            if "--version" in args:
+                return ShellResult(returncode=0, stdout="2.1.259\n", stderr="")
+            if "auth" in args:
+                return ShellResult(returncode=0, stdout=f'{{"loggedIn": true, "email": "{current_email}"}}', stderr="")
+            if "--model" in args:
+                idx = args.index("--model")
+                model_id = args[idx + 1]
+                ok = model_id == "claude-opus-5"
+                return ShellResult(returncode=0 if ok else 1, stdout="{}", stderr="" if ok else "boom")
+            return ShellResult(returncode=0, stdout="{}", stderr="")
+
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("sova.llm.providers.claude_code.run", _run),
+        ):
+            provider = ClaudeCodeProvider()
+            await provider.check_available()  # caches _last_auth_probe for a@example.com
+
+            current_email = "b@example.com"  # the CLI account changes underneath the same instance
+            models = await provider.list_available_models()
+
+        identity_a = _claude_code_enumeration_identity({"email": "a@example.com"})
+        identity_b = _claude_code_enumeration_identity({"email": "b@example.com"})
+        assert {m.id for m in models} == {"claude-opus-5"}
+
+        from sova.llm.client import get_availability_cache
+
+        assert get_availability_cache().get_enumeration(identity_b) is not None
+        assert get_availability_cache().get_enumeration(identity_a) is None
+
+    async def test_probe_model_launch_isolates_workspace_configuration(self) -> None:
+        """_probe_model() must run in a launch configuration that cannot load
+        project hooks, MCP servers, or CLAUDE.md, and cannot execute tools:
+        bypassPermissions mode would otherwise let a contributor-controlled
+        repository run arbitrary commands merely by being probed for model
+        availability."""
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        captured_args: list[tuple] = []
+
+        async def _run(*args, **kwargs):
+            captured_args.append(args)
+            if "auth" in args:
+                return ShellResult(returncode=0, stdout='{"loggedIn": true, "email": "dev@example.com"}', stderr="")
+            return ShellResult(returncode=0, stdout="{}", stderr="")
+
+        with patch("sova.llm.providers.claude_code.run", _run):
+            await ClaudeCodeProvider().list_available_models()
+
+        model_probe_calls = [args for args in captured_args if "--model" in args]
+        assert model_probe_calls, "expected at least one per-model probe call"
+        for args in model_probe_calls:
+            assert "--safe-mode" in args
+            tools_idx = args.index("--tools")
+            assert args[tools_idx + 1] == ""

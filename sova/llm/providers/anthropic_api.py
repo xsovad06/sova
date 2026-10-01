@@ -8,14 +8,25 @@ Uses the ``anthropic`` SDK as an optional dependency::
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 
+from sova.llm.client import cached_enumeration
 from sova.llm.errors import classify_exception
-from sova.llm.models import LLMResult, StreamEvent, compute_anthropic_cost, resolve_model_alias
+from sova.llm.models import (
+    CURATED_MODELS,
+    LLMResult,
+    ModelInfo,
+    StreamEvent,
+    classify_model_family,
+    compute_anthropic_cost,
+    model_tier_for_id,
+    resolve_model_alias,
+)
 from sova.llm.provider import LLMProvider, ProviderCapabilities, _measure_ms
 from sova.utils.logging import get_logger
 
@@ -35,6 +46,18 @@ _DEFAULT_MAX_TOKENS = 4096
 def _check_anthropic() -> None:
     if not _HAS_ANTHROPIC:
         raise ImportError("anthropic is not installed. Install it with: pip install sova[anthropic]")
+
+
+def _anthropic_api_enumeration_identity(api_key: str) -> str:
+    """Return the enumeration cache key for a configured API key.
+
+    A SHA-256 fingerprint, not any slice of the key itself: this identity is
+    only ever used as an in-memory dict key, but credential-handling code
+    should never carry a partial secret regardless of whether anything reads
+    it, matching _sanitize_error()'s never-leaks-the-key contract below.
+    """
+    fingerprint = hashlib.sha256(api_key.encode()).hexdigest()[:12]
+    return f"anthropic-api:{fingerprint}"
 
 
 def _sanitize_error(exc: Exception, api_key: str = "") -> str:
@@ -113,6 +136,51 @@ class AnthropicAPIProvider(LLMProvider):
 
     def normalize_model_name(self, model: str) -> str:
         return resolve_model_alias(model)
+
+    async def list_available_models(self, *, allow_probe: bool = True) -> list[ModelInfo]:
+        """Enumerate models via the SDK's ``models.list()``.
+
+        Falls back to the curated static list on every failure path (SDK
+        missing, no key configured, the API call itself failing) and never
+        raises: enumeration is advisory, not a hard dependency.
+        """
+        if not allow_probe or not _HAS_ANTHROPIC:
+            return list(CURATED_MODELS)
+
+        key = self._resolve_api_key()
+        if not key:
+            return list(CURATED_MODELS)
+
+        return await cached_enumeration(_anthropic_api_enumeration_identity(key), self._fetch_sdk_models)
+
+    async def _fetch_sdk_models(self) -> list[ModelInfo] | None:
+        """Return the SDK's model list, or None when it yields nothing usable.
+
+        ``None`` (rather than the curated list) so ``cached_enumeration()``
+        serves the fallback without caching it: a transient SDK failure must
+        not pin the static list for the whole enumeration TTL. An empty
+        catalog is reported the same way, matching the other two providers'
+        outage handling: an account that can authenticate but lists no model
+        at all is a service-side anomaly, not a fact worth caching as this
+        deployment's answer for the next 30 minutes.
+        """
+        try:
+            client = await self._get_client()
+            response = await client.models.list()
+            models = [
+                ModelInfo(
+                    id=m.id,
+                    family=classify_model_family(m.id),
+                    tier=model_tier_for_id(m.id),
+                    display_name=getattr(m, "display_name", "") or m.id,
+                    source="anthropic_api",
+                )
+                async for m in response
+            ]
+            return models or None
+        except Exception:  # noqa: BLE001 (enumeration is advisory; any SDK failure falls back to curated)
+            log.debug("anthropic_api.list_models_failed", exc_info=True)
+            return None
 
     async def invoke(
         self,
@@ -301,9 +369,15 @@ class AnthropicAPIProvider(LLMProvider):
         # tracked per-model rather than assumed reliable. There is no CLI
         # --max-budget-usd equivalent for a raw API call, and no CLI process
         # to hand a --fallback-model to.
+        # dynamic_models=True: list_available_models() reads the account's real
+        # catalog through the SDK's models.list(), so a model released after
+        # this code shipped is reported without a code change. That is exactly
+        # the "open-ended model enumeration" the flag describes, and leaving it
+        # False would make a caller that gates on it skip the most accurate
+        # enumeration source of the three providers.
         return ProviderCapabilities(
             supports_cli_fallback=False,
             supports_budget_cap=False,
             reports_cost=False,
-            dynamic_models=False,
+            dynamic_models=True,
         )

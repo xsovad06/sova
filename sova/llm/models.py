@@ -7,6 +7,46 @@ from decimal import Decimal
 from enum import StrEnum
 
 
+class ModelFamily(StrEnum):
+    """Vendor family a model ID belongs to, for enumeration/UI grouping.
+
+    ``OPENAI_OSS`` is deliberately distinct from ``OPENAI``: a Vertex AI
+    deployment's ``openai`` publisher only ever serves ``gpt-oss*`` (open
+    weights), never proprietary GPT/o-series models, and collapsing the two
+    would let enumeration results imply access to models the deployment does
+    not actually grant. ``LOCAL`` covers Ollama-served and other self-hosted
+    models. ``UNKNOWN`` is the conservative default for an ID that matches no
+    recognized prefix: the model still exists and must not be dropped from
+    results, it is just unclassified.
+    """
+
+    ANTHROPIC = "anthropic"
+    GOOGLE = "google"
+    OPENAI = "openai"
+    OPENAI_OSS = "openai-oss"
+    LOCAL = "local"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    """A single model a provider knows how to reach.
+
+    ``tier`` reuses this codebase's generic tier vocabulary (``fast``,
+    ``smart``, ``cheap``, the keys of ``_MODEL_ALIASES``/``model_aliases``),
+    or ``""`` when a model does not map to one. ``source`` names where the
+    entry came from (e.g. ``"curated"``, ``"probed"``, ``"anthropic_api"``,
+    ``"vertex"``, ``"ollama"``, ``"openai_compatible"``), so a caller can tell
+    a confirmed-reachable entry from a static fallback one.
+    """
+
+    id: str
+    family: ModelFamily
+    tier: str
+    display_name: str
+    source: str
+
+
 class BatchTimeoutError(Exception):
     """Raised when a batch does not complete within the timeout."""
 
@@ -141,6 +181,69 @@ def resolve_model_alias(model: str) -> str:
     the Claude CLI (which resolves aliases itself) must run it through here.
     """
     return _ALIAS_TO_CURRENT_MODEL.get(model, model)
+
+
+# Generic (capability) tiers, as opposed to the family aliases (opus/sonnet/haiku)
+# that share _ALIAS_TO_CURRENT_MODEL with them.
+_GENERIC_TIERS: tuple[str, ...] = ("smart", "fast", "cheap")
+
+# Derived from _ALIAS_TO_CURRENT_MODEL rather than restated, so a curated or
+# enumerated model ID reports its generic tier and a model-ID revision above
+# cannot leave a hand-maintained reverse map silently stale.
+_TIER_BY_MODEL_ID: dict[str, str] = {_ALIAS_TO_CURRENT_MODEL[tier]: tier for tier in _GENERIC_TIERS}
+
+
+def model_tier_for_id(model_id: str) -> str:
+    """Return the generic tier (fast/smart/cheap) for a known model ID, or ""."""
+    return _TIER_BY_MODEL_ID.get(model_id, "")
+
+
+def classify_model_family(model_id: str) -> ModelFamily:
+    """Classify a model ID into a vendor family by ID prefix.
+
+    Checked in a specific order: "gpt-oss" before the broader "gpt-" (Vertex's
+    openai publisher serves open-weight gpt-oss models only, never proprietary
+    GPT/o-series, so the two must never collapse to the same family), and
+    local-backend prefixes before anything else since "ollama/llama3" carries
+    no vendor-name prefix of its own. Returns ModelFamily.UNKNOWN rather than
+    raising or dropping the model: an unrecognized ID is still a real model.
+    """
+    lowered = model_id.lower()
+    if is_local_model_id(lowered):
+        return ModelFamily.LOCAL
+    if lowered.startswith("gpt-oss"):
+        return ModelFamily.OPENAI_OSS
+    if lowered.startswith("claude"):
+        return ModelFamily.ANTHROPIC
+    if lowered.startswith("gemini"):
+        return ModelFamily.GOOGLE
+    if lowered.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+        return ModelFamily.OPENAI
+    return ModelFamily.UNKNOWN
+
+
+# The ABC's concrete default and every provider's "enumeration unavailable"
+# fallback. Limited to the current-release Anthropic family (matching
+# _ALIAS_TO_CURRENT_MODEL): this is a safety net for callers that cannot
+# reach a real enumeration source, not a full model catalog.
+# Tiers come from model_tier_for_id() rather than being restated per entry, so
+# a model-ID revision in _ALIAS_TO_CURRENT_MODEL cannot leave a curated entry
+# advertising a tier it no longer holds.
+CURATED_MODELS: tuple[ModelInfo, ...] = tuple(
+    ModelInfo(
+        id=model_id,
+        family=ModelFamily.ANTHROPIC,
+        tier=model_tier_for_id(model_id),
+        display_name=display_name,
+        source="curated",
+    )
+    for model_id, display_name in (
+        ("claude-opus-5", "Claude Opus 5"),
+        ("claude-sonnet-5", "Claude Sonnet 5"),
+        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+        ("claude-fable-5-1", "Claude Fable 5.1"),
+    )
+)
 
 
 def compute_anthropic_cost(

@@ -6,6 +6,7 @@ import asyncio
 import json
 import shutil
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -13,9 +14,10 @@ from pathlib import Path
 # tests/test_llm.py and tests/test_model_fallback_cli.py.
 from sova.llm.cli_args import build_claude_cli_args as _build_args
 from sova.llm.cli_args import write_system_prompt_file
+from sova.llm.client import cached_enumeration, get_availability_cache
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import LLMInvocationError, classify_error
-from sova.llm.models import CostSource, LLMResult, StreamEvent
+from sova.llm.models import CURATED_MODELS, CostSource, LLMResult, ModelInfo, StreamEvent
 from sova.llm.provider import LLMProvider, ProviderCapabilities
 from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
@@ -25,6 +27,11 @@ log = get_logger(component="llm.provider.claude_code")
 
 # Auth status is a local keychain read; a slow one means something is wrong.
 _AUTH_CHECK_TIMEOUT = 15.0
+
+# A probe is a real (minimal) LLM turn, not a local status read, so it gets a
+# longer allowance than _AUTH_CHECK_TIMEOUT, but still short enough that a
+# hung model never stalls enumeration for long.
+_MODEL_PROBE_TIMEOUT = 20.0
 
 # Generic tier -> Claude model ID mapping
 _MODEL_ALIASES: dict[str, str] = {
@@ -94,28 +101,27 @@ class ClaudeCodeProvider(LLMProvider):
                 system_prompt_path.unlink(missing_ok=True)
 
         # Try to parse output first - Claude CLI may exit 1 for fallback warnings
-        # but still produce valid JSON output. Only attempt this when stderr is empty
-        # (if stderr has content, it's a real error and we should raise).
-        if result.stdout.strip() and not result.success and not result.stderr.strip():
+        # but still produce valid JSON output.
+        partial = _partial_success_payload(result)
+        if partial is not None:
             try:
-                data = json.loads(result.stdout)
-                if not data.get("is_error") and not data.get("terminal_reason"):
-                    parsed = _parse_result(data)
-                    log.warning(
-                        "llm.invoke.exit_code_nonzero_but_output_valid",
-                        exit_code=result.returncode,
-                    )
-                    log.info(
-                        "llm.invoke.completed",
-                        model=parsed.model or model,
-                        cost_usd=str(parsed.cost_usd),
-                        input_tokens=parsed.input_tokens,
-                        output_tokens=parsed.output_tokens,
-                        duration_ms=parsed.duration_ms,
-                    )
-                    return parsed
-            except (json.JSONDecodeError, RuntimeError, KeyError):
-                pass
+                parsed = _parse_result(partial)
+            except (RuntimeError, KeyError):
+                parsed = None
+            if parsed is not None:
+                log.warning(
+                    "llm.invoke.exit_code_nonzero_but_output_valid",
+                    exit_code=result.returncode,
+                )
+                log.info(
+                    "llm.invoke.completed",
+                    model=parsed.model or model,
+                    cost_usd=str(parsed.cost_usd),
+                    input_tokens=parsed.input_tokens,
+                    output_tokens=parsed.output_tokens,
+                    duration_ms=parsed.duration_ms,
+                )
+                return parsed
 
         # Handle normal success case
         if result.success and result.stdout.strip():
@@ -207,6 +213,32 @@ class ClaudeCodeProvider(LLMProvider):
     def normalize_model_name(self, model: str) -> str:
         return _MODEL_ALIASES.get(model, model)
 
+    async def list_available_models(self, *, allow_probe: bool = True) -> list[ModelInfo]:
+        """Probe the curated candidate list and return the ones that actually work.
+
+        There is no free model-listing endpoint on the CLI, so the only way to
+        learn the account's working model set is a minimal ``claude -p`` turn
+        per candidate. That cost is bounded: at most one probe per
+        ``(identity, model)`` per process (cached), only over the curated
+        list, only when ``allow_probe`` is True, and skipped entirely when the
+        account is not authenticated.
+        """
+        if not allow_probe:
+            return list(CURATED_MODELS)
+
+        # Probed fresh rather than via get_auth_details(): that method reuses
+        # whatever check_available() last cached on this instance, which can
+        # be stale if the CLI account was switched afterward. Enumeration
+        # must key its cache (and its probe results) off the account that is
+        # actually active right now, not a possibly-stale prior identity, so
+        # it never stores or serves another account's catalog.
+        auth = await _probe_auth()
+        if auth is None or auth.get("loggedIn") is not True:
+            return list(CURATED_MODELS)
+
+        identity = _claude_code_enumeration_identity(auth)
+        return await cached_enumeration(identity, lambda: _probe_curated_models(identity))
+
     async def check_available(self) -> tuple[bool, str]:
         # Cleared unconditionally, including every early-return path below, so
         # a later failing call always invalidates a cached successful probe
@@ -287,6 +319,107 @@ async def _probe_auth() -> dict | None:
     except (json.JSONDecodeError, ValueError):
         return None
     if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _claude_code_enumeration_identity(auth: dict) -> str:
+    """Return the enumeration cache key for an authenticated account.
+
+    Scoped by email (not the whole auth payload) so two deployments logged in
+    as different accounts in the same process never share a probed model set.
+    """
+    email = str(auth.get("email") or "").strip()
+    return f"claude-code:{email or 'unknown'}"
+
+
+async def _probe_model(model_id: str) -> bool:
+    """Run a minimal claude -p turn with *model_id* and report whether it worked.
+
+    A timeout (run() returns ShellResult(timed_out=True) rather than raising)
+    or a nonzero exit both count as unavailable for this model only. An
+    OSError (the CLI binary disappearing mid-process) is caught here rather
+    than propagated, matching _probe_auth()'s fail-open contract.
+
+    "Worked" is resolved through the same _partial_success_payload() guard
+    invoke() uses, not a bare exit-code check: the CLI exits nonzero on a
+    fallback warning while still emitting a clean JSON result, and a probe
+    stricter than the call path it predicts would drop a model invoke() would
+    have accepted.
+
+    Isolated from workspace configuration: ``--safe-mode`` disables CLAUDE.md
+    auto-discovery, hooks, MCP servers, and custom commands/agents for this
+    one invocation (auth, model selection, and permissions still work
+    normally, unlike ``--bare``, which additionally forces API-key-only auth
+    and would break subscription/OAuth accounts), and ``--tools ""`` disables
+    every built-in tool. Without both, a repository under enumeration (e.g.
+    a fork PR's contributor-controlled worktree) could execute commands with
+    the authenticated user's privileges merely by being probed for model
+    availability, since bypassPermissions mode otherwise loads whatever
+    project hooks and MCP config sit in the inherited cwd.
+    """
+    try:
+        result = await run(
+            *_build_args(model=model_id, output_format="json"),
+            "--safe-mode",
+            "--tools",
+            "",
+            timeout=_MODEL_PROBE_TIMEOUT,
+            env=scrub_agent_env(passthrough=configured_passthrough()),
+            stdin="hi",
+        )
+    except OSError:
+        log.debug("llm.model_probe.failed", model=model_id, exc_info=True)
+        return False
+    return result.success or _partial_success_payload(result) is not None
+
+
+async def _probe_curated_models(identity: str) -> list[ModelInfo] | None:
+    """Probe every curated candidate on *identity* and return the working ones.
+
+    Per-model outcomes are cached separately from the whole-list result, so a
+    later enumeration after the list TTL expires re-uses the probe answers
+    instead of paying for another full pass.
+
+    Returns ``None``, never ``[]``, when no candidate worked: a whole-list
+    wipeout is an account- or CLI-level outage rather than a real "this
+    account can reach no models" fact, and caching it would leave every
+    caller with an empty model list for the full enumeration TTL.
+    ``cached_enumeration()`` turns ``None`` into the curated fallback without
+    caching it, matching _enumerate_all_backends()'s handling of the same case.
+    """
+    cache = get_availability_cache()
+    working: list[ModelInfo] = []
+    for candidate in CURATED_MODELS:
+        outcome = cache.get_probe_outcome(identity, candidate.id)
+        if outcome is None:
+            outcome = await _probe_model(candidate.id)
+            cache.set_probe_outcome(identity, candidate.id, outcome)
+        if outcome:
+            working.append(replace(candidate, source="probed"))
+    return working or None
+
+
+def _partial_success_payload(result: ShellResult) -> dict | None:
+    """Return the JSON payload of a nonzero exit that still succeeded, else None.
+
+    The Claude CLI exits nonzero for incidental conditions (a fallback
+    warning) while still writing a complete, non-error JSON result to stdout,
+    so a bare exit-code check would discard a usable turn. Only stdout that is
+    a JSON *object* qualifies: ``json.loads`` accepts a bare scalar or array
+    too, and calling ``.get()`` on one raises an AttributeError that no caller
+    here guards against.
+
+    Shared by invoke() and _probe_model() so the probe cannot end up stricter
+    than the invocation path whose behavior it is meant to predict.
+    """
+    if result.success or not result.stdout.strip() or result.stderr.strip():
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:  # JSONDecodeError subclasses ValueError
+        return None
+    if not isinstance(data, dict) or data.get("is_error") or data.get("terminal_reason"):
         return None
     return data
 

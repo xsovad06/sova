@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 import httpx
 
+from sova.llm.gcp_auth import VertexTokenProvider
 from sova.llm.models import (
     BatchRequest,
     BatchResult,
@@ -65,7 +66,7 @@ class BatchProvider(LLMProvider):
         self._region = region
         self._gcs_bucket = gcs_bucket
         self._gcs_prefix = gcs_prefix
-        self._credentials: object | None = None
+        self._vertex_token_provider = VertexTokenProvider()
         # Warn once per model per provider instance: a batch can hold thousands
         # of items, and one line per item would bury the signal it is meant to
         # raise. Scoped to the instance (not module-level) so it is reset by
@@ -167,21 +168,11 @@ class BatchProvider(LLMProvider):
 
     async def _get_vertex_token(self) -> str:
         try:
-            import google.auth
-            import google.auth.transport.requests
+            return await self._vertex_token_provider.get_token()
         except ImportError:
             raise ImportError(
                 "google-auth is required for the Vertex AI batch backend. Install it with: pip install google-auth"
             ) from None
-
-        if self._credentials is None:
-            self._credentials, _ = await asyncio.to_thread(google.auth.default)
-
-        creds = self._credentials
-        if not getattr(creds, "token", "") or getattr(creds, "expired", False):
-            await asyncio.to_thread(creds.refresh, google.auth.transport.requests.Request())
-
-        return str(creds.token)
 
     async def _gcs_upload(self, client: httpx.AsyncClient, token: str, name: str, content: str) -> None:
         url = f"https://storage.googleapis.com/upload/storage/v1/b/{self._gcs_bucket}/o"

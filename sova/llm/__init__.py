@@ -29,7 +29,7 @@ from sova.llm.errors import (
     resolve_error_category,
 )
 from sova.llm.guard import PromptInjectionError, ScanResult, scan_prompt
-from sova.llm.models import BatchRequest, BatchResult, BatchTimeoutError, LLMResult, StreamEvent
+from sova.llm.models import BatchRequest, BatchResult, BatchTimeoutError, LLMResult, ModelFamily, ModelInfo, StreamEvent
 from sova.llm.provider import LLMProvider, ProviderCapabilities, create_provider
 from sova.llm.routing import TASK_TYPE_KEYS, route_model
 
@@ -44,6 +44,8 @@ __all__ = [
     "LLMProvider",
     "LLMResult",
     "LLMTimeoutError",
+    "ModelFamily",
+    "ModelInfo",
     "ModelUnavailableError",
     "PromptInjectionError",
     "ProviderCapabilities",
