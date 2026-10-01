@@ -173,7 +173,29 @@ _REGISTRY: list[SettingMeta] = [
         "llm.model_aliases",
         "Model aliases",
         "Maps generic model names (opus/sonnet/fast/smart) to the model IDs this deployment "
-        "serves. Applied client-side before the model reaches the provider; empty means no aliasing",
+        "serves. Applied client-side before the model reaches the provider; empty means no aliasing. "
+        "A key may also be scoped to a specific backend as '{backend}:{alias}' (backend one of "
+        "firstparty/vertex/bedrock/litellm, e.g. 'vertex:sonnet'), which is tried before the bare "
+        "key and ignored entirely when the detected backend does not match",
+        "llm",
+        "object",
+    ),
+    SettingMeta(
+        "llm.resolve_tier_aliases",
+        "Resolve tier aliases per backend",
+        "Fall through to a backend-servable model ID when a generic tier name (opus/sonnet/"
+        "haiku/fast/smart/cheap) can't be served by the detected backend (e.g. Vertex/Bedrock "
+        "via CLAUDE_CODE_USE_VERTEX/CLAUDE_CODE_USE_BEDROCK). Off restores byte-identical "
+        "passthrough resolution",
+        "llm",
+        "boolean",
+    ),
+    SettingMeta(
+        "llm.tier_candidates",
+        "Tier candidate overrides",
+        "Per-deployment override of the built-in tier candidate table. Keyed "
+        "'{backend}:{tier}' (e.g. 'vertex:opus'), value a JSON array or comma-separated "
+        "ordered list of model IDs. Empty uses the built-in table",
         "llm",
         "object",
     ),

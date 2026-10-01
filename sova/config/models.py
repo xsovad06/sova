@@ -101,6 +101,23 @@ class LLMConfig(BaseSettings):
     # never inside a provider's own normalize_model_name. Empty default
     # reproduces today's resolution exactly.
     model_aliases: dict[str, str] = Field(default_factory=dict)
+    # Backend-aware safety net for the six generic tier names (opus/sonnet/
+    # haiku/fast/smart/cheap), and for a pinned candidate ID reached directly:
+    # when the resolved value can't be served by the detected backend (e.g. a
+    # bare tier name sent to Vertex/Bedrock via CLAUDE_CODE_USE_VERTEX/
+    # CLAUDE_CODE_USE_BEDROCK, or a stale pinned ID left over from a backend
+    # switch), it is corrected to a servable one: sova/llm/backends.py's
+    # built-in candidate table on Vertex/Bedrock, or sova/llm/models.py's
+    # subscription-valid mapping on firstParty (so SOVA resolves a bare tier
+    # name itself rather than leaving it for the Claude CLI). Set False to
+    # restore byte-identical passthrough resolution.
+    resolve_tier_aliases: bool = True
+    # Per-deployment override of the built-in Vertex/Bedrock tier candidate
+    # table. Keyed "{backend}:{tier}" (backend one of firstparty/vertex/
+    # bedrock/litellm, tier one of the six generic names); value a JSON array
+    # or comma-separated ordered list of model IDs. Empty default uses the
+    # built-in table.
+    tier_candidates: dict[str, str] = Field(default_factory=dict)
     batch_eligible_tasks: list[str] = Field(default_factory=lambda: ["triage", "triage_enrich"])
     batch_gcs_bucket: str = ""
     batch_gcs_prefix: str = "sova-batch"

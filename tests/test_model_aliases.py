@@ -14,15 +14,36 @@ no-opping at a call site that forwards a hand-picked kwarg subset
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
 from sova.llm import client
-from sova.llm.models import LLMResult, StreamEvent
+from sova.llm.backends import Backend, tier_candidates_for
+from sova.llm.models import LLMResult, StreamEvent, resolve_model_alias
 
 _ALIASES = {"smart": "ollama/llama3.1:70b"}
+
+
+@contextmanager
+def _routed_via(var_name: str, value: str = "1"):
+    """Simulate a deployment with env-based Vertex/Bedrock routing for the Claude CLI.
+
+    ``resolve_alias()`` detects the backend from the environment a spawned
+    Claude CLI child would actually see, not this (test) process's own raw
+    ``os.environ``: ``CLAUDE_CODE_USE_VERTEX``/``CLAUDE_CODE_USE_BEDROCK`` are
+    stripped from a spawned child unless ``agent.env_passthrough`` opts them
+    back in (``sova/utils/env.py``). A deployment that genuinely routes
+    through Vertex/Bedrock via these vars must configure that passthrough, so
+    tests simulate that configuration rather than only setting the raw var.
+    """
+    with (
+        patch.dict("os.environ", {var_name: value}, clear=True),
+        patch("sova.utils.env.configured_passthrough", return_value=(var_name,)),
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -86,21 +107,266 @@ class TestSelectModel:
         assert client.select_model("b", cfg) == "a"
 
 
+def _llm_cfg(aliases: dict[str, str] | None = None, **kwargs) -> LLMConfig:
+    """The whole ``llm`` section, on the permissive LiteLLM backend by default."""
+    return LLMConfig(provider="litellm", model="claude-sonnet-4-6", model_aliases=aliases or {}, **kwargs)
+
+
 class TestResolveAlias:
-    """The raw-dict helper ``select_model`` and ``create_provider`` both build on."""
+    """The backend-aware helper ``select_model`` and ``create_provider`` both build on."""
 
     def test_mapped_name_resolves(self) -> None:
-        assert client.resolve_alias("smart", _ALIASES) == "ollama/llama3.1:70b"
+        assert client.resolve_alias("smart", _llm_cfg(_ALIASES)) == "ollama/llama3.1:70b"
 
     def test_unmapped_name_passes_through(self) -> None:
-        assert client.resolve_alias("opus", _ALIASES) == "opus"
+        assert client.resolve_alias("opus", _llm_cfg(_ALIASES)) == "opus"
 
     def test_self_mapping_is_a_no_op(self) -> None:
-        assert client.resolve_alias("opus", {"opus": "opus"}) == "opus"
+        assert client.resolve_alias("opus", _llm_cfg({"opus": "opus"})) == "opus"
 
     def test_falsy_but_not_none_target_is_returned(self) -> None:
         """An alias resolving to '' is a legitimate resolution, not 'unmapped'."""
-        assert client.resolve_alias("foo", {"foo": ""}) == ""
+        assert client.resolve_alias("foo", _llm_cfg({"foo": ""})) == ""
+
+    def test_scoped_key_wins_over_bare_key(self) -> None:
+        cfg = _llm_cfg({"opus": "bare-target", "litellm:opus": "scoped-target"})
+        assert client.resolve_alias("opus", cfg) == "scoped-target"
+
+    def test_scoped_key_for_a_different_backend_is_ignored(self) -> None:
+        cfg = _llm_cfg({"vertex:opus": "vertex-only-target"})
+        assert client.resolve_alias("opus", cfg) == "opus"
+
+    def test_colon_in_alias_name_still_resolves_via_bare_key(self) -> None:
+        """A LiteLLM-style 'provider:model' name used as a key is not itself a scoped key."""
+        cfg = _llm_cfg({"openai:gpt-4": "openai/gpt-4-turbo"})
+        assert client.resolve_alias("openai:gpt-4", cfg) == "openai/gpt-4-turbo"
+
+
+class TestResolveAliasBackendAware:
+    """Tier-name fallthrough when the detected backend can't serve a bare tier name."""
+
+    def test_bare_tier_name_resolves_on_firstparty(self) -> None:
+        """SOVA resolves a bare tier name itself rather than leaving it to the CLI (issue #619)."""
+        cfg = LLMConfig(provider="claude-code")
+        with patch.dict("os.environ", {}, clear=True):
+            resolved = client.resolve_alias("opus", cfg)
+        assert resolved == resolve_model_alias("opus")
+        assert resolved != "opus"
+
+    def test_bare_tier_name_falls_through_to_a_vertex_candidate(self) -> None:
+        cfg = LLMConfig(provider="claude-code")
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            resolved = client.resolve_alias("opus", cfg)
+        assert resolved == tier_candidates_for(Backend.VERTEX, "opus")[0]
+        assert resolved != "opus"
+
+    def test_bare_tier_name_falls_through_to_a_bedrock_candidate(self) -> None:
+        cfg = LLMConfig(provider="claude-code")
+        with _routed_via("CLAUDE_CODE_USE_BEDROCK"):
+            resolved = client.resolve_alias("opus", cfg)
+        assert resolved == tier_candidates_for(Backend.BEDROCK, "opus")[0]
+
+    def test_explicit_scoped_alias_wins_over_the_builtin_candidate_table(self) -> None:
+        cfg = LLMConfig(provider="claude-code", model_aliases={"vertex:opus": "my-custom-opus-id"})
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            assert client.resolve_alias("opus", cfg) == "my-custom-opus-id"
+
+    def test_non_tier_name_never_falls_through_even_when_unservable_looking(self) -> None:
+        """Fallthrough is scoped to the six tier names; anything else passes through as-is."""
+        cfg = LLMConfig(provider="claude-code", model_aliases={"my-custom-tier": "opus"})
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            assert client.resolve_alias("my-custom-tier", cfg) == "opus"
+
+    def test_resolve_tier_aliases_false_restores_passthrough(self) -> None:
+        cfg = LLMConfig(provider="claude-code", resolve_tier_aliases=False)
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            assert client.resolve_alias("opus", cfg) == "opus"
+
+    def test_unresolvable_tier_candidates_pass_through_unchanged(self) -> None:
+        """An override with no servable entries, on a tier with no builtin either, is not lost."""
+        cfg = LLMConfig(
+            provider="claude-code",
+            model_aliases={"vertex:sonnet": "sonnet"},
+            tier_candidates={"vertex:sonnet": "opus, smart"},
+        )
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            resolved = client.resolve_alias("sonnet", cfg)
+        # All override entries (bare tier names) and no working fallback: the
+        # scoped-alias value survives unchanged rather than resolving to None.
+        assert resolved == tier_candidates_for(Backend.VERTEX, "sonnet")[0]
+
+
+class TestResolveAliasScrubbedEnvironment:
+    """CodeRabbit (PR #1106): detection must match the spawned CLI child's env.
+
+    ``CLAUDE_CODE_USE_VERTEX``/``CLAUDE_CODE_USE_BEDROCK`` are stripped from a
+    spawned Claude CLI child's environment unless ``agent.env_passthrough``
+    opts them back in (``sova/utils/env.py:scrub_agent_env``). A raw var set
+    in the resolving process's own environment but never passed through must
+    not be treated as routing: the child will run firstParty regardless, and
+    resolving to an ``@``-pinned Vertex ID would hand that child a model it
+    cannot serve.
+    """
+
+    def test_env_var_without_passthrough_is_not_treated_as_routed(self) -> None:
+        cfg = LLMConfig(provider="claude-code")
+        with (
+            patch.dict("os.environ", {"CLAUDE_CODE_USE_VERTEX": "1"}, clear=True),
+            patch("sova.utils.env.configured_passthrough", return_value=()),
+        ):
+            resolved = client.resolve_alias("opus", cfg)
+        # Resolved as firstParty (SOVA's own tier table), never an @-pinned
+        # Vertex candidate the scrubbed child could not serve.
+        assert resolved == resolve_model_alias("opus")
+        assert "@" not in resolved
+
+    def test_env_var_with_passthrough_is_treated_as_routed(self) -> None:
+        cfg = LLMConfig(provider="claude-code")
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            resolved = client.resolve_alias("opus", cfg)
+        assert resolved == tier_candidates_for(Backend.VERTEX, "opus")[0]
+
+    def test_configured_passthrough_is_not_consulted_when_no_routing_var_is_set(self) -> None:
+        """The config-load behind configured_passthrough() is skipped in the common case."""
+        cfg = LLMConfig(provider="claude-code")
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("sova.utils.env.configured_passthrough") as mock_passthrough,
+        ):
+            client.resolve_alias("opus", cfg)
+        mock_passthrough.assert_not_called()
+
+    def test_non_claude_code_provider_ignores_the_raw_routing_var(self) -> None:
+        """Only the claude-code provider spawns a CLI child whose env can be scrubbed."""
+        cfg = LLMConfig(provider="anthropic", model="x")
+        with (
+            patch.dict("os.environ", {"CLAUDE_CODE_USE_VERTEX": "1"}, clear=True),
+            patch("sova.utils.env.configured_passthrough") as mock_passthrough,
+        ):
+            resolved = client.resolve_alias("opus", cfg)
+        mock_passthrough.assert_not_called()
+        assert resolved == resolve_model_alias("opus")
+
+
+class TestResolveAliasVertexLiteLLMPrefix:
+    """CodeRabbit (PR #1106): the ``vertex`` provider routes through LiteLLM.
+
+    ``LiteLLMProvider`` forwards the model ID to litellm unchanged, and
+    litellm's Vertex AI dialect requires a ``vertex_ai/`` prefix (see
+    ``_VENDOR_MODEL_EXAMPLES`` in ``sova/config/models.py``). The bare
+    candidate table must be prefixed only for ``cfg.provider == "vertex"``:
+    ``Backend.VERTEX`` also covers the claude-code CLI's own env-based Vertex
+    routing, which expects a bare, unprefixed ID.
+    """
+
+    def test_vertex_provider_candidate_gets_vertex_ai_prefix(self) -> None:
+        cfg = LLMConfig(provider="vertex", model="x")
+        resolved = client.resolve_alias("opus", cfg)
+        candidate = tier_candidates_for(Backend.VERTEX, "opus")[0]
+        assert resolved == f"vertex_ai/{candidate}"
+
+    def test_claude_code_env_routed_candidate_has_no_prefix(self) -> None:
+        cfg = LLMConfig(provider="claude-code")
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            resolved = client.resolve_alias("opus", cfg)
+        assert resolved == tier_candidates_for(Backend.VERTEX, "opus")[0]
+        assert not resolved.startswith("vertex_ai/")
+
+    def test_already_prefixed_override_is_not_double_prefixed(self) -> None:
+        cfg = LLMConfig(
+            provider="vertex",
+            model="x",
+            tier_candidates={"vertex:opus": "vertex_ai/custom-opus"},
+        )
+        assert client.resolve_alias("opus", cfg) == "vertex_ai/custom-opus"
+
+
+class TestResolveAliasPinnedIdDrift:
+    """Issue #1029: a pinned ID reached directly (not via a tier alias) whose backend drifted."""
+
+    def test_vertex_pinned_id_used_directly_corrects_on_firstparty(self) -> None:
+        """agent.model pinned to a Vertex snapshot ID, deployment since moved off Vertex."""
+        pinned = tier_candidates_for(Backend.VERTEX, "sonnet")[0]
+        cfg = LLMConfig(provider="claude-code")
+        with patch.dict("os.environ", {}, clear=True):
+            resolved = client.resolve_alias(pinned, cfg)
+        assert resolved == resolve_model_alias("sonnet")
+        assert resolved != pinned
+
+    def test_vertex_pinned_id_used_directly_is_unchanged_on_vertex(self) -> None:
+        """The same pinned ID, still on Vertex, is already correct and must not be touched."""
+        pinned = tier_candidates_for(Backend.VERTEX, "sonnet")[0]
+        cfg = LLMConfig(provider="claude-code")
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            assert client.resolve_alias(pinned, cfg) == pinned
+
+    def test_vertex_ai_prefixed_pinned_id_corrects_on_firstparty(self) -> None:
+        """A litellm-prefixed ID (pinned while cfg.provider == "vertex") also drifts off vertex."""
+        pinned = f"vertex_ai/{tier_candidates_for(Backend.VERTEX, 'sonnet')[0]}"
+        cfg = LLMConfig(provider="claude-code")
+        with patch.dict("os.environ", {}, clear=True):
+            resolved = client.resolve_alias(pinned, cfg)
+        assert resolved == resolve_model_alias("sonnet")
+        assert resolved != pinned
+
+    def test_bedrock_pinned_id_used_directly_corrects_on_firstparty(self) -> None:
+        pinned = tier_candidates_for(Backend.BEDROCK, "haiku")[0]
+        cfg = LLMConfig(provider="claude-code")
+        with patch.dict("os.environ", {}, clear=True):
+            resolved = client.resolve_alias(pinned, cfg)
+        assert resolved == resolve_model_alias("haiku")
+
+    def test_bedrock_pinned_id_used_directly_corrects_on_vertex(self) -> None:
+        """A Bedrock-dialect ID reached while actually running on Vertex is also corrected."""
+        bedrock_pinned = tier_candidates_for(Backend.BEDROCK, "haiku")[0]
+        cfg = LLMConfig(provider="claude-code")
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            resolved = client.resolve_alias(bedrock_pinned, cfg)
+        assert resolved == tier_candidates_for(Backend.VERTEX, "haiku")[0]
+
+
+class TestResolveAliasReasonLogging:
+    """The ``reason`` field on the ``llm.model_alias`` log line."""
+
+    def test_explicit_bare_alias_logs_explicit(self) -> None:
+        cfg = LLMConfig(provider="litellm", model_aliases={"smart": "ollama/llama3.1:70b"})
+        with patch.object(client.log, "info") as mock_log:
+            client.resolve_alias("smart", cfg)
+        mock_log.assert_called_once()
+        assert mock_log.call_args.kwargs["reason"] == "explicit"
+
+    def test_backend_scoped_alias_logs_backend_scoped(self) -> None:
+        cfg = LLMConfig(provider="claude-code", model_aliases={"vertex:opus": "my-custom-opus-id"})
+        with patch.object(client.log, "info") as mock_log, _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            client.resolve_alias("opus", cfg)
+        mock_log.assert_called_once()
+        assert mock_log.call_args.kwargs["reason"] == "backend_scoped"
+
+    def test_tier_fallthrough_logs_tier_candidate(self) -> None:
+        cfg = LLMConfig(provider="claude-code")
+        with (
+            patch.object(client.log, "info") as mock_log,
+            _routed_via("CLAUDE_CODE_USE_VERTEX"),
+        ):
+            client.resolve_alias("opus", cfg)
+        mock_log.assert_called_once()
+        assert mock_log.call_args.kwargs["reason"] == "tier_candidate"
+
+    def test_unmapped_passthrough_is_never_logged(self) -> None:
+        cfg = LLMConfig(provider="litellm")
+        with patch.object(client.log, "info") as mock_log:
+            client.resolve_alias("my-custom-model", cfg)
+        mock_log.assert_not_called()
+
+
+class TestTierCandidatesOverrideJsonArray:
+    def test_json_array_override_is_parsed(self) -> None:
+        cfg = LLMConfig(
+            provider="claude-code",
+            tier_candidates={"vertex:opus": '["custom-opus-a", "custom-opus-b"]'},
+        )
+        with _routed_via("CLAUDE_CODE_USE_VERTEX"):
+            assert client.resolve_alias("opus", cfg) == "custom-opus-a"
 
 
 # ---------------------------------------------------------------------------

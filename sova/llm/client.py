@@ -18,6 +18,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.config.models import LLMConfig, RolesConfig
+from sova.llm.backends import (
+    TIER_NAMES,
+    Backend,
+    backend_can_serve,
+    detect_backend,
+    routing_env_vars_present,
+    tier_candidates_for,
+    tier_for_known_candidate,
+)
 from sova.llm.complexity import ComplexityTier
 from sova.llm.errors import (
     BillingError,
@@ -808,21 +817,120 @@ def _resolve_task_type_model(
     return routed_model
 
 
-def resolve_alias(model: str, aliases: dict[str, str]) -> str:
-    """Resolve *model* through *aliases*, the raw ``llm.model_aliases`` map.
+def resolve_alias(model: str, cfg: LLMConfig) -> str:
+    """Resolve *model* through ``cfg.model_aliases``, backend-aware.
 
-    Shared by ``select_model`` (which holds a full ``ProjectConfig``) and
-    ``create_provider`` (which only ever holds the ``llm`` section, so it
-    cannot call ``select_model`` directly). Lookup is a single hop: an alias
-    whose target is itself an alias key is not chased, which keeps a
-    self-referential map from looping. An unmapped name, or a name mapped to
-    itself, passes through unchanged.
+    Shared by ``select_model`` (which holds a full ``ProjectConfig`` and passes
+    ``cfg.llm``) and ``create_provider`` (which only ever holds the ``llm``
+    section already, so it passes it straight through); both call paths
+    share this one signature.
+
+    Lookup order:
+
+    1. ``"{backend}:{model}"`` in ``cfg.model_aliases``, where *backend* is
+       ``sova.llm.backends.detect_backend(cfg)``. A key scoped to a different
+       backend is never matched (``"vertex:sonnet"`` never fires on
+       firstParty).
+    2. The bare ``model`` key (today's lookup), unchanged.
+    3. *model* itself, unmapped.
+
+    Resolution is still a single hop: the value found above is never chased
+    further, which keeps a self-referential map from looping.
+
+    When ``cfg.resolve_tier_aliases`` is set (the default) and the value found
+    above either is still an unresolved generic tier name or cannot be served
+    by the detected backend, it is corrected to a servable, concrete ID:
+
+    - On FIRSTPARTY, via ``sova.llm.models.resolve_model_alias`` (the same
+      subscription-valid mapping ``normalize_model_name`` and the cost model
+      use), so a bare tier name is resolved by SOVA itself rather than left
+      for the Claude CLI to resolve: a CLI-side alias-resolution change must
+      not silently retarget a config nobody edited (issue #619).
+    - On VERTEX/BEDROCK, via that tier's ordered candidate list
+      (``tier_candidates_for``).
+
+    The tier is normally *model* itself (one of ``sova.llm.backends.TIER_NAMES``),
+    but a pinned candidate ID reached directly (not through a tier alias,
+    e.g. ``agent.model`` set to a Vertex snapshot ID) is also recognized via
+    ``tier_for_known_candidate``, so a pinned value whose backend has since
+    drifted (#1029: pinned while Vertex-routed, then the deployment moved to
+    firstParty/Bedrock without the pinned value being updated) is corrected
+    the same way. If no candidate is servable either, the value found above is
+    returned unchanged rather than ``None``.
+
+    An unmapped name, or a name mapped to itself, passes through unchanged and
+    is never logged, so the default empty map reproduces today's resolution
+    exactly.
+
+    Backend detection reads the environment a spawned Claude CLI child would
+    actually see, not this (parent) process's own ``os.environ``: only the
+    ``claude-code`` provider ever spawns that child, and
+    ``sova.ipc.runtime``/``sova.llm.providers.claude_code`` scrub
+    ``CLAUDE_CODE_USE_VERTEX``/``CLAUDE_CODE_USE_BEDROCK`` from its
+    environment unless ``agent.env_passthrough`` opts them back in. Reading
+    the raw parent environment here could detect VERTEX/BEDROCK, resolve an
+    ``@``-pinned Vertex ID, and hand it to a child that actually runs
+    FIRSTPARTY once scrubbed, where that ID is not servable (CodeRabbit,
+    PR #1106). ``routing_env_vars_present()`` is a raw-``os.environ``
+    pre-check so the (otherwise per-call) config load behind
+    ``configured_passthrough()`` is only paid when one of the two vars is
+    actually set.
     """
-    resolved = aliases.get(model)
-    if resolved is None or resolved == model:
+    env = None
+    if cfg.provider == "claude-code" and routing_env_vars_present():
+        from sova.utils.env import configured_passthrough, scrub_agent_env
+
+        env = scrub_agent_env(passthrough=configured_passthrough())
+    backend = detect_backend(cfg, env=env)
+    aliases = cfg.model_aliases
+    scoped_key = f"{backend.value}:{model}"
+    if scoped_key in aliases:
+        resolved, reason = aliases[scoped_key], "backend_scoped"
+    elif model in aliases:
+        resolved, reason = aliases[model], "explicit"
+    else:
+        resolved, reason = model, "passthrough"
+
+    if cfg.resolve_tier_aliases:
+        # A value pinned while vertex-routed (cfg.provider == "vertex", e.g.
+        # "vertex_ai/claude-sonnet-4-5@20250929") carries the litellm
+        # "vertex_ai/" prefix this module adds below. The candidate table
+        # stores bare IDs, so the prefix must be stripped before the
+        # known-candidate lookup or a pinned value whose backend has since
+        # drifted off vertex is never recognized (CodeRabbit, PR #1106).
+        lookup_model = resolved.removeprefix("vertex_ai/")
+        tier = model if model in TIER_NAMES else tier_for_known_candidate(lookup_model)
+        needs_fix = tier is not None and (
+            not backend_can_serve(backend, resolved) or (backend is Backend.FIRSTPARTY and resolved == model)
+        )
+        if needs_fix:
+            if backend is Backend.FIRSTPARTY:
+                candidate = resolve_model_alias(tier)
+                if candidate != tier:
+                    resolved = candidate
+                    reason = "tier_candidate"
+            elif backend in (Backend.VERTEX, Backend.BEDROCK):
+                # tier_candidates_for() already drops anything this backend cannot serve.
+                candidates = tier_candidates_for(backend, tier, cfg.tier_candidates)
+                if candidates:
+                    resolved = candidates[0]
+                    # cfg.provider == "vertex" means create_provider() routes
+                    # through LiteLLMProvider, which forwards the model ID to
+                    # litellm unchanged; litellm's Vertex AI dialect requires
+                    # the "vertex_ai/" prefix (see _VENDOR_MODEL_EXAMPLES in
+                    # sova/config/models.py). Backend.VERTEX also covers the
+                    # claude-code CLI's own env-based Vertex routing, which
+                    # expects a bare ID, so the prefix is scoped to the
+                    # "vertex" provider only, never the backend as a whole
+                    # (CodeRabbit, PR #1106).
+                    if cfg.provider == "vertex" and not resolved.startswith("vertex_ai/"):
+                        resolved = f"vertex_ai/{resolved}"
+                    reason = "tier_candidate"
+
+    if resolved == model:
         return model
 
-    log.info("llm.model_alias", alias=model, model=resolved)
+    log.info("llm.model_alias", alias=model, model=resolved, backend=backend.value, reason=reason)
     return resolved
 
 
@@ -851,7 +959,7 @@ def select_model(model: str | None, cfg: ProjectConfig | None) -> str | None:
     if model is None or cfg is None:
         return model
 
-    return resolve_alias(model, cfg.llm.model_aliases)
+    return resolve_alias(model, cfg.llm)
 
 
 def _resolve_timeout(
