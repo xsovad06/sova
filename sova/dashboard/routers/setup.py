@@ -43,7 +43,6 @@ class ConfigureRequest(BaseModel):
     commit_format: str = "conventional"
     agent_model: str = "opus"
     max_budget: str = "10.00"
-    review_max_rounds: int = 2
     test_cmd: str = ""
     lint_cmd: str = ""
     format_cmd: str = ""
@@ -134,7 +133,6 @@ async def configure_project(req: ConfigureRequest) -> dict:
         task_source=req.task_source,
         agent_model=req.agent_model,
         max_budget=req.max_budget,
-        review_max_rounds=req.review_max_rounds,
         branch_naming=req.branch_naming,
         commit_format=req.commit_format,
         ai_coauthor=req.ai_coauthor,

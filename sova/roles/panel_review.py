@@ -30,6 +30,7 @@ from sova.roles._review_comments import (
     _load_findings_json,
     _parse_findings,
 )
+from sova.roles._review_format import _SEVERITY_MEDIUM
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -141,6 +142,29 @@ def _context_block(
 ```"""
 
 
+def _severity_rule(revise_at: int, addressed_findings: list[dict] | None = None) -> str:
+    """Calibrated severity-reporting rule shared by both panel prompts.
+
+    Replaces the old forcing language ("Report ALL findings... regardless of
+    severity") which made an empty findings list feel like a wrong answer.
+    """
+    rereview_rule = (
+        f'\n- On a re-review (an "Already Addressed in Earlier Rounds" section is present), raise a '
+        f"finding on unchanged code only if it is severity {revise_at} or above and was not already "
+        "raised and declined."
+        if addressed_findings
+        else ""
+    )
+    return (
+        "- Report what you find at the severity it deserves. An empty findings list is a valid answer "
+        "for a clean diff.\n"
+        f"- Findings at severity {revise_at} or above block the PR and start a fix round. Findings below "
+        f"{revise_at} are still recorded and will be fixed on the next round that touches this PR; they "
+        "just do not block approval or start one on their own. Do not inflate a severity to force a fix "
+        f"round, and do not omit a minor finding because it will not block: it is still worth fixing.{rereview_rule}"
+    )
+
+
 def _build_dimension_prompt(
     dimension: str,
     task: Task,
@@ -148,6 +172,7 @@ def _build_dimension_prompt(
     files: list[str],
     spec_sections: dict[str, str] | None = None,
     addressed_findings: list[dict] | None = None,
+    revise_at: int = _SEVERITY_MEDIUM,
 ) -> str:
     """Build a focused review prompt for a single dimension."""
     preamble = _DIMENSION_PROMPTS.get(dimension, f"Review the code for {dimension} issues.")
@@ -157,7 +182,7 @@ def _build_dimension_prompt(
 {_context_block(task, diff, files, spec_sections, addressed_findings)}
 
 ## Rules
-- Report ALL findings for your dimension, regardless of severity.
+{_severity_rule(revise_at, addressed_findings)}
 - Score each finding 1-10 (10 = critical, 1 = nitpick).
 - Be specific: exact file paths and line numbers from the diff.
 - If nothing in your area is wrong, return an empty findings list.
@@ -186,6 +211,7 @@ def _build_combined_prompt(
     files: list[str],
     spec_sections: dict[str, str] | None = None,
     addressed_findings: list[dict] | None = None,
+    revise_at: int = _SEVERITY_MEDIUM,
 ) -> str:
     """Build one prompt covering every dimension in a model group."""
     sections = "\n\n".join(f"### {dim}\n{_focus_block(dim)}" for dim in dimensions)
@@ -205,7 +231,7 @@ one pass per dimension, and report all findings in a single response.
 
 ## Rules
 - Cover EVERY dimension above. Do not stop because another dimension already found issues.
-- Report ALL findings, regardless of severity.
+{_severity_rule(revise_at, addressed_findings)}
 - Set "category" to the dimension the finding belongs to: {categories}.
 - Score each finding 1-10 (10 = critical, 1 = nitpick).
 - Be specific: exact file paths and line numbers from the diff.
@@ -389,6 +415,7 @@ class _ChunkRequest:
     addressed_findings: list[dict] | None = None
     cwd: Path | str | None = None
     default_model: str = _DEFAULT_MODEL
+    revise_at: int = _SEVERITY_MEDIUM
 
     @property
     def is_first(self) -> bool:
@@ -444,6 +471,7 @@ async def _review_dimensions(state: _PanelState, dimensions: list[str], request:
             request.files,
             spec_sections=request.spec_sections,
             addressed_findings=request.addressed_findings,
+            revise_at=request.revise_at,
         )
         try:
             llm_result = await invoke(prompt, model=model, task_type=f"review_{dim}", cwd=request.cwd)
@@ -490,6 +518,7 @@ async def _review_groups(state: _PanelState, groups: list[tuple[str, list[str]]]
             request.files,
             spec_sections=request.spec_sections,
             addressed_findings=request.addressed_findings,
+            revise_at=request.revise_at,
         )
         try:
             llm_result = await invoke(prompt, model=model, task_type="review_panel", cwd=request.cwd)
@@ -527,6 +556,7 @@ async def run_panel_review(
     budget_remaining: Decimal | None = None,
     addressed_findings: list[dict] | None = None,
     default_model: str = "sonnet",
+    revise_at: int = _SEVERITY_MEDIUM,
 ) -> ReviewResult:
     """Run the dimension reviewers and aggregate their results.
 
@@ -539,6 +569,10 @@ async def run_panel_review(
     ``panel_config.dimension_models`` pin, and therefore also decides how
     dimensions are grouped. Callers resolve it from config; the literal default
     keeps this module free of a config-load path.
+
+    ``revise_at`` is the severity threshold below which a finding is advisory
+    rather than blocking; threaded into every dimension/combined prompt so the
+    panel's own reporting language matches ``review.revise_severity``.
     """
     state = _PanelState(result=ReviewResult(), budget_remaining=budget_remaining)
     chunks = _chunk_diff(diff)
@@ -559,6 +593,7 @@ async def run_panel_review(
             addressed_findings=addressed_findings if chunk_idx == 0 else None,
             cwd=cwd,
             default_model=default_model,
+            revise_at=revise_at,
         )
 
         if panel_config.combined:

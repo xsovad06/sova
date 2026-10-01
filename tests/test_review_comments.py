@@ -89,6 +89,38 @@ class TestReviewResult:
         assert len(r.actionable) == 2
         assert r.actionable == [low, high]
 
+    def test_blocking_filters_by_revise_at(self) -> None:
+        low = _finding(severity=1)
+        high = _finding(severity=9)
+        r = ReviewResult(findings=[low, high])
+        assert r.blocking(3) == [high]
+
+    def test_blocking_includes_boundary_value(self) -> None:
+        exactly_at_threshold = _finding(severity=3)
+        r = ReviewResult(findings=[exactly_at_threshold])
+        assert r.blocking(3) == [exactly_at_threshold]
+
+    def test_blocking_excludes_protected_path(self) -> None:
+        from sova.roles._review_comments import _make_protected_path_finding
+
+        protected = _make_protected_path_finding(["a.py"])
+        r = ReviewResult(findings=[protected])
+        assert r.blocking(1) == []
+
+    def test_blocking_empty_when_all_advisory(self) -> None:
+        r = ReviewResult(findings=[_finding(severity=1), _finding(severity=2)])
+        assert r.blocking(3) == []
+
+    def test_blocking_clamps_out_of_range_severity_like_verdict_and_body(self) -> None:
+        """At revise_severity=1 every finding is documented to block (matches today's
+        pre-threshold behavior). A finding with an unclamped non-positive severity
+        (e.g. 0, from an unusable LLM severity field) must still block at that
+        setting, consistent with verdict_from_severities()/format_review_body(),
+        which both clamp to [1, 10] before comparing."""
+        zero_severity = _finding(severity=0)
+        r = ReviewResult(findings=[zero_severity])
+        assert r.blocking(1) == [zero_severity]
+
 
 # -- _safe_severity --
 
@@ -293,6 +325,16 @@ class TestVerdictLabel:
 
     def test_mixed_severities_uses_max(self) -> None:
         assert _verdict_label([_finding(severity=2), _finding(severity=8)]) == "BLOCK"
+
+    def test_advisory_severity_approve(self) -> None:
+        """Below the default revise_at (3): advisory, not blocking."""
+        assert _verdict_label([_finding(severity=1)]) == "APPROVE"
+        assert _verdict_label([_finding(severity=2)]) == "APPROVE"
+
+    def test_custom_thresholds(self) -> None:
+        assert _verdict_label([_finding(severity=5)], revise_at=6, block_at=9) == "APPROVE"
+        assert _verdict_label([_finding(severity=6)], revise_at=6, block_at=9) == "REVISE"
+        assert _verdict_label([_finding(severity=9)], revise_at=6, block_at=9) == "BLOCK"
 
 
 # -- _sova_verdict_label_name --
@@ -516,6 +558,28 @@ class TestBuildReviewPrompt:
         prompt = _build_review_prompt(_task(body=""), "diff", ["f.py"])
         assert "**Description**" not in prompt
 
+    def test_no_forcing_language(self) -> None:
+        """An empty findings list must be a legitimate answer, not something the
+
+        prompt pressures the model to avoid (issue #1108: a non-convergent
+        review loop driven partly by "must find at least one issue").
+        """
+        prompt = _build_review_prompt(_task(), "diff", ["f.py"])
+        assert "look harder" not in prompt
+        assert "must find at least one issue" not in prompt.lower()
+        assert "An empty findings list is a valid answer" in prompt
+
+    def test_severity_threshold_interpolated_into_prompt(self) -> None:
+        prompt = _build_review_prompt(_task(), "diff", ["f.py"], revise_at=5)
+        assert "severity 5 or above block the PR" in prompt
+
+    def test_rereview_rule_present_only_with_addressed_findings(self) -> None:
+        addressed = [{"source": "ruff", "file_path": "a.py", "message": "unused"}]
+        with_addressed = _build_review_prompt(_task(), "diff", ["f.py"], addressed_findings=addressed)
+        without_addressed = _build_review_prompt(_task(), "diff", ["f.py"])
+        assert "On a re-review" in with_addressed
+        assert "On a re-review" not in without_addressed
+
 
 # -- _compact_spec_ref --
 
@@ -654,6 +718,74 @@ class TestBuildReviewPayloadFromJson:
         payload = self._payload([], event="APPROVE")
         assert payload["comments"] == []
         assert payload["body"].startswith("<!-- sova-review: approve")
+
+    def test_advisory_finding_on_diff_line_stays_body_only(self) -> None:
+        """A severity-2 finding is below the default revise_at (3): even though it
+
+        lands on a diff line, it must not become an inline comment (no thread),
+        but must still appear in the body.
+        """
+        payload = self._payload([{"file": "a.py", "line": 3, "severity": 2, "category": "style", "description": "nit"}])
+        assert payload["comments"] == []
+        assert "nit" in payload["body"]
+        assert "### Advisory (not blocking)" in payload["body"]
+
+    def test_custom_thresholds_change_which_findings_get_inline_comments(self) -> None:
+        payload = self._payload(
+            [{"file": "a.py", "line": 3, "severity": 5, "category": "bug", "description": "issue"}],
+        )
+        assert len(payload["comments"]) == 1
+
+        import json
+
+        from sova.roles._review_comments import build_review_payload_from_json
+
+        raw = json.dumps(
+            {
+                "findings": [{"file": "a.py", "line": 3, "severity": 5, "category": "bug", "description": "issue"}],
+                "summary": "sum",
+            }
+        )
+        payload_raised = json.loads(build_review_payload_from_json(raw, self.DIFF, "COMMENT", revise_at=6, block_at=9))
+        assert payload_raised["comments"] == []
+        assert "issue" in payload_raised["body"]
+
+    def test_missing_severity_is_consistent_between_blocking_decision_and_label(self) -> None:
+        """A missing severity must not be decided on with a different default than the
+        one used to label the resulting inline comment. _finding_from_dict defaults an
+        unusable severity to 0 (clamped to 1, LOW), so at the default revise_at=3 this
+        finding must land in the advisory section, not as an inline comment decided
+        against some other (higher) default."""
+        payload = self._payload([{"file": "a.py", "line": 3, "category": "bug", "description": "missing-severity"}])
+        assert payload["comments"] == []
+        assert "missing-severity" in payload["body"]
+        assert "### Advisory (not blocking)" in payload["body"]
+
+    def test_non_numeric_severity_degrades_consistently(self) -> None:
+        payload = self._payload(
+            [{"file": "a.py", "line": 3, "severity": "HIGH", "category": "bug", "description": "badseverity"}]
+        )
+        assert payload["comments"] == []
+        assert "badseverity" in payload["body"]
+        assert "### Advisory (not blocking)" in payload["body"]
+
+    def test_missing_severity_inline_comment_label_matches_the_blocking_decision(self) -> None:
+        """At revise_at=1 every finding blocks, including one with a missing severity
+        (coerced to 0, clamped to 1). The posted inline comment's severity label must
+        reflect that same coerced severity (LOW), not a separately-defaulted value."""
+        import json
+
+        from sova.roles._review_comments import build_review_payload_from_json
+
+        raw = json.dumps(
+            {
+                "findings": [{"file": "a.py", "line": 3, "category": "bug", "description": "missing-severity"}],
+                "summary": "s",
+            }
+        )
+        payload = json.loads(build_review_payload_from_json(raw, self.DIFF, "COMMENT", revise_at=1, block_at=9))
+        assert len(payload["comments"]) == 1
+        assert payload["comments"][0]["body"].startswith("**[LOW] bug**")
 
     def test_malformed_sha_leaves_the_marker_unanchored(self) -> None:
         """Matches format_from_json: an unusable anchor must not be embedded."""

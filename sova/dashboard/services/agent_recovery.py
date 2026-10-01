@@ -884,6 +884,7 @@ async def get_sova_review_verdict(
             if handoff is not None:
                 next_action = handoff.get("next_action", "")
                 findings = handoff.get("pending_findings", [])
+                metadata = handoff.get("metadata", {}) or {}
 
                 if next_action == "approve":
                     verdict = "approve"
@@ -896,13 +897,17 @@ async def get_sova_review_verdict(
                     # Reviewer ran but could not post to GitHub. Return a distinct
                     # verdict so callers do not trigger address-review pipeline.
                     verdict = "post_failed"
+                elif metadata.get("verdict"):
+                    # Authoritative: persisted by ReviewerRole._write_handoff()
+                    # from the blocking (>= review.revise_severity) findings.
+                    verdict = metadata["verdict"]
                 elif findings:
+                    # Fallback for handoffs written before metadata.verdict existed.
                     max_sev = max((f.get("severity", 0) for f in findings), default=0)
                     verdict = "block" if max_sev >= 7 else "revise"
                 else:
                     verdict = "approve"
 
-                metadata = handoff.get("metadata", {}) or {}
                 return {
                     "has_sova_review": True,
                     "verdict": verdict,
