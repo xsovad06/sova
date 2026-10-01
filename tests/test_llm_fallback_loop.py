@@ -37,7 +37,15 @@ def _reset_state():
 
 
 def _cfg(*fallbacks: str) -> ProjectConfig:
-    return ProjectConfig(agent=AgentConfig(model="opus", fallback_models=list(fallbacks)))
+    # resolve_tier_aliases=False: this file tests chain-walking mechanics
+    # (dedup, budget, availability caching), not tier-alias resolution (that's
+    # tests/test_model_aliases.py and tests/test_llm_backends.py), so "opus"/
+    # "sonnet"/"haiku" here are meant to be opaque example model names rather
+    # than real generic tiers resolve_alias() now actively resolves on
+    # firstParty (issue #1033).
+    return ProjectConfig(
+        llm=LLMConfig(resolve_tier_aliases=False), agent=AgentConfig(model="opus", fallback_models=list(fallbacks))
+    )
 
 
 def _ok(model: str = "opus") -> LLMResult:

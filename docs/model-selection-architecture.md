@@ -206,6 +206,69 @@ runaway guard goes blind, and switching off claude-code loses the per-run cap en
 wall-clock / step-count runaway guard must exist **before** any non-Anthropic provider is
 enabled.
 
+### 2.7 Backend-aware alias resolution (#1033)
+
+`LLMConfig.model_aliases` (Q3) resolves a generic tier name to a native ID, but the native ID a
+deployment needs depends on which model-ID *dialect* the active endpoint actually speaks, not
+only on `llm.provider`: the Claude CLI's own `CLAUDE_CODE_USE_VERTEX`/`CLAUDE_CODE_USE_BEDROCK`
+env vars silently redirect `provider="claude-code"` to Vertex/Bedrock, which reject a bare tier
+name and require a fully-qualified, dialect-specific ID. `sova/llm/backends.py` is a leaf module
+(no intra-`sova` imports at runtime) adding this layer:
+
+- `detect_backend(cfg: LLMConfig, env: Mapping[str, str] | None = None) -> Backend` maps
+  `llm.provider` plus those two env vars to one of `firstparty` / `vertex` / `bedrock` /
+  `litellm` (the permissive catch-all and fail-open default for an unrecognized provider).
+  Reads `env` if given, else `os.environ` at call time (never cached). `sova/llm/client.py:
+  resolve_alias()` is the one caller that must pass an explicit `env`: it runs in the *parent*
+  process (dashboard/server/CLI), not inside the spawned Claude CLI child whose model it is
+  resolving, and that child's environment is scrubbed by `scrub_agent_env()` (stripping
+  `CLAUDE_CODE_USE_VERTEX`/`CLAUDE_CODE_USE_BEDROCK` unless `agent.env_passthrough` opts them
+  back in). Reading the parent's raw, unscrubbed `os.environ` there could detect `vertex` from a
+  routing var that happens to be set in the parent's environment but is never forwarded to the
+  child, resolve an `@`-pinned Vertex ID, and hand it to a child that actually runs `firstparty`
+  once scrubbed, where that ID is not servable (CodeRabbit, PR #1106). `resolve_alias()` therefore
+  builds the same scrubbed environment `scrub_agent_env(passthrough=configured_passthrough())`
+  would produce for the real spawn, but only when `cfg.provider == "claude-code"` and
+  `routing_env_vars_present()` (a raw-`os.environ` pre-check with no config load) finds either var
+  set, so the `agent.env_passthrough` config load behind `configured_passthrough()` is skipped
+  for the common case where neither var is set at all.
+- `backend_can_serve(backend, model_id) -> bool` is fail-open except for three known-wrong
+  combinations: a bare tier name on vertex/bedrock, an `@`-pinned Vertex snapshot ID on
+  firstparty, and a Bedrock-dialect ID (`anthropic.*`/`us.anthropic.*`) anywhere but bedrock.
+- `tier_candidates_for(backend, tier, overrides)` returns the ordered, backend-servable candidate
+  list for vertex/bedrock (built-in table, or `llm.tier_candidates` override, JSON-array- or
+  comma-separated). The built-in table's entries are bare, unprefixed IDs (e.g.
+  `claude-opus-4-6@20260401`), correct for the claude-code CLI's own env-based Vertex/Bedrock
+  routing. firstparty has no candidate table here: `sova/llm/client.py:resolve_alias()`
+  resolves a firstParty tier name through `sova.llm.models.resolve_model_alias()` instead (the
+  same subscription-valid mapping the cost model and `normalize_model_name` already use), so SOVA
+  resolves it itself rather than leaving a bare `"opus"`/`"sonnet"` for the Claude CLI to resolve;
+  issue #619 is exactly a CLI-side alias-resolution change silently retargeting a config nobody
+  edited. When `cfg.provider == "vertex"` the resolved candidate instead reaches
+  `LiteLLMProvider`, which forwards the model ID to litellm unchanged; litellm's Vertex AI dialect
+  requires the `vertex_ai/` prefix (`_VENDOR_MODEL_EXAMPLES` in `sova/config/models.py`), so
+  `resolve_alias()` prefixes the resolved candidate in that case only (CodeRabbit, PR #1106) --
+  never for `Backend.VERTEX` generally, since that also covers the CLI's own bare-ID routing.
+- `tier_for_known_candidate(model_id)` reverse-looks-up a known pinned candidate ID to its tier,
+  so a pinned ID reached *directly* (not via a tier alias, e.g. `agent.model` set to a Vertex
+  snapshot ID) whose backend has since drifted is corrected the same way a bare tier name is.
+
+`resolve_alias()`'s lookup order is unchanged at the top: `"{backend}:{model}"` in
+`model_aliases`, then the bare `model` key, then *model* itself, still a single hop. The
+backend-aware correction (gated by `llm.resolve_tier_aliases`, default on; `false` restores
+byte-identical passthrough) applies only when the resolved value is a known-unservable tier name
+or pinned ID for the detected backend; an explicit, already-servable override always wins and is
+never second-guessed. `create_provider()` (`sova/llm/provider.py`) and `select_model()` share this
+one function, so `llm.model`/`llm.fallback_model`/the primary `model=`/`agent.fallback_models`
+chain are all backend-aware the same way. The `llm.model_alias` log line's `reason` field
+(`explicit` / `backend_scoped` / `tier_candidate`; `passthrough` is never actually logged, since
+an unchanged resolution is not logged at all) names which path fired.
+
+Vertex/Bedrock-pinned candidate IDs in `sova/llm/backends.py` are a best-effort table, not
+verified against a live deployment at the time of writing (PR9): per the pinning-verification
+rule in `.claude/rules/architecture.md`, confirm availability (404 vs 429) before relying on them
+in production, and update the table if they have drifted.
+
 ---
 
 ## 3. Answers to the eight investigation questions

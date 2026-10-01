@@ -288,10 +288,8 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
         # The vendor-specific types are LiteLLM under a more discoverable name.
         # LLMConfig._default_model_for_litellm guarantees cfg.model is set for
         # them, so the Claude default below only ever applies to litellm/hybrid.
-        model = resolve_alias(cfg.model, cfg.model_aliases) if cfg.model else cfg.model
-        fallback_model = (
-            resolve_alias(cfg.fallback_model, cfg.model_aliases) if cfg.fallback_model else cfg.fallback_model
-        )
+        model = resolve_alias(cfg.model, cfg) if cfg.model else cfg.model
+        fallback_model = resolve_alias(cfg.fallback_model, cfg) if cfg.fallback_model else cfg.fallback_model
         return LiteLLMProvider(
             model=model or "claude-sonnet-4-6",
             fallback_model=fallback_model or None,
@@ -303,7 +301,7 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
         from sova.llm.keyring_store import resolve_secret
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
-        model = resolve_alias(cfg.model, cfg.model_aliases) if cfg.model else cfg.model
+        model = resolve_alias(cfg.model, cfg) if cfg.model else cfg.model
         api_key = resolve_secret("llm.api_key", cfg.api_key)
         return AnthropicAPIProvider(model=model or "", api_key=api_key)
 

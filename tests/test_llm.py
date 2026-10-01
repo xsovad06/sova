@@ -14,7 +14,7 @@ import pytest
 import respx
 
 from sova.llm import ComplexityTier, assess_complexity
-from sova.llm.models import BatchRequest, LLMResult, StreamEvent
+from sova.llm.models import BatchRequest, LLMResult, StreamEvent, resolve_model_alias
 
 # ---------------------------------------------------------------------------
 # LLMResult dataclass
@@ -195,9 +195,11 @@ class TestInvoke:
 
         await invoke("Hello", model="sonnet")
 
+        # "sonnet" is resolved by SOVA itself on the firstParty backend
+        # (issue #1033), not sent to the CLI bare.
         call_args = mock_run.call_args[0]
         assert "--model" in call_args
-        assert "sonnet" in call_args
+        assert resolve_model_alias("sonnet") in call_args
 
     async def test_invoke_with_cwd(self, mock_run: AsyncMock, tmp_path: Path) -> None:
         from sova.llm.client import invoke
@@ -635,7 +637,9 @@ class TestInvokeCommand:
         ):
             await client.invoke_command("/develop", args="42", model="opus", task_type="develop")
 
-        assert provider.invoke_command.call_args.kwargs["model"] == "haiku"
+        # The route picks "haiku"; resolve_alias then resolves it to a
+        # concrete, servable ID on the firstParty backend (issue #1033).
+        assert provider.invoke_command.call_args.kwargs["model"] == resolve_model_alias("haiku")
 
     async def test_invoke_routes_by_task_type_over_explicit_model(self) -> None:
         from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
@@ -650,7 +654,7 @@ class TestInvokeCommand:
         ):
             await client.invoke("hello", model="opus", task_type="triage")
 
-        assert provider.invoke.call_args.kwargs["model"] == "haiku"
+        assert provider.invoke.call_args.kwargs["model"] == resolve_model_alias("haiku")
 
     async def test_invoke_command_without_route_keeps_model(self) -> None:
         from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
@@ -665,7 +669,9 @@ class TestInvokeCommand:
         ):
             await client.invoke_command("/develop", args="42", model="opus", task_type="develop")
 
-        assert provider.invoke_command.call_args.kwargs["model"] == "opus"
+        # No route configured: the explicit model wins over routing (unchanged
+        # by #1033), but tier-alias resolution still runs on top of it.
+        assert provider.invoke_command.call_args.kwargs["model"] == resolve_model_alias("opus")
 
 
 # ---------------------------------------------------------------------------
