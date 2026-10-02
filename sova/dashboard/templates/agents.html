@@ -952,6 +952,7 @@ async function fetchLlmSuggestions() {
         has_sova_review: sovaCtx.has_sova_review || false,
         sova_verdict: sovaCtx.verdict || null,
         mergeable: prDetails.mergeable || 'UNKNOWN',
+        merge_state: prDetails.merge_state || 'UNKNOWN',
         review_decision: prDetails.review_decision || null,
         ci_passed: prDetails.ci_status === 'passed' || prDetails.ci_status === 'none',
         external_reviews_enabled: true

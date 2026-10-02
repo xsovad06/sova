@@ -31,6 +31,7 @@ class PRSuggestionRequest(BaseModel):
     has_sova_review: bool = False
     sova_verdict: str | None = None
     mergeable: str = "UNKNOWN"
+    merge_state: str = "UNKNOWN"
     review_decision: str | None = None
     ci_passed: bool = False
     external_reviews_enabled: bool = True
@@ -151,6 +152,7 @@ async def get_pr_action_suggestion(pr_number: int, body: PRSuggestionRequest) ->
         has_sova_review=body.has_sova_review,
         sova_verdict=body.sova_verdict,
         mergeable=body.mergeable,
+        merge_state=body.merge_state,
         review_decision=body.review_decision,
         ci_passed=body.ci_passed,
         external_reviews_enabled=body.external_reviews_enabled,

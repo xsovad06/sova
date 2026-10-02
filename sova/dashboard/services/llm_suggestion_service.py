@@ -6,7 +6,7 @@ backends: Vertex AI (Google Cloud ADC) and Anthropic direct (API key).
 Vertex AI is preferred when ANTHROPIC_VERTEX_PROJECT_ID is set.
 
 Results are cached server-side for 5 minutes per (pr_number,
-deterministic_state, pr_computed_state) triple.
+deterministic_state, pr_computed_state, merge_state) key.
 
 All results (agreements and disagreements) are cached and returned to the UI.
 The UI shows a comparison widget when the LLM disagrees, and a standalone
@@ -70,6 +70,7 @@ Current PR signals:
 - has_sova_review: {has_sova_review}
 - sova_verdict: {sova_verdict}
 - mergeable: {mergeable}
+- merge_state: {merge_state}
 - review_decision: {review_decision}
 - ci_passed: {ci_passed}
 - external_reviews_enabled: {external_reviews_enabled}
@@ -90,8 +91,8 @@ async def _is_enabled() -> bool:
     return cfg.dashboard.llm_suggestions
 
 
-def _make_cache_key(pr_number: int, deterministic_state: str, pr_computed_state: str) -> str:
-    return f"{pr_number}|{deterministic_state}|{pr_computed_state}"
+def _make_cache_key(pr_number: int, deterministic_state: str, pr_computed_state: str, merge_state: str) -> str:
+    return f"{pr_number}|{deterministic_state}|{pr_computed_state}|{merge_state}"
 
 
 def _detect_backend() -> str | None:
@@ -182,8 +183,9 @@ async def get_llm_suggestion(
     has_sova_review: bool,
     sova_verdict: str | None,
     mergeable: str,
-    review_decision: str | None,
-    ci_passed: bool,
+    merge_state: str = "UNKNOWN",
+    review_decision: str | None = None,
+    ci_passed: bool = False,
     external_reviews_enabled: bool = True,
 ) -> dict | None:
     """Ask the LLM to suggest a PR action. Returns None on any error.
@@ -193,7 +195,7 @@ async def get_llm_suggestion(
     """
     global _warned_no_credentials
 
-    cache_key = _make_cache_key(pr_number, deterministic_state, pr_computed_state)
+    cache_key = _make_cache_key(pr_number, deterministic_state, pr_computed_state, merge_state)
     cached = _cache.get(cache_key)
     if cached is not None:
         return cached
@@ -218,6 +220,7 @@ async def get_llm_suggestion(
             has_sova_review=has_sova_review,
             sova_verdict=sova_verdict or "none",
             mergeable=mergeable or "unknown",
+            merge_state=merge_state or "unknown",
             review_decision=review_decision or "none",
             ci_passed=ci_passed,
             external_reviews_enabled=external_reviews_enabled,
