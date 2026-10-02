@@ -63,6 +63,22 @@ def _isolate_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempP
 
 
 @pytest.fixture(autouse=True)
+def _reset_connectivity_tracker() -> None:
+    """Start every test with the network considered healthy.
+
+    The tracker is a process-wide singleton that gates agent spawning, and it is
+    fed by ``track_rate_limit`` from every ``gh`` call site. A test that
+    simulates a transport failure twice would otherwise declare an outage for
+    the rest of the session and block spawns in unrelated tests. Resetting also
+    decouples the suite from the developer's actual connection, which the probe
+    would otherwise record.
+    """
+    from sova.supervisor.network_health import reset
+
+    reset()
+
+
+@pytest.fixture(autouse=True)
 def _reset_log_dedup() -> None:
     """Clear sova.utils.log_dedup state so one test's warning can't suppress another's.
 

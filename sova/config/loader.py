@@ -120,6 +120,7 @@ _NESTED_SECTIONS = (
     "supervisor",
     "runaway",
     "memory_guard",
+    "network_guard",
     "watchdog",
     "telemetry",
     "fleet",
@@ -226,6 +227,20 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
         [
             ("enabled", "SOVA_COMPRESSION_ENABLED"),
             ("min_chars", "SOVA_COMPRESSION_MIN_CHARS"),
+        ],
+    )
+
+    _apply_nested_env_overrides(
+        merged,
+        "network_guard",
+        "SOVA_NETWORK_GUARD_",
+        [
+            ("enabled", "SOVA_NETWORK_GUARD_ENABLED"),
+            ("block_spawns", "SOVA_NETWORK_GUARD_BLOCK_SPAWNS"),
+            ("auto_resume", "SOVA_NETWORK_GUARD_AUTO_RESUME"),
+            ("recovery_grace_seconds", "SOVA_NETWORK_GUARD_RECOVERY_GRACE_SECONDS"),
+            ("resume_window_minutes", "SOVA_NETWORK_GUARD_RESUME_WINDOW_MINUTES"),
+            ("max_auto_resumes_per_hour", "SOVA_NETWORK_GUARD_MAX_AUTO_RESUMES_PER_HOUR"),
         ],
     )
 

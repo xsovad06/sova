@@ -39,6 +39,7 @@ from sova.supervisor.gates.already_running import check_already_running
 from sova.supervisor.gates.budget import check_budget_gate
 from sova.supervisor.gates.ci_budget import check_ci_budget_gate
 from sova.supervisor.gates.circuit_breaker import check_address_review_circuit_breaker_gate
+from sova.supervisor.gates.connectivity import check_connectivity_gate
 from sova.supervisor.gates.dependency import check_dependency_gate
 from sova.supervisor.gates.file_conflict import check_file_overlap_gate
 from sova.supervisor.gates.human_involvement import check_human_involvement_gate
@@ -254,6 +255,15 @@ class TaskProgressionEngine:
         pair is not in the plan's approved list are converted to WAIT.
         Deterministic gates still hard-block regardless of the plan.
         """
+        # Checked before the rate limit gate and, more importantly, before
+        # build_dependency_graph() below: with the network down every API call
+        # in that build fails, so an unchecked cycle spends its whole budget
+        # discovering what one in-memory read already knows.
+        global_connectivity = check_connectivity_gate(self._config.network_guard)
+        if global_connectivity is not None:
+            log.info("evaluate_all.skipped_network_unreachable", detail=global_connectivity.detail)
+            return []
+
         global_rate_limit = check_github_rate_limit_gate(self._adapter.github_user)
         if global_rate_limit is not None:
             log.info("evaluate_all.skipped_rate_limited")

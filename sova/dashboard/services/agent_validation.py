@@ -181,6 +181,47 @@ def check_memory_pressure(project_dir: Path) -> tuple[dict | None, str | None]:
     return None, None
 
 
+def check_network_connectivity(project_dir: Path) -> tuple[dict | None, str | None]:
+    """Check network reachability before spawning an agent.
+
+    Same contract as ``check_memory_pressure``: ``(block_error, warning)``,
+    fail-open on any error. Unlike memory pressure there is no warn tier, since
+    reachability is binary.
+
+    This is the last-resort check at the spawn choke point, so it covers a
+    manual dashboard click as well as a supervisor-executed spawn (the
+    supervisor's own gate stops it deciding to spawn in the first place).
+    """
+    try:
+        from sova.supervisor.network_health import get_connectivity_status
+
+        # Tracker first, config second. The tracker read is in-memory while
+        # load_config() is a blocking TOML + DB read, and if the network is up
+        # there is nothing to block whatever the config says, so the common path
+        # does no I/O at all rather than paying a config load on every spawn.
+        status = get_connectivity_status()
+        if not status.is_down:
+            return None, None
+
+        from sova.config.loader import load_config
+
+        guard = load_config(project_dir).network_guard
+        if guard.enabled and guard.block_spawns:
+            return {
+                "code": "network_unreachable",
+                "error": (
+                    "No connection to GitHub or the LLM provider "
+                    f"(down for {round(status.down_for_seconds)}s). An agent spawned now would "
+                    "fail within seconds. Use --force to bypass."
+                ),
+                "down_seconds": round(status.down_for_seconds),
+            }, None
+    except Exception:  # noqa: BLE001 (network guard is advisory; spawning proceeds if it cannot be evaluated)
+        log.warning("network_guard.check_failed", exc_info=True)
+
+    return None, None
+
+
 async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
     """Move the issue to IN_PROGRESS on the configured tracker."""
     try:

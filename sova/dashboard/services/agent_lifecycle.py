@@ -170,6 +170,9 @@ from sova.dashboard.services.agent_validation import (
 from sova.dashboard.services.agent_validation import (
     check_memory_pressure as check_memory_pressure,
 )
+from sova.dashboard.services.agent_validation import (
+    check_network_connectivity as check_network_connectivity,
+)
 from sova.dashboard.services.feed_service import emit_safe
 from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.runtime import _PIPELINE_ROLES, get_runtime, spawn_direct
@@ -446,6 +449,11 @@ async def start_agent(
             return mem_block
         if mem_warn:
             log.warning("start_agent.memory_pressure_warning", message=mem_warn)
+
+        net_block, _ = check_network_connectivity(pa.project_dir)
+        if net_block:
+            log.warning("start_agent.network_unreachable", issue=issue, role=role)
+            return net_block
 
     pre_run_sha = None
     if pr_number:
@@ -732,6 +740,11 @@ async def start_command(
         return mem_block
     if mem_warn:
         log.warning("start_command.memory_pressure_warning", message=mem_warn)
+
+    net_block, _ = check_network_connectivity(pa.project_dir)
+    if net_block:
+        log.warning("start_command.network_unreachable", command=command)
+        return net_block
 
     pre_run_sha = None
     if pr_number:
