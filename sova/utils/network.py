@@ -54,14 +54,19 @@ _AMBIGUOUS_PATTERNS: tuple[str, ...] = (
     "connection reset by peer",
     "failed to connect to",
     "could not read from remote repository",
+    # Covers SOVA's own phrasing for a verification it could not complete
+    # ("GitHub was unreachable while checking PR #687"), which must round-trip
+    # through this predicate: the messages this codebase writes are re-read
+    # here to decide self-heal eligibility and address-cycle accounting.
+    "unreachable",
 )
 
 # Deliberately excludes a bare "http": it appears in unrelated prose and URLs
 # throughout this codebase's error text. Each entry names a remote host or a
 # transport endpoint specifically.
 _REMOTE_CORROBORATORS: tuple[str, ...] = (
-    "github.com",
-    "api.anthropic.com",
+    "github",
+    "anthropic",
     "githubstatus.com",
     "port 22",
     "port 443",

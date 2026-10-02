@@ -124,11 +124,11 @@ class TestAgentDbSessionFailures:
             agent_db._COMMAND_VALIDATORS,
             {"review-pr": AsyncMock(side_effect=RuntimeError("validator exploded"))},
         ):
-            assert await agent_db._validate_command_outcome(1, agent) is None
+            assert (await agent_db._validate_command_outcome(1, agent)).failure_reason is None
 
     async def test_check_pr_branch_pushed_returns_none_when_shell_raises(self) -> None:
         with patch("sova.dashboard.services.agent_db._fetch_pr_fields", side_effect=OSError("no gh")):
-            assert await agent_db._check_pr_branch_pushed(_agent()) is None
+            assert await agent_db._check_pr_branch_pushed(_agent()) == (None, False)
 
     async def test_finalize_task_run_returns_false_on_unexpected_error(self) -> None:
         with patch("sova.db.session.get_session", _broken_session(ValueError("bad state"))):

@@ -481,14 +481,25 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     # didn't actually perform its core work (e.g., address-pr without
     # pushing commits, review-pr without posting a review).
     if exit_code == 0 and run_id:
-        failure_reason = await _validate_command_outcome(run_id, agent)
+        validation = await _validate_command_outcome(run_id, agent)
+        failure_reason = validation.failure_reason
+        # A validation that could not reach GitHub proves nothing about the
+        # run, so it is recorded as "interrupted" rather than "failed". The
+        # pipeline validator is local and has no such ambiguity.
+        network_blocked = validation.network_blocked
         if not failure_reason:
             failure_reason = await _validate_pipeline_outcome(run_id, agent)
+            network_blocked = False
         if failure_reason:
-            await _downgrade_to_failed(run_id, failure_reason, agent.project_dir)
-            status = "failed"
+            status = "interrupted" if network_blocked else "failed"
+            await _downgrade_to_failed(run_id, failure_reason, agent.project_dir, status=status)
             exit_code = 1
-            log.warning("agent.outcome_validation_failed", run_id=run_id, reason=failure_reason)
+            log.warning(
+                "agent.outcome_validation_failed",
+                run_id=run_id,
+                reason=failure_reason,
+                status=status,
+            )
 
     if status_changed:
         try:
