@@ -61,6 +61,26 @@ class TestEditabilityGate:
         assert template_source.count("_rawToInputString(JSON.parse(span.dataset.raw))") == 2
 
 
+class TestFormatValueKeyParameter:
+    def test_key_is_declared_and_passed_when_the_body_uses_it(self, template_source: str) -> None:
+        """An undeclared `key` throws on the first boolean row and blanks the whole page.
+
+        loadConfig() wraps rendering in a catch-all that only shows "Failed to load
+        configuration", and the ReferenceError never reaches the server log (#1103).
+        """
+        signature = re.search(r"function formatValue\(([^)]*)\) \{", template_source)
+        assert signature, "formatValue() not found in settings.html"
+        params = [p.strip() for p in signature.group(1).split(",")]
+        body = template_source[signature.end() : template_source.index("\n}\n", signature.end())]
+
+        code = re.sub(r"//[^\n]*", "", body)  # a comment mentioning "key" is not a use of it
+        if re.search(r"\bkey\b", code):
+            assert "key" in params, "formatValue() uses `key` but does not declare it"
+            assert "formatValue(s.value, s.value_type, s.key)" in template_source, (
+                "renderSettingRow() does not pass s.key to formatValue()"
+            )
+
+
 class TestRegistryCoverage:
     def test_list_settings_exist_to_justify_the_gate(self) -> None:
         """If this ever hits zero the gate test above is vacuous."""
