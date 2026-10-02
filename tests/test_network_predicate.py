@@ -107,6 +107,41 @@ class TestFalsePositiveGuards:
         assert looks_like_network_outage(message) is False
 
 
+class TestRoundTripOfSovaOwnMessages:
+    """Messages SOVA writes itself must be recognised by this predicate.
+
+    They are not merely prose: ``count_address_review_runs`` and the network
+    self-heal pass re-read persisted ``error_message`` text through this
+    function, so a validator whose wording drifts out of the pattern table
+    silently stops excluding outage runs from the address-cycle budget and
+    stops qualifying them for resume. Caught exactly that way in review: the
+    first version of the validator message used "GitHub was unreachable",
+    which the table did not match.
+    """
+
+    def test_address_pr_unverified_message(self) -> None:
+        message = "address-pr outcome unverified: GitHub was unreachable while checking PR #687"
+        assert looks_like_network_outage(message) is True
+
+    def test_unreachable_needs_a_remote_subject(self) -> None:
+        # "unreachable" is in the corroboration-required tier, so an unrelated
+        # local use of the word is still not an outage.
+        assert looks_like_network_outage("coverage: this branch is unreachable") is False
+
+    def test_bare_unreachable_with_a_github_url_is_not_an_outage(self) -> None:
+        # Found in review: a bare "unreachable" paired with a corroborator as
+        # generic as "github" or a URL matched unrelated text too easily. A
+        # stack trace asserting a local code path is unreachable, happening to
+        # mention a github.com URL (e.g. in a package's __file__ path), must
+        # not be classified as a transport failure.
+        message = (
+            "AssertionError: code path unreachable\n"
+            '  File "/pkg/site-packages/foo/bar.py", line 12, in <module>\n'
+            "    # see https://github.com/example/foo for details"
+        )
+        assert looks_like_network_outage(message) is False
+
+
 class TestShellResultProperty:
     def test_detects_outage_in_stderr(self) -> None:
         result = ShellResult(returncode=1, stdout="", stderr="error connecting to api.github.com")

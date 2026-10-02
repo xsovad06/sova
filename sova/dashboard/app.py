@@ -393,8 +393,22 @@ async def _periodic_recovery_loop(project_dir: Path | None, is_multi: bool) -> N
     while True:
         await asyncio.sleep(_RECOVERY_INTERVAL)
         try:
+            from sova.dashboard.services.agent_recovery import attempt_network_self_heal
+
             for d in _collect_sweep_dirs(project_dir, is_multi=is_multi):
-                await recover_stale_runs(d)
+                try:
+                    await recover_stale_runs(d)
+                    # Strictly after recover_stale_runs: that is what moves a
+                    # zombie row into a terminal status, and self-heal eligibility
+                    # is evaluated on terminal status. Riding this loop rather than
+                    # taking a lifespan task of its own also gets multi-project
+                    # iteration and shutdown cancellation for free, and works for
+                    # dashboard-only users who run no supervisor daemon.
+                    await attempt_network_self_heal(d)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 (one project's failure must not stop recovery for the rest)
+                    log.warning("periodic_recovery.project_failed", directory=str(d), exc_info=True)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 (background recovery must survive any single-cycle error)

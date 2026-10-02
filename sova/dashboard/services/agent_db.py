@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from typing import NamedTuple
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -404,10 +405,14 @@ async def _fetch_output_lines(run_id: int, project_dir: Path | None) -> list[str
         return None
 
 
-async def _fetch_pr_fields(pr_number: int, project_dir: Path, fields: str, jq_expr: str) -> str | None:
+async def _fetch_pr_fields(pr_number: int, project_dir: Path, fields: str, jq_expr: str) -> tuple[str | None, bool]:
     """Fetch PR fields via gh CLI with standard timeout and error handling.
 
-    Returns the stripped stdout on success, None on any error.
+    Returns ``(value, network_blocked)``: the stripped stdout on success, else
+    None plus whether the call failed because the network was unreachable.
+    Callers need that second value to tell "verified: nothing happened" apart
+    from "could not verify", which during an outage is the difference between
+    blaming the agent and reporting the outage.
     """
     from sova.utils.shell import run as run_shell
 
@@ -424,11 +429,25 @@ async def _fetch_pr_fields(pr_number: int, project_dir: Path, fields: str, jq_ex
             cwd=project_dir,
             timeout=10,
         )
+        # This is a gh call that bypasses the adapter and sova/git/pr.py, so it
+        # would otherwise be invisible to the connectivity tracker.
+        _track_connectivity_safe(result)
         if result.success and (output := result.stdout.strip()):
-            return output
+            return output, False
+        return None, result.is_network_unreachable
     except (RuntimeError, OSError):
         log.debug("fetch_pr_fields.failed", pr=pr_number, fields=fields, exc_info=True)
-    return None
+    return None, False
+
+
+def _track_connectivity_safe(result: object) -> None:
+    """Feed a ShellResult to the connectivity tracker, never raising."""
+    try:
+        from sova.supervisor.network_health import track_connectivity
+
+        track_connectivity(result, source="github")
+    except Exception:  # noqa: BLE001 (tracking must never break the validation it observes)
+        log.debug("track_connectivity.failed", exc_info=True)
 
 
 async def _capture_pr_head_sha(pr_number: int, project_dir: Path) -> str | None:
@@ -437,40 +456,40 @@ async def _capture_pr_head_sha(pr_number: int, project_dir: Path) -> str | None:
     Returns None on any error (API failure, timeout, missing PR) so callers
     can fall through to existing validation logic.
     """
-    sha = await _fetch_pr_fields(pr_number, project_dir, "headRefOid", ".headRefOid")
+    sha, _ = await _fetch_pr_fields(pr_number, project_dir, "headRefOid", ".headRefOid")
     if sha:
         log.debug("capture_pr_head_sha.ok", pr=pr_number, sha=sha[:12])
     return sha
 
 
-async def _check_pr_pushed_via_sha(agent: AgentState) -> bool | None:
+async def _check_pr_pushed_via_sha(agent: AgentState) -> tuple[bool | None, bool]:
     """Compare the PR's current headRefOid against the pre-run snapshot.
 
-    Returns:
+    Returns ``(answer, network_blocked)`` where answer is:
         True  -- SHA changed (agent pushed) or PR is merged
         None  -- inconclusive (no pre_run_sha, API error, or SHAs match)
         Never returns False; matching SHAs fall through as inconclusive.
     """
     if agent.pre_run_sha is None or not agent.pr_number:
-        return None
+        return None, False
 
-    output = await _fetch_pr_fields(
+    output, network_blocked = await _fetch_pr_fields(
         agent.pr_number, agent.project_dir, "headRefOid,state", "[.headRefOid, .state] | @tsv"
     )
     if not output:
-        return None
+        return None, network_blocked
 
     parts = output.split("\t")
     if len(parts) < 2:
-        return None
+        return None, False
     current_sha, state = parts[0], parts[1]
 
     if not current_sha or not state:
-        return None
+        return None, False
 
     if state == "MERGED":
         log.info("check_pr_pushed_via_sha.merged", pr=agent.pr_number)
-        return True
+        return True, False
 
     if current_sha != agent.pre_run_sha:
         log.info(
@@ -479,13 +498,30 @@ async def _check_pr_pushed_via_sha(agent: AgentState) -> bool | None:
             before=agent.pre_run_sha[:12],
             after=current_sha[:12],
         )
-        return True
+        return True, False
 
     log.debug("check_pr_pushed_via_sha.unchanged", pr=agent.pr_number)
-    return None
+    return None, False
 
 
-async def _validate_address_pr(run_id: int, agent: AgentState) -> str | None:
+class OutcomeValidation(NamedTuple):
+    """Result of validating a command run's outcome.
+
+    ``network_blocked`` means the verification itself could not reach GitHub,
+    so the run's real outcome is unknown rather than known-bad. Callers record
+    that as "interrupted" instead of "failed": every tier of these validators
+    needs the network, so an outage otherwise produces a confident accusation
+    that the agent did nothing.
+    """
+
+    failure_reason: str | None
+    network_blocked: bool = False
+
+
+_VALID = OutcomeValidation(None)
+
+
+async def _validate_address_pr(run_id: int, agent: AgentState) -> OutcomeValidation:
     """Check that address-pr actually committed and pushed changes.
 
     Fail-closed: requires at least one tier to positively confirm the push.
@@ -494,50 +530,68 @@ async def _validate_address_pr(run_id: int, agent: AgentState) -> str | None:
       1. PR headRefOid changed (SHA comparison)
       2. Branch has no unpushed commits (git fetch + rev-list)
       3. Output text contains push keywords (requires 2+ distinct matches)
+
+    Fail-closed is right for an answer, but not for the absence of one: tiers
+    1 and 2 both need GitHub, so during an outage both go inconclusive and the
+    fallback used to report that the agent "completed without pushing changes".
+    A network-blocked verification is reported as such instead.
     """
     if agent.pr_number is None:
-        return "address-pr run has no associated PR number"
+        return OutcomeValidation("address-pr run has no associated PR number")
 
     # Tier 0: output must exist (agent actually ran)
     lines = await _fetch_output_lines(run_id, agent.project_dir)
     if lines is None:
-        return "address-pr produced no output (agent never ran meaningfully)"
+        return OutcomeValidation("address-pr produced no output (agent never ran meaningfully)")
 
     # Tier 1: SHA comparison (most reliable)
-    sha_pushed = await _check_pr_pushed_via_sha(agent)
+    sha_pushed, sha_blocked = await _check_pr_pushed_via_sha(agent)
     if sha_pushed is True:
-        return None
+        return _VALID
 
     # Tier 2: branch ref check
-    pushed = await _check_pr_branch_pushed(agent)
+    pushed, branch_blocked = await _check_pr_branch_pushed(agent)
     if pushed is True:
-        return None
+        return _VALID
     if pushed is False:
-        return "address-pr completed without pushing changes"
+        return OutcomeValidation("address-pr completed without pushing changes")
 
     # Tier 3: text scan (require 2+ distinct keyword matches to reduce false positives)
     lowered = [line.lower() for line in lines]
     matched_keywords = {kw for kw in _PUSH_KEYWORDS if any(kw in line for line in lowered)}
     if len(matched_keywords) >= 2:
-        return None
+        return _VALID
 
-    return "address-pr completed without pushing changes"
+    if sha_blocked or branch_blocked:
+        return OutcomeValidation(
+            f"address-pr outcome unverified: GitHub was unreachable while checking PR #{agent.pr_number}",
+            network_blocked=True,
+        )
+
+    return OutcomeValidation("address-pr completed without pushing changes")
 
 
-async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
-    """Check if the PR branch has unpushed commits. Returns None if inconclusive."""
+async def _check_pr_branch_pushed(agent: AgentState) -> tuple[bool | None, bool]:
+    """Check if the PR branch has unpushed commits.
+
+    Returns ``(answer, network_blocked)``; answer is None when inconclusive.
+    A failed ``git fetch`` is the common inconclusive case during an outage,
+    which is why its transport failure is reported rather than discarded.
+    """
     from sova.utils.shell import run as run_shell
 
     if not agent.pr_number:
-        return None
+        return None, False
     try:
-        branch = await _fetch_pr_fields(agent.pr_number, agent.project_dir, "headRefName", ".headRefName")
+        branch, network_blocked = await _fetch_pr_fields(
+            agent.pr_number, agent.project_dir, "headRefName", ".headRefName"
+        )
         if not branch:
-            return None
+            return None, network_blocked
 
         fetch_result = await run_shell("git", "fetch", "origin", branch, cwd=agent.project_dir, timeout=15)
         if not fetch_result.success:
-            return None
+            return None, fetch_result.is_network_unreachable
 
         count_result = await run_shell(
             "git",
@@ -548,12 +602,12 @@ async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
             timeout=5,
         )
         if count_result.success and count_result.stdout.strip() == "0":
-            return True
+            return True, False
         if count_result.success and count_result.stdout.strip().isdigit():
-            return False
+            return False, False
     except (RuntimeError, OSError):
         log.debug("check_pr_branch_pushed.failed", pr=agent.pr_number, exc_info=True)
-    return None
+    return None, False
 
 
 _PUSH_KEYWORDS = ("git push", "force-with-lease", "force-push", "pushed to", "pushed commit")
@@ -611,14 +665,14 @@ async def _persist_review_verdict(run_id: int, verdict: str, project_dir: Path |
         raise
 
 
-async def _validate_review_pr(run_id: int, agent: AgentState) -> str | None:
+async def _validate_review_pr(run_id: int, agent: AgentState) -> OutcomeValidation:
     """Check that review-pr posted a review, then persist the verdict as handoff_json."""
     if agent.pr_number is None:
-        return "review-pr run has no associated PR number"
+        return OutcomeValidation("review-pr run has no associated PR number")
 
     lines = await _fetch_output_lines(run_id, agent.project_dir)
     if lines is None:
-        return "review-pr has no recorded output"
+        return OutcomeValidation("review-pr has no recorded output")
 
     has_post_evidence = any(
         "review posted" in line.lower()
@@ -628,7 +682,7 @@ async def _validate_review_pr(run_id: int, agent: AgentState) -> str | None:
     )
 
     if not has_post_evidence:
-        return "review-pr completed without posting a review on GitHub"
+        return OutcomeValidation("review-pr completed without posting a review on GitHub")
 
     marker = _extract_review_verdict_marker(lines)
     if marker:
@@ -640,7 +694,7 @@ async def _validate_review_pr(run_id: int, agent: AgentState) -> str | None:
         sha = None
     await _persist_review_verdict(run_id, verdict, agent.project_dir, sha=sha)
 
-    return None
+    return _VALID
 
 
 async def _has_active_merge_queue_entry(pr_number: int, project_dir: Path) -> bool:
@@ -677,7 +731,7 @@ def _strip_command_prefix(role: str | None) -> str:
     return (role or "").removeprefix(_COMMAND_ROLE_PREFIX).removeprefix("/").split()[0]
 
 
-async def _validate_merge_command(run_id: int, agent: AgentState) -> str | None:
+async def _validate_merge_command(run_id: int, agent: AgentState) -> OutcomeValidation:
     """Check that integrate-pr / approve-merge actually reached a terminal PR state.
 
     A headless `claude -p` process can exit cleanly (exit 0, is_error=False)
@@ -691,7 +745,7 @@ async def _validate_merge_command(run_id: int, agent: AgentState) -> str | None:
     accepting "done".
     """
     if agent.pr_number is None:
-        return None
+        return _VALID
 
     from sova.config.loader import load_config
     from sova.git.pr import get_pr_status
@@ -700,20 +754,24 @@ async def _validate_merge_command(run_id: int, agent: AgentState) -> str | None:
         cfg = load_config(agent.project_dir)
         repo = cfg.github_repo
         if not repo:
-            return None
+            return _VALID
         pr_status = await get_pr_status(agent.pr_number, repo=repo, github_user=cfg.github_user)
     except Exception:  # noqa: BLE001 (config load or PR status lookup failure aborts validation gracefully)
+        # Unlike _validate_address_pr, this path needs no network-blocked
+        # branch: get_pr_status() raises on a transport failure and this
+        # already degrades to "no accusation", so an outage leaves the run as
+        # it was rather than reporting a merge that did not happen.
         log.debug("validate_merge_command.pr_status_failed", pr_number=agent.pr_number, exc_info=True)
-        return None
+        return _VALID
 
     if pr_status.state in ("MERGED", "CLOSED"):
-        return None
+        return _VALID
 
     if await _has_active_merge_queue_entry(agent.pr_number, agent.project_dir):
-        return None
+        return _VALID
 
     cmd_name = _strip_command_prefix(agent.role)
-    return f"{cmd_name} exited without merging PR #{agent.pr_number} (state={pr_status.state})"
+    return OutcomeValidation(f"{cmd_name} exited without merging PR #{agent.pr_number} (state={pr_status.state})")
 
 
 _COMMAND_VALIDATORS = {
@@ -726,26 +784,27 @@ _COMMAND_VALIDATORS = {
 _PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})
 
 
-async def _validate_command_outcome(run_id: int, agent: AgentState) -> str | None:
+async def _validate_command_outcome(run_id: int, agent: AgentState) -> OutcomeValidation:
     """Validate that a command run actually produced its expected outcome.
 
     For known command types (address-pr, review-pr), checks evidence of
     the expected side effects (commits pushed, review posted, etc.).
-    Returns an error message if validation fails, None if OK or unknown command.
+    Returns a failure reason if validation fails, and whether the verification
+    itself was blocked by the network being unreachable.
     """
     if not agent.role or not agent.role.startswith(_COMMAND_ROLE_PREFIX):
-        return None
+        return _VALID
 
     cmd_name = _strip_command_prefix(agent.role)
     validator_fn = _COMMAND_VALIDATORS.get(cmd_name)
     if not validator_fn:
-        return None
+        return _VALID
 
     try:
         return await validator_fn(run_id, agent)
     except Exception:  # noqa: BLE001 (a raising validator must not fail the run it is validating)
         log.debug("validate_command.failed", run_id=run_id, cmd=cmd_name, exc_info=True)
-        return None
+        return _VALID
 
 
 def _collect_bypass_diagnostics(
@@ -903,8 +962,15 @@ async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | No
         return None
 
 
-async def _downgrade_to_failed(run_id: int, reason: str, project_dir: Path) -> None:
-    """Downgrade a 'done' TaskRun to 'failed' with the given reason."""
+async def _downgrade_to_failed(run_id: int, reason: str, project_dir: Path, *, status: str = "failed") -> None:
+    """Downgrade a 'done' TaskRun to a failure status with the given reason.
+
+    ``status`` is "interrupted" when the outcome could not be verified rather
+    than verified as bad (a network-blocked validation): the work may well have
+    succeeded, so recording a definite failure would be an accusation the
+    evidence does not support. "interrupted" also makes the run eligible for
+    the network self-heal pass.
+    """
     try:
         from sova.db.models import TaskRun
         from sova.db.session import get_session
@@ -913,9 +979,9 @@ async def _downgrade_to_failed(run_id: int, reason: str, project_dir: Path) -> N
             async with session.begin():
                 task_run = await session.get(TaskRun, run_id)
                 if task_run and task_run.status == "done":
-                    task_run.status = "failed"
+                    task_run.status = status
                     task_run.error_message = reason
-                    log.warning("task_run.downgraded", run_id=run_id, reason=reason)
+                    log.warning("task_run.downgraded", run_id=run_id, reason=reason, status=status)
 
         from sova.dashboard.services.agent_recovery import rollback_issue_state
 
