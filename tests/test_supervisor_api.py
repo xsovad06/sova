@@ -275,6 +275,8 @@ class TestSupervisorRouter:
             resp = await client.get("/supervisor")
             assert resp.status_code == 200
             assert "Supervisor" in resp.text
+            assert "let _hideDone = _lsGet('sova-graph-hide-done') !== '0';" in resp.text
+            assert "visibleNodes.forEach" in resp.text
 
     async def test_get_status_with_daemon(self, app) -> None:
         from sova.dashboard.routers.supervisor import set_daemon_registry
