@@ -53,7 +53,7 @@
 
 {% block scripts %}
 <script>
-function formatValue(val, type) {
+function formatValue(val, type, key) {
   if (val === null || val === undefined || val === '') {
     return '<span class="text-gray-600 italic text-xs">not set</span>';
   }
@@ -104,7 +104,7 @@ function renderSettingRow(s) {
   var isBool = (s.value_type === 'boolean' || s.value === true || s.value === false);
   var isObject = (s.value_type === 'object');
   var editable = !isBool && !isObject;
-  var valHtml = formatValue(s.value, s.value_type);
+  var valHtml = formatValue(s.value, s.value_type, s.key);
   var descHtml = s.description
     ? '<div class="text-xs text-gray-600 mt-0.5">' + escapeHtml(s.description) + '</div>'
     : '';
