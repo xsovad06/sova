@@ -15,6 +15,10 @@ When the user asks to "start the next task", "what should we work on", or simila
 
 4. **Before starting work**: read `.claude/rules/architecture.md` for architectural context.
 
+## Interactive Development Location
+
+- **Do non-trivial work in a dedicated worktree, not the primary checkout.** The primary checkout should stay on `main`; every other active branch in this repo already lives under `.claude/worktrees/<issue-number>` (`git worktree list` shows the current set). An interactive session is not exempt just because no autonomous SOVA agent spawned it: on 2026-10-02 a full feature (5 commits, PR #1116) was developed and pushed entirely from the primary checkout before the user noticed and asked for it to be relocated. Before starting feature work: create the branch if it doesn't exist, then `git worktree add .claude/worktrees/<issue-or-topic> <branch>` and do all editing from that directory. If work already started in the primary checkout and the branch is pushed, it relocates losslessly: `git checkout main` in the primary checkout (frees the branch), then `git worktree add .claude/worktrees/<id> <branch>` to attach it elsewhere.
+
 ## Git Safety Before Commits
 
 - **Verify branch identity before committing or resetting**: always check `git branch --show-current` before committing or running `git reset --soft`. If a feature branch was already merged and you're on main, commits land on main and `reset --soft` detaches from `origin/main`. Run `git log main..HEAD --oneline` to confirm you're ahead of main on the intended branch. Fix: create a branch at HEAD, reset main back, switch to the new branch.
