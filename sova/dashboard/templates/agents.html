@@ -682,8 +682,15 @@ function renderTaskCard(item) {
       'data-tooltip="This PR has merge conflicts that must be resolved">Conflicts</a>';
   }
 
-  var metaStrip = (assigneeHtml || ageHtml || diffHtml || draftHtml || threadHtml || conflictHtml)
-    ? '<span class="flex items-center gap-1.5 shrink-0">' + assigneeHtml + ageHtml + diffHtml + draftHtml + threadHtml + conflictHtml + '</span>'
+  var behindHtml = '';
+  if (pd.merge_state === 'BEHIND') {
+    behindHtml = '<span class="px-2 py-0.5 rounded-full text-[10px] bg-accent-lavender/20 text-accent-lavender shrink-0" ' +
+      'data-tooltip="Base branch moved on; Integrate rebases first">Behind base</span>';
+  }
+
+  var metaBadges = [assigneeHtml, ageHtml, diffHtml, draftHtml, threadHtml, conflictHtml, behindHtml].join('');
+  var metaStrip = metaBadges
+    ? '<span class="flex items-center gap-1.5 shrink-0">' + metaBadges + '</span>'
     : '';
 
   var reasonChain = item.reason_chain || [];
@@ -945,8 +952,9 @@ async function fetchLlmSuggestions() {
         has_sova_review: sovaCtx.has_sova_review || false,
         sova_verdict: sovaCtx.verdict || null,
         mergeable: prDetails.mergeable || 'UNKNOWN',
+        merge_state: prDetails.merge_state || 'UNKNOWN',
         review_decision: prDetails.review_decision || null,
-        ci_passed: prDetails.ci_status === 'all_passed',
+        ci_passed: prDetails.ci_status === 'passed' || prDetails.ci_status === 'none',
         external_reviews_enabled: true
       };
       var resp = await fetch(apiUrl('/prs/' + item.pr_number + '/suggestion'), {

@@ -671,6 +671,7 @@ def _format_pr_details(pr: dict) -> dict:
         "state_label": pr.get("state_label", ""),
         "url": pr.get("url", ""),
         "mergeable": pr.get("mergeable", ""),
+        "merge_state": pr.get("merge_state", ""),
         "author": pr.get("author", ""),
         "age_seconds": pr.get("age_seconds", 0),
         "is_draft": pr.get("is_draft", False),

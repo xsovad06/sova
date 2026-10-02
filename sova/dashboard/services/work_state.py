@@ -213,18 +213,22 @@ def _get_actions(
     return actions.get(state, (None, []))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class PRFacts:
     """Pure snapshot of everything resolve_next_action() needs to decide a PR's next action.
 
     Built by the caller (dashboard or supervisor) from already-fetched data;
-    resolve_next_action() itself performs no I/O.
+    resolve_next_action() itself performs no I/O. kw_only=True so inserting a new field
+    anywhere in this list (as merge_state was, #1109) can never silently shift a value
+    into the wrong same-typed field at a positional call site.
     """
 
     running_agent: bool
     pr_state: str  # "OPEN" | "MERGED" | "CLOSED"
     is_draft: bool
     mergeable: str  # "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
+    # GitHub mergeStateStatus: CLEAN|BEHIND|BLOCKED|DIRTY|UNSTABLE|HAS_HOOKS|DRAFT|UNKNOWN, "" when not fetched
+    merge_state: str
     ci_status: str  # "" | "pending" | "running" | "passed" | "failed"
     head_sha: str
     sova_verdict: str | None  # "approve" | "revise" | "block" | "post_failed" | None
@@ -269,21 +273,64 @@ def _has_standing_sova_changes(facts: PRFacts) -> bool:
     )
 
 
+# GitHub mergeStateStatus values grouped by whether the merge button works.
+# BEHIND merges successfully (the base branch just moved on; /integrate-pr
+# Phase 2 already rebases before merging). UNSTABLE also merges successfully:
+# per GitHub's documented mergeStateStatus semantics it means only
+# *non-required* status checks haven't passed, so the merge button still
+# works and it belongs with the mergeable states, not the blocked ones. BLOCKED
+# is the one state the ladder surfaces as "GitHub blocks merging" (a required
+# check or review is missing); DIRTY/DRAFT are handled by their own earlier
+# rules but never merge either. DRAFT is included here defensively: a draft PR
+# is normally caught by the earlier `draft` rule (via `facts.is_draft`), but if
+# some future caller reaches `_github_will_merge()` through a path that
+# bypasses that rule, `merge_state == "DRAFT"` still forces this to return
+# False rather than falling through to a possibly-stale `mergeable` value
+# (spec edge case 3).
+_MERGE_STATES_MERGEABLE = frozenset({"CLEAN", "BEHIND", "HAS_HOOKS", "UNSTABLE"})
+_MERGE_STATES_BLOCKED_BY_GITHUB = frozenset({"BLOCKED"})
+_MERGE_STATES_UNMERGEABLE = _MERGE_STATES_BLOCKED_BY_GITHUB | {"DIRTY", "DRAFT"}
+
+
+def _github_will_merge(facts: PRFacts) -> bool:
+    """True when GitHub's own merge button would work for this PR.
+
+    An unknown or unfetched merge_state ("UNKNOWN" or "") falls back to the
+    older `mergeable` field: GitHub returns UNKNOWN while it is still
+    recomputing mergeStateStatus (observed as three consecutive UNKNOWN reads on
+    a genuinely CLEAN PR right after a push), so falling back rather than
+    blocking avoids flapping between ready/not-ready across polls during that
+    recompute window.
+    """
+    if facts.merge_state in _MERGE_STATES_MERGEABLE:
+        return True
+    if facts.merge_state in _MERGE_STATES_UNMERGEABLE:
+        return False
+    return facts.mergeable == "MERGEABLE"
+
+
 def _unmet_merge_conditions(facts: PRFacts) -> list[str]:
     """Every merge precondition the PR currently fails, phrased for the reason chain.
 
     Empty means the PR satisfies all of them. Shared by the ladder's
-    "ready_to_merge" rule and its renderer so the two cannot diverge.
+    "ready_to_merge" rule and its renderer so the two cannot diverge. The
+    GitHub-merge-state message mirrors _github_will_merge()'s own branching
+    exactly (merge_state when it is one of the recognised unmergeable states,
+    mergeable otherwise) rather than an `or` chain over both fields, so the
+    reported field is always the one that actually decided the outcome.
     """
     unmet: list[str] = []
     if facts.sova_verdict != "approve":
         unmet.append(f"verdict is {facts.sova_verdict or 'none'}, not approve")
     if facts.thread_signal != "clear":
         unmet.append(f"threads are {facts.thread_signal}")
-    if facts.ci_status != "passed":
+    if facts.ci_status not in ("passed", "none"):
         unmet.append(f"CI status is {facts.ci_status or 'unknown'}")
-    if facts.mergeable != "MERGEABLE":
-        unmet.append(f"mergeable status is {facts.mergeable}")
+    if not _github_will_merge(facts):
+        if facts.merge_state in _MERGE_STATES_UNMERGEABLE:
+            unmet.append(f"GitHub merge state is {facts.merge_state}")
+        else:
+            unmet.append(f"GitHub merge state is {facts.mergeable or 'unknown'}")
     return unmet
 
 
@@ -305,7 +352,7 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
         return Resolution(WorkItemState.MERGED, None, tuple(chain))
 
     chain.append("conflicting")
-    if facts.mergeable == "CONFLICTING":
+    if facts.mergeable == "CONFLICTING" or facts.merge_state == "DIRTY":
         return Resolution(WorkItemState.PR_CONFLICTED, "rebase", tuple(chain))
 
     chain.append("draft")
@@ -349,6 +396,18 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
         state = WorkItemState.PR_SOVA_PENDING if facts.external_reviews_enabled else WorkItemState.PR_AWAITING_REVIEW
         return Resolution(state, "review_pr", tuple(chain))
 
+    chain.append("merge_blocked_by_github")
+    if facts.merge_state in _MERGE_STATES_BLOCKED_BY_GITHUB:
+        # action_id is None on purpose: a SOVA review is always posted with
+        # event="COMMENT" (see ReviewerRole._post_review), so re-reviewing can
+        # never satisfy a branch-protection approval requirement nor turn a
+        # failing non-required check green. Emitting "review_pr" here would let
+        # the supervisor spawn a reviewer on every poll cycle for a PR no
+        # review can unblock; None routes it to CHECKPOINT_NEEDED for a human
+        # instead. The dashboard is unaffected: its buttons come from
+        # _get_actions(state), not from action_id.
+        return Resolution(WorkItemState.PR_AWAITING_REVIEW, None, tuple(chain))
+
     chain.append("ready_to_merge")
     if not _unmet_merge_conditions(facts):
         return Resolution(WorkItemState.PR_READY_TO_MERGE, "integrate", tuple(chain))
@@ -371,10 +430,12 @@ def _fact_merged(facts: PRFacts) -> str:
 
 
 def _fact_conflicting(facts: PRFacts) -> str:
-    if facts.mergeable == "UNKNOWN":
-        return "mergeable status is unknown"
     if facts.mergeable == "CONFLICTING":
         return "PR has merge conflicts"
+    if facts.merge_state == "DIRTY":
+        return "GitHub reports the PR as DIRTY (needs a manual merge)"
+    if facts.mergeable == "UNKNOWN":
+        return "mergeable status is unknown"
     return f"PR mergeable status is {facts.mergeable}"
 
 
@@ -438,10 +499,16 @@ def _fact_external_changes_or_unresolved_threads(facts: PRFacts) -> str:
     return "no external changes requested and review threads are clear"
 
 
+def _fact_merge_blocked_by_github(facts: PRFacts) -> str:
+    if facts.merge_state in _MERGE_STATES_BLOCKED_BY_GITHUB:
+        return f"GitHub blocks merging (mergeStateStatus: {facts.merge_state})"
+    return "GitHub does not block merging"
+
+
 def _fact_ready_to_merge(facts: PRFacts) -> str:
     unmet = _unmet_merge_conditions(facts)
     if not unmet:
-        return "approved, threads clear, CI passed, and mergeable: ready to merge"
+        return "approved, threads clear, CI not blocking, and mergeable: ready to merge"
     return "not ready to merge (" + "; ".join(unmet) + ")"
 
 
@@ -461,6 +528,7 @@ _RULE_RENDERERS: dict[str, Callable[[PRFacts], str]] = {
     "sova_verdict_addressed": _fact_sova_verdict_addressed,
     "no_sova_review": _fact_no_sova_review,
     "external_changes_or_unresolved_threads": _fact_external_changes_or_unresolved_threads,
+    "merge_blocked_by_github": _fact_merge_blocked_by_github,
     "ready_to_merge": _fact_ready_to_merge,
     "awaiting_review": _fact_awaiting_review,
 }
@@ -514,6 +582,7 @@ def _build_pr_facts(
         pr_state=pr_data.get("state", "OPEN"),
         is_draft=bool(pr_data.get("is_draft", False)),
         mergeable=pr_data.get("mergeable") or "UNKNOWN",
+        merge_state=pr_data.get("merge_state") or "",
         ci_status=pr_data.get("ci_status", ""),
         head_sha=pr_data.get("head_sha", ""),
         sova_verdict=None if sova_verdict_addressed else raw_verdict,

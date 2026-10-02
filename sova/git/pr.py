@@ -88,6 +88,7 @@ class PRStatus:
     review_decision: str
     url: str
     title: str
+    merge_state: str = ""  # GitHub mergeStateStatus: CLEAN|BEHIND|BLOCKED|DIRTY|UNSTABLE|HAS_HOOKS|DRAFT|UNKNOWN
 
     @property
     def is_open(self) -> bool:
@@ -389,7 +390,7 @@ async def list_open_prs(*, repo: str, github_user: str = "", author: str | None 
         "open",
         "--json",
         "number,title,headRefName,headRefOid,url,reviewDecision,isDraft,author,"
-        "labels,createdAt,updatedAt,body,state,statusCheckRollup,mergeable,"
+        "labels,createdAt,updatedAt,body,state,statusCheckRollup,mergeable,mergeStateStatus,"
         "latestReviews,closingIssuesReferences,"
         "additions,deletions,changedFiles,assignees",
         "--limit",
@@ -681,7 +682,7 @@ async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> 
         "--repo",
         repo,
         "--json",
-        "number,state,mergeable,reviewDecision,url,title",
+        "number,state,mergeable,mergeStateStatus,reviewDecision,url,title",
         env=env,
     )
     _track_gh_rate_limit(result, github_user)
@@ -701,6 +702,7 @@ async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> 
         review_decision=data.get("reviewDecision", "") or "",
         url=data.get("url", ""),
         title=data.get("title", ""),
+        merge_state=data.get("mergeStateStatus") or "",
     )
 
 
