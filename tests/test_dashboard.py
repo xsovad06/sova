@@ -7981,6 +7981,80 @@ class TestWorkflowBudgetForceBypass:
 # ---------------------------------------------------------------------------
 
 
+class TestNetworkConnectivityPreSpawnCheck:
+    """check_network_connectivity blocks spawns while the network is unreachable."""
+
+    @staticmethod
+    def _cfg(*, enabled: bool = True, block_spawns: bool = True):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(network_guard=SimpleNamespace(enabled=enabled, block_spawns=block_spawns))
+
+    @staticmethod
+    def _status(*, is_down: bool):
+        from sova.supervisor.network_health import ConnectivityStatus
+
+        return ConnectivityStatus(
+            is_down=is_down,
+            down_for_seconds=45.0 if is_down else 0.0,
+            healthy_for_seconds=0.0 if is_down else 600.0,
+            consecutive_failures=2 if is_down else 0,
+            last_source="probe",
+        )
+
+    def test_blocks_while_unreachable(self) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_network_connectivity
+
+        with (
+            patch("sova.config.loader.load_config", return_value=self._cfg()),
+            patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=True)),
+        ):
+            block, warn = check_network_connectivity(Path("/tmp"))
+
+        assert block is not None
+        assert block["code"] == "network_unreachable"
+        assert "45s" in block["error"]
+        # Reachability is binary, so unlike memory pressure there is no warn tier.
+        assert warn is None
+
+    def test_clear_when_reachable(self) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_network_connectivity
+
+        with (
+            patch("sova.config.loader.load_config", return_value=self._cfg()),
+            patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=False)),
+        ):
+            assert check_network_connectivity(Path("/tmp")) == (None, None)
+
+    def test_respects_disabled_config(self) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_network_connectivity
+
+        with patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=True)):
+            with patch("sova.config.loader.load_config", return_value=self._cfg(enabled=False)):
+                assert check_network_connectivity(Path("/tmp")) == (None, None)
+            with patch("sova.config.loader.load_config", return_value=self._cfg(block_spawns=False)):
+                assert check_network_connectivity(Path("/tmp")) == (None, None)
+
+    def test_fails_open_when_unevaluable(self) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_network_connectivity
+
+        # An unloadable config must not stop every spawn on the machine.
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+            assert check_network_connectivity(Path("/tmp")) == (None, None)
+
+
 class TestMemoryPressureGate:
     """check_memory_pressure blocks, warns, or clears based on available memory."""
 

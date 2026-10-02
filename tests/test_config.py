@@ -1486,6 +1486,54 @@ def test_feed_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert cfg.feed.page_size == 25
 
 
+class TestNetworkGuardConfig:
+    def test_defaults(self) -> None:
+        from sova.config.models import NetworkGuardConfig
+
+        cfg = NetworkGuardConfig()
+        assert cfg.enabled is True
+        assert cfg.block_spawns is True
+        assert cfg.auto_resume is True
+        assert cfg.recovery_grace_seconds == 120
+        assert cfg.resume_window_minutes == 30
+        assert cfg.max_auto_resumes_per_hour == 3
+
+    def test_project_config_includes_section(self) -> None:
+        assert ProjectConfig().network_guard.enabled is True
+
+    def test_toml_section_is_read(self, tmp_path: Path) -> None:
+        # The _NESTED_SECTIONS leg: without it a [network_guard] block in the
+        # TOML is silently ignored and nothing raises.
+        (tmp_path / "sova.toml").write_text("[network_guard]\nblock_spawns = false\nresume_window_minutes = 90\n")
+        cfg = load_config(tmp_path)
+        assert cfg.network_guard.block_spawns is False
+        assert cfg.network_guard.resume_window_minutes == 90
+
+    def test_env_overrides(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The fourth registration leg, the one that is easy to miss: sections
+        # work end-to-end through TOML and the dashboard without it, and only
+        # the env var path silently no-ops (confirmed twice, #860 and #945).
+        (tmp_path / "sova.toml").write_text("[network_guard]\nauto_resume = true\nrecovery_grace_seconds = 120\n")
+        monkeypatch.setenv("SOVA_NETWORK_GUARD_AUTO_RESUME", "false")
+        monkeypatch.setenv("SOVA_NETWORK_GUARD_RECOVERY_GRACE_SECONDS", "300")
+        monkeypatch.setenv("SOVA_NETWORK_GUARD_MAX_AUTO_RESUMES_PER_HOUR", "9")
+
+        cfg = load_config(tmp_path)
+        assert cfg.network_guard.auto_resume is False
+        assert cfg.network_guard.recovery_grace_seconds == 300
+        assert cfg.network_guard.max_auto_resumes_per_hour == 9
+
+    def test_every_field_has_settings_metadata(self) -> None:
+        # Without a SettingMeta entry a field never appears in the dashboard
+        # settings UI, which for this section would mean no way to turn off
+        # spawn blocking from the one surface that shows the outage banner.
+        from sova.config.models import NetworkGuardConfig
+        from sova.dashboard.settings_meta import get_meta
+
+        for field_name in NetworkGuardConfig.model_fields:
+            assert get_meta(f"network_guard.{field_name}") is not None, field_name
+
+
 class TestAtlassianMCPConfig:
     def test_disabled_by_default(self) -> None:
         cfg = AtlassianMCPConfig()

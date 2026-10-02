@@ -832,6 +832,32 @@ class MemoryGuardConfig(BaseSettings):
         return self
 
 
+class NetworkGuardConfig(BaseSettings):
+    """Network reachability gate and outage self-heal."""
+
+    enabled: bool = True
+    # Refuse new spawns while the network is confirmed down. An agent spawned
+    # during an outage dies within seconds having accomplished nothing, so the
+    # block saves a slot and a wall of misleading failures rather than
+    # withholding useful work. force=True still bypasses it, matching the
+    # memory guard.
+    block_spawns: bool = True
+    # Resume runs that failed because of the outage once it clears. Only runs
+    # whose persisted error text positively identifies a transport failure are
+    # ever eligible; see attempt_network_self_heal().
+    auto_resume: bool = True
+    # Seconds the connection must be continuously healthy before any resume.
+    # Resuming the instant a flapping connection first answers would spend the
+    # retry budget on an outage that has not actually ended.
+    recovery_grace_seconds: int = Field(120, ge=0)
+    # How recently a run must have failed to be resumed. Older failures are
+    # assumed to have been superseded or handled by hand.
+    resume_window_minutes: int = Field(30, ge=1)
+    max_auto_resumes_per_hour: int = Field(3, ge=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_NETWORK_GUARD_")
+
+
 class WatchdogConfig(BaseSettings):
     """Agent watchdog: detects stuck, zombie, and bypassed agent processes."""
 
@@ -1093,6 +1119,7 @@ class ProjectConfig(BaseSettings):
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     runaway: RunawayConfig = Field(default_factory=RunawayConfig)
     memory_guard: MemoryGuardConfig = Field(default_factory=MemoryGuardConfig)
+    network_guard: NetworkGuardConfig = Field(default_factory=NetworkGuardConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     fleet: FleetConfig = Field(default_factory=FleetConfig)

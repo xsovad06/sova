@@ -162,6 +162,17 @@ def get_connectivity_tracker() -> ConnectivityTracker:
     return _tracker
 
 
+def reset() -> None:
+    """Reset the tracker to a healthy state.
+
+    For tests: this is process-wide mutable state that gates agent spawning, so
+    one test recording a transport failure would otherwise block spawns in every
+    test that follows. Sibling of ``sova.utils.log_dedup.reset``.
+    """
+    global _tracker
+    _tracker = ConnectivityTracker()
+
+
 def get_connectivity_status() -> ConnectivityStatus:
     return _tracker.get_status()
 
