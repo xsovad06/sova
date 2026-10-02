@@ -2749,6 +2749,68 @@ class TestApiHealth:
         assert result["api_health"]["status"] == "ok"
 
     @pytest.mark.asyncio
+    async def test_api_health_unreachable(self, monkeypatch, tmp_path) -> None:
+        """When the network is down, api_health reports unreachable."""
+        from sova.supervisor.network_health import ConnectivityStatus
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_item_service._fetch_all_sources",
+            AsyncMock(return_value=([], [], [], {"agents": [], "completed": []})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool._get_project_agents",
+            MagicMock(return_value=MagicMock(max_concurrent=3)),
+        )
+        monkeypatch.setattr(
+            "sova.supervisor.network_health.get_connectivity_status",
+            lambda: ConnectivityStatus(
+                is_down=True,
+                down_for_seconds=90.0,
+                healthy_for_seconds=0.0,
+                consecutive_failures=2,
+                last_source="probe",
+            ),
+        )
+
+        result = await get_work_items(project_dir=tmp_path)
+        assert result["api_health"]["status"] == "unreachable"
+        assert result["api_health"]["down_seconds"] == 90
+
+    @pytest.mark.asyncio
+    async def test_api_health_unreachable_supersedes_rate_limited(self, monkeypatch, tmp_path) -> None:
+        """An outage outranks a throttle: the cooldown is not the operator's problem."""
+        from sova.supervisor.github_quota import GitHubQuotaStatus
+        from sova.supervisor.network_health import ConnectivityStatus
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_item_service._fetch_all_sources",
+            AsyncMock(return_value=([], [], [], {"agents": [], "completed": []})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool._get_project_agents",
+            MagicMock(return_value=MagicMock(max_concurrent=3)),
+        )
+        monkeypatch.setattr(
+            "sova.supervisor.github_quota.get_github_quota_status",
+            lambda _user: GitHubQuotaStatus(
+                is_limited=True, last_hit_at=100.0, hits_in_window=5, cooldown_remaining_seconds=120.0
+            ),
+        )
+        monkeypatch.setattr(
+            "sova.supervisor.network_health.get_connectivity_status",
+            lambda: ConnectivityStatus(
+                is_down=True,
+                down_for_seconds=30.0,
+                healthy_for_seconds=0.0,
+                consecutive_failures=3,
+                last_source="github",
+            ),
+        )
+
+        result = await get_work_items(project_dir=tmp_path)
+        assert result["api_health"]["status"] == "unreachable"
+
+    @pytest.mark.asyncio
     async def test_api_health_exception_contained(self, monkeypatch, tmp_path) -> None:
         """If quota status throws, api_health falls back to ok."""
         monkeypatch.setattr(
