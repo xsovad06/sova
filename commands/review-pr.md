@@ -177,15 +177,45 @@ REVIEW_JSON
 
 **Scoring guidance**: bump to 3+ (not 1-2) if the finding removes code/duplication, improves error handling, fixes misleading docs, or eliminates dead code. Reserve 1-2 only for purely subjective preferences (naming, comment wording, formatting not caught by linter).
 
+Read the severity thresholds from the primary checkout's SOVA database (this command usually runs inside a worktree), mirroring `/address-pr` step 16's pattern. Findings at or above `REVISE_AT` block the verdict and get inline comments; findings below it are advisory (body text only, never discarded):
+
+```bash
+SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+RAW_REVISE=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
+  "SELECT value FROM project_settings WHERE key='review.revise_severity';" 2>/dev/null || true)
+RAW_BLOCK=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
+  "SELECT value FROM project_settings WHERE key='review.block_severity';" 2>/dev/null || true)
+# Validate as a 1-10 integer before trusting it: a config-tolerant repair can
+# persist an out-of-range or malformed value (-2, 3.5, 12) while load_config()
+# is broken, and tr -cd would silently mangle it (e.g. "3.5" -> "35") instead
+# of falling back to the default.
+case "$RAW_REVISE" in
+  [1-9]|10) REVISE_AT="$RAW_REVISE" ;;
+  *) REVISE_AT=3 ;;
+esac
+case "$RAW_BLOCK" in
+  [1-9]|10) BLOCK_AT="$RAW_BLOCK" ;;
+  *) BLOCK_AT=7 ;;
+esac
+[ "$REVISE_AT" -le "$BLOCK_AT" ] || {
+  REVISE_AT=3
+  BLOCK_AT=7
+}
+```
+
 Format the review body through the shared SOVA formatter:
 
 ```bash
-REVIEW_BODY=$(python3 -c "import sys; from sova.roles._review_format import format_from_json; print(format_from_json(sys.stdin.read()))" < "${ARTIFACT_PREFIX}-findings.json") || REVIEW_BODY=""
+REVIEW_BODY=$(REVISE_AT="$REVISE_AT" BLOCK_AT="$BLOCK_AT" python3 -c "
+import os, sys
+from sova.roles._review_format import format_from_json
+print(format_from_json(sys.stdin.read(), revise_at=int(os.environ['REVISE_AT']), block_at=int(os.environ['BLOCK_AT'])))
+" < "${ARTIFACT_PREFIX}-findings.json") || REVIEW_BODY=""
 ```
 
-The formatter produces: `<!-- sova-review: {verdict} sha={sha} -->` marker, `## Review:` heading, severity-sorted findings with `[LABEL N/10]` scores, `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity (7+ = block, any lower non-zero severity = revise, no findings = approve).
+The formatter produces: `<!-- sova-review: {verdict} sha={sha} -->` marker, `## Review:` heading, findings split into `### Findings` (severity >= `REVISE_AT`, blocking) and `### Advisory (not blocking)` (severity < `REVISE_AT`, still recorded but does not block), `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity: `BLOCK_AT` or above = block, `REVISE_AT` up to `BLOCK_AT` = revise, below `REVISE_AT` or no findings = approve.
 
-**Fallback**: if `python3` fails (SOVA not installed, import error, malformed JSON), `REVIEW_BODY` will be empty. In that case, write the review body manually: first line `<!-- sova-review: {verdict} sha={headRefOid} -->`, then `### Findings` heading, then findings as `- **[LABEL N/10]** [category] \`file:line\`: description. Fix: suggestion`. Determine the verdict from the highest severity in your JSON: 7+ = block, any findings (severity 1-6) = revise, no findings = approve. A finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely.
+**Fallback**: if `python3` fails (SOVA not installed, import error, malformed JSON), `REVIEW_BODY` will be empty. In that case, write the review body manually: first line `<!-- sova-review: {verdict} sha={headRefOid} -->`, then `### Findings` heading, then findings as `- **[LABEL N/10]** [category] \`file:line\`: description. Fix: suggestion`. Determine the verdict from the highest severity in your JSON against `REVISE_AT`/`BLOCK_AT` (defaults 3/7 if unresolved): `BLOCK_AT` or above = block, `REVISE_AT` or above = revise, below `REVISE_AT` or no findings = approve. A finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely.
 
 ## 7. Post Review on GitHub
 
@@ -213,10 +243,34 @@ command-driven review and an autonomous one produce identical output:
 ARTIFACT_PREFIX="<the exact value computed in Step 1>"
 # Set EVENT based on your verdict above: APPROVE, REQUEST_CHANGES or COMMENT
 export EVENT=REQUEST_CHANGES
+# REVISE_AT/BLOCK_AT must equal the values resolved in Step 6 (re-read here
+# since this is a separate shell invocation).
+SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+RAW_REVISE=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
+  "SELECT value FROM project_settings WHERE key='review.revise_severity';" 2>/dev/null || true)
+RAW_BLOCK=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
+  "SELECT value FROM project_settings WHERE key='review.block_severity';" 2>/dev/null || true)
+case "$RAW_REVISE" in
+  [1-9]|10) REVISE_AT="$RAW_REVISE" ;;
+  *) REVISE_AT=3 ;;
+esac
+case "$RAW_BLOCK" in
+  [1-9]|10) BLOCK_AT="$RAW_BLOCK" ;;
+  *) BLOCK_AT=7 ;;
+esac
+[ "$REVISE_AT" -le "$BLOCK_AT" ] || {
+  REVISE_AT=3
+  BLOCK_AT=7
+}
 
 build_payload() {
-  EVENT="$1" python3 -c "import os, sys; from sova.roles._review_comments import build_review_payload_from_json; print(build_review_payload_from_json(open(sys.argv[1]).read(), open(sys.argv[2]).read(), os.environ['EVENT']))" \
-    "${ARTIFACT_PREFIX}-findings.json" "${ARTIFACT_PREFIX}-diff.txt" \
+  EVENT="$1" REVISE_AT="$REVISE_AT" BLOCK_AT="$BLOCK_AT" python3 -c "
+import os, sys
+from sova.roles._review_comments import build_review_payload_from_json
+print(build_review_payload_from_json(
+    open(sys.argv[1]).read(), open(sys.argv[2]).read(), os.environ['EVENT'],
+    revise_at=int(os.environ['REVISE_AT']), block_at=int(os.environ['BLOCK_AT'])))
+" "${ARTIFACT_PREFIX}-findings.json" "${ARTIFACT_PREFIX}-diff.txt" \
     > "${ARTIFACT_PREFIX}-payload.json"
 }
 
@@ -237,9 +291,31 @@ main attempt.
    before retrying:
    ```bash
    ARTIFACT_PREFIX="<the exact value computed in Step 1>"
+   SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+   RAW_REVISE=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
+     "SELECT value FROM project_settings WHERE key='review.revise_severity';" 2>/dev/null || true)
+   RAW_BLOCK=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
+     "SELECT value FROM project_settings WHERE key='review.block_severity';" 2>/dev/null || true)
+   case "$RAW_REVISE" in
+     [1-9]|10) REVISE_AT="$RAW_REVISE" ;;
+     *) REVISE_AT=3 ;;
+   esac
+   case "$RAW_BLOCK" in
+     [1-9]|10) BLOCK_AT="$RAW_BLOCK" ;;
+     *) BLOCK_AT=7 ;;
+   esac
+   [ "$REVISE_AT" -le "$BLOCK_AT" ] || {
+     REVISE_AT=3
+     BLOCK_AT=7
+   }
    build_payload() {
-     EVENT="$1" python3 -c "import os, sys; from sova.roles._review_comments import build_review_payload_from_json; print(build_review_payload_from_json(open(sys.argv[1]).read(), open(sys.argv[2]).read(), os.environ['EVENT']))" \
-       "${ARTIFACT_PREFIX}-findings.json" "${ARTIFACT_PREFIX}-diff.txt" \
+     EVENT="$1" REVISE_AT="$REVISE_AT" BLOCK_AT="$BLOCK_AT" python3 -c "
+import os, sys
+from sova.roles._review_comments import build_review_payload_from_json
+print(build_review_payload_from_json(
+    open(sys.argv[1]).read(), open(sys.argv[2]).read(), os.environ['EVENT'],
+    revise_at=int(os.environ['REVISE_AT']), block_at=int(os.environ['BLOCK_AT'])))
+" "${ARTIFACT_PREFIX}-findings.json" "${ARTIFACT_PREFIX}-diff.txt" \
        > "${ARTIFACT_PREFIX}-payload.json"
    }
    build_payload COMMENT

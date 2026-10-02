@@ -190,6 +190,8 @@ class TestPostReviewReturnsBool:
 
         role = ReviewerRole()
         mock_ctx = MagicMock()
+        mock_ctx.config.review.revise_severity = 3
+        mock_ctx.config.review.block_severity = 7
         # First call (with inline comments) raises; second call (body-only) succeeds.
         mock_ctx.adapter.post_pr_review = AsyncMock(side_effect=[RuntimeError("inline failed"), None])
         mock_ctx.adapter.post_pr_comment = AsyncMock()
@@ -214,6 +216,8 @@ class TestPostReviewReturnsBool:
 
         role = ReviewerRole()
         mock_ctx = MagicMock()
+        mock_ctx.config.review.revise_severity = 3
+        mock_ctx.config.review.block_severity = 7
         mock_ctx.adapter.post_pr_review = AsyncMock(side_effect=RuntimeError("review API down"))
         mock_ctx.adapter.post_pr_comment = AsyncMock()
         mock_ctx.pr_number = 1

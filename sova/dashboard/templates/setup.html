@@ -208,10 +208,6 @@
               <label class="block text-xs text-gray-400 mb-1">Max Budget (USD)</label>
               <input name="max_budget" type="text" value="10.00" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
             </div>
-            <div>
-              <label class="block text-xs text-gray-400 mb-1">Review Rounds</label>
-              <input name="review_max_rounds" type="number" value="2" min="0" max="5" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
-            </div>
           </div>
         </div>
 
@@ -388,7 +384,6 @@ function prefillForm(data) {
   f('task_source', c['task_source.type'] || 'github');
   f('agent_model', c['agent.model'] || 'opus');
   f('max_budget', c['agent.max_budget'] || '10.00');
-  f('review_max_rounds', c['review.max_rounds'] || '2');
   f('test_cmd', c['test_cmd'] || data.test_cmd);
   f('lint_cmd', c['lint_cmd'] || data.lint_cmd);
   f('format_cmd', c['format_cmd'] || data.format_cmd);
@@ -589,7 +584,6 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
     commit_format: fd.get('commit_format'),
     agent_model: fd.get('agent_model'),
     max_budget: fd.get('max_budget'),
-    review_max_rounds: parseInt(fd.get('review_max_rounds')) || 2,
     test_cmd: fd.get('test_cmd'),
     lint_cmd: fd.get('lint_cmd'),
     format_cmd: fd.get('format_cmd'),

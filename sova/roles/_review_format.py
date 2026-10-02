@@ -33,26 +33,39 @@ def severity_label(severity: int) -> str:
     return "LOW"
 
 
-def verdict_from_severities(severities: list[int]) -> str:
+def verdict_from_severities(
+    severities: list[int],
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
+) -> str:
     """Determine the review verdict from a list of severity ints.
 
+    A finding below ``revise_at`` is advisory and does not affect the verdict.
     Returns ``APPROVE``, ``REVISE``, or ``BLOCK``.
     """
     if not severities:
         return "APPROVE"
     max_sev = max(clamp_severity(s) for s in severities)
-    if max_sev >= _SEVERITY_CRITICAL:
+    if max_sev >= block_at:
         return "BLOCK"
-    return "REVISE"
+    if max_sev >= revise_at:
+        return "REVISE"
+    return "APPROVE"
 
 
-def verdict_from_findings(findings: list[dict]) -> str:
+def verdict_from_findings(
+    findings: list[dict],
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
+) -> str:
     """Determine the review verdict from a list of finding dicts.
 
     Each dict must have a ``severity`` key (int). Returns ``APPROVE``,
     ``REVISE``, or ``BLOCK``.
     """
-    return verdict_from_severities([f.get("severity", 5) for f in findings])
+    return verdict_from_severities([f.get("severity", 5) for f in findings], revise_at=revise_at, block_at=block_at)
 
 
 def _verdict_action(verdict: str) -> str:
@@ -93,6 +106,9 @@ def format_review_body(
     summary: str = "",
     positives: list[str] | None = None,
     sha: str | None = None,
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
 ) -> str:
     """Format a complete review body in markdown.
 
@@ -103,30 +119,57 @@ def format_review_body(
         positives: Positive observations. Section omitted when empty/None.
         sha: Full SHA of the reviewed PR head commit. When known, embedded in
             the marker so the verdict can be anchored to the reviewed commit.
+        revise_at: Severity at or above which a finding blocks the verdict
+            and is listed under ``### Findings``. Findings below this are
+            advisory: still recorded, listed under
+            ``### Advisory (not blocking)`` instead.
+        block_at: Severity at or above which the verdict is ``BLOCK`` rather
+            than ``REVISE``.
     """
-    verdict = verdict_from_findings(findings)
+    verdict = verdict_from_findings(findings, revise_at=revise_at, block_at=block_at)
     sha_suffix = f" sha={sha}" if sha else ""
     lines = [f"<!-- sova-review: {verdict.lower()}{sha_suffix} -->", "", f"## Review: {verdict}", ""]
 
     effective_summary = (summary or "").strip() or "Review of changes."
     lines.extend([effective_summary, ""])
 
+    blocking = [f for f in findings if clamp_severity(f.get("severity", 5)) >= revise_at]
+    advisory = [f for f in findings if clamp_severity(f.get("severity", 5)) < revise_at]
+
     lines.append("### Findings")
     lines.append("")
-    if not findings:
-        lines.append("No issues found after thorough review.")
+    if not blocking:
+        no_findings_text = "No issues found after thorough review."
+        no_blocking_text = "No blocking issues found after thorough review."
+        lines.append(no_blocking_text if findings else no_findings_text)
     else:
-        count_label = "finding" if len(findings) == 1 else "findings"
-        lines.append(f"**{len(findings)} {count_label}** (all to be addressed)")
+        count_label = "finding" if len(blocking) == 1 else "findings"
+        lines.append(f"**{len(blocking)} {count_label}**")
         lines.append("")
 
-        sorted_findings = sorted(
-            findings,
+        sorted_blocking = sorted(
+            blocking,
             key=lambda x: clamp_severity(x.get("severity", 5)),
             reverse=True,
         )
 
-        lines.extend(_format_finding_line(f) for f in sorted_findings)
+        lines.extend(_format_finding_line(f) for f in sorted_blocking)
+
+    if advisory:
+        lines.append("")
+        lines.append("### Advisory (not blocking)")
+        lines.append("")
+        count_label = "finding" if len(advisory) == 1 else "findings"
+        lines.append(f"**{len(advisory)} {count_label}** (recorded for a later fix round, does not block approval)")
+        lines.append("")
+
+        sorted_advisory = sorted(
+            advisory,
+            key=lambda x: clamp_severity(x.get("severity", 5)),
+            reverse=True,
+        )
+
+        lines.extend(_format_finding_line(f) for f in sorted_advisory)
 
     if positives:
         lines.append("")
@@ -155,7 +198,12 @@ def normalize_sha(value: object) -> str | None:
     return None
 
 
-def format_from_data(data: dict) -> str:
+def format_from_data(
+    data: dict,
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
+) -> str:
     """Format an already-parsed review payload as a markdown review body.
 
     Shared by format_from_json() and by build_review_payload_from_json(), which
@@ -167,10 +215,17 @@ def format_from_data(data: dict) -> str:
         data.get("summary", ""),
         data.get("positives"),
         sha=normalize_sha(data.get("sha")),
+        revise_at=revise_at,
+        block_at=block_at,
     )
 
 
-def format_from_json(json_text: str) -> str:
+def format_from_json(
+    json_text: str,
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
+) -> str:
     """Parse JSON review data and format as markdown review body.
 
     For CLI use from the /review-pr command::
@@ -178,4 +233,4 @@ def format_from_json(json_text: str) -> str:
         python3 -c "import sys; from sova.roles._review_format import format_from_json; \\
             print(format_from_json(sys.stdin.read()))" < /tmp/review.json
     """
-    return format_from_data(json.loads(json_text))
+    return format_from_data(json.loads(json_text), revise_at=revise_at, block_at=block_at)

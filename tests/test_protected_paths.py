@@ -60,9 +60,10 @@ class TestMakeProtectedPathFinding:
         finding = _make_protected_path_finding(["deploy/prod.yaml", ".github/ci.yml"])
         assert ".github/ci.yml, deploy/prod.yaml" in finding.description
 
-    def test_finding_prevents_approve_verdict(self) -> None:
+    def test_lone_protected_path_finding_is_advisory(self) -> None:
+        """Severity-1 protected-path findings sit below the default revise_severity (3)."""
         finding = _make_protected_path_finding([".github/workflows/ci.yml"])
-        assert _verdict_label([finding]) == "REVISE"
+        assert _verdict_label([finding]) == "APPROVE"
 
     def test_finding_does_not_override_block(self) -> None:
         protected = _make_protected_path_finding([".github/workflows/ci.yml"])
@@ -89,9 +90,14 @@ class TestActionableExcludesProtectedPath:
         assert result.actionable == [bug]
 
     def test_verdict_still_uses_all_findings(self) -> None:
+        """_verdict_label is computed from the raw findings list, not from actionable,
+
+        but a lone severity-1 protected-path finding sits below the default
+        revise_severity (3) and is therefore advisory, not blocking.
+        """
         result = ReviewResult()
         result.findings.append(_make_protected_path_finding([".github/ci.yml"]))
-        assert _verdict_label(result.findings) == "REVISE"
+        assert _verdict_label(result.findings) == "APPROVE"
         assert result.actionable == []
 
     def test_multiple_categories_mixed_with_protected(self) -> None:

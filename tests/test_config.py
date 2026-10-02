@@ -37,7 +37,8 @@ def test_default_config() -> None:
     assert cfg.agent.max_budget == Decimal("10.00")
     assert cfg.agent.step_timeout == 1800
     assert cfg.review.enabled is True
-    assert cfg.review.max_rounds == 2
+    assert cfg.review.revise_severity == 3
+    assert cfg.review.block_severity == 7
     assert cfg.commit.format == "conventional"
     assert cfg.commit.pr_auto_link_issues is True
     assert cfg.roles.default == "developer"
@@ -96,7 +97,8 @@ type = "github"
 
 [review]
 enabled = false
-max_rounds = 3
+revise_severity = 4
+block_severity = 8
 
 [triage]
 min_confidence = 0.8
@@ -119,7 +121,8 @@ reviewer = "Koda"
     assert cfg.agent.max_budget == Decimal("5")
     assert cfg.task_source.type == "github"
     assert cfg.review.enabled is False
-    assert cfg.review.max_rounds == 3
+    assert cfg.review.revise_severity == 4
+    assert cfg.review.block_severity == 8
     assert cfg.triage.min_confidence == 0.8
     assert cfg.roles.default == "researcher"
     assert cfg.roles.nicknames == {"reviewer": "Koda"}
@@ -877,8 +880,10 @@ class TestFieldConstraints:
             (AgentConfig, "max_budget", Decimal("0")),
             (AgentConfig, "step_timeout", 0),
             (AgentConfig, "step_timeout", -1),
-            (ReviewConfig, "max_rounds", 0),
-            (ReviewConfig, "max_rounds", -1),
+            (ReviewConfig, "revise_severity", 0),
+            (ReviewConfig, "revise_severity", 11),
+            (ReviewConfig, "block_severity", 0),
+            (ReviewConfig, "block_severity", 11),
             (CIConfig, "poll_interval", 0),
             (CIConfig, "poll_interval", -60),
             (CIConfig, "max_wait", 0),
@@ -902,8 +907,10 @@ class TestFieldConstraints:
             "agent-max_budget-zero",
             "agent-step_timeout-zero",
             "agent-step_timeout-negative",
-            "review-max_rounds-zero",
-            "review-max_rounds-negative",
+            "review-revise_severity-below-range",
+            "review-revise_severity-above-range",
+            "review-block_severity-below-range",
+            "review-block_severity-above-range",
             "ci-poll_interval-zero",
             "ci-poll_interval-negative",
             "ci-max_wait-zero",
@@ -934,6 +941,20 @@ class TestFieldConstraints:
     def test_triage_min_confidence_boundary_one(self) -> None:
         cfg = TriageConfig(min_confidence=1.0)
         assert cfg.min_confidence == 1.0
+
+    def test_review_revise_severity_above_block_severity_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ReviewConfig(revise_severity=8, block_severity=7)
+
+    def test_review_revise_severity_equal_block_severity_allowed(self) -> None:
+        cfg = ReviewConfig(revise_severity=5, block_severity=5)
+        assert cfg.revise_severity == 5
+        assert cfg.block_severity == 5
+
+    def test_review_revise_severity_below_block_severity_allowed(self) -> None:
+        cfg = ReviewConfig(revise_severity=2, block_severity=9)
+        assert cfg.revise_severity == 2
+        assert cfg.block_severity == 9
 
     @pytest.mark.parametrize("bad_type", ["linear", "manual", "unknown"])
     def test_task_source_rejects_unsupported_type(self, bad_type: str) -> None:
@@ -1143,8 +1164,8 @@ class TestFlattenConfigDict:
     def test_mixed_keys(self) -> None:
         from sova.config.db_loader import _flatten_config_dict
 
-        result = _flatten_config_dict({"github_repo": "a/b", "review": {"enabled": True, "max_rounds": 2}})
-        assert result == {"github_repo": "a/b", "review.enabled": True, "review.max_rounds": 2}
+        result = _flatten_config_dict({"github_repo": "a/b", "review": {"enabled": True, "revise_severity": 3}})
+        assert result == {"github_repo": "a/b", "review.enabled": True, "review.revise_severity": 3}
 
     def test_empty_dict(self) -> None:
         from sova.config.db_loader import _flatten_config_dict

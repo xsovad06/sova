@@ -362,10 +362,13 @@ class ReviewerRole(AgentRole):
         handoff can signal the failure without triggering spurious address-review
         pipeline cycles.
         """
-        diff_lines = parse_diff_lines(diff)
-        inline_comments, body_only = _build_review_comments(review.findings, diff_lines)
+        revise_at = ctx.config.review.revise_severity
+        block_at = ctx.config.review.block_severity
 
-        body = _format_review_body(review.findings, review.summary, sha)
+        diff_lines = parse_diff_lines(diff)
+        inline_comments, body_only = _build_review_comments(review.blocking(revise_at), diff_lines)
+
+        body = _format_review_body(review.findings, review.summary, sha, revise_at=revise_at, block_at=block_at)
 
         try:
             await ctx.adapter.post_pr_review(
@@ -393,7 +396,9 @@ class ReviewerRole(AgentRole):
             else:
                 log.warning("reviewer.review_api_failed", exc_info=True)
 
-        fallback = _format_findings_comment(review.findings, review.summary, sha)
+        fallback = _format_findings_comment(
+            review.findings, review.summary, sha, revise_at=revise_at, block_at=block_at
+        )
         try:
             await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
             log.info("reviewer.posted_comment_fallback", finding_count=len(review.findings))
@@ -480,6 +485,7 @@ class ReviewerRole(AgentRole):
             budget_remaining=budget_remaining,
             addressed_findings=addressed_findings,
             default_model=self._resolve_review_model(ctx),
+            revise_at=ctx.config.review.revise_severity,
         )
         ctx.add_cost(result.total_cost)
         return result
@@ -509,6 +515,7 @@ class ReviewerRole(AgentRole):
                     files,
                     spec_sections=chunk_spec,
                     addressed_findings=chunk_addressed,
+                    revise_at=ctx.config.review.revise_severity,
                 )
                 chunk_budget = ctx.config.agent.max_budget / len(chunks)
 
@@ -633,11 +640,21 @@ class ReviewerRole(AgentRole):
         the current verdict. Non-fatal: if the label write fails, the DB/marker
         fallback path in _fetch_sova_verdicts() remains functional.
 
-        Uses actionable findings (excludes protected-path) so that
-        protected-path-only reviews write ``sova:approved`` instead of
+        Derives the verdict from ``review.actionable`` (excluding
+        protected-path) rather than from ``review.blocking()``: both
+        ``verdict_from_severities()`` and ``blocking()`` already apply the
+        same ``revise_severity`` threshold with the same clamping, so
+        pre-filtering to blocking findings here would just re-apply the
+        threshold a second time for no behavioral difference. Protected-path
+        or advisory-only reviews (every actionable finding below
+        ``revise_severity``) write ``sova:approved`` instead of
         ``sova:revise``, preventing spurious address-review routing.
         """
-        label = _sova_verdict_label_name(review.actionable)
+        label = _sova_verdict_label_name(
+            review.actionable,
+            revise_at=ctx.config.review.revise_severity,
+            block_at=ctx.config.review.block_severity,
+        )
         issue = ctx.issue_number
         if not issue:
             return
@@ -665,6 +682,7 @@ class ReviewerRole(AgentRole):
         to the reviewed commit rather than a timestamp.
         """
         actionable = review.actionable
+        blocking = review.blocking(ctx.config.review.revise_severity)
 
         findings_data = [
             {
@@ -728,12 +746,22 @@ class ReviewerRole(AgentRole):
             )
         else:
             has_protected_only = not actionable and review.findings
-            if actionable:
+            if blocking:
                 next_action = "address_review"
             elif has_protected_only:
                 next_action = "needs_human_review"
             else:
                 next_action = "approve"
+
+            # Derived from the full actionable list rather than the already
+            # revise_severity-filtered `blocking`, since verdict_from_severities()
+            # applies that same threshold itself; filtering twice is redundant
+            # and the two never disagree (see _write_verdict_label above).
+            verdict = _verdict_label(
+                actionable,
+                revise_at=ctx.config.review.revise_severity,
+                block_at=ctx.config.review.block_severity,
+            ).lower()
 
             agent_handoff = AgentHandoff(
                 role="reviewer",
@@ -742,20 +770,24 @@ class ReviewerRole(AgentRole):
                 key_decisions=[],
                 next_action=next_action,
                 pending_findings=findings_data,
-                metadata={"finding_summary": finding_summary, "review_head_sha": review_head_sha},
+                metadata={
+                    "finding_summary": finding_summary,
+                    "review_head_sha": review_head_sha,
+                    "verdict": verdict,
+                },
                 pr_number=ctx.pr_number,
                 branch_name=ctx.branch_name,
             )
 
             actions: list[HandoffAction] = []
 
-            if actionable:
+            if blocking:
                 auto = ctx.config.pipeline.auto_address_review
                 actions.append(
                     HandoffAction(
                         id="address_review",
                         label="Address Review",
-                        description=f"Fix {len(actionable)} actionable findings",
+                        description=f"Fix {len(blocking)} blocking findings",
                         style="approve",
                         mode="agent",
                         command="",
@@ -781,7 +813,7 @@ class ReviewerRole(AgentRole):
                     HandoffAction(
                         id="integrate",
                         label="Integrate PR",
-                        description="No actionable findings: rebase, merge, cleanup, and learn",
+                        description="No blocking findings: rebase, merge, cleanup, and learn",
                         style="approve",
                         mode="claude-command",
                         command=f"/integrate-pr {ctx.pr_number}",
@@ -795,7 +827,7 @@ class ReviewerRole(AgentRole):
                 issue=ctx.issue_number,
                 pr_number=ctx.pr_number,
                 branch=ctx.branch_name,
-                summary=f"{len(review.findings)} findings (all to be addressed)",
+                summary=f"{len(review.findings)} findings ({len(blocking)} blocking)",
                 details={
                     "next_action": next_action,
                     "cost_usd": str(review.total_cost),
