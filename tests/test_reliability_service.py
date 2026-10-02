@@ -76,6 +76,45 @@ class TestClassifyFailureCause:
         msg = "No commits ahead of base branch after commit step"
         assert reliability_service.classify_failure_cause(msg) == "gate_check"
 
+    def test_network_outage_wins_over_process_exit_shape(self) -> None:
+        # Verbatim from a real outage (Gwym run 1612). _build_exit_failure_message()
+        # wraps the real cause in the "Process exited with code N" shape, so
+        # without the leading network rule _PROCESS_EXIT_RE claims this first and
+        # an outage is reported as a generic nonzero exit.
+        msg = (
+            "Process exited with code 1; last output: "
+            "[stderr] RuntimeError: Failed to fetch issue #659: error connecting to api.github.com | "
+            "[stderr] check your internet connection or https://githubstatus.com"
+        )
+        assert reliability_service.classify_failure_cause(msg) == "network_unreachable"
+
+    def test_network_outage_wins_over_fix_llm_prefix(self) -> None:
+        # The fix_llm_* buckets exist to measure how well SOVA's own fix loop
+        # converges (issue #977); an outage-caused timeout left in that bucket
+        # is a false data point for exactly that measurement.
+        msg = "fix_llm_timeout on cycle 1: Can't reach the API server (ENOTFOUND)"
+        assert reliability_service.classify_failure_cause(msg) == "network_unreachable"
+
+    def test_claude_cli_dns_failure(self) -> None:
+        msg = (
+            "Claude CLI failed (exit 1): terminal_reason=api_error; is_error=true; "
+            "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
+        )
+        assert reliability_service.classify_failure_cause(msg) == "network_unreachable"
+
+    def test_git_push_ssh_transport_failure(self) -> None:
+        msg = (
+            "Command failed: git push -u origin feat/issue-659\nExit code: 128\n"
+            "stderr: ssh: connect to host github.com port 22: Operation timed out\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert reliability_service.classify_failure_cause(msg) == "network_unreachable"
+
+    def test_local_timeout_is_not_reclassified_as_network(self) -> None:
+        # The new leading rule must not swallow unrelated buckets: a bare local
+        # timeout has no remote endpoint to corroborate it.
+        assert reliability_service.classify_failure_cause("step_hard_timeout") == "step_timeout"
+
     def test_llm_billing_delegates_to_classify_error(self) -> None:
         # billing/rate-limit/model-unavailable are ambiguous labels too (see
         # _AMBIGUOUS_LLM_LABELS): an LLM context marker is required, same as
