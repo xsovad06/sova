@@ -1028,6 +1028,7 @@ class TestGetPRStatus:
                 "number": 42,
                 "state": "OPEN",
                 "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN",
                 "reviewDecision": "APPROVED",
                 "url": "https://github.com/user/repo/pull/42",
                 "title": "feat: add login",
@@ -1042,6 +1043,25 @@ class TestGetPRStatus:
             assert status.state == "OPEN"
             assert status.mergeable == "MERGEABLE"
             assert status.review_decision == "APPROVED"
+            assert status.merge_state == "CLEAN"
+
+    async def test_merge_state_defaults_empty_when_missing(self) -> None:
+        pr_json = json.dumps(
+            {
+                "number": 42,
+                "state": "OPEN",
+                "mergeable": "MERGEABLE",
+                "reviewDecision": "APPROVED",
+                "url": "https://github.com/user/repo/pull/42",
+                "title": "feat: add login",
+            }
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            status = await get_pr_status(42, repo="user/repo")
+
+            assert status.merge_state == ""
 
     async def test_raises_on_failure(self) -> None:
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:

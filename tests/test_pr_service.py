@@ -68,6 +68,29 @@ class TestComputePrState:
         result = _state(review_decision="APPROVED", ci_status="passed", mergeable="MERGEABLE")
         assert result == ComputedPRState.APPROVED_CI_GREEN
 
+    def test_approved_with_no_ci_is_green(self) -> None:
+        """A repository with no CI checks configured (ci_status="none") is neutral, not blocking."""
+        result = _state(review_decision="APPROVED", ci_status="none", mergeable="MERGEABLE")
+        assert result == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_approved_no_ci_blocked_by_github_is_not_green(self) -> None:
+        """An approved, CI-less, mergeable=MERGEABLE PR must not report ready to merge when
+        GitHub's own mergeStateStatus is BLOCKED (e.g. branch protection awaiting a required
+        review): sova/supervisor/pr_monitor.py trusts this computed state directly to decide
+        whether to fire notify_on_ready_to_merge (CodeRabbit, PR #1114)."""
+        result = _state(review_decision="APPROVED", ci_status="none", mergeable="MERGEABLE", merge_state="BLOCKED")
+        assert result == ComputedPRState.APPROVED
+
+    def test_approved_ci_green_blocked_by_github_is_not_green(self) -> None:
+        """Same BLOCKED guard applies even when CI actually passed."""
+        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="MERGEABLE", merge_state="BLOCKED")
+        assert result == ComputedPRState.APPROVED
+
+    def test_dirty_merge_state_is_conflicted(self) -> None:
+        """merge_state DIRTY is the mergeStateStatus equivalent of mergeable CONFLICTING."""
+        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="UNKNOWN", merge_state="DIRTY")
+        assert result == ComputedPRState.CONFLICTED
+
     def test_approved_ci_not_green(self) -> None:
         assert _state(review_decision="APPROVED") == ComputedPRState.APPROVED
 
@@ -615,6 +638,14 @@ class TestEnrichPr:
     def test_head_sha_missing_defaults_empty(self) -> None:
         result = _enrich_pr(self._raw_pr(), time.time())
         assert result["head_sha"] == ""
+
+    def test_merge_state_populated(self) -> None:
+        result = _enrich_pr(self._raw_pr(mergeStateStatus="BEHIND"), time.time())
+        assert result["merge_state"] == "BEHIND"
+
+    def test_merge_state_missing_defaults_empty(self) -> None:
+        result = _enrich_pr(self._raw_pr(), time.time())
+        assert result["merge_state"] == ""
 
     def test_diff_stats_enrichment(self) -> None:
         result = _enrich_pr(self._raw_pr(), time.time())
@@ -1201,6 +1232,31 @@ class TestCheckIntegrationGates:
         ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
         assert ci_gate["passed"] is False
         assert "pending" in ci_gate["reason"]
+
+    @pytest.mark.asyncio
+    async def test_ci_gate_passes_when_no_checks_configured(self) -> None:
+        """ci_status="none" means the repo has no checks at all, not a failure:
+        the resolver treats it as neutral, so gating Integrate on it would leave
+        a PR_READY_TO_MERGE item with a permanently greyed-out primary action."""
+        cfg = _make_config(ci_passed=True)
+        result = await check_integration_gates(pr_data=_pr_data(ci_status="none"), issue_number="10", config=cfg)
+        ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
+        assert ci_gate["passed"] is True
+        assert ci_gate["reason"] == ""
+
+    @pytest.mark.asyncio
+    async def test_ci_gate_fails_when_ci_status_unknown(self) -> None:
+        """An absent or empty ci_status is unknown, not "no checks": fail closed."""
+        cfg = _make_config(ci_passed=True)
+        result = await check_integration_gates(pr_data=_pr_data(ci_status=""), issue_number="10", config=cfg)
+        ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
+        assert ci_gate["passed"] is False
+        assert "unknown" in ci_gate["reason"]
+
+        missing = _pr_data()
+        del missing["ci_status"]
+        result = await check_integration_gates(pr_data=missing, issue_number="10", config=cfg)
+        assert next(g for g in result["gates"] if g["name"] == "ci_passed")["passed"] is False
 
     @pytest.mark.asyncio
     async def test_ci_gate_fails_when_ci_failed(self) -> None:
