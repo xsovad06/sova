@@ -47,8 +47,8 @@
         <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:#74c7ec;background:#74c7ec30"></span> Queued</span>
       </div>
       <div class="flex items-center gap-1">
-        <button type="button" id="hide-done-btn" onclick="toggleHideDone()" title="Toggle visibility of completed milestone groups"
-                class="text-xs text-gray-400 hover:text-gray-200 px-2 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">Hide Done</button>
+        <button type="button" id="hide-done-btn" onclick="toggleHideDone()" data-tooltip="Toggle visibility of completed work"
+                class="text-xs text-gray-400 hover:text-gray-200 px-2 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">Show Done</button>
         <button type="button" onclick="zoomIn()" title="Zoom in" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">+</button>
         <button type="button" onclick="zoomOut()" title="Zoom out" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">&minus;</button>
         <button type="button" onclick="zoomFit()" title="Fit to view" class="text-xs text-gray-400 hover:text-gray-200 px-2 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">Fit</button>
@@ -231,7 +231,12 @@ function _lsSet(key, val) {
   try { localStorage.setItem(key, val); } catch { /* noop */ }
 }
 
-let _hideDone = _lsGet('sova-graph-hide-done') === '1';
+let _hideDone = _lsGet('sova-graph-hide-done') !== '0';
+
+function isDoneState(state) {
+  const normalized = (state || '').toLowerCase();
+  return normalized === 'done' || normalized === 'closed';
+}
 
 function _computeGraphKey(data) {
   // agent_elapsed_seconds is intentionally excluded: it changes every poll while an agent runs
@@ -243,7 +248,7 @@ function _computeGraphKey(data) {
 
 function stateColor(state) {
   const s = (state || '').toLowerCase();
-  if (s === 'done' || s === 'closed') return '#a6e3a1';
+  if (isDoneState(s)) return '#a6e3a1';
   if (s === 'in_progress' || s === 'in_review') return '#89b4fa';
   if (s === 'awaiting_approval') return '#f9e2af';
   if (s === 'blocked') return '#f38ba8';
@@ -621,9 +626,14 @@ function renderGraph(data) {
   (data.parallel_groups || []).forEach(g => g.task_ids.forEach(id => { tierMap[id] = g.tier; }));
   (data.nodes || []).forEach(n => { if (tierMap[n.id] == null) tierMap[n.id] = 0; });
 
+  // Keep terminal nodes in the API for dependency evaluation, but omit them
+  // from the default presentation. Edges to hidden nodes naturally disappear
+  // because they have no rendered position.
+  const visibleNodes = (data.nodes || []).filter(n => !_hideDone || !isDoneState(n.state));
+
   // Group nodes by milestone; nodes without a milestone go into "(Independent)"
   const msMap = new Map();
-  (data.nodes || []).forEach(n => {
+  visibleNodes.forEach(n => {
     const m = n.milestone || '(Independent)';
     if (!msMap.has(m)) msMap.set(m, []);
     msMap.get(m).push(n);
@@ -800,7 +810,7 @@ function renderGraph(data) {
 
   function isGroupCompleted(m) {
     const nodes = msMap.get(m);
-    return !nodes.length || nodes.every(n => n.state === 'done' || n.state === 'closed');
+    return !nodes.length || nodes.every(n => isDoneState(n.state));
   }
 
   const visibleMs = _hideDone
@@ -1064,11 +1074,11 @@ function renderGraph(data) {
   });
 
   // --- nodes ---
-  (data.nodes || []).forEach(n => {
+  visibleNodes.forEach(n => {
     const pos = nodePos[n.id];
     if (!pos) return;
     const color = stateColor(n.state);
-    const isDone = n.state === 'done' || n.state === 'closed';
+    const isDone = isDoneState(n.state);
 
     const prc = n.pr_state ? prStateColor(n.pr_state) : null;
     const borderColor = prc || (color + '66');
@@ -1375,7 +1385,7 @@ function showDrawer(node) {
   </a>`;
 
   let queueBtn = '';
-  const isDone = (node.state || '').toLowerCase() === 'done' || (node.state || '').toLowerCase() === 'closed';
+  const isDone = isDoneState(node.state);
   if (!isDone && !node.is_epic && !node.is_human_only) {
     if (node.queue_position) {
       queueBtn = `<span class="text-xs px-3 py-1.5 rounded bg-sky-700/20 text-sky-300 border border-sky-700/30">In queue (Q${node.queue_position})</span>`;

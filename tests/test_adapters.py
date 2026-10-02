@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sova.adapters.base import Milestone, Task, TaskAdapter, TaskFilters, TaskState
-from sova.adapters.github import _STATE_LABELS, _STATE_TO_BOARD_NAMES, GitHubAdapter
+from sova.adapters.github import _STATE_LABELS, _STATE_TO_BOARD_NAMES, GitHubAdapter, _parse_issue
 from sova.config.models import _VALID_TASK_STATES
 
 # ---------------------------------------------------------------------------
@@ -874,12 +874,37 @@ class TestGitHubAdapter:
         state = await self.adapter.get_state("42")
         assert state == TaskState.DONE
 
+    async def test_get_state_merged_pr_dependency_is_done(self, mock_run: AsyncMock) -> None:
+        issue_json = json.dumps(
+            {
+                "state": "MERGED",
+                "labels": [{"name": "agent:in-review"}],
+            }
+        )
+        mock_run.return_value = _shell_result(stdout=issue_json)
+
+        state = await self.adapter.get_state("251")
+        assert state == TaskState.DONE
+
     async def test_get_state_open_no_labels_is_backlog(self, mock_run: AsyncMock) -> None:
         issue_json = json.dumps({"state": "OPEN", "labels": []})
         mock_run.return_value = _shell_result(stdout=issue_json)
 
         state = await self.adapter.get_state("42")
         assert state == TaskState.BACKLOG
+
+    def test_merged_pr_dependency_is_done_despite_stale_label(self) -> None:
+        task = _parse_issue(
+            {
+                "number": 590,
+                "title": "Merged dependency PR",
+                "state": "MERGED",
+                "labels": [{"name": "agent:triaged"}],
+                "url": "https://github.com/example/repo/pull/590",
+            }
+        )
+
+        assert task.state == TaskState.DONE
 
     # -- link_pr --
 

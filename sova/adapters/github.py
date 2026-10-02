@@ -44,6 +44,11 @@ _STATE_TO_BOARD_NAMES: dict[TaskState, list[str]] = {
     TaskState.HUMAN_ONLY: ["todo", _COL_TODO, _COL_BACKLOG],
 }
 
+# ``gh issue view`` also accepts pull request numbers.  Dependency references
+# can therefore resolve to a merged PR even though ``gh issue list`` correctly
+# excludes PRs.  Both tracker states are terminal from SOVA's perspective.
+_TERMINAL_TASK_STATES = {"CLOSED", "MERGED"}
+
 
 @dataclass
 class _ProjectBoardMeta:
@@ -355,7 +360,7 @@ class GitHubAdapter(TaskAdapter):
             log.warning("get_state.bad_json", issue=task_id, stdout=result.stdout[:200])
             raise RuntimeError(f"Failed to parse state for issue #{task_id}: {e}") from e
 
-        if data.get("state") == "CLOSED":
+        if data.get("state") in _TERMINAL_TASK_STATES:
             return TaskState.DONE
 
         labels = set(lbl["name"] for lbl in data.get("labels", []))
@@ -887,8 +892,8 @@ def _parse_issue(data: dict) -> Task:
     milestone_data = data.get("milestone")
     milestone = milestone_data["title"] if milestone_data else ""
 
-    # Closed issues are DONE regardless of labels
-    if data.get("state") == "CLOSED":
+    # Closed issues and merged PR dependency references are DONE regardless of labels.
+    if data.get("state") in _TERMINAL_TASK_STATES:
         state = TaskState.DONE
     else:
         # Check labels in priority order: HUMAN_ONLY always wins over any other
