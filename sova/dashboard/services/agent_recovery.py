@@ -1231,3 +1231,282 @@ async def get_synthesized_handoff() -> dict | None:
         log.debug("synthesized_handoff.failed", exc_info=True)
 
     return None
+
+
+# Network outage self-heal -----------------------------------------------------
+
+# Roles with no checkpoint to resume from: a `command:*` run is a fresh
+# `claude -p` slash-command conversation, and the supervisor's next poll
+# re-proposes the action anyway, so retrying one here is redundant mechanism.
+_SELF_HEAL_ROLES = frozenset({"developer", "researcher", "planner", "reviewer"})
+_SELF_HEAL_STATUSES = frozenset({"failed", "interrupted"})
+
+
+async def attempt_network_self_heal(project_dir: Path | None = None) -> list[dict]:
+    """Resume runs that failed because of a network outage, once it has cleared.
+
+    Deliberately narrow. The general-purpose auto-retry this codebase used to
+    have was removed for being unpredictable (migration
+    ``020_drop_task_run_retry_columns``); the difference here is that
+    eligibility requires the persisted error text to *positively* identify a
+    transport failure. Overlapping the outage window is only a filter, never
+    evidence, so an unrelated bug that happened to fail during an outage is
+    never resumed.
+
+    Resume rather than respawn: ``sova run --resume`` skips already-completed
+    steps, which is the whole point (the incident that motivated this lost a
+    14-minute, $5.65 developer run that failed at its final ``git push``). A run
+    that completed no steps degenerates to a fresh spawn on its own, so there is
+    one code path and no classifier deciding between them.
+
+    Returns the resumes it started, for logging and tests.
+    """
+    try:
+        from sova.config.loader import load_config
+        from sova.supervisor.network_health import get_connectivity_tracker
+
+        cfg = load_config(project_dir)
+        guard = cfg.network_guard
+        if not guard.enabled or not guard.auto_resume:
+            return []
+
+        tracker = get_connectivity_tracker()
+        if tracker.is_down():
+            return []
+        # Flap guard: a connection that has only just answered may be about to
+        # drop again, and spending the retry budget on it is how an outage
+        # exhausts the cap without ever shipping anything.
+        healthy_for = tracker.healthy_for_seconds()
+        if healthy_for < guard.recovery_grace_seconds:
+            log.debug("self_heal.grace_not_met", healthy_for=round(healthy_for))
+            return []
+
+        candidates = await _find_self_heal_candidates(project_dir, guard.resume_window_minutes)
+        if not candidates:
+            return []
+
+        if guard.max_auto_resumes_per_hour:
+            recent = await _count_recent_resumes(project_dir)
+            if recent >= guard.max_auto_resumes_per_hour:
+                log.info("self_heal.hourly_cap_reached", recent=recent, cap=guard.max_auto_resumes_per_hour)
+                return []
+
+        # One per tick. The 5-minute recovery loop is the rate limiter, so a
+        # multi-project outage recovers steadily instead of spawning a herd into
+        # the slot limit the moment the connection returns.
+        return await _resume_one(candidates[0], project_dir)
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.warning("self_heal.failed", exc_info=True)
+        return []
+
+
+async def _find_self_heal_candidates(project_dir: Path | None, window_minutes: int) -> list[dict]:
+    """Return resumable outage-failed runs, most valuable first.
+
+    One candidate per issue (the newest), skipping any issue that already has a
+    newer run which is running or done, and any run that has already been
+    resumed once.
+    """
+    from decimal import Decimal
+
+    from sqlalchemy import func, select
+
+    from sova.db.models import StepExecution, TaskRun
+    from sova.db.session import get_session
+    from sova.utils.network import looks_like_network_outage
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    candidates: list[dict] = []
+
+    async with await get_session(project_dir=project_dir) as session:
+        async with session.begin():
+            stmt = (
+                select(TaskRun)
+                .where(
+                    TaskRun.status.in_(_SELF_HEAL_STATUSES),
+                    # Stronger than status alone: excludes a deliberate stop, a
+                    # watchdog kill and an external signal, none of which should
+                    # be undone by an automatic resume.
+                    TaskRun.termination_reason.is_(None),
+                    TaskRun.role.in_(_SELF_HEAL_ROLES),
+                    func.coalesce(TaskRun.ended_at, TaskRun.started_at) >= cutoff,
+                )
+                .order_by(func.coalesce(TaskRun.ended_at, TaskRun.started_at).desc())
+            )
+            runs = list((await session.execute(stmt)).scalars().all())
+
+            seen_issues: set[str] = set()
+            for run in runs:
+                if not looks_like_network_outage(run.error_message):
+                    continue
+                # A run that is itself a resume is never resumed again. This
+                # caps every chain at one automatic follow-up without needing a
+                # column to tell automatic resumes from human ones: if the
+                # retry also died, a flapping connection would otherwise keep
+                # spending the budget, and handing back to a human at that
+                # point is the safer default given this codebase removed its
+                # general auto-retry for being unpredictable.
+                if run.resumed_from_id is not None:
+                    continue
+                issue = run.issue_number or ""
+                if not issue or issue in seen_issues:
+                    continue
+                seen_issues.add(issue)
+
+                if await _has_newer_live_run(session, run):
+                    continue
+                if await _already_resumed(session, run.id):
+                    continue
+
+                steps_done = await session.scalar(
+                    select(func.count(StepExecution.id)).where(
+                        StepExecution.task_run_id == run.id,
+                        StepExecution.status.in_(("passed", "done")),
+                    )
+                )
+                candidates.append(
+                    {
+                        "run_id": run.id,
+                        "issue": issue,
+                        "role": run.role,
+                        "pr_number": run.pr_number,
+                        "steps_done": int(steps_done or 0),
+                        "cost": run.total_cost_usd if run.total_cost_usd is not None else Decimal("0"),
+                    }
+                )
+
+    # Most recovered work first, so the run that is nearly finished goes before
+    # one that did nothing if the slot limit only allows a single resume.
+    candidates.sort(key=lambda c: (c["steps_done"], c["cost"]), reverse=True)
+    return candidates
+
+
+async def _has_newer_live_run(session: AsyncSession, run: object) -> bool:
+    """True when this issue already has a later run that is running or finished.
+
+    This is what stops a resume from duplicating work the system already redid
+    on its own: in the motivating incident the supervisor respawned both issues
+    four minutes later, which makes every earlier candidate for those issues
+    pure waste (and a potential duplicate PR).
+    """
+    from sqlalchemy import func, select
+
+    from sova.db.models import TaskRun
+
+    newer = await session.scalar(
+        select(func.count(TaskRun.id)).where(
+            TaskRun.issue_number == run.issue_number,
+            TaskRun.id > run.id,
+            TaskRun.status.in_(("running", "pending", "assessing", "done", "awaiting_approval")),
+        )
+    )
+    return bool(newer)
+
+
+async def _already_resumed(session: AsyncSession, run_id: int) -> bool:
+    """True when some run already resumed this one.
+
+    ``resumed_from_id`` is written by WorkflowEngine for every ``--resume``
+    spawn, so it marks "already handled" with no new column (the retry-tracking
+    columns a previous design used were dropped in migration 020 and are
+    deliberately not being re-added). A human-initiated resume sets it too,
+    which is correct: it also means this run has been dealt with.
+    """
+    from sqlalchemy import func, select
+
+    from sova.db.models import TaskRun
+
+    existing = await session.scalar(select(func.count(TaskRun.id)).where(TaskRun.resumed_from_id == run_id))
+    return bool(existing)
+
+
+async def _count_recent_resumes(project_dir: Path | None) -> int:
+    """Count resumes started in the last hour, as the per-project rate cap.
+
+    Counts every resume rather than only automatic ones: a human already
+    retrying this project repeatedly is exactly when an automatic resume should
+    hold off, and it needs no marker column to distinguish them.
+    """
+    from sqlalchemy import func, select
+
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    async with await get_session(project_dir=project_dir) as session:
+        async with session.begin():
+            count = await session.scalar(
+                select(func.count(TaskRun.id)).where(
+                    TaskRun.resumed_from_id.isnot(None),
+                    TaskRun.started_at >= cutoff,
+                )
+            )
+    return int(count or 0)
+
+
+async def _resume_one(candidate: dict, project_dir: Path | None) -> list[dict]:
+    """Resume a single candidate through the normal spawn path.
+
+    ``attempt_network_self_heal()`` runs from the background
+    ``_periodic_recovery_loop``, not a request context, so the per-request
+    ``get_project_slug()`` contextvar ``start_agent()`` would otherwise fall
+    back to is never set there. In multi-project mode that left every resume
+    landing on the unpopulated ``_DEFAULT_SLUG`` pool regardless of which
+    project ``candidate`` actually came from. Resolving the slug from
+    ``project_dir`` explicitly mirrors ``progression.py:execute_decision()``,
+    which resolves the same way for the same reason. A ``None`` result (no
+    ``project_dir``, or a single-project-mode directory that was never
+    registered) falls through to ``start_agent()``'s existing default
+    resolution, which is correct there since that pool's project_dir is
+    pre-seeded by ``set_project_dir()``.
+    """
+    from sova.config.registry import find_slug_for_path
+    from sova.dashboard.services.agent_lifecycle import start_agent
+
+    slug = find_slug_for_path(project_dir) if project_dir else None
+
+    # force=False on purpose: the memory, connectivity, slot and issue-conflict
+    # checks all still apply. An automatic resume is the last thing that should
+    # be allowed to bypass them.
+    result = await start_agent(
+        candidate["issue"],
+        role=candidate["role"],
+        resume_run_id=candidate["run_id"],
+        pr_number=candidate["pr_number"],
+        slug=slug,
+    )
+
+    if result.get("error"):
+        log.warning(
+            "self_heal.resume_rejected",
+            run_id=candidate["run_id"],
+            issue=candidate["issue"],
+            error=result["error"],
+        )
+        return []
+
+    log.info(
+        "self_heal.resumed",
+        run_id=candidate["run_id"],
+        new_run_id=result.get("run_id"),
+        issue=candidate["issue"],
+        role=candidate["role"],
+        steps_done=candidate["steps_done"],
+    )
+    _emit_self_heal_event(candidate)
+    return [{**candidate, "new_run_id": result.get("run_id")}]
+
+
+def _emit_self_heal_event(candidate: dict) -> None:
+    try:
+        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+
+        skipped = f" Skipping {candidate['steps_done']} completed step(s)." if candidate["steps_done"] else ""
+        emit_safe(
+            f"#{candidate['issue']} {candidate['role']} resumed after network recovery",
+            severity=FeedEventSeverity.info,
+            detail=f"The previous run failed while the connection was down.{skipped}",
+            category="connectivity",
+        )
+    except Exception:  # noqa: BLE001 (feed emission must never break the resume it reports)
+        log.debug("self_heal.emit_failed", exc_info=True)

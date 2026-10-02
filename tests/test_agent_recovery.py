@@ -3061,3 +3061,55 @@ class TestCountAddressReviewRuns:
         await self._seed(pr=3001)
         # Only the run that actually executed address_review and the finished command run count.
         assert await count_address_review_runs("200", 3001, Path("/tmp/unused")) == 2
+
+    async def test_network_outage_runs_do_not_consume_the_cycle_budget(self) -> None:
+        """An outage changed nothing on the PR and re-triggered no bot review.
+
+        Marking such a run "interrupted" is not enough on its own to exclude it:
+        "interrupted" is a member of TASK_RUN_TERMINAL, so without this filter
+        two outages would permanently exhaust a PR's address-review budget.
+        """
+        from sova.supervisor.gates.utils import count_address_review_runs
+
+        await self._seed(pr=3002)
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="200",
+                    role="command:address-pr",
+                    status="interrupted",
+                    pr_number=3002,
+                    error_message=("address-pr outcome unverified: GitHub was unreachable while checking PR #3002"),
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="200",
+                    role="command:address-pr",
+                    status="failed",
+                    pr_number=3002,
+                    error_message="Process exited with code 1; last output: error connecting to api.github.com",
+                )
+            )
+
+        # Still 2: the two outage runs are excluded, the real cycles are not.
+        assert await count_address_review_runs("200", 3002, Path("/tmp/unused")) == 2
+
+    async def test_genuine_failure_still_consumes_the_cycle_budget(self) -> None:
+        from sova.supervisor.gates.utils import count_address_review_runs
+
+        await self._seed(pr=3003)
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="200",
+                    role="command:address-pr",
+                    status="failed",
+                    pr_number=3003,
+                    error_message="address-pr completed without pushing changes",
+                )
+            )
+
+        assert await count_address_review_runs("200", 3003, Path("/tmp/unused")) == 3

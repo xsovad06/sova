@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -103,6 +104,9 @@ BASE = Path(__file__).parent
 _AGENTS_URL = "/agents"
 _SWEEP_INTERVAL = 5  # seconds
 _RECOVERY_INTERVAL = 300  # 5 minutes
+# Probe cadence. With the tracker's decisive-probe rule this is also the
+# worst-case time for an outage to reach the operator's banner.
+_CONNECTIVITY_PROBE_INTERVAL = 30  # seconds
 _SWEEP_WRITE_RETRY_ATTEMPTS = 5
 _SWEEP_WRITE_RETRY_DELAY = 3.0
 
@@ -338,6 +342,29 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
                     break
 
 
+_last_connectivity_probe_at: float = 0.0
+
+
+async def _maybe_probe_connectivity() -> None:
+    """Probe network reachability, rate-limited to _CONNECTIVITY_PROBE_INTERVAL.
+
+    Rides the existing liveness sweep rather than taking a lifespan task of its
+    own, so it needs no entry in the _shutdown_tasks() cancellation contract.
+    The probe is a DNS lookup, so running it on the 5s sweep's back is cheap;
+    the interval gate exists to keep it off the resolver every five seconds.
+    """
+    global _last_connectivity_probe_at
+
+    now = time.monotonic()
+    if now - _last_connectivity_probe_at < _CONNECTIVITY_PROBE_INTERVAL:
+        return
+    _last_connectivity_probe_at = now
+
+    from sova.supervisor.network_health import probe_connectivity
+
+    await probe_connectivity()
+
+
 async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:
     """Periodically check for dead agent processes and mark their TaskRuns."""
     while True:
@@ -348,6 +375,12 @@ async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None
             raise
         except Exception:  # noqa: BLE001 (background sweep must survive any single-cycle error)
             log.warning("sweep.error", exc_info=True)
+        try:
+            await _maybe_probe_connectivity()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 (probe is advisory; a resolver error must not stop the sweep)
+            log.debug("connectivity.probe_error", exc_info=True)
 
 
 async def _periodic_recovery_loop(project_dir: Path | None, is_multi: bool) -> None:
@@ -360,8 +393,17 @@ async def _periodic_recovery_loop(project_dir: Path | None, is_multi: bool) -> N
     while True:
         await asyncio.sleep(_RECOVERY_INTERVAL)
         try:
+            from sova.dashboard.services.agent_recovery import attempt_network_self_heal
+
             for d in _collect_sweep_dirs(project_dir, is_multi=is_multi):
                 await recover_stale_runs(d)
+                # Strictly after recover_stale_runs: that is what moves a
+                # zombie row into a terminal status, and self-heal eligibility
+                # is evaluated on terminal status. Riding this loop rather than
+                # taking a lifespan task of its own also gets multi-project
+                # iteration and shutdown cancellation for free, and works for
+                # dashboard-only users who run no supervisor daemon.
+                await attempt_network_self_heal(d)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 (background recovery must survive any single-cycle error)
@@ -867,6 +909,28 @@ def create_app(
         return JSONResponse(
             {"status": "ok" if healthy else "unhealthy", "checks": checks},
             status_code=200 if healthy else 503,
+        )
+
+    @app.get("/api/health/connectivity")
+    async def connectivity_health() -> Response:
+        """Current network reachability, for the global offline banner.
+
+        Registered on the app rather than in a project-scoped router because
+        reachability is a property of the machine, not of a project, so there is
+        one process-wide tracker behind it and nothing to prefix per project.
+        Reads in-memory state only: no DB, no network, safe to poll often.
+        Always 200 so the banner's own fetch cannot be confused with an outage.
+        """
+        from sova.supervisor.network_health import get_connectivity_status
+
+        status = get_connectivity_status()
+        return JSONResponse(
+            {
+                "is_down": status.is_down,
+                "down_seconds": round(status.down_for_seconds),
+                "healthy_seconds": round(status.healthy_for_seconds),
+                "last_source": status.last_source,
+            }
         )
 
     app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")

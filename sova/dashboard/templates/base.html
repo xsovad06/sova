@@ -149,6 +149,16 @@
 
   <!-- Main content -->
   <main id="main-content" class="sidebar-main flex-1 p-8 min-h-screen">
+    <!-- Connectivity banner. Deliberately has no Dismiss control, unlike the
+         notification banner below: it clears itself the moment the connection
+         is back, and dismissing it would hide why spawn buttons are disabled. -->
+    <div id="connectivity-banner" class="hidden bg-accent-red/10 border border-accent-red/30 rounded-lg px-4 py-3 mb-6 flex items-center gap-2">
+      <div class="flex items-center gap-2 text-sm text-accent-red">
+        {{ icon("warning", "w-4 h-4 shrink-0") }}
+        <span class="font-medium">No internet connection</span>
+      </div>
+      <span id="connectivity-banner-detail" class="text-xs text-gray-500"></span>
+    </div>
     <!-- Browser notification permission banner -->
     <div id="notif-permission-banner" class="hidden bg-accent/10 border border-accent/30 rounded-lg px-4 py-3 mb-6 flex items-center justify-between">
       <div class="flex items-center gap-2 text-sm text-accent">

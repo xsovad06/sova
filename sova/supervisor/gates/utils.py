@@ -29,16 +29,25 @@ async def count_address_review_runs(issue: str, pr_number: int, project_dir: Pat
     (#1066) but is unmistakably a cycle on this PR, while a run recorded
     against a different issue on the same PR number stays out of scope.
 
+    A run whose failure was a network outage is excluded: it consumed no
+    review, changed nothing on the PR, and re-triggered no bot. Counting it
+    would spend the ``pipeline.max_address_review_cycles`` budget on the
+    operator's internet connection, and two outages would wedge a PR's
+    address budget permanently. Note that marking such a run "interrupted"
+    is not sufficient on its own to exclude it, since "interrupted" is itself
+    a member of ``TASK_RUN_TERMINAL``.
+
     NOTE: This relies on ``StepExecution.step_name == "address_review"``
     matching the name used by ``AddressReviewStep`` in
     ``sova.core.steps.address_review``.  If that step is renamed, this
     query must be updated to match.
     """
-    from sqlalchemy import and_, exists, func, or_, select
+    from sqlalchemy import and_, exists, or_, select
 
     from sova.core.state import TASK_RUN_TERMINAL
     from sova.db.models import StepExecution, TaskRun
     from sova.db.session import get_session
+    from sova.utils.network import looks_like_network_outage
 
     pipeline_cycle = and_(
         TaskRun.role == "developer",
@@ -53,7 +62,7 @@ async def count_address_review_runs(issue: str, pr_number: int, project_dir: Pat
 
     async with await get_session(project_dir=project_dir) as session:
         stmt = (
-            select(func.count(TaskRun.id))
+            select(TaskRun.id, TaskRun.error_message)
             .select_from(TaskRun)
             .where(
                 TaskRun.pr_number == pr_number,
@@ -62,7 +71,17 @@ async def count_address_review_runs(issue: str, pr_number: int, project_dir: Pat
                 or_(pipeline_cycle, command_cycle),
             )
         )
-        result = await session.execute(stmt)
-        count = int(result.scalar_one())
-        log.debug("count_address_review_runs", issue=issue, pr_number=pr_number, count=count)
+        rows = (await session.execute(stmt)).all()
+        # Filtered in Python rather than SQL: the predicate is a substring table
+        # with a corroboration rule (sova/utils/network.py), not something a
+        # portable LIKE clause can express across SQLite and PostgreSQL.
+        outage_runs = [row.id for row in rows if looks_like_network_outage(row.error_message)]
+        count = len(rows) - len(outage_runs)
+        log.debug(
+            "count_address_review_runs",
+            issue=issue,
+            pr_number=pr_number,
+            count=count,
+            excluded_outage_runs=outage_runs,
+        )
         return count

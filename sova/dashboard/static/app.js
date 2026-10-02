@@ -460,25 +460,77 @@ function _dotClass(color, animate) {
 
 var _activityPollInterval = null;
 var _handoffPollInterval = null;
+var _connectivityPollInterval = null;
 
 function startSidebarPolling() {
   _pollActivity();
   _pollHandoff();
+  _pollConnectivity();
   _activityPollInterval = setInterval(_pollActivity, 3000);
   _handoffPollInterval = setInterval(_pollHandoff, 5000);
+  _connectivityPollInterval = setInterval(_pollConnectivity, 15000);
   _initFeedSSE();
+}
+
+// -- Connectivity banner --
+//
+// window._connectivityDown is the flag spawn handlers check via
+// blockedByConnectivity(). The backend gate is the real enforcement; this only
+// spares the operator a doomed click and the wall of 1-second failures it
+// produces. Not project-prefixed: reachability is machine-wide, so the endpoint
+// is registered on the app rather than in a per-project router.
+window._connectivityDown = false;
+
+async function _pollConnectivity() {
+  var data;
+  try {
+    data = await fetchAPI('/api/health/connectivity');
+  } catch (_e) {
+    // The dashboard itself being unreachable is a different failure than the
+    // internet being down, and this banner must not claim the latter on the
+    // strength of the former. Leave the last known state alone.
+    return;
+  }
+
+  window._connectivityDown = !!data.is_down;
+  var banner = document.getElementById('connectivity-banner');
+  if (!banner) return;
+
+  if (!data.is_down) {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  var detail = document.getElementById('connectivity-banner-detail');
+  if (detail) {
+    var mins = Math.floor((data.down_seconds || 0) / 60);
+    var forStr = mins > 0 ? ' for ' + mins + 'm' : '';
+    detail.textContent =
+      'Agent spawning is paused' + forStr +
+      '. Interrupted runs resume automatically once the connection returns.';
+  }
+  banner.classList.remove('hidden');
+}
+
+function blockedByConnectivity(action) {
+  if (!window._connectivityDown) return false;
+  showToast('No internet connection: ' + (action || 'this action') + ' would fail immediately.', 'error');
+  return true;
 }
 
 document.addEventListener('visibilitychange', function() {
   if (document.hidden) {
     if (_activityPollInterval) { clearInterval(_activityPollInterval); _activityPollInterval = null; }
     if (_handoffPollInterval) { clearInterval(_handoffPollInterval); _handoffPollInterval = null; }
+    if (_connectivityPollInterval) { clearInterval(_connectivityPollInterval); _connectivityPollInterval = null; }
     if (_globalBatchPollInterval) { clearInterval(_globalBatchPollInterval); _globalBatchPollInterval = null; }
   } else {
     _pollActivity();
     _pollHandoff();
+    _pollConnectivity();
     if (!_activityPollInterval) _activityPollInterval = setInterval(_pollActivity, 3000);
     if (!_handoffPollInterval) _handoffPollInterval = setInterval(_pollHandoff, 5000);
+    if (!_connectivityPollInterval) _connectivityPollInterval = setInterval(_pollConnectivity, 15000);
     if (_globalBatchId && !_globalBatchPollInterval) {
       _pollGlobalBatch();
       _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);

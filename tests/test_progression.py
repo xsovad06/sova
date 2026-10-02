@@ -1453,6 +1453,53 @@ class TestMemoryPressureGate:
         result = check_memory_pressure_gate(mg)
         assert result is None
 
+
+class TestConnectivityGate:
+    @staticmethod
+    def _status(*, is_down: bool):
+        from sova.supervisor.network_health import ConnectivityStatus
+
+        return ConnectivityStatus(
+            is_down=is_down,
+            down_for_seconds=75.0 if is_down else 0.0,
+            healthy_for_seconds=0.0 if is_down else 300.0,
+            consecutive_failures=2 if is_down else 0,
+            last_source="probe",
+        )
+
+    def test_network_down_blocks(self) -> None:
+        from sova.config.models import NetworkGuardConfig
+        from sova.supervisor.gates.connectivity import check_connectivity_gate
+
+        with patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=True)):
+            result = check_connectivity_gate(NetworkGuardConfig())
+        assert result is not None
+        assert result.gate == "connectivity"
+        assert "75s" in result.detail
+
+    def test_network_up_passes(self) -> None:
+        from sova.config.models import NetworkGuardConfig
+        from sova.supervisor.gates.connectivity import check_connectivity_gate
+
+        with patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=False)):
+            result = check_connectivity_gate(NetworkGuardConfig())
+        assert result is None
+
+    def test_disabled_guard_skips_check(self) -> None:
+        from sova.config.models import NetworkGuardConfig
+        from sova.supervisor.gates.connectivity import check_connectivity_gate
+
+        with patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=True)):
+            assert check_connectivity_gate(NetworkGuardConfig(enabled=False)) is None
+            assert check_connectivity_gate(NetworkGuardConfig(block_spawns=False)) is None
+
+    def test_unevaluable_gate_fails_open(self) -> None:
+        from sova.config.models import NetworkGuardConfig
+        from sova.supervisor.gates.connectivity import check_connectivity_gate
+
+        with patch("sova.supervisor.network_health.get_connectivity_status", side_effect=RuntimeError("boom")):
+            assert check_connectivity_gate(NetworkGuardConfig()) is None
+
     def test_psutil_unavailable_fails_open(self) -> None:
         """When psutil is not installed, the gate fails open (no block)."""
         from sova.config.models import MemoryGuardConfig
