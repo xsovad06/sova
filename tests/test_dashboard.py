@@ -173,6 +173,34 @@ class TestDashboardHealth:
         assert body["checks"]["db"] == "ok"
         assert body["checks"]["disk"] == "ok"
 
+    async def test_connectivity_endpoint_reports_healthy(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/health/connectivity")
+        assert resp.status_code == 200
+        assert resp.json()["is_down"] is False
+
+    async def test_connectivity_endpoint_reports_outage(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        from sova.supervisor.network_health import ConnectivityStatus
+
+        status = ConnectivityStatus(
+            is_down=True,
+            down_for_seconds=42.6,
+            healthy_for_seconds=0.0,
+            consecutive_failures=2,
+            last_source="probe",
+        )
+        with patch("sova.supervisor.network_health.get_connectivity_status", return_value=status):
+            resp = await client.get("/api/health/connectivity")
+        # 200 even while down: the banner's own fetch failing is a different
+        # condition (the dashboard being unreachable) and must not be conflated
+        # with the network being down.
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["is_down"] is True
+        assert body["down_seconds"] == 43
+        assert body["last_source"] == "probe"
+
     async def test_healthz_db_failure_returns_503(self, client: AsyncClient) -> None:
         from unittest.mock import AsyncMock, patch
 

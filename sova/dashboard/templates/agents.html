@@ -1118,6 +1118,7 @@ async function quickStartRole(issue, role, prNumber) {
 }
 
 async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride) {
+  if (!force && blockedByConnectivity('starting an agent')) return;
   try {
     var payload = { issue: String(issue), role: role, force: force, budget_override: budgetOverride || false };
     if (prNumber) payload.pr_number = prNumber;
@@ -1354,6 +1355,7 @@ function hidePrActionsPanel() {
 }
 
 async function runCommand(command, args) {
+  if (blockedByConnectivity('running ' + command)) return;
   try {
     var res = await fetch(apiUrl('/agents/command'), {
       method: 'POST',
@@ -1911,6 +1913,9 @@ var _rebaseInFlight = new Set();
 
 async function triggerRebase(btnEl, issue) {
   if (_rebaseInFlight.has(issue)) return;
+  // Guarded before the in-flight marker is set: a rejected attempt must not
+  // leave the issue permanently marked as having a rebase in progress.
+  if (blockedByConnectivity('rebasing')) return;
   _rebaseInFlight.add(issue);
   if (btnEl) btnEl.disabled = true;
   try {
@@ -3270,6 +3275,20 @@ function _updateApiHealthBanner(health) {
     banner.classList.add('hidden');
     return;
   }
+  if (health.status === 'unreachable') {
+    banner.classList.remove('hidden');
+    banner.innerHTML = '<div class="bg-accent-red/10 border border-accent-red/30 rounded-lg p-4">' +
+      '<div class="flex items-center gap-2">' +
+        '<span class="text-sm font-medium text-accent-red">No internet connection</span>' +
+        '<span class="text-xs text-gray-500">' +
+          escapeHtml(health.detail || '') +
+          ' Interrupted runs resume automatically once the connection returns.' +
+        '</span>' +
+      '</div>' +
+    '</div>';
+    return;
+  }
+
   var cooldown = health.cooldown_seconds || 0;
   var minutes = Math.floor(cooldown / 60);
   var seconds = cooldown % 60;
