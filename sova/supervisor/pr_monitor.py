@@ -47,6 +47,13 @@ _NOTIFY_STATES: dict[str, str] = {
     ComputedPRState.CI_FAILED: "notify_on_ci_failure",
 }
 
+# compute_pr_state() treats ci_status == "none" (no CI configured) as neutral rather than
+# blocking (issue #1109), so an approved + mergeable PR in a CI-less repo now computes to
+# APPROVED_CI_GREEN instead of APPROVED. This mapping is unchanged, but the condition that
+# selects an entry from it shifted: that PR now fires notify_on_ready_to_merge instead of
+# notify_on_approval. Pinned by test_ci_less_approved_pr_fires_ready_to_merge_not_approval
+# in tests/test_pr_monitor.py.
+
 # Validate that every config flag in _NOTIFY_STATES is a real PRMonitorConfig field
 for _flag in _NOTIFY_STATES.values():
     if _flag not in PRMonitorConfig.model_fields:

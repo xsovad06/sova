@@ -108,6 +108,7 @@ def _kwargs(**overrides: object) -> dict:
         "has_sova_review": False,
         "sova_verdict": None,
         "mergeable": "MERGEABLE",
+        "merge_state": "CLEAN",
         "review_decision": "APPROVED",
         "ci_passed": True,
         "external_reviews_enabled": True,
@@ -137,6 +138,20 @@ class TestGetLlmSuggestion:
         req_body = call_kwargs[1]["json"]
         assert req_body["model"] == "claude-haiku-4-5-20251001"
         assert req_body["max_tokens"] == 200
+
+    async def test_prompt_includes_merge_state(self) -> None:
+        """merge_state is _github_will_merge()'s primary mergeability signal (#1109);
+        the LLM shadow-evaluation prompt must see it too, not just the stale `mergeable`."""
+        mock_resp = _make_httpx_response("integrate", "branch is behind but will auto-merge")
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with _mock_api(mock_client):
+            await get_llm_suggestion(**_kwargs(merge_state="BEHIND"))
+
+        req_body = mock_client.post.call_args[1]["json"]
+        prompt_text = req_body["messages"][0]["content"]
+        assert "merge_state: BEHIND" in prompt_text
 
     async def test_disagrees_false_when_llm_matches_deterministic(self) -> None:
         mock_resp = _make_httpx_response("review_pr")
@@ -277,6 +292,44 @@ class TestGetLlmSuggestion:
 
         assert result_a["action_id"] == "integrate"
         assert result_b["action_id"] == "address_pr"
+
+    async def test_merge_state_change_triggers_new_call(self) -> None:
+        """An unreviewed PR can shift from CLEAN to BLOCKED between polls while the
+        deterministic/computed state strings stay unchanged; the suggestion must be
+        re-evaluated rather than served stale from the cache (CodeRabbit, PR #1114)."""
+        responses = [
+            _make_httpx_response("integrate"),
+            _make_httpx_response("address_pr"),
+        ]
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=responses)
+
+        with _mock_api(mock_client):
+            result_a = await get_llm_suggestion(**_kwargs(merge_state="CLEAN"))
+            result_b = await get_llm_suggestion(**_kwargs(merge_state="BLOCKED"))
+
+        assert result_a["action_id"] == "integrate"
+        assert result_b["action_id"] == "address_pr"
+        assert mock_client.post.call_count == 2
+
+    async def test_mergeable_fallback_change_triggers_new_call(self) -> None:
+        """While merge_state stays UNKNOWN, mergeable can flip from UNKNOWN to MERGEABLE
+        between polls; the suggestion must be re-evaluated rather than served stale from
+        the cache keyed only on merge_state (CodeRabbit, PR #1114)."""
+        responses = [
+            _make_httpx_response("integrate"),
+            _make_httpx_response("address_pr"),
+        ]
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=responses)
+
+        with _mock_api(mock_client):
+            result_a = await get_llm_suggestion(**_kwargs(merge_state="UNKNOWN", mergeable="UNKNOWN"))
+            result_b = await get_llm_suggestion(**_kwargs(merge_state="UNKNOWN", mergeable="MERGEABLE"))
+
+        assert result_a["action_id"] == "integrate"
+        assert result_b["action_id"] == "address_pr"
+        assert mock_client.post.call_count == 2
 
     async def test_expired_cache_entry_triggers_new_call(self) -> None:
         import sova.dashboard.services.llm_suggestion_service as mod
@@ -556,23 +609,39 @@ class TestGetVertexToken:
 
 class TestMakeCacheKey:
     def test_unique_by_pr_number(self) -> None:
-        k1 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green")
-        k2 = _make_cache_key(2, "pr_sova_pending", "approved_ci_green")
+        k1 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green", "CLEAN", "MERGEABLE")
+        k2 = _make_cache_key(2, "pr_sova_pending", "approved_ci_green", "CLEAN", "MERGEABLE")
         assert k1 != k2
 
     def test_unique_by_deterministic_state(self) -> None:
-        k1 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green")
-        k2 = _make_cache_key(1, "pr_awaiting_review", "approved_ci_green")
+        k1 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green", "CLEAN", "MERGEABLE")
+        k2 = _make_cache_key(1, "pr_awaiting_review", "approved_ci_green", "CLEAN", "MERGEABLE")
         assert k1 != k2
 
     def test_unique_by_computed_state(self) -> None:
-        k1 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green")
-        k2 = _make_cache_key(1, "pr_sova_pending", "approved")
+        k1 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green", "CLEAN", "MERGEABLE")
+        k2 = _make_cache_key(1, "pr_sova_pending", "approved", "CLEAN", "MERGEABLE")
+        assert k1 != k2
+
+    def test_unique_by_merge_state(self) -> None:
+        """An unreviewed PR can shift from CLEAN to BLOCKED while both state strings stay
+        unchanged; the cache key must still distinguish the two reads (CodeRabbit, PR #1114)."""
+        k1 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green", "CLEAN", "MERGEABLE")
+        k2 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green", "BLOCKED", "MERGEABLE")
+        assert k1 != k2
+
+    def test_unique_by_mergeable_fallback(self) -> None:
+        """While merge_state stays UNKNOWN (GitHub still recomputing mergeStateStatus),
+        mergeable can independently flip from UNKNOWN to MERGEABLE, and the resolver reads
+        that fallback value; the cache key must distinguish the two reads too (CodeRabbit,
+        PR #1114)."""
+        k1 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green", "UNKNOWN", "UNKNOWN")
+        k2 = _make_cache_key(1, "pr_sova_pending", "approved_ci_green", "UNKNOWN", "MERGEABLE")
         assert k1 != k2
 
     def test_same_args_same_key(self) -> None:
-        k1 = _make_cache_key(42, "pr_approved", "approved_ci_green")
-        k2 = _make_cache_key(42, "pr_approved", "approved_ci_green")
+        k1 = _make_cache_key(42, "pr_approved", "approved_ci_green", "CLEAN", "MERGEABLE")
+        k2 = _make_cache_key(42, "pr_approved", "approved_ci_green", "CLEAN", "MERGEABLE")
         assert k1 == k2
 
 
@@ -652,3 +721,24 @@ class TestIsEnabled:
             side_effect=RuntimeError("config error"),
         ):
             assert await _is_enabled() is True
+
+
+class TestSuggestionPayloadIncludesMergeState:
+    """Source-level check: there is no JS test harness in this repo, so the dashboard's
+    own suggestion-request payload (built in agents.html, posted to POST /prs/{pr}/suggestion)
+    is asserted against its literal source text, matching the pattern used elsewhere for
+    JS-only gates (e.g. tests/test_settings_template.py).
+    """
+
+    def test_agents_html_sends_merge_state_in_suggestion_payload(self) -> None:
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / "agents.html"
+        content = path.read_text(encoding="utf-8")
+        idx = content.find("deterministic_state: item.state,")
+        assert idx != -1, "Suggestion request payload construction not found in agents.html"
+        block = content[idx : idx + 600]
+        assert "merge_state: prDetails.merge_state" in block, (
+            "Suggestion payload must include merge_state so the LLM shadow-evaluation "
+            "sees the same primary mergeability signal the deterministic resolver uses (#1109)"
+        )

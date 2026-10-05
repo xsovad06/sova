@@ -211,6 +211,109 @@ class TestStateTransitionNotifications:
         mock_notify.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_ci_less_approved_pr_fires_ready_to_merge_not_approval(self) -> None:
+        """An approved, mergeable PR with no CI configured (ci_status="none") computes to
+        APPROVED_CI_GREEN (see TestComputePrState.test_approved_with_no_ci_is_green in
+        test_pr_service.py), which must fire notify_on_ready_to_merge, not notify_on_approval.
+        """
+        from sova.dashboard.services.pr_service import compute_pr_state
+
+        computed_state = compute_pr_state(
+            is_draft=False,
+            review_decision="APPROVED",
+            ci_status="none",
+            mergeable="MERGEABLE",
+        )
+        assert computed_state == ComputedPRState.APPROVED_CI_GREEN
+
+        # notify_on_approval alone must NOT fire for this transition.
+        cfg_approval_only = PRMonitorConfig(enabled=True, notify_on_approval=True, notify_on_ready_to_merge=False)
+        monitor = _make_monitor(monitor_config=cfg_approval_only)
+        monitor._initialized = True
+        monitor._last_state = {
+            1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
+        }
+        prs = [_make_pr(1, computed_state)]
+        with (
+            patch(
+                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                new_callable=AsyncMock,
+                return_value=prs,
+            ),
+            patch(
+                "sova.supervisor.pr_monitor._is_coderabbit_rate_limited",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch("sova.ipc.notifications.notify") as mock_notify,
+        ):
+            await monitor._poll_cycle()
+        mock_notify.assert_not_called()
+
+        # notify_on_ready_to_merge alone MUST fire for this transition.
+        cfg_ready_only = PRMonitorConfig(enabled=True, notify_on_approval=False, notify_on_ready_to_merge=True)
+        monitor = _make_monitor(monitor_config=cfg_ready_only)
+        monitor._initialized = True
+        monitor._last_state = {
+            1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
+        }
+        with (
+            patch(
+                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                new_callable=AsyncMock,
+                return_value=prs,
+            ),
+            patch(
+                "sova.supervisor.pr_monitor._is_coderabbit_rate_limited",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch("sova.ipc.notifications.notify") as mock_notify,
+        ):
+            await monitor._poll_cycle()
+        mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_blocked_ci_less_approved_pr_does_not_fire_ready_to_merge(self) -> None:
+        """An approved, CI-less, mergeable PR whose GitHub mergeStateStatus is BLOCKED (e.g.
+        branch protection awaiting a required review) must compute to APPROVED, not
+        APPROVED_CI_GREEN, so it never fires notify_on_ready_to_merge while GitHub itself
+        still blocks the merge (CodeRabbit, PR #1114)."""
+        from sova.dashboard.services.pr_service import compute_pr_state
+
+        computed_state = compute_pr_state(
+            is_draft=False,
+            review_decision="APPROVED",
+            ci_status="none",
+            mergeable="MERGEABLE",
+            merge_state="BLOCKED",
+        )
+        assert computed_state == ComputedPRState.APPROVED
+
+        cfg = PRMonitorConfig(enabled=True, notify_on_approval=False, notify_on_ready_to_merge=True)
+        monitor = _make_monitor(monitor_config=cfg)
+        monitor._initialized = True
+        monitor._last_state = {
+            1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
+        }
+        prs = [_make_pr(1, computed_state)]
+        with (
+            patch(
+                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                new_callable=AsyncMock,
+                return_value=prs,
+            ),
+            patch(
+                "sova.supervisor.pr_monitor._is_coderabbit_rate_limited",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch("sova.ipc.notifications.notify") as mock_notify,
+        ):
+            await monitor._poll_cycle()
+        mock_notify.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_no_notification_when_disabled(self) -> None:
         cfg = PRMonitorConfig(enabled=True, notify_on_approval=False)
         monitor = _make_monitor(monitor_config=cfg)

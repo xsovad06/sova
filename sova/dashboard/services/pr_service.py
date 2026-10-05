@@ -427,9 +427,10 @@ def _check_ci_gate(enabled: bool, ci_status: str) -> dict:
     button on it would leave such a PR at PR_READY_TO_MERGE with its primary
     action permanently greyed out. An empty status (pr_data carrying no usable
     ci_status) stays blocking, since unknown is not the same as absent: a
-    missing ``ci_status`` key now reports as "CI status is 'unknown'" in the
-    gate's failure reason (previously "CI status is 'none'"), though the gate
-    still fails either way.
+    missing ``ci_status`` key fails the gate exactly as before; only the
+    displayed reason text changed, from "CI status is 'none'" to "CI status
+    is 'unknown'", to reflect that absent and genuinely-none are different
+    states.
     """
     if not enabled:
         return _gate("ci_passed", enabled=False, passed=True)

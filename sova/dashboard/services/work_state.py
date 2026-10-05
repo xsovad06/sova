@@ -213,12 +213,14 @@ def _get_actions(
     return actions.get(state, (None, []))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class PRFacts:
     """Pure snapshot of everything resolve_next_action() needs to decide a PR's next action.
 
     Built by the caller (dashboard or supervisor) from already-fetched data;
-    resolve_next_action() itself performs no I/O.
+    resolve_next_action() itself performs no I/O. kw_only=True so inserting a new field
+    anywhere in this list (as merge_state was, #1109) can never silently shift a value
+    into the wrong same-typed field at a positional call site.
     """
 
     running_agent: bool

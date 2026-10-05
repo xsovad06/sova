@@ -15877,6 +15877,19 @@ class TestPrSuggestionEndpoint:
         assert data["action_id"] == "integrate"
         assert data["disagrees"] is True
 
+    async def test_rejects_unsupported_merge_state(self, client: AsyncClient) -> None:
+        """merge_state must be one of GitHub's documented mergeStateStatus values (plus the
+        UNKNOWN/empty fallbacks); an arbitrary string must not reach the suggestion prompt
+        unvalidated (CodeRabbit, PR #1114)."""
+        body = {
+            "deterministic_state": "pr_sova_pending",
+            "deterministic_action_id": "review_pr",
+            "pr_computed_state": "approved_ci_green",
+            "merge_state": "NOT_A_REAL_STATE",
+        }
+        resp = await client.post("/api/prs/378/suggestion", json=body)
+        assert resp.status_code == 422
+
 
 class TestPrFeedbackEndpoint:
     """Tests for POST /api/prs/feedback."""
