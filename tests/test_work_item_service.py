@@ -672,7 +672,7 @@ class TestSortItems:
 
 
 def _facts(**overrides: object) -> PRFacts:
-    """A fully mergeable, green, approved, thread-clear PRFacts snapshot (rule 12 default).
+    """A fully mergeable, green, approved, thread-clear PRFacts snapshot (rule 13 default).
 
     Each golden-table row overrides only the fields relevant to the rule it exercises,
     isolating that rule from every other one.
@@ -682,6 +682,7 @@ def _facts(**overrides: object) -> PRFacts:
         "pr_state": "OPEN",
         "is_draft": False,
         "mergeable": "MERGEABLE",
+        "merge_state": "CLEAN",
         "ci_status": "passed",
         "head_sha": "sha-head",
         "sova_verdict": "approve",
@@ -696,7 +697,7 @@ def _facts(**overrides: object) -> PRFacts:
 
 
 class TestResolveNextAction:
-    """Golden table for resolve_next_action()'s 13-rule, first-match-wins ladder (#991)."""
+    """Golden table for resolve_next_action()'s 14-rule, first-match-wins ladder (#991, #1109)."""
 
     @pytest.mark.parametrize(
         ("scenario", "facts", "expected_state", "expected_action_id"),
@@ -806,15 +807,63 @@ class TestResolveNextAction:
             ),
             (
                 "approve_but_mergeability_not_yet_computed_is_not_integrate",
-                _facts(mergeable="UNKNOWN"),
+                _facts(mergeable="UNKNOWN", merge_state="UNKNOWN"),
                 WorkItemState.PR_AWAITING_REVIEW,
                 "review_pr",
             ),
             (
-                "approve_but_no_ci_checks_configured_is_not_integrate",
+                "approve_with_no_ci_checks_configured_reaches_ready_to_merge",
                 _facts(ci_status="none"),
+                WorkItemState.PR_READY_TO_MERGE,
+                "integrate",
+            ),
+            (
+                "approve_with_no_ci_and_behind_base_reaches_ready_to_merge",
+                _facts(ci_status="none", merge_state="BEHIND"),
+                WorkItemState.PR_READY_TO_MERGE,
+                "integrate",
+            ),
+            (
+                "merge_state_unknown_falls_back_to_mergeable_mergeable",
+                _facts(merge_state="UNKNOWN"),
+                WorkItemState.PR_READY_TO_MERGE,
+                "integrate",
+            ),
+            (
+                "merge_state_unknown_falls_back_to_mergeable_conflicting",
+                _facts(merge_state="UNKNOWN", mergeable="CONFLICTING"),
+                WorkItemState.PR_CONFLICTED,
+                "rebase",
+            ),
+            (
+                "merge_state_dirty_is_conflicted",
+                _facts(merge_state="DIRTY"),
+                WorkItemState.PR_CONFLICTED,
+                "rebase",
+            ),
+            (
+                "merge_state_blocked_routes_to_awaiting_review_with_no_action",
+                _facts(merge_state="BLOCKED"),
                 WorkItemState.PR_AWAITING_REVIEW,
-                "review_pr",
+                None,
+            ),
+            (
+                "merge_state_unstable_with_all_else_green_still_reaches_ready_to_merge",
+                _facts(merge_state="UNSTABLE"),
+                WorkItemState.PR_READY_TO_MERGE,
+                "integrate",
+            ),
+            (
+                "merge_state_unfetched_falls_back_to_mergeable_mergeable",
+                _facts(merge_state=""),
+                WorkItemState.PR_READY_TO_MERGE,
+                "integrate",
+            ),
+            (
+                "merge_state_unfetched_falls_back_to_mergeable_conflicting",
+                _facts(merge_state="", mergeable="CONFLICTING"),
+                WorkItemState.PR_CONFLICTED,
+                "rebase",
             ),
             (
                 "post_failed_verdict_falls_to_awaiting_review",
@@ -854,7 +903,7 @@ class TestResolveNextAction:
         resolution = resolve_next_action(_facts())
         assert resolution.state == WorkItemState.PR_READY_TO_MERGE
         assert resolution.reason_chain[-1] == "ready_to_merge"
-        assert len(resolution.reason_chain) == 12
+        assert len(resolution.reason_chain) == 13
 
     def test_resolution_is_frozen(self) -> None:
         resolution = resolve_next_action(_facts())
@@ -879,6 +928,7 @@ class TestDescribeReasonChain:
             "sova_verdict_addressed",
             "no_sova_review",
             "external_changes_or_unresolved_threads",
+            "merge_blocked_by_github",
             "ready_to_merge",
             "awaiting_review",
         )
@@ -887,6 +937,35 @@ class TestDescribeReasonChain:
         for rule_id, sentence in zip(all_rule_ids, sentences, strict=True):
             assert sentence != rule_id
             assert sentence
+
+    def test_conflicting_renderer_prefers_dirty_over_unknown_mergeable(self) -> None:
+        """DIRTY must be checked before UNKNOWN: a PR GitHub reports as DIRTY while
+        `mergeable` hasn't been recomputed yet must still name DIRTY, not report
+        the mergeable status as merely unknown (spec Edge Cases)."""
+        sentence = describe_reason_chain(("conflicting",), _facts(merge_state="DIRTY", mergeable="UNKNOWN"))[0]
+        assert "DIRTY" in sentence
+        assert "mergeable status is unknown" not in sentence
+
+    def test_merge_blocked_renderer_names_the_github_state(self) -> None:
+        """The reason sentence must name the mergeStateStatus that blocked the merge."""
+        sentence = describe_reason_chain(("merge_blocked_by_github",), _facts(merge_state="BLOCKED"))[0]
+        assert "BLOCKED" in sentence
+        clean = describe_reason_chain(("merge_blocked_by_github",), _facts(merge_state="CLEAN"))[0]
+        assert "BLOCKED" not in clean
+
+    def test_merge_blocked_renderer_does_not_flag_unstable(self) -> None:
+        """UNSTABLE means only non-required checks are failing: GitHub's merge
+        button still works, so it must not be reported as blocking."""
+        sentence = describe_reason_chain(("merge_blocked_by_github",), _facts(merge_state="UNSTABLE"))[0]
+        assert "GitHub does not block merging" == sentence
+
+    def test_blocked_by_github_emits_no_supervisor_action(self) -> None:
+        """A SOVA review is COMMENT-only, so it can never clear a branch-protection
+        block: the resolution must carry no action_id, or the supervisor would
+        re-spawn a reviewer on every poll cycle for a PR no review can unblock."""
+        resolution = resolve_next_action(_facts(merge_state="BLOCKED"))
+        assert resolution.reason_chain[-1] == "merge_blocked_by_github"
+        assert resolution.action_id is None
 
     def test_unrecognised_rule_id_renders_as_itself(self) -> None:
         """A future ladder rule with no renderer must not crash; it falls back to the identifier."""
@@ -1224,6 +1303,13 @@ class TestFormatHelpers:
         assert result["assignees"] == ["dev"]
         assert result["updated_at"] == "2026-06-02T12:00:00Z"
         assert result["commit_count"] == 4
+
+    def test_format_pr_details_carries_merge_state(self) -> None:
+        """merge_state must reach pr_details: the "Behind base" pill and the
+        resolver's merge-state rules both read it from there (#1109)."""
+        result = _format_pr_details({"number": 42, "merge_state": "BEHIND"})
+        assert result["merge_state"] == "BEHIND"
+        assert _format_pr_details({"number": 42})["merge_state"] == ""
 
     def test_format_pr_details_defaults(self) -> None:
         result = _format_pr_details({"number": 42})
@@ -2106,6 +2192,32 @@ class TestMergeLabelVerdict:
         merged = _merge_label_verdict(db, label)
         assert merged["verdict"] == "block"
         assert merged["review_head_sha"] is None
+
+
+class TestBuildPrFactsMergeState:
+    """_build_pr_facts() reads merge_state from pr_data (#1109)."""
+
+    def test_merge_state_is_read_from_pr_data(self) -> None:
+        from sova.dashboard.services.work_state import _build_pr_facts
+
+        facts = _build_pr_facts(
+            {"state": "OPEN", "ci_status": "none", "mergeable": "MERGEABLE", "merge_state": "BEHIND"},
+            None,
+            external_reviews_enabled=False,
+        )
+        assert facts.merge_state == "BEHIND"
+
+    def test_missing_merge_state_degrades_to_empty(self) -> None:
+        """A pr_data dict cached before this field existed must not raise; it
+        falls back to the older mergeable field via _github_will_merge()."""
+        from sova.dashboard.services.work_state import _build_pr_facts
+
+        facts = _build_pr_facts(
+            {"state": "OPEN", "ci_status": "passed", "mergeable": "MERGEABLE"},
+            None,
+            external_reviews_enabled=False,
+        )
+        assert facts.merge_state == ""
 
 
 class TestCanonicalVerdictPath:
