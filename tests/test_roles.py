@@ -4494,8 +4494,13 @@ class TestReviewerLLMReview:
         dashboard_handoff = mock_file_handoff.call_args[0][1]
         assert dashboard_handoff.next_actions[0].id == "address_review"
 
-    async def test_handoff_all_findings_actionable(self) -> None:
-        """All findings (including low-severity) are now actionable and sent to developer."""
+    async def test_handoff_low_severity_finding_is_advisory_not_blocking(self) -> None:
+        """A single low-severity finding (below the default revise_severity of 3) is
+
+        advisory: it approves rather than triggering address_review, but it is
+        still recorded in pending_findings so a manually-triggered Address run
+        can still fix it.
+        """
         from decimal import Decimal
         from unittest.mock import patch
 
@@ -4521,7 +4526,45 @@ class TestReviewerLLMReview:
             await role.execute(ctx)
 
         handoff = mock_db_handoff.call_args[0][1]
+        assert handoff.next_action == "approve"
+        assert handoff.metadata["verdict"] == "approve"
+        assert len(handoff.pending_findings) == 1
+
+        dashboard_handoff = mock_file_handoff.call_args[0][1]
+        assert dashboard_handoff.next_actions[0].id == "integrate"
+
+    async def test_handoff_blocking_finding_triggers_address_review(self) -> None:
+        """A finding at or above the default revise_severity (3) still blocks and
+
+        auto-spawns the address_review handoff action, exactly like before.
+        """
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx.task_run_id = 1
+
+        findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Moderate"}]
+        llm_result = LLMResult(text=self._llm_response(findings), model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
+        ):
+            role = ReviewerRole()
+            await role.execute(ctx)
+
+        handoff = mock_db_handoff.call_args[0][1]
         assert handoff.next_action == "address_review"
+        assert handoff.metadata["verdict"] == "revise"
         assert len(handoff.pending_findings) == 1
 
         dashboard_handoff = mock_file_handoff.call_args[0][1]
@@ -5078,7 +5121,10 @@ class TestReviewerParsing:
         assert _verdict_label([_f(10)]) == "BLOCK"
         assert _verdict_label([_f(6)]) == "REVISE"
         assert _verdict_label([_f(5)]) == "REVISE"
-        assert _verdict_label([_f(1)]) == "REVISE"
+        assert _verdict_label([_f(3)]) == "REVISE"
+        # Below the default revise_severity (3): advisory, does not block.
+        assert _verdict_label([_f(2)]) == "APPROVE"
+        assert _verdict_label([_f(1)]) == "APPROVE"
 
     def test_sova_verdict_label_name(self) -> None:
         from sova.roles.reviewer import ReviewFinding, _sova_verdict_label_name
@@ -5098,6 +5144,11 @@ class TestReviewerParsing:
         assert "## Review: APPROVE" in comment
 
     def test_format_findings_with_actionable(self) -> None:
+        """A blocking finding (severity 7) and an advisory one (severity 1, below
+
+        the default revise_severity of 3) land in separate sections, but both
+        are still rendered in the body.
+        """
         from sova.roles.reviewer import ReviewFinding, _format_findings_comment
 
         findings = [
@@ -5105,8 +5156,9 @@ class TestReviewerParsing:
             ReviewFinding(file="b.py", severity=1, category="style", description="Whitespace"),
         ]
         comment = _format_findings_comment(findings, "Mixed")
-        assert "2 findings" in comment
-        assert "all to be addressed" in comment
+        assert "### Findings" in comment
+        assert "**1 finding**" in comment
+        assert "### Advisory (not blocking)" in comment
         assert "Null ref" in comment
         assert "## Review: BLOCK" in comment
         assert "**[CRITICAL 7/10]**" in comment
@@ -5324,6 +5376,71 @@ class TestReviewerExceptionPaths:
         with patch("sova.roles.reviewer.write_handoff_file", side_effect=OSError("disk full")):
             # Should not raise
             await role._write_handoff(ctx, review)
+
+    async def test_write_handoff_advisory_only_approves_but_keeps_pending_findings(self) -> None:
+        """A review whose only findings are advisory (below revise_severity) must
+
+        approve and skip auto-address, but pending_findings (built from
+        actionable, unfiltered by severity) must still carry the advisory
+        finding so a manually-triggered Address run can still fix it.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
+
+        role = ReviewerRole()
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        finding = ReviewFinding(file="a.py", severity=1, category="style", description="nit")
+        review = ReviewResult(findings=[finding], summary="minor nit")
+
+        with (
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
+        ):
+            await role._write_handoff(ctx, review)
+
+        assert not mock_db_handoff.called  # ctx.task_run_id is None by default
+
+        file_handoff = mock_file_handoff.call_args[0][1]
+        assert file_handoff.details["next_action"] == "approve"
+        assert file_handoff.details["pending_findings"] == [
+            {
+                "file": "a.py",
+                "line": None,
+                "severity": 1,
+                "category": "style",
+                "description": "nit",
+                "suggestion": "",
+            }
+        ]
+        action_ids = [a.id for a in file_handoff.next_actions]
+        assert action_ids == ["integrate"]
+
+    async def test_write_handoff_persists_verdict_in_metadata(self) -> None:
+        """metadata.verdict is computed from blocking findings, not actionable."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
+
+        role = ReviewerRole()
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        ctx.task_run_id = 1
+        # One blocking (severity 8 >= block_severity 7) and one advisory finding.
+        findings = [
+            ReviewFinding(file="a.py", severity=8, category="bug", description="crash"),
+            ReviewFinding(file="b.py", severity=1, category="style", description="nit"),
+        ]
+        review = ReviewResult(findings=findings, summary="mixed")
+
+        with (
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
+        ):
+            await role._write_handoff(ctx, review)
+
+        db_handoff = mock_db_handoff.call_args[0][1]
+        assert db_handoff.metadata["verdict"] == "block"
+        assert db_handoff.next_action == "address_review"
 
     async def test_execute_total_posting_failure_writes_post_failed_handoff(self) -> None:
         """When all posting attempts fail, execute() succeeds and handoff signals review_post_failed.

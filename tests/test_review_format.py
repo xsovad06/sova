@@ -86,15 +86,37 @@ class TestVerdictFromFindings:
         assert verdict_from_findings([_fd(severity=10)]) == "BLOCK"
 
     def test_below_critical_revise(self) -> None:
-        assert verdict_from_findings([_fd(severity=1)]) == "REVISE"
+        assert verdict_from_findings([_fd(severity=3)]) == "REVISE"
         assert verdict_from_findings([_fd(severity=6)]) == "REVISE"
+
+    def test_below_revise_severity_approve(self) -> None:
+        """Below the default revise_severity (3): advisory, not blocking."""
+        assert verdict_from_findings([_fd(severity=1)]) == "APPROVE"
+        assert verdict_from_findings([_fd(severity=2)]) == "APPROVE"
 
     def test_mixed_uses_max(self) -> None:
         assert verdict_from_findings([_fd(severity=2), _fd(severity=8)]) == "BLOCK"
 
     def test_clamps_severity(self) -> None:
-        assert verdict_from_findings([_fd(severity=0)]) == "REVISE"
+        assert verdict_from_findings([_fd(severity=0)]) == "APPROVE"
         assert verdict_from_findings([_fd(severity=15)]) == "BLOCK"
+
+    def test_explicit_thresholds(self) -> None:
+        """Acceptance criteria: verdict_from_severities(..., revise_at=3, block_at=7)."""
+        from sova.roles._review_format import verdict_from_severities
+
+        assert verdict_from_severities([2], revise_at=3, block_at=7) == "APPROVE"
+        assert verdict_from_severities([3], revise_at=3, block_at=7) == "REVISE"
+        assert verdict_from_severities([7], revise_at=3, block_at=7) == "BLOCK"
+        assert verdict_from_severities([], revise_at=3, block_at=7) == "APPROVE"
+
+    def test_custom_thresholds_override_defaults(self) -> None:
+        from sova.roles._review_format import verdict_from_severities
+
+        # A project that raises revise_severity treats a severity-5 finding as advisory.
+        assert verdict_from_severities([5], revise_at=6, block_at=9) == "APPROVE"
+        assert verdict_from_severities([6], revise_at=6, block_at=9) == "REVISE"
+        assert verdict_from_severities([9], revise_at=6, block_at=9) == "BLOCK"
 
 
 class TestFormatReviewBody:
@@ -229,6 +251,49 @@ class TestFormatReviewBody:
         assert "- Nice tests" in body
         assert "### Verdict" in body
         assert "**Request changes**: bad." in body
+
+
+class TestFormatReviewBodyAdvisorySplit:
+    """Findings below revise_at are advisory: recorded, but never blocking."""
+
+    def test_advisory_only_findings_approve_with_advisory_section(self) -> None:
+        findings = [_fd(severity=1, description="nitpick")]
+        body = format_review_body(findings, "")
+        assert body.startswith("<!-- sova-review: approve -->")
+        assert "## Review: APPROVE" in body
+        assert "### Advisory (not blocking)" in body
+        assert "nitpick" in body
+        assert "No blocking issues found after thorough review." in body
+
+    def test_mixed_severities_split_into_two_sections(self) -> None:
+        findings = [
+            _fd(severity=8, file="blocking.py", description="crash"),
+            _fd(severity=2, file="advisory.py", description="nit"),
+        ]
+        body = format_review_body(findings, "")
+        assert "## Review: BLOCK" in body
+        assert "### Findings" in body
+        assert "### Advisory (not blocking)" in body
+        findings_idx = body.index("### Findings")
+        advisory_idx = body.index("### Advisory (not blocking)")
+        assert findings_idx < advisory_idx
+        assert body.index("blocking.py") < advisory_idx
+        assert body.index("advisory.py") > advisory_idx
+
+    def test_no_advisory_section_when_everything_blocks(self) -> None:
+        body = format_review_body([_fd(severity=6)], "")
+        assert "### Advisory (not blocking)" not in body
+
+    def test_no_findings_at_all_omits_advisory_and_uses_clean_text(self) -> None:
+        body = format_review_body([], "")
+        assert "### Advisory (not blocking)" not in body
+        assert "No issues found after thorough review." in body
+
+    def test_custom_thresholds_change_the_split(self) -> None:
+        """A severity-5 finding is advisory when revise_at is raised to 6."""
+        body = format_review_body([_fd(severity=5)], "", revise_at=6, block_at=9)
+        assert "### Advisory (not blocking)" in body
+        assert body.startswith("<!-- sova-review: approve -->")
 
 
 class TestFormatFindingLine:

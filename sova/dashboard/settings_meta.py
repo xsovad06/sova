@@ -500,7 +500,21 @@ _REGISTRY: list[SettingMeta] = [
     ),
     # -- Review --
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
-    SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),
+    SettingMeta(
+        "review.revise_severity",
+        "Revise severity",
+        "Findings at or above this severity (1-10) block the verdict and start a fix round. "
+        "Findings below it are still recorded (shown as Advisory) but do not block approval",
+        "review",
+        "number",
+    ),
+    SettingMeta(
+        "review.block_severity",
+        "Block severity",
+        "Findings at or above this severity (1-10) verdict as BLOCK instead of REVISE",
+        "review",
+        "number",
+    ),
     SettingMeta(
         "review.protected_paths",
         "Protected paths",

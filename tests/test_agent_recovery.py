@@ -562,6 +562,38 @@ class TestAgentRecoveryDirect:
         assert result["verdict"] == "revise"
         assert result["finding_count"] == 1
 
+    async def test_sova_review_verdict_prefers_persisted_metadata_verdict(self) -> None:
+        """metadata.verdict (persisted by ReviewerRole._write_handoff) wins over the
+
+        legacy severity-7 re-derivation from pending_findings: pending_findings
+        still carries an advisory finding (severity 2, below revise_severity),
+        which the legacy derivation would read as "revise" via max severity, but
+        the review threshold meant it was never blocking.
+        """
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="102b",
+                    role="reviewer",
+                    status="done",
+                    handoff_json={
+                        "next_action": "address_review",
+                        "pending_findings": [
+                            {"file": "c.py", "severity": 2, "description": "nit"},
+                        ],
+                        "metadata": {"verdict": "block"},
+                    },
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("102b")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "block"
+
     async def test_sova_review_verdict_strips_hash(self) -> None:
         from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 

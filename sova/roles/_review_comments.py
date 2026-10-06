@@ -13,6 +13,9 @@ from decimal import Decimal
 
 from sova.adapters.base import Task
 from sova.roles._review_format import (
+    _SEVERITY_CRITICAL,
+    _SEVERITY_MEDIUM,
+    clamp_severity,
     format_from_data,
     format_review_body,
     severity_label,
@@ -71,6 +74,15 @@ class ReviewResult:
     def actionable(self) -> list[ReviewFinding]:
         return [f for f in self.findings if f.category != "protected-path"]
 
+    def blocking(self, revise_at: int) -> list[ReviewFinding]:
+        """Actionable findings at or above *revise_at*: the subset that blocks the verdict.
+
+        Everything below this stays in ``actionable`` (and therefore in
+        ``pending_findings``) but does not gate the verdict, the ``sova:*``
+        label, or the auto-spawned address-review handoff action.
+        """
+        return [f for f in self.actionable if clamp_severity(f.severity) >= revise_at]
+
 
 def _format_addressed_findings(findings: list[dict] | None) -> str:
     """Format addressed external findings into a prompt section."""
@@ -115,6 +127,7 @@ def _build_review_prompt(
     files: list[str],
     spec_sections: dict[str, str] | None = None,
     addressed_findings: list[dict] | None = None,
+    revise_at: int = _SEVERITY_MEDIUM,
 ) -> str:
     """Build the LLM prompt for code review."""
     file_list = "\n".join(f"- {f}" for f in files)
@@ -142,6 +155,14 @@ def _build_review_prompt(
     # structured form.  Omit the verbose issue body to save tokens -- the title
     # is enough for identification.
     description_block = f"\n**Description**: {task.body}" if not has_spec and task.body else ""
+
+    rereview_rule = (
+        f'\n- On a re-review (an "Already Addressed in Earlier Rounds" section is present), raise a '
+        f"finding on unchanged code only if it is severity {revise_at} or above and was not already "
+        "raised and declined."
+        if addressed_findings
+        else ""
+    )
 
     return f"""You are a senior software engineer performing a thorough code review. \
 Your job is to find real issues -- do NOT rubber-stamp the PR. \
@@ -172,9 +193,12 @@ Examine every changed line against each criterion. Score each finding 1-10 (10 =
 8. **Docs** (2-3): stale comments, misleading docstrings{spec_checklist}
 
 ## Critical Rules
-- You MUST find at least one issue. No PR is perfect. If you think the code is clean, look harder.
 - Focus on REAL issues that would cause bugs, security holes, or maintenance problems.
-- Report ALL findings regardless of severity. Low-severity findings will still be addressed.
+- Report what you find at the severity it deserves. An empty findings list is a valid answer for a clean diff.
+- Findings at severity {revise_at} or above block the PR and start a fix round. Findings below {revise_at} \
+are still recorded and will be fixed on the next round that touches this PR; they just do not block approval \
+or start one on their own. Do not inflate a severity to force a fix round, and do not omit a minor finding \
+because it will not block: it is still worth fixing.{rereview_rule}
 - For each finding, explain WHY it is a problem and provide a CONCRETE fix.
 - Be specific: reference exact file paths and line numbers from the diff.
 
@@ -341,9 +365,14 @@ _VERDICT_TO_LABEL: dict[str, str] = {
 }
 
 
-def _sova_verdict_label_name(findings: list[ReviewFinding]) -> str:
+def _sova_verdict_label_name(
+    findings: list[ReviewFinding],
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
+) -> str:
     """Return the sova:{verdict} label name for the given findings."""
-    return _VERDICT_TO_LABEL[_verdict_label(findings)]
+    return _VERDICT_TO_LABEL[_verdict_label(findings, revise_at=revise_at, block_at=block_at)]
 
 
 def _severity_label(severity: int) -> str:
@@ -351,9 +380,14 @@ def _severity_label(severity: int) -> str:
     return severity_label(severity)
 
 
-def _verdict_label(findings: list[ReviewFinding]) -> str:
+def _verdict_label(
+    findings: list[ReviewFinding],
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
+) -> str:
     """Determine the review verdict from findings."""
-    return verdict_from_severities([f.severity for f in findings])
+    return verdict_from_severities([f.severity for f in findings], revise_at=revise_at, block_at=block_at)
 
 
 def _make_protected_path_finding(matched_files: list[str]) -> ReviewFinding:
@@ -373,7 +407,14 @@ def _make_protected_path_finding(matched_files: list[str]) -> ReviewFinding:
     )
 
 
-def _format_findings_body(findings: list[ReviewFinding], summary: str, sha: str | None = None) -> str:
+def _format_findings_body(
+    findings: list[ReviewFinding],
+    summary: str,
+    sha: str | None = None,
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
+) -> str:
     """Build the shared review body used by both review API and comment fallback."""
     finding_dicts = [
         {
@@ -386,12 +427,19 @@ def _format_findings_body(findings: list[ReviewFinding], summary: str, sha: str 
         }
         for f in findings
     ]
-    return format_review_body(finding_dicts, summary, sha=sha)
+    return format_review_body(finding_dicts, summary, sha=sha, revise_at=revise_at, block_at=block_at)
 
 
-def _format_findings_comment(findings: list[ReviewFinding], summary: str, sha: str | None = None) -> str:
+def _format_findings_comment(
+    findings: list[ReviewFinding],
+    summary: str,
+    sha: str | None = None,
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
+) -> str:
     """Format findings into a GitHub PR comment (fallback path)."""
-    return _format_findings_body(findings, summary, sha=sha)
+    return _format_findings_body(findings, summary, sha=sha, revise_at=revise_at, block_at=block_at)
 
 
 def _format_inline_comment(finding: ReviewFinding) -> str:
@@ -407,9 +455,12 @@ def _format_review_body(
     findings: list[ReviewFinding],
     summary: str,
     sha: str | None = None,
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
 ) -> str:
     """Format the review body for the PR review API (with inline comments)."""
-    return _format_findings_body(findings, summary, sha=sha)
+    return _format_findings_body(findings, summary, sha=sha, revise_at=revise_at, block_at=block_at)
 
 
 def _coerce_int(value: object) -> int | None:
@@ -446,16 +497,24 @@ def _finding_from_dict(raw: dict) -> ReviewFinding:
     )
 
 
-def build_review_payload_from_json(json_text: str, diff_text: str, event: str) -> str:
+def build_review_payload_from_json(
+    json_text: str,
+    diff_text: str,
+    event: str,
+    *,
+    revise_at: int = _SEVERITY_MEDIUM,
+    block_at: int = _SEVERITY_CRITICAL,
+) -> str:
     """Build a complete GitHub PR review payload (body plus inline comments) as JSON.
 
     Gives the /review-pr command the same output as ReviewerRole._post_review():
-    every finding that lands on a line present on the RIGHT side of the diff
-    becomes its own inline review comment, and therefore its own resolvable
-    thread. Without this the command posted only a summary body, so a
-    command-driven review left nothing per-finding to resolve and the
-    unresolved-thread count could not be used to track what still needs
-    addressing. Findings that do not map to a diff line stay in the body only.
+    every blocking finding (severity >= revise_at) that lands on a line present
+    on the RIGHT side of the diff becomes its own inline review comment, and
+    therefore its own resolvable thread. Without this the command posted only
+    a summary body, so a command-driven review left nothing per-finding to
+    resolve and the unresolved-thread count could not be used to track what
+    still needs addressing. Findings that do not map to a diff line, and
+    advisory findings below revise_at, stay in the body only.
 
     ``diff_text`` is the PR diff (``gh pr diff``). ``event`` is APPROVE,
     REQUEST_CHANGES or COMMENT. Returns a JSON string for ``gh api --input``.
@@ -473,11 +532,30 @@ def build_review_payload_from_json(json_text: str, diff_text: str, event: str) -
     # Non-dict entries are dropped once, before either half is built, so the
     # body and the inline comments always describe the same set of findings.
     raw_findings = [f for f in data.get("findings", []) if isinstance(f, dict)]
-    data["findings"] = raw_findings
-    inline_comments, _ = _build_review_comments(
-        [_finding_from_dict(f) for f in raw_findings], parse_diff_lines(diff_text)
-    )
-    return json.dumps({"body": format_from_data(data), "event": event, "comments": inline_comments})
+    # Coerce every finding through _finding_from_dict exactly once (the same path
+    # _format_inline_comment() reads from) and feed that single coerced view to
+    # both the blocking decision/inline comments and the body renderer. Passing
+    # the raw dicts straight to format_from_data() would let it re-derive
+    # severity on its own (a bare `.get("severity", 5)`, no type coercion), which
+    # both disagrees with the blocking/inline-comment severity for a missing
+    # value (5 vs. this function's 0) and crashes on a non-numeric one (e.g.
+    # "HIGH") since clamp_severity() assumes an int.
+    all_findings = [_finding_from_dict(f) for f in raw_findings]
+    data["findings"] = [
+        {
+            "file": f.file,
+            "line": f.line,
+            "severity": f.severity,
+            "category": f.category,
+            "description": f.description,
+            "suggestion": f.suggestion,
+        }
+        for f in all_findings
+    ]
+    blocking_findings = [f for f in all_findings if clamp_severity(f.severity) >= revise_at]
+    inline_comments, _ = _build_review_comments(blocking_findings, parse_diff_lines(diff_text))
+    body = format_from_data(data, revise_at=revise_at, block_at=block_at)
+    return json.dumps({"body": body, "event": event, "comments": inline_comments})
 
 
 def _build_review_comments(

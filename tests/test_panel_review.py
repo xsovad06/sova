@@ -183,6 +183,22 @@ class TestBuildDimensionPrompt:
         prompt = _build_dimension_prompt("correctness", _task(), "diff", ["a.py"], addressed_findings=None)
         assert "Already Addressed" not in prompt
 
+    def test_no_forcing_language(self) -> None:
+        prompt = _build_dimension_prompt("correctness", _task(), "diff", ["a.py"])
+        assert "regardless of severity" not in prompt
+        assert "An empty findings list is a valid answer" in prompt
+
+    def test_severity_threshold_interpolated(self) -> None:
+        prompt = _build_dimension_prompt("correctness", _task(), "diff", ["a.py"], revise_at=4)
+        assert "severity 4 or above block the PR" in prompt
+
+    def test_rereview_rule_only_with_addressed_findings(self) -> None:
+        findings = [{"source": "ruff", "file_path": "a.py", "message": "unused"}]
+        with_addressed = _build_dimension_prompt("correctness", _task(), "diff", ["a.py"], addressed_findings=findings)
+        without_addressed = _build_dimension_prompt("correctness", _task(), "diff", ["a.py"])
+        assert "On a re-review" in with_addressed
+        assert "On a re-review" not in without_addressed
+
 
 # ---------------------------------------------------------------------------
 # Panel review integration
@@ -737,6 +753,15 @@ class TestBuildCombinedPrompt:
         prompt = _build_combined_prompt(["foo_dimension"], _task(), "diff", ["a.py"])
         assert "### foo_dimension" in prompt
         assert "Any foo_dimension issues" in prompt
+
+    def test_no_forcing_language(self) -> None:
+        prompt = _build_combined_prompt(["correctness"], _task(), "diff", ["a.py"])
+        assert "regardless of severity" not in prompt
+        assert "An empty findings list is a valid answer" in prompt
+
+    def test_severity_threshold_interpolated(self) -> None:
+        prompt = _build_combined_prompt(["correctness"], _task(), "diff", ["a.py"], revise_at=4)
+        assert "severity 4 or above block the PR" in prompt
 
 
 # ---------------------------------------------------------------------------

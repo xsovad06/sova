@@ -166,7 +166,6 @@ class TomlConfig:
     task_source: str = "github"
     agent_model: str = "opus"
     max_budget: str = "10.00"
-    review_max_rounds: int = 2
     branch_naming: str = "conventional"
     commit_format: str = "conventional"
     ai_coauthor: bool = True
@@ -197,7 +196,7 @@ def generate_config_dict(config: TomlConfig) -> dict:
         "format_cmd": config.format_cmd,
         "task_source": {"type": config.task_source},
         "agent": {"model": config.agent_model, "max_budget": config.max_budget},
-        "review": {"enabled": True, "max_rounds": config.review_max_rounds},
+        "review": {"enabled": True},
         "commit": {
             "format": config.commit_format,
             "ai_coauthor": config.ai_coauthor,

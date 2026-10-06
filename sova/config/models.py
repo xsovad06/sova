@@ -241,11 +241,27 @@ class ReviewConfig(BaseSettings):
     """Automated review configuration."""
 
     enabled: bool = True
-    max_rounds: int = Field(2, gt=0)
+    # Findings at or above this severity block the verdict and start a fix
+    # round; findings below it are advisory (recorded, never discarded, but
+    # do not block approval). Default matches the existing _SEVERITY_MEDIUM
+    # boundary in _review_format.py, so only LOW (1-2) becomes advisory.
+    revise_severity: int = Field(3, ge=1, le=10)
+    # Findings at or above this severity verdict as BLOCK rather than REVISE.
+    # Default matches the existing _SEVERITY_CRITICAL boundary.
+    block_severity: int = Field(7, ge=1, le=10)
     panel: ReviewPanelConfig = Field(default_factory=ReviewPanelConfig)
     protected_paths: list[str] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_REVIEW_")
+
+    @model_validator(mode="after")
+    def _validate_severity_thresholds(self) -> ReviewConfig:
+        if self.revise_severity > self.block_severity:
+            raise ValueError(
+                f"review.revise_severity ({self.revise_severity}) must be <= "
+                f"review.block_severity ({self.block_severity})"
+            )
+        return self
 
 
 class DevelopConfig(BaseSettings):

@@ -746,7 +746,7 @@ def _default_config(repo: str = "", test_cmd: str = "make test", github_user: st
         "check_cmd": "",
         "task_source": {"type": "github"},
         "agent": {"model": "opus", "max_budget": "10.00"},
-        "review": {"enabled": True, "max_rounds": 2},
+        "review": {"enabled": True},
         "triage": {"auto_label": True, "min_confidence": 0.7},
         "roles": {"default": "developer"},
     }
