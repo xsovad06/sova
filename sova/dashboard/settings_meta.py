@@ -1833,6 +1833,52 @@ _REGISTRY: list[SettingMeta] = [
         "select",
         options=("warn", "stop_newest"),
     ),
+    # Agent Health: Network Guard
+    SettingMeta(
+        "network_guard.enabled",
+        "Network guard",
+        "Detect loss of connectivity to GitHub and the LLM provider (on by default)",
+        "agent_health",
+        "boolean",
+    ),
+    SettingMeta(
+        "network_guard.block_spawns",
+        "Block spawns while offline",
+        "Refuse new agent spawns while the network is unreachable, since they fail within "
+        "seconds having done nothing (on by default). Force still bypasses this",
+        "agent_health",
+        "boolean",
+    ),
+    SettingMeta(
+        "network_guard.auto_resume",
+        "Resume after an outage",
+        "Resume runs that failed because of a network outage once the connection returns, "
+        "skipping the steps they had already completed (on by default)",
+        "agent_health",
+        "boolean",
+    ),
+    SettingMeta(
+        "network_guard.recovery_grace_seconds",
+        "Recovery grace period (seconds)",
+        "How long the connection must stay healthy before anything is resumed, so a flapping "
+        "connection does not spend the retry budget",
+        "agent_health",
+        "integer",
+    ),
+    SettingMeta(
+        "network_guard.resume_window_minutes",
+        "Resume window (minutes)",
+        "Only runs that failed this recently are resumed; older failures are left alone",
+        "agent_health",
+        "integer",
+    ),
+    SettingMeta(
+        "network_guard.max_auto_resumes_per_hour",
+        "Max auto-resumes per hour",
+        "Per-project cap on automatic resumes (0 disables the cap)",
+        "agent_health",
+        "integer",
+    ),
     # -- Agent Health: Watchdog --
     SettingMeta(
         "watchdog.enabled",

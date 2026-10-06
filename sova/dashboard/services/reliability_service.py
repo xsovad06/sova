@@ -27,6 +27,7 @@ from sova.llm.errors import (
     RateLimitError,
     classify_error,
 )
+from sova.utils.network import looks_like_network_outage
 
 # Below this many terminal runs in the window, a role's success rate is too
 # noisy to act on. Mirrors get_monthly_projection()'s insufficient_data
@@ -147,6 +148,16 @@ def classify_failure_cause(error_message: str | None) -> str:
         return "unclassified"
 
     lower = error_message.strip().lower()
+
+    # Checked before every other rule, for two reasons. Mechanically, a
+    # connectivity failure usually arrives wrapped in another rule's shape:
+    # _build_exit_failure_message() prefixes the captured cause with "Process
+    # exited with code 1", which _PROCESS_EXIT_RE below would otherwise claim
+    # first. Substantively, an outage is an external root cause, and leaving it
+    # in the fix_llm_* or step_timeout buckets corrupts exactly the measurement
+    # those buckets exist for (how well SOVA's own fix loop converges).
+    if looks_like_network_outage(error_message):
+        return "network_unreachable"
 
     if lower == _STEP_TIMEOUT_MARKER:
         return "step_timeout"

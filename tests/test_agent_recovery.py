@@ -3093,3 +3093,81 @@ class TestCountAddressReviewRuns:
         await self._seed(pr=3001)
         # Only the run that actually executed address_review and the finished command run count.
         assert await count_address_review_runs("200", 3001, Path("/tmp/unused")) == 2
+
+    async def test_network_outage_runs_do_not_consume_the_cycle_budget(self) -> None:
+        """An outage changed nothing on the PR and re-triggered no bot review.
+
+        Marking such a run "interrupted" is not enough on its own to exclude it:
+        "interrupted" is a member of TASK_RUN_TERMINAL, so without this filter
+        two outages would permanently exhaust a PR's address-review budget.
+        """
+        from sova.supervisor.gates.utils import count_address_review_runs
+
+        await self._seed(pr=3002)
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="200",
+                    role="command:address-pr",
+                    status="interrupted",
+                    pr_number=3002,
+                    error_message=("address-pr outcome unverified: GitHub was unreachable while checking PR #3002"),
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="200",
+                    role="command:address-pr",
+                    status="failed",
+                    pr_number=3002,
+                    error_message="Process exited with code 1; last output: error connecting to api.github.com",
+                )
+            )
+
+        # Still 2: the two outage runs are excluded, the real cycles are not.
+        assert await count_address_review_runs("200", 3002, Path("/tmp/unused")) == 2
+
+    async def test_done_run_with_a_stale_outage_message_still_counts(self) -> None:
+        """The outage exclusion applies only to failure statuses.
+
+        A `done` run normally carries no error_message, but a run that was
+        downgraded and later recovered, or one that simply kept a stale
+        message, must not be excluded just because that leftover text matches
+        the outage predicate: it completed a real cycle.
+        """
+        from sova.supervisor.gates.utils import count_address_review_runs
+
+        await self._seed(pr=3004)
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="200",
+                    role="command:address-pr",
+                    status="done",
+                    pr_number=3004,
+                    error_message=("address-pr outcome unverified: GitHub was unreachable while checking PR #3004"),
+                )
+            )
+
+        # 3, not 2: the done run counts despite its stale outage-shaped message.
+        assert await count_address_review_runs("200", 3004, Path("/tmp/unused")) == 3
+
+    async def test_genuine_failure_still_consumes_the_cycle_budget(self) -> None:
+        from sova.supervisor.gates.utils import count_address_review_runs
+
+        await self._seed(pr=3003)
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="200",
+                    role="command:address-pr",
+                    status="failed",
+                    pr_number=3003,
+                    error_message="address-pr completed without pushing changes",
+                )
+            )
+
+        assert await count_address_review_runs("200", 3003, Path("/tmp/unused")) == 3

@@ -437,7 +437,8 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     """Assemble unified work items from all state sources.
 
     Returns: {items, running_count, slots_available, max_concurrent, github_user, jira_display_name, api_health}
-    api_health: {status: "ok"} or {status: "rate_limited", detail, cooldown_seconds, hits}
+    api_health: {status: "ok"}, {status: "unreachable", detail, down_seconds},
+    or {status: "rate_limited", detail, cooldown_seconds, hits}
     """
     from sova.dashboard.services.agent_pool import _get_project_agents
 
@@ -518,9 +519,20 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     api_health: dict[str, object] = {"status": "ok"}
     try:
         from sova.supervisor.github_quota import get_github_quota_status
+        from sova.supervisor.network_health import get_connectivity_status
 
+        # Unreachable is checked first: an outage supersedes throttling, and
+        # during one the rate-limit cooldown is not what the operator needs to
+        # know about. A throttled call reached GitHub; an unreachable one did not.
+        net_status = get_connectivity_status()
         gh_status = get_github_quota_status(github_user)
-        if gh_status.is_limited:
+        if net_status.is_down:
+            api_health = {
+                "status": "unreachable",
+                "detail": "No connection to GitHub or the LLM provider. Agent spawning is paused.",
+                "down_seconds": round(net_status.down_for_seconds),
+            }
+        elif gh_status.is_limited:
             api_health = {
                 "status": "rate_limited",
                 "detail": "GitHub API rate limit exceeded. Data may be stale.",

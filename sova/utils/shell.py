@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sova.utils.logging import get_logger
+from sova.utils.network import looks_like_network_outage
 
 log = get_logger(component="shell")
 
@@ -47,6 +48,19 @@ class ShellResult:
             return False
         lower = self.stderr.lower()
         return "rate limit" in lower or "abuse detection" in lower
+
+    @property
+    def is_network_unreachable(self) -> bool:
+        """Check if the command failed because the network was unreachable.
+
+        Distinct from ``is_rate_limited``: a throttled call reached the API,
+        an unreachable one never left the machine. Both stderr and stdout are
+        scanned because ``gh`` writes its connection error to stderr while
+        some git porcelain reports transport failures on stdout.
+        """
+        if self.success:
+            return False
+        return looks_like_network_outage(self.stderr) or looks_like_network_outage(self.stdout)
 
 
 async def run(

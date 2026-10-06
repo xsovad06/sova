@@ -56,7 +56,7 @@ sova/
     awareness/                     # Awareness subsystem (AwarenessProvider ABC, AwarenessItem, ItemCategory, provider registry, BriefingService aggregation engine, rendering models, rendering/cli_renderer.py Rich terminal output)
     oversight/                     # Oversight agent: background daemon, operations persona (user-maintained LLM guidance)
     supervisor/                    # Supervisor-level services (TaskProgressionEngine, CodeRabbit quota, task dependency graph)
-      gates/                       # Gate check functions (one per module): rate_limit, memory_pressure, dependency, human_involvement, quota, ci_budget, slots, budget, already_running, repeated_failure, ownership, merge_conflict, file_conflict, circuit_breaker, review_completed
+      gates/                       # Gate check functions (one per module): rate_limit, connectivity, memory_pressure, dependency, human_involvement, quota, ci_budget, slots, budget, already_running, repeated_failure, ownership, merge_conflict, file_conflict, circuit_breaker, review_completed
     commands/                      # Command + guideline distribution (catalog, templates, manifest, distribution)
     config/                        # Pydantic Settings + TOML config + project registry + request context
     monitoring/                     # Resource monitoring (psutil-based CPU, memory, I/O tracking)
@@ -76,7 +76,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (10200+ tests)
+  tests/                           # pytest suite (10300+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)

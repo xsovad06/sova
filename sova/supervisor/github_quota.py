@@ -125,13 +125,28 @@ def get_github_quota_status(identity: str = "") -> GitHubQuotaStatus:
 
 
 def track_rate_limit(result: object, identity: str = "") -> None:
-    """Record rate limit state from a gh CLI ShellResult.
+    """Record rate limit and connectivity state from a gh CLI ShellResult.
 
     Accepts any object with ``is_rate_limited`` and ``success`` attributes
     (i.e. ShellResult) to avoid importing from sova.utils.shell.
+
+    Connectivity is folded in here rather than given its own call because every
+    ``gh`` invocation in the codebase already routes through this one function
+    (sova/utils/gh.py, sova/adapters/github.py, sova/git/pr.py,
+    sova/supervisor/pr_monitor.py, sova/supervisor/pr_throttle.py), so the
+    reachability tracker gets the same coverage for free. The two states are
+    distinct and must not alias: a throttled call reached GitHub, an
+    unreachable one never left the machine.
     """
     tracker = get_github_quota_tracker(identity)
     if getattr(result, "is_rate_limited", False):
         tracker.record_rate_limit_hit()
     elif getattr(result, "success", False):
         tracker.record_success()
+
+    try:
+        from sova.supervisor.network_health import track_connectivity
+
+        track_connectivity(result, source="github")
+    except Exception:  # noqa: BLE001 (connectivity tracking must never break a gh call path)
+        log.debug("track_connectivity.failed", exc_info=True)
