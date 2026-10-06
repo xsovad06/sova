@@ -55,6 +55,7 @@ from sova.dashboard.routers import (
     logs,
     mcp,
     memory,
+    models,
     oversight,
     overview,
     prs,
@@ -1363,6 +1364,7 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(control.router, prefix=prefix)
     app.include_router(handoff.router, prefix=prefix)
     app.include_router(memory.router, prefix=prefix)
+    app.include_router(models.router, prefix=prefix)
     app.include_router(logs.router, prefix=prefix)
     app.include_router(tasks.router, prefix=prefix)
     app.include_router(queue.router, prefix=prefix)

@@ -5800,6 +5800,36 @@ class TestModelAvailabilityCacheEnumeration:
         assert cache.get_enumeration("id1") is None
         assert cache.get_probe_outcome("id1", "model-a") is None
 
+    def test_clear_enumeration_drops_enumeration_but_not_probe_outcomes(self) -> None:
+        """A forced refresh clears the enumeration pass but must not erase a
+        per-model probe outcome: a model that worked is a stable positive
+        fact independent of which pass discovered it."""
+        from sova.llm.client import ModelAvailabilityCache
+        from sova.llm.models import CURATED_MODELS
+
+        cache = ModelAvailabilityCache()
+        cache.set_enumeration("id1", list(CURATED_MODELS))
+        cache.set_probe_outcome("id1", "model-a", True)
+
+        cache.clear_enumeration()
+
+        assert cache.get_enumeration("id1") is None
+        assert cache.get_probe_outcome("id1", "model-a") is True
+
+    def test_module_level_clear_enumeration_targets_the_shared_cache(self) -> None:
+        from sova.llm.client import clear_enumeration, get_availability_cache, reset_availability_cache
+        from sova.llm.models import CURATED_MODELS
+
+        reset_availability_cache()
+        get_availability_cache().set_enumeration("id1", list(CURATED_MODELS))
+        get_availability_cache().set_probe_outcome("id1", "model-a", True)
+
+        clear_enumeration()
+
+        assert get_availability_cache().get_enumeration("id1") is None
+        assert get_availability_cache().get_probe_outcome("id1", "model-a") is True
+        reset_availability_cache()
+
     def test_get_enumeration_returns_a_copy(self) -> None:
         """The cached list is handed straight to callers, so an in-place edit by
         one caller must not corrupt every later read for the whole TTL."""
