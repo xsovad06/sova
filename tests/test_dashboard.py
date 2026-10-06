@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -12143,6 +12145,331 @@ class TestAuthStatusAPI:
         body = resp.text
         assert "sk-ant-secret" not in body
         assert resp.json()["account"] == {"email": "u@e.com"}
+
+
+class _FakeModelsProvider:
+    """Fake provider exposing only ``list_available_models()``."""
+
+    def __init__(self, models: list, *, delay: float = 0.0) -> None:
+        self._models = models
+        self._delay = delay
+        self.call_count = 0
+
+    async def list_available_models(self, *, allow_probe: bool = True):
+        self.call_count += 1
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return list(self._models)
+
+
+def _model(model_id: str = "m1", display_name: str = "M1", *, tier: str = "smart", source: str = "probed"):
+    """Build one ModelInfo; every field a test does not care about has a default."""
+    from sova.llm.models import ModelFamily, ModelInfo
+
+    return ModelInfo(id=model_id, family=ModelFamily.ANTHROPIC, tier=tier, display_name=display_name, source=source)
+
+
+@contextmanager
+def _patch_models_env(provider, cfg=None):
+    """Patch the config load and provider construction every test here needs."""
+    with (
+        patch("sova.config.loader.load_config", return_value=cfg if cfg is not None else _fake_cfg()),
+        patch("sova.llm.provider.create_provider", return_value=provider),
+    ):
+        yield
+
+
+class TestAvailableModelsAPI:
+    @pytest.fixture(autouse=True)
+    def _clear_models_cache(self):
+        from sova.dashboard.services import models_service
+
+        models_service._models_cache.clear()
+        models_service._models_locks.clear()
+        models_service._last_refresh_at.clear()
+        yield
+        models_service._models_cache.clear()
+        models_service._models_locks.clear()
+        models_service._last_refresh_at.clear()
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_routing_vars(self):
+        """``provider_identity`` embeds ``detect_backend()``, which reads the
+        routing env vars, so a developer running with Vertex or Bedrock routing
+        exported would otherwise fail these assertions on an unrelated change."""
+        import os
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_CODE_USE_VERTEX", None)
+            os.environ.pop("CLAUDE_CODE_USE_BEDROCK", None)
+            yield
+
+    async def test_default_provider_returns_curated_response_shape(self, client: AsyncClient) -> None:
+        from sova.llm.models import CURATED_MODELS
+
+        provider = _FakeModelsProvider(list(CURATED_MODELS))
+        with _patch_models_env(provider):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["layer"] == "llm"
+        assert data["provider_identity"] == "claude-code:firstparty"
+        assert data["source"] == "curated"
+        assert data["detail"] == ""
+        assert data["cached"] is False
+        assert "cached_at" in data
+        assert len(data["models"]) == len(CURATED_MODELS)
+        assert set(data["models"][0].keys()) == {"id", "family", "display_name", "tier"}
+
+    async def test_empty_enumeration_is_a_valid_200(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([])
+        with _patch_models_env(provider):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["models"] == []
+        assert data["source"] == "unknown"
+
+    async def test_empty_enumeration_is_never_cached(self, client: AsyncClient) -> None:
+        """No in-tree provider returns ``[]`` (an outage is reported as ``None``,
+        which becomes the curated fallback), so a zero-model result is a shape
+        nothing here can vouch is stable and must not be pinned for the TTL."""
+        provider = _FakeModelsProvider([])
+        with _patch_models_env(provider):
+            first = await client.get("/api/models/available", params={"layer": "llm"})
+            second = await client.get("/api/models/available", params={"layer": "llm"})
+        assert first.json()["cached"] is False
+        assert second.json()["cached"] is False
+        assert provider.call_count == 2
+
+    async def test_real_enumeration_serializes_only_allowlisted_fields(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([_model("claude-sonnet-5", "Sonnet")])
+        with _patch_models_env(provider):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        data = resp.json()
+        assert data["source"] == "probed"
+        assert data["models"] == [
+            {"id": "claude-sonnet-5", "family": "anthropic", "display_name": "Sonnet", "tier": "smart"}
+        ]
+
+    async def test_mixed_sources_report_mixed(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([_model(), _model("m2", "M2", tier="fast", source="curated")])
+        with _patch_models_env(provider):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        assert resp.json()["source"] == "mixed"
+
+    async def test_no_secret_material_in_response_body(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([_model("claude-x", "X")])
+        with _patch_models_env(provider, _fake_cfg(api_key="sk-ant-secret-token")):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        assert "sk-ant-secret-token" not in resp.text
+        assert "api_base" not in resp.text
+        assert "api_key" not in resp.text
+        assert "email" not in resp.text
+
+    async def test_cache_hit_returns_cached_true(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([_model()])
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()) as mock_load,
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            first = await client.get("/api/models/available", params={"layer": "llm"})
+            second = await client.get("/api/models/available", params={"layer": "llm"})
+        assert first.json()["cached"] is False
+        assert second.json()["cached"] is True
+        assert second.json()["cached_at"] == first.json()["cached_at"]
+        assert mock_load.call_count == 1
+        assert provider.call_count == 1
+
+    async def test_curated_result_is_never_cached(self, client: AsyncClient) -> None:
+        """A curated fallback means enumeration did not produce a real answer
+        (unconfigured provider, not authenticated, misconfig, timeout). It
+        must not be pinned at the service layer: the next poll retries."""
+        from sova.llm.models import CURATED_MODELS
+
+        provider = _FakeModelsProvider(list(CURATED_MODELS))
+        with _patch_models_env(provider):
+            first = await client.get("/api/models/available", params={"layer": "llm"})
+            second = await client.get("/api/models/available", params={"layer": "llm"})
+        assert first.json()["cached"] is False
+        assert second.json()["cached"] is False
+        assert provider.call_count == 2
+
+    async def test_concurrent_cold_requests_share_one_enumeration_pass(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([_model()], delay=0.05)
+        with _patch_models_env(provider):
+            first, second = await asyncio.gather(
+                client.get("/api/models/available", params={"layer": "llm"}),
+                client.get("/api/models/available", params={"layer": "llm"}),
+            )
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert provider.call_count == 1
+
+    async def test_misconfigured_provider_returns_200_curated(self, client: AsyncClient) -> None:
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", side_effect=ValueError("Unknown LLM provider")),
+        ):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source"] == "curated"
+        assert "Unknown LLM provider" in data["detail"]
+        assert data["cached"] is False
+
+    async def test_enumeration_timeout_falls_back_to_curated_and_is_not_cached(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([_model()], delay=0.2)
+        with (
+            _patch_models_env(provider),
+            patch("sova.dashboard.services.models_service._ENUMERATION_TIMEOUT_SECONDS", 0.01),
+        ):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source"] == "curated"
+        assert data["cached"] is False
+        assert "timed out" in data["detail"].lower()
+
+    async def test_config_load_failure_returns_503(self, client: AsyncClient) -> None:
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("config unreadable")):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        assert resp.status_code == 503
+
+    async def test_layer_runtime_returns_501(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/models/available", params={"layer": "runtime"})
+        assert resp.status_code == 501
+
+    async def test_missing_layer_returns_422(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/models/available")
+        assert resp.status_code == 422
+
+    async def test_invalid_layer_returns_422(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/models/available", params={"layer": "bogus"})
+        assert resp.status_code == 422
+
+    async def test_refresh_clears_provider_level_enumeration_cache(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([_model()])
+        with (
+            _patch_models_env(provider),
+            patch("sova.llm.client.clear_enumeration") as mock_clear,
+        ):
+            resp = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
+        assert resp.status_code == 200
+        mock_clear.assert_called_once()
+
+    async def test_refresh_does_not_wipe_the_global_cache_when_the_provider_is_unusable(
+        self, client: AsyncClient
+    ) -> None:
+        """clear_enumeration() wipes every identity process-wide, so a refresh
+        that cannot enumerate anything must not charge that cost to every other
+        project sharing the process."""
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", side_effect=ValueError("Unknown LLM provider")),
+            patch("sova.llm.client.clear_enumeration") as mock_clear,
+        ):
+            resp = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
+        assert resp.status_code == 200
+        mock_clear.assert_not_called()
+
+    async def test_refresh_allowance_not_consumed_when_provider_misconfigured(self, client: AsyncClient) -> None:
+        """A refresh that never actually ran (create_provider failed) must not
+        spend the 60s throttle window: the very next ?refresh=1 should still
+        go through rather than getting a 429 for a refresh that never happened."""
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", side_effect=ValueError("Unknown LLM provider")),
+        ):
+            first = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
+            second = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
+        assert first.status_code == 200
+        assert second.status_code == 200
+
+    async def test_refresh_allowance_not_consumed_when_import_error(self, client: AsyncClient) -> None:
+        """create_provider() can also raise ImportError (missing optional SDK
+        extra for litellm/anthropic providers); that must be handled the same
+        as a ValueError misconfiguration, not propagate as a 503."""
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", side_effect=ImportError("litellm not installed")),
+        ):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source"] == "curated"
+        assert "litellm not installed" in data["detail"]
+
+    async def test_refresh_allowance_not_consumed_when_config_load_fails(self, client: AsyncClient) -> None:
+        """A refresh that fails before create_provider is even reached (the
+        config load itself errors) must not spend the throttle window either."""
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("config unreadable")):
+            first = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
+        assert first.status_code == 503
+
+        provider = _FakeModelsProvider([_model()])
+        with _patch_models_env(provider):
+            second = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
+        assert second.status_code == 200
+
+    async def test_refresh_rate_limited_returns_429_with_retry_after(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([_model()])
+        with _patch_models_env(provider):
+            first = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
+            second = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
+        assert first.status_code == 200
+        assert second.status_code == 429
+        assert "Retry-After" in second.headers
+        assert int(second.headers["Retry-After"]) > 0
+
+    async def test_plain_get_is_never_rate_limited(self, client: AsyncClient) -> None:
+        provider = _FakeModelsProvider([_model()])
+        with _patch_models_env(provider):
+            first = await client.get("/api/models/available", params={"layer": "llm"})
+            second = await client.get("/api/models/available", params={"layer": "llm"})
+        assert first.status_code == 200
+        assert second.status_code == 200
+
+    def test_enumeration_timeout_exceeds_claude_code_probe_bounds(self) -> None:
+        """A budget below one auth probe plus one model probe cancels mid-probe,
+        banks no outcome, and turns the "next poll retries" contract into a
+        permanent curated fallback. Pins the floor against drift on either side."""
+        from sova.dashboard.services import models_service
+        from sova.llm.providers.claude_code import _AUTH_CHECK_TIMEOUT, _MODEL_PROBE_TIMEOUT
+
+        assert models_service._ENUMERATION_TIMEOUT_SECONDS > _AUTH_CHECK_TIMEOUT + _MODEL_PROBE_TIMEOUT
+
+    async def test_project_isolation_separate_cache_entries(self, tmp_path: Path) -> None:
+        from sova.dashboard.services import models_service
+
+        project_a = tmp_path / "a"
+        project_b = tmp_path / "b"
+        project_a.mkdir()
+        project_b.mkdir()
+
+        provider_a = _FakeModelsProvider([_model("model-a", "A")])
+        provider_b = _FakeModelsProvider([_model("model-b", "B")])
+
+        def _load_config(path):
+            return _fake_cfg(provider="claude-code" if path == project_a else "ollama")
+
+        def _create_provider(llm_cfg):
+            return provider_a if llm_cfg.provider == "claude-code" else provider_b
+
+        with (
+            patch("sova.config.loader.load_config", side_effect=_load_config),
+            patch("sova.llm.provider.create_provider", side_effect=_create_provider),
+        ):
+            result_a = await models_service.get_available_models(project_a)
+            result_b = await models_service.get_available_models(project_b)
+            # Second call for project_a must hit its own cache, not project_b's.
+            result_a_again = await models_service.get_available_models(project_a)
+
+        assert result_a["models"][0]["id"] == "model-a"
+        assert result_b["models"][0]["id"] == "model-b"
+        assert result_a_again["cached"] is True
+        assert provider_a.call_count == 1
+        assert provider_b.call_count == 1
 
 
 class TestTomlConfigGeneration:

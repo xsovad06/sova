@@ -374,6 +374,18 @@ class ModelAvailabilityCache:
             self._enumeration_locks[identity] = lock
         return lock
 
+    def clear_enumeration(self) -> None:
+        """Drop every cached enumeration result, forcing the next call to re-enumerate.
+
+        Deliberately narrower than ``reset()``: per-model probe outcomes
+        (``set_probe_outcome()``) are left untouched, since a model that
+        worked is a stable positive fact independent of which enumeration
+        pass discovered it, and a failing probe already expires on its own
+        short reactive TTL. A caller wanting a full re-probe of individual
+        models, not just a fresh enumeration pass, must clear those too.
+        """
+        self._enumeration.clear()
+
     def reset(self) -> None:
         """Drop every entry (used by tests to avoid cross-test leakage)."""
         self._expiry.clear()
@@ -393,6 +405,19 @@ def get_availability_cache() -> ModelAvailabilityCache:
 def reset_availability_cache() -> None:
     """Clear the process-local availability cache (for testing)."""
     _availability_cache.reset()
+
+
+def clear_enumeration() -> None:
+    """Drop every cached enumeration result in the process-local availability cache.
+
+    Enumeration identity (e.g. ``LiteLLMProvider._enumeration_identity()``,
+    which embeds ``api_base`` and a key fingerprint) is provider-private and
+    not reconstructible by an outside caller, so a forced refresh clears
+    every identity's entry rather than one. In a multi-project process the
+    only cost to another project sharing it is one extra re-enumeration on
+    its next poll.
+    """
+    _availability_cache.clear_enumeration()
 
 
 async def cached_enumeration(
