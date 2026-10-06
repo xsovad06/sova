@@ -8,11 +8,12 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from sova.config.loader import load_config
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services.pr_service import check_integration_gates, list_open_prs_with_state
+from sova.dashboard.services.work_state import VALID_MERGE_STATES
 from sova.dashboard.services.work_verdict import resolve_sova_verdict
 from sova.utils.logging import get_logger
 
@@ -31,9 +32,17 @@ class PRSuggestionRequest(BaseModel):
     has_sova_review: bool = False
     sova_verdict: str | None = None
     mergeable: str = "UNKNOWN"
+    merge_state: str = "UNKNOWN"
     review_decision: str | None = None
     ci_passed: bool = False
     external_reviews_enabled: bool = True
+
+    @field_validator("merge_state")
+    @classmethod
+    def validate_merge_state(cls, v: str) -> str:
+        if v not in VALID_MERGE_STATES:
+            raise ValueError(f"unsupported merge_state {v!r}, expected one of: {', '.join(sorted(VALID_MERGE_STATES))}")
+        return v
 
 
 class PRFeedbackRequest(BaseModel):
@@ -151,6 +160,7 @@ async def get_pr_action_suggestion(pr_number: int, body: PRSuggestionRequest) ->
         has_sova_review=body.has_sova_review,
         sova_verdict=body.sova_verdict,
         mergeable=body.mergeable,
+        merge_state=body.merge_state,
         review_decision=body.review_decision,
         ci_passed=body.ci_passed,
         external_reviews_enabled=body.external_reviews_enabled,

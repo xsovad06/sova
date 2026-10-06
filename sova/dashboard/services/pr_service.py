@@ -226,12 +226,22 @@ def _should_unblock_bot_reviews(
     return ComputedPRState.APPROVED
 
 
+# Mirrors work_state.py's _MERGE_STATES_BLOCKED_BY_GITHUB/_MERGE_STATES_UNMERGEABLE: a
+# GitHub mergeStateStatus of BLOCKED (e.g. branch protection awaiting a required review)
+# or DIRTY (a real conflict) must never be masked by an otherwise-green ci_status/mergeable
+# reading, since this is the signal sova/supervisor/pr_monitor.py's notify_on_ready_to_merge
+# trusts directly (CodeRabbit, PR #1114).
+_MERGE_STATES_BLOCKED_BY_GITHUB = frozenset({"BLOCKED"})
+_MERGE_STATES_UNMERGEABLE = _MERGE_STATES_BLOCKED_BY_GITHUB | {"DIRTY"}
+
+
 def compute_pr_state(
     *,
     is_draft: bool,
     review_decision: str,
     ci_status: str,
     mergeable: str,
+    merge_state: str = "",
     latest_reviews: list[dict] | None = None,
     all_threads_resolved: bool | None = False,
     superseded_by_new_commit: bool = False,
@@ -239,12 +249,13 @@ def compute_pr_state(
     """Derive a single computed state from PR signals."""
     if is_draft:
         return ComputedPRState.DRAFT
-    if mergeable == "CONFLICTING":
+    if mergeable == "CONFLICTING" or merge_state == "DIRTY":
         return ComputedPRState.CONFLICTED
     if ci_status == "pending":
         return ComputedPRState.CI_RUNNING
     if ci_status == "failed":
         return ComputedPRState.CI_FAILED
+    github_blocked = merge_state in _MERGE_STATES_UNMERGEABLE
     if review_decision == "CHANGES_REQUESTED":
         if latest_reviews:
             cr_reviews = _extract_cr_reviews(latest_reviews)
@@ -254,7 +265,12 @@ def compute_pr_state(
             if unblock_state:
                 return unblock_state
         return ComputedPRState.CHANGES_REQUESTED
-    if review_decision == "APPROVED" and ci_status == "passed" and mergeable == "MERGEABLE":
+    if (
+        review_decision == "APPROVED"
+        and ci_status in ("passed", "none")
+        and mergeable == "MERGEABLE"
+        and not github_blocked
+    ):
         return ComputedPRState.APPROVED_CI_GREEN
     if review_decision == "APPROVED":
         return ComputedPRState.APPROVED
@@ -267,12 +283,12 @@ def compute_pr_state(
             if unblock_state:
                 return unblock_state
             return ComputedPRState.CHANGES_REQUESTED
-        if all_threads_resolved and ci_status == "passed" and mergeable == "MERGEABLE":
+        if all_threads_resolved and ci_status == "passed" and mergeable == "MERGEABLE" and not github_blocked:
             return ComputedPRState.APPROVED_CI_GREEN
         if all_threads_resolved:
             return ComputedPRState.APPROVED
         return ComputedPRState.REVIEW_ADDRESSED
-    if ci_status == "passed" and mergeable == "MERGEABLE":
+    if ci_status == "passed" and mergeable == "MERGEABLE" and not github_blocked:
         return ComputedPRState.APPROVED_CI_GREEN
     return ComputedPRState.AWAITING_REVIEW
 
@@ -337,6 +353,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     review_decision = raw.get("reviewDecision") or ""
     is_draft = bool(raw.get("isDraft"))
     mergeable = raw.get("mergeable") or ""
+    merge_state = raw.get("mergeStateStatus") or ""
     latest_reviews = raw.get("latestReviews") or None
     thread_counts = raw.get("_thread_counts")
     if thread_counts is None:
@@ -353,6 +370,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         review_decision=review_decision,
         ci_status=ci_status,
         mergeable=mergeable,
+        merge_state=merge_state,
         latest_reviews=latest_reviews,
         all_threads_resolved=all_threads_resolved,
         superseded_by_new_commit=superseded_by_new_commit,
@@ -375,6 +393,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "review_decision": review_decision,
         "ci_status": ci_status,
         "mergeable": mergeable,
+        "merge_state": merge_state,
         "is_draft": is_draft,
         "author": author.get("login", ""),
         "linked_issue": _extract_linked_issue(raw),
@@ -400,10 +419,24 @@ def _gate(name: str, *, enabled: bool, passed: bool, reason: str = "") -> dict:
 
 
 def _check_ci_gate(enabled: bool, ci_status: str) -> dict:
+    """Gate integration on CI, treating "no checks configured" as neutral.
+
+    ``"none"`` means the head commit has no status checks at all (a repository
+    without CI), which is not a failure: the resolver's own
+    _unmet_merge_conditions() reads it the same way, so gating the Integrate
+    button on it would leave such a PR at PR_READY_TO_MERGE with its primary
+    action permanently greyed out. An empty status (pr_data carrying no usable
+    ci_status) stays blocking, since unknown is not the same as absent: a
+    missing ``ci_status`` key fails the gate exactly as before; only the
+    displayed reason text changed, from "CI status is 'none'" to "CI status
+    is 'unknown'", to reflect that absent and genuinely-none are different
+    states.
+    """
     if not enabled:
         return _gate("ci_passed", enabled=False, passed=True)
-    passed = ci_status == "passed"
-    return _gate("ci_passed", enabled=True, passed=passed, reason="" if passed else f"CI status is '{ci_status}'")
+    passed = ci_status in ("passed", "none")
+    reason = "" if passed else f"CI status is '{ci_status or 'unknown'}'"
+    return _gate("ci_passed", enabled=True, passed=passed, reason=reason)
 
 
 def _check_coderabbit_from_pr_data(pr_data: dict) -> bool:
@@ -482,7 +515,7 @@ async def check_integration_gates(
     gates_cfg = config.integration_gates
 
     # CI gate is synchronous: no API call needed
-    ci_gate = _check_ci_gate(gates_cfg.ci_passed, pr_data.get("ci_status", "none"))
+    ci_gate = _check_ci_gate(gates_cfg.ci_passed, pr_data.get("ci_status", ""))
 
     # SOVA review gate: requires async DB query
     async def check_sova_review() -> dict:
