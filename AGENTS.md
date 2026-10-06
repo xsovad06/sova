@@ -13,6 +13,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `README.md` | Project overview, installation, usage |
 | `docs/VISION.md` | Product vision and roadmap |
 | `.claude/rules/architecture.md` | Project structure, key paths, design decisions |
+| `docs/architecture-deep-dive.md` | On-demand: full narrative entries indexed (not duplicated) in architecture.md's "Supporting Modules" and "Key Design Decisions" sections |
 | `.claude/rules/bash-patterns.md` | Shell scripting conventions and gotchas |
 | `.claude/rules/workflow.md` | Development workflow and task finding |
 | `docs/model-selection-architecture.md` | LLM model routing, provider abstraction, design details |
@@ -41,6 +42,7 @@ sova/
     llm/                           # Claude CLI wrapper, cost tracking
     git/                           # Git operations (branch, pr, rebase), worktree management
     ipc/                           # Inter-process: handoff protocol, process control, notifications
+    agents/                        # RuntimeAdapter ABC: where each coding-agent runtime (claude-code, codex) reads its commands/skills from on disk
     knowledge/                     # Memory CRUD, tier loading, personas, review patterns
     scheduler/                     # Watch loop, parallel executor, server daemon
     dashboard/                     # FastAPI web UI
@@ -76,7 +78,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (10300+ tests)
+  tests/                           # pytest suite (10400+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)

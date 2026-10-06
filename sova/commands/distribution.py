@@ -9,18 +9,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
-from sova.commands.catalog import discover
+from sova.commands.catalog import CommandEntry, discover
 from sova.commands.manifest import (
+    Manifest,
+    ManifestEntry,
     create_manifest,
     file_hash,
     read_manifest,
-    update_manifest,
+    write_manifest,
 )
 from sova.commands.templates import build_variables, render_command
 from sova.config.models import ProjectConfig
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.agents.base import RuntimeAdapter
 
 log = get_logger(component="commands.distribution")
 
@@ -192,12 +198,9 @@ def _update_files(
             return UpdateResult()
 
     manifest = read_manifest(target_dir)
+    working = manifest if manifest is not None else Manifest()
+    manifest_dirty = False
     result = UpdateResult()
-
-    if manifest is None:
-        install_result = _install_files(source_files, target_dir, variables)
-        result.updated = install_result.installed
-        return result
 
     for filename, source_path in source_files:
         content = source_path.read_text(encoding="utf-8")
@@ -205,12 +208,38 @@ def _update_files(
         new_hash = file_hash(rendered)
 
         target_path = target_dir / filename
-        manifest_entry = manifest.commands.get(filename)
+        manifest_entry = working.commands.get(filename)
 
         if manifest_entry is None:
+            # No manifest entry means SOVA never installed this filename here,
+            # which includes the "no manifest at all yet" case (a target
+            # directory that pre-dates SOVA managing it, e.g. a hand-authored
+            # tree a runtime adapter mirrors into, or whose manifest was
+            # deleted/corrupted after a prior install).
+            if target_path.is_file():
+                local_text = read_text_or_none(target_path)
+                installed_hash = file_hash(local_text) if local_text is not None else None
+                if installed_hash == new_hash:
+                    # Content already matches canonical: this is recovery after a
+                    # missing manifest entry, not unmanaged content. Adopt it as
+                    # managed rather than reporting a conflict that --force would
+                    # be needed to clear, since --force here would also overwrite
+                    # the genuinely divergent, unmanaged case just below.
+                    working.commands[filename] = ManifestEntry(hash=new_hash, managed=True)
+                    manifest_dirty = True
+                    result.skipped += 1
+                    continue
+                # Genuinely divergent (or unreadable) pre-existing content is
+                # therefore unmanaged content, not a stale install, and must not
+                # be silently overwritten; only a genuinely missing path is safe
+                # to write without asking.
+                if not force:
+                    result.conflicts.append(filename)
+                    continue
             target_path.parent.mkdir(parents=True, exist_ok=True)
             _write_rendered(target_dir, target_path, rendered)
-            update_manifest(target_dir, filename, new_hash)
+            working.commands[filename] = ManifestEntry(hash=new_hash, managed=True)
+            manifest_dirty = True
             result.updated += 1
             continue
 
@@ -238,7 +267,8 @@ def _update_files(
             # manifest hash so a future non-force sync doesn't derive a false
             # conflict from it.
             if manifest_entry.hash != new_hash:
-                update_manifest(target_dir, filename, new_hash)
+                working.commands[filename] = ManifestEntry(hash=new_hash, managed=True)
+                manifest_dirty = True
             result.skipped += 1
             continue
 
@@ -252,10 +282,25 @@ def _update_files(
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
         _write_rendered(target_dir, target_path, rendered)
-        update_manifest(target_dir, filename, new_hash)
+        working.commands[filename] = ManifestEntry(hash=new_hash, managed=True)
+        manifest_dirty = True
         result.updated += 1
 
+    if manifest_dirty:
+        write_manifest(target_dir, working)
+
     return result
+
+
+def _runtime_filter(adapter: RuntimeAdapter | None) -> Callable[[CommandEntry], bool]:
+    """Build the per-command predicate for an optional target runtime.
+
+    ``adapter=None`` (every call site that doesn't yet care about runtime
+    restriction) keeps every command, matching pre-existing behavior exactly.
+    """
+    if adapter is None:
+        return lambda _cmd: True
+    return adapter.supports_command
 
 
 def install_commands(
@@ -264,10 +309,20 @@ def install_commands(
     cfg: ProjectConfig,
     *,
     include_autonomous: bool = True,
+    adapter: RuntimeAdapter | None = None,
 ) -> InstallResult:
-    """Install canonical commands into a target project directory."""
+    """Install canonical commands into a target project directory.
+
+    ``adapter``, when given, additionally restricts installation to commands
+    whose frontmatter ``runtimes`` list (if any) names that adapter's runtime.
+    """
     commands = discover(canonical_dir)
-    files = [(cmd.path.name, cmd.path) for cmd in commands if include_autonomous or cmd.category != "autonomous"]
+    supports = _runtime_filter(adapter)
+    files = [
+        (cmd.path.name, cmd.path)
+        for cmd in commands
+        if (include_autonomous or cmd.category != "autonomous") and supports(cmd)
+    ]
     skipped = len(commands) - len(files)
 
     result = _install_files(files, target_dir, build_variables(cfg))
@@ -284,14 +339,22 @@ def update_commands(
     include_autonomous: bool = True,
     force: bool = False,
     filenames: list[str] | None = None,
+    adapter: RuntimeAdapter | None = None,
 ) -> UpdateResult:
     """Update installed commands incrementally.
 
     ``filenames``, when not ``None``, restricts the update to that explicit
     subset of discovered commands (an empty list means "update nothing").
+    ``adapter``, when given, additionally restricts the update to commands
+    whose frontmatter ``runtimes`` list (if any) names that adapter's runtime.
     """
     commands = discover(canonical_dir)
-    files = [(cmd.path.name, cmd.path) for cmd in commands if include_autonomous or cmd.category != "autonomous"]
+    supports = _runtime_filter(adapter)
+    files = [
+        (cmd.path.name, cmd.path)
+        for cmd in commands
+        if (include_autonomous or cmd.category != "autonomous") and supports(cmd)
+    ]
     skipped = len(commands) - len(files)
 
     result = _update_files(files, target_dir, build_variables(cfg), force=force, filenames=filenames)
@@ -429,10 +492,21 @@ def diff_commands(
     canonical_dir: Path,
     target_dir: Path,
     cfg: ProjectConfig,
+    *,
+    adapter: RuntimeAdapter | None = None,
 ) -> DiffResult:
-    """Show what changed between canonical source and installed commands."""
+    """Show what changed between canonical source and installed commands.
+
+    ``adapter``, when given, restricts the comparison to commands whose
+    frontmatter ``runtimes`` list (if any) names that adapter's runtime,
+    matching the same restriction ``update_commands()``/``install_commands()``
+    apply. Without it, a command installed only for a different runtime (e.g.
+    Codex-only) would be reported as "new" against a Claude Code target it
+    was never meant to reach.
+    """
     commands = discover(canonical_dir)
-    files = [(cmd.path.name, cmd.path) for cmd in commands]
+    supports = _runtime_filter(adapter)
+    files = [(cmd.path.name, cmd.path) for cmd in commands if supports(cmd)]
     return _diff_files(files, target_dir, build_variables(cfg))
 
 
@@ -440,10 +514,16 @@ def reverse_diff_commands(
     canonical_dir: Path,
     target_dir: Path,
     cfg: ProjectConfig,
+    *,
+    adapter: RuntimeAdapter | None = None,
 ) -> ReverseDiffResult:
-    """Show local modifications to installed commands that could be back-ported."""
+    """Show local modifications to installed commands that could be back-ported.
+
+    ``adapter`` has the same meaning as in :func:`diff_commands`.
+    """
     commands = discover(canonical_dir)
-    files = [(cmd.path.name, cmd.path) for cmd in commands]
+    supports = _runtime_filter(adapter)
+    files = [(cmd.path.name, cmd.path) for cmd in commands if supports(cmd)]
     return _reverse_diff_files(files, target_dir, build_variables(cfg))
 
 

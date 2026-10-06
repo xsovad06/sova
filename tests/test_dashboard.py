@@ -6157,6 +6157,32 @@ class TestSetupAPI:
         assert captured["filenames"] == ["develop.md"]
         assert captured["force"] is True
 
+    async def test_sync_commands_threads_claude_code_adapter(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        """A command restricted to another runtime (e.g. codex-only) must not be
+        installed into .claude/commands/ via the dashboard sync path, matching
+        the CLI's `sova commands sync`/`sova install`, both of which already
+        pass adapter=ClaudeCodeAdapter() to update_commands()/install_commands().
+        Without threading the adapter here too, the review modal and this
+        sync endpoint would disagree with the CLI about what belongs in
+        .claude/commands/.
+        """
+        from sova.agents.claude_code import ClaudeCodeAdapter
+        from sova.commands.distribution import UpdateResult
+
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+
+        captured: dict = {}
+
+        def fake_update_commands(canonical_dir, target_dir, cfg, **kwargs):
+            captured.update(kwargs)
+            return UpdateResult(updated=1)
+
+        monkeypatch.setattr("sova.commands.distribution.update_commands", fake_update_commands)
+
+        resp = await client.post("/api/setup/commands/sync", json={})
+        assert resp.status_code == 200
+        assert isinstance(captured["adapter"], ClaudeCodeAdapter)
+
     async def test_sync_commands_empty_filenames_updates_nothing(
         self, client: AsyncClient, tmp_path, monkeypatch
     ) -> None:

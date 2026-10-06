@@ -77,7 +77,7 @@ def update_manifest(target_dir: Path, filename: str, content_hash: str) -> None:
         return
 
     manifest.commands[filename] = ManifestEntry(hash=content_hash, managed=True)
-    _write_manifest(target_dir, manifest)
+    write_manifest(target_dir, manifest)
 
 
 def remove_from_manifest(target_dir: Path, filename: str) -> None:
@@ -87,7 +87,7 @@ def remove_from_manifest(target_dir: Path, filename: str) -> None:
         return
 
     manifest.commands.pop(filename, None)
-    _write_manifest(target_dir, manifest)
+    write_manifest(target_dir, manifest)
 
 
 def file_hash(content: str) -> str:
@@ -95,8 +95,15 @@ def file_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
-def _write_manifest(target_dir: Path, manifest: Manifest) -> None:
-    """Write manifest to disk."""
+def write_manifest(target_dir: Path, manifest: Manifest) -> None:
+    """Write a full ``Manifest`` object to disk in one shot.
+
+    Public so a caller updating several entries in a loop (e.g.
+    ``_update_files`` in ``sova.commands.distribution``) can mutate a single
+    in-memory ``Manifest`` and write it once, rather than calling
+    ``update_manifest()`` per entry, which re-reads and rewrites the whole
+    file on every call.
+    """
     data = {
         "version": manifest.version,
         "commands": {name: {"hash": e.hash, "managed": e.managed} for name, e in manifest.commands.items()},

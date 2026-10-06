@@ -200,6 +200,7 @@ async def sync_commands(req: SyncCommandsRequest | None = None) -> dict[str, obj
     changes", not "all guideline changes": a selective request must name
     what it wants.
     """
+    from sova.agents.claude_code import ClaudeCodeAdapter
     from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
     from sova.commands.distribution import UpdateResult, update_commands, update_guidelines
     from sova.commands.manifest import read_manifest
@@ -227,7 +228,8 @@ async def sync_commands(req: SyncCommandsRequest | None = None) -> dict[str, obj
     no_selection = req is None or (cmd_filenames is None and guideline_filenames is None)
     should_sync_commands = no_selection or cmd_filenames is not None
 
-    commands_dir = project_dir / ".claude" / "commands"
+    claude_adapter = ClaudeCodeAdapter()
+    commands_dir = claude_adapter.commands_dir(project_dir)
     if should_sync_commands:
         # A selective sync with an explicit empty `filenames` list is a no-op for
         # commands (see _update_files: an empty allow-list returns immediately
@@ -245,6 +247,7 @@ async def sync_commands(req: SyncCommandsRequest | None = None) -> dict[str, obj
             cfg,
             force=cmd_filenames is not None,
             filenames=cmd_filenames,
+            adapter=claude_adapter,
         )
     else:
         cmd_result = UpdateResult()

@@ -28,6 +28,9 @@ class CommandEntry:
     path: Path
     inputs: list[str] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
+    # Runtimes this command is restricted to (e.g. ["claude-code"]). Empty
+    # means unrestricted: every RuntimeAdapter (sova/agents/) accepts it.
+    runtimes: list[str] = field(default_factory=list)
 
 
 def discover(commands_dir: Path) -> list[CommandEntry]:
@@ -110,9 +113,35 @@ def _parse_command_file(path: Path) -> CommandEntry | None:
         category=fields.get("category", "core"),
         user_invocable=str(fields.get("user-invocable", "false")).lower() in ("true", "yes"),
         path=path,
-        inputs=fields.get("inputs", []) if isinstance(fields.get("inputs"), list) else [],
-        outputs=fields.get("outputs", []) if isinstance(fields.get("outputs"), list) else [],
+        inputs=_normalize_str_list(fields, "inputs", path),
+        outputs=_normalize_str_list(fields, "outputs", path),
+        runtimes=_normalize_str_list(fields, "runtimes", path),
     )
+
+
+def _normalize_str_list(fields: dict[str, str | list[str]], key: str, path: Path) -> list[str]:
+    """Normalize a frontmatter field meant to be a list of strings.
+
+    ``_parse_yaml_simple`` only produces a real list for block (``- item``)
+    syntax: a bare scalar (``runtimes: claude-code``) or an inline flow
+    sequence (``runtimes: [claude-code]``) is stored as a plain string. A
+    naive ``isinstance(..., list)`` guard treats either of those as "absent"
+    and silently falls back to an empty list, which for ``runtimes``
+    inverts the author's intent from "restricted" to "unrestricted" with no
+    warning. A non-empty scalar is wrapped as a single-element list instead.
+    Anything else (``None``, or an empty string from an ``- item``-less
+    ``key:`` line) has nothing to warn about: it's simply absent.
+    """
+    value = fields.get(key)
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    if isinstance(value, str) and value:
+        stripped = value.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            items = [item.strip().strip("'\"") for item in stripped[1:-1].split(",")]
+            return [item for item in items if item]
+        return [stripped]
+    return []
 
 
 def _parse_yaml_simple(text: str) -> dict[str, str | list[str]]:

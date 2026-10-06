@@ -396,6 +396,58 @@ class TestDistribution:
 
         assert (target_dir / "review-pr.md").exists()
 
+    def test_install_commands_with_adapter_filters_runtime_restricted(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """A command restricted to one runtime's frontmatter is skipped for an adapter it doesn't name."""
+        from sova.agents.codex import CodexAdapter
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        (canonical_dir / "claude-only.md").write_text(
+            "---\nname: claude-only\ndescription: Claude-only workflow.\nuser-invocable: true\n"
+            "category: core\nruntimes: [claude-code]\n---\n\nBody.\n"
+        )
+
+        cfg = ProjectConfig()
+        result = install_commands(canonical_dir, target_dir, cfg, adapter=CodexAdapter())
+
+        assert not (target_dir / "claude-only.md").exists()
+        assert (target_dir / "develop.md").exists()
+        assert result.skipped >= 1
+
+    def test_install_commands_with_adapter_keeps_matching_runtime(self, canonical_dir: Path, target_dir: Path) -> None:
+        from sova.agents.claude_code import ClaudeCodeAdapter
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        (canonical_dir / "claude-only.md").write_text(
+            "---\nname: claude-only\ndescription: Claude-only workflow.\nuser-invocable: true\n"
+            "category: core\nruntimes: [claude-code]\n---\n\nBody.\n"
+        )
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg, adapter=ClaudeCodeAdapter())
+
+        assert (target_dir / "claude-only.md").exists()
+
+    def test_install_commands_without_adapter_ignores_runtime_restriction(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """No adapter given (every pre-existing call site) keeps prior unrestricted behavior."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        (canonical_dir / "claude-only.md").write_text(
+            "---\nname: claude-only\ndescription: Claude-only workflow.\nuser-invocable: true\n"
+            "category: core\nruntimes: [claude-code]\n---\n\nBody.\n"
+        )
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        assert (target_dir / "claude-only.md").exists()
+
     def test_update_changes_only_modified(self, canonical_dir: Path, target_dir: Path) -> None:
         """update_commands() only writes commands whose source changed."""
         from sova.commands.distribution import install_commands, update_commands
@@ -789,6 +841,55 @@ class TestUpdateFilenamesAllowList:
         manifest = read_manifest(target_dir)
         assert manifest is not None
         assert manifest.commands["standup.md"].hash != "stale-hash-does-not-match-content"
+
+    def test_deleted_manifest_adopts_matching_file_without_force(self, canonical_dir: Path, target_dir: Path) -> None:
+        """A deleted/corrupted manifest with content that still matches canonical
+        must self-repair on a plain non-force sync, not require --force.
+
+        Without this, every file silently becomes a reported conflict the
+        moment the manifest goes missing, even though nothing local actually
+        diverged from canonical, and --force would be the wrong fix anyway,
+        since it would also blindly overwrite genuinely unmanaged, divergent
+        content sitting at the same path (see test_filenames_with_force_
+        overwrites_preexisting_unmanaged_content_without_manifest below).
+        """
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.commands.manifest import MANIFEST_FILENAME, read_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+        (target_dir / MANIFEST_FILENAME).unlink()
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"])
+
+        assert result.updated == 0
+        assert result.skipped == 1
+        assert result.conflicts == []
+
+        manifest = read_manifest(target_dir)
+        assert manifest is not None
+        assert "standup.md" in manifest.commands
+
+    def test_filenames_without_force_reports_conflict_for_divergent_content_without_manifest(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """A file with no manifest entry whose content genuinely diverges from
+        canonical must still be reported as a conflict without --force, even
+        after the "adopt a matching file" recovery path above.
+        """
+        from sova.commands.distribution import update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "standup.md").write_text("# Hand-authored, not canonical\n", encoding="utf-8")
+
+        result = update_commands(canonical_dir, target_dir, cfg, filenames=["standup.md"])
+
+        assert result.updated == 0
+        assert result.conflicts == ["standup.md"]
+        assert (target_dir / "standup.md").read_text(encoding="utf-8") == "# Hand-authored, not canonical\n"
 
     def test_guidelines_filenames_restricts_to_subset(self, guidelines_dir: Path, rules_dir: Path) -> None:
         """update_guidelines() with filenames only updates the named subset."""
@@ -1225,6 +1326,102 @@ class TestSkillsDistribution:
         cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
         result = install_skills(tmp_path / "nonexistent", skills_target, cfg)
         assert result.installed == 0
+
+
+class TestSyncRuntimeSkillsAndReport:
+    """`sova commands skills-update`/`skills-sync` must also refresh a non-Claude
+    runtime's own skills mirror (e.g. Codex's .codex/skills/), not only .claude/skills/.
+    """
+
+    def test_claude_code_runtime_prints_nothing(
+        self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from sova.cli.commands.commands import _sync_runtime_skills_and_report
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
+        cfg = ProjectConfig()
+        assert cfg.agent.runtime == "claude-code"
+
+        _sync_runtime_skills_and_report(tmp_path, cfg)
+
+        assert not (tmp_path / ".codex").exists()
+        assert capsys.readouterr().err == ""
+
+    def test_codex_runtime_preexisting_unmanaged_skill_is_a_conflict_not_an_overwrite(
+        self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A locally-modified file already at the Codex mirror target must be reported, not clobbered."""
+        from sova.cli.commands.commands import _sync_runtime_skills_and_report
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
+        preexisting = tmp_path / ".codex" / "skills" / "alpha"
+        preexisting.mkdir(parents=True)
+        (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
+
+        cfg = ProjectConfig()
+        cfg.agent.runtime = "codex"
+
+        _sync_runtime_skills_and_report(tmp_path, cfg)
+
+        err = capsys.readouterr().err
+        assert "alpha/SKILL.md" in err
+        assert "Conflicts" in err
+        assert (preexisting / "SKILL.md").read_text(encoding="utf-8") == "Hand-authored, not canonical.\n"
+
+    def test_codex_runtime_force_overwrites_preexisting_unmanaged_skill(
+        self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from sova.cli.commands.commands import _sync_runtime_skills_and_report
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
+        preexisting = tmp_path / ".codex" / "skills" / "alpha"
+        preexisting.mkdir(parents=True)
+        (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
+
+        cfg = ProjectConfig()
+        cfg.agent.runtime = "codex"
+
+        _sync_runtime_skills_and_report(tmp_path, cfg, force=True)
+
+        assert "Hand-authored, not canonical." not in (preexisting / "SKILL.md").read_text(encoding="utf-8")
+        assert "Conflicts" not in capsys.readouterr().err
+
+    def test_codex_runtime_installs_and_reports(
+        self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from sova.cli.commands.commands import _sync_runtime_skills_and_report
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
+        cfg = ProjectConfig()
+        cfg.agent.runtime = "codex"
+
+        _sync_runtime_skills_and_report(tmp_path, cfg)
+
+        assert (tmp_path / ".codex" / "skills" / "alpha" / "SKILL.md").is_file()
+        assert "Skills synced for runtime 'codex': 2" in capsys.readouterr().err
+
+    def test_warns_about_orphaned_codex_mirror_after_switch_to_claude_code(
+        self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from sova.cli.commands.commands import _sync_runtime_skills_and_report
+        from sova.commands.manifest import MANIFEST_FILENAME
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
+        codex_skills = tmp_path / ".codex" / "skills"
+        codex_skills.mkdir(parents=True)
+        (codex_skills / MANIFEST_FILENAME).write_text("{}", encoding="utf-8")
+
+        cfg = ProjectConfig()  # back to claude-code
+        _sync_runtime_skills_and_report(tmp_path, cfg)
+
+        err = capsys.readouterr().err.replace("\n", "")
+        assert "codex" in err
+        assert str(codex_skills) in err
 
 
 # ---------------------------------------------------------------------------

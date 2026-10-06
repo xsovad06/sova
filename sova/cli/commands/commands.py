@@ -10,6 +10,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from sova.agents.claude_code import ClaudeCodeAdapter
+from sova.agents.sync import report_runtime_skills_sync, sync_runtime_skills, warn_orphaned_runtime_artifacts
 from sova.commands.catalog import get_canonical_dir, get_guidelines_dir, get_skills_dir
 from sova.commands.distribution import (
     ReverseDiffResult,
@@ -110,7 +112,14 @@ def update_cmd(
 
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    result = update_commands(canonical_dir, target_dir, cfg, include_autonomous=include_autonomous, force=force)
+    result = update_commands(
+        canonical_dir,
+        target_dir,
+        cfg,
+        include_autonomous=include_autonomous,
+        force=force,
+        adapter=ClaudeCodeAdapter(),
+    )
 
     console.print(f"[green]Updated: {result.updated}[/green]")
     console.print(f"[dim]Skipped (unchanged): {result.skipped}[/dim]")
@@ -122,8 +131,19 @@ def update_cmd(
         console.print("[dim]Use --force to overwrite, or manually merge.[/dim]")
 
 
-def _sync_across_projects(subdir: Path, run_update: Callable[[Path, ProjectConfig], UpdateResult]) -> None:
-    """Apply run_update to subdir in every registered project, printing a per-project and summary report."""
+def _sync_across_projects(
+    subdir: Path,
+    run_update: Callable[[Path, ProjectConfig], UpdateResult],
+    *,
+    after: Callable[[Path, ProjectConfig], None] | None = None,
+) -> None:
+    """Apply run_update to subdir in every registered project, printing a per-project and summary report.
+
+    ``after``, when given, runs once per project right after ``run_update``,
+    reusing the already-resolved ``project_dir``/``cfg`` from this same loop
+    rather than requiring a second pass that re-globs ``list_projects()`` and
+    re-calls the blocking ``load_config()`` per project.
+    """
     projects = list_projects()
     if not projects:
         console.print("[yellow]No projects registered. Run 'sova install' first.[/yellow]")
@@ -158,6 +178,18 @@ def _sync_across_projects(subdir: Path, run_update: Callable[[Path, ProjectConfi
         status = f"[green]+{result.updated}[/green]" if result.updated else "[dim]+0[/dim]"
         console.print(f"  {slug}: {status} updated, {result.skipped} unchanged")
 
+        if after is not None:
+            try:
+                after(project_dir, cfg)
+            except (OSError, UnicodeDecodeError, ValueError):
+                # update_skills() -> _update_files() reads canonical files with
+                # read_text(encoding="utf-8") (UnicodeDecodeError on a non-UTF-8
+                # file) and _write_rendered() raises ValueError on a containment
+                # violation, neither of which is an OSError. Catching only OSError
+                # let one bad file abort the sync for every remaining project.
+                log.warning("commands.sync_after_hook_failed", slug=slug, exc_info=True)
+                console.print(f"  [yellow]{slug}: runtime skills sync failed (see logs)[/yellow]")
+
     console.print(
         f"\n[bold]Summary[/bold]: {total_updated} updated, {total_skipped} unchanged across {len(projects)} project(s)"
     )
@@ -177,7 +209,12 @@ def sync_cmd(
     _sync_across_projects(
         _COMMANDS_SUBDIR,
         lambda target_dir, cfg: update_commands(
-            canonical_dir, target_dir, cfg, include_autonomous=include_autonomous, force=force
+            canonical_dir,
+            target_dir,
+            cfg,
+            include_autonomous=include_autonomous,
+            force=force,
+            adapter=ClaudeCodeAdapter(),
         ),
     )
 
@@ -234,6 +271,19 @@ def skills_diff_cmd(
             console.print(f"  - {name}", style="red")
 
 
+def _sync_runtime_skills_and_report(
+    project_dir: Path, cfg: ProjectConfig, *, force: bool = False, indent: str = ""
+) -> None:
+    """Mirror canonical skills into the configured runtime's own directory (e.g. Codex's .codex/skills/).
+
+    No-op for the default claude-code runtime, whose .claude/skills/ is kept
+    current by the caller's own update_skills() call above.
+    """
+    skills_dir = get_skills_dir()
+    result = sync_runtime_skills(skills_dir, project_dir, cfg, force=force)
+    report_runtime_skills_sync(console, result, cfg, warn_orphaned_runtime_artifacts(project_dir, cfg), indent=indent)
+
+
 @app.command(name="skills-update")
 def skills_update_cmd(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
@@ -256,6 +306,14 @@ def skills_update_cmd(
             console.print(f"  ! {name} -- locally modified, source also changed")
         console.print("[dim]Use --force to overwrite, or manually merge.[/dim]")
 
+    try:
+        _sync_runtime_skills_and_report(project_dir, cfg, force=force)
+    except (OSError, UnicodeDecodeError, ValueError):
+        # See the matching comment in _sync_across_projects: a non-UTF-8 canonical
+        # file or a containment violation isn't an OSError and must not crash here.
+        log.warning("commands.runtime_skills_sync_failed", project_dir=str(project_dir), exc_info=True)
+        console.print(f"[yellow]Warning: runtime skills sync failed for {cfg.agent.runtime!r} (see logs)[/yellow]")
+
 
 @app.command(name="skills-sync")
 def skills_sync_cmd(
@@ -264,7 +322,9 @@ def skills_sync_cmd(
     """Sync skills across all registered projects."""
     skills_dir = get_skills_dir()
     _sync_across_projects(
-        _SKILLS_SUBDIR, lambda target_dir, cfg: update_skills(skills_dir, target_dir, cfg, force=force)
+        _SKILLS_SUBDIR,
+        lambda target_dir, cfg: update_skills(skills_dir, target_dir, cfg, force=force),
+        after=lambda project_dir, cfg: _sync_runtime_skills_and_report(project_dir, cfg, force=force, indent="  "),
     )
 
 

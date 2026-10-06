@@ -683,6 +683,7 @@ def build_installation_diff(project_dir: Path, cfg: ProjectConfig) -> Installati
     canonical commands source directory doesn't exist (e.g. a non-editable
     pip install), since every file would otherwise misleadingly look drifted.
     """
+    from sova.agents.claude_code import ClaudeCodeAdapter
     from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
     from sova.commands.distribution import (
         diff_commands,
@@ -701,14 +702,15 @@ def build_installation_diff(project_dir: Path, cfg: ProjectConfig) -> Installati
     variables = build_variables(cfg)
     files: list[FileDiff] = []
 
-    commands_dir = project_dir / ".claude" / "commands"
+    claude_adapter = ClaudeCodeAdapter()
+    commands_dir = claude_adapter.commands_dir(project_dir)
     files.extend(
         _build_category_diffs(
             "command",
             canonical_dir,
             commands_dir,
-            diff_commands(canonical_dir, commands_dir, cfg),
-            reverse_diff_commands(canonical_dir, commands_dir, cfg),
+            diff_commands(canonical_dir, commands_dir, cfg, adapter=claude_adapter),
+            reverse_diff_commands(canonical_dir, commands_dir, cfg, adapter=claude_adapter),
             variables,
         )
     )

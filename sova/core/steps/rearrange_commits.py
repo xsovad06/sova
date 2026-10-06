@@ -12,26 +12,29 @@ from __future__ import annotations
 
 import re
 
+from sova.agents.registry import artifact_root_names
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
-_IGNORABLE_UNTRACKED_RE = re.compile(r"^\.claude/|^\.sova/")
-
-# Pathspecs excluded from the "did the agent leave work uncommitted?" checks.
 # `.claude/` and `.sova/` hold agent infrastructure the pipeline itself writes
 # into the worktree (ensure_claude_artifacts mirrors commands, rules and skills
 # from the primary checkout on every run), so churn there is inherited state,
 # never the agent's own output. Counting it made every address-review run pause
 # whenever the primary checkout was dirty: 17 gate failures before #1090.
+# `artifact_root_names()` adds every registered RuntimeAdapter's own directory
+# (e.g. Codex's `.codex/`) on top of those two, so a future adapter's skills
+# mirror can't reopen the same failure mode for a new, not-yet-hand-listed
+# directory.
+_RUNTIME_ARTIFACT_ROOTS = frozenset({".claude", ".sova"}) | artifact_root_names()
+_IGNORABLE_UNTRACKED_RE = re.compile("|".join(rf"^{re.escape(root)}/" for root in sorted(_RUNTIME_ARTIFACT_ROOTS)))
+
+# Pathspecs excluded from the "did the agent leave work uncommitted?" checks.
 # _IGNORABLE_UNTRACKED_RE above already applies the same rule to untracked
 # files, and DevelopStep._NON_SUBSTANTIVE_RE applies it to change detection.
-_EXCLUDED_PATHSPECS = (
-    ":(exclude).claude/",
-    ":(exclude).sova/",
-)
+_EXCLUDED_PATHSPECS = tuple(f":(exclude){root}/" for root in sorted(_RUNTIME_ARTIFACT_ROOTS))
 
 log = get_logger(component="step.rearrange_commits")
 
