@@ -12471,6 +12471,58 @@ class TestAvailableModelsAPI:
         assert provider_a.call_count == 1
         assert provider_b.call_count == 1
 
+    async def test_stale_project_entries_are_pruned(self, tmp_path: Path) -> None:
+        """A project dir untouched for far longer than the cache TTL must not
+        accumulate forever: its cache/lock/refresh entries are dropped on a
+        later, unrelated request rather than held for the life of the
+        process."""
+        import time
+
+        from sova.dashboard.services import models_service
+
+        stale_dir = tmp_path / "stale"
+        fresh_dir = tmp_path / "fresh"
+        stale_dir.mkdir()
+        fresh_dir.mkdir()
+
+        # time.monotonic()'s reference point is undefined (CPython docs) and
+        # can be small on a freshly started process/container, so a literal
+        # 0.0 is not reliably "long ago": it must be relative to the clock
+        # actually in use, or this flakes on exactly that kind of runner.
+        stale_timestamp = time.monotonic() - (models_service._PRUNE_STALE_AFTER_SECONDS * 2)
+        stale_key = str(stale_dir.resolve())
+        models_service._models_cache[stale_key] = (stale_timestamp, {"fake": "entry"})
+        models_service._last_refresh_at[stale_key] = stale_timestamp
+        models_service._models_locks[stale_key] = asyncio.Lock()
+
+        provider = _FakeModelsProvider([_model()])
+        with _patch_models_env(provider):
+            await models_service.get_available_models(fresh_dir)
+
+        assert stale_key not in models_service._models_cache
+        assert stale_key not in models_service._last_refresh_at
+        assert stale_key not in models_service._models_locks
+
+    async def test_held_lock_on_stale_entry_is_not_pruned(self, tmp_path: Path) -> None:
+        """A lock currently held must survive pruning even if its cache/refresh
+        entries look stale, since deleting it out from under a waiter would let
+        a concurrent setdefault() hand out a second Lock for the same key."""
+        import time
+
+        from sova.dashboard.services import models_service
+
+        busy_dir = tmp_path / "busy"
+        busy_dir.mkdir()
+        busy_key = str(busy_dir.resolve())
+
+        lock = asyncio.Lock()
+        models_service._models_locks[busy_key] = lock
+
+        async with lock:
+            models_service._prune_stale_entries(time.monotonic() + models_service._PRUNE_STALE_AFTER_SECONDS * 2)
+            assert busy_key in models_service._models_locks
+            assert models_service._models_locks[busy_key] is lock
+
 
 class TestTomlConfigGeneration:
     """Tests for TomlConfig dataclass defaults."""

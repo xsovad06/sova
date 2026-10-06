@@ -82,6 +82,40 @@ _models_locks: dict[str, asyncio.Lock] = {}
 # project dir -> monotonic time of the last accepted ?refresh=1 call.
 _last_refresh_at: dict[str, float] = {}
 
+# How long a project dir's cache/refresh entries sit untouched before
+# _prune_stale_entries() drops them. A large multiple of the longer-lived TTL
+# above, not the TTL itself: an entry just past _MODELS_CACHE_TTL is a normal
+# "expired, refresh on next read" state, not something to evict. This only
+# clears directories nothing has queried in a long while, so a dashboard
+# instance that is ever pointed at many distinct project directories (not
+# just the handful it serves steadily) does not accumulate one entry per
+# directory for the life of the process, the way setup_service's sibling
+# _auth_status_cache currently does.
+_PRUNE_STALE_AFTER_SECONDS = max(_MODELS_CACHE_TTL, _REFRESH_MIN_INTERVAL) * 10
+
+
+def _prune_stale_entries(now: float) -> None:
+    """Drop per-project cache/lock/refresh entries untouched for a long time.
+
+    Has no ``await`` of its own, so it always runs atomically with respect to
+    every other coroutine on the event loop: a lock this function observes as
+    free (``not lock.locked()``) cannot be acquired by a waiter mid-prune,
+    since a waiter is only ever created at an ``await`` point and none occurs
+    here. Called at the top of every request rather than on a timer, so it
+    costs nothing when the project count stays small (the common case) and
+    self-heals if it does not.
+    """
+    for key in [k for k, (cached_at, _) in _models_cache.items() if now - cached_at > _PRUNE_STALE_AFTER_SECONDS]:
+        del _models_cache[key]
+    for key in [k for k, last in _last_refresh_at.items() if now - last > _PRUNE_STALE_AFTER_SECONDS]:
+        del _last_refresh_at[key]
+    for key in [
+        k
+        for k in _models_locks
+        if k not in _models_cache and k not in _last_refresh_at and not _models_locks[k].locked()
+    ]:
+        del _models_locks[key]
+
 
 class ModelsRefreshRateLimitedError(Exception):
     """Raised when ``?refresh=1`` is requested again inside the throttle window."""
@@ -171,6 +205,7 @@ async def get_available_models(project_dir: Path, *, layer: str = "llm", refresh
 
     cache_key = str(project_dir.resolve())
     now = time.monotonic()
+    _prune_stale_entries(now)
 
     if not refresh:
         cached = _models_cache.get(cache_key)
