@@ -10,11 +10,15 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run, run_checked, subprocess_error
+
+if TYPE_CHECKING:
+    from sova.agents.base import RuntimeAdapter
 
 log = get_logger(component="git.worktree")
 
@@ -452,16 +456,17 @@ def _copy2_skip_identical(src: str, dst: str, *, follow_symlinks: bool = True) -
         return dst
 
 
-def _tracked_paths(worktree_path: Path) -> set[str]:
-    """Return paths under ``.claude/`` that the worktree's branch tracks.
+def _tracked_paths(worktree_path: Path, pathspec: str = ".claude") -> set[str]:
+    """Return paths under *pathspec* that the worktree's branch tracks.
 
-    Used to decide what :func:`ensure_claude_artifacts` must not overwrite. A
-    failure to ask git returns the empty set, preserving the historical
-    copy-everything behaviour rather than silently skipping a worktree's setup.
+    Used to decide what :func:`ensure_claude_artifacts` (and its runtime-skills
+    counterpart) must not overwrite. A failure to ask git returns the empty
+    set, preserving the historical copy-everything behaviour rather than
+    silently skipping a worktree's setup.
     """
     try:
         result = subprocess.run(
-            ["git", "ls-files", "-z", "--", ".claude"],
+            ["git", "ls-files", "-z", "--", pathspec],
             cwd=worktree_path,
             capture_output=True,
             text=True,
@@ -570,8 +575,83 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
             except OSError:
                 log.warning("worktree.copy_claude_file.failed", file=filename, exc_info=True)
 
+    _mirror_runtime_skills(project_dir, worktree_path)
+
 
 _copy_claude_artifacts = ensure_claude_artifacts
+
+
+def _active_runtime_skills_dirs(project_dir: Path) -> tuple[Path, RuntimeAdapter] | None:
+    """Resolve the configured runtime's skills source directory and adapter.
+
+    Returns ``(skills_dir_in_project_dir, adapter)``, or ``None`` when the
+    configured runtime has no skills directory of its own or it's the same
+    one ``.claude/skills`` (handled by the main copy loop above) already
+    covers.
+    """
+    from sova.agents.claude_code import ClaudeCodeAdapter
+    from sova.agents.registry import create_runtime_adapter
+    from sova.config.loader import load_config
+
+    try:
+        cfg = load_config(project_dir)
+    except (FileNotFoundError, ValueError, KeyError, RuntimeError):
+        log.debug("worktree.runtime_skills.config_load_failed", project_dir=str(project_dir), exc_info=True)
+        return None
+
+    adapter = create_runtime_adapter(cfg.agent.runtime)
+    src = adapter.skills_dir(project_dir)
+    if src is None or src == ClaudeCodeAdapter().skills_dir(project_dir):
+        return None
+    return src, adapter
+
+
+def _mirror_runtime_skills(project_dir: Path, worktree_path: Path) -> None:
+    """Mirror the active runtime adapter's own skills directory into the worktree.
+
+    ``.claude/skills`` is already handled by the main copy loop above (read by
+    the interactive Claude Code session regardless of ``agent.runtime``). A
+    non-Claude runtime (e.g. Codex) reads skills from its own directory
+    instead (``.codex/skills/``), and a project that gitignores it (the
+    standard SOVA-installed pattern) left every worktree-spawned pipeline
+    agent for that runtime with zero skills, since this mirror didn't exist.
+    Reuses the same tracked-and-present guard as the ``.claude/`` copy above,
+    so a branch-tracked copy in the worktree is never overwritten.
+    """
+    resolved = _active_runtime_skills_dirs(project_dir)
+    if resolved is None:
+        return
+    src, adapter = resolved
+    if not src.is_dir():
+        return
+
+    dst = adapter.skills_dir(worktree_path)
+    if dst is None:
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+
+    root_name = src.relative_to(project_dir).parts[0]
+    tracked = _tracked_paths(worktree_path, pathspec=root_name)
+
+    def _ignore_tracked(directory: str, names: list[str]) -> set[str]:
+        skipped: set[str] = set()
+        base = Path(directory).relative_to(project_dir)
+        dest_dir = worktree_path / base
+        for name in names:
+            if (base / name).as_posix() in tracked and (dest_dir / name).exists():
+                skipped.add(name)
+        return skipped
+
+    try:
+        shutil.copytree(
+            src,
+            dst,
+            dirs_exist_ok=True,
+            copy_function=_copy2_skip_identical,
+            ignore=_ignore_tracked,
+        )
+    except OSError:
+        log.warning("worktree.copy_runtime_skills.failed", runtime=adapter.name, exc_info=True)
 
 
 def _is_file_safe(path: Path) -> bool:
@@ -633,6 +713,11 @@ def _dir_entry_names(path: Path) -> set[str] | None:
 def missing_claude_artifacts(project_dir: Path, worktree_path: Path) -> list[str]:
     """Return the required ``.claude`` artifacts absent from *worktree_path*.
 
+    Also checks the configured runtime adapter's own skills directory (e.g.
+    Codex's ``.codex/skills``) when it differs from ``.claude/skills``, so a
+    worktree missing only that mirror still triggers the repopulate path in
+    :func:`ensure_worktree_usable` instead of being reported healthy.
+
     An artifact is required only when it exists (and is readable) in
     *project_dir*: a project with no ``.claude/skills`` directory is never
     reported unhealthy for lacking one in a worktree, and a source directory
@@ -655,6 +740,16 @@ def missing_claude_artifacts(project_dir: Path, worktree_path: Path) -> list[str
     root_claude_md = project_dir / "CLAUDE.md"
     if _is_file_safe(root_claude_md) and not _is_file_safe(worktree_path / "CLAUDE.md"):
         missing.append("CLAUDE.md")
+
+    resolved = _active_runtime_skills_dirs(project_dir)
+    if resolved is not None:
+        src, adapter = resolved
+        src_names = _dir_entry_names(src)
+        if src_names is not None:
+            dst = adapter.skills_dir(worktree_path)
+            dst_names = _dir_entry_names(dst) if dst is not None else None
+            if dst_names is None or not src_names.issubset(dst_names):
+                missing.append(src.relative_to(project_dir).as_posix())
 
     claude_src = project_dir / ".claude"
     try:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from sova.agents.registry import artifact_root_names
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke, invoke_command
@@ -131,12 +132,17 @@ _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]+\.py|tests\.py|[^/]+_test\.py)$
 # exists to avoid.
 _CYCLE_OVERHEAD_BUFFER_SECONDS = 60
 
+# Keep the runtime-artifact-root alternatives in sync with
+# rearrange_commits.py's _IGNORABLE_UNTRACKED_RE/_EXCLUDED_PATHSPECS: both
+# derive from the same artifact_root_names() registry so a future
+# RuntimeAdapter's own directory is excluded everywhere at once.
+_RUNTIME_ARTIFACT_ROOTS = frozenset({".claude", ".sova"}) | artifact_root_names()
 _NON_SUBSTANTIVE_RE = re.compile(
     r"(?:"
     r"Pipfile\.lock$|package-lock\.json$|yarn\.lock$|pnpm-lock\.yaml$|"
     r"poetry\.lock$|Gemfile\.lock$|composer\.lock$|Cargo\.lock$|go\.sum$|"
-    r"^\.sova/|^\.claude/"
-    r")"
+    + "|".join(rf"^{re.escape(root)}/" for root in sorted(_RUNTIME_ARTIFACT_ROOTS))
+    + r")"
 )
 
 

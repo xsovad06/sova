@@ -24,3 +24,4 @@ For domain-specific implementation patterns, code examples, and gotchas, see the
 | [database-guidelines.md](database-guidelines.md) | ORM, sessions, migrations |
 | [testing-guidelines.md](testing-guidelines.md) | pytest patterns, fixtures, mocking |
 | [integration-guidelines.md](integration-guidelines.md) | External services, handoff protocol |
+| [architecture-deep-dive.md](architecture-deep-dive.md) | Full per-module and per-decision narrative entries indexed (not duplicated) in `.claude/rules/architecture.md` |

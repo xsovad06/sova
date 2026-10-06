@@ -113,6 +113,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
 
     # Stage 4: Commands, guidelines, and skills
     try:
+        from sova.agents.claude_code import ClaudeCodeAdapter
         from sova.commands.catalog import get_canonical_dir, get_guidelines_dir, get_skills_dir
         from sova.commands.distribution import install_commands as install_cmds
         from sova.commands.distribution import install_guidelines as install_guides
@@ -121,17 +122,18 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         from sova.commands.distribution import update_guidelines as update_guides
         from sova.commands.distribution import update_skills as update_sk
 
+        claude_adapter = ClaudeCodeAdapter()
         canonical_dir = get_canonical_dir()
         guidelines_dir = get_guidelines_dir()
         skills_src_dir = get_skills_dir()
-        commands_dir = claude_dir / "commands"
+        commands_dir = claude_adapter.commands_dir(project_dir)
         commands_dir.mkdir(exist_ok=True)
         rules_dir = claude_dir / "rules"
         rules_dir.mkdir(exist_ok=True)
-        skills_target = claude_dir / "skills"
+        skills_target = claude_adapter.skills_dir(project_dir)
 
         if update:
-            cmd_result = update_cmds(canonical_dir, commands_dir, cfg)
+            cmd_result = update_cmds(canonical_dir, commands_dir, cfg, adapter=claude_adapter)
             console.print(f"[green]Commands updated: {cmd_result.updated}, unchanged: {cmd_result.skipped}[/green]")
             if cmd_result.conflicts:
                 for name in cmd_result.conflicts:
@@ -149,7 +151,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
                 for name in sk_result.conflicts:
                     console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
         else:
-            cmd_result = install_cmds(canonical_dir, commands_dir, cfg)
+            cmd_result = install_cmds(canonical_dir, commands_dir, cfg, adapter=claude_adapter)
             console.print(f"[green]Commands installed: {cmd_result.installed}[/green]")
             guide_result = install_guides(guidelines_dir, rules_dir, cfg)
             console.print(f"[green]Guidelines installed: {guide_result.installed}[/green]")
@@ -159,6 +161,24 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         log.warning("setup.command_install_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[red]Command installation failed: {exc}[/red]")
         failed_stages.append("commands")
+
+    # Stage 4.5: Runtime skills mirror (additive, non-fatal). Mirrors skills
+    # into whatever non-Claude runtime adapter agent.runtime names (e.g.
+    # Codex's .codex/skills/). Claude's .claude/skills/ above is installed
+    # unconditionally since it's also read by the interactive session, not
+    # only by agent.runtime. Kept in its own try/except, separate from Stage
+    # 4: a failure here is not a command-installation failure (commands,
+    # guidelines, and Claude's own skills may have all installed fine), so it
+    # must not be folded into "commands" failed_stages reporting.
+    try:
+        from sova.agents.sync import report_runtime_skills_sync, sync_runtime_skills, warn_orphaned_runtime_artifacts
+        from sova.commands.catalog import get_skills_dir
+
+        runtime_sk_result = sync_runtime_skills(get_skills_dir(), project_dir, cfg)
+        report_runtime_skills_sync(console, runtime_sk_result, cfg, warn_orphaned_runtime_artifacts(project_dir, cfg))
+    except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
+        log.warning("setup.runtime_skills_sync_failed", project_dir=str(project_dir), exc_info=True)
+        console.print(f"[yellow]Warning: runtime skills sync failed: {exc}[/yellow]")
 
     # Stage 5: RTK hook injection (non-fatal)
     try:

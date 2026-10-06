@@ -804,7 +804,7 @@ class TestProjectCommands:
         """Successful install creates commands dir, agent-memory, and saves config to DB."""
         from sova.cli.commands.project import _install
 
-        def _install_cmds_side_effect(_canonical_dir, commands_dir, _cfg):
+        def _install_cmds_side_effect(_canonical_dir, commands_dir, _cfg, **_kwargs):
             commands_dir.mkdir(parents=True, exist_ok=True)
             (commands_dir / "dummy.md").write_text("---\nname: dummy\n---\n")
             return MagicMock(installed=1)
