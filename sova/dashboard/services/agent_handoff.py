@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.dashboard.services.agent_validation import check_memory_pressure
-from sova.dashboard.services.feed_service import emit_safe
+from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.supervisor.gates.utils import count_address_review_runs
 from sova.utils.logging import get_logger
 
@@ -25,7 +25,15 @@ async def _check_address_review_circuit_breaker(
 ) -> str | None:
     """Check if the address-review circuit breaker should block auto-execution.
 
-    Returns a reason string if blocked, None if clear.
+    Returns a reason string if blocked, None if clear. A blocked PR no longer
+    needs a manual-only handoff written: resolve_next_action()'s
+    review_budget_exhausted rule already resolves an over-budget PR to
+    PR_REVIEW_EXHAUSTED with an Integrate action the dashboard renders
+    directly, so the caller only has to stop auto-spawning the next cycle.
+    The verdict cache is invalidated unconditionally once the cycle count is
+    computed, not only when the budget turns out to be exhausted, so a verdict
+    served from cache always reflects this run's just-completed cycle rather
+    than waiting out the cache TTL.
     """
     if role != "developer" or pr_number is None:
         return None
@@ -38,14 +46,48 @@ async def _check_address_review_circuit_breaker(
         return None
 
     count = await count_address_review_runs(issue, pr_number, project_dir)
+
+    from sova.dashboard.services.work_verdict import invalidate_verdict
+
+    invalidate_verdict(project_dir, pr_number)
+
     if count >= max_cycles:
         return (
-            f"Circuit breaker: {count} address-review cycles completed for "
-            f"PR #{pr_number} on issue #{issue}. "
-            f"Max allowed: {max_cycles}. Manual action required."
+            f"Address-review budget exhausted: {count} cycles completed for "
+            f"PR #{pr_number} on issue #{issue} (max allowed: {max_cycles}). "
+            f"Routed to Integrate for a manual decision."
         )
 
     return None
+
+
+def _issue_label(issue: str) -> str:
+    """Render an issue number for a notification subtitle or feed title."""
+    return f"#{issue}" if issue else "Agent"
+
+
+def _notify_budget_exhausted(agent: AgentState, issue: str, reason: str) -> None:
+    """Announce an exhausted address-review budget on every configured channel.
+
+    Routed through notify() rather than send_desktop_notification() so the
+    operator's notification config (desktop toggle, Slack, email, webhook) is
+    honoured and delivery stays fire-and-forget: this runs on the agent-exit
+    path, which must not block on a notifier subprocess or be derailed by one
+    failing before clear_handoff() runs.
+    """
+    try:
+        from sova.config.loader import load_config
+        from sova.ipc.notifications import notify
+
+        notify(
+            load_config(agent.project_dir).notification,
+            "SOVA",
+            f"{agent.project_dir.name} | {reason}",
+            subtitle=f"Address-review budget exhausted {_issue_label(issue)}",
+            group=f"sova-{issue}" if issue else "sova",
+        )
+    except Exception:  # noqa: BLE001 (best-effort: config load and the OS notifier both fail in many ways)
+        log.debug("notify.failed", run_id=agent.run_id, exc_info=True)
 
 
 async def _persist_completing_agent_handoff(run_id: int, handoff: "DashboardHandoff", project_dir: "Path") -> None:
@@ -158,35 +200,20 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                         pr_number=pr_num,
                         reason=reason,
                     )
-                    # Write a manual-only handoff so the dashboard shows the blocked state
-                    from sova.ipc.handoff import DashboardHandoff, HandoffAction, write_handoff_file
-
-                    blocked_handoff = DashboardHandoff(
-                        source="circuit_breaker",
-                        status="awaiting_action",
-                        issue=target_issue,
-                        pr_number=pr_num,
-                        branch=handoff.branch,
-                        summary=reason,
-                        next_actions=[
-                            HandoffAction(
-                                id="address_review",
-                                label="Address Review (manual)",
-                                mode="agent",
-                                args=args,
-                                auto_execute=False,
-                            ),
-                            HandoffAction(
-                                id="integrate",
-                                label="Integrate PR",
-                                mode="claude-command",
-                                command=f"/integrate-pr {pr_num}" if pr_num else "/integrate-pr",
-                                auto_execute=False,
-                            ),
-                        ],
+                    # No manual-only handoff needed: resolve_next_action()'s
+                    # review_budget_exhausted rule already resolves this PR to
+                    # PR_REVIEW_EXHAUSTED with an Integrate action, so clearing
+                    # the stale handoff is enough for the dashboard to pick up
+                    # the right next action on its next poll.
+                    emit_safe(
+                        f"{_issue_label(target_issue)}: address-review budget exhausted",
+                        severity=FeedEventSeverity.warning,
+                        detail=reason,
+                        category="handoff",
+                        metadata={"issue": target_issue, "pr_number": pr_num, "run_id": agent.run_id},
                     )
+                    _notify_budget_exhausted(agent, target_issue, reason)
                     handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
-                    write_handoff_file(agent.project_dir, blocked_handoff)
                     return
 
             # Memory pressure gate (all action modes)

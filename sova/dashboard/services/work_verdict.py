@@ -39,6 +39,19 @@ def clear_verdict_cache() -> None:
     _sova_verdict_cache.clear()
 
 
+def invalidate_verdict(project_dir: Path | None, pr_number: int | None) -> None:
+    """Drop one PR's cached verdict so the next resolve_sova_verdict() call recomputes it.
+
+    Called on agent exit (the auto-handoff circuit breaker check) so a
+    just-completed address cycle's count is reflected immediately rather than
+    waiting out the cache TTL. A no-op when pr_number is None or the PR has no
+    cache entry: there is nothing to invalidate in either case.
+    """
+    if pr_number is None:
+        return
+    _sova_verdict_cache.pop(_cache_key(project_dir, pr_number), None)
+
+
 _SOVA_VERDICT_LABEL_MAP: dict[str, str] = {
     "sova:approved": "approve",
     "sova:revise": "revise",
@@ -251,6 +264,27 @@ def _cache_put(project_dir: Path | None, pr_number: int, verdict: dict) -> None:
     _sova_verdict_cache[_cache_key(project_dir, pr_number)] = (time.monotonic(), dict(verdict))
 
 
+async def _safe_count_address_cycles(issue_number: str | None, pr_number: int | None, project_dir: Path | None) -> int:
+    """Count completed address cycles for this PR, failing open to 0.
+
+    pr_number is None means there is no PR to count cycles against yet, so
+    this returns 0 without querying: the review_budget_exhausted rule in
+    resolve_next_action() must never fire for a PR that doesn't exist. A DB
+    failure (unavailable, locked) also yields 0 rather than propagating, so a
+    transient DB error cannot escalate into a wrongly-exhausted verdict.
+    """
+    if pr_number is None:
+        return 0
+
+    from sova.supervisor.gates.utils import count_address_review_runs
+
+    try:
+        return await count_address_review_runs(issue_number or "", pr_number, project_dir)
+    except Exception:  # noqa: BLE001 (address_cycles is advisory; a failed count must not block verdict resolution)
+        log.debug("work_items.address_cycle_count_failed", issue=issue_number, pr=pr_number, exc_info=True)
+        return 0
+
+
 def _merge_label_verdict(db_verdict: dict, label_verdict: dict | None) -> dict:
     """Reconcile the local DB verdict with the cross-machine sova:* issue label.
 
@@ -270,6 +304,12 @@ def _merge_label_verdict(db_verdict: dict, label_verdict: dict | None) -> dict:
     """
     if label_verdict is None:
         return db_verdict
+    # address_cycles is a property of the PR, not of whichever source won the
+    # verdict, and only db_verdict carries it (labels encode no cycle count).
+    # Dropping it on a label win would silently reset the budget to 0 and
+    # disable resolve_next_action()'s review_budget_exhausted rule for exactly
+    # the cross-instance PRs most likely to have burned cycles already.
+    label_verdict = {**label_verdict, "address_cycles": db_verdict.get("address_cycles", 0)}
     if not db_verdict.get("has_sova_review"):
         return label_verdict
     db_value = db_verdict.get("verdict")
@@ -303,6 +343,23 @@ async def resolve_sova_verdict(
     via _supersede_if_addressed_locally(), so the DB and GitHub paths agree on
     when a verdict counts as addressed.
 
+    The returned dict also carries ``address_cycles``: the count of completed
+    address-review runs for this PR (via count_address_review_runs(), the one
+    canonical counter), so resolve_next_action()'s review_budget_exhausted
+    rule can compare it against pipeline.max_address_review_cycles without a
+    second, possibly-divergent query. Recomputed on every call, cache hit or
+    miss: a cache hit used to return the count the cached verdict was given
+    when it was written, relying on invalidate_verdict() (called on agent
+    exit) to keep it fresh. That invalidation only fires for a ``developer``
+    role's agent-exit path (_check_address_review_circuit_breaker() is gated
+    on role=="developer"), so a command:address-pr run, which also increments
+    the real cycle count via count_address_review_runs(), left a positive
+    cache entry serving a stale count for up to the full 5-minute TTL, long
+    enough for the review_budget_exhausted rule to let one extra cycle spawn
+    past the cap. The count query is a local DB read (no GitHub API call), so
+    recomputing it on every call costs far less than the GitHub/DB round trip
+    the verdict cache exists to avoid in the first place.
+
     The cache stores the unmerged DB/GitHub source verdict, never a verdict
     already merged against labels: label reconciliation is applied fresh on
     every call (cache hit or miss) against the caller's current issue_labels.
@@ -319,6 +376,10 @@ async def resolve_sova_verdict(
     if pr_number is not None and use_cache:
         cached = _cache_get(project_dir, pr_number)
         if cached is not None:
+            cached = {
+                **cached,
+                "address_cycles": await _safe_count_address_cycles(issue_number, pr_number, project_dir),
+            }
             return _merge_label_verdict(cached, label_verdict)
 
     try:
@@ -331,6 +392,8 @@ async def resolve_sova_verdict(
         gh_verdict = await _fetch_github_review_fallback(pr_number, fallback_adapter)
         if gh_verdict is not None:
             verdict = await _supersede_if_addressed_locally(gh_verdict, issue_number, pr_number, project_dir)
+
+    verdict = {**verdict, "address_cycles": await _safe_count_address_cycles(issue_number, pr_number, project_dir)}
 
     if pr_number is not None and use_cache:
         _cache_put(project_dir, pr_number, verdict)

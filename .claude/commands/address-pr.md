@@ -283,7 +283,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
     **Never dismiss human reviews**: only bot reviews (`user.type == "Bot"`) whose findings have been addressed.
 
-16. **Request bot re-review** (only if bot comments were addressed AND the cycle cap allows it). Every re-review trigger produces a fresh round of bot findings and a new address run, so an uncapped loop burns tokens on both sides. The cap is the same `pipeline.max_address_review_cycles` that bounds the autonomous address-review pipeline (default 2; 0 means unlimited). Read it from the primary checkout's SOVA database (this command usually runs inside a worktree).
+16. **Request bot re-review** (only if bot comments were addressed AND the cycle cap allows it). Every re-review trigger produces a fresh round of bot findings and a new address run, so an uncapped loop burns tokens on both sides. The cap is the same `pipeline.max_address_review_cycles` that bounds the autonomous address-review pipeline (default 3; 0 means unlimited). Read it from the primary checkout's SOVA database (this command usually runs inside a worktree).
 
     This block is self-contained: each bash invocation is a fresh shell, so it
     recomputes the round rather than reusing step 14's variable. Step 14 has
@@ -297,7 +297,7 @@ This command runs as a headless agent. You MUST execute every step below through
     RAW=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
       "SELECT value FROM project_settings WHERE key='pipeline.max_address_review_cycles';" 2>/dev/null || true)
     MAX_CYCLES=$(printf '%s' "$RAW" | tr -cd '0-9')
-    MAX_CYCLES=${MAX_CYCLES:-2}
+    MAX_CYCLES=${MAX_CYCLES:-3}
     # The marker list is captured first so a failed `gh api` call is caught
     # explicitly rather than silently counting as zero matches, which would
     # under-report ROUND and let the cap be bypassed. `grep -c .` counts

@@ -14,7 +14,7 @@ log = get_logger(component="supervisor.gates.utils")
 _FAILURE_STATUSES = frozenset({"failed", "interrupted"})
 
 
-async def count_address_review_runs(issue: str, pr_number: int, project_dir: Path) -> int:
+async def count_address_review_runs(issue: str, pr_number: int, project_dir: Path | None) -> int:
     """Count completed address cycles for the given PR.
 
     Two run shapes count, matching ``_address_cycle_completed_since()`` in

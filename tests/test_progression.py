@@ -14,7 +14,6 @@ from sova.git.pr import PRInfo
 from sova.supervisor.gates.already_running import check_already_running
 from sova.supervisor.gates.budget import check_budget_gate
 from sova.supervisor.gates.ci_budget import check_ci_budget_gate
-from sova.supervisor.gates.circuit_breaker import check_address_review_circuit_breaker_gate
 from sova.supervisor.gates.dependency import check_dependency_gate
 from sova.supervisor.gates.file_conflict import check_file_overlap_gate
 from sova.supervisor.gates.human_involvement import check_human_involvement_gate
@@ -3226,6 +3225,92 @@ class TestRefineInReviewAction:
         assert pr.number == 55
 
     @pytest.mark.asyncio
+    async def test_exhausted_address_budget_never_spawns_another_address_cycle(self) -> None:
+        """The cap must bound the supervisor, not just the dashboard (#1110).
+
+        The dedicated circuit-breaker gate was deleted when the budget moved
+        into resolve_next_action(), so _refine_in_review_action() has to thread
+        pipeline.max_address_review_cycles into the facts it builds. Left at
+        the parameter's 0 default the rule reads as "unlimited" and a standing
+        revise verdict re-spawns address cycles forever.
+        """
+        from sova.config.models import PipelineConfig
+
+        engine = _make_engine(
+            SupervisorConfig(auto_address_review=True, auto_integrate=False),
+            project_overrides={"pipeline": PipelineConfig(max_address_review_cycles=2)},
+        )
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "revise",
+                "finding_count": 3,
+                "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
+                "address_cycles": 2,
+            },
+        ):
+            action, _pr = await engine._refine_in_review_action(42)
+        # Resolves to "integrate", which auto_integrate=False then holds for a
+        # human. The load-bearing assertion is that it is not another cycle.
+        assert action != ProgressionAction.SPAWN_ADDRESS_REVIEW
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
+
+    @pytest.mark.asyncio
+    async def test_exhausted_address_budget_routes_to_integrate_when_auto_integrate_on(self) -> None:
+        from sova.config.models import PipelineConfig
+
+        engine = _make_engine(
+            SupervisorConfig(auto_address_review=True, auto_integrate=True),
+            project_overrides={"pipeline": PipelineConfig(max_address_review_cycles=2)},
+        )
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "revise",
+                "finding_count": 3,
+                "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
+                "address_cycles": 5,
+            },
+        ):
+            action, _pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_INTEGRATE
+
+    @pytest.mark.asyncio
+    async def test_under_address_budget_still_spawns_address_review(self) -> None:
+        from sova.config.models import PipelineConfig
+
+        engine = _make_engine(
+            SupervisorConfig(auto_address_review=True, auto_integrate=False),
+            project_overrides={"pipeline": PipelineConfig(max_address_review_cycles=3)},
+        )
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "revise",
+                "finding_count": 3,
+                "reviewed_at": "2026-01-01",
+                "review_head_sha": None,
+                "address_cycles": 2,
+            },
+        ):
+            action, _pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_ADDRESS_REVIEW
+
+    @pytest.mark.asyncio
     async def test_verdict_block_with_auto_enabled_spawns_address_review(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_address_review=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=10, url=""))
@@ -3464,85 +3549,6 @@ class TestRefineInReviewAction:
 
 
 # ---------------------------------------------------------------------------
-# SPAWN_ADDRESS_REVIEW: circuit breaker gate
-# ---------------------------------------------------------------------------
-
-
-class TestAddressReviewCircuitBreakerGate:
-    @pytest.mark.asyncio
-    async def test_blocks_when_max_cycles_reached(self) -> None:
-        with patch(
-            "sova.supervisor.gates.circuit_breaker.count_address_review_runs",
-            new_callable=AsyncMock,
-            return_value=2,
-        ):
-            tmp = Path(tempfile.mkdtemp())
-            result = await check_address_review_circuit_breaker_gate(
-                42,
-                pr_number=55,
-                max_cycles=2,
-                project_dir=tmp,
-            )
-        assert result is not None
-        assert result.gate == "circuit_breaker"
-        assert "2" in result.detail
-
-    @pytest.mark.asyncio
-    async def test_passes_when_under_limit(self) -> None:
-        with patch(
-            "sova.supervisor.gates.circuit_breaker.count_address_review_runs",
-            new_callable=AsyncMock,
-            return_value=1,
-        ):
-            tmp = Path(tempfile.mkdtemp())
-            result = await check_address_review_circuit_breaker_gate(
-                42,
-                pr_number=55,
-                max_cycles=2,
-                project_dir=tmp,
-            )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_passes_when_unlimited(self) -> None:
-        tmp = Path(tempfile.mkdtemp())
-        result = await check_address_review_circuit_breaker_gate(
-            42,
-            pr_number=55,
-            max_cycles=0,
-            project_dir=tmp,
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_passes_when_no_pr_number(self) -> None:
-        tmp = Path(tempfile.mkdtemp())
-        result = await check_address_review_circuit_breaker_gate(
-            42,
-            pr_number=None,
-            max_cycles=2,
-            project_dir=tmp,
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_fails_open_on_error(self) -> None:
-        with patch(
-            "sova.supervisor.gates.utils.count_address_review_runs",
-            new_callable=AsyncMock,
-            side_effect=Exception("count error"),
-        ):
-            tmp = Path(tempfile.mkdtemp())
-            result = await check_address_review_circuit_breaker_gate(
-                42,
-                pr_number=55,
-                max_cycles=2,
-                project_dir=tmp,
-            )
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
 # SPAWN_ADDRESS_REVIEW: execute_decision
 # ---------------------------------------------------------------------------
 
@@ -3644,51 +3650,11 @@ class TestEvaluateTaskAddressReview:
                 new_callable=AsyncMock,
                 return_value=(None, None),
             ),
-            patch(
-                "sova.supervisor.progression.check_address_review_circuit_breaker_gate",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
         ):
             decision = await engine.evaluate_task(42)
         assert decision.action == ProgressionAction.SPAWN_ADDRESS_REVIEW
         assert decision.role == "developer"
         assert decision.pr_number == 55
-
-    @pytest.mark.asyncio
-    async def test_in_review_with_revise_verdict_blocked_by_circuit_breaker(self) -> None:
-        adapter = AsyncMock()
-        adapter.get_state = AsyncMock(return_value=TaskState.IN_REVIEW)
-        adapter.list_tasks = AsyncMock(return_value=[_task(42, state=TaskState.IN_REVIEW)])
-        engine = _make_engine(
-            config=SupervisorConfig(auto_address_review=True),
-            adapter=adapter,
-        )
-        circuit_block = BlockReason(gate="circuit_breaker", detail="max cycles reached")
-        with (
-            patch.object(
-                engine,
-                "_refine_in_review_action",
-                new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, PRInfo(number=55, url="")),
-            ),
-            patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
-            patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
-            patch(
-                "sova.supervisor.progression.check_ownership_gate",
-                new_callable=AsyncMock,
-                return_value=(None, None),
-            ),
-            patch(
-                "sova.supervisor.progression.check_address_review_circuit_breaker_gate",
-                new_callable=AsyncMock,
-                return_value=circuit_block,
-            ),
-        ):
-            decision = await engine.evaluate_task(42)
-        assert decision.action == ProgressionAction.BLOCKED
-        assert any(b.gate == "circuit_breaker" for b in decision.blocked_by)
 
     @pytest.mark.asyncio
     async def test_in_review_refine_returns_wait_produces_wait(self) -> None:
@@ -4856,12 +4822,3 @@ class TestExecuteDecisionReviewLoop:
         decision = ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_REVIEWER, reason="Re-review")
         result = await engine.execute_decision(decision)
         assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_spawn_address_pr_is_bounded_by_circuit_breaker(self) -> None:
-        """The /address-pr command path re-triggers the bot each round, so it must
-        consume the same cycle budget as the pipeline path."""
-        from sova.supervisor.progression import _ADDRESS_CYCLE_ACTIONS
-
-        assert ProgressionAction.SPAWN_ADDRESS_PR in _ADDRESS_CYCLE_ACTIONS
-        assert ProgressionAction.SPAWN_ADDRESS_REVIEW in _ADDRESS_CYCLE_ACTIONS

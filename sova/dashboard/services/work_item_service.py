@@ -195,6 +195,7 @@ def _build_task_item(
     sova_verdict: dict | None = None,
     *,
     external_reviews_enabled: bool = True,
+    max_address_cycles: int = 0,
 ) -> dict:
     """Build a work item from a queue task and its linked PR/handoff/agent."""
     issue_num = str(task["issue"])
@@ -210,6 +211,7 @@ def _build_task_item(
         running_agent=running,
         sova_verdict=sova_verdict if pr_data else None,
         external_reviews_enabled=external_reviews_enabled,
+        max_address_cycles=max_address_cycles,
     )
     state = resolution.state
     reason_chain = _reason_chain_payload(resolution, facts)
@@ -269,6 +271,7 @@ def _build_pr_item(
     sova_verdict: dict | None = None,
     *,
     external_reviews_enabled: bool = True,
+    max_address_cycles: int = 0,
 ) -> dict:
     """Build a work item from a standalone or unlinked PR."""
     resolution, facts = compute_work_item_resolution(
@@ -277,6 +280,7 @@ def _build_pr_item(
         running_agent=running,
         sova_verdict=sova_verdict,
         external_reviews_enabled=external_reviews_enabled,
+        max_address_cycles=max_address_cycles,
     )
     state = resolution.state
     reason_chain = _reason_chain_payload(resolution, facts)
@@ -328,6 +332,7 @@ def _append_standalone_pr_items(
     verdicts_by_issue: dict[str, dict] | None = None,
     *,
     external_reviews_enabled: bool = True,
+    max_address_cycles: int = 0,
 ) -> None:
     """Add work items for PRs not already covered by a queue task."""
     for pr in prs:
@@ -348,7 +353,13 @@ def _append_standalone_pr_items(
             verdict = None
         items.append(
             _build_pr_item(
-                pr, running, handoff, issue_num, sova_verdict=verdict, external_reviews_enabled=external_reviews_enabled
+                pr,
+                running,
+                handoff,
+                issue_num,
+                sova_verdict=verdict,
+                external_reviews_enabled=external_reviews_enabled,
+                max_address_cycles=max_address_cycles,
             )
         )
 
@@ -407,6 +418,14 @@ async def _attach_integration_gates(
         action = _find_integrate_action(item)
         if not action:
             return
+        if item.get("state") == WorkItemState.PR_REVIEW_EXHAUSTED:
+            # An over-budget PR must show an enabled Integrate button even
+            # when a standing revise/block verdict would otherwise fail the
+            # sova_reviewed gate: that gate exists to require re-review after
+            # a fix, but once the address-review budget is exhausted there is
+            # no more autonomous fixing left to re-review. Leaving
+            # action["gate_result"] unset renders the button enabled.
+            return
         pr_data = prs_by_issue.get(item.get("issue_number") or "")
         if not pr_data and item.get("pr_details"):
             pr_data = item["pr_details"]
@@ -451,10 +470,14 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
 
         cfg = load_config(project_dir)
         external_reviews_enabled = cfg.external_reviews.enabled
+        max_address_cycles = cfg.pipeline.max_address_review_cycles
     except Exception:  # noqa: BLE001 (work items still render with default settings when config is unavailable)
         log.warning("work_items.config_load_failed", project_dir=str(project_dir), exc_info=True)
         cfg = None
         external_reviews_enabled = True
+        # 0 disables the review_budget_exhausted rule: fail open to the
+        # pre-budget-cap routing rather than inventing an exhausted state.
+        max_address_cycles = 0
 
     queue, prs, handoffs, agents_data = await _fetch_all_sources(
         project_dir=project_dir,
@@ -493,6 +516,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
                 handoffs_by_issue.get(issue_num),
                 sova_verdict=verdicts_by_issue.get(issue_num) if pr_data else None,
                 external_reviews_enabled=external_reviews_enabled,
+                max_address_cycles=max_address_cycles,
             )
         )
 
@@ -504,6 +528,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         handoffs_by_issue,
         verdicts_by_issue=verdicts_by_issue,
         external_reviews_enabled=external_reviews_enabled,
+        max_address_cycles=max_address_cycles,
     )
 
     _sort_items(items)

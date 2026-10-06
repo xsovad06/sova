@@ -58,7 +58,7 @@ sova/
     awareness/                     # Awareness subsystem (AwarenessProvider ABC, AwarenessItem, ItemCategory, provider registry, BriefingService aggregation engine, rendering models, rendering/cli_renderer.py Rich terminal output)
     oversight/                     # Oversight agent: background daemon, operations persona (user-maintained LLM guidance)
     supervisor/                    # Supervisor-level services (TaskProgressionEngine, CodeRabbit quota, task dependency graph)
-      gates/                       # Gate check functions (one per module): rate_limit, connectivity, memory_pressure, dependency, human_involvement, quota, ci_budget, slots, budget, already_running, repeated_failure, ownership, merge_conflict, file_conflict, circuit_breaker, review_completed
+      gates/                       # Gate check functions (one per module): rate_limit, connectivity, memory_pressure, dependency, human_involvement, quota, ci_budget, slots, budget, already_running, repeated_failure, ownership, merge_conflict, file_conflict, review_completed
     commands/                      # Command + guideline distribution (catalog, templates, manifest, distribution)
     config/                        # Pydantic Settings + TOML config + project registry + request context
     monitoring/                     # Resource monitoring (psutil-based CPU, memory, I/O tracking)
@@ -195,9 +195,9 @@ Examples:
 - Use emojis in code, documentation, or commit messages
 - Skip pre-commit hooks (`--no-verify`)
 
-### Role Chaining and Circuit Breaker
+### Role Chaining and the Address-Review Budget
 
-Agents chain autonomously: Developer -> Reviewer -> Developer (address review) -> Reviewer (re-review). The address-review circuit breaker prevents infinite bot re-review loops (e.g., CodeRabbit repeatedly requesting changes). It counts completed address cycles for a PR: a `developer` run with an `address_review` `StepExecution`, or a `command:address-pr` run, so both the autonomous pipeline and the `/address-pr` command consume the same budget. When the count reaches `pipeline.max_address_review_cycles` (default 2, 0=unlimited), auto-execution is blocked and a manual-only handoff is written so the dashboard shows "Address Review (manual)" and "Integrate PR" buttons; the supervisor's own `SPAWN_ADDRESS_PR`/`SPAWN_ADDRESS_REVIEW` actions are blocked by the same gate. See `.claude/rules/architecture.md` for full details.
+Agents chain autonomously: Developer -> Reviewer -> Developer (address review) -> Reviewer (re-review). A per-PR address-review budget prevents infinite bot re-review loops (e.g., CodeRabbit repeatedly requesting changes). It counts completed address cycles for a PR: a `developer` run with an `address_review` `StepExecution`, or a `command:address-pr` run, so both the autonomous pipeline and the `/address-pr` command consume the same budget. When the count reaches `pipeline.max_address_review_cycles` (default 3, 0=unlimited), `resolve_next_action()` resolves the PR to `PR_REVIEW_EXHAUSTED` with an Integrate action instead of another address cycle, and the agent-exit breaker in `agent_handoff.py` stops the handoff chain from auto-spawning one more. Both the dashboard and the supervisor read that one resolver, so neither can propose another cycle. See `.claude/rules/architecture.md` for full details.
 
 ## Development Workflow
 - **SSH**: repo-level `core.sshCommand` is configured for the personal key
