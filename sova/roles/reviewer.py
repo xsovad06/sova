@@ -72,6 +72,7 @@ from sova.roles._review_comments import (
 )
 from sova.roles._review_format import _SEVERITY_HIGH
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
+from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
 # Re-export everything from _review_comments for backward compatibility.
@@ -599,17 +600,24 @@ class ReviewerRole(AgentRole):
         try:
             spec_dir = ctx.working_dir or ctx.project_dir
             path = find_spec_file(str(issue), spec_dir)
-            if path is None:
-                log.debug("reviewer.no_spec", issue=issue)
-                return None
-            raw = path.read_text()
-            sections = _extract_spec_sections(raw)
-            if sections:
-                log.info("reviewer.spec_loaded", issue=issue, sections=list(sections.keys()))
-            return sections or None
-        except (OSError, ValueError):
+        except OSError:
             log.warning("reviewer.spec_load_failed", issue=issue, exc_info=True)
             return None
+        if path is None:
+            log.debug("reviewer.no_spec", issue=issue)
+            return None
+        raw = read_text_or_none(path)
+        if raw is None:
+            log.warning("reviewer.spec_load_failed", issue=issue)
+            return None
+        try:
+            sections = _extract_spec_sections(raw)
+        except ValueError:
+            log.warning("reviewer.spec_load_failed", issue=issue, exc_info=True)
+            return None
+        if sections:
+            log.info("reviewer.spec_loaded", issue=issue, sections=list(sections.keys()))
+        return sections or None
 
     def _append_review_rationale(self, ctx: ExecutionContext, review: ReviewResult) -> None:
         """Append review rationale to spec for findings with severity >= 5."""
