@@ -12,6 +12,8 @@ class.
 
 from __future__ import annotations
 
+import os
+import shutil
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -32,6 +34,7 @@ from sova.git.operations import (
     get_pr_files,
     get_pr_head_sha,
 )
+from sova.ipc.codex import CodexStreamParser
 from sova.ipc.handoff import (
     AgentHandoff,
     DashboardHandoff,
@@ -40,8 +43,10 @@ from sova.ipc.handoff import (
     write_handoff,
     write_handoff_file,
 )
+from sova.ipc.runtime import _codex_exec_args, _resolve_codex_api_key
 from sova.llm.backends import TIER_NAMES
 from sova.llm.client import invoke, resolve_alias, resolve_model
+from sova.llm.models import CostSource
 
 if TYPE_CHECKING:
     from sova.llm.models import LLMResult
@@ -75,6 +80,7 @@ from sova.roles._review_format import _SEVERITY_HIGH
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
+from sova.utils.shell import run as run_shell
 
 # Re-export everything from _review_comments for backward compatibility.
 # Do NOT remove these imports; external modules depend on them.
@@ -110,6 +116,39 @@ log = get_logger(component="role.reviewer")
 # Terminal fallback when neither role config nor complexity routing resolves a
 # model (the reviewer is a standalone role, so ``ctx.complexity`` is usually None).
 _DEFAULT_REVIEW_MODEL = "sonnet"
+
+# Explicit allowlist for the optional repo-context sub-call's environment
+# (see ReviewerRole._gather_repo_context). Built up from scratch rather than
+# derived from the reviewer's own trusted ``gh_env`` (which carries a GitHub
+# token and DB connection string, precisely because the reviewer process
+# itself is trusted): a denylist over gh_env would silently re-admit a future
+# gh_env field nobody remembered to strip. This sub-call only reads files
+# under a read-only Codex sandbox, so it never needs either. CODEX_HOME and
+# XDG_CONFIG_HOME are included because a project that relocates Codex's
+# config/credential directory needs them to authenticate; the proxy/TLS
+# names let the sub-call reach Codex's API from behind a corporate proxy or
+# custom CA bundle, same requirement a Claude Code spawn covers via
+# ``agent.env_passthrough``. None of these carry a GitHub token or DB URL,
+# so the allowlist's safety property is unaffected by any of them.
+_REPO_CONTEXT_ENV_ALLOWLIST = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "CODEX_HOME",
+    "XDG_CONFIG_HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+)
+_REPO_CONTEXT_MAX_FILES = 30
 
 
 def _build_finding_summary(review: ReviewResult) -> dict:
@@ -198,7 +237,12 @@ class ReviewerRole(AgentRole):
         if addressed:
             log.info("reviewer.addressed_findings_loaded", count=len(addressed))
 
-        review = await self._run_review(ctx, task, diff, files, addressed_findings=addressed)
+        # The panel path never consumes repo_context (see _run_review's panel
+        # branch), so skip paying for the sub-call's wall clock and Codex
+        # turn entirely when panel review is enabled.
+        repo_context = "" if ctx.config.review.panel.enabled else await self._gather_repo_context(ctx, files)
+
+        review = await self._run_review(ctx, task, diff, files, addressed_findings=addressed, repo_context=repo_context)
 
         protected = _check_protected_paths(files, ctx.config.review.protected_paths)
         if protected:
@@ -421,6 +465,7 @@ class ReviewerRole(AgentRole):
         diff: str,
         files: list[str],
         addressed_findings: list[dict] | None = None,
+        repo_context: str = "",
     ) -> ReviewResult:
         """Send diff to LLM for review, chunking if too large."""
         spec_sections = self._load_spec_sections(ctx)
@@ -436,6 +481,10 @@ class ReviewerRole(AgentRole):
             )
 
         if ctx.config.review.panel.enabled:
+            # Panel review does not consume repo_context today: it is a
+            # separate, already-elaborate chunking path, and the feature
+            # (opt-in sub-call) is deliberately scoped to the default
+            # single-reviewer path.
             return await self._run_panel_review(ctx, task, diff, files, spec_sections, addressed_findings)
 
         return await self._run_single_review(
@@ -445,6 +494,7 @@ class ReviewerRole(AgentRole):
             files,
             spec_sections,
             addressed_findings=addressed_findings,
+            repo_context=repo_context,
         )
 
     def _resolve_review_model(self, ctx: ExecutionContext) -> str:
@@ -535,6 +585,7 @@ class ReviewerRole(AgentRole):
         files: list[str],
         spec_sections: dict[str, str] | None,
         addressed_findings: list[dict] | None = None,
+        repo_context: str = "",
     ) -> ReviewResult:
         """Original single-reviewer path."""
         chunks = _chunk_diff(diff)
@@ -546,6 +597,9 @@ class ReviewerRole(AgentRole):
             try:
                 chunk_spec = spec_sections if i == 0 else _compact_spec_ref(spec_sections)
                 chunk_addressed = addressed_findings if i == 0 else None
+                # Repo context is background, not a finding source: include it
+                # only on the first chunk, same treatment as spec/addressed-findings.
+                chunk_repo_context = repo_context if i == 0 else ""
                 prompt = _build_review_prompt(
                     task,
                     chunk,
@@ -553,6 +607,7 @@ class ReviewerRole(AgentRole):
                     spec_sections=chunk_spec,
                     addressed_findings=chunk_addressed,
                     revise_at=ctx.config.review.revise_severity,
+                    repo_context=chunk_repo_context,
                 )
                 chunk_budget = ctx.config.agent.max_budget / len(chunks)
 
@@ -654,6 +709,134 @@ class ReviewerRole(AgentRole):
         if sections:
             log.info("reviewer.spec_loaded", issue=issue, sections=list(sections.keys()))
         return sections or None
+
+    async def _gather_repo_context(self, ctx: ExecutionContext, files: list[str]) -> str:
+        """Optionally gather extra repository context via a read-only Codex sub-call.
+
+        Gated by ``review.repo_context_agent`` (default off). This never
+        replaces the diff-based analysis: its output is untrusted context
+        folded into the existing review prompt, not a source of findings or
+        a verdict on its own. The sub-call gets no GitHub token and no
+        database access: its environment is built from
+        ``_REPO_CONTEXT_ENV_ALLOWLIST``, not by stripping entries out of the
+        reviewer's own trusted ``gh_env``.
+
+        The returned text is capped at ``review.repo_context_max_chars``
+        (default 8000), passed to a dedicated ``CodexStreamParser`` instance
+        so this feature's budget cannot be silently shrunk by a future
+        tightening of ``codex.py``'s unrelated terminal-display cap
+        (``_MAX_CONTENT_CHARS``, 2000, still the default for every other
+        parser instance). A ``"... [context truncated]"`` marker is appended
+        whenever ``llm_result.truncated`` reports the cap was actually hit.
+        That flag is derived from the *raw* agent-message length the parser
+        saw, not from ``len(text)`` against the cap: redaction can shrink the
+        rendered text below the cap even when the original message was
+        truncated (a secret-dense or whitespace-free message), which a
+        length check on the rendered text would miss.
+
+        Returns "" (review proceeds diff-only) when the feature is
+        disabled, the ``codex`` binary is unavailable, or the sub-call
+        fails, times out, errors, or produces no text.
+        """
+        if not ctx.config.review.repo_context_agent:
+            return ""
+        if shutil.which("codex") is None:
+            log.info("reviewer.repo_context_codex_unavailable")
+            return ""
+
+        # Deliberately does NOT union in ``ctx.config.agent.env_passthrough``:
+        # that list is a user-editable config field whose documented purpose
+        # is Claude-routing variables (CLAUDE_CODE_USE_VERTEX etc), none of
+        # which Codex reads. Unioning it in would let a project that lists
+        # GH_TOKEN/SOVA_DATABASE_URL there (nothing stops that; the field
+        # has no allowed-name restriction) hand a write-capable GitHub token
+        # or DB connection string to this sub-call's untrusted, potentially
+        # attacker-authored (fork-PR) read-only sandbox, which is exactly
+        # the hole _REPO_CONTEXT_ENV_ALLOWLIST exists to close.
+        env = {name: os.environ[name] for name in _REPO_CONTEXT_ENV_ALLOWLIST if name in os.environ}
+        codex_api_key = _resolve_codex_api_key()
+        if codex_api_key:
+            env["CODEX_API_KEY"] = codex_api_key
+
+        file_list = "\n".join(f"- {f}" for f in files[:_REPO_CONTEXT_MAX_FILES])
+        prompt = (
+            "You are gathering read-only background context for a code review. "
+            "Do not modify any files. Inspect the repository and summarize any "
+            "context relevant to reviewing changes to these files (related "
+            "modules, conventions, call sites, existing tests):\n"
+            f"{file_list}"
+        )
+
+        args = _codex_exec_args(prompt, model=ctx.config.codex.model, sandbox="read-only")
+
+        try:
+            result = await run_shell(
+                *args,
+                cwd=ctx.working_dir or ctx.project_dir,
+                env=env,
+                timeout=ctx.config.review.repo_context_timeout,
+            )
+        except OSError:
+            log.warning("reviewer.repo_context_spawn_failed", exc_info=True)
+            return ""
+
+        if result.timed_out:
+            log.info("reviewer.repo_context_timed_out")
+            return ""
+
+        parser = CodexStreamParser(max_content_chars=ctx.config.review.repo_context_max_chars)
+        text = ""
+        llm_result: LLMResult | None = None
+        for line in result.stdout.splitlines():
+            event = parser.parse_line(line)
+            if event is not None and event.type == "result" and event.result is not None:
+                if event.result.stop_reason == "error":
+                    text = ""
+                    llm_result = None
+                else:
+                    text = event.text
+                    llm_result = event.result
+
+        # Attributed before the empty-text check below: a turn can complete
+        # successfully (and be billed) while producing an empty or
+        # fully-redacted-away agent message, and those tokens must not be
+        # silently dropped from the run's accounting just because the text
+        # ended up unusable.
+        if llm_result is not None and (llm_result.input_tokens or llm_result.output_tokens):
+            ctx.add_usage(llm_result)
+            log.info(
+                "reviewer.repo_context_usage",
+                input_tokens=llm_result.input_tokens,
+                output_tokens=llm_result.output_tokens,
+            )
+            # Codex's LLMResult always reports cost_usd=Decimal("0")/UNKNOWN
+            # (no pricing table for Codex models in this codebase), so
+            # add_usage() above adds exactly $0 to ctx.cost_usd. Both budget
+            # guards (agent.max_budget, the per-issue spend gate) compare
+            # dollars, so this sub-call's spend is structurally invisible to
+            # every budget control SOVA has. Logged distinctly so it is at
+            # least traceable from the run log rather than silently unbounded.
+            if llm_result.cost_source == CostSource.UNKNOWN:
+                log.warning(
+                    "reviewer.repo_context_cost_unbudgeted",
+                    input_tokens=llm_result.input_tokens,
+                    output_tokens=llm_result.output_tokens,
+                )
+
+        if result.returncode != 0 or not text:
+            if result.returncode != 0:
+                log.warning(
+                    "reviewer.repo_context_nonzero_exit",
+                    returncode=result.returncode,
+                    stderr=result.stderr[:200],
+                )
+            else:
+                log.info("reviewer.repo_context_empty", returncode=result.returncode)
+            return ""
+
+        if llm_result is not None and llm_result.truncated:
+            text += "\n[context truncated]"
+        return text
 
     def _append_review_rationale(self, ctx: ExecutionContext, review: ReviewResult) -> None:
         """Append review rationale to spec for findings with severity >= 5."""

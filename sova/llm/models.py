@@ -93,6 +93,13 @@ class LLMResult:
     # non-Codex result, which never populates it; a Codex result that omits
     # the field reports 0.
     reasoning_output_tokens: int | None = None
+    # Codex-only: whether `text` is a cut version of a longer raw message.
+    # Set from the raw, pre-redaction/pre-cap agent-message length, not from
+    # len(text) against the display cap: redaction can shrink `text` below
+    # the cap even when the original message was truncated, which would make
+    # a length-based check on `text` miss exactly the inputs it exists to
+    # catch. Always False on every non-Codex result.
+    truncated: bool = False
 
     @property
     def total_tokens(self) -> int:

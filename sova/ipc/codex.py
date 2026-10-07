@@ -211,10 +211,15 @@ def _str_field(obj: Any, key: str) -> str:
 class CodexStreamParser:
     """Stateful parser mapping Codex JSONL events to StreamEvent/LLMResult."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_content_chars: int = _MAX_CONTENT_CHARS) -> None:
         self._thread_id = ""
         self._last_message_text = ""
+        self._last_message_truncated = False
         self._terminal_emitted = False
+        # Overridable per instance: the default is a display cap for a
+        # terminal stream, but a non-display consumer (e.g. the reviewer's
+        # repo-context sub-call) can budget for a larger last-message copy.
+        self._max_content_chars = max_content_chars
 
     def parse_line(self, line: str) -> StreamEvent | None:
         """Parse a single line of Codex ``exec --json`` output.
@@ -275,6 +280,7 @@ class CodexStreamParser:
         # deliberately kept: it spans the whole thread, not one turn.
         self._terminal_emitted = False
         self._last_message_text = ""
+        self._last_message_truncated = False
 
     @staticmethod
     def _item_payload(data: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -311,10 +317,19 @@ class CodexStreamParser:
         return None
 
     def _render_agent_message(self, item: dict[str, Any]) -> StreamEvent | None:
-        rendered = _redact_and_truncate(_str_field(item, "text"))
+        raw_text = _str_field(item, "text")
+        rendered = _redact_and_truncate(raw_text, self._max_content_chars)
         if not rendered:
             return None
         self._last_message_text = rendered
+        # Necessary (not sufficient) condition for truncation: redaction only
+        # ever shrinks text (secrets are replaced by a shorter "[REDACTED:...]"
+        # tag), so a raw message that was already within the cap can never be
+        # cut by the cap step. This can still over-report on a raw message
+        # just over the cap that redaction happens to shrink back under it,
+        # but that false positive is far cheaper than the false negative a
+        # length check on the already-capped `rendered` text produces.
+        self._last_message_truncated = len(raw_text) > self._max_content_chars
         return StreamEvent(type="content", text=rendered)
 
     def _render_command_completed(self, item: dict[str, Any]) -> StreamEvent:
@@ -367,6 +382,7 @@ class CodexStreamParser:
             reasoning_output_tokens=_coerce_reasoning_tokens(usage),
             session_id=self._thread_id,
             stop_reason="end_turn",
+            truncated=self._last_message_truncated,
         )
         return StreamEvent(type="result", text=result.text, result=result)
 

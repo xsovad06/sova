@@ -175,7 +175,7 @@ from sova.dashboard.services.agent_validation import (
 )
 from sova.dashboard.services.feed_service import emit_safe
 from sova.dashboard.services.output_service import OutputWriter
-from sova.ipc.runtime import _PIPELINE_ROLES, get_runtime, spawn_direct
+from sova.ipc.runtime import _PIPELINE_ROLES, _codex_extra_env, get_runtime, spawn_direct
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
 
@@ -405,6 +405,22 @@ def _resolve_config_fallback_model(project_dir: Path) -> str | None:
         return None
 
 
+def _resolve_repo_context_agent_enabled(project_dir: Path) -> bool:
+    """Return whether the reviewer's optional read-only Codex repo-context sub-call is enabled.
+
+    Gates re-admitting ``CODEX_API_KEY`` into the reviewer's spawn: the feature
+    defaults off, and the key must not be exported into the reviewer's `sova
+    run` process (and everything it spawns) when nothing will ever read it.
+    """
+    try:
+        from sova.config.loader import load_config
+
+        return load_config(project_dir).review.repo_context_agent
+    except Exception:  # noqa: BLE001 (config load failure defaults the feature off)
+        log.debug("resolve_repo_context_agent_enabled.failed", exc_info=True)
+        return False
+
+
 async def _record_budget_override(issue: str, run_id: int, budget_error: dict, project_dir: Path) -> None:
     """Persist a BudgetOverride record and emit a feed event."""
     from decimal import Decimal
@@ -572,12 +588,16 @@ async def start_agent(
                     cwd=str(cwd),
                     cmd=cmd_parts[:4],
                 )
+                direct_extra_env = None
+                if effective_role == "reviewer" and _resolve_repo_context_agent_enabled(project_dir):
+                    direct_extra_env = _codex_extra_env(gh_env)
                 process = await spawn_direct(
                     cmd_parts,
                     cwd,
                     env=gh_env,
                     output_dir=output_dir,
                     run_label=str(run_id),
+                    extra_env=direct_extra_env,
                 )
             else:
                 log.info(

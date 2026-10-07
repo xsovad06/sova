@@ -1644,6 +1644,133 @@ class TestDuplicateAgentPrevention:
         mock_runtime_spawn.assert_not_awaited()
         assert mock_spawn_direct.call_args is not None, "spawn_direct() was never called"
 
+    async def test_start_agent_threads_codex_api_key_to_reviewer_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CODEX_API_KEY is scrubbed from every spawned agent's environment by default
+        (SCRUBBED_VARS), so the reviewer's optional Codex repo-context sub-call can only
+        ever see it if it is re-admitted at the reviewer's own spawn boundary, and only
+        when that sub-call is actually enabled via review.repo_context_agent."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        mock_spawn_direct = AsyncMock(return_value=mock_process)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "spawn_direct", mock_spawn_direct),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_resolve_repo_context_agent_enabled", return_value=True),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99", role="reviewer")
+
+        assert result["status"] == "started"
+        assert mock_spawn_direct.call_args.kwargs["extra_env"] == {"CODEX_API_KEY": "codex-secret"}
+
+    async def test_start_agent_omits_codex_api_key_when_repo_context_agent_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """review.repo_context_agent defaults off, so the common configuration must not
+        export CODEX_API_KEY into the reviewer's process (and everything it spawns) at
+        all, even though the key is present in the server's own environment."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        mock_spawn_direct = AsyncMock(return_value=mock_process)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "spawn_direct", mock_spawn_direct),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_resolve_repo_context_agent_enabled", return_value=False),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99", role="reviewer")
+
+        assert result["status"] == "started"
+        assert mock_spawn_direct.call_args.kwargs["extra_env"] is None
+
+    async def test_start_agent_omits_codex_api_key_for_non_reviewer_direct_spawn_role(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Even with the feature enabled, only the reviewer role's spawn gets the key:
+        it is read solely by ReviewerRole._gather_repo_context()."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        mock_spawn_direct = AsyncMock(return_value=mock_process)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "spawn_direct", mock_spawn_direct),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_resolve_repo_context_agent_enabled", return_value=True),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99", role="developer")
+
+        assert result["status"] == "started"
+        assert mock_spawn_direct.call_args.kwargs["extra_env"] is None
+
     async def test_start_agent_spawns_reviewer_via_spawn_direct_under_codex_runtime(self) -> None:
         """agent.runtime and llm.provider are orthogonal for the reviewer: since it never
         touches AgentRuntime at all, a project configured with agent.runtime = "codex"

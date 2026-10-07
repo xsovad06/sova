@@ -179,7 +179,13 @@ class AgentConfig(BaseSettings):
 
 
 class CodexConfig(BaseSettings):
-    """Codex CLI runtime configuration, used only when agent.runtime = "codex".
+    """Codex CLI runtime configuration.
+
+    Applies when ``agent.runtime = "codex"`` (the pipeline roles spawn through
+    ``CodexRuntime``), and also when ``review.repo_context_agent`` is enabled
+    (the reviewer's optional read-only repo-context sub-call reads ``model``
+    regardless of ``agent.runtime``, since the reviewer never goes through
+    any ``AgentRuntime`` at all; see ``ReviewerRole._gather_repo_context()``).
 
     Deliberately minimal: user-level Codex configuration (profiles, MCP
     servers, approval policy, reasoning effort) remains owned by Codex's own
@@ -189,11 +195,14 @@ class CodexConfig(BaseSettings):
 
     # Empty means the Codex CLI's own configured default model is used.
     # CodexRuntime.spawn() never forwards the caller-supplied model (a Claude
-    # model id resolved from agent.model) to `codex exec --model`.
+    # model id resolved from agent.model) to `codex exec --model`; the
+    # reviewer's repo-context sub-call honours this field the same way.
     model: str = ""
     # "danger-full-access" is deliberately not a valid value: the default
     # spawn surface must never grant Codex unrestricted filesystem/network
-    # access.
+    # access. Deliberately NOT honoured by the repo-context sub-call, which
+    # always hardcodes "read-only" regardless of this setting: do not "fix"
+    # that inconsistency without re-checking the sub-call's threat model.
     sandbox: Literal["read-only", "workspace-write"] = "workspace-write"
     # Upper bound (seconds) on how long dashboard finalization waits for the
     # output reader to drain a Codex process's terminal JSONL event after
@@ -251,6 +260,22 @@ class ReviewConfig(BaseSettings):
     block_severity: int = Field(7, ge=1, le=10)
     panel: ReviewPanelConfig = Field(default_factory=ReviewPanelConfig)
     protected_paths: list[str] = Field(default_factory=list)
+    # Optional, narrowly-scoped sub-call: asks a read-only Codex sandbox for
+    # extra repository context (beyond the diff) to fold into the existing
+    # LLM-driven review prompt. Off by default so an OpenAI/Anthropic-backed
+    # reviewer is not forced to have Codex installed. The sub-call never gets
+    # a GitHub token or database access; see
+    # ReviewerRole._gather_repo_context().
+    repo_context_agent: bool = False
+    # Upper bound (seconds) the repo-context sub-call is allowed to run before
+    # being treated as a failure (review proceeds diff-only).
+    repo_context_timeout: float = Field(120.0, gt=0)
+    # Upper bound (characters) kept from the sub-call's last agent message.
+    # Deliberately a dedicated budget rather than reusing codex.py's
+    # _MAX_CONTENT_CHARS (2000): that constant is a display cap for a
+    # terminal stream, and tying this feature's usefulness to a future
+    # tightening of that unrelated cap would silently shrink it.
+    repo_context_max_chars: int = Field(8000, gt=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_REVIEW_")
 
