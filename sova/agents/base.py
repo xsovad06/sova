@@ -49,6 +49,29 @@ class RuntimeAdapter(ABC):
         """Directory this runtime reads reusable skills from, or ``None``."""
         ...
 
+    @property
+    def skill_name_prefix(self) -> str:
+        """Prefix applied to every skill name this runtime installs.
+
+        Empty by default. A runtime whose skills directory risks colliding
+        with pre-existing, independently-maintained content under a plain
+        name (e.g. Codex's ``.agents/skills/``) overrides this so every
+        SOVA-managed entry is written under a name nothing else could
+        already occupy, rather than needing per-directory conflict checks.
+        """
+        return ""
+
+    def extra_skill_sources(self, canonical_commands_dir: Path) -> dict[str, str]:
+        """Additional ``{skill_name: SKILL.md content}`` this runtime wants beyond the shared ``skills/`` directory.
+
+        Empty by default. Overridden by a runtime that mechanically derives
+        extra skills from something other than the hand-authored
+        ``skills/`` directory (e.g. Codex renders every canonical command
+        in ``canonical_commands_dir`` into its own skill; see
+        ``CodexAdapter``).
+        """
+        return {}
+
     def supports_command(self, entry: CommandEntry) -> bool:
         """Whether a canonical command applies to this runtime.
 

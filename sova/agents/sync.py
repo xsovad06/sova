@@ -6,20 +6,25 @@ into ``.claude/`` regardless of ``agent.runtime``, because that directory is
 read by the interactive Claude Code session too, not only by whichever
 backend ``agent.runtime`` tells SOVA to spawn for autonomous pipeline agents.
 This module only adds the extra mirror a non-Claude adapter needs (today,
-Codex's ``.codex/skills/``) and warns, never deletes, about a
-previously-configured runtime's directory left behind after a switch.
+Codex's ``.agents/skills/``, which also gets one mechanically-rendered skill
+per canonical command via ``RuntimeAdapter.extra_skill_sources()``) and
+warns, never deletes, about a previously-configured runtime's directory left
+behind after a switch.
 """
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.agents.base import RuntimeAdapter
 from sova.agents.claude_code import ClaudeCodeAdapter
 from sova.agents.registry import ADAPTERS, create_runtime_adapter
+from sova.commands.catalog import get_canonical_dir
 from sova.commands.distribution import UpdateResult, update_skills
-from sova.commands.manifest import MANIFEST_FILENAME
+from sova.commands.manifest import MANIFEST_FILENAME, read_manifest
+from sova.commands.skill_render import materialize_combined_skill_sources
 from sova.config.models import ProjectConfig
 from sova.utils.logging import get_logger
 
@@ -27,6 +32,15 @@ if TYPE_CHECKING:
     from rich.console import Console
 
 log = get_logger(component="agents.sync")
+
+# Directories a previous version of an adapter used before its skills_dir()
+# moved, kept so an upgrade from that version doesn't leave orphaned,
+# manifest-tracked content with nothing to detect it: warn_orphaned_runtime_
+# artifacts() only scans the *currently registered* adapters' resolved
+# directories, so a directory that is no longer any adapter's target is
+# otherwise invisible to it. CodexAdapter.skills_dir() moved from
+# `.codex/skills` to `.agents/skills` in #1123.
+_LEGACY_SKILL_DIRS: dict[str, Path] = {"codex": Path(".codex") / "skills"}
 
 
 def _non_default_adapters(project_dir: Path) -> dict[str, type[RuntimeAdapter]]:
@@ -55,15 +69,26 @@ def sync_runtime_skills(
     a "cold" target with no manifest yet: a destination directory could in
     principle already hold hand-authored content that must be reported as a
     conflict rather than silently overwritten on the first sync. (Codex's
-    target, ``.codex/skills/``, is deliberately a directory no pre-existing
-    source tree in this repo could already occupy; see ``CodexAdapter``.)
+    target, ``.agents/skills/``, installs every entry under a ``sova-``
+    prefix for exactly this reason; see ``CodexAdapter``.)
+
+    The adapter's ``extra_skill_sources()`` (Codex's command-derived skills)
+    are merged with ``skills_src_dir`` into a scratch directory first, so a
+    single ``update_skills()`` call produces one coherent manifest for both
+    source kinds.
     """
     adapter = create_runtime_adapter(cfg.agent.runtime)
     target = adapter.skills_dir(project_dir)
     if target is None or target == ClaudeCodeAdapter().skills_dir(project_dir):
         return None
 
-    return update_skills(skills_src_dir, target, cfg, force=force)
+    extra = adapter.extra_skill_sources(get_canonical_dir())
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp)
+        materialize_combined_skill_sources(
+            skills_src_dir, extra, scratch, name_prefix=adapter.skill_name_prefix, existing_target_dir=target
+        )
+        return update_skills(scratch, target, cfg, force=force, name_prefix=adapter.skill_name_prefix)
 
 
 def report_runtime_skills_sync(
@@ -90,23 +115,73 @@ def report_runtime_skills_sync(
 
 
 def warn_orphaned_runtime_artifacts(project_dir: Path, cfg: ProjectConfig) -> list[str]:
-    """Warn about SOVA-managed skill directories from a no-longer-configured runtime.
+    """Warn about SOVA-managed skill entries from a no-longer-configured runtime.
 
-    Never deletes anything (cleanup is left to the operator), so a
-    runtime switch can't silently discard content a human may have edited
-    in place.
+    Never deletes anything (cleanup is left to the operator), so a runtime
+    switch can't silently discard content a human may have edited in place.
+    Scoped to the manifest-tracked (``managed: true``) entries specifically,
+    never the whole directory: a runtime whose ``skill_name_prefix`` is
+    non-empty (e.g. Codex's ``.agents/skills``) shares that directory with
+    independently-maintained, hand-authored content under plain names (this
+    repo's own ``testing-patterns``, ``database-patterns``, etc.), and
+    advising "remove it manually" against the directory as a whole would
+    point an operator at deleting content SOVA never installed.
+
+    Silent, rather than merely softened, when that shared directory also
+    holds anything SOVA didn't install (confirmed on this very repo: the
+    checked-in ``.agents/skills/sova-*`` self-render tree sits beside
+    hand-authored skills, and is permanent build output, not a leftover
+    mirror from a runtime no longer configured; see
+    ``test_no_warning_for_this_repos_own_self_rendered_skills`` and
+    ``test_no_warning_when_shared_directory_also_holds_unmanaged_content``,
+    which pin exactly this). A directory holding only manifest-tracked
+    entries is unambiguous, so that case still warns. ``on_disk`` is
+    restricted to directories actually containing a ``SKILL.md``, so an
+    unrelated stray subdirectory (an assets folder, a cache dir) can't widen
+    that ambiguity check.
+
+    Also reports a previous version of an adapter's skills directory (see
+    ``_LEGACY_SKILL_DIRS``) when it still holds a SOVA manifest: that
+    directory is no longer any adapter's resolved target at all, so the
+    live-registry scan below would otherwise never see it.
     """
     active_name = create_runtime_adapter(cfg.agent.runtime).name
     warnings: list[str] = []
     for runtime_name, adapter_cls in _non_default_adapters(project_dir).items():
         if runtime_name == active_name:
             continue
-        target = adapter_cls().skills_dir(project_dir)
+        adapter = adapter_cls()
+        target = adapter.skills_dir(project_dir)
         if target is None:
             continue
-        if (target / MANIFEST_FILENAME).is_file():
-            warnings.append(
-                f"{target} still holds SOVA-managed skills for runtime {runtime_name!r}, which is no "
-                f"longer configured (agent.runtime={cfg.agent.runtime!r}); remove it manually if unneeded"
-            )
+        manifest = read_manifest(target)
+        if manifest is None:
+            continue
+        managed = {name for name, entry in manifest.commands.items() if entry.managed}
+        if not managed:
+            continue
+        on_disk = {f"{p.name}/SKILL.md" for p in target.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()}
+        if on_disk - managed:
+            continue
+        warnings.append(
+            f"{target} still holds {len(managed)} SOVA-managed skill entries for runtime {runtime_name!r}, "
+            f"which is no longer configured (agent.runtime={cfg.agent.runtime!r}); remove those entries "
+            f"and {MANIFEST_FILENAME} manually if unneeded, but leave any other content in that directory alone"
+        )
+    for runtime_name, legacy_rel in _LEGACY_SKILL_DIRS.items():
+        if runtime_name == active_name:
+            continue
+        legacy_dir = project_dir / legacy_rel
+        manifest = read_manifest(legacy_dir)
+        if manifest is None:
+            continue
+        managed = {name for name, entry in manifest.commands.items() if entry.managed}
+        if not managed:
+            continue
+        current_target = ADAPTERS[runtime_name]().skills_dir(project_dir) if runtime_name in ADAPTERS else None
+        moved_note = f" it has since moved to {current_target}; " if current_target is not None else " "
+        warnings.append(
+            f"{legacy_dir} still holds {len(managed)} SOVA-managed skill entries from an earlier version of the "
+            f"{runtime_name!r} runtime;{moved_note}remove those entries and {MANIFEST_FILENAME} manually if unneeded"
+        )
     return warnings

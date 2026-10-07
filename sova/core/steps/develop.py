@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from sova.agents.registry import artifact_root_names
+from sova.agents.registry import artifact_exclusion_prefixes
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke, invoke_command
@@ -132,16 +132,16 @@ _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]+\.py|tests\.py|[^/]+_test\.py)$
 # exists to avoid.
 _CYCLE_OVERHEAD_BUFFER_SECONDS = 60
 
-# Keep the runtime-artifact-root alternatives in sync with
+# Keep the runtime-artifact-prefix alternatives in sync with
 # rearrange_commits.py's _IGNORABLE_UNTRACKED_RE/_EXCLUDED_PATHSPECS: both
-# derive from the same artifact_root_names() registry so a future
-# RuntimeAdapter's own directory is excluded everywhere at once.
-_RUNTIME_ARTIFACT_ROOTS = frozenset({".claude", ".sova"}) | artifact_root_names()
+# derive from the same artifact_exclusion_prefixes() registry so a future
+# RuntimeAdapter's own mirrored directory is excluded everywhere at once.
+_RUNTIME_ARTIFACT_PREFIXES = frozenset({".claude/", ".sova/"}) | artifact_exclusion_prefixes()
 _NON_SUBSTANTIVE_RE = re.compile(
     r"(?:"
     r"Pipfile\.lock$|package-lock\.json$|yarn\.lock$|pnpm-lock\.yaml$|"
     r"poetry\.lock$|Gemfile\.lock$|composer\.lock$|Cargo\.lock$|go\.sum$|"
-    + "|".join(rf"^{re.escape(root)}/" for root in sorted(_RUNTIME_ARTIFACT_ROOTS))
+    + "|".join(rf"^{re.escape(prefix)}" for prefix in sorted(_RUNTIME_ARTIFACT_PREFIXES))
     + r")"
 )
 
@@ -540,7 +540,9 @@ class DevelopStep(BaseStep):
         has_commits = bool(log_result.success and log_result.stdout.strip())
         # Also check for untracked new files: Claude often writes new modules without staging them.
         # git diff and git log are blind to untracked files, so they miss this case entirely.
-        status_result = await run("git", "status", "--porcelain", cwd=ctx.working_dir)
+        # --untracked-files=all forces one line per file rather than collapsing a wholly-untracked
+        # directory into a single parent-level line _NON_SUBSTANTIVE_RE's prefixes can't match.
+        status_result = await run("git", "status", "--porcelain", "--untracked-files=all", cwd=ctx.working_dir)
         has_untracked = bool(
             status_result.success and any(line.startswith("??") for line in status_result.stdout.splitlines())
         )

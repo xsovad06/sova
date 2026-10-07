@@ -35,6 +35,7 @@ make lint                           # ShellCheck + Ruff
 make format                         # Auto-format Python code
 make marketplace                    # Regenerate plugins/sova/ from commands/ (run after editing a published command)
 make commands-render                # Regenerate .claude/commands/ from commands/ (run after editing a managed command)
+make skills-render                  # Regenerate .agents/skills/ from commands/ and skills/ (run after editing a managed command or skill)
 
 # Git hooks (after fresh clone)
 git config core.hooksPath .githooks

@@ -274,7 +274,7 @@ def skills_diff_cmd(
 def _sync_runtime_skills_and_report(
     project_dir: Path, cfg: ProjectConfig, *, force: bool = False, indent: str = ""
 ) -> None:
-    """Mirror canonical skills into the configured runtime's own directory (e.g. Codex's .codex/skills/).
+    """Mirror canonical skills into the configured runtime's own directory (e.g. Codex's .agents/skills/).
 
     No-op for the default claude-code runtime, whose .claude/skills/ is kept
     current by the caller's own update_skills() call above.

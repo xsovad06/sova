@@ -1071,6 +1071,7 @@ class ProjectConfig(BaseSettings):
     # Project settings
     github_repo: str = ""
     github_user: str = ""
+    project_name: str = ""
     base_branch: str = "main"
     test_cmd: str = "make test"
     lint_cmd: str = "make lint"

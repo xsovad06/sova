@@ -10,6 +10,57 @@ import re
 
 from sova.config.models import ProjectConfig
 
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+_DOUBLE_DASH_RE = re.compile(r" -{2} ")
+
+
+def split_fenced_lines(text: str) -> list[tuple[bool, str]]:
+    """Pair each line of ``text`` with whether it is inside (or delimiting) a fenced code block.
+
+    The one place fence state is tracked, shared by every renderer that must treat code
+    differently from prose: a shell flag, path, or placeholder inside a fence needs a
+    code-shaped rewrite (or none at all), while the same token in prose needs an
+    explanatory one. Fence delimiter lines themselves report ``True`` so no prose rule
+    is ever applied to them.
+
+    Follows CommonMark's own fence-matching rule rather than toggling on any
+    fence-looking line: a closing fence must use the same marker character
+    (backtick vs. tilde) and be at least as long as the opening one. Without
+    that, a ``~~~`` block containing a literal ```` ``` ```` line (or a
+    4-backtick fence wrapping a nested 3-backtick example) would close early,
+    leaving the rest of the block misclassified as prose.
+    """
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    paired: list[tuple[bool, str]] = []
+    for line in text.split("\n"):
+        match = _FENCE_RE.match(line)
+        if match:
+            marker = match.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_char = marker[0]
+                fence_len = len(marker)
+            elif marker[0] == fence_char and len(marker) >= fence_len:
+                in_fence = False
+            paired.append((True, line))
+            continue
+        paired.append((in_fence, line))
+    return paired
+
+
+def dedash_prose(text: str) -> str:
+    """Replace space-dash-dash-space prose separators (AGENTS.md forbids them, see invariants/no-double-dash.sh).
+
+    Fenced code blocks are left untouched, mirroring the invariant's own exemption for them: a
+    real shell ``--`` flag or example inside a fence must not be rewritten. Shared by every
+    renderer that derives distributable text from canonical ``commands/*.md`` bodies (today:
+    ``sova.commands.marketplace_export``, ``sova.commands.skill_render``), since those bodies
+    predate the invariant and still use `` -- `` themselves.
+    """
+    return "\n".join(line if fenced else _DOUBLE_DASH_RE.sub(": ", line) for fenced, line in split_fenced_lines(text))
+
 
 def render_command(content: str, variables: dict[str, str]) -> str:
     """Render template variables in command content.
@@ -102,7 +153,15 @@ def build_variables(cfg: ProjectConfig) -> dict[str, str]:
 
 
 def _derive_project_name(cfg: ProjectConfig) -> str:
-    """Derive a human-readable project name from config."""
+    """Derive a human-readable project name from config.
+
+    ``cfg.project_name``, when set, wins outright: it exists precisely for a
+    case like this repo's own, where the real repo slug ("sova") and the
+    brand name used in prose ("SOVA") differ, so neither has to be faked to
+    produce the other.
+    """
+    if cfg.project_name:
+        return cfg.project_name
     repo = (cfg.github_repo or "").strip().strip("/")
     if "/" in repo:
         return repo.rsplit("/", 1)[-1] or "project"

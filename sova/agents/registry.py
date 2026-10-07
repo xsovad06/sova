@@ -17,13 +17,13 @@ ADAPTERS: dict[str, type[RuntimeAdapter]] = {
 }
 
 # A path used only to read off the first path component an adapter resolves
-# its directories under (e.g. ".codex" from ".codex/skills"). Never touched
+# its directories under (e.g. ".agents" from ".agents/skills"). Never touched
 # on disk.
 _ROOT_PROBE = Path("/__sova_project_root__")
 
 
-def artifact_root_names() -> frozenset[str]:
-    """Top-level directory names every registered runtime adapter writes artifacts under.
+def artifact_exclusion_prefixes() -> frozenset[str]:
+    """Relative directory prefixes safe to treat as mirrored agent infrastructure, never the agent's own work.
 
     Used to keep "did the agent leave work uncommitted?" gate checks (the
     untracked-file regex and committed-pathspec exclusions in
@@ -33,15 +33,31 @@ def artifact_root_names() -> frozenset[str]:
     reintroduce the #1090 failure mode (agent infrastructure churn mistaken
     for the agent's own uncommitted work) for a new directory the gates don't
     yet know about.
+
+    Returns a whole-directory prefix (always suffixed ``/``) per adapter
+    directory, never a narrower name-prefix within it. Deliberately does NOT
+    stop at an adapter's ``skill_name_prefix`` subtree: ``_mirror_runtime_skills()``
+    (``sova/git/worktree.py``) copies an adapter's entire ``skills_dir()`` into
+    every worktree, not just the SOVA-managed, prefixed entries inside it, so a
+    narrower exclusion left hand-authored, unmanaged content sharing that
+    directory (e.g. this repo's own ``.agents/skills/testing-patterns``) looking
+    like the agent's own uncommitted work the moment it was mirrored into a
+    worktree. ``skill_name_prefix`` still does its own, separate job wherever
+    ``install_skills()``/``update_skills()`` write into a shared directory:
+    avoiding a destructive overwrite of unmanaged content there. The two
+    mechanisms solve different problems and are allowed to disagree on
+    granularity.
     """
-    names: set[str] = set()
+    prefixes: set[str] = set()
     for adapter_cls in ADAPTERS.values():
         adapter = adapter_cls()
-        for resolver in (adapter.commands_dir, adapter.skills_dir):
-            target = resolver(_ROOT_PROBE)
-            if target is not None:
-                names.add(target.relative_to(_ROOT_PROBE).parts[0])
-    return frozenset(names)
+        commands = adapter.commands_dir(_ROOT_PROBE)
+        if commands is not None:
+            prefixes.add(f"{commands.relative_to(_ROOT_PROBE).as_posix()}/")
+        skills = adapter.skills_dir(_ROOT_PROBE)
+        if skills is not None:
+            prefixes.add(f"{skills.relative_to(_ROOT_PROBE).as_posix()}/")
+    return frozenset(prefixes)
 
 
 def create_runtime_adapter(runtime: str) -> RuntimeAdapter:

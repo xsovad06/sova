@@ -1,6 +1,6 @@
 ---
 name: testing-patterns
-description: Test conventions for {{ project_name }} -- pytest patterns, mock strategies, fixture patterns. Auto-activates when writing or modifying test files.
+description: "Test conventions for {{ project_name }}: pytest patterns, mock strategies, fixture patterns. Auto-activates when writing or modifying test files."
 allowed_tools: Read, Grep, Glob, Bash, Edit, Write
 ---
 
@@ -25,7 +25,7 @@ When writing or modifying test files, follow these conventions.
 ## Fixture Patterns
 
 - Define fixtures per-file, not shared across test files
-- Use `autouse=True` fixtures sparingly -- only for setup/teardown that every test needs
+- Use `autouse=True` fixtures sparingly: only for setup/teardown that every test needs
 - Name fixtures descriptively: `mock_api_client` not `client`
 
 ## Mock Rules

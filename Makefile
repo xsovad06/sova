@@ -1,4 +1,4 @@
-.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help css css-watch marketplace commands-render
+.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help css css-watch marketplace commands-render skills-render
 
 SHELL := /bin/bash
 
@@ -76,6 +76,9 @@ marketplace: ## Regenerate plugins/sova/ from commands/ (run after editing a pub
 
 commands-render: ## Regenerate .claude/commands/ from commands/ (run after editing a managed command)
 	python3 -m sova.commands.self_render
+
+skills-render: ## Regenerate .agents/skills/ from commands/ and skills/ (run after editing a managed command or skill)
+	python3 -m sova.commands.skill_render
 
 # ── Setup ─────────────────────────────────────────────────────
 

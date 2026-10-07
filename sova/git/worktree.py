@@ -612,7 +612,7 @@ def _mirror_runtime_skills(project_dir: Path, worktree_path: Path) -> None:
     ``.claude/skills`` is already handled by the main copy loop above (read by
     the interactive Claude Code session regardless of ``agent.runtime``). A
     non-Claude runtime (e.g. Codex) reads skills from its own directory
-    instead (``.codex/skills/``), and a project that gitignores it (the
+    instead (``.agents/skills/``), and a project that gitignores it (the
     standard SOVA-installed pattern) left every worktree-spawned pipeline
     agent for that runtime with zero skills, since this mirror didn't exist.
     Reuses the same tracked-and-present guard as the ``.claude/`` copy above,
@@ -714,7 +714,7 @@ def missing_claude_artifacts(project_dir: Path, worktree_path: Path) -> list[str
     """Return the required ``.claude`` artifacts absent from *worktree_path*.
 
     Also checks the configured runtime adapter's own skills directory (e.g.
-    Codex's ``.codex/skills``) when it differs from ``.claude/skills``, so a
+    Codex's ``.agents/skills``) when it differs from ``.claude/skills``, so a
     worktree missing only that mirror still triggers the repopulate path in
     :func:`ensure_worktree_usable` instead of being reported healthy.
 
