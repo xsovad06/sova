@@ -2672,7 +2672,6 @@ window.addEventListener('beforeunload', function() {
   if (_metricsInterval) { clearInterval(_metricsInterval); }
   if (_prPollInterval) { clearInterval(_prPollInterval); }
   if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); }
-  if (_crQuotaSyncInterval) { clearInterval(_crQuotaSyncInterval); }
   if (_workItemsPollInterval) { clearInterval(_workItemsPollInterval); }
   if (_memPressureInterval) { clearInterval(_memPressureInterval); }
 });
@@ -3111,7 +3110,6 @@ document.addEventListener('visibilitychange', function() {
     if (_prPollInterval) { clearInterval(_prPollInterval); _prPollInterval = null; }
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
     if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); _crQuotaPollInterval = null; }
-    if (_crQuotaSyncInterval) { clearInterval(_crQuotaSyncInterval); _crQuotaSyncInterval = null; }
     if (_memPressureInterval) { clearInterval(_memPressureInterval); _memPressureInterval = null; }
     if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
     if (logPollInterval) { clearTimeout(logPollInterval); logPollInterval = null; }
