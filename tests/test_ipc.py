@@ -1550,8 +1550,13 @@ class TestSpawnDirect:
         assert fp.pid == 78
 
     def test_pipeline_roles_set(self) -> None:
-        """developer/researcher/planner use spawn_direct(); every other role goes through
-        runtime.spawn() (reviewer, custom, and every command:* role)."""
+        """developer/researcher/planner use spawn_direct() via `_PIPELINE_ROLES`.
+        Post-#1126, reviewer also uses spawn_direct(), but via a local extension of
+        this set in agent_lifecycle.py (`_DIRECT_SPAWN_ROLES`), not by joining
+        `_PIPELINE_ROLES` itself: that constant names the WorkflowEngine-driven
+        step-pipeline roles, a shape ReviewerRole does not have. Every remaining
+        role (custom, every command:* role) goes through runtime.spawn()."""
+        from sova.dashboard.services.agent_lifecycle import _DIRECT_SPAWN_ROLES
         from sova.ipc.runtime import _PIPELINE_ROLES
 
         assert "developer" in _PIPELINE_ROLES
@@ -1560,6 +1565,15 @@ class TestSpawnDirect:
         assert "reviewer" not in _PIPELINE_ROLES
         assert "custom" not in _PIPELINE_ROLES
         assert "command:review-pr" not in _PIPELINE_ROLES
+
+        # Literal membership, not `_DIRECT_SPAWN_ROLES == _PIPELINE_ROLES | {"reviewer"}`:
+        # that comparison is a tautology that passes for any value of
+        # _PIPELINE_ROLES, including one someone later adds "reviewer", "custom"
+        # or "command:review-pr" to, which is exactly the drift this test exists
+        # to catch.
+        assert _DIRECT_SPAWN_ROLES == {"developer", "researcher", "planner", "reviewer"}
+        assert "custom" not in _DIRECT_SPAWN_ROLES
+        assert "command:review-pr" not in _DIRECT_SPAWN_ROLES
 
 
 class TestAiderRuntime:

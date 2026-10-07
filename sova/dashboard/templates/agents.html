@@ -1153,6 +1153,9 @@ async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride
       _autoOpenLogsIfIdle(result.run_id);
       var agentLabel = issue ? '#' + issue : (role || 'agent');
       showToast('Agent started: ' + agentLabel, 'success');
+      if (Array.isArray(result.warnings)) {
+        result.warnings.forEach(function (w) { showToast(w, 'warning'); });
+      }
     }
   } catch (e) {
     showToast('Failed to start agent: ' + e.message, 'error');

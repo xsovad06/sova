@@ -272,6 +272,15 @@ class AgentRuntime(ABC):
                 GitHub API. Pass True only for a prompt that genuinely needs
                 nothing but reads.
 
+                No production caller passes this today: the reviewer role
+                (the one role that used to request it) now runs as a plain
+                trusted subprocess via ``spawn_direct()``, outside any
+                ``AgentRuntime`` entirely. The parameter and its three
+                implementations are kept available for a future non-pipeline
+                role that needs a sandboxed read-only spawn; there is
+                currently no live enforcement path exercising it outside
+                tests.
+
         Returns:
             An AgentProcess (pipe-based) or FileAgentProcess (file-based).
         """
@@ -683,11 +692,11 @@ class CodexRuntime(AgentRuntime):
     substring would put every Codex agent's argv inside reach of a
     ``pkill -f`` matching it, including a ``command:*`` run whose own
     prompt never mentions sova at all). The caller's own prompt text still
-    ends up on argv regardless: a non-pipeline role (reviewer, custom) spawned
-    through this runtime wraps its command in a ``sova run ...`` invocation
+    ends up on argv regardless: a non-pipeline role (custom) spawned through
+    this runtime wraps its command in a ``sova run ...`` invocation
     (``agent_lifecycle.py``'s ``cmd_parts``), so that literal substring still
-    reaches argv for those roles even with the static example gone. Never
-    reap SOVA processes by matching prompt text.
+    reaches argv for that role even with the static example gone. Never reap
+    SOVA processes by matching prompt text.
 
     Model and sandbox policy come from ``CodexConfig`` (``[codex]`` in
     ``sova.toml``), passed in at construction via ``create_runtime(codex=...)``.
@@ -805,17 +814,33 @@ class CodexRuntime(AgentRuntime):
 # Direct subprocess spawn (bypasses Claude Code intermediary)
 # ---------------------------------------------------------------------------
 #
-# Role launch-path classification (issue #946), intentional, not incidental:
+# Role launch-path classification (issue #946, revised by #1126), intentional,
+# not incidental:
 #   developer, researcher, planner -> spawn_direct(). Each runs `sova run` as
 #       a plain subprocess; the WorkflowEngine inside that subprocess resolves
 #       its own LLM provider calls, so wrapping it in an AgentRuntime would
 #       add a redundant second agent process, a second bill, and reintroduce
 #       the 600s-timeout class of failure spawn_direct() exists to eliminate.
-#   reviewer, custom, command:* -> runtime.spawn(), via the configured
-#       AgentRuntime (Claude Code, Aider, or Codex). These are not
-#       pipeline-driven: reviewer and custom-role runs, and every
-#       dashboard-triggered slash command, execute inside a single autonomous
-#       agent session.
+#   reviewer -> also spawn_direct(), via a local extension of this set in
+#       agent_lifecycle.py (``_DIRECT_SPAWN_ROLES``), not by adding it here.
+#       The reviewer never needed interactive coding-agent tool-use (it only
+#       makes a model call over a diff plus GitHub/DB writes), so routing it
+#       through an AgentRuntime sandbox was a redundant wrapper, not a
+#       protection it depended on. It is kept out of ``_PIPELINE_ROLES``
+#       itself because this constant names the WorkflowEngine-driven
+#       step-pipeline roles, a shape ReviewerRole bypasses entirely (it has
+#       no WorkflowEngine and no step pipeline). Note that ``agent_db.py``
+#       and ``work_service.py`` do NOT read this constant: each defines its
+#       own independent local ``_PIPELINE_ROLES`` frozenset for its own
+#       purpose (``agent_db.py``'s gates ``_validate_pipeline_outcome()``,
+#       pipeline-bypass detection at run exit; ``work_service.py``'s gates
+#       step-count display), so adding "reviewer" here would not have
+#       affected either of them, and editing this set does not propagate
+#       to theirs.
+#   custom, command:* -> runtime.spawn(), via the configured AgentRuntime
+#       (Claude Code, Aider, or Codex). These are not pipeline-driven:
+#       custom-role runs and every dashboard-triggered slash command execute
+#       inside a single autonomous agent session.
 _PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})
 
 
