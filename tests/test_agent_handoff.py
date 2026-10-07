@@ -349,6 +349,8 @@ class TestAutoHandoffCircuitBreaker:
         mock_start = AsyncMock()
         mock_clear = MagicMock()
         mock_write = MagicMock()
+        mock_emit = MagicMock()
+        mock_notify = MagicMock()
         mock_cfg = MagicMock()
         mock_cfg.pipeline.max_address_review_cycles = 2
         with (
@@ -358,17 +360,22 @@ class TestAutoHandoffCircuitBreaker:
             patch("sova.ipc.handoff.write_handoff_file", mock_write),
             patch("sova.config.loader.load_config", return_value=mock_cfg),
             patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_handoff.emit_safe", mock_emit),
+            patch("sova.dashboard.services.agent_handoff._notify_budget_exhausted", mock_notify),
         ):
             await _process_auto_handoff(agent)
 
         # Agent should NOT be spawned
         mock_start.assert_not_awaited()
-        # Blocked handoff should be written with manual-only actions
-        mock_write.assert_called_once()
-        blocked = mock_write.call_args[0][1]
-        assert blocked.source == "circuit_breaker"
-        assert all(not a.auto_execute for a in blocked.next_actions)
-        assert "Circuit breaker" in blocked.summary
+        # No manual-only handoff is written anymore: resolve_next_action()'s
+        # review_budget_exhausted rule resolves the over-budget PR to
+        # PR_REVIEW_EXHAUSTED with an Integrate action on its own, so the
+        # breaker only clears the stale handoff and reports the exhaustion.
+        mock_write.assert_not_called()
+        mock_clear.assert_called_once()
+        mock_emit.assert_called_once()
+        assert "budget exhausted" in mock_emit.call_args[0][0]
+        mock_notify.assert_called_once()
 
     async def test_allows_under_limit(self) -> None:
         """Circuit breaker should allow address-review when under the limit."""

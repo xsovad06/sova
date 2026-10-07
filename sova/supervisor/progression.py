@@ -38,7 +38,6 @@ from sova.supervisor.gates import BlockReason
 from sova.supervisor.gates.already_running import check_already_running
 from sova.supervisor.gates.budget import check_budget_gate
 from sova.supervisor.gates.ci_budget import check_ci_budget_gate
-from sova.supervisor.gates.circuit_breaker import check_address_review_circuit_breaker_gate
 from sova.supervisor.gates.connectivity import check_connectivity_gate
 from sova.supervisor.gates.dependency import check_dependency_gate
 from sova.supervisor.gates.file_conflict import check_file_overlap_gate
@@ -124,10 +123,6 @@ _ACTION_ID_TO_PROGRESSION: dict[str, tuple[ProgressionAction, str]] = {
     "review_pr": (ProgressionAction.SPAWN_REVIEWER, "auto_review"),
     "rebase": (ProgressionAction.SPAWN_REBASE, "auto_rebase"),
 }
-
-# Actions that consume an address cycle and are therefore bounded by the
-# address-review circuit breaker (pipeline.max_address_review_cycles).
-_ADDRESS_CYCLE_ACTIONS = frozenset({ProgressionAction.SPAWN_ADDRESS_REVIEW, ProgressionAction.SPAWN_ADDRESS_PR})
 
 # Actions that need the issue's open PR number resolved before execution.
 _PR_SCOPED_ACTIONS = frozenset(
@@ -1102,15 +1097,6 @@ class TaskProgressionEngine:
                     role="developer",
                 )
             )
-        if candidate in _ADDRESS_CYCLE_ACTIONS:
-            cb_pr = (refined_pr_info.number if refined_pr_info else None) or discovered_pr
-            cb_block = await check_address_review_circuit_breaker_gate(
-                issue_number,
-                pr_number=cb_pr,
-                max_cycles=self._config.pipeline.max_address_review_cycles,
-                project_dir=self._project_dir,
-            )
-            simple_results.append(cb_block)
         blockers.extend(r for r in simple_results if r is not None)
 
         if candidate == ProgressionAction.SPAWN_INTEGRATE:
@@ -1313,7 +1299,15 @@ class TaskProgressionEngine:
             return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
         facts = _build_pr_facts(
-            enriched_pr, verdict_data, external_reviews_enabled=self._config.external_reviews.enabled
+            enriched_pr,
+            verdict_data,
+            external_reviews_enabled=self._config.external_reviews.enabled,
+            # Threading the cap is what bounds the supervisor's own
+            # SPAWN_ADDRESS_REVIEW/SPAWN_ADDRESS_PR loop now that the dedicated
+            # circuit-breaker gate is gone: left at its 0 default the
+            # review_budget_exhausted rule reads as "unlimited" and the
+            # supervisor would re-spawn address cycles forever.
+            max_address_cycles=self._config.pipeline.max_address_review_cycles,
         )
         resolution = resolve_next_action(facts)
 

@@ -302,11 +302,11 @@ var _STATE_FILTER_GROUPS = {
   running: ['agent_running'],
   pr_stage: ['pr_draft', 'pr_conflicted', 'pr_ci_running', 'pr_ci_failed', 'pr_awaiting_review',
     'pr_sova_pending', 'pr_changes_requested', 'pr_sova_changes', 'pr_external_changes',
-    'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge'],
+    'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge', 'pr_review_exhausted'],
   ci_failed: ['pr_ci_failed'],
   needs_review: ['pr_awaiting_review', 'pr_sova_pending'],
   changes_requested: ['pr_changes_requested', 'pr_sova_changes', 'pr_external_changes'],
-  ready_to_merge: ['pr_ready_to_merge', 'pr_approved'],
+  ready_to_merge: ['pr_ready_to_merge', 'pr_approved', 'pr_review_exhausted'],
   backlog: ['backlog', 'triaged', 'researched', 'needs_spec']
 };
 
@@ -321,7 +321,7 @@ var _PR_STAGE_STATES = new Set([
   'pr_draft', 'pr_conflicted', 'pr_ci_running', 'pr_ci_failed',
   'pr_awaiting_review', 'pr_sova_pending',
   'pr_changes_requested', 'pr_sova_changes', 'pr_external_changes',
-  'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge'
+  'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge', 'pr_review_exhausted'
 ]);
 
 async function loadWorkItems() {
@@ -355,7 +355,8 @@ async function loadWorkItems() {
 
     var attentionCount = _workItems.filter(function(i) {
       return i.state === 'spec_review' ||
-        i.state === 'pr_ready_to_merge' || i.state === 'pr_changes_requested';
+        i.state === 'pr_ready_to_merge' || i.state === 'pr_changes_requested' ||
+        i.state === 'pr_review_exhausted';
     }).length;
     var badge = document.getElementById('tasks-attention-badge');
     if (badge) {

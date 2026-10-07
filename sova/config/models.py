@@ -476,7 +476,7 @@ class PipelineConfig(BaseSettings):
 
     auto_handoff: bool = True
     auto_address_review: bool = True
-    max_address_review_cycles: int = Field(2, ge=0)
+    max_address_review_cycles: int = Field(3, ge=0)
 
     # Deprecated: auto-retry system removed in v0.x. These fields are accepted
     # but have no effect so existing sova.toml files do not break.

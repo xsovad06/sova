@@ -42,6 +42,8 @@ class WorkItemState(StrEnum):
     PR_APPROVED = "pr_approved"
     PR_READY_TO_MERGE = "pr_ready_to_merge"
     PR_SOVA_PENDING = "pr_sova_pending"
+    # address-review cycle budget exhausted; routed to Integrate for a human decision
+    PR_REVIEW_EXHAUSTED = "pr_review_exhausted"
 
     # Handoff states
     SPEC_REVIEW = "spec_review"
@@ -71,6 +73,7 @@ _STATE_LABELS: dict[WorkItemState, str] = {
     WorkItemState.PR_APPROVED: "Approved",
     WorkItemState.PR_READY_TO_MERGE: "Ready to Merge",
     WorkItemState.PR_SOVA_PENDING: "Sova Review Pending",
+    WorkItemState.PR_REVIEW_EXHAUSTED: "Review Budget Exhausted",
     WorkItemState.SPEC_REVIEW: "Spec Review",
     WorkItemState.MERGED: "Merged",
     WorkItemState.DONE: "Done",
@@ -102,6 +105,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
     WorkItemState.PR_APPROVED: _CLR_GREEN,
     WorkItemState.PR_READY_TO_MERGE: _CLR_GREEN,
     WorkItemState.PR_SOVA_PENDING: _CLR_PEACH,
+    WorkItemState.PR_REVIEW_EXHAUSTED: _CLR_PEACH,
     WorkItemState.SPEC_REVIEW: _CLR_PEACH,
     WorkItemState.MERGED: _CLR_GREEN_STRONG,
     WorkItemState.DONE: _CLR_GREEN_STRONG,
@@ -208,6 +212,10 @@ def _get_actions(
             cmd("integrate", "Integrate", "success", "integrate-pr"),
             [review, address],
         ),
+        S.PR_REVIEW_EXHAUSTED: (
+            cmd("integrate", "Integrate", "success", "integrate-pr"),
+            [review, address],
+        ),
         S.MERGED: (cmd("after_merge", "Post-Merge", "purple", "after-merge"), []),
     }
     return actions.get(state, (None, []))
@@ -237,6 +245,8 @@ class PRFacts:
     external_changes_requested: bool  # standing CHANGES_REQUESTED from a bot/human, not dismissed
     thread_signal: str  # "clear" | "pending" | "unknown" (#989, three-valued)
     external_reviews_enabled: bool
+    address_cycles: int  # completed address-review runs for this PR (0 when no PR exists yet)
+    max_address_cycles: int  # pipeline.max_address_review_cycles; 0 means unlimited
 
 
 @dataclass(frozen=True)
@@ -374,6 +384,15 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     if facts.ci_status in ("pending", "running"):
         return Resolution(WorkItemState.PR_CI_RUNNING, None, tuple(chain))
 
+    # The address-review budget is a hard cap: once exhausted, nothing short
+    # of a conflict, a draft, or red/pending CI (all evaluated above) keeps
+    # the PR cycling through address_review/address_pr. This outranks every
+    # verdict- and thread-based rule below, including a standing revise/block
+    # verdict, so the loop actually stops rather than spawning one more cycle.
+    chain.append("review_budget_exhausted")
+    if facts.max_address_cycles > 0 and facts.address_cycles >= facts.max_address_cycles:
+        return Resolution(WorkItemState.PR_REVIEW_EXHAUSTED, "integrate", tuple(chain))
+
     # A stale verdict falls through to "no current review" (rule 10).
     verdict_stale = _verdict_is_stale(facts)
 
@@ -466,6 +485,14 @@ def _fact_ci_running(facts: PRFacts) -> str:
     return f"CI is not pending or running (status: {facts.ci_status})"
 
 
+def _fact_review_budget_exhausted(facts: PRFacts) -> str:
+    if facts.max_address_cycles <= 0:
+        return "address-review budget is unlimited"
+    if facts.address_cycles >= facts.max_address_cycles:
+        return f"address-review budget exhausted ({facts.address_cycles}/{facts.max_address_cycles} cycles)"
+    return f"address-review budget not exhausted ({facts.address_cycles}/{facts.max_address_cycles} cycles)"
+
+
 def _fact_sova_standing_changes(facts: PRFacts) -> str:
     if _has_standing_sova_changes(facts):
         return f"SOVA has a standing '{facts.sova_verdict}' verdict on the current head"
@@ -530,6 +557,7 @@ _RULE_RENDERERS: dict[str, Callable[[PRFacts], str]] = {
     "draft": _fact_draft,
     "ci_failed": _fact_ci_failed,
     "ci_running": _fact_ci_running,
+    "review_budget_exhausted": _fact_review_budget_exhausted,
     "sova_standing_changes": _fact_sova_standing_changes,
     "sova_verdict_stale": _fact_sova_verdict_stale,
     "sova_verdict_addressed": _fact_sova_verdict_addressed,
@@ -577,6 +605,7 @@ def _build_pr_facts(
     sova_verdict: dict | None,
     *,
     external_reviews_enabled: bool,
+    max_address_cycles: int = 0,
 ) -> PRFacts:
     """Translate raw pr_data/sova_verdict dicts into a PRFacts snapshot."""
     verdict = sova_verdict or {}
@@ -598,6 +627,12 @@ def _build_pr_facts(
         external_changes_requested=pr_data.get("computed_state") == "changes_requested",
         thread_signal=_thread_signal(pr_data),
         external_reviews_enabled=external_reviews_enabled,
+        # verdict.get() rather than indexing: a pre-existing cache entry written
+        # before address_cycles existed has no such key, and a caller that built
+        # its own verdict dict by hand (tests, the synthetic no-review default)
+        # is not obliged to carry one.
+        address_cycles=verdict.get("address_cycles", 0),
+        max_address_cycles=max_address_cycles,
     )
 
 
@@ -608,6 +643,7 @@ def compute_work_item_resolution(
     running_agent: dict | None,
     sova_verdict: dict | None = None,
     external_reviews_enabled: bool = True,
+    max_address_cycles: int = 0,
 ) -> tuple[Resolution, PRFacts | None]:
     """Compute the full Resolution plus the PRFacts it was built from (#992).
 
@@ -621,16 +657,21 @@ def compute_work_item_resolution(
     linked yet) and flips running_agent=True via dataclasses.replace, then calls
     resolve_next_action() normally, so the "agent_running" entry comes from the
     ladder itself rather than a second, potentially-divergent code path.
-    """
-    if running_agent is not None:
-        facts = replace(
-            _build_pr_facts(pr_data or {}, sova_verdict, external_reviews_enabled=external_reviews_enabled),
-            running_agent=True,
-        )
-        return resolve_next_action(facts), facts
 
-    if pr_data is not None:
-        facts = _build_pr_facts(pr_data, sova_verdict, external_reviews_enabled=external_reviews_enabled)
+    ``max_address_cycles`` defaults to 0 (unlimited, disabling the
+    review_budget_exhausted rule): a caller that failed to load config passes
+    0 explicitly to fail open to the pre-budget-cap routing rather than
+    inventing an exhausted state from a missing value.
+    """
+    if running_agent is not None or pr_data is not None:
+        facts = _build_pr_facts(
+            pr_data or {},
+            sova_verdict,
+            external_reviews_enabled=external_reviews_enabled,
+            max_address_cycles=max_address_cycles,
+        )
+        if running_agent is not None:
+            facts = replace(facts, running_agent=True)
         return resolve_next_action(facts), facts
 
     if task_state is not None:
@@ -647,6 +688,7 @@ def compute_work_item_state(
     running_agent: dict | None,
     sova_verdict: dict | None = None,
     external_reviews_enabled: bool = True,
+    max_address_cycles: int = 0,
 ) -> WorkItemState:
     """Compute the unified dashboard state for a work item.
 
@@ -658,6 +700,7 @@ def compute_work_item_state(
         running_agent=running_agent,
         sova_verdict=sova_verdict,
         external_reviews_enabled=external_reviews_enabled,
+        max_address_cycles=max_address_cycles,
     )
     return resolution.state
 
@@ -667,6 +710,7 @@ _STATE_SORT_ORDER: dict[str, int] = {
     WorkItemState.SPEC_REVIEW: 1,
     WorkItemState.PR_READY_TO_MERGE: 2,
     WorkItemState.PR_APPROVED: 2,
+    WorkItemState.PR_REVIEW_EXHAUSTED: 2,
     WorkItemState.PR_CONFLICTED: 3,
     WorkItemState.PR_CI_FAILED: 3,
     WorkItemState.PR_CHANGES_REQUESTED: 3,

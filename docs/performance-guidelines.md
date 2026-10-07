@@ -174,7 +174,7 @@ Active interval: 300s (`watch.interval_active`), idle interval: 1800s (`watch.in
 | Max LLM calls | 250 | `runaway.max_llm_calls` (0=disable) |
 | Max step attempts | 80 | `runaway.max_step_attempts` (0=disable) |
 | Max CI fix attempts | 3 | `ci.max_fix_attempts` (0=disable) |
-| Max address-review cycles | 2 | `pipeline.max_address_review_cycles` (0=unlimited) |
+| Max address-review cycles | 3 | `pipeline.max_address_review_cycles` (0=unlimited) |
 
 **`max_budget_usd` caps per attempt, not per call, when `agent.fallback_models` is
 non-empty.** `_invoke_with_fallback()` in `sova/llm/client.py` passes the caller's

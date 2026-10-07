@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -691,13 +693,15 @@ def _facts(**overrides: object) -> PRFacts:
         "external_changes_requested": False,
         "thread_signal": "clear",
         "external_reviews_enabled": True,
+        "address_cycles": 0,
+        "max_address_cycles": 0,
     }
     defaults.update(overrides)
     return PRFacts(**defaults)
 
 
 class TestResolveNextAction:
-    """Golden table for resolve_next_action()'s 14-rule, first-match-wins ladder (#991, #1109)."""
+    """Golden table for resolve_next_action()'s 15-rule, first-match-wins ladder (#991, #1109, #1110)."""
 
     @pytest.mark.parametrize(
         ("scenario", "facts", "expected_state", "expected_action_id"),
@@ -715,6 +719,54 @@ class TestResolveNextAction:
             ("ci_failed", _facts(ci_status="failed"), WorkItemState.PR_CI_FAILED, "address_pr"),
             ("ci_pending", _facts(ci_status="pending"), WorkItemState.PR_CI_RUNNING, None),
             ("ci_running", _facts(ci_status="running"), WorkItemState.PR_CI_RUNNING, None),
+            (
+                "review_budget_exhausted_with_standing_revise",
+                _facts(sova_verdict="revise", address_cycles=3, max_address_cycles=3),
+                WorkItemState.PR_REVIEW_EXHAUSTED,
+                "integrate",
+            ),
+            (
+                "review_budget_exhausted_beats_external_changes",
+                _facts(external_changes_requested=True, address_cycles=3, max_address_cycles=3),
+                WorkItemState.PR_REVIEW_EXHAUSTED,
+                "integrate",
+            ),
+            (
+                "review_budget_exhausted_beats_unresolved_threads",
+                _facts(thread_signal="pending", address_cycles=5, max_address_cycles=3),
+                WorkItemState.PR_REVIEW_EXHAUSTED,
+                "integrate",
+            ),
+            (
+                "review_budget_not_yet_exhausted_stays_on_standing_revise",
+                _facts(sova_verdict="revise", address_cycles=2, max_address_cycles=3),
+                WorkItemState.PR_SOVA_CHANGES,
+                "address_review",
+            ),
+            (
+                "review_budget_unlimited_never_exhausts",
+                _facts(sova_verdict="revise", address_cycles=1000, max_address_cycles=0),
+                WorkItemState.PR_SOVA_CHANGES,
+                "address_review",
+            ),
+            (
+                "review_budget_exhausted_does_not_beat_conflicting",
+                _facts(mergeable="CONFLICTING", address_cycles=3, max_address_cycles=3),
+                WorkItemState.PR_CONFLICTED,
+                "rebase",
+            ),
+            (
+                "review_budget_exhausted_does_not_beat_ci_failed",
+                _facts(ci_status="failed", address_cycles=3, max_address_cycles=3),
+                WorkItemState.PR_CI_FAILED,
+                "address_pr",
+            ),
+            (
+                "review_budget_exhausted_does_not_beat_merged",
+                _facts(pr_state="MERGED", address_cycles=3, max_address_cycles=3),
+                WorkItemState.MERGED,
+                None,
+            ),
             (
                 "standing_revise_on_current_head",
                 _facts(sova_verdict="revise", sova_verdict_sha="sha-head"),
@@ -903,7 +955,7 @@ class TestResolveNextAction:
         resolution = resolve_next_action(_facts())
         assert resolution.state == WorkItemState.PR_READY_TO_MERGE
         assert resolution.reason_chain[-1] == "ready_to_merge"
-        assert len(resolution.reason_chain) == 13
+        assert len(resolution.reason_chain) == 14
 
     def test_resolution_is_frozen(self) -> None:
         resolution = resolve_next_action(_facts())
@@ -2360,6 +2412,181 @@ class TestCanonicalVerdictPath:
         assert first["has_sova_review"] is True
         assert first["verdict"] == "approve"
         assert second["has_sova_review"] is False
+
+
+@contextlib.contextmanager
+def _patched_cycle_count(**count_kwargs: object) -> Iterator[AsyncMock]:
+    """Patch resolve_sova_verdict()'s DB source to "no review" and its cycle counter.
+
+    ``count_kwargs`` goes straight to the counter's AsyncMock, so a caller
+    passes return_value for a fixed count or side_effect for a sequence or a
+    raise. Yields that mock so a test can assert how it was awaited.
+    """
+    from sova.dashboard.services.work_verdict import _NO_REVIEW
+
+    clear_verdict_cache()
+    with (
+        patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=dict(_NO_REVIEW),
+        ),
+        patch(
+            "sova.supervisor.gates.utils.count_address_review_runs",
+            new_callable=AsyncMock,
+            **count_kwargs,
+        ) as mock_count,
+    ):
+        yield mock_count
+
+
+class TestAddressCycleBudget:
+    """resolve_sova_verdict() reports address_cycles; invalidate_verdict() clears one entry."""
+
+    @pytest.mark.asyncio()
+    async def test_verdict_carries_address_cycles_from_count(self) -> None:
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        with _patched_cycle_count(return_value=2):
+            verdict = await resolve_sova_verdict("42", pr_number=200, issue_labels=[])
+
+        assert verdict["address_cycles"] == 2
+
+    @pytest.mark.asyncio()
+    async def test_no_pr_number_skips_the_count_and_stays_zero(self) -> None:
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        with _patched_cycle_count() as mock_count:
+            verdict = await resolve_sova_verdict("42", pr_number=None, issue_labels=[])
+
+        assert verdict["address_cycles"] == 0
+        mock_count.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    async def test_count_failure_fails_open_to_zero(self) -> None:
+        """A raising count must never propagate out of resolve_sova_verdict()."""
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        with _patched_cycle_count(side_effect=Exception("DB locked")):
+            verdict = await resolve_sova_verdict("42", pr_number=201, issue_labels=[])
+
+        assert verdict["address_cycles"] == 0
+
+    @pytest.mark.asyncio()
+    async def test_cache_hit_recomputes_the_count(self) -> None:
+        """A cache hit must not serve a stale address_cycles count.
+
+        A command:address-pr completion never invalidates the verdict
+        cache (invalidate_verdict() is only called from the developer
+        agent-exit path), so a cache hit has to recompute the count itself
+        rather than trust the value the cache entry was written with.
+        """
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        with _patched_cycle_count(side_effect=[1, 2]) as mock_count:
+            first = await resolve_sova_verdict("42", pr_number=202, issue_labels=[])
+            second = await resolve_sova_verdict("42", pr_number=202, issue_labels=[])
+
+        assert first["address_cycles"] == 1
+        assert second["address_cycles"] == 2
+        assert mock_count.await_count == 2
+
+    @pytest.mark.asyncio()
+    async def test_invalidate_verdict_forces_a_fresh_count_on_the_next_call(self) -> None:
+        from sova.dashboard.services.work_verdict import invalidate_verdict, resolve_sova_verdict
+
+        with _patched_cycle_count(side_effect=[1, 2]) as mock_count:
+            first = await resolve_sova_verdict("42", pr_number=203, issue_labels=[])
+            invalidate_verdict(None, 203)
+            second = await resolve_sova_verdict("42", pr_number=203, issue_labels=[])
+
+        assert first["address_cycles"] == 1
+        assert second["address_cycles"] == 2
+        assert mock_count.await_count == 2
+
+    def test_invalidate_verdict_is_a_noop_without_a_cache_entry(self) -> None:
+        from sova.dashboard.services.work_verdict import invalidate_verdict
+
+        clear_verdict_cache()
+        invalidate_verdict(None, 9999)  # must not raise
+
+    def test_invalidate_verdict_is_a_noop_when_pr_number_is_none(self) -> None:
+        from sova.dashboard.services.work_verdict import invalidate_verdict
+
+        invalidate_verdict(None, None)  # must not raise
+
+    @pytest.mark.asyncio()
+    async def test_label_win_preserves_address_cycles(self) -> None:
+        """A label-sourced verdict must not reset the PR's cycle count to 0.
+
+        address_cycles belongs to the PR, not to whichever source won the
+        verdict, and only the DB-derived dict carries it. Dropping it when the
+        label wins would silently disable the review_budget_exhausted rule for
+        exactly the cross-instance PRs most likely to be over budget.
+        """
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        with _patched_cycle_count(return_value=4):
+            verdict = await resolve_sova_verdict("42", pr_number=204, issue_labels=["sova:revise"])
+
+        # No DB record, so the label wins outright.
+        assert verdict["verdict"] == "revise"
+        assert verdict["address_cycles"] == 4
+
+    @pytest.mark.asyncio()
+    async def test_label_disagreeing_with_db_still_preserves_address_cycles(self) -> None:
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        clear_verdict_cache()
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value={
+                    "has_sova_review": True,
+                    "verdict": "approve",
+                    "finding_count": 0,
+                    "reviewed_at": "2026-01-01",
+                    "review_head_sha": "abc1234",
+                },
+            ),
+            patch(
+                "sova.supervisor.gates.utils.count_address_review_runs",
+                new_callable=AsyncMock,
+                return_value=3,
+            ),
+        ):
+            verdict = await resolve_sova_verdict("42", pr_number=205, issue_labels=["sova:revise"])
+
+        assert verdict["verdict"] == "revise"
+        assert verdict["address_cycles"] == 3
+
+
+class TestReviewBudgetExhaustedIntegrationGates:
+    """An over-budget PR must show an enabled Integrate button unconditionally."""
+
+    @pytest.mark.asyncio
+    async def test_exhausted_state_skips_gate_evaluation(self) -> None:
+        from sova.config.models import ProjectConfig
+
+        config = ProjectConfig()
+        config.integration_gates.sova_reviewed = True
+        item = {
+            "issue_number": "42",
+            "pr_number": 100,
+            "state": WorkItemState.PR_REVIEW_EXHAUSTED.value,
+            "primary_action": {"id": "integrate"},
+            "secondary_actions": [],
+            "pr_details": {"number": 100},
+        }
+        with patch(
+            "sova.dashboard.services.pr_service.check_integration_gates",
+            new_callable=AsyncMock,
+        ) as mock_gates:
+            await _attach_integration_gates([item], {"42": {"number": 100}}, config, None, {})
+
+        mock_gates.assert_not_awaited()
+        assert "gate_result" not in item["primary_action"]
 
 
 class TestParseSovaReviewFromGithub:

@@ -400,7 +400,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "pipeline.max_address_review_cycles",
         "Max address-review cycles",
-        "Maximum auto address-review runs per PR before requiring manual intervention (0 = unlimited)",
+        "Maximum auto address-review runs per PR before the PR is treated as review-budget-exhausted "
+        "and routed to Integrate (0 = unlimited)",
         "pipeline",
         "number",
     ),
