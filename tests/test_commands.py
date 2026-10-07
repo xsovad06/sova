@@ -257,6 +257,65 @@ class TestTemplates:
         assert "agent, dashboard, cli" in result
 
 
+class TestFenceAwareProse:
+    """split_fenced_lines()/dedash_prose(): the shared code-vs-prose split both renderers rely on."""
+
+    def test_split_marks_fenced_and_delimiter_lines(self) -> None:
+        from sova.commands.templates import split_fenced_lines
+
+        paired = split_fenced_lines("prose\n```bash\ncode\n```\nmore prose")
+
+        assert paired == [
+            (False, "prose"),
+            (True, "```bash"),
+            (True, "code"),
+            (True, "```"),
+            (False, "more prose"),
+        ]
+
+    def test_split_handles_tilde_fences_and_indentation(self) -> None:
+        from sova.commands.templates import split_fenced_lines
+
+        paired = split_fenced_lines("a\n  ~~~\n  code\n  ~~~\nb")
+
+        assert [fenced for fenced, _ in paired] == [False, True, True, True, False]
+
+    def test_split_tilde_fence_is_not_closed_by_nested_backtick_fence(self) -> None:
+        from sova.commands.templates import split_fenced_lines
+
+        text = "prose\n~~~\nExample:\n```\nnested\n```\nstill inside\n~~~\nmore prose"
+        paired = split_fenced_lines(text)
+
+        assert [fenced for fenced, _ in paired] == [False, True, True, True, True, True, True, True, False]
+
+    def test_split_four_backtick_fence_is_not_closed_by_nested_triple_backtick(self) -> None:
+        from sova.commands.templates import split_fenced_lines
+
+        text = "prose\n````\n```bash\ncode\n```\n````\nmore prose"
+        paired = split_fenced_lines(text)
+
+        assert [fenced for fenced, _ in paired] == [False, True, True, True, True, True, False]
+
+    def test_dedash_rewrites_prose_only(self) -> None:
+        from sova.commands.templates import dedash_prose
+
+        sep = " -" + "- "  # assembled: invariants/no-double-dash.sh flags the literal on any added line
+        text = f"Fixed{sep}updated the hint\n```bash\ngit diff origin/main{sep}path\n```\nDone{sep}really"
+
+        result = dedash_prose(text)
+
+        assert "Fixed: updated the hint" in result
+        assert f"git diff origin/main{sep}path" in result
+        assert "Done: really" in result
+
+    def test_dedash_preserves_an_unterminated_fence_as_code(self) -> None:
+        """A body whose last fence is never closed must not have its tail rewritten as prose."""
+        from sova.commands.templates import dedash_prose
+
+        sep = " -" + "- "
+        assert dedash_prose(f"```\nfoo{sep}bar") == f"```\nfoo{sep}bar"
+
+
 # ---------------------------------------------------------------------------
 # manifest.py -- manifest tracking
 # ---------------------------------------------------------------------------
@@ -1309,6 +1368,27 @@ class TestSkillsDistribution:
         assert not any("stray-file" in k for k in keys)
         assert "alpha/SKILL.md" in keys
 
+    def test_collect_skills_with_name_prefix(self, skills_dir: Path) -> None:
+        """A name_prefix is applied to the installed name, not the source directory name."""
+        from sova.commands.distribution import _collect_skills
+
+        files = _collect_skills(skills_dir, name_prefix="sova-")
+        keys = [k for k, _ in files]
+        assert "sova-alpha/SKILL.md" in keys
+        assert "sova-beta/SKILL.md" in keys
+        assert "alpha/SKILL.md" not in keys
+
+    def test_install_skills_with_name_prefix(self, skills_dir: Path, skills_target: Path) -> None:
+        from sova.commands.distribution import install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        result = install_skills(skills_dir, skills_target, cfg, name_prefix="sova-")
+
+        assert result.installed == 2
+        assert (skills_target / "sova-alpha" / "SKILL.md").exists()
+        assert not (skills_target / "alpha").exists()
+
     def test_update_skills_empty_dir(self, tmp_path: Path, skills_target: Path) -> None:
         """update_skills() handles missing skills directory gracefully."""
         from sova.commands.distribution import update_skills
@@ -1330,8 +1410,15 @@ class TestSkillsDistribution:
 
 class TestSyncRuntimeSkillsAndReport:
     """`sova commands skills-update`/`skills-sync` must also refresh a non-Claude
-    runtime's own skills mirror (e.g. Codex's .codex/skills/), not only .claude/skills/.
+    runtime's own skills mirror (e.g. Codex's .agents/skills/), not only .claude/skills/.
     """
+
+    @pytest.fixture(autouse=True)
+    def _empty_canonical_commands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep these tests focused on skills_dir: no real commands/*.md get rendered as extra skills."""
+        empty = tmp_path / "empty-canonical-commands"
+        empty.mkdir()
+        monkeypatch.setattr("sova.agents.sync.get_canonical_dir", lambda: empty)
 
     def test_claude_code_runtime_prints_nothing(
         self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1345,7 +1432,7 @@ class TestSyncRuntimeSkillsAndReport:
 
         _sync_runtime_skills_and_report(tmp_path, cfg)
 
-        assert not (tmp_path / ".codex").exists()
+        assert not (tmp_path / ".agents").exists()
         assert capsys.readouterr().err == ""
 
     def test_codex_runtime_preexisting_unmanaged_skill_is_a_conflict_not_an_overwrite(
@@ -1356,7 +1443,7 @@ class TestSyncRuntimeSkillsAndReport:
         from sova.config.models import ProjectConfig
 
         monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
-        preexisting = tmp_path / ".codex" / "skills" / "alpha"
+        preexisting = tmp_path / ".agents" / "skills" / "sova-alpha"
         preexisting.mkdir(parents=True)
         (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
 
@@ -1366,7 +1453,7 @@ class TestSyncRuntimeSkillsAndReport:
         _sync_runtime_skills_and_report(tmp_path, cfg)
 
         err = capsys.readouterr().err
-        assert "alpha/SKILL.md" in err
+        assert "sova-alpha/SKILL.md" in err
         assert "Conflicts" in err
         assert (preexisting / "SKILL.md").read_text(encoding="utf-8") == "Hand-authored, not canonical.\n"
 
@@ -1377,7 +1464,7 @@ class TestSyncRuntimeSkillsAndReport:
         from sova.config.models import ProjectConfig
 
         monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
-        preexisting = tmp_path / ".codex" / "skills" / "alpha"
+        preexisting = tmp_path / ".agents" / "skills" / "sova-alpha"
         preexisting.mkdir(parents=True)
         (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
 
@@ -1401,7 +1488,7 @@ class TestSyncRuntimeSkillsAndReport:
 
         _sync_runtime_skills_and_report(tmp_path, cfg)
 
-        assert (tmp_path / ".codex" / "skills" / "alpha" / "SKILL.md").is_file()
+        assert (tmp_path / ".agents" / "skills" / "sova-alpha" / "SKILL.md").is_file()
         assert "Skills synced for runtime 'codex': 2" in capsys.readouterr().err
 
     def test_warns_about_orphaned_codex_mirror_after_switch_to_claude_code(
@@ -1412,9 +1499,12 @@ class TestSyncRuntimeSkillsAndReport:
         from sova.config.models import ProjectConfig
 
         monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
-        codex_skills = tmp_path / ".codex" / "skills"
+        codex_skills = tmp_path / ".agents" / "skills"
         codex_skills.mkdir(parents=True)
-        (codex_skills / MANIFEST_FILENAME).write_text("{}", encoding="utf-8")
+        (codex_skills / MANIFEST_FILENAME).write_text(
+            '{"version": 1, "commands": {"sova-alpha/SKILL.md": {"hash": "x", "managed": true}}}',
+            encoding="utf-8",
+        )
 
         cfg = ProjectConfig()  # back to claude-code
         _sync_runtime_skills_and_report(tmp_path, cfg)

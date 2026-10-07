@@ -3611,6 +3611,35 @@ class TestRearrangeCommitsStep:
 
         assert gate.passed
 
+    async def test_validate_ignores_mirrored_codex_skills_untracked(self) -> None:
+        """A freshly-mirrored `.agents/skills/` tree (Codex's manifest and command-derived
+        skills included) must not fail the gate as the agent's own leftover work. Regression
+        test for the #1090 failure mode reopening: with `--untracked-files=all` git lists
+        each mirrored path individually rather than collapsing them to `?? .agents/`, so the
+        whole-directory `.agents/skills/` exclusion prefix can match every line."""
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat(core): something\n"),  # log
+                MagicMock(success=True, stdout=""),  # diff --stat (clean)
+                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(
+                    success=True,
+                    stdout=(
+                        "?? .agents/skills/.sova-manifest.json\n"
+                        "?? .agents/skills/sova-develop/SKILL.md\n"
+                        "?? .agents/skills/testing-patterns/SKILL.md\n"
+                    ),
+                ),
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
     async def test_validate_reports_untracked_filenames(self) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
