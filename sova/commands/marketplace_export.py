@@ -21,6 +21,7 @@ import tomllib
 from pathlib import Path
 
 from sova.commands.catalog import parse_frontmatter
+from sova.commands.templates import dedash_prose
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _COMMANDS_DIR = _REPO_ROOT / "commands"
@@ -82,7 +83,7 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
         "Review the actual diff that will be merged, as a senior engineer would:",
     ),
     (
-        re.compile(r"Execute the full `/review-pr` analysis \(fetch diff, read files, deep analysis\)"),
+        re.compile(r"Execute the `/review-pr` analysis in full \(fetch diff, read files, deep analysis\)"),
         "Fetch the diff, read every changed file, and analyse it deeply",
     ),
     (re.compile(r"Run the `/address-pr` workflow to fix the findings:"), "Fix the findings:"),
@@ -140,27 +141,6 @@ def _apply_substitutions(body: str) -> str:
     return body
 
 
-_FENCE_RE = re.compile(r"^\s*(```|~~~)")
-_DOUBLE_DASH_RE = re.compile(r" -{2} ")
-
-
-def _dedash_prose(text: str) -> str:
-    """Replace space-dash-dash-space prose separators (AGENTS.md forbids them, see invariants/no-double-dash.sh).
-
-    Fenced code blocks are left untouched, mirroring the invariant's own exemption for them:
-    a real shell `--` flag or example inside a fence must not be rewritten.
-    """
-    in_fence = False
-    lines = []
-    for line in text.split("\n"):
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-            lines.append(line)
-            continue
-        lines.append(line if in_fence else _DOUBLE_DASH_RE.sub(": ", line))
-    return "\n".join(lines)
-
-
 def _argument_hint(inputs: list[str]) -> str:
     return "<" + "|".join(inputs) + ">" if inputs else ""
 
@@ -177,13 +157,13 @@ def render_command(name: str) -> str:
         raise ValueError(f"{source} has no valid frontmatter")
     fields, body = parsed
 
-    description = _dedash_prose(str(fields.get("description", "")))
+    description = dedash_prose(str(fields.get("description", "")))
     category = str(fields.get("category", "core"))
     inputs = _as_str_list(fields.get("inputs"))
     outputs = _as_str_list(fields.get("outputs"))
     argument_hint = _argument_hint(inputs)
     example = _EXAMPLES[name]
-    body = _dedash_prose(_apply_substitutions(body)).strip("\n")
+    body = dedash_prose(_apply_substitutions(body)).strip("\n")
 
     frontmatter_lines = [
         "---",
