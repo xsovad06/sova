@@ -1,13 +1,7 @@
 ---
-name: source-command-extract-knowledge
+name: sova-extract-knowledge
 description: "Extract reusable knowledge from this session into the project's knowledge system."
 ---
-
-# source-command-extract-knowledge
-
-Use this skill when the user asks to run the migrated source command `extract-knowledge`.
-
-## Command Template
 
 # Extract Knowledge
 
@@ -17,19 +11,19 @@ Review this session's work and extract reusable knowledge into the project's kno
 
 This project uses a four-tier knowledge system:
 
-### Tier 0: `~/.Codex/shared-knowledge/` (cross-project patterns)
+### Tier 0: `~/.claude/shared-knowledge/` (cross-project patterns)
 Reusable patterns that apply across multiple repositories. Loaded by agent startup scripts.
 
-### Tier 1: `.Codex/rules/*.md` (canonical, always loaded via AGENTS.md)
-Stable patterns loaded into every session via AGENTS.md. Primary destination for confirmed conventions.
+### Tier 1: `.claude/rules/*.md` (canonical, always loaded via CLAUDE.md)
+Stable patterns loaded into every session via CLAUDE.md. Primary destination for confirmed conventions.
 
-### Tier 2: `.Codex/agent-memory/` (agent learnings, loaded by morning agent)
+### Tier 2: `.claude/agent-memory/` (agent learnings, loaded by morning agent)
 Lessons learned from development and review cycles. Destination for agent-specific patterns that improve autonomous development quality.
 
 - **`MEMORY.md`**: Index file
 - **`cookbook.md`**: Topical knowledge by domain, common mistakes with occurrence counts
 
-### Tier 3: User auto-memory (`~/.Codex/projects/.../memory/`)
+### Tier 3: User auto-memory (`~/.claude/projects/.../memory/`)
 User preferences, workflow conventions, and project state.
 
 ## Steps
@@ -44,9 +38,9 @@ For each finding, determine the right destination:
 
 | Finding type | Destination |
 |---|---|
-| Domain-specific patterns (security, performance, etc.) | `.Codex/rules/<domain>.md` |
-| ORM/framework gotchas, review lessons, recurring mistakes | `.Codex/agent-memory/cookbook.md` (under matching domain section) |
-| Agent workflow or project pattern changes | `.Codex/agent-memory/MEMORY.md` |
+| Domain-specific patterns (security, performance, etc.) | `.claude/rules/<domain>.md` |
+| ORM/framework gotchas, review lessons, recurring mistakes | `.claude/agent-memory/cookbook.md` (under matching domain section) |
+| Agent workflow or project pattern changes | `.claude/agent-memory/MEMORY.md` |
 | User preferences, workflow, collaboration style | User auto-memory |
 
 ### 3. Check for Duplicates
@@ -59,10 +53,10 @@ Before writing anything:
 
 ### 4. Write Knowledge
 
-**For `.Codex/rules/*.md` (Tier 1):**
-- Follow the existing structure and formatting of the target file. Write concise entries with bold labels, then the lesson. These are always loaded: keep entries actionable and specific to this project.
+**For `.claude/rules/*.md` (Tier 1):**
+- Follow the existing structure and formatting of the target file. Write concise entries with bold labels, then the lesson. These are always loaded, so keep entries actionable and specific to this project.
 
-**For `.Codex/agent-memory/` (Tier 2):**
+**For `.claude/agent-memory/` (Tier 2):**
 - One line per pattern: bold label, then the lesson
 - Include the "why": not just what to do, but why it matters
 - Include file paths when relevant
@@ -77,7 +71,7 @@ Agent memory files should stay concise:
 - `MEMORY.md`: under 20 lines (index only)
 - `cookbook.md`: under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
 
-If a pattern has matured from agent-memory into a stable convention, promote it to the appropriate `.Codex/rules/*.md` file and remove the agent-memory entry.
+If a pattern has matured from agent-memory into a stable convention, promote it to the appropriate `.claude/rules/*.md` file and remove the agent-memory entry.
 
 ### 6. Summary
 
@@ -96,8 +90,8 @@ List what was extracted and where it was saved. Flag any patterns promoted from 
 
 ## Cross-References
 
-- **Called by**: `/review` (Step 9) and `/after-merge` (post-merge learning)
-- **Broader assessment**: Run `/agent-readiness` to evaluate the full knowledge system
+- **Called by**: the `sova-review` skill (Step 9) and the `sova-after-merge` skill (post-merge learning)
+- **Broader assessment**: Run the `sova-agent-readiness` skill to evaluate the full knowledge system
 
 ## Rules
 
@@ -105,5 +99,5 @@ List what was extracted and where it was saved. Flag any patterns promoted from 
 - Update existing entries when the pattern evolved
 - Keep entries actionable: someone reading them should know exactly what to do
 - No session-specific context (task details, in-progress work)
-- **Promote mature patterns** from agent-memory to `.Codex/rules/*.md`
+- **Promote mature patterns** from agent-memory to `.claude/rules/*.md`
 - NEVER use emojis in any output
