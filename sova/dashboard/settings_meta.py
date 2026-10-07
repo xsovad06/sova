@@ -531,6 +531,31 @@ _REGISTRY: list[SettingMeta] = [
         "list",
     ),
     SettingMeta(
+        "review.repo_context_agent",
+        "Repo context sub-agent",
+        "Ask a read-only Codex sandbox for extra repository context beyond the diff, folded into "
+        "the review prompt. Requires the codex CLI; never gets a GitHub token or database access. "
+        "Token usage is logged but its cost is always $0 (no Codex pricing table), so this sub-call's "
+        "spend is not covered by agent.max_budget or the per-issue budget",
+        "review",
+        "boolean",
+    ),
+    SettingMeta(
+        "review.repo_context_timeout",
+        "Repo context sub-agent timeout",
+        "Upper bound in seconds on how long the repo context sub-call may run before the review proceeds diff-only",
+        "review",
+        "number",
+    ),
+    SettingMeta(
+        "review.repo_context_max_chars",
+        "Repo context max characters",
+        "Upper bound on characters kept from the repo context sub-call's last message, independent of the "
+        "unrelated terminal-stream display cap",
+        "review",
+        "number",
+    ),
+    SettingMeta(
         "review.panel.enabled",
         "Panel review",
         "Review the diff against focused dimensions (correctness, security, ...) instead of a single "

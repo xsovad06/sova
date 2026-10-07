@@ -956,6 +956,27 @@ class TestFieldConstraints:
         assert cfg.revise_severity == 2
         assert cfg.block_severity == 9
 
+    def test_review_repo_context_agent_defaults_off(self) -> None:
+        assert ReviewConfig().repo_context_agent is False
+
+    def test_review_repo_context_agent_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SOVA_REVIEW_REPO_CONTEXT_AGENT", "true")
+        assert ReviewConfig().repo_context_agent is True
+
+    def test_review_repo_context_timeout_default(self) -> None:
+        assert ReviewConfig().repo_context_timeout == 120.0
+
+    def test_review_repo_context_timeout_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SOVA_REVIEW_REPO_CONTEXT_TIMEOUT", "30")
+        assert ReviewConfig().repo_context_timeout == 30.0
+
+    def test_review_repo_context_max_chars_default(self) -> None:
+        assert ReviewConfig().repo_context_max_chars == 8000
+
+    def test_review_repo_context_max_chars_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SOVA_REVIEW_REPO_CONTEXT_MAX_CHARS", "500")
+        assert ReviewConfig().repo_context_max_chars == 500
+
     @pytest.mark.parametrize("bad_type", ["linear", "manual", "unknown"])
     def test_task_source_rejects_unsupported_type(self, bad_type: str) -> None:
         with pytest.raises(ValidationError):

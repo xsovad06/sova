@@ -272,6 +272,15 @@ class AgentRuntime(ABC):
                 GitHub API. Pass True only for a prompt that genuinely needs
                 nothing but reads.
 
+                No production caller passes this today: the reviewer role
+                (the one role that used to request it) now runs as a plain
+                trusted subprocess via ``spawn_direct()``, outside any
+                ``AgentRuntime`` entirely. The parameter and its three
+                implementations are kept available for a future non-pipeline
+                role that needs a sandboxed read-only spawn; there is
+                currently no live enforcement path exercising it outside
+                tests.
+
         Returns:
             An AgentProcess (pipe-based) or FileAgentProcess (file-based).
         """
@@ -545,14 +554,43 @@ def _resolve_codex_api_key(env: Mapping[str, str] | None = None) -> str | None:
     return value or None
 
 
+def _codex_exec_args(prompt: str, *, model: str | None, sandbox: str) -> list[str]:
+    """Build the ``codex exec --json --sandbox ... [--model M] -- PROMPT`` argv.
+
+    Shared by ``CodexRuntime.spawn()`` and ``ReviewerRole._gather_repo_context()``
+    (the reviewer's optional read-only repo-context sub-call) so the two
+    ``codex exec`` invocation paths cannot silently diverge from each other,
+    the same reasoning that already applies to the Claude CLI's two
+    invocation paths (see ``build_claude_cli_args()``). ``prompt`` must
+    already be whatever text the caller wants on argv: this function does
+    not call ``transform_prompt()``, since the repo-context sub-call
+    deliberately skips the headless guardrail preamble (it is not a pipeline
+    agent).
+
+    ``"--"`` is passed unconditionally: ``codex exec`` takes PROMPT as a
+    positional argument (clap-based parser), so an argv value starting with
+    ``"-"`` would otherwise be misread as an unrecognized option.
+    """
+    args: list[str] = ["codex", "exec", "--json", "--sandbox", sandbox]
+    if model:
+        args.extend(["--model", model])
+    args.extend(["--", prompt])
+    return args
+
+
 def _codex_extra_env(env: Mapping[str, str] | None = None) -> dict[str, str] | None:
     """Build the ``extra_env`` override that re-admits ``CODEX_API_KEY``.
 
     ``CODEX_API_KEY`` is in ``SCRUBBED_VARS`` by default (see
     ``sova.utils.env``), so it is absent from the ``env`` a ``CodexRuntime``
     spawn would otherwise receive. This re-injects it after scrubbing, scoped
-    to this one spawn/probe: no other runtime calls this function, so the key
-    never reaches a Claude Code or Aider child.
+    to two callers: ``CodexRuntime.spawn()``/``_probe_codex_auth()`` scope it
+    to a single ``codex exec`` child, while ``agent_lifecycle.py`` passes it
+    to the reviewer's own ``spawn_direct()`` process (gated on
+    ``review.repo_context_agent``), not a Codex child at all. The key still
+    never reaches a Claude Code or Aider child: any such child spawned from
+    that reviewer process re-scrubs its own environment via
+    ``scrub_agent_env()`` at its own spawn boundary.
     """
     api_key = _resolve_codex_api_key(env)
     return {"CODEX_API_KEY": api_key} if api_key else None
@@ -683,11 +721,11 @@ class CodexRuntime(AgentRuntime):
     substring would put every Codex agent's argv inside reach of a
     ``pkill -f`` matching it, including a ``command:*`` run whose own
     prompt never mentions sova at all). The caller's own prompt text still
-    ends up on argv regardless: a non-pipeline role (reviewer, custom) spawned
-    through this runtime wraps its command in a ``sova run ...`` invocation
+    ends up on argv regardless: a non-pipeline role (custom) spawned through
+    this runtime wraps its command in a ``sova run ...`` invocation
     (``agent_lifecycle.py``'s ``cmd_parts``), so that literal substring still
-    reaches argv for those roles even with the static example gone. Never
-    reap SOVA processes by matching prompt text.
+    reaches argv for that role even with the static example gone. Never reap
+    SOVA processes by matching prompt text.
 
     Model and sandbox policy come from ``CodexConfig`` (``[codex]`` in
     ``sova.toml``), passed in at construction via ``create_runtime(codex=...)``.
@@ -743,20 +781,9 @@ class CodexRuntime(AgentRuntime):
             )
 
         sandbox = "read-only" if read_only else self._config.sandbox
-        args: list[str] = ["codex", "exec", "--json", "--sandbox", sandbox]
-
         codex_model = self._config.model
-        if codex_model:
-            args.extend(["--model", codex_model])
-
         transformed_prompt = self.transform_prompt(prompt)
-
-        # "--" is passed unconditionally: codex exec takes PROMPT as a
-        # positional argument (clap-based parser), so an argv value starting
-        # with "-" would be misread as an unrecognized option. The preamble
-        # prepended above happens to make that impossible today, but the
-        # separator must not depend on the preamble's first character.
-        args.extend(["--", transformed_prompt])
+        args = _codex_exec_args(transformed_prompt, model=codex_model, sandbox=sandbox)
 
         log.info(
             "codex.spawn",
@@ -805,17 +832,33 @@ class CodexRuntime(AgentRuntime):
 # Direct subprocess spawn (bypasses Claude Code intermediary)
 # ---------------------------------------------------------------------------
 #
-# Role launch-path classification (issue #946), intentional, not incidental:
+# Role launch-path classification (issue #946, revised by #1126), intentional,
+# not incidental:
 #   developer, researcher, planner -> spawn_direct(). Each runs `sova run` as
 #       a plain subprocess; the WorkflowEngine inside that subprocess resolves
 #       its own LLM provider calls, so wrapping it in an AgentRuntime would
 #       add a redundant second agent process, a second bill, and reintroduce
 #       the 600s-timeout class of failure spawn_direct() exists to eliminate.
-#   reviewer, custom, command:* -> runtime.spawn(), via the configured
-#       AgentRuntime (Claude Code, Aider, or Codex). These are not
-#       pipeline-driven: reviewer and custom-role runs, and every
-#       dashboard-triggered slash command, execute inside a single autonomous
-#       agent session.
+#   reviewer -> also spawn_direct(), via a local extension of this set in
+#       agent_lifecycle.py (``_DIRECT_SPAWN_ROLES``), not by adding it here.
+#       The reviewer never needed interactive coding-agent tool-use (it only
+#       makes a model call over a diff plus GitHub/DB writes), so routing it
+#       through an AgentRuntime sandbox was a redundant wrapper, not a
+#       protection it depended on. It is kept out of ``_PIPELINE_ROLES``
+#       itself because this constant names the WorkflowEngine-driven
+#       step-pipeline roles, a shape ReviewerRole bypasses entirely (it has
+#       no WorkflowEngine and no step pipeline). Note that ``agent_db.py``
+#       and ``work_service.py`` do NOT read this constant: each defines its
+#       own independent local ``_PIPELINE_ROLES`` frozenset for its own
+#       purpose (``agent_db.py``'s gates ``_validate_pipeline_outcome()``,
+#       pipeline-bypass detection at run exit; ``work_service.py``'s gates
+#       step-count display), so adding "reviewer" here would not have
+#       affected either of them, and editing this set does not propagate
+#       to theirs.
+#   custom, command:* -> runtime.spawn(), via the configured AgentRuntime
+#       (Claude Code, Aider, or Codex). These are not pipeline-driven:
+#       custom-role runs and every dashboard-triggered slash command execute
+#       inside a single autonomous agent session.
 _PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})
 
 
@@ -826,6 +869,7 @@ async def spawn_direct(
     env: dict[str, str] | None = None,
     output_dir: Path | None = None,
     run_label: str | None = None,
+    extra_env: Mapping[str, str] | None = None,
 ) -> AgentProcess | FileAgentProcess:
     """Spawn a CLI command directly as a subprocess (approved ``shell.py`` exception).
 
@@ -838,10 +882,14 @@ async def spawn_direct(
     a live process handle for streaming output, which the shared runner's
     fire-and-wait model cannot support. Timeout and lifecycle management
     are handled by ``_wait_and_finalize()`` in ``agent_lifecycle.py``.
+
+    ``extra_env`` re-admits variables the shared scrub strips by default
+    (see ``_inject_agent_marker()``), e.g. ``_codex_extra_env()`` for the
+    reviewer role's optional read-only Codex repo-context sub-call.
     """
     log.info("process.spawn_direct", cwd=str(cwd), cmd=cmd_parts[0:3])
 
-    return await _spawn_agent_process(cmd_parts, cwd, env, output_dir, run_label)
+    return await _spawn_agent_process(cmd_parts, cwd, env, output_dir, run_label, extra_env=extra_env)
 
 
 # ---------------------------------------------------------------------------

@@ -1828,6 +1828,408 @@ class TestReviewerRole:
 
 
 # ---------------------------------------------------------------------------
+# Optional read-only Codex repo-context sub-call (issue #1126)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerGatherRepoContext:
+    async def test_disabled_by_default_returns_empty(self) -> None:
+        from sova.roles.reviewer import ReviewerRole
+
+        ctx = _make_ctx(role="reviewer")
+        role = ReviewerRole()
+
+        with patch("sova.roles.reviewer.run_shell", new_callable=AsyncMock) as mock_run:
+            result = await role._gather_repo_context(ctx, ["a.py"])
+
+        assert result == ""
+        mock_run.assert_not_awaited()
+
+    async def test_returns_empty_when_codex_unavailable(self) -> None:
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+
+        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        role = ReviewerRole()
+
+        with patch("shutil.which", return_value=None):
+            result = await role._gather_repo_context(ctx, ["a.py"])
+
+        assert result == ""
+
+    async def test_returns_context_text_on_success(self) -> None:
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        role = ReviewerRole()
+
+        stdout = (
+            '{"type": "item.completed", "item": {"item_type": "agent_message", '
+            '"text": "This module is called from three other places."}}\n'
+            '{"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}\n'
+        )
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout=stdout, stderr=""),
+            ) as mock_run,
+        ):
+            result = await role._gather_repo_context(ctx, ["a.py"])
+
+        assert result == "This module is called from three other places."
+        args = mock_run.call_args.args
+        assert args[:5] == ("codex", "exec", "--json", "--sandbox", "read-only")
+        assert args[-2] == "--"
+        assert ctx.input_tokens == 10
+        assert ctx.output_tokens == 5
+
+    async def test_usage_logged_as_unbudgeted_since_cost_is_always_zero(self) -> None:
+        """Codex's LLMResult always reports cost_usd=$0/CostSource.UNKNOWN, so this
+        sub-call's spend is invisible to every dollar-based budget guard. A distinct
+        warning must fire so the gap is at least traceable from the run log."""
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        role = ReviewerRole()
+
+        stdout = (
+            '{"type": "item.completed", "item": {"item_type": "agent_message", '
+            '"text": "Some background."}}\n'
+            '{"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}\n'
+        )
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout=stdout, stderr=""),
+            ),
+            patch("sova.roles.reviewer.log") as mock_log,
+        ):
+            await role._gather_repo_context(ctx, ["a.py"])
+
+        assert ctx.cost_usd == 0
+        assert mock_log.warning.call_args.args[0] == "reviewer.repo_context_cost_unbudgeted"
+
+    async def test_passes_configured_codex_model(self) -> None:
+        """A project that pins codex.model for cost/availability reasons must have the
+        sub-call honour it instead of whatever the codex CLI defaults to."""
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(review=ReviewConfig(repo_context_agent=True), codex=CodexConfig(model="gpt-5-codex")),
+        )
+        role = ReviewerRole()
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout="", stderr=""),
+            ) as mock_run,
+        ):
+            await role._gather_repo_context(ctx, ["a.py"])
+
+        args = mock_run.call_args.args
+        assert args[5:7] == ("--model", "gpt-5-codex")
+
+    async def test_returns_empty_on_failed_turn(self) -> None:
+        """A turn.failed/error terminal event must never be folded into the review
+        prompt as if it were repository context."""
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        role = ReviewerRole()
+
+        stdout = '{"type": "turn.failed", "error": {"message": "stream error: 401 Unauthorized"}}\n'
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=1, stdout=stdout, stderr=""),
+            ),
+        ):
+            result = await role._gather_repo_context(ctx, ["a.py"])
+
+        assert result == ""
+
+    async def test_appends_truncation_marker_when_cap_hit(self) -> None:
+        """The terminal event's text is capped at review.repo_context_max_chars; a
+        result that hits the cap must say so rather than silently ending mid-sentence."""
+        import json as _json
+
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        max_chars = 2000
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=max_chars)),
+        )
+        role = ReviewerRole()
+
+        long_text = "x" * 5000
+        stdout = (
+            _json.dumps({"type": "item.completed", "item": {"item_type": "agent_message", "text": long_text}})
+            + "\n"
+            + _json.dumps({"type": "turn.completed", "usage": {}})
+            + "\n"
+        )
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout=stdout, stderr=""),
+            ),
+        ):
+            result = await role._gather_repo_context(ctx, ["a.py"])
+
+        assert result.startswith("x" * max_chars)
+        assert result.endswith("[context truncated]")
+
+    async def test_repo_context_max_chars_decoupled_from_display_cap(self) -> None:
+        """review.repo_context_max_chars must not be tied to codex.py's unrelated
+        terminal-display cap (_MAX_CONTENT_CHARS, 2000): a message longer than that
+        display cap but within the configured repo-context budget must survive whole."""
+        import json as _json
+
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.ipc.codex import _MAX_CONTENT_CHARS
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        text = "y" * (_MAX_CONTENT_CHARS + 500)
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=_MAX_CONTENT_CHARS + 1000)
+            ),
+        )
+        role = ReviewerRole()
+
+        stdout = (
+            _json.dumps({"type": "item.completed", "item": {"item_type": "agent_message", "text": text}})
+            + "\n"
+            + _json.dumps({"type": "turn.completed", "usage": {}})
+            + "\n"
+        )
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout=stdout, stderr=""),
+            ),
+        ):
+            result = await role._gather_repo_context(ctx, ["a.py"])
+
+        assert result == text
+        assert "[context truncated]" not in result
+
+    async def test_appends_truncation_marker_on_secret_dense_whitespace_free_message(self) -> None:
+        """A raw message that redacts down below the cap must still get the
+        truncation marker: inferring truncation from len(text) against the cap (the
+        pre-fix check) misses this case entirely, since redaction can shrink a long,
+        secret-dense, whitespace-free message well under the configured cap."""
+        import json as _json
+
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=2000)),
+        )
+        role = ReviewerRole()
+
+        secret_dense = ("api_key=" + "a" * 40 + "!") * 60
+
+        stdout = (
+            _json.dumps({"type": "item.completed", "item": {"item_type": "agent_message", "text": secret_dense}})
+            + "\n"
+            + _json.dumps({"type": "turn.completed", "usage": {}})
+            + "\n"
+        )
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout=stdout, stderr=""),
+            ),
+        ):
+            result = await role._gather_repo_context(ctx, ["a.py"])
+
+        assert "aaaa" not in result
+        assert result.endswith("[context truncated]")
+
+    async def test_returns_empty_on_timeout(self) -> None:
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        role = ReviewerRole()
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=-1, stdout="", stderr="", timed_out=True),
+            ),
+        ):
+            result = await role._gather_repo_context(ctx, ["a.py"])
+
+        assert result == ""
+
+    async def test_returns_empty_on_spawn_failure(self) -> None:
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+
+        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        role = ReviewerRole()
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                side_effect=OSError("boom"),
+            ),
+        ):
+            result = await role._gather_repo_context(ctx, ["a.py"])
+
+        assert result == ""
+
+    async def test_env_excludes_untrusted_vars_but_includes_allowlisted_and_codex_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sub-call must never inherit a GitHub token or DB URL, even if present in
+        the process environment, but must get the allowlisted vars and CODEX_API_KEY."""
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        monkeypatch.setenv("GH_TOKEN", "super-secret-token")
+        monkeypatch.setenv("SOVA_DATABASE_URL", "postgresql://user:pass@host/db")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
+        monkeypatch.setenv("CODEX_HOME", "/custom/codex-home")
+        monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg-config")
+
+        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        role = ReviewerRole()
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout="", stderr=""),
+            ) as mock_run,
+        ):
+            await role._gather_repo_context(ctx, ["a.py"])
+
+        sub_env = mock_run.call_args.kwargs["env"]
+        assert "GH_TOKEN" not in sub_env
+        assert "SOVA_DATABASE_URL" not in sub_env
+        assert sub_env["PATH"] == "/usr/bin"
+        assert sub_env["CODEX_API_KEY"] == "codex-secret"
+        assert sub_env["CODEX_HOME"] == "/custom/codex-home"
+        assert sub_env["XDG_CONFIG_HOME"] == "/custom/xdg-config"
+
+    async def test_env_includes_proxy_and_tls_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A corporate-proxy or custom-CA setup must not silently break the sub-call:
+        none of these carry a GitHub token or DB URL, so allowlisting them does not
+        weaken the allowlist's safety property."""
+        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:8080")
+        monkeypatch.setenv("SSL_CERT_FILE", "/custom/ca-bundle.pem")
+
+        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        role = ReviewerRole()
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout="", stderr=""),
+            ) as mock_run,
+        ):
+            await role._gather_repo_context(ctx, ["a.py"])
+
+        sub_env = mock_run.call_args.kwargs["env"]
+        assert sub_env["HTTPS_PROXY"] == "http://proxy.internal:8080"
+        assert sub_env["SSL_CERT_FILE"] == "/custom/ca-bundle.pem"
+
+    async def test_env_passthrough_is_not_unioned_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """agent.env_passthrough must never widen the sub-call's environment.
+
+        That field is a user-editable config list whose documented purpose is
+        Claude-routing variables; it has no allowed-name restriction. Unioning
+        it in would let a project that lists GH_TOKEN/SOVA_DATABASE_URL there
+        hand a write-capable GitHub token or DB connection string to this
+        sub-call's untrusted, potentially attacker-authored (fork-PR) sandbox.
+        """
+        from sova.config.models import AgentConfig, ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        monkeypatch.setenv("CUSTOM_NETWORK_VAR", "custom-value")
+        monkeypatch.setenv("GH_TOKEN", "super-secret-token")
+
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                agent=AgentConfig(env_passthrough=["CUSTOM_NETWORK_VAR", "GH_TOKEN"]),
+            ),
+        )
+        role = ReviewerRole()
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout="", stderr=""),
+            ) as mock_run,
+        ):
+            await role._gather_repo_context(ctx, ["a.py"])
+
+        sub_env = mock_run.call_args.kwargs["env"]
+        assert "CUSTOM_NETWORK_VAR" not in sub_env
+        assert "GH_TOKEN" not in sub_env
+
+
+# ---------------------------------------------------------------------------
 # Spec-anchored review helpers
 # ---------------------------------------------------------------------------
 
@@ -2227,6 +2629,85 @@ class TestSpecAnchoredReview:
         assert "X" * 500 in captured_prompts[0]
         # Second chunk has truncated spec
         assert "... (see full spec in chunk 1)" in captured_prompts[1]
+
+    def test_run_review_attaches_repo_context_to_first_chunk_only(self) -> None:
+        """Repo context is background, not a finding source: it must reach the
+        prompt on chunk 0 only, mirroring spec/addressed-findings treatment. This
+        covers the _execute -> _run_review -> _run_single_review -> _build_review_prompt
+        wiring that per-function tests of _gather_repo_context/_build_review_prompt
+        in isolation cannot: dropping `repo_context=` from any forwarding call site
+        would leave this silently doing nothing."""
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import DIFF_CHUNK_SIZE, ReviewerRole
+
+        role = ReviewerRole()
+        task = Task(id="1", title="Test", body="desc", state=TaskState.IN_REVIEW)
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+
+        chunk1 = "diff --git a/a.py b/a.py\n" + "+" * DIFF_CHUNK_SIZE
+        chunk2 = "\ndiff --git a/b.py b/b.py\n" + "+" * 100
+        large_diff = chunk1 + chunk2
+
+        captured_prompts: list[str] = []
+
+        async def _capture_invoke(prompt: str, **kwargs):
+            captured_prompts.append(prompt)
+            from decimal import Decimal as Dec
+
+            from sova.llm.models import LLMResult
+
+            return LLMResult(text='{"findings": [], "summary": "ok"}', cost_usd=Dec("0.01"))
+
+        import asyncio
+
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=_capture_invoke):
+            asyncio.get_event_loop().run_until_complete(
+                role._run_review(ctx, task, large_diff, ["a.py"], repo_context="SENTINEL_REPO_CONTEXT")
+            )
+
+        assert len(captured_prompts) == 2
+        assert "SENTINEL_REPO_CONTEXT" in captured_prompts[0]
+        assert "SENTINEL_REPO_CONTEXT" not in captured_prompts[1]
+
+    async def test_execute_skips_repo_context_sub_call_when_panel_enabled(self) -> None:
+        """The panel path never consumes repo_context (see _run_review's panel
+        branch), so _execute must not even pay for the sub-call's wall clock and
+        Codex turn when review.panel.enabled is set. A regression that drops this
+        guard would silently bill every panel review for an unused Codex turn."""
+        from sova.config.models import ProjectConfig, ReviewConfig, ReviewPanelConfig
+        from sova.roles.reviewer import ReviewerRole, ReviewResult
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(
+            role="reviewer",
+            state=TaskState.IN_REVIEW,
+            adapter=adapter,
+            pr_number=99,
+            config=ProjectConfig(review=ReviewConfig(repo_context_agent=True, panel=ReviewPanelConfig(enabled=True))),
+        )
+        role = ReviewerRole()
+
+        with (
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", "abc123"),
+            ),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
+            patch.object(role, "_run_panel_review", new_callable=AsyncMock, return_value=ReviewResult()),
+            patch.object(role, "_gather_repo_context", new_callable=AsyncMock) as mock_gather,
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        mock_gather.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

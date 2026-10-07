@@ -28,6 +28,24 @@ class TestSettingMeta:
     def test_get_meta_unknown_key(self) -> None:
         assert get_meta("nonexistent.key.here") is None
 
+    def test_review_repo_context_agent_meta_registered(self) -> None:
+        meta = get_meta("review.repo_context_agent")
+        assert meta is not None
+        assert meta.group == "review"
+        assert meta.value_type == "boolean"
+
+    def test_review_repo_context_timeout_meta_registered(self) -> None:
+        meta = get_meta("review.repo_context_timeout")
+        assert meta is not None
+        assert meta.group == "review"
+        assert meta.value_type == "number"
+
+    def test_review_repo_context_max_chars_meta_registered(self) -> None:
+        meta = get_meta("review.repo_context_max_chars")
+        assert meta is not None
+        assert meta.group == "review"
+        assert meta.value_type == "number"
+
     @pytest.mark.parametrize(
         "key",
         [

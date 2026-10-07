@@ -175,11 +175,29 @@ from sova.dashboard.services.agent_validation import (
 )
 from sova.dashboard.services.feed_service import emit_safe
 from sova.dashboard.services.output_service import OutputWriter
-from sova.ipc.runtime import _PIPELINE_ROLES, get_runtime, spawn_direct
+from sova.ipc.runtime import _PIPELINE_ROLES, _codex_extra_env, get_runtime, spawn_direct
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
+
+# Roles spawned as a plain trusted subprocess (spawn_direct) rather than
+# through a coding-agent runtime wrapper. Reviewer joins the pipeline roles
+# here, scoped to this one spawn-path decision only: ``_PIPELINE_ROLES``
+# names the WorkflowEngine-driven step-pipeline roles, which ReviewerRole is
+# not (it bypasses WorkflowEngine entirely). Rather than add "reviewer" to
+# that constant, it is unioned in here, local to this one spawn-path
+# decision. Note this is a real duplication hazard, not just a naming one:
+# ``agent_db.py`` and ``work_service.py`` each independently define their own
+# local ``_PIPELINE_ROLES`` frozenset: ``agent_db.py``'s copy gates
+# ``_validate_pipeline_outcome()`` (pipeline-bypass detection at run exit),
+# ``work_service.py``'s gates step-count display (neither imports this
+# module's constant, and work_service.py's copy doesn't even include
+# "planner"), so editing one copy does not propagate to the others.
+# The reviewer never needed interactive coding-agent tool-use: it only makes
+# a model call over a diff plus GitHub/DB writes, so running it outside any
+# runtime sandbox is correct regardless of ``agent.runtime``.
+_DIRECT_SPAWN_ROLES = _PIPELINE_ROLES | {"reviewer"}
 
 
 # Status queries
@@ -387,6 +405,22 @@ def _resolve_config_fallback_model(project_dir: Path) -> str | None:
         return None
 
 
+def _resolve_repo_context_agent_enabled(project_dir: Path) -> bool:
+    """Return whether the reviewer's optional read-only Codex repo-context sub-call is enabled.
+
+    Gates re-admitting ``CODEX_API_KEY`` into the reviewer's spawn: the feature
+    defaults off, and the key must not be exported into the reviewer's `sova
+    run` process (and everything it spawns) when nothing will ever read it.
+    """
+    try:
+        from sova.config.loader import load_config
+
+        return load_config(project_dir).review.repo_context_agent
+    except Exception:  # noqa: BLE001 (config load failure defaults the feature off)
+        log.debug("resolve_repo_context_agent_enabled.failed", exc_info=True)
+        return False
+
+
 async def _record_budget_override(issue: str, run_id: int, budget_error: dict, project_dir: Path) -> None:
     """Persist a BudgetOverride record and emit a feed event."""
     from decimal import Decimal
@@ -540,7 +574,13 @@ async def start_agent(
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            if effective_role in _PIPELINE_ROLES:
+            model_override_warning = None
+            if effective_role in _DIRECT_SPAWN_ROLES:
+                if model:
+                    log.warning("agent.model_override_ignored", role=effective_role, model=model)
+                    model_override_warning = (
+                        f"model override {model!r} ignored: {effective_role} runs resolve their model from config"
+                    )
                 log.info(
                     "agent.spawn_direct",
                     run_id=run_id,
@@ -548,12 +588,16 @@ async def start_agent(
                     cwd=str(cwd),
                     cmd=cmd_parts[:4],
                 )
+                direct_extra_env = None
+                if effective_role == "reviewer" and _resolve_repo_context_agent_enabled(project_dir):
+                    direct_extra_env = _codex_extra_env(gh_env)
                 process = await spawn_direct(
                     cmd_parts,
                     cwd,
                     env=gh_env,
                     output_dir=output_dir,
                     run_label=str(run_id),
+                    extra_env=direct_extra_env,
                 )
             else:
                 log.info(
@@ -573,28 +617,6 @@ async def start_agent(
                     model = _resolve_config_model(project_dir)
                 fallback_model = _resolve_config_fallback_model(project_dir)
                 runtime = get_runtime()
-                # The reviewer role only reads and posts findings; it must
-                # never modify the repository. A runtime with a sandbox
-                # mechanism (CodexRuntime) enforces this; others accept the
-                # flag and no-op, relying on the prompt alone as before.
-                #
-                # CodexRuntime's `read-only` sandbox denies every write AND
-                # disables network access for the whole process tree, so it
-                # also blocks the writes and GitHub calls the reviewer's own
-                # `sova run` subprocess needs (DB, handoff file, GitHub API
-                # calls). There is no finer-grained Codex sandbox policy
-                # today, so rather than silently spawn a reviewer run that is
-                # guaranteed to fail deep in the pipeline, fail fast here with
-                # a clear diagnostic. Full rationale: see the #946 entry in
-                # .claude/rules/architecture.md.
-                if effective_role == "reviewer" and runtime.name == "codex":
-                    raise RuntimeError(
-                        "Codex runtime does not support the reviewer role: its "
-                        "read-only sandbox blocks the writes (database, handoff "
-                        "file, GitHub API) the reviewer's own `sova run` "
-                        'subprocess needs. Configure agent.runtime = "claude-code" '
-                        "for reviewer runs."
-                    )
                 process = await runtime.spawn(
                     prompt,
                     cwd,
@@ -603,7 +625,6 @@ async def start_agent(
                     fallback_model=fallback_model,
                     output_dir=output_dir,
                     run_label=str(run_id),
-                    read_only=effective_role == "reviewer",
                 )
         except Exception as exc:  # noqa: BLE001 (any spawn failure must finalize the run rather than leave it orphaned)
             log.error("agent.spawn_failed", run_id=run_id, error=str(exc), exc_info=True)
@@ -611,7 +632,7 @@ async def start_agent(
             return {"error": f"Failed to spawn agent process: {exc}"}
 
         stream_reader_drain_timeout = None
-        if effective_role not in _PIPELINE_ROLES:
+        if effective_role not in _DIRECT_SPAWN_ROLES:
             try:
                 stream_parser = runtime.create_stream_parser()
             except Exception:  # noqa: BLE001 (parser creation failure must not orphan the already-running process)
@@ -670,7 +691,10 @@ async def start_agent(
         metadata={"run_id": run_id, "issue": issue, "role": role or "developer"},
     )
 
-    return {"status": "started", "pid": pid, "run_id": run_id}
+    result = {"status": "started", "pid": pid, "run_id": run_id}
+    if model_override_warning:
+        result["warnings"] = [model_override_warning]
+    return result
 
 
 async def stop_agent(

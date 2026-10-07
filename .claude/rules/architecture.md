@@ -139,6 +139,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Environment scrubbing at the spawn boundary is the only correct fix for inherited provider-routing variables
 - `check_available()` must report authentication, not just installation
 - Codex credential ownership: keyring-first, `CODEX_API_KEY` opt-in scoped to the Codex child only
+- Reviewer spawns as a trusted subprocess, not through a coding-agent runtime sandbox
 - Reviewer post failure must not trigger address-review
 - SOVA review verdict: one canonical assembly path, DB-reconciled label, SHA-anchored staleness
 - An address cycle must be visible on GitHub and must supersede a verdict regardless of where that verdict was read from
