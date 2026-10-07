@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "commands": {
+    "sova-address-pr/SKILL.md": {
+      "hash": "f14347705b94dcc5",
+      "managed": true
+    },
+    "sova-after-merge/SKILL.md": {
+      "hash": "3c2d7ebe30b28fdc",
+      "managed": true
+    },
+    "sova-agent-readiness/SKILL.md": {
+      "hash": "1b9cfa9bc905fe97",
+      "managed": true
+    },
+    "sova-audit-instructions/SKILL.md": {
+      "hash": "79dc99e3f55ec66a",
+      "managed": true
+    },
+    "sova-debug/SKILL.md": {
+      "hash": "93ac1cafce4cc51f",
+      "managed": true
+    },
+    "sova-design-system/SKILL.md": {
+      "hash": "a0f747ba4be9a77e",
+      "managed": true
+    },
+    "sova-develop/SKILL.md": {
+      "hash": "ec4de27827ea4f35",
+      "managed": true
+    },
+    "sova-develop-explain/SKILL.md": {
+      "hash": "c4415888f17ba875",
+      "managed": true
+    },
+    "sova-develop-full/SKILL.md": {
+      "hash": "08e1c95703e9b23a",
+      "managed": true
+    },
+    "sova-extract-knowledge/SKILL.md": {
+      "hash": "ab6af9ea1b48d316",
+      "managed": true
+    },
+    "sova-find-task/SKILL.md": {
+      "hash": "efc6587e50b26df6",
+      "managed": true
+    },
+    "sova-health-audit/SKILL.md": {
+      "hash": "2862c2ccbfedd75e",
+      "managed": true
+    },
+    "sova-ingest-review/SKILL.md": {
+      "hash": "1e658eff65bf7c98",
+      "managed": true
+    },
+    "sova-integrate-pr/SKILL.md": {
+      "hash": "0a2bae5bf65f68ef",
+      "managed": true
+    },
+    "sova-issue/SKILL.md": {
+      "hash": "525f6aeb761e3beb",
+      "managed": true
+    },
+    "sova-issue-template/SKILL.md": {
+      "hash": "29127aa85a93b3f6",
+      "managed": true
+    },
+    "sova-new-feature/SKILL.md": {
+      "hash": "b8c1f7414aa9df1e",
+      "managed": true
+    },
+    "sova-optimize-knowledge/SKILL.md": {
+      "hash": "f00a2f1c6c37fb8a",
+      "managed": true
+    },
+    "sova-pr/SKILL.md": {
+      "hash": "060fd8fcdab287a3",
+      "managed": true
+    },
+    "sova-rearrange-commits/SKILL.md": {
+      "hash": "5582840f38618862",
+      "managed": true
+    },
+    "sova-research/SKILL.md": {
+      "hash": "9c90fa973ad46d3d",
+      "managed": true
+    },
+    "sova-review/SKILL.md": {
+      "hash": "f6e06afc99966dd3",
+      "managed": true
+    },
+    "sova-review-full/SKILL.md": {
+      "hash": "e3da94c91bff43df",
+      "managed": true
+    },
+    "sova-review-pr/SKILL.md": {
+      "hash": "2792fd78688c1d17",
+      "managed": true
+    },
+    "sova-simplify/SKILL.md": {
+      "hash": "e7f47dd447a7194c",
+      "managed": true
+    },
+    "sova-spec/SKILL.md": {
+      "hash": "23c82514a4a7e888",
+      "managed": true
+    },
+    "sova-standup/SKILL.md": {
+      "hash": "ccbf212d4f87c34c",
+      "managed": true
+    },
+    "sova-status/SKILL.md": {
+      "hash": "c454084ed163a1ac",
+      "managed": true
+    },
+    "sova-test/SKILL.md": {
+      "hash": "4b7f126c34cf9adb",
+      "managed": true
+    },
+    "sova-update-docs/SKILL.md": {
+      "hash": "3595bac2937c3eb0",
+      "managed": true
+    }
+  }
+}

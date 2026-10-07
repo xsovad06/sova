@@ -45,6 +45,10 @@ SELF_VARIABLES: dict[str, str] = {
     "test_cmd": "make test",
     "lint_cmd": "make lint",
     "format_cmd": "make format",
+    "github_repo": "xsovad06/sova",
+    # Pinned independently of github_repo: the real repo slug is lowercase
+    # ("sova"), but the brand name used in prose is "SOVA".
+    "project_name": "SOVA",
 }
 
 # Matches the same placeholder shape render_command() substitutes: a bare word
@@ -66,10 +70,14 @@ def self_config() -> ProjectConfig:
     return ProjectConfig(**SELF_VARIABLES)
 
 
-def used_placeholders(canonical_dir: Path) -> set[str]:
-    """Return every placeholder name appearing in canonical command templates."""
+def used_placeholders(directory: Path, pattern: str = "*.md") -> set[str]:
+    """Return every placeholder name appearing in templates matching *pattern* under *directory*.
+
+    ``pattern`` defaults to the flat ``commands/*.md`` shape; callers scanning
+    the standalone ``skills/*/SKILL.md`` tree pass ``"*/SKILL.md"``.
+    """
     names: set[str] = set()
-    for path in sorted(canonical_dir.glob("*.md")):
+    for path in sorted(directory.glob(pattern)):
         names.update(PLACEHOLDER_RE.findall(path.read_text(encoding="utf-8")))
     return names
 

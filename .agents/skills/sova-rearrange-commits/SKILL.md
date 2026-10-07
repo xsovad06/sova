@@ -1,13 +1,7 @@
 ---
-name: source-command-rearrange-commits
+name: sova-rearrange-commits
 description: "Reorganize current branch commits into small, logical, well-documented steps."
 ---
-
-# source-command-rearrange-commits
-
-Use this skill when the user asks to run the migrated source command `rearrange-commits`.
-
-## Command Template
 
 # Rearrange Commits
 
@@ -77,8 +71,8 @@ Ensure:
 
 ## Cross-References
 
-- **Called by**: `/develop-full` (Phase 3) and `/pr` (commit organization step)
-- **Before PR**: Run `/review` after rearranging, then `/pr`
+- **Called by**: the `sova-develop-full` skill (Phase 3) and the `sova-pr` skill (commit organization step)
+- **Before PR**: Run the `sova-review` skill after rearranging, then the `sova-pr` skill
 
 ## Rules
 

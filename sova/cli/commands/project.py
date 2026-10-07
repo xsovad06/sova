@@ -164,7 +164,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
 
     # Stage 4.5: Runtime skills mirror (additive, non-fatal). Mirrors skills
     # into whatever non-Claude runtime adapter agent.runtime names (e.g.
-    # Codex's .codex/skills/). Claude's .claude/skills/ above is installed
+    # Codex's .agents/skills/). Claude's .claude/skills/ above is installed
     # unconditionally since it's also read by the interactive session, not
     # only by agent.runtime. Kept in its own try/except, separate from Stage
     # 4: a failure here is not a command-installation failure (commands,

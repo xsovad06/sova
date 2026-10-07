@@ -160,7 +160,7 @@ These phases run after the PR is created/updated. They enable autonomous operati
 16. **Self-review the PR diff**:
     Run the `/review-pr` workflow against this PR to review the actual diff that will be merged:
     1. Fetch the PR number from the branch
-    2. Execute the full `/review-pr` analysis (fetch diff, read files, deep analysis)
+    2. Execute the `/review-pr` analysis in full (fetch diff, read files, deep analysis)
     3. Post the review on GitHub
     4. If the verdict has no findings >= 3/10: skip step 17, go to step 18
     5. If there are findings >= 3/10: continue to step 17

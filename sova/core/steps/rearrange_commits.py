@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from sova.agents.registry import artifact_root_names
+from sova.agents.registry import artifact_exclusion_prefixes
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke_command
@@ -24,17 +24,38 @@ from sova.utils.shell import run
 # from the primary checkout on every run), so churn there is inherited state,
 # never the agent's own output. Counting it made every address-review run pause
 # whenever the primary checkout was dirty: 17 gate failures before #1090.
-# `artifact_root_names()` adds every registered RuntimeAdapter's own directory
-# (e.g. Codex's `.codex/`) on top of those two, so a future adapter's skills
-# mirror can't reopen the same failure mode for a new, not-yet-hand-listed
-# directory.
-_RUNTIME_ARTIFACT_ROOTS = frozenset({".claude", ".sova"}) | artifact_root_names()
-_IGNORABLE_UNTRACKED_RE = re.compile("|".join(rf"^{re.escape(root)}/" for root in sorted(_RUNTIME_ARTIFACT_ROOTS)))
+# `artifact_exclusion_prefixes()` adds every registered RuntimeAdapter's own
+# mirrored directory (e.g. Codex's `.agents/skills/`) on top of those two, so a
+# future adapter's skills mirror can't reopen the same failure mode for a new,
+# not-yet-hand-listed directory. Every prefix here is a whole directory
+# (trailing `/`): `_mirror_runtime_skills()` copies an adapter's entire skills
+# directory into the worktree, including hand-authored content sharing it under
+# a plain name, so the exclusion has to cover the whole directory too, not just
+# the SOVA-managed, name-prefixed subtree within it.
+_RUNTIME_ARTIFACT_PREFIXES = frozenset({".claude/", ".sova/"}) | artifact_exclusion_prefixes()
+_IGNORABLE_UNTRACKED_RE = re.compile(
+    "|".join(rf"^{re.escape(prefix)}" for prefix in sorted(_RUNTIME_ARTIFACT_PREFIXES))
+)
+
+
+def _pathspec_exclude(prefix: str) -> str:
+    """Build a git pathspec excluding *prefix*.
+
+    A bare name-prefix (no trailing ``/``, e.g. ``.agents/skills/sova-``) needs
+    a trailing ``*`` to exclude everything under matching directories: git's
+    default (non-literal) pathspec wildcard matching already treats ``*`` as
+    matching any characters including ``/``, so no explicit ``:(glob)`` magic
+    is required.
+    """
+    if prefix.endswith("/"):
+        return f":(exclude){prefix}"
+    return f":(exclude){prefix}*"
+
 
 # Pathspecs excluded from the "did the agent leave work uncommitted?" checks.
 # _IGNORABLE_UNTRACKED_RE above already applies the same rule to untracked
 # files, and DevelopStep._NON_SUBSTANTIVE_RE applies it to change detection.
-_EXCLUDED_PATHSPECS = tuple(f":(exclude){root}/" for root in sorted(_RUNTIME_ARTIFACT_ROOTS))
+_EXCLUDED_PATHSPECS = tuple(_pathspec_exclude(prefix) for prefix in sorted(_RUNTIME_ARTIFACT_PREFIXES))
 
 log = get_logger(component="step.rearrange_commits")
 
@@ -80,7 +101,11 @@ class RearrangeCommitsStep(BaseStep):
         if has_uncommitted:
             return GateCheckResult(passed=False, reason="Uncommitted changes remain after rearranging")
 
-        status_result = await run("git", "status", "--porcelain", cwd=ctx.working_dir)
+        # --untracked-files=all forces one line per untracked file rather than
+        # collapsing a wholly-untracked directory (e.g. a fresh `.agents/skills/`
+        # mirror in a project that doesn't track it) into a single parent-level
+        # line that _IGNORABLE_UNTRACKED_RE's per-directory prefixes can't match.
+        status_result = await run("git", "status", "--porcelain", "--untracked-files=all", cwd=ctx.working_dir)
         if not status_result.success:
             return GateCheckResult(passed=False, reason="git status failed")
         untracked_lines = [

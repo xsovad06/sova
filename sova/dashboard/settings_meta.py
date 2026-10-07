@@ -96,6 +96,12 @@ _REGISTRY: list[SettingMeta] = [
         "github_repo", "GitHub repository", "Owner/repo slug for GitHub API calls (e.g. user/my-project)", "project"
     ),
     SettingMeta("github_user", "GitHub user", "GitHub account to authenticate with for this project", "project"),
+    SettingMeta(
+        "project_name",
+        "Project name",
+        "Human-readable project name used in rendered commands/skills. Falls back to the github_repo slug when empty",
+        "project",
+    ),
     SettingMeta("base_branch", "Base branch", "Default branch to branch from and merge into", "project"),
     SettingMeta("test_cmd", "Test command", "Shell command to run the test suite", "project"),
     SettingMeta("lint_cmd", "Lint command", "Shell command to run the linter", "project"),
