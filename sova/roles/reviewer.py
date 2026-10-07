@@ -40,7 +40,8 @@ from sova.ipc.handoff import (
     write_handoff,
     write_handoff_file,
 )
-from sova.llm.client import invoke, resolve_model
+from sova.llm.backends import TIER_NAMES
+from sova.llm.client import invoke, resolve_alias, resolve_model
 
 if TYPE_CHECKING:
     from sova.llm.models import LLMResult
@@ -447,7 +448,28 @@ class ReviewerRole(AgentRole):
         )
 
     def _resolve_review_model(self, ctx: ExecutionContext) -> str:
-        """Resolve the model for review work, honouring ``roles.reviewer_model``."""
+        """Resolve the model for review work, honouring ``roles.reviewer_model``.
+
+        ``roles.reviewer_model`` defaults to the bare Claude family alias
+        "sonnet", which only the Claude Code CLI and the Anthropic API
+        provider's own alias table can expand. Any other ``llm.provider``
+        (openai, ollama, vertex, litellm, hybrid) routes through LiteLLM,
+        which sends the model string straight to the backend, so a bare
+        alias there is not necessarily a real model ID.
+
+        For those providers, a still-bare tier name is first run through
+        ``sova.llm.client.resolve_alias()``: the one choke point that already
+        honours ``llm.model_aliases`` (including the backend-scoped
+        ``"{backend}:{tier}"`` key) and, for VERTEX/BEDROCK, expands the tier
+        to a servable, concrete candidate ID of its own. Only when that
+        leaves the alias unresolved (no mapping, no backend candidate table,
+        e.g. plain LiteLLM/OpenAI) does this fall back to the provider's own
+        ``llm.model``: vendor provider types require it to be set explicitly
+        (see ``LLMConfig._default_model_for_litellm``). Resolving through
+        ``resolve_alias()`` first prevents this fallback from discarding an
+        explicit, correctly-mapped ``roles.reviewer_model`` (e.g. a Vertex
+        deployment where "opus" already resolves to a pinned snapshot ID).
+        """
         resolved = resolve_model(
             role="reviewer",
             roles_config=ctx.config.roles,
@@ -455,9 +477,23 @@ class ReviewerRole(AgentRole):
             llm_config=ctx.config.llm,
             agent_model=ctx.config.agent.model,
         )
-        if resolved is None:
-            return _DEFAULT_REVIEW_MODEL
-        model, reason = resolved
+        model, reason = resolved if resolved is not None else (_DEFAULT_REVIEW_MODEL, "default")
+
+        provider = ctx.config.llm.provider
+        if provider not in ("claude-code", "anthropic") and model in TIER_NAMES:
+            resolved_id = resolve_alias(model, ctx.config.llm)
+            if resolved_id != model:
+                log.info("reviewer.model_resolved", model=resolved_id, reason=f"{reason}+alias")
+                return resolved_id
+            if ctx.config.llm.model:
+                log.info(
+                    "reviewer.model_fallback_provider_aware",
+                    alias=model,
+                    provider=provider,
+                    model=ctx.config.llm.model,
+                )
+                return ctx.config.llm.model
+
         log.info("reviewer.model_resolved", model=model, reason=reason)
         return model
 

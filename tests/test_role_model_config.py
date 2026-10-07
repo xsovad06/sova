@@ -241,6 +241,80 @@ class TestReviewerModelResolution:
 
 
 # ---------------------------------------------------------------------------
+# Provider-aware model fallback (issue #1126)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerModelProviderAwareFallback:
+    """A bare Claude family alias ("sonnet", "opus", ...) is not a real model ID for
+    any backend other than Claude Code / the Anthropic API's own alias table. A
+    non-Claude llm.provider must fall back to its own configured llm.model instead."""
+
+    async def test_stock_reviewer_model_falls_back_to_llm_model_for_openai(self) -> None:
+        config = ProjectConfig(llm=LLMConfig(provider="openai", model="gpt-5"))
+        ctx = _review_ctx(config)
+        role = ReviewerRole()
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(text=_findings_response(), model="gpt-5")
+            await role._run_review(ctx, _task(), "diff --git a/a.py b/a.py\n+x", ["a.py"])
+
+        assert mock_invoke.call_args[1]["model"] == "gpt-5"
+
+    async def test_explicit_reviewer_model_alias_resolves_to_its_own_vertex_candidate(self) -> None:
+        """An explicitly configured but still-bare alias ("opus") is resolved through
+        resolve_alias()'s own Vertex tier-candidate table rather than being silently
+        replaced by the unrelated general-purpose llm.model."""
+        config = ProjectConfig(
+            roles=RolesConfig(reviewer_model="opus"),
+            llm=LLMConfig(provider="vertex", model="vertex_ai/gemini-2.5-pro"),
+        )
+        ctx = _review_ctx(config)
+        role = ReviewerRole()
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(text=_findings_response(), model="vertex_ai/claude-opus-4-6@20260401")
+            await role._run_review(ctx, _task(), "diff --git a/a.py b/a.py\n+x", ["a.py"])
+
+        assert mock_invoke.call_args[1]["model"] == "vertex_ai/claude-opus-4-6@20260401"
+
+    async def test_non_alias_reviewer_model_is_not_overridden(self) -> None:
+        """A reviewer_model that is already a concrete, non-alias ID passes through
+        unchanged regardless of provider."""
+        config = ProjectConfig(
+            roles=RolesConfig(reviewer_model="gpt-4o-mini"),
+            llm=LLMConfig(provider="openai", model="gpt-5"),
+        )
+        ctx = _review_ctx(config)
+        role = ReviewerRole()
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(text=_findings_response(), model="gpt-4o-mini")
+            await role._run_review(ctx, _task(), "diff --git a/a.py b/a.py\n+x", ["a.py"])
+
+        assert mock_invoke.call_args[1]["model"] == "gpt-4o-mini"
+
+    async def test_anthropic_provider_keeps_bare_alias(self) -> None:
+        """The Anthropic API provider resolves bare aliases itself (resolve_model_alias),
+        so it is excluded from the override."""
+        config = ProjectConfig(llm=LLMConfig(provider="anthropic", model="claude-sonnet-5"))
+        ctx = _review_ctx(config)
+        role = ReviewerRole()
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(text=_findings_response(), model="sonnet")
+            await role._run_review(ctx, _task(), "diff --git a/a.py b/a.py\n+x", ["a.py"])
+
+        assert mock_invoke.call_args[1]["model"] == "sonnet"
+
+    async def test_claude_code_provider_keeps_bare_alias(self) -> None:
+        config = ProjectConfig(llm=LLMConfig(provider="claude-code"))
+        ctx = _review_ctx(config)
+        role = ReviewerRole()
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(text=_findings_response(), model="sonnet")
+            await role._run_review(ctx, _task(), "diff --git a/a.py b/a.py\n+x", ["a.py"])
+
+        assert mock_invoke.call_args[1]["model"] == "sonnet"
+
+
+# ---------------------------------------------------------------------------
 # Panel review default model
 # ---------------------------------------------------------------------------
 
