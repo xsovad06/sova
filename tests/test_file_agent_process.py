@@ -425,6 +425,7 @@ class TestRuntimeFileOutput:
         mock_proc.returncode = None
 
         rt = CodexRuntime()
+        rt._stdin_capable = False
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await rt.spawn("fix bug", tmp_path, output_dir=output_dir, run_label="300")
 

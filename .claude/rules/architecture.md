@@ -140,6 +140,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - `check_available()` must report authentication, not just installation
 - Codex credential ownership: keyring-first, `CODEX_API_KEY` opt-in scoped to the Codex child only
 - Reviewer spawns as a trusted subprocess, not through a coding-agent runtime sandbox
+- `OPENAI_API_KEY` is scrubbed like `CODEX_API_KEY` and re-injected only for `spawn_direct()`'s trusted pipeline subprocess, and Codex prompt delivery moves to stdin when the CLI documents support for it
 - Reviewer post failure must not trigger address-review
 - SOVA review verdict: one canonical assembly path, DB-reconciled label, SHA-anchored staleness
 - An address cycle must be visible on GitHub and must supersede a verdict regardless of where that verdict was read from

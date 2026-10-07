@@ -1549,6 +1549,80 @@ class TestSpawnDirect:
         assert isinstance(fp, FileAgentProcess)
         assert fp.pid == 78
 
+    async def test_spawn_direct_scrubs_credentials_and_routing_vars(self) -> None:
+        """spawn_direct() routes through _spawn_agent_process() like every other
+        spawn path, so it must scrub the same credentials and routing vars,
+        except OPENAI_API_KEY: it is the one trusted pipeline child that may
+        need it back for its own in-process litellm calls (see
+        _openai_extra_env())."""
+        from sova.ipc.runtime import spawn_direct
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 79
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        hostile = {
+            "PATH": "/usr/bin",
+            "OPENAI_API_KEY": "sk-openai-secret",
+            "CODEX_API_KEY": "sk-codex-secret",
+            "CLAUDE_CODE_USE_VERTEX": "1",
+        }
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await spawn_direct(["sova", "run", "42"], Path("/tmp"), env=hostile)
+
+        child_env = mock_exec.call_args.kwargs["env"]
+        assert child_env["PATH"] == "/usr/bin"
+        assert child_env["OPENAI_API_KEY"] == "sk-openai-secret"
+        for leaked in ("CODEX_API_KEY", "CLAUDE_CODE_USE_VERTEX"):
+            assert leaked not in child_env
+
+    async def test_spawn_direct_omits_openai_key_when_unset(self) -> None:
+        """No OPENAI_API_KEY in the source env means none is re-admitted."""
+        from sova.ipc.runtime import spawn_direct
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 80
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await spawn_direct(["sova", "run", "42"], Path("/tmp"), env={"PATH": "/usr/bin"})
+
+        child_env = mock_exec.call_args.kwargs["env"]
+        assert "OPENAI_API_KEY" not in child_env
+
+    async def test_agent_runtime_spawns_never_receive_openai_key(self) -> None:
+        """OPENAI_API_KEY re-admission is scoped to spawn_direct() only: the
+        AgentRuntime spawn paths (Claude Code, Aider, Codex) must never see it,
+        even when it's set in the source env."""
+        from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime, CodexRuntime
+
+        hostile = {"PATH": "/usr/bin", "OPENAI_API_KEY": "sk-openai-secret"}
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 81
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await ClaudeCodeRuntime().spawn("do work", Path("/tmp"), env=hostile)
+        assert "OPENAI_API_KEY" not in mock_exec.call_args.kwargs["env"]
+
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await AiderRuntime().spawn("do work", Path("/tmp"), env=hostile)
+        assert "OPENAI_API_KEY" not in mock_exec.call_args.kwargs["env"]
+
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+            patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
+        ):
+            await CodexRuntime().spawn("do work", Path("/tmp"), env=hostile)
+        assert "OPENAI_API_KEY" not in mock_exec.call_args.kwargs["env"]
+
     def test_pipeline_roles_set(self) -> None:
         """developer/researcher/planner use spawn_direct() via `_PIPELINE_ROLES`.
         Post-#1126, reviewer also uses spawn_direct(), but via a local extension of
@@ -1729,6 +1803,16 @@ class TestAiderRuntime:
 
 
 class TestCodexRuntime:
+    @pytest.fixture(autouse=True)
+    def _default_no_stdin_probe(self):
+        """Tests below assume today's argv delivery and don't model the probe's
+        own subprocess call in their mocked process. Stub it to the common
+        fallback outcome; tests covering stdin delivery set
+        ``rt._stdin_capable`` directly or patch the probe themselves, which
+        overrides this for their scope."""
+        with patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)):
+            yield
+
     async def test_spawn_builds_correct_args(self) -> None:
         from sova.config.models import CodexConfig
         from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
@@ -1892,6 +1976,90 @@ class TestCodexRuntime:
         args = mock_exec.call_args[0]
         assert args[-1] == _HEADLESS_PREAMBLE_CODEX + prompt
         assert args[-2] == "--"
+
+    async def test_spawn_uses_stdin_when_cli_supports_it(self) -> None:
+        """When the installed CLI documents stdin delivery, the prompt never reaches argv."""
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 70
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
+
+        rt = CodexRuntime()
+        rt._stdin_capable = True
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            ap = await rt.spawn("fix the bug", Path("/tmp"))
+
+        assert ap.pid == 70
+        args = mock_exec.call_args[0]
+        assert "fix the bug" not in " ".join(args)
+        assert "--" not in args
+        mock_proc.stdin.write.assert_called_once_with((_HEADLESS_PREAMBLE_CODEX + "fix the bug").encode("utf-8"))
+
+    async def test_spawn_falls_back_to_argv_when_stdin_unsupported(self) -> None:
+        """An explicit False (older CLI, failed probe) must keep today's argv delivery."""
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 71
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        rt._stdin_capable = False
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await rt.spawn("fix the bug", Path("/tmp"))
+
+        args = mock_exec.call_args[0]
+        assert args[-1] == _HEADLESS_PREAMBLE_CODEX + "fix the bug"
+        assert args[-2] == "--"
+
+    async def test_spawn_logs_prompt_delivery_mode(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 72
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
+
+        rt = CodexRuntime()
+        rt._stdin_capable = True
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.ipc.runtime.log") as mock_log,
+        ):
+            await rt.spawn("fix the bug", Path("/tmp"))
+
+        spawn_calls = [call for call in mock_log.info.call_args_list if call[0][0] == "codex.spawn"]
+        assert len(spawn_calls) == 1
+        assert spawn_calls[0].kwargs["prompt_delivery"] == "stdin"
+
+    async def test_resolve_stdin_capable_probes_once_and_caches(self) -> None:
+        """The capability probe must not re-run on every spawn from the same runtime."""
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 73
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.stdin = _stdin_mock()
+
+        rt = CodexRuntime()
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=True)) as mock_probe,
+        ):
+            await rt.spawn("first", Path("/tmp"))
+            await rt.spawn("second", Path("/tmp"))
+
+        mock_probe.assert_called_once()
 
     @pytest.mark.parametrize(
         "prompt",
@@ -2425,6 +2593,121 @@ class TestCheckCliAvailable:
         assert "timed out" in detail
 
 
+class TestProbeCodexStdinPromptSupport:
+    """The capability probe gating Codex stdin prompt delivery."""
+
+    async def test_returns_true_when_help_mentions_stdin(self) -> None:
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = "Arguments:\n  [PROMPT]  Prompt to use. If omitted, read from stdin.\n"
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is True
+
+    async def test_returns_false_when_help_omits_stdin(self) -> None:
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        probe = ShellResult(returncode=0, stdout="Arguments:\n  <PROMPT>  Prompt to use.\n", stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
+    async def test_returns_false_when_stdin_mention_is_negated(self) -> None:
+        """A line saying stdin is NOT supported must not be read as confirmation.
+
+        A bare substring check for "stdin" would misread this as support,
+        which risks the exact hang this probe exists to prevent (stdin
+        delivery to a CLI that never reads it).
+        """
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = "Arguments:\n  <PROMPT>  Prompt to use. PROMPT is not read from stdin.\n"
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
+    async def test_returns_true_when_unrelated_line_is_negated_but_another_confirms(self) -> None:
+        """Negation on one line must not suppress a genuine confirmation elsewhere."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = (
+            "Options:\n  --no-color  Output is not colorized via stdin detection.\n"
+            "Arguments:\n  [PROMPT]  Prompt to use. If omitted, read from stdin.\n"
+        )
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is True
+
+    async def test_returns_false_when_unrelated_option_mentions_stdin(self) -> None:
+        """An unrelated option's positive stdin mention must not be read as
+        PROMPT's own stdin support: only PROMPT's own argument-definition
+        line (marked <PROMPT> or [PROMPT]) counts."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = "Options:\n  --input  Read additional config from stdin.\nArguments:\n  <PROMPT>  Prompt to use.\n"
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
+    async def test_returns_true_for_alternate_prompt_wording(self) -> None:
+        """A differently-worded but still PROMPT-scoped confirmation must match."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = "Arguments:\n  [PROMPT]  If not provided as an argument, read from stdin.\n"
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is True
+
+    async def test_probe_uses_scrubbed_environment(self) -> None:
+        """The --help probe needs no credential at all, so it must see the
+        same scrubbed environment as _probe_codex_auth(), not the server's
+        raw os.environ (CodeRabbit finding, runtime.py:624)."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        probe = ShellResult(returncode=0, stdout="Arguments:\n  <PROMPT>  Prompt to use.\n", stderr="")
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "sk-openai-secret", "CODEX_API_KEY": "sk-codex-secret"}),
+            patch("sova.ipc.runtime.run", return_value=probe) as mock_run,
+        ):
+            await _probe_codex_stdin_prompt_support()
+
+        probe_env = mock_run.call_args.kwargs["env"]
+        assert "OPENAI_API_KEY" not in probe_env
+        assert "CODEX_API_KEY" not in probe_env
+
+    async def test_returns_false_on_nonzero_exit(self) -> None:
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        probe = ShellResult(returncode=1, stdout="", stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
+    async def test_returns_false_when_cli_missing(self) -> None:
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        with patch("sova.ipc.runtime.run", side_effect=OSError("codex not found")):
+            assert await _probe_codex_stdin_prompt_support() is False
+
+    async def test_returns_false_on_timeout(self) -> None:
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        probe = ShellResult(returncode=-1, stdout="", stderr="Command timed out after 5.0s", timed_out=True)
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
+    async def test_never_logs_help_text_verbatim_at_info_level(self) -> None:
+        """Probe outcomes are debug-only noise; must never surface at info/warning."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        with (
+            patch("sova.ipc.runtime.run", side_effect=OSError("boom")),
+            patch("sova.ipc.runtime.log") as mock_log,
+        ):
+            await _probe_codex_stdin_prompt_support()
+
+        mock_log.info.assert_not_called()
+        mock_log.warning.assert_not_called()
+
+
 class TestClaudeCodeParseEdgeCases:
     def test_parse_output_assistant_string_content(self) -> None:
         import json
@@ -2763,6 +3046,19 @@ class TestAgentEnvScrubbing:
 
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("no project")):
             assert configured_passthrough() == ()
+
+    def test_marker_passthrough_cannot_readmit_credentials(self) -> None:
+        """A deployment naming OPENAI_API_KEY/CODEX_API_KEY in agent.env_passthrough
+        must not re-leak them: that escape hatch is for provider-routing vars only."""
+        from sova.ipc.runtime import _inject_agent_marker
+
+        hostile = {"OPENAI_API_KEY": "sk-openai-secret", "CODEX_API_KEY": "sk-codex-secret", "PATH": "/bin"}
+        with patch("sova.ipc.runtime.configured_passthrough", return_value=("OPENAI_API_KEY", "CODEX_API_KEY")):
+            result = _inject_agent_marker(hostile)
+
+        assert "OPENAI_API_KEY" not in result
+        assert "CODEX_API_KEY" not in result
+        assert result["PATH"] == "/bin"
 
 
 class TestInterpretCodexAuthProbe:
