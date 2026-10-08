@@ -28,9 +28,11 @@ from typing import Callable, Union
 
 from sova.commands.catalog import CommandEntry, discover, get_canonical_dir, parse_frontmatter
 from sova.commands.distribution import InstallResult, install_skills
+from sova.commands.manifest import Manifest, file_hash, read_manifest
 from sova.commands.self_render import repo_root, self_config
 from sova.commands.templates import build_variables, dedash_prose, split_fenced_lines, workflow_reference_re
 from sova.config.models import ProjectConfig
+from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
 # A substitution's replacement, either a plain string (passed straight to
@@ -455,8 +457,9 @@ def render_codex_skills(
     """Render every Codex-eligible canonical command into {name: SKILL.md content}.
 
     Keyed by the bare command name (``develop``, not ``sova-develop``): the
-    ``sova-`` prefix is applied once, at installation time, by
-    ``name_prefix`` on ``install_skills()``/``update_skills()``, not here.
+    ``sova-`` prefix is applied once, when the result is merged into a
+    scratch directory, by ``name_prefix`` on
+    ``materialize_combined_skill_sources()``, not here.
 
     ``supports``, when given, restricts output to the commands it accepts;
     pass an adapter's own ``supports_command`` (e.g.
@@ -483,58 +486,34 @@ def render_codex_skills(
 _FRONTMATTER_NAME_LINE_RE = re.compile(r'^(name:\s*)([\'"]?)(.+?)\2\s*$')
 
 
-def _prefix_skill_frontmatter_name(content: str, skill_dir_name: str, prefix: str) -> str:
-    """Rewrite a standalone skill's frontmatter ``name:`` field to carry *prefix*.
+def _check_skill_frontmatter_name(content: str, skill_dir_name: str) -> None:
+    """Reject a standalone skill whose frontmatter ``name:`` disagrees with its directory name.
 
-    Operates on the raw text rather than through ``parse_frontmatter()`` plus
-    reassembly, so every other frontmatter field (``allowed_tools``, etc.)
-    and its exact formatting survives untouched; only the ``name:`` line's
-    value changes. Without this, the installed directory name carries the
-    prefix (``_collect_skills()`` applies it) while the frontmatter inside
-    still declares the plain name, so a runtime that keys skills by that
-    declared name (not the directory) sees a collision between the prefixed
-    package and whatever pre-existing, independently-maintained content
-    already used the plain name (exactly what the prefix exists to
-    prevent).
+    A standalone skill always installs under its own bare directory name
+    (never a prefix: see ``materialize_combined_skill_sources()``), so a
+    mismatched ``name:`` here would reach the installed tree undetected
+    otherwise, which a runtime that keys skills by that declared name (not
+    the directory) would read as a different identity than the one the
+    directory name implies.
 
     A skill with no frontmatter, or frontmatter with no ``name:`` field, is
-    left untouched rather than rejected: not every hand-authored SKILL.md
-    (project-local content synced generically through this same function)
+    left unchecked rather than rejected: not every hand-authored SKILL.md
+    (project-local content synced generically through this same pipeline)
     declares a name a runtime could key on in the first place, so there is
-    nothing to collide and nothing to rewrite.
-
-    A declared name that disagrees with the directory it lives in is
-    rejected outright, rather than silently prefixed to a mismatched value:
-    the installed directory name is always derived from ``skill_dir_name``
-    (``install_skills()``'s ``name_prefix`` is applied to the directory, not
-    to whatever the frontmatter happens to say), so a mismatch here would
-    reach the installed tree undetected otherwise, which is the exact
-    dir/identity split the prefix exists to prevent.
-
-    The ``name:`` value may be a bare scalar or a single-quoted/double-quoted
-    one (``name: "foo"``); the quote style, if any, is preserved around the
-    rewritten value.
+    nothing to compare.
     """
     lines = content.split("\n")
     if not lines or lines[0].strip() != "---":
-        return content
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            break
-        match = _FRONTMATTER_NAME_LINE_RE.match(lines[i])
-        if match:
-            key_part, quote, value = match.group(1), match.group(2), match.group(3)
-            expected_prefixed = f"{prefix}{skill_dir_name}" if prefix else skill_dir_name
-            if value not in (skill_dir_name, expected_prefixed):
-                raise SkillRenderError(
-                    f"skills/{skill_dir_name}/SKILL.md declares name {value!r}, which does not match its "
-                    f"directory name {skill_dir_name!r}"
-                )
-            if not prefix or value == expected_prefixed:
-                return content
-            lines[i] = f"{key_part}{quote}{expected_prefixed}{quote}"
-            return "\n".join(lines)
-    return content
+        return
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return
+        match = _FRONTMATTER_NAME_LINE_RE.match(line)
+        if match and match.group(3) != skill_dir_name:
+            raise SkillRenderError(
+                f"skills/{skill_dir_name}/SKILL.md declares name {match.group(3)!r}, which does not match its "
+                f"directory name {skill_dir_name!r}"
+            )
 
 
 # Frontmatter keys with no meaning outside Claude Code. Dropped from a
@@ -578,12 +557,24 @@ def materialize_combined_skill_sources(
     manifest, rather than two independent manifests each only seeing half
     the installed skills.
 
-    ``name_prefix`` rewrites each standalone skill's frontmatter ``name:``
-    to match the prefix the caller will later apply to the installed
-    directory name (via ``install_skills(..., name_prefix=...)``), so the two
-    stay consistent. Command-derived entries in ``extra`` are left alone:
-    ``render_codex_skill()`` already bakes the matching prefix into their
-    frontmatter directly.
+    ``name_prefix`` is baked directly into the scratch directory name for
+    each ``extra`` (command-derived) entry here, so the caller installs the
+    combined scratch tree with no ``name_prefix`` of its own. A standalone
+    skill under ``standalone_skills_dir`` is always written out bare, with
+    its frontmatter ``name:`` left untouched, regardless of ``name_prefix``:
+    distributed project skills (``skills/issue-template``, ``skills/
+    design-taste``, etc.) are a different artifact class from a
+    command-derived one and keep their own namespace, so the two rendering
+    pipelines never write to the same path (issue #1136). A standalone
+    directory whose name already starts with ``name_prefix`` (e.g. a
+    hypothetical ``skills/sova-foo/``) is rejected outright, before the
+    ordinary collision check below even runs: that reserved namespace is for
+    command-derived output only, never a standalone skill borrowing it.
+    ``existing_target_dir`` below is checked unconditionally (not gated on
+    ``name_prefix``): the real precondition is "this runtime's skills
+    directory is shared with pre-existing, independently-maintained
+    content," which a plain, unshared install (``.claude/skills/``) simply
+    satisfies by never passing ``existing_target_dir`` at all.
 
     A standalone skill's body (and its ``description`` field, when present)
     goes through the same ``_CODEX_SUBSTITUTIONS`` + cross-reference +
@@ -595,8 +586,8 @@ def materialize_combined_skill_sources(
     placeholder) as a canonical command body is, and leaving it unchecked
     would let that idiom reach a non-Claude target unrendered with nothing
     to catch it. A skill with no frontmatter is left as plain prose with no
-    pipeline applied, matching ``_prefix_skill_frontmatter_name()``'s own
-    "nothing to rewrite" treatment of that case. Claude-only frontmatter
+    pipeline applied, matching ``_check_skill_frontmatter_name()``'s own
+    "nothing to check" treatment of that case. Claude-only frontmatter
     keys (``allowed_tools``) are dropped via
     ``_strip_claude_only_frontmatter_keys()`` regardless.
 
@@ -605,25 +596,42 @@ def materialize_combined_skill_sources(
     must fail loudly here rather than silently shipping a ``SKILL.md`` that
     references content nothing ever copied.
 
-    ``existing_target_dir``, when given, is the directory a prefixed copy of
-    this skill would ultimately be installed alongside (e.g. ``.agents/skills/``
-    for Codex). A standalone skill whose plain name already exists there as an
-    unprefixed, hand-authored directory with its own ``SKILL.md`` is skipped
-    entirely rather than also installed under the prefix: this repo's own
-    ``.agents/skills/testing-patterns/`` is the SOVA-specific, hand-maintained
-    version of what ``skills/testing-patterns/SKILL.md`` renders generically,
-    and installing both left two skills declaring overlapping "writing or
-    modifying test files" auto-activation triggers in the same discovery
-    directory, with the thinner generic one just as likely to win. The
-    hand-authored, pre-existing copy at the plain name always wins; this
-    mirrors ``skill_name_prefix``'s own purpose (never clobber unmanaged
-    content already using a plain name) one level up, at skill-selection time
-    rather than file-write time.
+    ``existing_target_dir``, when given, is the directory a standalone
+    skill would ultimately be installed into (e.g. ``.agents/skills/`` for
+    Codex). A standalone skill whose plain name already exists there as a
+    directory with its own ``SKILL.md`` that SOVA doesn't already manage
+    (absent from that directory's manifest, or present but marked
+    unmanaged) is skipped entirely rather than installed over it: this
+    repo's own ``.agents/skills/testing-patterns/`` is the SOVA-specific,
+    hand-maintained version of what ``skills/testing-patterns/SKILL.md``
+    renders generically, and installing both left two skills declaring
+    overlapping "writing or modifying test files" auto-activation triggers
+    in the same discovery directory, with the thinner generic one just as
+    likely to win. The hand-authored, pre-existing copy at the plain name
+    always wins, with no override (not even ``force=True`` on the caller's
+    later ``update_skills()`` call reaches this far, since the entry is
+    never added to ``combined`` in the first place). The manifest check
+    specifically excludes SOVA's *own* prior install of this same standalone
+    skill from that same-wins rule: without it, a second sync of e.g.
+    ``design-taste`` (which, being bare, now lands at that exact plain-name
+    path on every run) would mistake its own previous output for pre-existing
+    hand-authored content and refuse to ever update itself again.
+
+    When ``existing_target_dir`` has no manifest at all yet (first-ever sync
+    to a fresh directory, or one whose manifest was lost), there is no
+    recorded verdict to read, so the decision falls back to comparing the
+    existing on-disk content against *this* candidate's freshly rendered
+    content: a match means the content is either SOVA's own prior output
+    (now unrecorded) or coincidentally identical, either way safe to let
+    through so the normal installer can adopt it; a mismatch is treated the
+    same as explicit pre-existing hand-authored content and skipped, exactly
+    like the recorded-unmanaged case above (issue #1136).
     """
-    combined = dict(extra)
+    combined: dict[str, str] = {f"{name_prefix}{name}": content for name, content in extra.items()}
     skill_names = list(extra)
     cross_references = _cross_reference_substitutions(skill_names)
     prose_substitutions = _CODEX_SUBSTITUTIONS + cross_references + _workflow_reference_substitutions(skill_names)
+    existing_manifest = read_manifest(existing_target_dir) if existing_target_dir is not None else None
 
     if standalone_skills_dir.is_dir():
         for skill_dir in sorted(standalone_skills_dir.iterdir()):
@@ -632,12 +640,11 @@ def materialize_combined_skill_sources(
             skill_file = skill_dir / "SKILL.md"
             if not skill_file.is_file():
                 continue
-            if (
-                name_prefix
-                and existing_target_dir is not None
-                and (existing_target_dir / skill_dir.name / "SKILL.md").is_file()
-            ):
-                continue
+            if name_prefix and skill_dir.name.startswith(name_prefix):
+                raise SkillRenderError(
+                    f"skills/{skill_dir.name}/ uses the reserved {name_prefix!r} prefix, which is reserved for "
+                    "command-derived skills"
+                )
             other_entries = sorted(p.name for p in skill_dir.iterdir() if p.name != "SKILL.md")
             if other_entries:
                 raise SkillRenderError(
@@ -664,13 +671,51 @@ def materialize_combined_skill_sources(
                     frontmatter_raw = _rewrite_frontmatter_description(frontmatter_raw, rendered_description)
                 content = f"{frontmatter_raw}{rendered_body}\n"
             content = _strip_claude_only_frontmatter_keys(content)
-            combined[skill_dir.name] = _prefix_skill_frontmatter_name(content, skill_dir.name, name_prefix)
+            _check_skill_frontmatter_name(content, skill_dir.name)
+            if existing_target_dir is not None and _is_unmanaged_at(
+                existing_target_dir, skill_dir.name, content, existing_manifest
+            ):
+                continue
+            combined[skill_dir.name] = content
 
     scratch_dir.mkdir(parents=True, exist_ok=True)
     for name, content in combined.items():
         dest_dir = scratch_dir / name
         dest_dir.mkdir(parents=True, exist_ok=True)
         (dest_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+
+def _is_unmanaged_at(existing_target_dir: Path, skill_name: str, candidate: str, manifest: Manifest | None) -> bool:
+    """Whether *skill_name* already exists at *existing_target_dir* as content SOVA doesn't manage.
+
+    ``False`` both when nothing exists there yet and when *manifest* already
+    marks ``{skill_name}/SKILL.md`` as managed: the latter is SOVA's own
+    prior install of this standalone skill, not pre-existing hand-authored
+    content, and must not be mistaken for it (see
+    ``materialize_combined_skill_sources()``'s docstring).
+
+    *manifest* is ``None`` for both "no manifest file exists yet" and "the
+    manifest file is unreadable/corrupt" (``read_manifest()`` doesn't
+    distinguish the two, and neither case gives positive evidence either
+    way). Returning ``True`` unconditionally for that case would read a
+    merely-lost manifest the same as a confirmed hand-authored collision,
+    silently and permanently dropping a SOVA-managed entry with no way for
+    even ``--force`` to recover it, since this function runs before the
+    entry ever reaches ``_update_files()``'s own, already-correct,
+    no-manifest-entry recovery logic (issue #1136 finding). Comparing the
+    existing on-disk content against *candidate* (this call's freshly
+    rendered content) instead preserves the collision guarantee for content
+    that actually differs (hand-authored or otherwise) while letting
+    unrecorded-but-unchanged content flow through to be silently re-adopted.
+    """
+    path = existing_target_dir / skill_name / "SKILL.md"
+    if not path.is_file():
+        return False
+    if manifest is None:
+        local = read_text_or_none(path)
+        return local is None or file_hash(local) != file_hash(candidate)
+    entry = manifest.commands.get(f"{skill_name}/SKILL.md")
+    return entry is None or not entry.managed
 
 
 def render_self_skills(root: Path | None = None, target_dir: Path | None = None) -> InstallResult:
@@ -702,8 +747,8 @@ def render_self_skills(root: Path | None = None, target_dir: Path | None = None)
     # independently of `target` below, which the drift test overrides to an
     # empty scratch directory: that override must not make this repo's own
     # already-committed `testing-patterns/` invisible to the collision check,
-    # or a fresh render would disagree with the checked-in tree on whether
-    # `sova-testing-patterns` should exist at all.
+    # or a fresh render would disagree with the checked-in tree on whether a
+    # generic `testing-patterns` should be installed over it.
     real_target = adapter.skills_dir(base)
     target = target_dir if target_dir is not None else real_target
     if target is None:
@@ -715,7 +760,10 @@ def render_self_skills(root: Path | None = None, target_dir: Path | None = None)
         materialize_combined_skill_sources(
             standalone_dir, extra, scratch, name_prefix=SKILL_NAME_PREFIX, existing_target_dir=real_target
         )
-        result = install_skills(scratch, target, self_config(), name_prefix=SKILL_NAME_PREFIX)
+        # No name_prefix here: materialize_combined_skill_sources() already baked
+        # SKILL_NAME_PREFIX into each command-derived entry's directory name above,
+        # and deliberately left every standalone skill's directory name bare.
+        result = install_skills(scratch, target, self_config())
 
     log.info("skills.self_rendered", target=str(target), installed=result.installed)
     return result

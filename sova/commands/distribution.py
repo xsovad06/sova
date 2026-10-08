@@ -46,6 +46,11 @@ class UpdateResult:
     updated: int = 0
     skipped: int = 0
     conflicts: list[str] = field(default_factory=list)
+    # Only ever populated when the caller opts into ``prune_stale`` (see
+    # ``_update_files()``): a manifest-tracked path whose source entry is
+    # gone entirely, removed because its on-disk content still matched the
+    # last-installed hash.
+    removed: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -209,11 +214,29 @@ def _update_files(
     force: bool = False,
     filenames: list[str] | None = None,
     workflow_names: list[str] | None = None,
+    prune_stale: bool = False,
 ) -> UpdateResult:
     """Incrementally update installed files with conflict detection.
 
     ``filenames``, when not ``None``, restricts the update to that explicit
     subset of ``source_files`` (an empty list means "update nothing").
+
+    ``prune_stale``, only honored when ``filenames`` is ``None`` (a
+    caller-restricted subset is never the full canonical set, so it must
+    never be read as "everything else is gone"), additionally removes any
+    manifest entry absent from ``source_files`` entirely. This covers a
+    source renamed or retired out from under an existing install (e.g. a
+    standalone skill losing its ``sova-`` prefix, issue #1136): without it,
+    the old installed path survives forever alongside the new one, since the
+    main loop above only ever touches filenames it was actually given. Only
+    a ``managed`` entry whose on-disk content still matches the recorded
+    hash is removed unconditionally; a locally-modified managed entry is
+    reported via ``result.conflicts`` instead (same list the main loop above
+    already uses for "needs a human") unless ``force=True``, in which case
+    the explicit override is read as the user asking for the retired copy
+    to go regardless of the local edit. An unmanaged entry is never touched
+    at all, so project-owned content can't be silently deleted no matter
+    what ``force`` is.
     """
     if filenames is not None:
         allowed = set(filenames)
@@ -309,6 +332,47 @@ def _update_files(
         working.commands[filename] = ManifestEntry(hash=new_hash, managed=True)
         manifest_dirty = True
         result.updated += 1
+
+    if prune_stale and filenames is None:
+        canonical_names = {filename for filename, _ in source_files}
+        for filename in sorted(working.commands):
+            if filename in canonical_names:
+                continue
+            entry = working.commands[filename]
+            if not entry.managed:
+                continue
+            target_path = target_dir / filename
+            if not target_path.is_file():
+                # Already gone (manually deleted, or never written); just drop
+                # the now-meaningless manifest entry.
+                del working.commands[filename]
+                manifest_dirty = True
+                result.removed.append(filename)
+                continue
+            local_text = read_text_or_none(target_path)
+            local_hash = file_hash(local_text) if local_text is not None else None
+            if local_hash != entry.hash and not force:
+                # An explicit --force is the user asking for the retired copy to go even
+                # though it was locally modified; without it, a locally-modified retired
+                # entry is reported exactly like any other conflict above, rather than
+                # being silently kept forever with no way to clear it.
+                result.conflicts.append(filename)
+                continue
+            try:
+                target_path.unlink()
+            except OSError:
+                log.warning("commands.prune.unlink_failed", filename=filename)
+                result.conflicts.append(filename)
+                continue
+            parent = target_path.parent
+            if parent != target_dir:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    pass
+            del working.commands[filename]
+            manifest_dirty = True
+            result.removed.append(filename)
 
     if manifest_dirty:
         write_manifest(target_dir, working)
@@ -626,15 +690,15 @@ def update_guidelines(
     return _update_files(files, target_dir, build_variables(cfg), force=force, filenames=filenames)
 
 
-def _collect_skills(skills_dir: Path, *, name_prefix: str = "") -> list[tuple[str, Path]]:
+def _collect_skills(skills_dir: Path) -> list[tuple[str, Path]]:
     """Collect SKILL.md files from subdirectories of a skills directory.
 
-    ``name_prefix`` is applied to the installed directory name, not the
-    source directory name, so a runtime that needs a collision-safe target
-    (e.g. Codex's ``.agents/skills/``, which pre-existing hand-authored
-    content under plain names already occupies) can install the same
-    canonical source tree under ``sova-<name>`` without a second,
-    prefixed copy of that source tree.
+    No prefixing: a runtime that needs a collision-safe target (e.g.
+    Codex's ``.agents/skills/``, which pre-existing hand-authored content
+    under plain names already occupies) handles that upstream of this
+    function, in ``materialize_combined_skill_sources()``, which bakes the
+    prefix directly into the scratch directory it hands this one (issue
+    #1136).
     """
     if not skills_dir.is_dir():
         return []
@@ -644,20 +708,13 @@ def _collect_skills(skills_dir: Path, *, name_prefix: str = "") -> list[tuple[st
             continue
         skill_file = skill_dir / "SKILL.md"
         if skill_file.is_file():
-            rel_key = f"{name_prefix}{skill_dir.name}/SKILL.md"
-            result.append((rel_key, skill_file))
+            result.append((f"{skill_dir.name}/SKILL.md", skill_file))
     return result
 
 
-def install_skills(
-    skills_dir: Path,
-    target_dir: Path,
-    cfg: ProjectConfig,
-    *,
-    name_prefix: str = "",
-) -> InstallResult:
+def install_skills(skills_dir: Path, target_dir: Path, cfg: ProjectConfig) -> InstallResult:
     """Install skill templates into a target project's skills directory."""
-    files = _collect_skills(skills_dir, name_prefix=name_prefix)
+    files = _collect_skills(skills_dir)
     if not files:
         return InstallResult()
     result = _install_files(files, target_dir, build_variables(cfg))
@@ -671,35 +728,72 @@ def update_skills(
     cfg: ProjectConfig,
     *,
     force: bool = False,
-    name_prefix: str = "",
+    prune_stale: bool = False,
 ) -> UpdateResult:
-    """Update installed skills incrementally."""
-    files = _collect_skills(skills_dir, name_prefix=name_prefix)
+    """Update installed skills incrementally.
+
+    ``prune_stale`` removes any manifest entry absent from ``skills_dir``
+    entirely (see ``_update_files()``), so the caller is responsible for
+    guaranteeing ``skills_dir`` is a trustworthy, *complete* enumeration of
+    everything that should exist at ``target_dir`` before opting in:
+    whatever name is missing from it is read as "retired" and deleted,
+    with no way for this function to tell "genuinely retired" apart from
+    "the caller's own source enumeration silently came up short." It
+    defaults to off, and only ``sova.agents.sync.sync_runtime_skills()``
+    opts in today. A runtime-support filter narrowing ``skills_dir`` is an
+    intended, desirable prune trigger there (a command that stops
+    supporting the runtime should be removed); an enumeration that fails
+    open to an empty or partial view because its own source directory is
+    missing or unreadable is not, which is exactly why that caller only
+    passes ``prune_stale=True`` after confirming its canonical commands
+    directory actually resolved (see its own docstring, issue #1136).
+    """
+    files = _collect_skills(skills_dir)
     if not files:
         return UpdateResult()
-    return _update_files(files, target_dir, build_variables(cfg), force=force)
+    return _update_files(files, target_dir, build_variables(cfg), force=force, prune_stale=prune_stale)
 
 
 def diff_skills(skills_dir: Path, target_dir: Path, cfg: ProjectConfig) -> DiffResult:
-    """Show what changed between canonical skills and installed ones.
-
-    No ``name_prefix`` parameter: unlike ``install_skills()``/``update_skills()``,
-    nothing calls this against a prefixed runtime mirror (e.g. Codex's
-    ``.agents/skills/``) today, so there is no caller to thread it through to.
-    Add one back only alongside an actual caller resolving that mirror's
-    ``skills_dir()`` and ``skill_name_prefix``.
-    """
+    """Show what changed between canonical skills and installed ones."""
     files = _collect_skills(skills_dir)
     return _diff_files(files, target_dir, build_variables(cfg))
 
 
 def reverse_diff_skills(skills_dir: Path, target_dir: Path, cfg: ProjectConfig) -> ReverseDiffResult:
-    """Show local modifications to installed skills that could be back-ported.
-
-    See ``diff_skills()`` for why this has no ``name_prefix`` parameter.
-    """
+    """Show local modifications to installed skills that could be back-ported."""
     files = _collect_skills(skills_dir)
     return _reverse_diff_files(files, target_dir, build_variables(cfg))
+
+
+def find_skill_debris(target_dir: Path) -> dict[str, list[str]]:
+    """Leftover sibling files inside a SOVA-managed skill directory, keyed by skill name.
+
+    A skill installs exactly one file, ``SKILL.md`` (see ``_collect_skills()``);
+    anything else sitting alongside it is content orphaned by a prior on-disk
+    layout (e.g. a three-file ``README.md``/``design-standards.md`` shape
+    folded into a single ``SKILL.md``, issue #1136) that neither the manifest
+    nor any installer ever cleans up on its own. Scoped to manifest-tracked
+    (``managed: true``) skill directories only, so project-owned content
+    sharing the same parent directory is never reported.
+    """
+    manifest = read_manifest(target_dir)
+    if manifest is None:
+        return {}
+    managed_names = {
+        name.removesuffix("/SKILL.md")
+        for name, entry in manifest.commands.items()
+        if entry.managed and name.endswith("/SKILL.md")
+    }
+    debris: dict[str, list[str]] = {}
+    for name in sorted(managed_names):
+        skill_dir = target_dir / name
+        if not skill_dir.is_dir():
+            continue
+        extras = sorted(p.name for p in skill_dir.iterdir() if p.name != "SKILL.md")
+        if extras:
+            debris[name] = extras
+    return debris
 
 
 def list_commands(target_dir: Path) -> ListResult:

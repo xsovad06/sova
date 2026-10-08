@@ -240,7 +240,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Termination provenance is recorded at the point the signal is sent, not guessed at exit
 - The memory guard's runtime check lives in the watchdog's existing poll loop, not a new gate or poller
 - `sova run` installs its own SIGTERM handler so the grace period before SIGKILL is spent preserving work, not lost to the default disposition
-- Codex skills are mechanically rendered from `commands/*.md`, not hand-authored, and every SOVA-managed `.agents/skills/` entry is name-prefixed rather than directory-separated
+- Codex skills are mechanically rendered from `commands/*.md`, not hand-authored, and every command-derived `.agents/skills/` entry is name-prefixed rather than directory-separated; a standalone, distributed skill from `skills/` installs under its own bare name there instead
 
 ## Cross-References (domain-specific details)
 

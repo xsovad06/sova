@@ -43,10 +43,10 @@ def artifact_exclusion_prefixes() -> frozenset[str]:
     directory (e.g. this repo's own ``.agents/skills/testing-patterns``) looking
     like the agent's own uncommitted work the moment it was mirrored into a
     worktree. ``skill_name_prefix`` still does its own, separate job wherever
-    ``install_skills()``/``update_skills()`` write into a shared directory:
-    avoiding a destructive overwrite of unmanaged content there. The two
-    mechanisms solve different problems and are allowed to disagree on
-    granularity.
+    ``materialize_combined_skill_sources()`` merges a command-derived skill
+    into a shared directory: avoiding a destructive overwrite of unmanaged
+    content there. The two mechanisms solve different problems and are
+    allowed to disagree on granularity.
     """
     prefixes: set[str] = set()
     for adapter_cls in ADAPTERS.values():

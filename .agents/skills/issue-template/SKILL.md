@@ -1,5 +1,5 @@
 ---
-name: sova-issue-template
+name: issue-template
 description: "Canonical issue body structure for SOVA, using the exact headings the SOVA triage quality gate scores. Auto-activates when creating, drafting, or rewriting an issue or ticket for the tracker."
 ---
 

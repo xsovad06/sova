@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from sova.commands.catalog import CommandEntry
+from sova.commands.manifest import MANIFEST_FILENAME
 from sova.commands.skill_render import (
     SKILL_NAME_PREFIX,
     SkillRenderError,
@@ -521,6 +522,22 @@ class TestMaterializeCombinedSkillSources:
         with pytest.raises(SkillRenderError, match="collision"):
             materialize_combined_skill_sources(standalone, {"foo": "---\nname: sova-foo\n---\nBody.\n"}, scratch)
 
+    def test_standalone_skill_squatting_the_reserved_prefix_raises(self, tmp_path: Path) -> None:
+        """A standalone directory whose *name already carries the reserved prefix* (e.g.
+        `skills/sova-foo/`) is rejected up front, before the ordinary collision check even
+        runs: it isn't actually a command-derived skill, it's a standalone one squatting on
+        a namespace reserved for command-derived output (issue #1136 finding)."""
+        standalone = tmp_path / "skills"
+        skill_dir = standalone / "sova-foo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: sova-foo\n---\nHand-authored.\n", encoding="utf-8")
+
+        scratch = tmp_path / "scratch"
+        with pytest.raises(SkillRenderError, match="reserved"):
+            materialize_combined_skill_sources(
+                standalone, {"foo": "---\nname: sova-foo\n---\nBody.\n"}, scratch, name_prefix="sova-"
+            )
+
     def test_missing_standalone_dir_is_fine(self, tmp_path: Path) -> None:
         scratch = tmp_path / "scratch"
         materialize_combined_skill_sources(tmp_path / "nonexistent", {"foo": "content"}, scratch)
@@ -548,6 +565,34 @@ class TestMaterializeCombinedSkillSources:
 
         assert not (scratch / "testing-patterns").exists()
 
+    def test_missing_manifest_does_not_silently_drop_unchanged_managed_content(self, tmp_path: Path) -> None:
+        """A manifest lost to corruption or manual deletion must not be read as positive
+        evidence the on-disk content is foreign: that would silently and permanently
+        exclude a SOVA-managed skill from every future sync, with no way for even --force
+        to recover it, since the exclusion happens before update_skills() ever sees the
+        entry (issue #1136 finding). When the on-disk content still matches what would be
+        rendered today, there's nothing to distinguish it from SOVA's own prior output, so
+        it must flow through rather than being skipped."""
+        standalone = tmp_path / "skills"
+        skill_dir = standalone / "a-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: a-skill\n---\nUnchanged body.\n", encoding="utf-8")
+
+        existing_target = tmp_path / "installed"
+        existing_skill = existing_target / "a-skill"
+        existing_skill.mkdir(parents=True)
+        (existing_skill / "SKILL.md").write_text("---\nname: a-skill\n---\nUnchanged body.\n", encoding="utf-8")
+        # No manifest file at all: simulates a deleted/corrupted .sova-manifest.json.
+
+        scratch = tmp_path / "scratch"
+        materialize_combined_skill_sources(
+            standalone, {}, scratch, name_prefix="sova-", existing_target_dir=existing_target
+        )
+
+        assert (scratch / "a-skill" / "SKILL.md").read_text(encoding="utf-8") == (
+            "---\nname: a-skill\n---\nUnchanged body.\n"
+        )
+
     def test_does_not_skip_when_no_existing_sibling(self, tmp_path: Path) -> None:
         """Without a pre-existing hand-authored sibling at the target, the standalone skill
         still renders normally (the skip is specific to an actual on-disk collision)."""
@@ -563,8 +608,36 @@ class TestMaterializeCombinedSkillSources:
 
         assert (scratch / "testing-patterns" / "SKILL.md").is_file()
 
-    def test_name_prefix_rewrites_standalone_frontmatter_name(self, tmp_path: Path) -> None:
-        """Without this, the installed dir is sova-foo but the frontmatter still declares plain foo."""
+    def test_does_not_skip_a_standalone_skill_sova_already_manages(self, tmp_path: Path) -> None:
+        """A bare-named standalone skill lands at the same path on every sync (issue #1136): a
+        second sync must not mistake its own prior install for pre-existing hand-authored content,
+        or it would never be able to update itself again."""
+        standalone = tmp_path / "skills"
+        skill_dir = standalone / "design-taste"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: design-taste\n---\nUpdated body.\n", encoding="utf-8")
+
+        existing_target = tmp_path / "installed"
+        existing_skill = existing_target / "design-taste"
+        existing_skill.mkdir(parents=True)
+        (existing_skill / "SKILL.md").write_text("---\nname: design-taste\n---\nStale body.\n", encoding="utf-8")
+        (existing_target / MANIFEST_FILENAME).write_text(
+            '{"version": 1, "commands": {"design-taste/SKILL.md": {"hash": "x", "managed": true}}}',
+            encoding="utf-8",
+        )
+
+        scratch = tmp_path / "scratch"
+        materialize_combined_skill_sources(
+            standalone, {}, scratch, name_prefix="sova-", existing_target_dir=existing_target
+        )
+
+        assert (scratch / "design-taste" / "SKILL.md").read_text(encoding="utf-8") == (
+            "---\nname: design-taste\n---\nUpdated body.\n"
+        )
+
+    def test_name_prefix_does_not_reach_standalone_frontmatter_name(self, tmp_path: Path) -> None:
+        """A standalone skill is a different artifact class: it installs bare even when
+        extra (command-derived) entries in the same call get name_prefix (issue #1136)."""
         standalone = tmp_path / "skills"
         skill_dir = standalone / "hand-authored"
         skill_dir.mkdir(parents=True)
@@ -575,7 +648,8 @@ class TestMaterializeCombinedSkillSources:
         materialize_combined_skill_sources(standalone, {}, scratch, name_prefix="sova-")
 
         content = (scratch / "hand-authored" / "SKILL.md").read_text(encoding="utf-8")
-        assert "name: sova-hand-authored" in content
+        assert "name: hand-authored" in content
+        assert "sova-" not in content
 
     def test_claude_only_frontmatter_keys_are_stripped(self, tmp_path: Path) -> None:
         """Codex has no tool-permission concept: allowed_tools is Claude-only noise, not useful metadata."""
@@ -591,7 +665,7 @@ class TestMaterializeCombinedSkillSources:
 
         content = (scratch / "hand-authored" / "SKILL.md").read_text(encoding="utf-8")
         assert "allowed_tools" not in content
-        assert "name: sova-hand-authored" in content
+        assert "name: hand-authored" in content
         assert "Body." in content
 
     def test_no_name_prefix_leaves_frontmatter_untouched(self, tmp_path: Path) -> None:
@@ -606,17 +680,16 @@ class TestMaterializeCombinedSkillSources:
         content = (scratch / "hand-authored" / "SKILL.md").read_text(encoding="utf-8")
         assert "name: hand-authored" in content
 
-    def test_already_prefixed_name_is_not_double_prefixed(self, tmp_path: Path) -> None:
-        standalone = tmp_path / "skills"
-        skill_dir = standalone / "already-prefixed"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("---\nname: sova-already-prefixed\n---\nBody.\n", encoding="utf-8")
-
+    def test_extra_entry_is_prefixed_in_the_scratch_directory_name(self, tmp_path: Path) -> None:
+        """A command-derived entry's scratch directory name carries name_prefix directly: the
+        caller installs the combined tree with no further name_prefix of its own."""
         scratch = tmp_path / "scratch"
-        materialize_combined_skill_sources(standalone, {}, scratch, name_prefix="sova-")
+        materialize_combined_skill_sources(
+            tmp_path / "nonexistent", {"foo": "---\nname: sova-foo\n---\nBody.\n"}, scratch, name_prefix="sova-"
+        )
 
-        content = (scratch / "already-prefixed" / "SKILL.md").read_text(encoding="utf-8")
-        assert content.count("sova-") == 1
+        assert (scratch / "sova-foo" / "SKILL.md").is_file()
+        assert not (scratch / "foo").exists()
 
     def test_sibling_file_raises_instead_of_being_silently_dropped(self, tmp_path: Path) -> None:
         """A SKILL.md referencing a sibling file must not ship a package missing that file."""
@@ -643,7 +716,7 @@ class TestMaterializeCombinedSkillSources:
         with pytest.raises(SkillRenderError, match="references"):
             materialize_combined_skill_sources(standalone, {}, scratch)
 
-    def test_quoted_frontmatter_name_is_prefixed_preserving_quotes(self, tmp_path: Path) -> None:
+    def test_quoted_frontmatter_name_is_left_quoted_and_unprefixed(self, tmp_path: Path) -> None:
         standalone = tmp_path / "skills"
         skill_dir = standalone / "hand-authored"
         skill_dir.mkdir(parents=True)
@@ -653,7 +726,7 @@ class TestMaterializeCombinedSkillSources:
         materialize_combined_skill_sources(standalone, {}, scratch, name_prefix="sova-")
 
         content = (scratch / "hand-authored" / "SKILL.md").read_text(encoding="utf-8")
-        assert 'name: "sova-hand-authored"' in content
+        assert 'name: "hand-authored"' in content
 
     def test_frontmatter_name_directory_mismatch_raises(self, tmp_path: Path) -> None:
         """A declared name that disagrees with its directory would otherwise reach the installed tree unnoticed."""
@@ -713,5 +786,5 @@ class TestRenderSelfSkills:
 
         assert result.installed == 2
         assert (target / "sova-foo" / "SKILL.md").is_file()
-        assert (target / "sova-bar" / "SKILL.md").is_file()
+        assert (target / "bar" / "SKILL.md").is_file()
         assert (target / ".sova-manifest.json").is_file()

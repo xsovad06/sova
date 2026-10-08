@@ -1396,6 +1396,124 @@ class TestSkillsDistribution:
         assert result.updated == 1
         assert result.skipped == 1
 
+    @staticmethod
+    def _install_prefixed_alpha(skills_dir: Path, skills_target: Path, cfg: object) -> None:
+        """Write a `sova-alpha/SKILL.md` directly, simulating a prior install from before
+        issue #1136 removed `name_prefix` support from `install_skills()`: prefixing is now
+        solely `materialize_combined_skill_sources()`'s job, so these tests build the
+        pre-existing on-disk state by hand instead."""
+        from sova.commands.distribution import _install_files
+        from sova.commands.templates import build_variables
+
+        target_rel = "sova-alpha/SKILL.md"
+        source_path = skills_dir / "alpha" / "SKILL.md"
+        _install_files([(target_rel, source_path)], skills_target, build_variables(cfg))
+
+    def test_update_skills_prune_stale_removes_unmodified_retired_entry(
+        self, skills_dir: Path, skills_target: Path
+    ) -> None:
+        """A managed entry no longer in the source tree, with unmodified on-disk content,
+        is deleted and its manifest entry dropped: this is the issue #1136 migration case
+        where a standalone skill lost its `sova-` prefix and the old `sova-<name>/SKILL.md`
+        would otherwise sit on disk forever alongside the new bare-named one."""
+        from sova.commands.distribution import update_skills
+        from sova.commands.manifest import read_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        self._install_prefixed_alpha(skills_dir, skills_target, cfg)
+        assert (skills_target / "sova-alpha" / "SKILL.md").is_file()
+
+        # Simulate the renamed source tree: "alpha" now installs bare, with no
+        # prefixed sibling in the new source at all.
+        bare_source = skills_dir.parent / "skills-bare"
+        bare_source.mkdir()
+        (bare_source / "alpha").mkdir()
+        (bare_source / "alpha" / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+        result = update_skills(bare_source, skills_target, cfg, prune_stale=True)
+
+        assert "sova-alpha/SKILL.md" in result.removed
+        assert not (skills_target / "sova-alpha").exists()
+        assert (skills_target / "alpha" / "SKILL.md").is_file()
+        manifest = read_manifest(skills_target)
+        assert manifest is not None
+        assert "sova-alpha/SKILL.md" not in manifest.commands
+
+    def test_update_skills_prune_stale_preserves_locally_modified_entry(
+        self, skills_dir: Path, skills_target: Path
+    ) -> None:
+        """A managed but locally-modified retired entry is reported as a conflict, not deleted:
+        project-owned edits to a since-renamed skill must survive a migration unless the
+        caller explicitly passes --force."""
+        from sova.commands.distribution import update_skills
+        from sova.commands.manifest import read_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        self._install_prefixed_alpha(skills_dir, skills_target, cfg)
+        (skills_target / "sova-alpha" / "SKILL.md").write_text("# Locally edited\n")
+
+        bare_source = skills_dir.parent / "skills-bare"
+        bare_source.mkdir()
+        (bare_source / "alpha").mkdir()
+        (bare_source / "alpha" / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+        result = update_skills(bare_source, skills_target, cfg, prune_stale=True)
+
+        assert "sova-alpha/SKILL.md" in result.conflicts
+        assert (skills_target / "sova-alpha" / "SKILL.md").read_text() == "# Locally edited\n"
+        manifest = read_manifest(skills_target)
+        assert manifest is not None
+        assert "sova-alpha/SKILL.md" in manifest.commands
+
+    def test_update_skills_prune_stale_force_removes_locally_modified_entry(
+        self, skills_dir: Path, skills_target: Path
+    ) -> None:
+        """An explicit --force on a locally-modified retired entry is the user asking for
+        it to go anyway, unlike the unforced case above."""
+        from sova.commands.distribution import update_skills
+        from sova.commands.manifest import read_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        self._install_prefixed_alpha(skills_dir, skills_target, cfg)
+        (skills_target / "sova-alpha" / "SKILL.md").write_text("# Locally edited\n")
+
+        bare_source = skills_dir.parent / "skills-bare"
+        bare_source.mkdir()
+        (bare_source / "alpha").mkdir()
+        (bare_source / "alpha" / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+        result = update_skills(bare_source, skills_target, cfg, force=True, prune_stale=True)
+
+        assert "sova-alpha/SKILL.md" in result.removed
+        assert "sova-alpha/SKILL.md" not in result.conflicts
+        assert not (skills_target / "sova-alpha").exists()
+        manifest = read_manifest(skills_target)
+        assert manifest is not None
+        assert "sova-alpha/SKILL.md" not in manifest.commands
+
+    def test_update_skills_without_prune_stale_leaves_retired_entry(
+        self, skills_dir: Path, skills_target: Path
+    ) -> None:
+        """Default behavior (prune_stale=False) is unchanged: a retired entry is left alone."""
+        from sova.commands.distribution import update_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        self._install_prefixed_alpha(skills_dir, skills_target, cfg)
+
+        bare_source = skills_dir.parent / "skills-bare"
+        bare_source.mkdir()
+        (bare_source / "alpha").mkdir()
+        (bare_source / "alpha" / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+        result = update_skills(bare_source, skills_target, cfg)
+
+        assert result.removed == []
+        assert (skills_target / "sova-alpha" / "SKILL.md").is_file()
+
     def test_diff_skills(self, skills_dir: Path, skills_target: Path) -> None:
         """diff_skills() detects changed and new skills."""
         from sova.commands.distribution import diff_skills, install_skills
@@ -1419,27 +1537,6 @@ class TestSkillsDistribution:
         assert not any("stray-file" in k for k in keys)
         assert "alpha/SKILL.md" in keys
 
-    def test_collect_skills_with_name_prefix(self, skills_dir: Path) -> None:
-        """A name_prefix is applied to the installed name, not the source directory name."""
-        from sova.commands.distribution import _collect_skills
-
-        files = _collect_skills(skills_dir, name_prefix="sova-")
-        keys = [k for k, _ in files]
-        assert "sova-alpha/SKILL.md" in keys
-        assert "sova-beta/SKILL.md" in keys
-        assert "alpha/SKILL.md" not in keys
-
-    def test_install_skills_with_name_prefix(self, skills_dir: Path, skills_target: Path) -> None:
-        from sova.commands.distribution import install_skills
-        from sova.config.models import ProjectConfig
-
-        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
-        result = install_skills(skills_dir, skills_target, cfg, name_prefix="sova-")
-
-        assert result.installed == 2
-        assert (skills_target / "sova-alpha" / "SKILL.md").exists()
-        assert not (skills_target / "alpha").exists()
-
     def test_update_skills_empty_dir(self, tmp_path: Path, skills_target: Path) -> None:
         """update_skills() handles missing skills directory gracefully."""
         from sova.commands.distribution import update_skills
@@ -1457,6 +1554,53 @@ class TestSkillsDistribution:
         cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
         result = install_skills(tmp_path / "nonexistent", skills_target, cfg)
         assert result.installed == 0
+
+
+class TestFindSkillDebris:
+    """A prior three-file skill layout (README.md, design-standards.md) folded into a
+    single SKILL.md leaves orphaned siblings on disk with nothing to flag them (issue
+    #1136 finding)."""
+
+    def test_no_manifest_reports_nothing(self, tmp_path: Path) -> None:
+        from sova.commands.distribution import find_skill_debris
+
+        assert find_skill_debris(tmp_path / "nonexistent") == {}
+
+    def test_reports_leftover_sibling_in_a_managed_skill_directory(self, skills_dir: Path, skills_target: Path) -> None:
+        from sova.commands.distribution import find_skill_debris, install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+        (skills_target / "alpha" / "README.md").write_text("Leftover.\n")
+
+        debris = find_skill_debris(skills_target)
+
+        assert debris == {"alpha": ["README.md"]}
+
+    def test_unmanaged_directory_is_not_reported(self, skills_dir: Path, skills_target: Path) -> None:
+        """A project-owned skill directory SOVA never installed must never be reported,
+        even if it happens to hold more than one file."""
+        from sova.commands.distribution import find_skill_debris, install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+        local = skills_target / "local-only"
+        local.mkdir()
+        (local / "SKILL.md").write_text("# Local\n")
+        (local / "NOTES.md").write_text("Notes.\n")
+
+        assert find_skill_debris(skills_target) == {}
+
+    def test_no_debris_reports_empty(self, skills_dir: Path, skills_target: Path) -> None:
+        from sova.commands.distribution import find_skill_debris, install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+
+        assert find_skill_debris(skills_target) == {}
 
 
 class TestSyncRuntimeSkillsAndReport:
@@ -1486,15 +1630,30 @@ class TestSyncRuntimeSkillsAndReport:
         assert not (tmp_path / ".agents").exists()
         assert capsys.readouterr().err == ""
 
-    def test_codex_runtime_preexisting_unmanaged_skill_is_a_conflict_not_an_overwrite(
+    def test_codex_runtime_preexisting_unmanaged_command_derived_skill_is_a_conflict_not_an_overwrite(
         self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """A locally-modified file already at the Codex mirror target must be reported, not clobbered."""
+        """A locally-modified file already at the Codex mirror target must be reported, not clobbered.
+
+        Uses a command-derived skill's prefixed name: that name is reserved for
+        SOVA's own output, so pre-existing content there always goes through
+        the ordinary manifest-conflict path. A standalone skill's bare name
+        instead goes through materialize_combined_skill_sources()'s
+        existing-content check and is silently preserved, never reported (see
+        test_codex_runtime_preserves_preexisting_unmanaged_standalone_skill).
+        """
         from sova.cli.commands.commands import _sync_runtime_skills_and_report
         from sova.config.models import ProjectConfig
 
         monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
-        preexisting = tmp_path / ".agents" / "skills" / "sova-alpha"
+        commands_dir = tmp_path / "real-canonical-commands"
+        commands_dir.mkdir()
+        (commands_dir / "foo.md").write_text(
+            "---\nname: foo\ndescription: Foo command.\nuser-invocable: true\n---\nDo the foo thing.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sova.agents.sync.get_canonical_dir", lambda: commands_dir)
+        preexisting = tmp_path / ".agents" / "skills" / "sova-foo"
         preexisting.mkdir(parents=True)
         (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
 
@@ -1504,18 +1663,47 @@ class TestSyncRuntimeSkillsAndReport:
         _sync_runtime_skills_and_report(tmp_path, cfg)
 
         err = capsys.readouterr().err
-        assert "sova-alpha/SKILL.md" in err
+        assert "sova-foo/SKILL.md" in err
         assert "Conflicts" in err
         assert (preexisting / "SKILL.md").read_text(encoding="utf-8") == "Hand-authored, not canonical.\n"
 
-    def test_codex_runtime_force_overwrites_preexisting_unmanaged_skill(
+    def test_codex_runtime_preserves_preexisting_unmanaged_standalone_skill(
+        self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A standalone skill's bare name is where its own sync would also write (issue #1136):
+        pre-existing unmanaged content there is preserved by never being attempted at all, even
+        with force=True, since materialize_combined_skill_sources() excludes it upfront."""
+        from sova.cli.commands.commands import _sync_runtime_skills_and_report
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
+        preexisting = tmp_path / ".agents" / "skills" / "alpha"
+        preexisting.mkdir(parents=True)
+        (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
+
+        cfg = ProjectConfig()
+        cfg.agent.runtime = "codex"
+
+        _sync_runtime_skills_and_report(tmp_path, cfg, force=True)
+
+        assert (preexisting / "SKILL.md").read_text(encoding="utf-8") == "Hand-authored, not canonical.\n"
+        assert "Conflicts" not in capsys.readouterr().err
+
+    def test_codex_runtime_force_overwrites_preexisting_unmanaged_command_derived_skill(
         self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         from sova.cli.commands.commands import _sync_runtime_skills_and_report
         from sova.config.models import ProjectConfig
 
         monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
-        preexisting = tmp_path / ".agents" / "skills" / "sova-alpha"
+        commands_dir = tmp_path / "real-canonical-commands"
+        commands_dir.mkdir()
+        (commands_dir / "foo.md").write_text(
+            "---\nname: foo\ndescription: Foo command.\nuser-invocable: true\n---\nDo the foo thing.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sova.agents.sync.get_canonical_dir", lambda: commands_dir)
+        preexisting = tmp_path / ".agents" / "skills" / "sova-foo"
         preexisting.mkdir(parents=True)
         (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
 
@@ -1539,7 +1727,7 @@ class TestSyncRuntimeSkillsAndReport:
 
         _sync_runtime_skills_and_report(tmp_path, cfg)
 
-        assert (tmp_path / ".agents" / "skills" / "sova-alpha" / "SKILL.md").is_file()
+        assert (tmp_path / ".agents" / "skills" / "alpha" / "SKILL.md").is_file()
         assert "Skills synced for runtime 'codex': 2" in capsys.readouterr().err
 
     def test_warns_about_orphaned_codex_mirror_after_switch_to_claude_code(

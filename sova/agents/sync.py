@@ -69,26 +69,49 @@ def sync_runtime_skills(
     a "cold" target with no manifest yet: a destination directory could in
     principle already hold hand-authored content that must be reported as a
     conflict rather than silently overwritten on the first sync. (Codex's
-    target, ``.agents/skills/``, installs every entry under a ``sova-``
-    prefix for exactly this reason; see ``CodexAdapter``.)
+    target, ``.agents/skills/``, installs every command-derived entry under
+    a ``sova-`` prefix for exactly this reason; see ``CodexAdapter``. A
+    standalone skill under ``skills_src_dir`` installs under its own bare
+    name instead, relying on ``materialize_combined_skill_sources()``'s
+    separate existing-content check rather than the prefix, since it is a
+    different artifact class from a command-derived skill; see that
+    function's docstring, issue #1136.)
 
     The adapter's ``extra_skill_sources()`` (Codex's command-derived skills)
     are merged with ``skills_src_dir`` into a scratch directory first, so a
     single ``update_skills()`` call produces one coherent manifest for both
-    source kinds.
+    source kinds. No further ``name_prefix`` is passed to ``update_skills()``
+    itself: ``materialize_combined_skill_sources()`` already named every
+    entry in the scratch directory exactly as it should land in ``target``.
+
+    ``prune_stale=True`` on that call removes any manifest-tracked entry
+    absent from the scratch tree entirely (when unmodified), not just ones
+    whose content changed: a prior install's ``sova-<name>`` standalone
+    skill (from before issue #1136 removed that prefix for standalone
+    skills) would otherwise sit on disk forever alongside the new bare-named
+    one, discoverable twice under the runtime's own skill lookup. It is only
+    passed when the canonical commands directory actually resolved to a real
+    directory: ``adapter.extra_skill_sources()`` fails open to ``{}`` when
+    ``get_canonical_dir()`` is missing or unreadable (a broken/partial
+    package-data install, or a future relocation of that resource), and the
+    standalone skills alone would still make the scratch tree non-empty, so
+    nothing else would catch a prune running against that silently-truncated
+    source and deleting every real command-derived entry. See
+    ``update_skills()``'s docstring for the general contract this upholds.
     """
     adapter = create_runtime_adapter(cfg.agent.runtime)
     target = adapter.skills_dir(project_dir)
     if target is None or target == ClaudeCodeAdapter().skills_dir(project_dir):
         return None
 
-    extra = adapter.extra_skill_sources(get_canonical_dir())
+    canonical_dir = get_canonical_dir()
+    extra = adapter.extra_skill_sources(canonical_dir)
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         materialize_combined_skill_sources(
             skills_src_dir, extra, scratch, name_prefix=adapter.skill_name_prefix, existing_target_dir=target
         )
-        return update_skills(scratch, target, cfg, force=force, name_prefix=adapter.skill_name_prefix)
+        return update_skills(scratch, target, cfg, force=force, prune_stale=canonical_dir.is_dir())
 
 
 def report_runtime_skills_sync(
@@ -105,6 +128,10 @@ def report_runtime_skills_sync(
     """
     if result is not None:
         console.print(f"{indent}[green]Skills synced for runtime {cfg.agent.runtime!r}: {result.updated}[/green]")
+        if result.removed:
+            console.print(f"{indent}[dim]Removed {len(result.removed)} entr(ies) no longer provided by SOVA:[/dim]")
+            for name in result.removed:
+                console.print(f"{indent}  - {name}")
         if result.conflicts:
             console.print(f"{indent}[yellow]Conflicts ({len(result.conflicts)}):[/yellow]")
             for name in result.conflicts:
