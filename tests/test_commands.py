@@ -1444,7 +1444,8 @@ class TestSkillsDistribution:
         self, skills_dir: Path, skills_target: Path
     ) -> None:
         """A managed but locally-modified retired entry is reported as a conflict, not deleted:
-        project-owned edits to a since-renamed skill must survive a migration."""
+        project-owned edits to a since-renamed skill must survive a migration unless the
+        caller explicitly passes --force."""
         from sova.commands.distribution import update_skills
         from sova.commands.manifest import read_manifest
         from sova.config.models import ProjectConfig
@@ -1465,6 +1466,33 @@ class TestSkillsDistribution:
         manifest = read_manifest(skills_target)
         assert manifest is not None
         assert "sova-alpha/SKILL.md" in manifest.commands
+
+    def test_update_skills_prune_stale_force_removes_locally_modified_entry(
+        self, skills_dir: Path, skills_target: Path
+    ) -> None:
+        """An explicit --force on a locally-modified retired entry is the user asking for
+        it to go anyway, unlike the unforced case above."""
+        from sova.commands.distribution import update_skills
+        from sova.commands.manifest import read_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        self._install_prefixed_alpha(skills_dir, skills_target, cfg)
+        (skills_target / "sova-alpha" / "SKILL.md").write_text("# Locally edited\n")
+
+        bare_source = skills_dir.parent / "skills-bare"
+        bare_source.mkdir()
+        (bare_source / "alpha").mkdir()
+        (bare_source / "alpha" / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+        result = update_skills(bare_source, skills_target, cfg, force=True, prune_stale=True)
+
+        assert "sova-alpha/SKILL.md" in result.removed
+        assert "sova-alpha/SKILL.md" not in result.conflicts
+        assert not (skills_target / "sova-alpha").exists()
+        manifest = read_manifest(skills_target)
+        assert manifest is not None
+        assert "sova-alpha/SKILL.md" not in manifest.commands
 
     def test_update_skills_without_prune_stale_leaves_retired_entry(
         self, skills_dir: Path, skills_target: Path

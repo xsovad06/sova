@@ -230,11 +230,13 @@ def _update_files(
     the old installed path survives forever alongside the new one, since the
     main loop above only ever touches filenames it was actually given. Only
     a ``managed`` entry whose on-disk content still matches the recorded
-    hash is removed; a locally-modified managed entry is left in place and
+    hash is removed unconditionally; a locally-modified managed entry is
     reported via ``result.conflicts`` instead (same list the main loop above
-    already uses for "needs a human"), and an unmanaged entry is never
-    touched at all, so project-owned or already-edited content can't be
-    silently deleted.
+    already uses for "needs a human") unless ``force=True``, in which case
+    the explicit override is read as the user asking for the retired copy
+    to go regardless of the local edit. An unmanaged entry is never touched
+    at all, so project-owned content can't be silently deleted no matter
+    what ``force`` is.
     """
     if filenames is not None:
         allowed = set(filenames)
@@ -349,7 +351,11 @@ def _update_files(
                 continue
             local_text = read_text_or_none(target_path)
             local_hash = file_hash(local_text) if local_text is not None else None
-            if local_hash != entry.hash:
+            if local_hash != entry.hash and not force:
+                # An explicit --force is the user asking for the retired copy to go even
+                # though it was locally modified; without it, a locally-modified retired
+                # entry is reported exactly like any other conflict above, rather than
+                # being silently kept forever with no way to clear it.
                 result.conflicts.append(filename)
                 continue
             try:
@@ -726,11 +732,21 @@ def update_skills(
 ) -> UpdateResult:
     """Update installed skills incrementally.
 
-    ``prune_stale`` is for a caller syncing the *complete* set of skills that
-    should exist at ``target_dir`` (see ``_update_files()``): passing it when
-    ``skills_dir`` was itself filtered (e.g. by runtime support) would read
-    the filtered-out names as "retired" and delete them, so it defaults to
-    off and only ``sova.agents.sync.sync_runtime_skills()`` opts in today.
+    ``prune_stale`` removes any manifest entry absent from ``skills_dir``
+    entirely (see ``_update_files()``), so the caller is responsible for
+    guaranteeing ``skills_dir`` is a trustworthy, *complete* enumeration of
+    everything that should exist at ``target_dir`` before opting in:
+    whatever name is missing from it is read as "retired" and deleted,
+    with no way for this function to tell "genuinely retired" apart from
+    "the caller's own source enumeration silently came up short." It
+    defaults to off, and only ``sova.agents.sync.sync_runtime_skills()``
+    opts in today. A runtime-support filter narrowing ``skills_dir`` is an
+    intended, desirable prune trigger there (a command that stops
+    supporting the runtime should be removed); an enumeration that fails
+    open to an empty or partial view because its own source directory is
+    missing or unreadable is not, which is exactly why that caller only
+    passes ``prune_stale=True`` after confirming its canonical commands
+    directory actually resolved (see its own docstring, issue #1136).
     """
     files = _collect_skills(skills_dir)
     if not files:

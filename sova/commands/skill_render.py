@@ -28,10 +28,11 @@ from typing import Callable, Union
 
 from sova.commands.catalog import CommandEntry, discover, get_canonical_dir, parse_frontmatter
 from sova.commands.distribution import InstallResult, install_skills
-from sova.commands.manifest import read_manifest
+from sova.commands.manifest import Manifest, file_hash, read_manifest
 from sova.commands.self_render import repo_root, self_config
 from sova.commands.templates import build_variables, dedash_prose, split_fenced_lines, workflow_reference_re
 from sova.config.models import ProjectConfig
+from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
 # A substitution's replacement, either a plain string (passed straight to
@@ -564,11 +565,16 @@ def materialize_combined_skill_sources(
     distributed project skills (``skills/issue-template``, ``skills/
     design-taste``, etc.) are a different artifact class from a
     command-derived one and keep their own namespace, so the two rendering
-    pipelines never write to the same path (issue #1136). ``name_prefix``
-    still gates whether a standalone skill's name is checked against
-    ``existing_target_dir`` below: that check only matters for a runtime
-    sharing one directory between managed and unmanaged content (Codex), not
-    for a plain, unshared install (``.claude/skills/``).
+    pipelines never write to the same path (issue #1136). A standalone
+    directory whose name already starts with ``name_prefix`` (e.g. a
+    hypothetical ``skills/sova-foo/``) is rejected outright, before the
+    ordinary collision check below even runs: that reserved namespace is for
+    command-derived output only, never a standalone skill borrowing it.
+    ``existing_target_dir`` below is checked unconditionally (not gated on
+    ``name_prefix``): the real precondition is "this runtime's skills
+    directory is shared with pre-existing, independently-maintained
+    content," which a plain, unshared install (``.claude/skills/``) simply
+    satisfies by never passing ``existing_target_dir`` at all.
 
     A standalone skill's body (and its ``description`` field, when present)
     goes through the same ``_CODEX_SUBSTITUTIONS`` + cross-reference +
@@ -610,11 +616,22 @@ def materialize_combined_skill_sources(
     ``design-taste`` (which, being bare, now lands at that exact plain-name
     path on every run) would mistake its own previous output for pre-existing
     hand-authored content and refuse to ever update itself again.
+
+    When ``existing_target_dir`` has no manifest at all yet (first-ever sync
+    to a fresh directory, or one whose manifest was lost), there is no
+    recorded verdict to read, so the decision falls back to comparing the
+    existing on-disk content against *this* candidate's freshly rendered
+    content: a match means the content is either SOVA's own prior output
+    (now unrecorded) or coincidentally identical, either way safe to let
+    through so the normal installer can adopt it; a mismatch is treated the
+    same as explicit pre-existing hand-authored content and skipped, exactly
+    like the recorded-unmanaged case above (issue #1136).
     """
     combined: dict[str, str] = {f"{name_prefix}{name}": content for name, content in extra.items()}
     skill_names = list(extra)
     cross_references = _cross_reference_substitutions(skill_names)
     prose_substitutions = _CODEX_SUBSTITUTIONS + cross_references + _workflow_reference_substitutions(skill_names)
+    existing_manifest = read_manifest(existing_target_dir) if existing_target_dir is not None else None
 
     if standalone_skills_dir.is_dir():
         for skill_dir in sorted(standalone_skills_dir.iterdir()):
@@ -623,12 +640,11 @@ def materialize_combined_skill_sources(
             skill_file = skill_dir / "SKILL.md"
             if not skill_file.is_file():
                 continue
-            if (
-                name_prefix
-                and existing_target_dir is not None
-                and _is_unmanaged_at(existing_target_dir, skill_dir.name)
-            ):
-                continue
+            if name_prefix and skill_dir.name.startswith(name_prefix):
+                raise SkillRenderError(
+                    f"skills/{skill_dir.name}/ uses the reserved {name_prefix!r} prefix, which is reserved for "
+                    "command-derived skills"
+                )
             other_entries = sorted(p.name for p in skill_dir.iterdir() if p.name != "SKILL.md")
             if other_entries:
                 raise SkillRenderError(
@@ -656,6 +672,10 @@ def materialize_combined_skill_sources(
                 content = f"{frontmatter_raw}{rendered_body}\n"
             content = _strip_claude_only_frontmatter_keys(content)
             _check_skill_frontmatter_name(content, skill_dir.name)
+            if existing_target_dir is not None and _is_unmanaged_at(
+                existing_target_dir, skill_dir.name, content, existing_manifest
+            ):
+                continue
             combined[skill_dir.name] = content
 
     scratch_dir.mkdir(parents=True, exist_ok=True)
@@ -665,20 +685,35 @@ def materialize_combined_skill_sources(
         (dest_dir / "SKILL.md").write_text(content, encoding="utf-8")
 
 
-def _is_unmanaged_at(existing_target_dir: Path, skill_name: str) -> bool:
+def _is_unmanaged_at(existing_target_dir: Path, skill_name: str, candidate: str, manifest: Manifest | None) -> bool:
     """Whether *skill_name* already exists at *existing_target_dir* as content SOVA doesn't manage.
 
-    ``False`` both when nothing exists there yet and when a manifest at
-    ``existing_target_dir`` already marks ``{skill_name}/SKILL.md`` as
-    managed: the latter is SOVA's own prior install of this standalone
-    skill, not pre-existing hand-authored content, and must not be mistaken
-    for it (see ``materialize_combined_skill_sources()``'s docstring).
+    ``False`` both when nothing exists there yet and when *manifest* already
+    marks ``{skill_name}/SKILL.md`` as managed: the latter is SOVA's own
+    prior install of this standalone skill, not pre-existing hand-authored
+    content, and must not be mistaken for it (see
+    ``materialize_combined_skill_sources()``'s docstring).
+
+    *manifest* is ``None`` for both "no manifest file exists yet" and "the
+    manifest file is unreadable/corrupt" (``read_manifest()`` doesn't
+    distinguish the two, and neither case gives positive evidence either
+    way). Returning ``True`` unconditionally for that case would read a
+    merely-lost manifest the same as a confirmed hand-authored collision,
+    silently and permanently dropping a SOVA-managed entry with no way for
+    even ``--force`` to recover it, since this function runs before the
+    entry ever reaches ``_update_files()``'s own, already-correct,
+    no-manifest-entry recovery logic (issue #1136 finding). Comparing the
+    existing on-disk content against *candidate* (this call's freshly
+    rendered content) instead preserves the collision guarantee for content
+    that actually differs (hand-authored or otherwise) while letting
+    unrecorded-but-unchanged content flow through to be silently re-adopted.
     """
-    if not (existing_target_dir / skill_name / "SKILL.md").is_file():
+    path = existing_target_dir / skill_name / "SKILL.md"
+    if not path.is_file():
         return False
-    manifest = read_manifest(existing_target_dir)
     if manifest is None:
-        return True
+        local = read_text_or_none(path)
+        return local is None or file_hash(local) != file_hash(candidate)
     entry = manifest.commands.get(f"{skill_name}/SKILL.md")
     return entry is None or not entry.managed
 

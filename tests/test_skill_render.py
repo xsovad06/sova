@@ -522,19 +522,18 @@ class TestMaterializeCombinedSkillSources:
         with pytest.raises(SkillRenderError, match="collision"):
             materialize_combined_skill_sources(standalone, {"foo": "---\nname: sova-foo\n---\nBody.\n"}, scratch)
 
-    def test_name_collision_raises_against_prefixed_combined_key(self, tmp_path: Path) -> None:
-        """A standalone skill whose *directory name already carries the prefix* (e.g.
-        `skills/sova-foo/`) must still be caught as a collision with command-derived `foo`
-        once `name_prefix="sova-"` is applied: checking against the bare `extra` dict (which
-        only has `"foo"`) missed this, letting line 625's `combined[skill_dir.name] = content`
-        silently overwrite the command-derived entry with no error."""
+    def test_standalone_skill_squatting_the_reserved_prefix_raises(self, tmp_path: Path) -> None:
+        """A standalone directory whose *name already carries the reserved prefix* (e.g.
+        `skills/sova-foo/`) is rejected up front, before the ordinary collision check even
+        runs: it isn't actually a command-derived skill, it's a standalone one squatting on
+        a namespace reserved for command-derived output (issue #1136 finding)."""
         standalone = tmp_path / "skills"
         skill_dir = standalone / "sova-foo"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("---\nname: sova-foo\n---\nHand-authored.\n", encoding="utf-8")
 
         scratch = tmp_path / "scratch"
-        with pytest.raises(SkillRenderError, match="collision"):
+        with pytest.raises(SkillRenderError, match="reserved"):
             materialize_combined_skill_sources(
                 standalone, {"foo": "---\nname: sova-foo\n---\nBody.\n"}, scratch, name_prefix="sova-"
             )
@@ -565,6 +564,34 @@ class TestMaterializeCombinedSkillSources:
         )
 
         assert not (scratch / "testing-patterns").exists()
+
+    def test_missing_manifest_does_not_silently_drop_unchanged_managed_content(self, tmp_path: Path) -> None:
+        """A manifest lost to corruption or manual deletion must not be read as positive
+        evidence the on-disk content is foreign: that would silently and permanently
+        exclude a SOVA-managed skill from every future sync, with no way for even --force
+        to recover it, since the exclusion happens before update_skills() ever sees the
+        entry (issue #1136 finding). When the on-disk content still matches what would be
+        rendered today, there's nothing to distinguish it from SOVA's own prior output, so
+        it must flow through rather than being skipped."""
+        standalone = tmp_path / "skills"
+        skill_dir = standalone / "a-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: a-skill\n---\nUnchanged body.\n", encoding="utf-8")
+
+        existing_target = tmp_path / "installed"
+        existing_skill = existing_target / "a-skill"
+        existing_skill.mkdir(parents=True)
+        (existing_skill / "SKILL.md").write_text("---\nname: a-skill\n---\nUnchanged body.\n", encoding="utf-8")
+        # No manifest file at all: simulates a deleted/corrupted .sova-manifest.json.
+
+        scratch = tmp_path / "scratch"
+        materialize_combined_skill_sources(
+            standalone, {}, scratch, name_prefix="sova-", existing_target_dir=existing_target
+        )
+
+        assert (scratch / "a-skill" / "SKILL.md").read_text(encoding="utf-8") == (
+            "---\nname: a-skill\n---\nUnchanged body.\n"
+        )
 
     def test_does_not_skip_when_no_existing_sibling(self, tmp_path: Path) -> None:
         """Without a pre-existing hand-authored sibling at the target, the standalone skill

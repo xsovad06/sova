@@ -89,20 +89,29 @@ def sync_runtime_skills(
     whose content changed: a prior install's ``sova-<name>`` standalone
     skill (from before issue #1136 removed that prefix for standalone
     skills) would otherwise sit on disk forever alongside the new bare-named
-    one, discoverable twice under the runtime's own skill lookup.
+    one, discoverable twice under the runtime's own skill lookup. It is only
+    passed when the canonical commands directory actually resolved to a real
+    directory: ``adapter.extra_skill_sources()`` fails open to ``{}`` when
+    ``get_canonical_dir()`` is missing or unreadable (a broken/partial
+    package-data install, or a future relocation of that resource), and the
+    standalone skills alone would still make the scratch tree non-empty, so
+    nothing else would catch a prune running against that silently-truncated
+    source and deleting every real command-derived entry. See
+    ``update_skills()``'s docstring for the general contract this upholds.
     """
     adapter = create_runtime_adapter(cfg.agent.runtime)
     target = adapter.skills_dir(project_dir)
     if target is None or target == ClaudeCodeAdapter().skills_dir(project_dir):
         return None
 
-    extra = adapter.extra_skill_sources(get_canonical_dir())
+    canonical_dir = get_canonical_dir()
+    extra = adapter.extra_skill_sources(canonical_dir)
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         materialize_combined_skill_sources(
             skills_src_dir, extra, scratch, name_prefix=adapter.skill_name_prefix, existing_target_dir=target
         )
-        return update_skills(scratch, target, cfg, force=force, prune_stale=True)
+        return update_skills(scratch, target, cfg, force=force, prune_stale=canonical_dir.is_dir())
 
 
 def report_runtime_skills_sync(
@@ -120,9 +129,7 @@ def report_runtime_skills_sync(
     if result is not None:
         console.print(f"{indent}[green]Skills synced for runtime {cfg.agent.runtime!r}: {result.updated}[/green]")
         if result.removed:
-            console.print(
-                f"{indent}[dim]Removed {len(result.removed)} stale entr(ies) from a prior naming scheme:[/dim]"
-            )
+            console.print(f"{indent}[dim]Removed {len(result.removed)} entr(ies) no longer provided by SOVA:[/dim]")
             for name in result.removed:
                 console.print(f"{indent}  - {name}")
         if result.conflicts:

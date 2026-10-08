@@ -210,6 +210,30 @@ class TestSyncRuntimeSkills:
         assert result.updated == 2  # "foo" (forced) and the standalone "a-skill" (fresh)
         assert "Hand-authored, not canonical." not in (target / "SKILL.md").read_text(encoding="utf-8")
 
+    def test_codex_runtime_does_not_prune_when_canonical_dir_is_missing(
+        self, tmp_path: Path, skills_src_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing/unreadable canonical commands directory must degrade to the old
+        never-delete behavior, not read as "every command-derived skill retired": a
+        broken/partial package-data install (commands/ isn't in package-data, so
+        get_canonical_dir() resolves to a nonexistent path for any non-editable install)
+        would otherwise wipe every sova-<name> entry on the very next sync (issue #1136
+        finding)."""
+        self._use_real_commands_dir_with_foo(tmp_path, monkeypatch)
+        cfg = ProjectConfig()
+        cfg.agent.runtime = "codex"
+        first = sync_runtime_skills(skills_src_dir, tmp_path, cfg)
+        assert first is not None
+        assert (tmp_path / ".agents" / "skills" / "sova-foo" / "SKILL.md").is_file()
+
+        monkeypatch.setattr("sova.agents.sync.get_canonical_dir", lambda: tmp_path / "nonexistent-canonical")
+        second = sync_runtime_skills(skills_src_dir, tmp_path, cfg)
+
+        assert second is not None
+        assert second.removed == []
+        assert (tmp_path / ".agents" / "skills" / "sova-foo" / "SKILL.md").is_file()
+        assert (tmp_path / ".agents" / "skills" / "a-skill" / "SKILL.md").is_file()
+
     def test_codex_runtime_preserves_preexisting_unmanaged_standalone_skill(
         self, tmp_path: Path, skills_src_dir: Path
     ) -> None:
