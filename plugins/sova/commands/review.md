@@ -1,5 +1,5 @@
 ---
-description: Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them. Run before /pr to catch issues early.
+description: Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them. Run before `/pr` to catch issues early.
 argument-hint: "<scope>"
 example: "/sova:review"
 category: core
@@ -20,7 +20,7 @@ sova:review
 
 ## Description
 
-Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them. Run before /pr to catch issues early.
+Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them. Run before `/pr` to catch issues early.
 
 ## Implementation
 
@@ -169,13 +169,13 @@ Run the full CI-equivalent checks: `the project's CI-equivalent check command (s
 
 After fixes are applied, review the session for reusable patterns. Skip this step if no new patterns were found.
 
-Run `/extract-knowledge` to capture any reusable patterns, gotchas, or lessons into the project's knowledge system.
+Document reusable patterns, gotchas, or lessons in an appropriate project knowledge document.
 
 ## Cross-References
 
-- **Came from**: `/develop-full` (Phase 2) or manual pre-push check
+- **Came from**: `/develop`, or a manual pre-push check
 - **Next step**: `/pr` to create the pull request
-- **Reviewing someone else's PR?** Use `/review-pr` instead
+- **Reviewing someone else's PR?** Use the review steps above to inspect the PR diff and changed files instead
 
 ## Rules
 

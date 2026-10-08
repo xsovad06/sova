@@ -7,7 +7,7 @@ category: core
 
 # Research
 
-Investigate a task's codebase impact and produce a structured research assessment. Designed for autonomous execution -- always writes findings back to the tracker. For interactive pre-development planning, use `/spec` instead.
+Investigate a task's codebase impact and produce a structured research assessment. Designed for autonomous execution: always writes findings back to the tracker. For interactive pre-development planning, use the `/spec` workflow instead.
 
 **Task**: $ARGUMENTS
 
@@ -155,8 +155,8 @@ Ready for development.
 ## Cross-References
 
 - **Before research**: Issue should be triaged (has labels, is in TRIAGED state)
-- **After research**: Run `/develop {issue-number}` or `/develop-full {issue-number}` to implement
-- **Interactive alternative**: Use `/spec {issue-number}` for human-in-the-loop planning
+- **After research**: Run the `/develop` workflow or the `/develop-full` workflow with the issue number to implement
+- **Interactive alternative**: Use the `/spec` workflow with the issue number for human-in-the-loop planning
 
 ## Rules
 

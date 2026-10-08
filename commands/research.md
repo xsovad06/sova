@@ -7,26 +7,26 @@ category: core
 
 # Research
 
-Investigate a task's codebase impact and produce a structured research assessment. Designed for autonomous execution -- always writes findings back to the tracker. For interactive pre-development planning, use `/spec` instead.
+Investigate a task's codebase impact and produce a structured research assessment. Designed for autonomous execution: always writes findings back to the tracker. For interactive pre-development planning, use the `spec` workflow instead.
 
-**Task**: $ARGUMENTS
+**Task**: {{ arguments }}
 
 ## Instructions
 
 ### Step 1: Fetch the Task
 
-Get the issue number or ticket key from `$ARGUMENTS`. If empty, stop with an error.
+Get the issue number or ticket key from `{{ arguments }}`. If empty, stop with an error.
 
 Determine the task source by running `sova config` and reading the `task_source` row (configuration lives in `.claude/sova.db`, not in a file).
 
 **GitHub** (the default):
 ```bash
-gh issue view $ARGUMENTS --json number,title,body,labels,milestone
+gh issue view {{ arguments }} --json number,title,body,labels,milestone
 ```
 
 **JIRA** (`task_source.type = "jira"`):
 ```bash
-jira issue view $ARGUMENTS --plain
+jira issue view {{ arguments }} --plain
 ```
 
 Save the original description verbatim.
@@ -131,13 +131,13 @@ Write the updated body back to the tracker. You MUST append the research to the 
 **GitHub**:
 ```bash
 echo "<original body + research section>" > /tmp/issue_body.md
-gh issue edit $ARGUMENTS --body-file /tmp/issue_body.md
+gh issue edit {{ arguments }} --body-file /tmp/issue_body.md
 ```
 
 **JIRA** (requires `jira-cli` by ankitpokhrel):
 ```bash
 echo "<original body + research section>" > /tmp/issue_body.md
-cat /tmp/issue_body.md | jira issue edit $ARGUMENTS --no-input
+cat /tmp/issue_body.md | jira issue edit {{ arguments }} --no-input
 ```
 
 After writing, verify the research was saved to the description (not as a comment). If verification fails, retry the body edit.
@@ -155,8 +155,8 @@ Ready for development.
 ## Cross-References
 
 - **Before research**: Issue should be triaged (has labels, is in TRIAGED state)
-- **After research**: Run `/develop {issue-number}` or `/develop-full {issue-number}` to implement
-- **Interactive alternative**: Use `/spec {issue-number}` for human-in-the-loop planning
+- **After research**: Run the `develop` workflow or the `develop-full` workflow with the issue number to implement
+- **Interactive alternative**: Use the `spec` workflow with the issue number for human-in-the-loop planning
 
 ## Rules
 

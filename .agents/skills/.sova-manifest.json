@@ -2,7 +2,7 @@
   "version": 1,
   "commands": {
     "sova-address-pr/SKILL.md": {
-      "hash": "f14347705b94dcc5",
+      "hash": "b5f25262a3b477d5",
       "managed": true
     },
     "sova-after-merge/SKILL.md": {
@@ -74,7 +74,7 @@
       "managed": true
     },
     "sova-pr/SKILL.md": {
-      "hash": "060fd8fcdab287a3",
+      "hash": "f7a00d36328f5390",
       "managed": true
     },
     "sova-rearrange-commits/SKILL.md": {
@@ -82,7 +82,7 @@
       "managed": true
     },
     "sova-research/SKILL.md": {
-      "hash": "9c90fa973ad46d3d",
+      "hash": "1b27665340b08e63",
       "managed": true
     },
     "sova-review/SKILL.md": {
@@ -102,7 +102,7 @@
       "managed": true
     },
     "sova-spec/SKILL.md": {
-      "hash": "23c82514a4a7e888",
+      "hash": "73b382b1599f8a12",
       "managed": true
     },
     "sova-standup/SKILL.md": {

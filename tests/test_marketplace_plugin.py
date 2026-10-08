@@ -23,6 +23,7 @@ _PLUGIN_DIR = _REPO_ROOT / "plugins" / "sova"
 _COMMANDS_DIR = _PLUGIN_DIR / "commands"
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)", re.DOTALL)
 _TEMPLATE_VAR_RE = re.compile(r"\{\{\s*\w+\s*\}\}")
+_WORKFLOW_REFERENCE_RE = re.compile(r"`[\w-]+`\s+workflow\b")
 _REQUIRED_SECTIONS = ("## Name", "## Synopsis", "## Description", "## Implementation")
 
 
@@ -132,6 +133,22 @@ class TestPluginCommands:
         content = path.read_text(encoding="utf-8")
         for forbidden in ("sova.toml", "sova install", "SOVA pipeline"):
             assert forbidden not in content, f"{path} references SOVA-specific setup: {forbidden!r}"
+
+    @pytest.mark.parametrize("path", _command_files(), ids=lambda p: p.stem)
+    def test_no_unresolved_workflow_cross_references(self, path: Path) -> None:
+        """No raw "`name` workflow" cross-reference syntax may survive rendering.
+
+        `_IN_PLUGIN_WORKFLOW_RE` turns a bundled name into a real `/name` slash
+        reference; `_SUBSTITUTIONS` rewrites every other (unbundled) name into
+        plain prose. A match here means a canonical command grew a new
+        cross-reference that neither path accounts for, leaving a standalone
+        marketplace user pointed at a workflow they cannot run (issue #1124,
+        PR #1143 round 2: `find-task`, `develop-full`, `extract-knowledge`, and
+        `review-pr` all leaked through this way).
+        """
+        content = path.read_text(encoding="utf-8")
+        leaked = _WORKFLOW_REFERENCE_RE.findall(content)
+        assert not leaked, f"{path} has unresolved workflow cross-reference(s): {leaked!r}"
 
 
 class TestNoDrift:

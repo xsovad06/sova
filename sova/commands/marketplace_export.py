@@ -21,7 +21,7 @@ import tomllib
 from pathlib import Path
 
 from sova.commands.catalog import parse_frontmatter
-from sova.commands.templates import dedash_prose
+from sova.commands.templates import dedash_prose, workflow_reference_re
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _COMMANDS_DIR = _REPO_ROOT / "commands"
@@ -61,6 +61,12 @@ _EXAMPLES = {
 # standalone marketplace user) and SOVA-specific config file references are replaced with
 # generic, project-agnostic wording.
 _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
+    # {{ arguments }} is the provider-neutral counterpart to Claude's own
+    # $ARGUMENTS token (see sova.commands.templates.build_variables()). A
+    # standalone marketplace user runs these as real Claude Code slash
+    # commands, so the literal $ARGUMENTS token is exactly what they need,
+    # same as SOVA's own .claude/commands/ install path.
+    (re.compile(r"\{\{\s*arguments\s*\}\}"), "$ARGUMENTS"),
     (
         re.compile(r"\{\{\s*check_cmd\s*\}\}"),
         "the project's CI-equivalent check command (see its Makefile, package.json scripts, or CI config)",
@@ -78,30 +84,75 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
     # describe the action instead. `/verify-local` needs no entry: the canonical
     # text already guards it with "If the project has a `/verify-local` command"
     # and "Skip if no `/verify-local` command exists".
+    #
+    # These match the provider-neutral "`name` workflow" cross-reference syntax
+    # (see sova.commands.templates.workflow_reference_re()), after
+    # _IN_PLUGIN_WORKFLOW_RE (applied in _apply_substitutions()) has already
+    # turned any reference to a bundled command (develop/spec/review/pr/debug/test)
+    # into a real `/name` slash reference; only out-of-plugin names reach these
+    # patterns still in the neutral form.
     (
-        re.compile(r"Run the `/review-pr` workflow against this PR to review the actual diff that will be merged:"),
+        re.compile(r"Run the `find-task` workflow to pick the next issue"),
+        "Select the next issue from the project's task source",
+    ),
+    (
+        re.compile(r"Run `/develop` or the `develop-full` workflow with the issue number to implement"),
+        "Run `/develop` with the issue number to implement; for the full cycle, continue with "
+        "`/test`, `/review`, and `/pr`",
+    ),
+    (
+        re.compile(r"Use the `develop-full` workflow instead for end-to-end \(develop \+ test \+ review \+ PR\)"),
+        "For end-to-end work, run `/develop`, `/test`, `/review`, and `/pr` in sequence",
+    ),
+    (
+        re.compile(r"Use the `develop-full` workflow for the complete develop-test-review-pr cycle"),
+        "For the complete develop-test-review-pr cycle, run `/develop`, `/test`, `/review`, and `/pr` in sequence",
+    ),
+    (
+        re.compile(
+            r"Run the `extract-knowledge` workflow to capture any reusable patterns, gotchas, or lessons "
+            r"into the project's knowledge system\."
+        ),
+        "Document reusable patterns, gotchas, or lessons in an appropriate project knowledge document.",
+    ),
+    (
+        re.compile(r"the `develop-full` workflow \(Phase 2\) or manual pre-push check"),
+        "`/develop`, or a manual pre-push check",
+    ),
+    (
+        re.compile(r"Use the `review-pr` workflow instead"),
+        "Use the review steps above to inspect the PR diff and changed files instead",
+    ),
+    (
+        re.compile(r"Run the `review-pr` workflow against this PR to review the actual diff that will be merged:"),
         "Review the actual diff that will be merged, as a senior engineer would:",
     ),
     (
-        re.compile(r"Execute the `/review-pr` analysis in full \(fetch diff, read files, deep analysis\)"),
+        re.compile(r"Execute the `review-pr` workflow's analysis in full \(fetch diff, read files, deep analysis\)"),
         "Fetch the diff, read every changed file, and analyse it deeply",
     ),
-    (re.compile(r"Run the `/address-pr` workflow to fix the findings:"), "Fix the findings:"),
+    (re.compile(r"Run the `address-pr` workflow to fix the findings:"), "Fix the findings:"),
     (re.compile(r"Status: ready for /integrate-pr"), "Status: ready to merge"),
     (
-        re.compile(r"Run `/review` or `/review-full` to catch issues before pushing"),
+        re.compile(r"Run `/review` or the `review-full` workflow to catch issues before pushing"),
         "Run `/review` to catch issues before pushing",
     ),
     (
-        re.compile(r"`/develop-full` -> `/review-full` -> `/pr` -> `/integrate-pr`"),
+        re.compile(
+            r"the `develop-full` workflow -> the `review-full` workflow -> `/pr` -> the `integrate-pr` workflow"
+        ),
         "`/develop` -> `/review` -> `/pr`",
     ),
     (
-        re.compile(r"Run `/integrate-pr` for merge, cleanup, and knowledge extraction"),
+        re.compile(r"Run the `integrate-pr` workflow for merge, cleanup, and knowledge extraction"),
         "merge the PR, delete the branch, and capture anything learned",
     ),
     (
-        re.compile(r"NEVER merge the PR: that happens via `/integrate-pr` or `/approve-merge`"),
+        re.compile(r"Run the `rearrange-commits` workflow"),
+        "Reorganize the branch's commits into clean, logical units",
+    ),
+    (
+        re.compile(r"NEVER merge the PR: that happens via the `integrate-pr` workflow or `/approve-merge`"),
         "NEVER merge the PR yourself unless the user explicitly asks",
     ),
     # A standalone plugin user has neither the `sova` CLI nor the importable
@@ -135,7 +186,21 @@ def read_pyproject_version() -> str:
     return str(data["project"]["version"])
 
 
+# A bare cross-reference to one of this plugin's own bundled commands (the
+# provider-neutral `name` workflow syntax; see
+# sova.commands.templates.workflow_reference_re()) becomes a real `/name` slash
+# reference, since every SELECTED_COMMANDS entry ships inside this same
+# plugin. Applied before _SUBSTITUTIONS, which hand-rewrites references to
+# commands this plugin does NOT bundle. A leading "the " is swallowed too, so
+# "the `test` workflow" becomes `/test` rather than the redundant "the `/test`".
+_IN_PLUGIN_WORKFLOW_RE = [
+    (re.compile(rf"(?:the\s+)?{workflow_reference_re(name).pattern}"), f"`/{name}`") for name in SELECTED_COMMANDS
+]
+
+
 def _apply_substitutions(body: str) -> str:
+    for pattern, replacement in _IN_PLUGIN_WORKFLOW_RE:
+        body = pattern.sub(replacement, body)
     for pattern, replacement in _SUBSTITUTIONS:
         body = pattern.sub(replacement, body)
     return body
@@ -157,7 +222,7 @@ def render_command(name: str) -> str:
         raise ValueError(f"{source} has no valid frontmatter")
     fields, body = parsed
 
-    description = dedash_prose(str(fields.get("description", "")))
+    description = dedash_prose(_apply_substitutions(str(fields.get("description", ""))))
     category = str(fields.get("category", "core"))
     inputs = _as_str_list(fields.get("inputs"))
     outputs = _as_str_list(fields.get("outputs"))

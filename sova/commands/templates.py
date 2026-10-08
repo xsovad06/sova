@@ -62,6 +62,19 @@ def dedash_prose(text: str) -> str:
     return "\n".join(line if fenced else _DOUBLE_DASH_RE.sub(": ", line) for fenced, line in split_fenced_lines(text))
 
 
+def workflow_reference_re(name: str) -> re.Pattern[str]:
+    """Match the provider-neutral ``name`` workflow cross-reference syntax.
+
+    Canonical commands reference each other as a backticked bare command name
+    immediately followed by the literal word "workflow" (e.g. "the `test`
+    workflow"), rather than Claude's `/test` slash syntax. Each render target
+    maps a match to its own invocation form: ``sova.commands.distribution``
+    renders it back to Claude's `/test` slash syntax, while
+    ``sova.commands.skill_render`` renders it to a Codex skill reference.
+    """
+    return re.compile(rf"`{re.escape(name)}`\s+workflow\b")
+
+
 def render_command(content: str, variables: dict[str, str]) -> str:
     """Render template variables in command content.
 
@@ -144,6 +157,12 @@ def build_variables(cfg: ProjectConfig) -> dict[str, str]:
         "github_repo": cfg.github_repo,
         "github_user": cfg.github_user,
         "project_name": _derive_project_name(cfg),
+        # Claude Code substitutes this literal token with the user's actual
+        # invocation arguments at runtime; Codex has no equivalent mechanism
+        # and renders {{ arguments }} to descriptive prose instead (see
+        # sova.commands.skill_render's own substitution, applied before this
+        # value ever gets a chance to fill it in).
+        "arguments": "$ARGUMENTS",
     }
 
     # Scopes: derived from commit config or default

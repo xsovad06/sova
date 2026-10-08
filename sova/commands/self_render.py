@@ -49,6 +49,11 @@ SELF_VARIABLES: dict[str, str] = {
     # Pinned independently of github_repo: the real repo slug is lowercase
     # ("sova"), but the brand name used in prose is "SOVA".
     "project_name": "SOVA",
+    # Claude Code's own literal substitution token (see
+    # sova.commands.templates.build_variables()); pinned here too so
+    # test_every_used_placeholder_is_pinned recognizes it as a known
+    # placeholder, exactly like every other SELF_VARIABLES entry.
+    "arguments": "$ARGUMENTS",
 }
 
 # Matches the same placeholder shape render_command() substitutes: a bare word

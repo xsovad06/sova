@@ -97,7 +97,7 @@ Create a pull request for the current branch using the project's standard PR tem
    - The PR title MUST start with `[PROJECT_KEY-NUMBER]` followed by a human-readable description (NOT the branch name)
 
    **GitHub** (default):
-   - If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), include `Closes #42` in the body
+   - If `{{ arguments }}` contains a GitHub Issue number (e.g., #42), include `Closes #42` in the body
 
 8. **Run preflight CI checks locally** before pushing:
    Run the full CI-equivalent checks: `{{ check_cmd }}`. This must pass before any push; it covers linting, tests, formatting, invariants, and any other checks the CI pipeline enforces. Fix any failures before proceeding.
@@ -158,15 +158,15 @@ These phases run after the PR is created/updated. They enable autonomous operati
     - **CI still pending after max wait**: report current status and the PR URL. Suggest the user check back later.
 
 16. **Self-review the PR diff**:
-    Run the `/review-pr` workflow against this PR to review the actual diff that will be merged:
+    Run the `review-pr` workflow against this PR to review the actual diff that will be merged:
     1. Fetch the PR number from the branch
-    2. Execute the `/review-pr` analysis in full (fetch diff, read files, deep analysis)
+    2. Execute the `review-pr` workflow's analysis in full (fetch diff, read files, deep analysis)
     3. Post the review on GitHub
     4. If the verdict has no findings >= 3/10: skip step 17, go to step 18
     5. If there are findings >= 3/10: continue to step 17
 
 17. **Address review findings**:
-    Run the `/address-pr` workflow to fix the findings:
+    Run the `address-pr` workflow to fix the findings:
     1. Score and address each finding (fix or acknowledge)
     2. Commit fixes
     3. Reply to review comments on GitHub
@@ -187,16 +187,16 @@ These phases run after the PR is created/updated. They enable autonomous operati
 
 ## Cross-References
 
-- **Before this**: Run `/review` or `/review-full` to catch issues before pushing
-- **Full workflow**: `/develop-full` -> `/review-full` -> `/pr` -> `/integrate-pr`
-- **After merge**: Run `/integrate-pr` for merge, cleanup, and knowledge extraction
-- **Need to reorganize commits first?** Run `/rearrange-commits`
+- **Before this**: Run the `review` workflow or the `review-full` workflow to catch issues before pushing
+- **Full workflow**: the `develop-full` workflow -> the `review-full` workflow -> the `pr` workflow -> the `integrate-pr` workflow
+- **After merge**: Run the `integrate-pr` workflow for merge, cleanup, and knowledge extraction
+- **Need to reorganize commits first?** Run the `rearrange-commits` workflow
 
 ## Rules
 
 - If the branch has no commits ahead of main and no uncommitted changes, inform the user
 - All commits on the branch will be analyzed to generate the PR description
-- NEVER merge the PR: that happens via `/integrate-pr` or `/approve-merge`
+- NEVER merge the PR: that happens via the `integrate-pr` workflow or `/approve-merge`
 - Use `--force-with-lease` for force pushes, never `--force`
 - NEVER skip CI checks or use `--no-verify`
 - If CI fails 3 times, stop and ask the user for guidance

@@ -110,7 +110,7 @@ Before declaring done:
 
 - **Testing issues?** Run `/test` to iterate on failures
 - **Ready to review?** Run `/review` for a self-review before pushing
-- **Full workflow?** Use `/develop-full` instead for end-to-end (develop + test + review + PR)
+- **Full workflow?** For end-to-end work, run `/develop`, `/test`, `/review`, and `/pr` in sequence
 
 ## Rules
 
