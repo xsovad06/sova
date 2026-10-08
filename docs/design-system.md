@@ -251,6 +251,10 @@ Defined in `style.css` Section 3b, function in `app.js` Section 5.
 - Default styling for neutral confirmations (skip, advance, approve)
 - The enclosing function must be `async` to use `await`
 
+### Documented Exception: Merge-Blocker Confirm
+
+`runCommandWithMergeBlockers()` in `agents.html` (the secondary "Integrate PR" action, gated on `Resolution.merge_blockers`, issue #1111) uses the browser's native `confirm()` rather than `sovaConfirm()`. This was an explicit spec decision for that issue ("use the browser's native `confirm()`, no new modal component, consistent with the dashboard's existing lightweight-interaction patterns for destructive/consequential actions"), not an oversight. It is the one call to native `confirm()` in the dashboard (`sovaConfirm()` is used everywhere else, including other actions in the same file) and is also the highest-consequence confirmation in the app (it squash-merges and deletes the branch), so a future audit should not flag it as unintentional drift. Revisit via `sovaConfirm()` only as a deliberate follow-up, not a silent fix-in-passing.
+
 ## Layout Tokens
 
 | Token | Value | Usage |

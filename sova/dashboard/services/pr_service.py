@@ -8,14 +8,10 @@ import time
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.utils.logging import get_logger
-
-if TYPE_CHECKING:
-    from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.pr_service")
 
@@ -414,39 +410,6 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     }
 
 
-def _gate(name: str, *, enabled: bool, passed: bool, reason: str = "") -> dict:
-    return {"name": name, "enabled": enabled, "passed": passed, "reason": reason}
-
-
-def _check_ci_gate(enabled: bool, ci_status: str) -> dict:
-    """Gate integration on CI, treating "no checks configured" as neutral.
-
-    ``"none"`` means the head commit has no status checks at all (a repository
-    without CI), which is not a failure: the resolver's own
-    _unmet_merge_conditions() reads it the same way, so gating the Integrate
-    button on it would leave such a PR at PR_READY_TO_MERGE with its primary
-    action permanently greyed out. An empty status (pr_data carrying no usable
-    ci_status) stays blocking, since unknown is not the same as absent: a
-    missing ``ci_status`` key fails the gate exactly as before; only the
-    displayed reason text changed, from "CI status is 'none'" to "CI status
-    is 'unknown'", to reflect that absent and genuinely-none are different
-    states.
-    """
-    if not enabled:
-        return _gate("ci_passed", enabled=False, passed=True)
-    passed = ci_status in ("passed", "none")
-    reason = "" if passed else f"CI status is '{ci_status or 'unknown'}'"
-    return _gate("ci_passed", enabled=True, passed=passed, reason=reason)
-
-
-def _check_coderabbit_from_pr_data(pr_data: dict) -> bool:
-    """Check if CodeRabbit reviewed using pre-fetched review_logins from enriched PR data."""
-    from sova.adapters.external_reviews import DEFAULT_CODERABBIT_AUTHORS
-
-    review_logins = set(pr_data.get("review_logins") or [])
-    return bool(review_logins & DEFAULT_CODERABBIT_AUTHORS)
-
-
 def get_unresolved_thread_count(pr_data: dict) -> int | None:
     """Return the number of unresolved review threads from enriched PR data.
 
@@ -464,140 +427,6 @@ def get_unresolved_thread_count(pr_data: dict) -> int | None:
     if total is None or resolved is None:
         return None
     return max(0, total - resolved)
-
-
-def _check_threads_from_pr_data(pr_data: dict) -> dict:
-    """Check thread resolution using pre-fetched thread counts from enriched PR data."""
-    unresolved = get_unresolved_thread_count(pr_data)
-    if unresolved is None:
-        return _gate(
-            "threads_resolved",
-            enabled=True,
-            passed=False,
-            reason="thread resolution state unknown, cannot verify",
-        )
-    total = pr_data.get("thread_total", 0)
-    if unresolved == 0:
-        return _gate("threads_resolved", enabled=True, passed=True)
-    return _gate(
-        "threads_resolved",
-        enabled=True,
-        passed=False,
-        reason=f"{unresolved} of {total} threads unresolved",
-    )
-
-
-async def check_integration_gates(
-    *,
-    pr_data: dict,
-    issue_number: str | None,
-    config: ProjectConfig,
-    project_dir: Path | None = None,
-    sova_verdict: dict | None = None,
-) -> dict:
-    """Check all configured integration gates for a PR.
-
-    Uses pre-fetched data from enriched PR dicts (review_logins, thread_total,
-    thread_resolved).  check_coderabbit and check_threads inspect only the
-    supplied pr_data and do not fall back to API calls when fields are absent.
-
-    ``sova_verdict`` is the verdict already assembled by resolve_sova_verdict()
-    for this PR.  When supplied it is used as-is: the gate that decides whether
-    the Integrate button is enabled must read the same verdict that decided the
-    button exists at all, otherwise the canonical assembly path (#991) and this
-    gate can disagree on the same PR.  Callers without one (the standalone
-    /gates endpoint) fall back to the DB-only lookup.
-
-    Returns a dict with:
-      - passed: bool (all enabled gates passed)
-      - gates: list of {name, enabled, passed, reason}
-    """
-    gates_cfg = config.integration_gates
-
-    # CI gate is synchronous: no API call needed
-    ci_gate = _check_ci_gate(gates_cfg.ci_passed, pr_data.get("ci_status", ""))
-
-    # SOVA review gate: requires async DB query
-    async def check_sova_review() -> dict:
-        if not gates_cfg.sova_reviewed:
-            return _gate("sova_reviewed", enabled=False, passed=True)
-        if not issue_number and pr_data.get("number") is None:
-            return _gate("sova_reviewed", enabled=True, passed=True, reason="No linked issue or PR (skipped)")
-
-        verdict = sova_verdict
-        if verdict is None:
-            from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-            verdict = await get_sova_review_verdict(
-                issue_number, pr_number=pr_data.get("number"), project_dir=project_dir
-            )
-        if not verdict.get("has_sova_review"):
-            return _gate("sova_reviewed", enabled=True, passed=False, reason="No SOVA review found")
-        v = verdict.get("verdict", "")
-        if v == "approve":
-            return _gate("sova_reviewed", enabled=True, passed=True)
-        if v == "addressed":
-            return _gate(
-                "sova_reviewed",
-                enabled=True,
-                passed=False,
-                reason="SOVA findings addressed; a re-review must approve the new head",
-            )
-        return _gate(
-            "sova_reviewed",
-            enabled=True,
-            passed=False,
-            reason=f"SOVA review verdict: {v} ({verdict.get('finding_count', 0)} findings)",
-        )
-
-    # CodeRabbit gate: inspects pre-fetched review_logins; no API fallback
-    def check_coderabbit() -> dict:
-        if not gates_cfg.coderabbit_reviewed:
-            return _gate("coderabbit_reviewed", enabled=False, passed=True)
-        if _check_coderabbit_from_pr_data(pr_data):
-            return _gate("coderabbit_reviewed", enabled=True, passed=True)
-        return _gate("coderabbit_reviewed", enabled=True, passed=False, reason="No CodeRabbit review found")
-
-    # Threads gate: inspects pre-fetched thread counts; no API fallback
-    def check_threads() -> dict:
-        if not gates_cfg.threads_resolved:
-            return _gate("threads_resolved", enabled=False, passed=True)
-        return _check_threads_from_pr_data(pr_data)
-
-    # Only SOVA review needs async; rest are synchronous using pre-fetched data
-    sova_gate = await check_sova_review()
-    cr_gate = check_coderabbit()
-    thr_gate = check_threads()
-
-    gates = [ci_gate, sova_gate, cr_gate, thr_gate]
-    return {"passed": all(g["passed"] for g in gates), "gates": gates}
-
-
-async def get_pr_mergeability_map() -> dict[int, str]:
-    """Build {issue_number: mergeable_status} from open PRs.
-
-    A PR may close multiple issues (via closingIssuesReferences); all linked
-    issues receive the PR's mergeable status.  When multiple PRs reference the
-    same issue, CONFLICTING wins (worst-case: if any PR conflicts, the issue is
-    blocked).
-
-    Returns an empty dict on any failure (fail-open).
-    """
-    try:
-        prs = await list_open_prs_with_state()
-    except (RuntimeError, OSError):
-        log.debug("mergeability_map.fetch_failed", exc_info=True)
-        return {}
-    result: dict[int, str] = {}
-    for pr in prs:
-        status = pr.get("mergeable", "")
-        for issue_num in pr.get("linked_issues") or []:
-            existing = result.get(issue_num)
-            if existing == "CONFLICTING" or status == "CONFLICTING":
-                result[issue_num] = "CONFLICTING"
-            else:
-                result[issue_num] = status
-    return result
 
 
 async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_error: bool = False) -> list[dict]:

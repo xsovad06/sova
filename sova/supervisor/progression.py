@@ -43,7 +43,6 @@ from sova.supervisor.gates.dependency import check_dependency_gate
 from sova.supervisor.gates.file_conflict import check_file_overlap_gate
 from sova.supervisor.gates.human_involvement import check_human_involvement_gate
 from sova.supervisor.gates.memory_pressure import check_memory_pressure_gate
-from sova.supervisor.gates.merge_conflict import check_merge_conflict_gate
 from sova.supervisor.gates.ownership import check_ownership_gate
 from sova.supervisor.gates.quota import check_quota_gate
 from sova.supervisor.gates.rate_limit import check_github_rate_limit_gate
@@ -170,16 +169,6 @@ class TaskProgressionEngine:
         self._last_graph: DependencyGraph | None = None
         self._repo_cache_key: str = getattr(adapter, "repo", "") or getattr(adapter, "project_key", "") or ""
 
-    async def _fetch_mergeability_map(self) -> dict:
-        """Fetch merge conflict state for all open PRs (fail-open)."""
-        try:
-            from sova.dashboard.services.pr_service import get_pr_mergeability_map
-
-            return await get_pr_mergeability_map()
-        except Exception:  # noqa: BLE001 (fail-open: mergeability fetch spans GitHub API and git calls)
-            log.debug("evaluate_all.mergeability_fetch_failed", exc_info=True)
-            return {}
-
     async def _fetch_file_overlap_sets(self) -> list[BranchFileSet] | None:
         """Fetch active branch file sets for the file overlap gate (fail-open)."""
         if not self._config.supervisor.file_overlap_gate:
@@ -283,7 +272,6 @@ class TaskProgressionEngine:
             github_repo=cfg.github_repo,
             ci_block_minutes=cfg.supervisor.ci_block_minutes,
         )
-        precomputed_conflicts = await self._fetch_mergeability_map()
         precomputed_file_sets = await self._fetch_file_overlap_sets()
 
         # Fail open on an unavailable count, matching check_slot_gate's policy:
@@ -334,7 +322,6 @@ class TaskProgressionEngine:
                 precomputed_quota=effective_quota,
                 precomputed_slots=effective_slots,
                 precomputed_ci_budget=global_ci_budget,
-                precomputed_conflicts=precomputed_conflicts,
                 precomputed_file_sets=precomputed_file_sets,
                 task_labels=task.labels,
                 task_body=task.body,
@@ -532,8 +519,6 @@ class TaskProgressionEngine:
                 blocked_by=(BlockReason(gate="adapter", detail="build_dependency_graph() failed"),),
             )
 
-        precomputed_conflicts = await self._fetch_mergeability_map()
-
         precomputed_file_sets: list[BranchFileSet] | None = None
         task_labels: list[str] = []
         task_body: str = ""
@@ -558,7 +543,6 @@ class TaskProgressionEngine:
             issue_number,
             state,
             graph,
-            precomputed_conflicts=precomputed_conflicts,
             precomputed_file_sets=precomputed_file_sets,
             task_labels=task_labels,
             task_body=task_body,
@@ -855,7 +839,6 @@ class TaskProgressionEngine:
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_ci_budget: BlockReason | None | object = _NOT_COMPUTED,
-        precomputed_conflicts: dict[int, str] | None = None,
         precomputed_file_sets: list[BranchFileSet] | None = None,
         task_labels: list[str] | None = None,
         task_body: str = "",
@@ -969,7 +952,6 @@ class TaskProgressionEngine:
             precomputed_quota=precomputed_quota,
             precomputed_slots=precomputed_slots,
             precomputed_ci_budget=precomputed_ci_budget,
-            precomputed_conflicts=precomputed_conflicts,
             precomputed_file_sets=precomputed_file_sets,
             task_labels=task_labels,
             task_body=task_body,
@@ -978,20 +960,6 @@ class TaskProgressionEngine:
         )
 
         if blockers:
-            all_conflict = all(b.gate == "conflict" for b in blockers)
-            if all_conflict and self._config.supervisor.auto_rebase:
-                log.info(
-                    "evaluate_single.ready",
-                    issue=issue_number,
-                    action=ProgressionAction.SPAWN_REBASE.value,
-                    pr_number=None,
-                )
-                return ProgressionDecision(
-                    issue_number=issue_number,
-                    action=ProgressionAction.SPAWN_REBASE,
-                    reason="PR has merge conflicts, attempting auto-rebase",
-                )
-
             reasons = "; ".join(b.detail for b in blockers)
             log.info(
                 "evaluate_single.blocked",
@@ -1034,7 +1002,6 @@ class TaskProgressionEngine:
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_ci_budget: BlockReason | None | object = _NOT_COMPUTED,
-        precomputed_conflicts: dict[int, str] | None = None,
         precomputed_file_sets: list[BranchFileSet] | None = None,
         task_labels: list[str] | None = None,
         task_body: str = "",
@@ -1100,11 +1067,6 @@ class TaskProgressionEngine:
         blockers.extend(r for r in simple_results if r is not None)
 
         if candidate == ProgressionAction.SPAWN_INTEGRATE:
-            if precomputed_conflicts is not None:
-                conflict_block = check_merge_conflict_gate(issue_number, precomputed_conflicts)
-                if conflict_block:
-                    blockers.append(conflict_block)
-
             gate_pr_number = (refined_pr_info.number if refined_pr_info else None) or discovered_pr
             enriched_pr = await self._fetch_enriched_pr(gate_pr_number) if gate_pr_number else None
             review_block = await check_review_completed_gate(

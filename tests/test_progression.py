@@ -2378,23 +2378,26 @@ class TestSpawnRebaseAction:
 
 
 class TestAutoRebase:
+    """Auto-rebase is reached only through resolve_next_action()'s "conflicting"
+    rule now that the dedicated merge-conflict gate is gone (#1111): no gate emits
+    a ``gate="conflict"`` BlockReason any more, so _evaluate_single() has no
+    conflict-specific branch and SPAWN_REBASE arrives as a normal refined candidate.
+    Both auto_rebase directions of the resolver mapping itself are covered by
+    TestRefineInReviewAction.
+    """
+
     @pytest.mark.asyncio
-    async def test_conflict_only_blocker_with_auto_rebase_returns_spawn_rebase(self) -> None:
-        """When conflict is the only blocker and auto_rebase is enabled, return SPAWN_REBASE."""
+    async def test_refined_rebase_candidate_returns_spawn_rebase(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
         with (
             patch.object(
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
+                return_value=(ProgressionAction.SPAWN_REBASE, PRInfo(number=55, url="")),
             ),
-            patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
+            patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock, return_value=([], None)),
         ):
-            mock_gates.return_value = (
-                [BlockReason(gate="conflict", detail="PR for #42 has merge conflicts")],
-                None,
-            )
             decision = await engine._evaluate_single(
                 42,
                 TaskState.IN_REVIEW,
@@ -2402,12 +2405,13 @@ class TestAutoRebase:
             )
         assert decision.action == ProgressionAction.SPAWN_REBASE
         assert decision.issue_number == 42
+        assert decision.pr_number == 55
 
     @pytest.mark.asyncio
     async def test_stale_already_running_wait_self_heals_to_spawn_rebase(self) -> None:
         """A stale already_running false-positive on one poll must not prevent a
         later poll for the same issue (once the gate correctly reports the agent
-        gone) from reaching the all_conflict / SPAWN_REBASE branch (#984).
+        gone) from reaching SPAWN_REBASE (#984).
 
         Each _evaluate_single() call is independent and stateless: nothing carries
         a prior poll's stale WAIT forward, so the very next poll for the same
@@ -2431,35 +2435,31 @@ class TestAutoRebase:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=548, url="")),
+                return_value=(ProgressionAction.SPAWN_REBASE, PRInfo(number=548, url="")),
             ),
-            patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
+            patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock, return_value=([], None)),
         ):
-            mock_gates.return_value = (
-                [BlockReason(gate="conflict", detail="PR for #42 has merge conflicts")],
-                None,
-            )
             decision_2 = await engine._evaluate_single(42, TaskState.IN_REVIEW, MagicMock())
 
         assert decision_2.action == ProgressionAction.SPAWN_REBASE
         assert decision_2.issue_number == 42
 
     @pytest.mark.asyncio
-    async def test_conflict_with_other_blockers_returns_blocked(self) -> None:
-        """When conflict + other blockers exist, return BLOCKED even with auto_rebase."""
+    async def test_rebase_candidate_is_still_gate_checked(self) -> None:
+        """SPAWN_REBASE is not exempt from the gate sweep: a real blocker parks it."""
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
         with (
             patch.object(
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
+                return_value=(ProgressionAction.SPAWN_REBASE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
         ):
             mock_gates.return_value = (
                 [
-                    BlockReason(gate="conflict", detail="PR has conflicts"),
+                    BlockReason(gate="memory", detail="Memory pressure"),
                     BlockReason(gate="budget", detail="Budget exceeded"),
                 ],
                 None,
@@ -2471,30 +2471,6 @@ class TestAutoRebase:
             )
         assert decision.action == ProgressionAction.BLOCKED
         assert len(decision.blocked_by) == 2
-
-    @pytest.mark.asyncio
-    async def test_conflict_without_auto_rebase_returns_blocked(self) -> None:
-        """When auto_rebase is disabled, conflict returns BLOCKED normally."""
-        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=False))
-        with (
-            patch.object(
-                engine,
-                "_refine_in_review_action",
-                new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
-            ),
-            patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
-        ):
-            mock_gates.return_value = (
-                [BlockReason(gate="conflict", detail="PR has conflicts")],
-                None,
-            )
-            decision = await engine._evaluate_single(
-                42,
-                TaskState.IN_REVIEW,
-                MagicMock(),
-            )
-        assert decision.action == ProgressionAction.BLOCKED
 
 
 # ---------------------------------------------------------------------------
@@ -4318,11 +4294,6 @@ class TestStaleInProgressReset:
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_ci_budget_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch(
-                "sova.dashboard.services.pr_service.get_pr_mergeability_map",
-                new_callable=AsyncMock,
-                return_value={},
-            ),
             patch.object(engine, "_evaluate_single", side_effect=mock_evaluate),
         ):
             decisions = await engine.evaluate_all()
@@ -4375,26 +4346,6 @@ class TestStaleInProgressReset:
 # ---------------------------------------------------------------------------
 # Extracted helpers from evaluate_all refactoring
 # ---------------------------------------------------------------------------
-
-
-_MERGEABILITY_PATH = "sova.dashboard.services.pr_service.get_pr_mergeability_map"
-
-
-class TestFetchMergeabilityMap:
-    @pytest.mark.asyncio
-    async def test_returns_map_on_success(self) -> None:
-        engine = _make_engine()
-        expected = {42: "CONFLICTING"}
-        with patch(_MERGEABILITY_PATH, new_callable=AsyncMock, return_value=expected):
-            result = await engine._fetch_mergeability_map()
-        assert result == expected
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_dict_on_exception(self) -> None:
-        engine = _make_engine()
-        with patch(_MERGEABILITY_PATH, new_callable=AsyncMock, side_effect=RuntimeError("API down")):
-            result = await engine._fetch_mergeability_map()
-        assert result == {}
 
 
 _FILE_OVERLAP_PATH = "sova.supervisor.progression.get_active_branch_file_sets"

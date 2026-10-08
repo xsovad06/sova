@@ -790,17 +790,6 @@ class CodeRabbitQuotaConfig(BaseSettings):
         return self
 
 
-class IntegrationGatesConfig(BaseSettings):
-    """Configurable gates that must pass before PR integration is allowed."""
-
-    ci_passed: bool = True
-    sova_reviewed: bool = True
-    coderabbit_reviewed: bool = False
-    threads_resolved: bool = True
-
-    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_INTEGRATION_GATES_")
-
-
 class IntegrationConfig(BaseSettings):
     """Merge execution and post-merge behavior configuration."""
 
@@ -1152,7 +1141,6 @@ class ProjectConfig(BaseSettings):
     testing: TestingConfig = Field(default_factory=TestingConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
-    integration_gates: IntegrationGatesConfig = Field(default_factory=IntegrationGatesConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     rtk: RTKConfig = Field(default_factory=RTKConfig)
     compression: HeadroomConfig = Field(default_factory=HeadroomConfig)

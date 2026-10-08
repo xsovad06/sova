@@ -14,7 +14,6 @@ from sova.config.models import (
     AtlassianMCPConfig,
     CIConfig,
     ConfidenceConfig,
-    IntegrationGatesConfig,
     PipelineConfig,
     PipelineDefinitions,
     ProjectConfig,
@@ -1080,53 +1079,6 @@ jira_status_mapping = { "ON_QA" = "done", "Selected for Development" = "triaged"
             "ON_QA": "done",
             "Selected for Development": "triaged",
         }
-
-
-class TestIntegrationGatesConfig:
-    def test_defaults(self) -> None:
-        cfg = IntegrationGatesConfig()
-        assert cfg.ci_passed is True
-        assert cfg.sova_reviewed is True
-        assert cfg.coderabbit_reviewed is False
-        assert cfg.threads_resolved is True
-
-    def test_project_config_includes_gates(self) -> None:
-        cfg = ProjectConfig()
-        assert hasattr(cfg, "integration_gates")
-        assert cfg.integration_gates.ci_passed is True
-
-    def test_toml_loading(self, tmp_path: Path) -> None:
-        toml_content = """
-[project]
-github_repo = "user/repo"
-
-[integration_gates]
-ci_passed = true
-sova_reviewed = true
-coderabbit_reviewed = false
-threads_resolved = true
-"""
-        (tmp_path / "sova.toml").write_text(toml_content)
-        cfg = load_config(tmp_path)
-        assert cfg.integration_gates.ci_passed is True
-        assert cfg.integration_gates.sova_reviewed is True
-        assert cfg.integration_gates.coderabbit_reviewed is False
-        assert cfg.integration_gates.threads_resolved is True
-
-    def test_explicit_false_overrides_new_default(self, tmp_path: Path) -> None:
-        """An explicit `false` in sova.toml must survive the default-flip to True."""
-        toml_content = """
-[project]
-github_repo = "user/repo"
-
-[integration_gates]
-sova_reviewed = false
-"""
-        (tmp_path / "sova.toml").write_text(toml_content)
-        cfg = load_config(tmp_path)
-        assert cfg.integration_gates.sova_reviewed is False
-        assert cfg.integration_gates.ci_passed is True
-        assert cfg.integration_gates.threads_resolved is True
 
 
 class TestMemoryGuardConfig:
