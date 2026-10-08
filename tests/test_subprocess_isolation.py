@@ -75,6 +75,10 @@ class TestSubprocessIsolation:
 
         proc = _mock_proc(with_streams=not use_file_output)
         runtime = getattr(rt, runtime_cls)()
+        if runtime_cls == "CodexRuntime":
+            # Skip the stdin-support probe: it's a separate subprocess call
+            # not modeled by this shared mock, and not what this test covers.
+            runtime._stdin_capable = False
 
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             kwargs: dict = {}

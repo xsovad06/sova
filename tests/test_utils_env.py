@@ -7,6 +7,7 @@ from unittest.mock import patch
 from sova.utils.env import (
     ANTHROPIC_CREDENTIAL_VARS,
     CODEX_CREDENTIAL_VARS,
+    OPENAI_CREDENTIAL_VARS,
     PARENT_SESSION_VARS,
     PROVIDER_ROUTING_VARS,
     SCRUBBED_VARS,
@@ -107,6 +108,21 @@ class TestScrubAgentEnv:
         env = {"CODEX_API_KEY": "sk-codex-secret", "PATH": "/bin"}
         assert scrub_agent_env(env) == {"PATH": "/bin"}
 
+    def test_removes_openai_api_key_by_default(self) -> None:
+        """OPENAI_API_KEY is an in-process litellm credential; it must never reach a child."""
+        env = {"OPENAI_API_KEY": "sk-openai-secret", "PATH": "/bin"}
+        assert scrub_agent_env(env) == {"PATH": "/bin"}
+
+    def test_passthrough_cannot_readmit_codex_api_key(self) -> None:
+        """A credential can never be opted back in via agent.env_passthrough."""
+        env = {"CODEX_API_KEY": "sk-codex-secret", "PATH": "/bin"}
+        assert scrub_agent_env(env, passthrough=["CODEX_API_KEY"]) == {"PATH": "/bin"}
+
+    def test_passthrough_cannot_readmit_openai_api_key(self) -> None:
+        """A credential can never be opted back in via agent.env_passthrough."""
+        env = {"OPENAI_API_KEY": "sk-openai-secret", "PATH": "/bin"}
+        assert scrub_agent_env(env, passthrough=["OPENAI_API_KEY"]) == {"PATH": "/bin"}
+
     def test_extra_scrub_removes_named_vars(self) -> None:
         env = {"ANTHROPIC_API_KEY": "sk-ant-secret", "PATH": "/bin"}
         result = scrub_agent_env(env, extra_scrub=ANTHROPIC_CREDENTIAL_VARS)
@@ -134,20 +150,28 @@ class TestScrubAgentEnv:
 
 class TestScrubbedVarSets:
     def test_scrubbed_is_the_union(self) -> None:
-        assert SCRUBBED_VARS == PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS | CODEX_CREDENTIAL_VARS
+        assert (
+            SCRUBBED_VARS
+            == PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS | CODEX_CREDENTIAL_VARS | OPENAI_CREDENTIAL_VARS
+        )
 
     def test_var_sets_are_disjoint(self) -> None:
         assert not (PROVIDER_ROUTING_VARS & PARENT_SESSION_VARS)
         assert not (PROVIDER_ROUTING_VARS & CODEX_CREDENTIAL_VARS)
         assert not (PARENT_SESSION_VARS & CODEX_CREDENTIAL_VARS)
+        assert not (PROVIDER_ROUTING_VARS & OPENAI_CREDENTIAL_VARS)
+        assert not (PARENT_SESSION_VARS & OPENAI_CREDENTIAL_VARS)
+        assert not (CODEX_CREDENTIAL_VARS & OPENAI_CREDENTIAL_VARS)
 
     def test_credential_vars_are_not_scrubbed(self) -> None:
         """Guards the deliberate carve-out documented in sova/utils/env.py."""
         assert not (ANTHROPIC_CREDENTIAL_VARS & SCRUBBED_VARS)
 
-    def test_openai_api_key_is_not_scrubbed(self) -> None:
-        """OPENAI_API_KEY is an in-process LiteLLM credential, never subprocess-spawned."""
-        assert "OPENAI_API_KEY" not in SCRUBBED_VARS
+    def test_openai_api_key_is_scrubbed_by_default(self) -> None:
+        """OPENAI_API_KEY must never reach a spawned child; only the in-process
+        litellm/OpenAI SDK read in litellm_provider.py may use it."""
+        assert "OPENAI_API_KEY" in SCRUBBED_VARS
+        assert "OPENAI_API_KEY" in OPENAI_CREDENTIAL_VARS
 
     def test_codex_api_key_is_scrubbed_by_default(self) -> None:
         assert "CODEX_API_KEY" in SCRUBBED_VARS

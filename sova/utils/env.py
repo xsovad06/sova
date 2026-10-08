@@ -60,7 +60,7 @@ PARENT_SESSION_VARS: frozenset[str] = frozenset(
     }
 )
 
-# OpenAI/Codex credential. Folded into SCRUBBED_VARS so a CODEX_API_KEY set in
+# Codex credential. Folded into SCRUBBED_VARS so a CODEX_API_KEY set in
 # the SOVA server's own environment (e.g. for someone else's automation
 # script) is stripped from every spawned child by default, not just Codex's.
 # Deliberately NOT reused via agent.env_passthrough, since that list is global
@@ -68,7 +68,36 @@ PARENT_SESSION_VARS: frozenset[str] = frozenset(
 # children too; CodexRuntime re-injects it explicitly, scoped to its own spawn.
 CODEX_CREDENTIAL_VARS: frozenset[str] = frozenset({"CODEX_API_KEY"})
 
-SCRUBBED_VARS: frozenset[str] = PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS | CODEX_CREDENTIAL_VARS
+# OpenAI credential. No agent runtime in this repo authenticates with
+# OPENAI_API_KEY directly, so it is scrubbed from every spawned child by
+# default. The one scoped exception is sova/ipc/runtime.py's spawn_direct(),
+# the launcher for the developer/researcher/planner pipeline roles: that
+# child runs a full WorkflowEngine which may read OPENAI_API_KEY in-process
+# (sova/llm/litellm_provider.py) if the project configures an OpenAI-backed
+# litellm model, so spawn_direct() re-admits it via extra_env
+# (_openai_extra_env(), mirroring _codex_extra_env()), scoped to that one
+# call site only. ClaudeCodeRuntime/CodexRuntime spawns never see it.
+#
+# AiderRuntime is deliberately NOT given the same carve-out: it forwards an
+# arbitrary caller-supplied model string straight to Aider's --model flag,
+# and today's only caller resolves that string from agent.model, documented
+# as "Claude model to use for agent work". An OpenAI-backed Aider model is
+# out of scope until that changes; if it ever does, scope the exception to
+# AiderRuntime's own spawn() rather than widening agent.env_passthrough.
+# Not reused via agent.env_passthrough for the same reason CODEX_CREDENTIAL_VARS
+# isn't: that escape hatch is global across runtimes, and would leak the key
+# into ClaudeCodeRuntime/AiderRuntime/CodexRuntime children too.
+OPENAI_CREDENTIAL_VARS: frozenset[str] = frozenset({"OPENAI_API_KEY"})
+
+SCRUBBED_VARS: frozenset[str] = (
+    PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS | CODEX_CREDENTIAL_VARS | OPENAI_CREDENTIAL_VARS
+)
+
+# Credential vars can never be re-admitted via agent.env_passthrough, even if
+# a deployment's passthrough list names them explicitly: that escape hatch
+# exists for provider-routing vars (Vertex/Bedrock), not for leaking a
+# runtime-specific credential into every spawned child.
+_PASSTHROUGH_INELIGIBLE: frozenset[str] = CODEX_CREDENTIAL_VARS | OPENAI_CREDENTIAL_VARS
 
 # Credential variables are deliberately NOT scrubbed by default: the anthropic
 # provider reads ANTHROPIC_API_KEY from the environment, and removing it here
@@ -111,6 +140,10 @@ def scrub_agent_env(
         passthrough: Variable names to preserve despite being scrubbed by
             default. Set via ``agent.env_passthrough`` for deployments that
             intentionally route the Claude CLI through Vertex AI or Bedrock.
+            A name in ``_PASSTHROUGH_INELIGIBLE`` (a credential, e.g.
+            ``CODEX_API_KEY``/``OPENAI_API_KEY``) is stripped from this set
+            unconditionally: that escape hatch is for provider-routing vars,
+            not for re-leaking a credential into every spawned child.
         extra_scrub: Variable names to remove in addition to ``SCRUBBED_VARS``,
             for a single spawn rather than every one. Applied unconditionally,
             after the ``passthrough`` keep-set: a name here is removed even if
@@ -125,7 +158,7 @@ def scrub_agent_env(
         A new dict safe to hand to a spawned subprocess.
     """
     source = os.environ if env is None else env
-    keep = {name.strip() for name in passthrough if name and name.strip()}
+    keep = {name.strip() for name in passthrough if name and name.strip()} - _PASSTHROUGH_INELIGIBLE
     always_remove = {name.strip() for name in extra_scrub if name and name.strip()}
 
     result: dict[str, str] = {}

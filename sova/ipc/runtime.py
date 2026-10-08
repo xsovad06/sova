@@ -176,9 +176,13 @@ async def _spawn_agent_process(
 
     ``stdin_payload``, when set, is written to the child's stdin and the
     pipe is then closed (EOF), instead of the default of inheriting this
-    process's stdin. Only ``ClaudeCodeRuntime.spawn()`` sets it today (the
-    prompt, since the Claude CLI reads it from stdin rather than argv); every
-    other caller leaves it ``None`` and keeps inheriting stdin unchanged.
+    process's stdin. ``ClaudeCodeRuntime.spawn()`` always sets it (the
+    prompt, since the Claude CLI reads it from stdin rather than argv);
+    ``CodexRuntime.spawn()`` sets it only when
+    ``_probe_codex_stdin_prompt_support()`` confirms the installed CLI reads
+    an omitted PROMPT from stdin, and otherwise leaves it ``None`` to keep
+    the prompt on argv. Every other caller leaves it ``None`` and keeps
+    inheriting stdin unchanged.
     """
     agent_env = _inject_agent_marker(env, extra_scrub=extra_scrub, extra_env=extra_env)
 
@@ -554,8 +558,8 @@ def _resolve_codex_api_key(env: Mapping[str, str] | None = None) -> str | None:
     return value or None
 
 
-def _codex_exec_args(prompt: str, *, model: str | None, sandbox: str) -> list[str]:
-    """Build the ``codex exec --json --sandbox ... [--model M] -- PROMPT`` argv.
+def _codex_exec_args(prompt: str | None, *, model: str | None, sandbox: str) -> list[str]:
+    """Build the ``codex exec --json --sandbox ... [--model M] [-- PROMPT]`` argv.
 
     Shared by ``CodexRuntime.spawn()`` and ``ReviewerRole._gather_repo_context()``
     (the reviewer's optional read-only repo-context sub-call) so the two
@@ -567,14 +571,21 @@ def _codex_exec_args(prompt: str, *, model: str | None, sandbox: str) -> list[st
     deliberately skips the headless guardrail preamble (it is not a pipeline
     agent).
 
-    ``"--"`` is passed unconditionally: ``codex exec`` takes PROMPT as a
-    positional argument (clap-based parser), so an argv value starting with
-    ``"-"`` would otherwise be misread as an unrecognized option.
+    ``prompt=None`` omits the PROMPT positional entirely, for
+    ``CodexRuntime.spawn()``'s stdin delivery path (see
+    ``_resolve_stdin_capable()``): the caller is responsible for delivering
+    the prompt via ``stdin_payload`` instead in that case.
+
+    ``"--"`` is passed unconditionally when ``prompt`` is given: ``codex
+    exec`` takes PROMPT as a positional argument (clap-based parser), so an
+    argv value starting with ``"-"`` would otherwise be misread as an
+    unrecognized option.
     """
     args: list[str] = ["codex", "exec", "--json", "--sandbox", sandbox]
     if model:
         args.extend(["--model", model])
-    args.extend(["--", prompt])
+    if prompt is not None:
+        args.extend(["--", prompt])
     return args
 
 
@@ -594,6 +605,25 @@ def _codex_extra_env(env: Mapping[str, str] | None = None) -> dict[str, str] | N
     """
     api_key = _resolve_codex_api_key(env)
     return {"CODEX_API_KEY": api_key} if api_key else None
+
+
+def _openai_extra_env(env: Mapping[str, str] | None = None) -> dict[str, str] | None:
+    """Build the ``extra_env`` override that re-admits ``OPENAI_API_KEY`` for ``spawn_direct()``.
+
+    ``OPENAI_API_KEY`` is in ``SCRUBBED_VARS`` by default (see
+    ``sova.utils.env``), so it is otherwise absent from every spawned child.
+    ``spawn_direct()`` is the one caller that needs it back: it launches the
+    ``sova run N`` subprocess for the developer/researcher/planner pipeline
+    roles, and that subprocess's own ``WorkflowEngine`` may read
+    ``OPENAI_API_KEY`` in-process (``sova/llm/litellm_provider.py``) when the
+    project's ``llm.provider`` is an OpenAI-backed litellm model. Mirrors
+    ``_codex_extra_env()``: scoped to this one call site, so
+    ``ClaudeCodeRuntime``/``AiderRuntime``/``CodexRuntime`` spawns never
+    receive it.
+    """
+    source = os.environ if env is None else env
+    api_key = source.get("OPENAI_API_KEY", "").strip()
+    return {"OPENAI_API_KEY": api_key} if api_key else None
 
 
 async def _probe_codex_auth() -> str | None:
@@ -623,6 +653,69 @@ async def _probe_codex_auth() -> str | None:
     if result.timed_out:
         return None
     return f"{result.stdout}\n{result.stderr}".strip()
+
+
+_CODEX_STDIN_PROBE_TIMEOUT = _VERSION_CHECK_TIMEOUT
+
+# A line mentioning "stdin" alongside one of these is describing the absence
+# of stdin support, not its presence (e.g. "PROMPT is not read from stdin").
+# Scanning line-by-line, rather than the whole blob, keeps an unrelated flag
+# elsewhere in --help that happens to mention "stdin" from forcing this same
+# negation check onto text that has nothing to do with it.
+_STDIN_NEGATION_MARKERS = ("not ", "cannot", "can't", "no stdin", "unsupported", "doesn't", "does not", "won't")
+
+# clap (Codex CLI's arg parser) names the PROMPT positional inside <> when
+# required or [] when optional on its own definition line. Requiring one of
+# these markers, not just the word "stdin", keeps an unrelated option's
+# incidental stdin mention (e.g. "--input reads additional config from
+# stdin") from being misread as PROMPT's own stdin support.
+_PROMPT_ARG_MARKERS = ("<prompt>", "[prompt]")
+
+
+async def _probe_codex_stdin_prompt_support() -> bool:
+    """Check whether the installed Codex CLI documents a stdin-delivered prompt.
+
+    Reads ``codex exec --help`` (a local, non-billing, non-model-invoking
+    read, like the ``--version`` check in ``_check_cli_available()``) and
+    looks for the CLI's own PROMPT argument documentation mentioning stdin.
+    Never guesses from a hardcoded version string: Codex CLI versioning is
+    external, so a hardcoded cutoff would silently become wrong on the next
+    release.
+
+    Uses the shared ``run()`` helper, like ``_probe_codex_auth()`` above,
+    including the same scrubbed environment (``--help`` needs no credential
+    at all, so no ``extra_env`` re-injection is needed here): any failure,
+    timeout, non-zero exit, or ambiguous output fails closed to ``False``
+    (argv delivery, today's behavior): wrongly assuming stdin support risks
+    the child blocking on an interactive terminal read instead of the prompt
+    it was supposed to receive, a hang strictly worse than the
+    argv-visibility hazard this probe exists to close. Confirmation requires
+    the line to be PROMPT's own argument-definition line (see
+    ``_PROMPT_ARG_MARKERS``); an unrelated option that happens to mention
+    "stdin" must not match, and a line mentioning "stdin" in a negated sense
+    (e.g. "not read from stdin") is exactly this kind of ambiguous case and
+    must not be read as confirmation either.
+    """
+    probe_env = _inject_agent_marker(None, extra_scrub=ANTHROPIC_CREDENTIAL_VARS)
+    try:
+        result = await run("codex", "exec", "--help", env=probe_env, timeout=_CODEX_STDIN_PROBE_TIMEOUT)
+    except OSError:
+        log.debug("codex.stdin_probe_failed", exc_info=True)
+        return False
+
+    if result.timed_out or not result.success:
+        return False
+    for line in result.stdout.lower().splitlines():
+        if not any(marker in line for marker in _PROMPT_ARG_MARKERS):
+            continue
+        # Negation is checked per clause, not per line: a line like "if not
+        # provided as an argument, read from stdin" negates "provided as an
+        # argument", not "read from stdin". Checking the whole line would
+        # misread that unrelated "not" as negating stdin support.
+        for clause in re.split(r"[.,]", line):
+            if "stdin" in clause and not any(marker in clause for marker in _STDIN_NEGATION_MARKERS):
+                return True
+    return False
 
 
 def _interpret_codex_auth_probe(text: str | None) -> tuple[bool | None, str]:
@@ -709,23 +802,27 @@ class CodexRuntime(AgentRuntime):
     the pipeline-boundary guardrail gap that used to be tracked here against
     epic #940 (issue #946).
 
-    Known residual, still deferred to epic #940: the transformed prompt is
-    still placed on ``codex exec``'s argv (see ``spawn()`` below), not
-    delivered via stdin the way ``ClaudeCodeRuntime`` does. This widens the
+    Prompt delivery is stdin when the installed Codex CLI documents support
+    for it, argv otherwise: ``_probe_codex_stdin_prompt_support()`` reads
+    ``codex exec --help`` once per runtime instance (cached on
+    ``self._stdin_capable``) and ``spawn()`` only omits the PROMPT positional
+    (delivering the prompt via ``stdin_payload`` instead, the same mechanism
+    ``ClaudeCodeRuntime.spawn()`` uses) when that probe answered yes. A CLI
+    build the probe cannot read, or one that fails/times out, keeps the
+    prompt on argv exactly as before (issue #1127), which still widens the
     known ``ps``/``pkill -f`` argv-visibility hazard (see
-    ``sova/llm/cli_args.py``) since the guardrail preamble makes the argv
-    string longer; moving Codex prompt delivery to stdin changes the spawn
-    contract and is scoped to epic #940, not this issue. The preamble's
-    COMMAND INTERPRETATION clause deliberately avoids embedding a literal
+    ``sova/llm/cli_args.py``) on that fallback path, since the guardrail
+    preamble makes the argv string longer. The preamble's COMMAND
+    INTERPRETATION clause deliberately avoids embedding a literal
     ``sova run N``-shaped example for exactly this reason (a fixed example
     substring would put every Codex agent's argv inside reach of a
     ``pkill -f`` matching it, including a ``command:*`` run whose own
     prompt never mentions sova at all). The caller's own prompt text still
-    ends up on argv regardless: a non-pipeline role (custom) spawned through
-    this runtime wraps its command in a ``sova run ...`` invocation
-    (``agent_lifecycle.py``'s ``cmd_parts``), so that literal substring still
-    reaches argv for that role even with the static example gone. Never reap
-    SOVA processes by matching prompt text.
+    ends up on argv on the fallback path: a non-pipeline role (reviewer,
+    custom) spawned through this runtime wraps its command in a
+    ``sova run ...`` invocation (``agent_lifecycle.py``'s ``cmd_parts``), so
+    that literal substring still reaches argv for those roles even with the
+    static example gone. Never reap SOVA processes by matching prompt text.
 
     Model and sandbox policy come from ``CodexConfig`` (``[codex]`` in
     ``sova.toml``), passed in at construction via ``create_runtime(codex=...)``.
@@ -739,6 +836,10 @@ class CodexRuntime(AgentRuntime):
     def __init__(self, config: CodexConfig | None = None) -> None:
         self._config = config if config is not None else CodexConfig()
         self._parser = CodexStreamParser()
+        # Cached on first spawn: None means "not probed yet", so the real
+        # probe only ever runs once per runtime instance rather than once per
+        # spawn. See _resolve_stdin_capable().
+        self._stdin_capable: bool | None = None
 
     @property
     def name(self) -> str:
@@ -752,6 +853,14 @@ class CodexRuntime(AgentRuntime):
         than the same text.
         """
         return _HEADLESS_PREAMBLE_CODEX + prompt
+
+    async def _resolve_stdin_capable(self) -> bool:
+        """Resolve, and cache on this instance, whether the installed Codex
+        CLI supports a stdin-delivered prompt (see
+        ``_probe_codex_stdin_prompt_support()``)."""
+        if self._stdin_capable is None:
+            self._stdin_capable = await _probe_codex_stdin_prompt_support()
+        return self._stdin_capable
 
     async def spawn(
         self,
@@ -783,7 +892,16 @@ class CodexRuntime(AgentRuntime):
         sandbox = "read-only" if read_only else self._config.sandbox
         codex_model = self._config.model
         transformed_prompt = self.transform_prompt(prompt)
-        args = _codex_exec_args(transformed_prompt, model=codex_model, sandbox=sandbox)
+
+        stdin_capable = await self._resolve_stdin_capable()
+        stdin_payload: str | None = None
+        if stdin_capable:
+            # No PROMPT positional at all: the probe confirmed this CLI reads
+            # it from stdin when omitted, so the prompt never touches argv.
+            args = _codex_exec_args(None, model=codex_model, sandbox=sandbox)
+            stdin_payload = transformed_prompt
+        else:
+            args = _codex_exec_args(transformed_prompt, model=codex_model, sandbox=sandbox)
 
         log.info(
             "codex.spawn",
@@ -792,6 +910,7 @@ class CodexRuntime(AgentRuntime):
             prompt_len=len(transformed_prompt),
             read_only=read_only,
             sandbox=sandbox,
+            prompt_delivery="stdin" if stdin_capable else "argv",
         )
 
         return await _spawn_agent_process(
@@ -802,6 +921,7 @@ class CodexRuntime(AgentRuntime):
             run_label,
             extra_scrub=ANTHROPIC_CREDENTIAL_VARS,
             extra_env=_codex_extra_env(env),
+            stdin_payload=stdin_payload,
         )
 
     def parse_output(self, line: str) -> StreamEvent | None:
@@ -886,10 +1006,15 @@ async def spawn_direct(
     ``extra_env`` re-admits variables the shared scrub strips by default
     (see ``_inject_agent_marker()``), e.g. ``_codex_extra_env()`` for the
     reviewer role's optional read-only Codex repo-context sub-call.
+    ``OPENAI_API_KEY`` is always re-admitted on top of that (see
+    ``_openai_extra_env()``): the spawned ``sova run N`` subprocess is the
+    one trusted pipeline child whose own in-process litellm calls may need
+    it, unlike the AgentRuntime spawns below which never receive it.
     """
     log.info("process.spawn_direct", cwd=str(cwd), cmd=cmd_parts[0:3])
 
-    return await _spawn_agent_process(cmd_parts, cwd, env, output_dir, run_label, extra_env=extra_env)
+    combined_extra_env = {**(_openai_extra_env(env) or {}), **(extra_env or {})}
+    return await _spawn_agent_process(cmd_parts, cwd, env, output_dir, run_label, extra_env=combined_extra_env or None)
 
 
 # ---------------------------------------------------------------------------
