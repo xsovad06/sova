@@ -101,8 +101,8 @@ _ACTION_TO_ROLE: dict[ProgressionAction, str] = {
 # and raises "Unknown role: 'command:integrate-pr'". The spawned agent was then
 # left to improvise the workflow from a failed CLI call. start_command() sends
 # the real slash command instead, and produces the same `command:{name}` role
-# string that count_address_review_runs() and _address_cycle_completed_since()
-# match on. The _ACTION_TO_ROLE entries above stay for display and logging.
+# string that _validate_command_outcome() (agent_db.py) matches on.
+# The _ACTION_TO_ROLE entries above stay for display and logging.
 _ACTION_TO_COMMAND: dict[ProgressionAction, str] = {
     ProgressionAction.SPAWN_INTEGRATE: "integrate-pr",
     ProgressionAction.SPAWN_ADDRESS_PR: "address-pr",
@@ -929,7 +929,7 @@ class TaskProgressionEngine:
 
         refined_pr_info: PRInfo | None = None
         if state == TaskState.IN_REVIEW and candidate == ProgressionAction.SPAWN_INTEGRATE:
-            candidate, refined_pr_info = await self._refine_in_review_action(issue_number, task_labels)
+            candidate, refined_pr_info = await self._refine_in_review_action(issue_number)
             if candidate == ProgressionAction.WAIT:
                 return ProgressionDecision(
                     issue_number=issue_number,
@@ -1226,9 +1226,7 @@ class TaskProgressionEngine:
             log.debug("find_pr.failed", issue=issue, exc_info=True)
             return None
 
-    async def _refine_in_review_action(
-        self, issue: int, task_labels: list[str] | None = None
-    ) -> tuple[ProgressionAction, PRInfo | None]:
+    async def _refine_in_review_action(self, issue: int) -> tuple[ProgressionAction, PRInfo | None]:
         """Refine the IN_REVIEW placeholder into a specific action via resolve_next_action().
 
         Returns (action, pr_info). Both the verdict and the facts are assembled
@@ -1248,8 +1246,7 @@ class TaskProgressionEngine:
                 str(issue),
                 pr_number=pr_info.number,
                 project_dir=self._project_dir,
-                issue_labels=task_labels or [],
-                fallback_adapter=self._adapter,
+                adapter=self._adapter,
             )
         except Exception:  # noqa: BLE001 (verdict lookup spans DB, tracker and PR review sources)
             log.debug("refine_in_review.verdict_failed", issue=issue, exc_info=True)

@@ -110,13 +110,12 @@ class TestFalsePositiveGuards:
 class TestRoundTripOfSovaOwnMessages:
     """Messages SOVA writes itself must be recognised by this predicate.
 
-    They are not merely prose: ``count_address_review_runs`` and the network
-    self-heal pass re-read persisted ``error_message`` text through this
-    function, so a validator whose wording drifts out of the pattern table
-    silently stops excluding outage runs from the address-cycle budget and
-    stops qualifying them for resume. Caught exactly that way in review: the
-    first version of the validator message used "GitHub was unreachable",
-    which the table did not match.
+    They are not merely prose: the network self-heal pass re-reads persisted
+    ``error_message`` text through this function, so a validator whose
+    wording drifts out of the pattern table silently stops qualifying a run
+    for resume. Caught exactly that way in review: the first version of the
+    validator message used "GitHub was unreachable", which the table did not
+    match.
     """
 
     def test_address_pr_unverified_message(self) -> None:

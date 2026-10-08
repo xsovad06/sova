@@ -34,6 +34,7 @@ def _ctx(findings: list[dict], tmp_path: Path) -> ExecutionContext:
         pr_number=1063,
     )
     ctx.addressed_review_findings = findings
+    ctx.pipeline_variant = "address_review"
     return ctx
 
 
@@ -79,8 +80,32 @@ class TestPostAddressSummary:
         assert "## Address Review: Round 2" in ctx.adapter.post_pr_review.call_args.kwargs["body"]
 
     @pytest.mark.asyncio
-    async def test_nothing_posted_without_findings(self, tmp_path: Path) -> None:
+    async def test_findings_free_cycle_still_posts_its_marker(self, tmp_path: Path) -> None:
+        """A cycle with no findings is still a cycle the address budget must see."""
         ctx = _ctx([], tmp_path)
+        with patch("sova.core.steps.resolve_external_reviews.run", new=_git_head_ok()):
+            posted = await _post_address_summary(ctx)
+
+        assert posted is True
+        body = ctx.adapter.post_pr_review.call_args.kwargs["body"]
+        assert body.startswith(f"<!-- sova-addressed: sha={_HEAD} -->")
+        assert "No review findings were pending" in body
+
+    @pytest.mark.asyncio
+    async def test_nothing_posted_outside_address_review_pipeline(self, tmp_path: Path) -> None:
+        """A custom configured pipeline including this step outside address-review must not post."""
+        ctx = _ctx([{"file": "a.py", "line": 1, "description": "bug"}], tmp_path)
+        ctx.pipeline_variant = "developer"
+        with patch("sova.core.steps.resolve_external_reviews.run", new=_git_head_ok()):
+            posted = await _post_address_summary(ctx)
+
+        assert posted is False
+        ctx.adapter.post_pr_review.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_nothing_posted_without_a_pr(self, tmp_path: Path) -> None:
+        ctx = _ctx([], tmp_path)
+        ctx.pr_number = None
         with patch("sova.core.steps.resolve_external_reviews.run", new=_git_head_ok()):
             posted = await _post_address_summary(ctx)
 
@@ -101,6 +126,20 @@ class TestPostAddressSummary:
         ctx = _ctx([{"file": "a.py", "line": 1, "description": "bug"}], tmp_path)
         failed_git = AsyncMock(return_value=MagicMock(success=False, stdout=""))
         with patch("sova.core.steps.resolve_external_reviews.run", new=failed_git):
+            posted = await _post_address_summary(ctx)
+
+        assert posted is True
+        assert ctx.adapter.post_pr_review.call_args.kwargs["body"].startswith("<!-- sova-addressed -->")
+
+    @pytest.mark.asyncio
+    async def test_missing_working_dir_still_posts_marker(self, tmp_path: Path) -> None:
+        """A pruned worktree makes the HEAD spawn raise, which must not lose the cycle."""
+        ctx = _ctx([{"file": "a.py", "line": 1, "description": "bug"}], tmp_path)
+        ctx.worktree_dir = tmp_path / "pruned"
+        with patch(
+            "sova.core.steps.resolve_external_reviews.run",
+            new=AsyncMock(side_effect=FileNotFoundError(2, "No such file or directory")),
+        ):
             posted = await _post_address_summary(ctx)
 
         assert posted is True

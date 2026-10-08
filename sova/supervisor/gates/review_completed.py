@@ -3,8 +3,8 @@
 Three-source check (defense in depth):
   1. Issue labels: sova:approved only (zero API cost). sova:revise and
      sova:block explicitly reject the PR and must not satisfy this gate.
-  2. DB TaskRun: completed (status="done") reviewer run with handoff_json.
-     Deliberately verdict-blind (see below).
+  2. GitHub review marker: a ``sova-review`` marker found via
+     resolve_verdict_for_pr(). Deliberately verdict-blind (see below).
   3. PR review_decision: non-bot GitHub approval (from cached PR data)
 
 Additionally blocks regardless of the above when the PR has unresolved review
@@ -13,16 +13,15 @@ determined at all (unknown fails closed, same as unresolved): a stale
 "reviewed" signal must not authorize integration while open conversations
 remain, or might remain undetected.
 
-Known residual gap: source 2 (``_has_reviewer_run()``) only checks that a
-reviewer run completed, not what it concluded, so a completed run with a
-"revise" or "block" verdict (or one whose findings never reached any external
-observer, e.g. "post_failed") still satisfies it even though source 1 rejects
-the matching label. Making source 2 verdict-aware was considered and
-deliberately deferred: it overlaps issue #991's next-action resolver work and
-was out of scope for the label-narrowing fix that introduced source 1's
-rejection rule (issue #993). A genuine human GitHub approval (source 3)
-posted after a rejecting label or run still authorizes integration, since this
-gate only fails to satisfy on a rejection, it does not veto.
+Known residual gap: source 2 (``_has_review_marker()``) only checks that a
+review was posted, not what it concluded, so a "revise" or "block" marker
+still satisfies it even though source 1 rejects the matching label. Making
+source 2 verdict-aware was considered and deliberately deferred: it overlaps
+issue #991's next-action resolver work and was out of scope for the
+label-narrowing fix that introduced source 1's rejection rule (issue #993). A
+genuine human GitHub approval (source 3) posted after a rejecting label or
+marker still authorizes integration, since this gate only fails to satisfy on
+a rejection, it does not veto.
 
 Only blocks supervisor autonomy; dashboard "Integrate" button remains available
 for human-initiated integration (explicit user choice).
@@ -71,7 +70,7 @@ async def check_review_completed_gate(
     if _has_sova_label(labels):
         return None
 
-    if await _has_reviewer_run(issue_number, pr_number, project_dir):
+    if await _has_review_marker(issue_number, pr_number, project_dir):
         return None
 
     if _has_human_approval(pr_data):
@@ -111,30 +110,28 @@ def _unresolved_thread_count(pr_data: dict | None) -> int | None:
     return get_unresolved_thread_count(pr_data)
 
 
-async def _has_reviewer_run(
+async def _has_review_marker(
     issue_number: int,
     pr_number: int | None,
     project_dir: Path,
 ) -> bool:
-    """Check if a completed (status="done") reviewer TaskRun exists for this issue/PR.
+    """Check if a SOVA review marker exists on GitHub for this issue/PR.
 
-    A failed or interrupted run may still carry handoff_json (e.g. a crash after
-    writing findings), but it never finished the review, so it must not satisfy
-    this safety-critical gate. ``get_sova_review_verdict()`` is shared with
-    display-only callers that legitimately want to surface a verdict from a
-    non-"done" run, so the completion check is done here instead.
+    A ``sova-review`` marker is only ever posted once a review run finishes
+    and successfully posts to GitHub, so its presence alone is a completion
+    signal: there is no DB status distinction left to make here.
 
-    Deliberately verdict-blind: a completed run's verdict (including "revise"
-    or "block") is not consulted here. See the module docstring's "Known
-    residual gap" note.
+    Deliberately verdict-blind: the marker's verdict (including "revise" or
+    "block") is not consulted here. See the module docstring's "Known residual
+    gap" note.
     """
     try:
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+        from sova.dashboard.services.work_verdict import resolve_verdict_for_pr
 
-        verdict = await get_sova_review_verdict(str(issue_number), pr_number=pr_number, project_dir=project_dir)
-        return verdict.get("has_sova_review", False) and verdict.get("run_status") == "done"
+        verdict = await resolve_verdict_for_pr(str(issue_number), pr_number=pr_number, project_dir=project_dir)
+        return verdict.get("has_sova_review", False)
     except Exception:  # noqa: BLE001 (one of three review sources; failure falls through to the others)
-        log.debug("review_completed.db_check_failed", exc_info=True)
+        log.debug("review_completed.marker_check_failed", exc_info=True)
         return False
 
 

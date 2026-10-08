@@ -1,23 +1,22 @@
 """Work item verdict resolution: SOVA verdict fetching, parsing, caching.
 
-Handles fetching SOVA review verdicts from labels, DB, and GitHub PR reviews.
-Includes the verdict cache and GitHub review marker parsing.
+GitHub review markers (``sova-review``, ``sova-addressed``) are the sole
+source of truth for a PR's SOVA verdict: parse_review_history() computes
+verdict, anchor commit, addressed state, and address-cycle count from a PR's
+review history in one pass, and resolve_sova_verdict() is a thin adapter over
+it (fetch the history, cache the result).
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from sova.utils.gh import get_active_gh_user
 from sova.utils.logging import get_logger
-from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE
-
-if TYPE_CHECKING:
-    from sova.adapters.base import PRReview
+from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE, parse_verdict_marker
 
 log = get_logger(component="dashboard.work_item")
 
@@ -43,192 +42,13 @@ def invalidate_verdict(project_dir: Path | None, pr_number: int | None) -> None:
     """Drop one PR's cached verdict so the next resolve_sova_verdict() call recomputes it.
 
     Called on agent exit (the auto-handoff circuit breaker check) so a
-    just-completed address cycle's count is reflected immediately rather than
-    waiting out the cache TTL. A no-op when pr_number is None or the PR has no
-    cache entry: there is nothing to invalidate in either case.
+    just-completed address cycle's round count is reflected immediately rather
+    than waiting out the cache TTL. A no-op when pr_number is None or the PR has
+    no cache entry: there is nothing to invalidate in either case.
     """
     if pr_number is None:
         return
     _sova_verdict_cache.pop(_cache_key(project_dir, pr_number), None)
-
-
-_SOVA_VERDICT_LABEL_MAP: dict[str, str] = {
-    "sova:approved": "approve",
-    "sova:revise": "revise",
-    "sova:block": "block",
-}
-
-
-def _extract_sova_verdict_from_labels(labels: list[str]) -> dict | None:
-    """Extract a SOVA review verdict from issue labels.
-
-    Returns a verdict dict matching get_sova_review_verdict()'s shape, or None
-    if no sova:* label is present. If multiple sova:* labels exist (should not
-    happen), takes the first match.
-    """
-    for label in labels:
-        verdict = _SOVA_VERDICT_LABEL_MAP.get(label)
-        if verdict is not None:
-            # Labels carry no commit SHA: unanchored, not stale.
-            return {
-                "has_sova_review": True,
-                "verdict": verdict,
-                "finding_count": 0,
-                "reviewed_at": None,
-                "review_head_sha": None,
-            }
-    return None
-
-
-_SOVA_MARKER_RE = re.compile(
-    r"<!--\s*sova-review:\s*(approve|revise|block)(?:\s+sha=([0-9a-f]{7,40}))?\s*-->", re.IGNORECASE
-)
-# Matches the natural-language verdict line from /review-pr command output and older pipeline output.
-_SOVA_VERDICT_LINE_RE = re.compile(
-    r"^\*\*(Approve|Request changes|Block|Comment only)\b",
-    re.IGNORECASE | re.MULTILINE,
-)
-_VERDICT_NORMALIZE = {
-    "approve": "approve",
-    "request changes": "revise",
-    "block": "block",
-    "comment only": "approve",
-}
-
-
-def _parse_sova_review_from_github(reviews: list[PRReview]) -> dict | None:
-    """Scan GitHub PR reviews for a cross-instance SOVA review.
-
-    Processes reviews newest-first. Skips DISMISSED reviews (superseded).
-    Tries the machine-readable marker first, then falls back to detecting
-    SOVA's characteristic body structure for reviews posted before the
-    marker was introduced.
-
-    An address cycle (the autonomous pipeline or ``/address-pr``) posts its
-    ``## Address Review`` summary as a COMMENT-state review whose first line is
-    the ``sova-addressed`` marker. Because the scan is newest-first, meeting
-    that marker before the verdict means the verdict was addressed after it
-    was posted, and the result is "addressed" rather than the pre-fix verdict,
-    matching what get_sova_review_verdict() reports from the local DB. A
-    summary older than the verdict (a re-review after an earlier cycle) is
-    ignored, since the verdict then postdates the fixes.
-
-    Returns a verdict dict matching get_sova_review_verdict()'s shape, or None.
-    """
-
-    def _verdict_dict(verdict: str, submitted_at: str, review_head_sha: str | None) -> dict:
-        return {
-            "has_sova_review": True,
-            "verdict": verdict,
-            "finding_count": 0,
-            "reviewed_at": submitted_at,
-            "review_head_sha": review_head_sha,
-        }
-
-    addressed_after_verdict = False
-    for review in sorted(reviews, key=lambda r: r.submitted_at, reverse=True):
-        if review.state == "DISMISSED":
-            continue
-        body = review.body or ""
-
-        if SOVA_ADDRESSED_MARKER_RE.search(body):
-            addressed_after_verdict = True
-            continue
-
-        found = _extract_review_verdict(body)
-        if found is None:
-            continue
-        if addressed_after_verdict:
-            return _verdict_dict("addressed", review.submitted_at, None)
-        verdict, review_head_sha = found
-        return _verdict_dict(verdict, review.submitted_at, review_head_sha)
-
-    return None
-
-
-def _extract_review_verdict(body: str) -> tuple[str, str | None] | None:
-    """Read (verdict, reviewed sha) from one SOVA review body, or None if it is not one.
-
-    Tries the machine-readable marker first, then the heuristic body structure
-    used by /review-pr before the marker existed (never sha-anchored).
-    """
-    m = _SOVA_MARKER_RE.search(body)
-    if m:
-        sha = m.group(2)
-        return m.group(1).lower(), (sha.lower() if sha else None)
-
-    if "## PR Summary" in body and "## Verdict" in body:
-        # Scope to the ## Verdict section to avoid matching bold lines in ## Findings.
-        verdict_section = body.split("## Verdict", 1)[-1]
-        verdict_match = _SOVA_VERDICT_LINE_RE.search(verdict_section)
-        if verdict_match:
-            return _VERDICT_NORMALIZE.get(verdict_match.group(1).lower(), "revise"), None
-
-    return None
-
-
-def _parse_reviewed_at(value: Any) -> datetime | None:
-    """Parse a review's ISO 8601 ``submitted_at`` into an aware UTC datetime, or None."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
-async def _supersede_if_addressed_locally(
-    verdict: dict, issue_number: str | None, pr_number: int | None, project_dir: Path | None
-) -> dict:
-    """Apply the local DB's address-cycle record to a verdict that did not come from the DB.
-
-    get_sova_review_verdict() only evaluates address-cycle supersession for a
-    review run it found in the DB. A verdict read from a GitHub review marker
-    (posted by the ``/review-pr`` command, whose run leaves no reviewer
-    TaskRun, or by another SOVA instance) therefore used to stand forever,
-    even after this machine's own address-review pipeline had fixed and
-    pushed every finding: the dashboard kept routing the PR to "Address"
-    with nothing left to address (#1063). Here the same supersession rule is
-    applied to the GitHub-sourced verdict using its own ``reviewed_at``.
-    """
-    if verdict.get("verdict") == "addressed":
-        return verdict
-    since = _parse_reviewed_at(verdict.get("reviewed_at"))
-    if since is None:
-        return verdict
-
-    from sova.dashboard.services.agent_recovery import has_address_cycle_since
-
-    if not await has_address_cycle_since(since, issue_number, pr_number=pr_number, project_dir=project_dir):
-        return verdict
-    return {
-        **verdict,
-        "verdict": "addressed",
-        "finding_count": 0,
-        "run_status": "done",
-        "review_head_sha": None,
-    }
-
-
-async def _fetch_github_review_fallback(pr_number: int, adapter: Any) -> dict | None:
-    """Fetch GitHub reviews and scan for a cross-instance SOVA review marker.
-
-    Called only when the local DB has no SOVA review record for this PR.
-    This handles the case where a second SOVA instance (different machine/user)
-    ran the review and its TaskRun lives in a different database.
-
-    The adapter is built once by _fetch_sova_verdicts and shared across all PR lookups
-    so that blocking config/adapter construction does not run per-PR inside asyncio.gather.
-    """
-    try:
-        reviews = await adapter.get_pr_reviews(pr_number)
-        return _parse_sova_review_from_github(reviews)
-    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
-        log.debug("work_items.github_review_fallback_failed", pr=pr_number, exc_info=True)
-        return None
 
 
 _NO_REVIEW: dict = {
@@ -236,9 +56,96 @@ _NO_REVIEW: dict = {
     "verdict": None,
     "finding_count": 0,
     "reviewed_at": None,
-    "run_status": None,
     "review_head_sha": None,
+    "address_cycles": 0,
 }
+
+# A verdict that could not be looked up at all (GitHub unreachable, or no
+# adapter to name the repo) is reported as _NO_REVIEW plus this flag, rather
+# than as a plain "no review found". The two are indistinguishable in the
+# fields above, yet they must not be treated the same by every caller:
+# "no review yet" means address_cycles really is 0, while "could not look"
+# means the count is unknown, and a safety budget keyed on it has to fail
+# closed instead of reading the unknown as zero. Display callers may keep
+# ignoring the flag; see _check_address_review_circuit_breaker().
+UNRESOLVED_KEY = "history_unavailable"
+
+
+def _unresolved() -> dict:
+    """Return a no-review verdict marked as "could not be looked up"."""
+    return {**_NO_REVIEW, UNRESOLVED_KEY: True}
+
+
+def parse_review_history(reviews: list[dict], *, trusted_login: str = "") -> dict:
+    """Compute a SOVA verdict from a PR's review history, scanning for markers only.
+
+    ``reviews`` entries carry ``state``, ``body``, ``submitted_at`` (ISO 8601;
+    sorts correctly as a plain string, so no datetime parsing is needed) and
+    ``author`` (lowercased GitHub login): the shape ``PRReviewData.review_history``
+    returns. DISMISSED reviews are skipped entirely: a dismissed review's body
+    no longer reflects reviewer intent, so it counts toward neither the
+    verdict scan nor ``address_cycles``.
+
+    ``trusted_login`` restricts both the verdict scan and the address-cycle
+    count to reviews authored by that login (case-insensitive), the account
+    SOVA posts its own markers as. Without this filter, any GitHub user who
+    can submit a COMMENT review could forge a ``sova-review`` or
+    ``sova-addressed`` marker and forge an approval or inflate the
+    address-cycle count. An empty ``trusted_login`` disables the filter
+    (callers that have no configured identity to check against yet).
+
+    Scans newest-first by ``submitted_at`` (the ordering key; array position is
+    not trusted). ``address_cycles`` is the number of ``sova-addressed`` markers
+    found, each marking one completed address cycle, capped at whatever the
+    last-100 GraphQL window returned (an accepted limitation for very
+    long-lived PRs; resolve_sova_verdict() fails closed instead of reporting
+    an undercount when even that window is truncated). The first
+    ``sova-addressed`` marker encountered in the scan means
+    every verdict marker older than it has already been addressed, so the
+    reported verdict is "addressed" rather than the stale pre-fix value. A
+    review body with neither marker (a human review, or a SOVA review posted
+    before markers existed) is skipped without affecting the scan, not treated
+    as an error.
+
+    The reviewed commit comes from the marker's own ``sha=`` anchor, never from
+    the commit GitHub recorded the review against: an anchor is what the
+    reviewer claims it reviewed, which is the only thing a staleness check can
+    act on.
+    """
+    trusted = trusted_login.lower() if trusted_login else ""
+    ordered = sorted(
+        (
+            r
+            for r in reviews
+            if r.get("state") != "DISMISSED" and (not trusted or (r.get("author") or "").lower() == trusted)
+        ),
+        key=lambda r: r.get("submitted_at") or "",
+        reverse=True,
+    )
+
+    address_cycles = sum(1 for r in ordered if SOVA_ADDRESSED_MARKER_RE.search(r.get("body") or ""))
+
+    addressed_after_verdict = False
+    for r in ordered:
+        body = r.get("body") or ""
+        if SOVA_ADDRESSED_MARKER_RE.search(body):
+            addressed_after_verdict = True
+            continue
+
+        found = parse_verdict_marker(body)
+        if found is None:
+            continue
+        verdict, sha = found
+        return {
+            "has_sova_review": True,
+            "verdict": "addressed" if addressed_after_verdict else verdict,
+            "finding_count": 0,
+            "reviewed_at": r.get("submitted_at") or None,
+            "review_head_sha": None if addressed_after_verdict else sha,
+            "address_cycles": address_cycles,
+        }
+
+    return {**_NO_REVIEW, "address_cycles": address_cycles}
 
 
 def _cache_key(project_dir: Path | None, pr_number: int) -> tuple[str, int]:
@@ -264,58 +171,74 @@ def _cache_put(project_dir: Path | None, pr_number: int, verdict: dict) -> None:
     _sova_verdict_cache[_cache_key(project_dir, pr_number)] = (time.monotonic(), dict(verdict))
 
 
-async def _safe_count_address_cycles(issue_number: str | None, pr_number: int | None, project_dir: Path | None) -> int:
-    """Count completed address cycles for this PR, failing open to 0.
+def build_verdict_adapter(project_dir: Path | None = None, *, config: Any = None) -> Any:
+    """Build the task adapter whose repo/github_user resolve_sova_verdict() needs.
 
-    pr_number is None means there is no PR to count cycles against yet, so
-    this returns 0 without querying: the review_budget_exhausted rule in
-    resolve_next_action() must never fire for a PR that doesn't exist. A DB
-    failure (unavailable, locked) also yields 0 rather than propagating, so a
-    transient DB error cannot escalate into a wrongly-exhausted verdict.
+    Returns None when construction fails (adapter config missing or
+    misconfigured), which resolve_sova_verdict() reports as "no review found"
+    rather than raising: every verdict lookup is best-effort. Pass ``config``
+    when one is already loaded to skip a redundant read.
     """
-    if pr_number is None:
-        return 0
-
-    from sova.supervisor.gates.utils import count_address_review_runs
-
     try:
-        return await count_address_review_runs(issue_number or "", pr_number, project_dir)
-    except Exception:  # noqa: BLE001 (address_cycles is advisory; a failed count must not block verdict resolution)
-        log.debug("work_items.address_cycle_count_failed", issue=issue_number, pr=pr_number, exc_info=True)
-        return 0
+        from sova.adapters import create_adapter
+        from sova.config.loader import load_config
+
+        return create_adapter(config if config is not None else load_config(project_dir))
+    except Exception:  # noqa: BLE001 (the adapter only supplies the repo; fail open to no verdict)
+        log.debug("work_items.verdict_adapter_build_failed", exc_info=True)
+        return None
 
 
-def _merge_label_verdict(db_verdict: dict, label_verdict: dict | None) -> dict:
-    """Reconcile the local DB verdict with the cross-machine sova:* issue label.
+async def resolve_verdict_for_pr(
+    issue_number: str | None,
+    *,
+    pr_number: int | None,
+    project_dir: Path | None = None,
+    config: Any = None,
+) -> dict:
+    """Resolve one PR's verdict, building the adapter resolve_sova_verdict() needs.
 
-    The two sources answer the same question with different strengths. The DB
-    record is strictly richer: it carries the reviewed commit SHA (#987), the
-    finding counts, and whether an address cycle has since superseded the
-    review (#988). The label is coarser (verdict value only, no anchor) but is
-    the only source that survives a review run on another machine.
-
-    So the label wins only where it actually adds information: when the local
-    DB has no record at all, or when it disagrees with the DB (which means some
-    other instance reviewed more recently than anything this machine knows
-    about). When the DB agrees, or reports "addressed", the DB wins, because a
-    completed address cycle never clears the reviewer's label and a label taken
-    at face value there would re-route an already-addressed PR back to
-    address-review.
+    Every single-PR caller (the integration-gate check, its standalone
+    endpoint, the review-completed gate, auto-handoff) wants a verdict and has
+    no adapter in hand, so each one otherwise repeats the same
+    build-then-resolve preamble. The batch path keeps calling
+    resolve_sova_verdict() directly because it builds one adapter for the
+    whole gather instead of one per PR, and pre-warms the cache with a single
+    batched fetch first (see _prewarm_verdict_cache()).
     """
-    if label_verdict is None:
-        return db_verdict
-    # address_cycles is a property of the PR, not of whichever source won the
-    # verdict, and only db_verdict carries it (labels encode no cycle count).
-    # Dropping it on a label win would silently reset the budget to 0 and
-    # disable resolve_next_action()'s review_budget_exhausted rule for exactly
-    # the cross-instance PRs most likely to have burned cycles already.
-    label_verdict = {**label_verdict, "address_cycles": db_verdict.get("address_cycles", 0)}
-    if not db_verdict.get("has_sova_review"):
-        return label_verdict
-    db_value = db_verdict.get("verdict")
-    if db_value in ("addressed", label_verdict.get("verdict")):
-        return db_verdict
-    return label_verdict
+    return await resolve_sova_verdict(
+        issue_number,
+        pr_number=pr_number,
+        project_dir=project_dir,
+        adapter=build_verdict_adapter(project_dir, config=config),
+    )
+
+
+async def _fetch_review_history(pr_number: int, *, repo: str, github_user: str) -> tuple[list[dict] | None, bool]:
+    """Fetch this PR's review history, or None when GitHub could not answer.
+
+    Reuses get_pr_review_data() (the same per-repo batch call that already
+    fetches thread and bot-CR-review data) rather than a separate REST call,
+    so a verdict costs the same GraphQL shape the dashboard already pays for.
+
+    ``None`` is a distinct answer from ``[]``: get_pr_review_data() does not
+    raise on failure, it maps the PR to None (whole call failed, or the PR was
+    absent from the response), and collapsing that into an empty list would
+    report "this PR has no SOVA review and zero address cycles" every time
+    GitHub is unreachable. See UNRESOLVED_KEY for why that distinction has to
+    survive as far as the caller.
+
+    The second element is ``review_data.review_history_truncated``: True means
+    the last-100 window missed older reviews, so any ``address_cycles`` count
+    computed from this history is an undercount, not a real answer.
+    """
+    from sova.git.pr import get_pr_review_data
+
+    data = await get_pr_review_data([pr_number], repo=repo, github_user=github_user)
+    review_data = data.get(pr_number)
+    if review_data is None:
+        return None, False
+    return review_data.review_history, review_data.review_history_truncated
 
 
 async def resolve_sova_verdict(
@@ -323,89 +246,126 @@ async def resolve_sova_verdict(
     *,
     pr_number: int | None,
     project_dir: Path | None = None,
-    issue_labels: list[str] | None = None,
-    fallback_adapter: Any = None,
+    adapter: Any = None,
     use_cache: bool = True,
 ) -> dict:
-    """Assemble a SOVA review verdict from every available source.
+    """Resolve a PR's SOVA review verdict from its GitHub review history.
 
-    This is the single canonical assembly path: both the dashboard
+    Thin adapter over parse_review_history(): both the dashboard
     (_fetch_sova_verdicts) and the supervisor (_refine_in_review_action) call
     it so the same PR cannot yield two different verdict dicts, and therefore
     cannot resolve to two different next actions via resolve_next_action().
 
-    Sources, in order: the (project, PR)-keyed verdict cache, the local DB
-    (get_sova_review_verdict), the issue's sova:* label reconciled against the
-    DB by _merge_label_verdict(), and finally a GitHub PR review marker scan
-    for reviews posted by an instance whose DB this machine cannot see (or by
-    the /review-pr command, which leaves no reviewer TaskRun). A verdict found
-    on GitHub is then checked against this machine's completed address cycles
-    via _supersede_if_addressed_locally(), so the DB and GitHub paths agree on
-    when a verdict counts as addressed.
+    ``adapter`` supplies the repo/github_user needed to fetch the review
+    history; single-PR callers get it via resolve_verdict_for_pr(). Without one
+    (adapter unavailable), or without a PR number at all, this fails open to
+    "no review found" rather than raising, matching every other best-effort PR
+    lookup in this module. A lookup that could not run (no adapter, or the
+    fetch raised) is additionally tagged ``history_unavailable`` and is *not*
+    cached: the negative TTL would otherwise pin an unknown count at 0 for 30s,
+    and the next poll should retry rather than re-serve the non-answer.
 
-    The returned dict also carries ``address_cycles``: the count of completed
-    address-review runs for this PR (via count_address_review_runs(), the one
-    canonical counter), so resolve_next_action()'s review_budget_exhausted
-    rule can compare it against pipeline.max_address_review_cycles without a
-    second, possibly-divergent query. Recomputed on every call, cache hit or
-    miss: a cache hit used to return the count the cached verdict was given
-    when it was written, relying on invalidate_verdict() (called on agent
-    exit) to keep it fresh. That invalidation only fires for a ``developer``
-    role's agent-exit path (_check_address_review_circuit_breaker() is gated
-    on role=="developer"), so a command:address-pr run, which also increments
-    the real cycle count via count_address_review_runs(), left a positive
-    cache entry serving a stale count for up to the full 5-minute TTL, long
-    enough for the review_budget_exhausted rule to let one extra cycle spawn
-    past the cap. The count query is a local DB read (no GitHub API call), so
-    recomputing it on every call costs far less than the GitHub/DB round trip
-    the verdict cache exists to avoid in the first place.
-
-    The cache stores the unmerged DB/GitHub source verdict, never a verdict
-    already merged against labels: label reconciliation is applied fresh on
-    every call (cache hit or miss) against the caller's current issue_labels.
-    Caching a merged result would let a label-only "approve" (no DB record
-    backing it, e.g. a cross-instance review) freeze into the cache and keep
-    being served even after the label lookup comes back empty on a later
-    call, whether because the label was actually removed or because the
-    lookup itself failed transiently.
+    The cache stores the full computed verdict, including ``address_cycles``:
+    unlike the old multi-source assembly, every field here comes from the same
+    review-history fetch, so a cache hit is exactly as fresh as the verdict it
+    carries. invalidate_verdict() (called right after an address cycle
+    completes) is what keeps a served verdict from lagging a just-completed
+    cycle, not a per-call recompute.
     """
-    from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+    if pr_number is None:
+        return dict(_NO_REVIEW)
 
-    label_verdict = _extract_sova_verdict_from_labels(issue_labels or [])
-
-    if pr_number is not None and use_cache:
+    if use_cache:
         cached = _cache_get(project_dir, pr_number)
         if cached is not None:
-            cached = {
-                **cached,
-                "address_cycles": await _safe_count_address_cycles(issue_number, pr_number, project_dir),
-            }
-            return _merge_label_verdict(cached, label_verdict)
+            return cached
 
+    repo = getattr(adapter, "repo", None)
+    if not repo:
+        return _unresolved()
+
+    github_user = getattr(adapter, "github_user", "") or ""
+    trusted_login = github_user or await get_active_gh_user()
+    if not trusted_login:
+        # No configured identity and no active gh account either: there is no
+        # login to trust, so parsing with an empty trusted_login would accept
+        # a marker forged by any reviewer. Fail closed instead of resolving a
+        # verdict with no trust filter at all.
+        log.debug("work_items.no_trusted_login", issue=issue_number, pr=pr_number)
+        return _unresolved()
     try:
-        verdict = await get_sova_review_verdict(issue_number, pr_number=pr_number, project_dir=project_dir)
-    except Exception:  # noqa: BLE001 (verdict lookup spans DB and tracker; failure yields no verdict)
-        log.debug("work_items.db_verdict_failed", issue=issue_number, pr=pr_number, exc_info=True)
-        verdict = dict(_NO_REVIEW)
+        reviews, truncated = await _fetch_review_history(pr_number, repo=repo, github_user=github_user)
+    except Exception:  # noqa: BLE001 (verdict lookup is best-effort; failure yields no verdict)
+        log.debug("work_items.review_history_fetch_failed", issue=issue_number, pr=pr_number, exc_info=True)
+        return _unresolved()
+    if reviews is None:
+        log.debug("work_items.review_history_unavailable", issue=issue_number, pr=pr_number)
+        return _unresolved()
+    if truncated:
+        # A truncated review-history window can hide older sova-addressed
+        # markers, undercounting address_cycles. Fail closed like any other
+        # "could not be looked up" case rather than report a count known to
+        # be too low.
+        log.debug("work_items.review_history_truncated", issue=issue_number, pr=pr_number)
+        return _unresolved()
+    verdict = parse_review_history(reviews, trusted_login=trusted_login)
 
-    if not verdict.get("has_sova_review") and pr_number is not None and fallback_adapter is not None:
-        gh_verdict = await _fetch_github_review_fallback(pr_number, fallback_adapter)
-        if gh_verdict is not None:
-            verdict = await _supersede_if_addressed_locally(gh_verdict, issue_number, pr_number, project_dir)
-
-    verdict = {**verdict, "address_cycles": await _safe_count_address_cycles(issue_number, pr_number, project_dir)}
-
-    if pr_number is not None and use_cache:
+    if use_cache:
         _cache_put(project_dir, pr_number, verdict)
 
-    return _merge_label_verdict(verdict, label_verdict)
+    return verdict
+
+
+async def _prewarm_verdict_cache(pr_numbers: list[int], *, project_dir: Path | None, adapter: Any) -> None:
+    """Resolve a whole poll's worth of verdicts with one GraphQL call.
+
+    get_pr_review_data() batches by repo, but resolve_sova_verdict() can only
+    ask it for the single PR it was given, so the per-PR path costs one
+    GraphQL round trip each. Seeding the cache here collapses a poll over N
+    PRs into one call; the per-PR calls that follow are then cache hits.
+
+    Best-effort and fail-open by construction: anything not seeded (call
+    failed, PR absent from the response, no adapter) just falls through to the
+    per-PR path, which is what ran before this existed. Already-cached PRs are
+    skipped so a warm positive entry is not refetched on every poll.
+    """
+    repo = getattr(adapter, "repo", None)
+    if not repo:
+        return
+    wanted = sorted({n for n in pr_numbers if _cache_get(project_dir, n) is None})
+    if not wanted:
+        return
+
+    from sova.git.pr import get_pr_review_data
+
+    github_user = getattr(adapter, "github_user", "") or ""
+    trusted_login = github_user or await get_active_gh_user()
+    if not trusted_login:
+        # No login to trust: let the per-PR path (resolve_sova_verdict) fail
+        # closed on each PR instead of seeding the cache from an unfiltered
+        # (or wrongly-filtered) parse here.
+        return
+    try:
+        data = await get_pr_review_data(wanted, repo=repo, github_user=github_user)
+    except Exception:  # noqa: BLE001 (pre-warm is an optimization; the per-PR path remains the fallback)
+        log.debug("work_items.verdict_prewarm_failed", prs=wanted, exc_info=True)
+        return
+
+    for pr_number, review_data in data.items():
+        if review_data is None:
+            continue
+        if review_data.review_history_truncated:
+            # Don't seed the cache with an undercounted address_cycles; let
+            # the per-PR path (resolve_sova_verdict) fail closed on it.
+            continue
+        verdict = parse_review_history(review_data.review_history, trusted_login=trusted_login)
+        _cache_put(project_dir, pr_number, verdict)
 
 
 async def _fetch_sova_verdicts(
     prs_by_issue: dict[str, dict],
     unlinked_prs: list[dict] | None = None,
     project_dir: Path | None = None,
-    labels_by_issue: dict[str, list[str]] | None = None,
 ) -> dict[str, dict]:
     """Batch-fetch SOVA reviewer verdicts for all issues and unlinked PRs.
 
@@ -417,31 +377,25 @@ async def _fetch_sova_verdicts(
     {"pr:{number}": verdict_dict} for unlinked standalone PRs.
     """
     # Build the adapter once before the gather so blocking config/adapter construction
-    # does not run per-PR inside asyncio.gather. Non-fatal: if this fails the fallback
-    # is simply skipped for all PRs in this batch.
-    _fallback_adapter: Any = None
-    try:
-        from sova.adapters import create_adapter
-        from sova.config.loader import load_config
+    # does not run per-PR inside asyncio.gather. Non-fatal: a None adapter yields
+    # "no review found" for every PR in this batch rather than an error.
+    _adapter = build_verdict_adapter(project_dir)
 
-        cfg = load_config(project_dir)
-        _fallback_adapter = create_adapter(cfg)
-    except Exception:  # noqa: BLE001 (fallback adapter is optional; verdict lookup uses other sources)
-        log.debug("work_items.github_fallback_adapter_build_failed", exc_info=True)
+    pr_numbers = [pr["number"] for pr in prs_by_issue.values() if pr.get("number")]
+    pr_numbers += [pr["number"] for pr in unlinked_prs or [] if pr.get("number")]
+    await _prewarm_verdict_cache(pr_numbers, project_dir=project_dir, adapter=_adapter)
 
     async def fetch_one(key: str, issue_num: str | None, pr_number: int | None) -> tuple[str, dict]:
-        labels = labels_by_issue.get(issue_num, []) if (issue_num and labels_by_issue) else []
         try:
             verdict = await resolve_sova_verdict(
                 issue_num,
                 pr_number=pr_number,
                 project_dir=project_dir,
-                issue_labels=labels,
-                fallback_adapter=_fallback_adapter,
+                adapter=_adapter,
             )
-        except Exception:  # noqa: BLE001 (verdict lookup spans labels, DB and GitHub; failure yields no verdict)
+        except Exception:  # noqa: BLE001 (verdict lookup spans the GitHub review history fetch; failure yields no verdict)
             log.debug("work_items.verdict_fetch_failed", issue=issue_num, pr=pr_number, exc_info=True)
-            return key, dict(_NO_REVIEW)
+            return key, _unresolved()
         return key, verdict
 
     tasks = [fetch_one(issue, issue, pr.get("number")) for issue, pr in prs_by_issue.items()]

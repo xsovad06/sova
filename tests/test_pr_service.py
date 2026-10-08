@@ -1012,6 +1012,73 @@ class TestGetReviewThreadCounts:
         assert result[10].bot_cr_commit_sha == ""
 
     @pytest.mark.asyncio
+    async def test_review_history_carries_lowercased_author(self, monkeypatch) -> None:
+        """Each review_history entry's author must be fetched and lowercased so
+        parse_review_history() can filter forged markers by login."""
+        from sova.git.pr import get_pr_review_data
+
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pr10": {
+                        "headRefOid": "new-sha",
+                        "reviewThreads": {"totalCount": 0, "nodes": []},
+                        "reviews": {"nodes": []},
+                        "history": {
+                            "pageInfo": {"hasPreviousPage": False},
+                            "nodes": [
+                                {
+                                    "state": "APPROVED",
+                                    "body": "<!-- sova-review: approve sha=abc1234 -->",
+                                    "submittedAt": "2026-01-01T00:00:00Z",
+                                    "author": {"login": "SOVA-Bot"},
+                                }
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_pr_review_data([10], repo="owner/repo")
+        assert result[10].review_history[0]["author"] == "sova-bot"
+        assert result[10].review_history_truncated is False
+
+    @pytest.mark.asyncio
+    async def test_review_history_truncation_is_surfaced(self, monkeypatch) -> None:
+        """A last-30 window missing older reviews must set review_history_truncated."""
+        from sova.git.pr import get_pr_review_data
+
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pr10": {
+                        "headRefOid": "new-sha",
+                        "reviewThreads": {"totalCount": 0, "nodes": []},
+                        "reviews": {"nodes": []},
+                        "history": {
+                            "pageInfo": {"hasPreviousPage": True},
+                            "nodes": [],
+                        },
+                    }
+                }
+            }
+        }
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_pr_review_data([10], repo="owner/repo")
+        assert result[10].review_history_truncated is True
+
+    @pytest.mark.asyncio
     async def test_detects_classic_coderabbit_login_without_bot_suffix(self, monkeypatch) -> None:
         """CodeRabbit's classic login ('coderabbitai', no [bot] suffix) must still
         populate bot_cr_commit_sha, matching DEFAULT_CODERABBIT_AUTHORS."""

@@ -864,8 +864,8 @@ class ReviewerRole(AgentRole):
         """Write a sova:{verdict} label to the issue for cross-machine visibility.
 
         Removes any existing sova:* verdict labels first (idempotent), then adds
-        the current verdict. Non-fatal: if the label write fails, the DB/marker
-        fallback path in _fetch_sova_verdicts() remains functional.
+        the current verdict. Non-fatal: if the label write fails, the GitHub
+        review marker resolve_sova_verdict() reads remains the source of truth.
 
         Derives the verdict from ``review.actionable`` (excluding
         protected-path) rather than from ``review.blocking()``: both
@@ -901,8 +901,10 @@ class ReviewerRole(AgentRole):
         When ``review.post_failed`` is True (all posting attempts failed), the
         handoff uses ``next_action="review_post_failed"`` and surfaces a manual
         Re-run Review action with ``auto_execute=False``. This prevents
-        ``_process_auto_handoff()`` from spawning a spurious address-review cycle
-        and prevents ``get_sova_review_verdict()`` from defaulting to "revise".
+        ``_process_auto_handoff()`` from spawning a spurious address-review
+        cycle: no ``sova-review`` marker was ever posted, so
+        ``resolve_sova_verdict()`` correctly reports no review at all rather
+        than inventing one.
 
         ``review_head_sha`` is the PR head commit this review was performed
         against, recorded in handoff metadata so the verdict can be anchored

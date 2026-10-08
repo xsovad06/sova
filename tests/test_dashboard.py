@@ -2504,6 +2504,70 @@ class TestDuplicateAgentPrevention:
 
         assert result is None
 
+    async def test_check_issue_conflict_auto_recovers_dead_pid(self) -> None:
+        """_check_issue_conflict should mark dead-PID DB runs as interrupted."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, _check_issue_conflict
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session as real_get_session
+
+        pa = ProjectAgents()
+
+        async with await real_get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="84", role="developer", status="running", pid=999999)
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+            result = await _check_issue_conflict("84", pa)
+
+        assert result is None
+
+        async with await real_get_session() as session:
+            async with session.begin():
+                updated = await session.get(TaskRun, run_id)
+                assert updated.status == "interrupted"
+                assert updated.error_message is not None
+
+    async def test_check_issue_conflict_force_skips_live_external(self) -> None:
+        """_check_issue_conflict with force=True should skip live external agents."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, _check_issue_conflict
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session as real_get_session
+
+        pa = ProjectAgents()
+
+        async with await real_get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="85", role="developer", status="running", pid=12345)
+                session.add(run)
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with (
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_recovery._is_process_alive", return_value=True),
+        ):
+            result_no_force = await _check_issue_conflict("85", pa)
+            assert result_no_force is not None
+            assert "already has an active agent" in result_no_force["error"]
+
+            result_force = await _check_issue_conflict("85", pa, force=True)
+            assert result_force is None
+
 
 # ---------------------------------------------------------------------------
 # start_command worktree resolution
@@ -7046,7 +7110,7 @@ class TestFinalizeTaskRunGuard:
 
         The WorkflowEngine subprocess may finalize status before the dashboard's
         _finalize_task_run runs, causing an early-return. handoff_json must still
-        be set so get_sova_review_verdict() finds the real verdict.
+        be set so every other consumer of TaskRun.handoff_json finds it.
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9296,7 +9360,8 @@ class TestReviewPrVerdictPersistence:
             assert run.handoff_json["next_action"] == "address_review"
             assert run.handoff_json["metadata"]["review_head_sha"] == "deadbeef"
 
-    async def test_validate_review_pr_falls_back_to_prose_verdict(self) -> None:
+    async def test_validate_review_pr_no_marker_defaults_to_revise(self) -> None:
+        """Without a sova-review marker, there's nothing left to parse: default to revise."""
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _validate_review_pr
@@ -9330,7 +9395,7 @@ class TestReviewPrVerdictPersistence:
         async with await get_session() as session:
             run = await session.get(TaskRun, run_id)
             assert run.handoff_json is not None
-            assert run.handoff_json["next_action"] == "approve"
+            assert run.handoff_json["next_action"] == "address_review"
 
     async def test_validate_review_pr_no_verdict_defaults_to_revise(self) -> None:
         from unittest.mock import MagicMock
@@ -16481,11 +16546,6 @@ class TestStartAgentMemoryGate:
             result = await start_command("review-pr", args={"issue": "42"})
 
         assert result == block_error
-
-
-# ---------------------------------------------------------------------------
-# get_sova_review_verdict: address-pr supersede logic
-# ---------------------------------------------------------------------------
 
 
 class TestSyncBranchWorktreeConflict:

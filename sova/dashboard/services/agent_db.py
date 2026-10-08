@@ -5,7 +5,6 @@ Separated from agent_lifecycle to keep DB logic focused and testable.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -19,6 +18,7 @@ from sova.dashboard.services.agent_pool import AgentState
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.ipc.control import normalize_signal_exit
 from sova.utils.logging import get_logger
+from sova.utils.review_markers import SOVA_VERDICT_MARKER_RE
 
 try:
     import psutil
@@ -245,8 +245,8 @@ async def _handle_terminal_status(task_run: object, file_handoff: dict | None, s
     # Apply file handoff even for already-terminal runs. WorkflowEngine
     # finalizes status in the subprocess before exiting, but write_handoff()
     # there may target the wrong DB when CWD is a linked worktree. Persisting
-    # here (dashboard context, correct project_dir) ensures
-    # get_sova_review_verdict() can always find the real verdict.
+    # here (dashboard context, correct project_dir) ensures every other
+    # consumer of TaskRun.handoff_json can always find it.
     if not task_run.handoff_json:
         _apply_file_handoff(task_run, file_handoff, run_id)
     await _finalize_orphaned_steps(session, run_id)
@@ -612,10 +612,6 @@ async def _check_pr_branch_pushed(agent: AgentState) -> tuple[bool | None, bool]
 
 _PUSH_KEYWORDS = ("git push", "force-with-lease", "force-push", "pushed to", "pushed commit")
 
-_SOVA_REVIEW_MARKER_RE = re.compile(
-    r"<!--\s*sova-review:\s*(approve|revise|block)(?:\s+sha=([0-9a-f]{7,40}))?\s*-->", re.IGNORECASE
-)
-
 _VERDICT_TO_NEXT_ACTION = {
     "approve": "approve",
     "revise": "address_review",
@@ -626,11 +622,14 @@ _VERDICT_TO_NEXT_ACTION = {
 def _extract_review_verdict_marker(lines: list[str]) -> tuple[str, str | None] | None:
     """Extract verdict and SHA from <!-- sova-review: X sha=Y --> marker in output lines.
 
-    Scans lines in reverse so the last marker wins (per spec). Returns
-    (verdict, sha) where sha is None if the marker predates SHA-anchoring.
+    Scans lines in reverse, and each line's own matches last-first, so the last
+    marker in the output wins (per spec). Returns (verdict, sha) where sha is
+    None if the marker predates SHA-anchoring. Shares the marker pattern with
+    the GitHub-review scan but not its parse_verdict_marker() helper, which
+    reports a body's *first* match: the opposite tiebreak.
     """
     for line in reversed(lines):
-        matches = _SOVA_REVIEW_MARKER_RE.findall(line)
+        matches = SOVA_VERDICT_MARKER_RE.findall(line)
         if matches:
             verdict, sha = matches[-1]
             return verdict.lower(), (sha or None)
@@ -688,10 +687,11 @@ async def _validate_review_pr(run_id: int, agent: AgentState) -> OutcomeValidati
     if marker:
         verdict, sha = marker
     else:
-        from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
-
-        verdict = _parse_verdict_from_output(lines) or "revise"
-        sha = None
+        # No sova-review marker in the output: the GitHub review body posted
+        # (confirmed above by has_post_evidence) is the verdict's sole source
+        # of truth, so there is nothing left to guess from output text. Default
+        # to the conservative "revise" so a missing marker never reads as approved.
+        verdict, sha = "revise", None
     await _persist_review_verdict(run_id, verdict, agent.project_dir, sha=sha)
 
     return _VALID
