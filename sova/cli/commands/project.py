@@ -115,6 +115,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     try:
         from sova.agents.claude_code import ClaudeCodeAdapter
         from sova.commands.catalog import get_canonical_dir, get_guidelines_dir, get_skills_dir
+        from sova.commands.distribution import find_skill_debris
         from sova.commands.distribution import install_commands as install_cmds
         from sova.commands.distribution import install_guidelines as install_guides
         from sova.commands.distribution import install_skills as install_sk
@@ -157,6 +158,12 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
             console.print(f"[green]Guidelines installed: {guide_result.installed}[/green]")
             sk_result = install_sk(skills_src_dir, skills_target, cfg)
             console.print(f"[green]Skills installed: {sk_result.installed}[/green]")
+
+        for skill_name, extras in find_skill_debris(skills_target).items():
+            console.print(
+                f"[yellow]Warning: .claude/skills/{skill_name}/ has leftover file(s) from a prior layout: "
+                f"{', '.join(extras)}: remove them[/yellow]"
+            )
     except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
         log.warning("setup.command_install_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[red]Command installation failed: {exc}[/red]")

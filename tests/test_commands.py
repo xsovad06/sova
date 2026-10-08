@@ -1556,6 +1556,53 @@ class TestSkillsDistribution:
         assert result.installed == 0
 
 
+class TestFindSkillDebris:
+    """A prior three-file skill layout (README.md, design-standards.md) folded into a
+    single SKILL.md leaves orphaned siblings on disk with nothing to flag them (issue
+    #1136 finding)."""
+
+    def test_no_manifest_reports_nothing(self, tmp_path: Path) -> None:
+        from sova.commands.distribution import find_skill_debris
+
+        assert find_skill_debris(tmp_path / "nonexistent") == {}
+
+    def test_reports_leftover_sibling_in_a_managed_skill_directory(self, skills_dir: Path, skills_target: Path) -> None:
+        from sova.commands.distribution import find_skill_debris, install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+        (skills_target / "alpha" / "README.md").write_text("Leftover.\n")
+
+        debris = find_skill_debris(skills_target)
+
+        assert debris == {"alpha": ["README.md"]}
+
+    def test_unmanaged_directory_is_not_reported(self, skills_dir: Path, skills_target: Path) -> None:
+        """A project-owned skill directory SOVA never installed must never be reported,
+        even if it happens to hold more than one file."""
+        from sova.commands.distribution import find_skill_debris, install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+        local = skills_target / "local-only"
+        local.mkdir()
+        (local / "SKILL.md").write_text("# Local\n")
+        (local / "NOTES.md").write_text("Notes.\n")
+
+        assert find_skill_debris(skills_target) == {}
+
+    def test_no_debris_reports_empty(self, skills_dir: Path, skills_target: Path) -> None:
+        from sova.commands.distribution import find_skill_debris, install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+
+        assert find_skill_debris(skills_target) == {}
+
+
 class TestSyncRuntimeSkillsAndReport:
     """`sova commands skills-update`/`skills-sync` must also refresh a non-Claude
     runtime's own skills mirror (e.g. Codex's .agents/skills/), not only .claude/skills/.

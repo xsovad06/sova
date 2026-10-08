@@ -18,6 +18,7 @@ from sova.commands.distribution import (
     UpdateResult,
     diff_commands,
     diff_skills,
+    find_skill_debris,
     list_commands,
     reverse_diff_commands,
     reverse_diff_guidelines,
@@ -178,6 +179,12 @@ def _sync_across_projects(
         status = f"[green]+{result.updated}[/green]" if result.updated else "[dim]+0[/dim]"
         console.print(f"  {slug}: {status} updated, {result.skipped} unchanged")
 
+        for skill_name, extras in find_skill_debris(target_dir).items():
+            console.print(
+                f"  [yellow]{slug}: {subdir}/{skill_name}/ has leftover file(s) from a prior layout: "
+                f"{', '.join(extras)}: remove them[/yellow]"
+            )
+
         if after is not None:
             try:
                 after(project_dir, cfg)
@@ -305,6 +312,12 @@ def skills_update_cmd(
         for name in result.conflicts:
             console.print(f"  ! {name} -- locally modified, source also changed")
         console.print("[dim]Use --force to overwrite, or manually merge.[/dim]")
+
+    for skill_name, extras in find_skill_debris(target_dir).items():
+        console.print(
+            f"[yellow]Warning: .claude/skills/{skill_name}/ has leftover file(s) from a prior layout: "
+            f"{', '.join(extras)}: remove them[/yellow]"
+        )
 
     try:
         _sync_runtime_skills_and_report(project_dir, cfg, force=force)

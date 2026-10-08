@@ -766,6 +766,36 @@ def reverse_diff_skills(skills_dir: Path, target_dir: Path, cfg: ProjectConfig) 
     return _reverse_diff_files(files, target_dir, build_variables(cfg))
 
 
+def find_skill_debris(target_dir: Path) -> dict[str, list[str]]:
+    """Leftover sibling files inside a SOVA-managed skill directory, keyed by skill name.
+
+    A skill installs exactly one file, ``SKILL.md`` (see ``_collect_skills()``);
+    anything else sitting alongside it is content orphaned by a prior on-disk
+    layout (e.g. a three-file ``README.md``/``design-standards.md`` shape
+    folded into a single ``SKILL.md``, issue #1136) that neither the manifest
+    nor any installer ever cleans up on its own. Scoped to manifest-tracked
+    (``managed: true``) skill directories only, so project-owned content
+    sharing the same parent directory is never reported.
+    """
+    manifest = read_manifest(target_dir)
+    if manifest is None:
+        return {}
+    managed_names = {
+        name.removesuffix("/SKILL.md")
+        for name, entry in manifest.commands.items()
+        if entry.managed and name.endswith("/SKILL.md")
+    }
+    debris: dict[str, list[str]] = {}
+    for name in sorted(managed_names):
+        skill_dir = target_dir / name
+        if not skill_dir.is_dir():
+            continue
+        extras = sorted(p.name for p in skill_dir.iterdir() if p.name != "SKILL.md")
+        if extras:
+            debris[name] = extras
+    return debris
+
+
 def list_commands(target_dir: Path) -> ListResult:
     """List all commands in a target directory, grouped by managed vs local."""
     manifest = read_manifest(target_dir)
