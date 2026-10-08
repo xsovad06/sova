@@ -1999,6 +1999,65 @@ class TestParseReviewHistory:
         result = parse_review_history(reviews)
         assert result["address_cycles"] == 3
 
+    def test_trusted_login_rejects_forged_verdict_marker(self) -> None:
+        """A marker authored by someone other than the trusted login must not be trusted."""
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "APPROVED",
+                "body": "<!-- sova-review: approve sha=abc1234 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+                "author": "some-random-user",
+            },
+        ]
+        result = parse_review_history(reviews, trusted_login="sova-bot")
+        assert result["has_sova_review"] is False
+
+    def test_trusted_login_rejects_forged_addressed_marker(self) -> None:
+        """A forged sova-addressed marker must not inflate the address-cycle count."""
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "COMMENT",
+                "body": "<!-- sova-addressed: sha=1111111 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+                "author": "some-random-user",
+            },
+        ]
+        result = parse_review_history(reviews, trusted_login="sova-bot")
+        assert result["address_cycles"] == 0
+
+    def test_trusted_login_is_case_insensitive(self) -> None:
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "APPROVED",
+                "body": "<!-- sova-review: approve sha=abc1234 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+                "author": "SOVA-Bot",
+            },
+        ]
+        result = parse_review_history(reviews, trusted_login="sova-bot")
+        assert result["has_sova_review"] is True
+
+    def test_empty_trusted_login_disables_the_filter(self) -> None:
+        """Back-compat: callers that have no configured identity still get markers through."""
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "APPROVED",
+                "body": "<!-- sova-review: approve sha=abc1234 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+                "author": "anyone",
+            },
+        ]
+        result = parse_review_history(reviews)
+        assert result["has_sova_review"] is True
+
 
 class TestResolveSovaVerdict:
     """resolve_sova_verdict() is a thin adapter over parse_review_history()."""
@@ -2034,6 +2093,7 @@ class TestResolveSovaVerdict:
                             "state": "CHANGES_REQUESTED",
                             "body": "<!-- sova-review: revise sha=abc1234 -->",
                             "submitted_at": "2026-01-01T00:00:00Z",
+                            "author": "bot",
                         }
                     ],
                 )
@@ -2046,6 +2106,65 @@ class TestResolveSovaVerdict:
         assert result["has_sova_review"] is True
         assert result["verdict"] == "revise"
         assert result["review_head_sha"] == "abc1234"
+
+    @pytest.mark.asyncio
+    async def test_no_login_to_trust_fails_closed(self, monkeypatch) -> None:
+        """No configured github_user and no active gh account: fail closed, not unfiltered."""
+        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, resolve_sova_verdict
+
+        async def _no_active_user() -> str | None:
+            return None
+
+        async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
+            raise AssertionError("must not fetch review history without a trusted login")
+
+        monkeypatch.setattr("sova.dashboard.services.work_verdict.get_active_gh_user", _no_active_user)
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
+        adapter = MagicMock(repo="owner/repo", github_user="")
+
+        result = await resolve_sova_verdict("42", pr_number=1, adapter=adapter, use_cache=False)
+        assert result["has_sova_review"] is False
+        assert result[UNRESOLVED_KEY] is True
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_github_user_falls_back_to_active_gh_account(self, monkeypatch) -> None:
+        """No configured github_user: trust the ambient gh account instead of disabling the filter."""
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+        from sova.git.pr import PRReviewData
+
+        async def _active_user() -> str | None:
+            return "dsova06"
+
+        async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
+            return {
+                pr_numbers[0]: PRReviewData(
+                    thread_total=0,
+                    thread_resolved=0,
+                    head_sha="abc1234",
+                    review_history=[
+                        {
+                            "state": "CHANGES_REQUESTED",
+                            "body": "<!-- sova-review: revise sha=abc1234 -->",
+                            "submitted_at": "2026-01-02T00:00:00Z",
+                            "author": "forger",
+                        },
+                        {
+                            "state": "APPROVED",
+                            "body": "<!-- sova-review: approve sha=abc1234 -->",
+                            "submitted_at": "2026-01-01T00:00:00Z",
+                            "author": "dsova06",
+                        },
+                    ],
+                )
+            }
+
+        monkeypatch.setattr("sova.dashboard.services.work_verdict.get_active_gh_user", _active_user)
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
+        adapter = MagicMock(repo="owner/repo", github_user="")
+
+        result = await resolve_sova_verdict("42", pr_number=1, adapter=adapter, use_cache=False)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
 
     @pytest.mark.asyncio
     async def test_fetch_failure_fails_open(self, monkeypatch) -> None:
@@ -2079,6 +2198,38 @@ class TestResolveSovaVerdict:
         assert result["address_cycles"] == 0
 
     @pytest.mark.asyncio
+    async def test_truncated_history_fails_closed(self, monkeypatch) -> None:
+        """A last-30 window that missed older reviews must not report an undercount."""
+        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, clear_verdict_cache, resolve_sova_verdict
+        from sova.git.pr import PRReviewData
+
+        clear_verdict_cache()
+
+        async def _truncated(pr_numbers, *, repo, github_user=""):
+            return {
+                pr_numbers[0]: PRReviewData(
+                    thread_total=0,
+                    thread_resolved=0,
+                    head_sha="abc1234",
+                    review_history=[
+                        {
+                            "state": "COMMENT",
+                            "body": "<!-- sova-addressed: sha=abc1234 -->",
+                            "submitted_at": "2026-01-01T00:00:00Z",
+                            "author": "bot",
+                        }
+                    ],
+                    review_history_truncated=True,
+                )
+            }
+
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", _truncated)
+        adapter = MagicMock(repo="owner/repo", github_user="bot")
+
+        result = await resolve_sova_verdict("42", pr_number=1, adapter=adapter, use_cache=False)
+        assert result[UNRESOLVED_KEY] is True
+
+    @pytest.mark.asyncio
     async def test_unresolved_verdict_is_not_cached(self, monkeypatch) -> None:
         """A non-answer must not occupy the cache for the negative TTL."""
         from sova.dashboard.services.work_verdict import clear_verdict_cache, resolve_sova_verdict
@@ -2102,6 +2253,7 @@ class TestResolveSovaVerdict:
                             "state": "COMMENTED",
                             "body": "<!-- sova-addressed: sha=abc1234 -->",
                             "submitted_at": "2026-01-01T00:00:00Z",
+                            "author": "bot",
                         }
                     ],
                 )
@@ -2136,6 +2288,7 @@ class TestResolveSovaVerdict:
                             "state": "CHANGES_REQUESTED",
                             "body": "<!-- sova-review: revise sha=abc1234 -->",
                             "submitted_at": "2026-01-01T00:00:00Z",
+                            "author": "bot",
                         }
                     ],
                 )
@@ -2204,6 +2357,7 @@ class TestResolveSovaVerdict:
                             "state": state,
                             "body": f"<!-- sova-review: {verdict} sha=abc1234 -->",
                             "submitted_at": "2026-01-01T00:00:00Z",
+                            "author": "bot",
                         }
                     ],
                 )
@@ -2248,6 +2402,28 @@ class TestResolveSovaVerdict:
         from sova.dashboard.services.work_verdict import invalidate_verdict
 
         invalidate_verdict(None, None)  # must not raise
+
+
+class TestPrewarmVerdictCache:
+    """_prewarm_verdict_cache() must not seed the cache from an unfiltered parse."""
+
+    @pytest.mark.asyncio
+    async def test_no_login_to_trust_skips_prewarm_entirely(self, monkeypatch) -> None:
+        from sova.dashboard.services.work_verdict import _prewarm_verdict_cache, clear_verdict_cache
+
+        clear_verdict_cache()
+
+        async def _no_active_user() -> str | None:
+            return None
+
+        async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
+            raise AssertionError("must not fetch review history without a trusted login")
+
+        monkeypatch.setattr("sova.dashboard.services.work_verdict.get_active_gh_user", _no_active_user)
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
+        adapter = MagicMock(repo="owner/repo", github_user="")
+
+        await _prewarm_verdict_cache([1, 2], project_dir=None, adapter=adapter)  # must not raise
 
 
 class TestFetchSovaVerdictsBatch:

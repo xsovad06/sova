@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from sova.utils.gh import get_active_gh_user
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE, parse_verdict_marker
 
@@ -75,20 +76,31 @@ def _unresolved() -> dict:
     return {**_NO_REVIEW, UNRESOLVED_KEY: True}
 
 
-def parse_review_history(reviews: list[dict]) -> dict:
+def parse_review_history(reviews: list[dict], *, trusted_login: str = "") -> dict:
     """Compute a SOVA verdict from a PR's review history, scanning for markers only.
 
-    ``reviews`` entries carry ``state``, ``body`` and ``submitted_at`` (ISO
-    8601; sorts correctly as a plain string, so no datetime parsing is needed):
-    the shape ``PRReviewData.review_history`` returns. DISMISSED reviews are
-    skipped entirely: a dismissed review's body no longer reflects reviewer
-    intent, so it counts toward neither the verdict scan nor ``address_cycles``.
+    ``reviews`` entries carry ``state``, ``body``, ``submitted_at`` (ISO 8601;
+    sorts correctly as a plain string, so no datetime parsing is needed) and
+    ``author`` (lowercased GitHub login): the shape ``PRReviewData.review_history``
+    returns. DISMISSED reviews are skipped entirely: a dismissed review's body
+    no longer reflects reviewer intent, so it counts toward neither the
+    verdict scan nor ``address_cycles``.
+
+    ``trusted_login`` restricts both the verdict scan and the address-cycle
+    count to reviews authored by that login (case-insensitive), the account
+    SOVA posts its own markers as. Without this filter, any GitHub user who
+    can submit a COMMENT review could forge a ``sova-review`` or
+    ``sova-addressed`` marker and forge an approval or inflate the
+    address-cycle count. An empty ``trusted_login`` disables the filter
+    (callers that have no configured identity to check against yet).
 
     Scans newest-first by ``submitted_at`` (the ordering key; array position is
     not trusted). ``address_cycles`` is the number of ``sova-addressed`` markers
     found, each marking one completed address cycle, capped at whatever the
-    last-30 GraphQL window returned (an accepted limitation for very long-lived
-    PRs). The first ``sova-addressed`` marker encountered in the scan means
+    last-100 GraphQL window returned (an accepted limitation for very
+    long-lived PRs; resolve_sova_verdict() fails closed instead of reporting
+    an undercount when even that window is truncated). The first
+    ``sova-addressed`` marker encountered in the scan means
     every verdict marker older than it has already been addressed, so the
     reported verdict is "addressed" rather than the stale pre-fix value. A
     review body with neither marker (a human review, or a SOVA review posted
@@ -100,8 +112,13 @@ def parse_review_history(reviews: list[dict]) -> dict:
     reviewer claims it reviewed, which is the only thing a staleness check can
     act on.
     """
+    trusted = trusted_login.lower() if trusted_login else ""
     ordered = sorted(
-        (r for r in reviews if r.get("state") != "DISMISSED"),
+        (
+            r
+            for r in reviews
+            if r.get("state") != "DISMISSED" and (not trusted or (r.get("author") or "").lower() == trusted)
+        ),
         key=lambda r: r.get("submitted_at") or "",
         reverse=True,
     )
@@ -197,7 +214,7 @@ async def resolve_verdict_for_pr(
     )
 
 
-async def _fetch_review_history(pr_number: int, *, repo: str, github_user: str) -> list[dict] | None:
+async def _fetch_review_history(pr_number: int, *, repo: str, github_user: str) -> tuple[list[dict] | None, bool]:
     """Fetch this PR's review history, or None when GitHub could not answer.
 
     Reuses get_pr_review_data() (the same per-repo batch call that already
@@ -210,12 +227,18 @@ async def _fetch_review_history(pr_number: int, *, repo: str, github_user: str) 
     report "this PR has no SOVA review and zero address cycles" every time
     GitHub is unreachable. See UNRESOLVED_KEY for why that distinction has to
     survive as far as the caller.
+
+    The second element is ``review_data.review_history_truncated``: True means
+    the last-100 window missed older reviews, so any ``address_cycles`` count
+    computed from this history is an undercount, not a real answer.
     """
     from sova.git.pr import get_pr_review_data
 
     data = await get_pr_review_data([pr_number], repo=repo, github_user=github_user)
     review_data = data.get(pr_number)
-    return review_data.review_history if review_data is not None else None
+    if review_data is None:
+        return None, False
+    return review_data.review_history, review_data.review_history_truncated
 
 
 async def resolve_sova_verdict(
@@ -262,15 +285,30 @@ async def resolve_sova_verdict(
         return _unresolved()
 
     github_user = getattr(adapter, "github_user", "") or ""
+    trusted_login = github_user or await get_active_gh_user()
+    if not trusted_login:
+        # No configured identity and no active gh account either: there is no
+        # login to trust, so parsing with an empty trusted_login would accept
+        # a marker forged by any reviewer. Fail closed instead of resolving a
+        # verdict with no trust filter at all.
+        log.debug("work_items.no_trusted_login", issue=issue_number, pr=pr_number)
+        return _unresolved()
     try:
-        reviews = await _fetch_review_history(pr_number, repo=repo, github_user=github_user)
+        reviews, truncated = await _fetch_review_history(pr_number, repo=repo, github_user=github_user)
     except Exception:  # noqa: BLE001 (verdict lookup is best-effort; failure yields no verdict)
         log.debug("work_items.review_history_fetch_failed", issue=issue_number, pr=pr_number, exc_info=True)
         return _unresolved()
     if reviews is None:
         log.debug("work_items.review_history_unavailable", issue=issue_number, pr=pr_number)
         return _unresolved()
-    verdict = parse_review_history(reviews)
+    if truncated:
+        # A truncated review-history window can hide older sova-addressed
+        # markers, undercounting address_cycles. Fail closed like any other
+        # "could not be looked up" case rather than report a count known to
+        # be too low.
+        log.debug("work_items.review_history_truncated", issue=issue_number, pr=pr_number)
+        return _unresolved()
+    verdict = parse_review_history(reviews, trusted_login=trusted_login)
 
     if use_cache:
         _cache_put(project_dir, pr_number, verdict)
@@ -300,15 +338,28 @@ async def _prewarm_verdict_cache(pr_numbers: list[int], *, project_dir: Path | N
 
     from sova.git.pr import get_pr_review_data
 
+    github_user = getattr(adapter, "github_user", "") or ""
+    trusted_login = github_user or await get_active_gh_user()
+    if not trusted_login:
+        # No login to trust: let the per-PR path (resolve_sova_verdict) fail
+        # closed on each PR instead of seeding the cache from an unfiltered
+        # (or wrongly-filtered) parse here.
+        return
     try:
-        data = await get_pr_review_data(wanted, repo=repo, github_user=getattr(adapter, "github_user", "") or "")
+        data = await get_pr_review_data(wanted, repo=repo, github_user=github_user)
     except Exception:  # noqa: BLE001 (pre-warm is an optimization; the per-PR path remains the fallback)
         log.debug("work_items.verdict_prewarm_failed", prs=wanted, exc_info=True)
         return
 
     for pr_number, review_data in data.items():
-        if review_data is not None:
-            _cache_put(project_dir, pr_number, parse_review_history(review_data.review_history))
+        if review_data is None:
+            continue
+        if review_data.review_history_truncated:
+            # Don't seed the cache with an undercounted address_cycles; let
+            # the per-PR path (resolve_sova_verdict) fail closed on it.
+            continue
+        verdict = parse_review_history(review_data.review_history, trusted_login=trusted_login)
+        _cache_put(project_dir, pr_number, verdict)
 
 
 async def _fetch_sova_verdicts(

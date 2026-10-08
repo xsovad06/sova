@@ -8423,6 +8423,21 @@ class TestAddressReviewHelpers:
 
 
 class TestResolveExternalReviewsStep:
+    @pytest.fixture(autouse=True)
+    def _stub_git_head(self):
+        """Stub the address-summary HEAD lookup.
+
+        ``_post_address_summary()`` resolves HEAD in ``ctx.working_dir``, which
+        for ``_make_ctx()`` is a placeholder path that need not exist. Without
+        the stub the subprocess spawn itself fails on the missing cwd, so these
+        tests would assert the step's degraded path rather than its real one.
+        """
+        with patch(
+            "sova.core.steps.resolve_external_reviews.run",
+            new=AsyncMock(return_value=MagicMock(success=True, stdout="deadbee\n")),
+        ):
+            yield
+
     async def test_skips_when_no_pr(self) -> None:
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
@@ -8597,6 +8612,7 @@ class TestResolveExternalReviewsStep:
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
         ctx = _make_ctx(pr_number=42)
+        ctx.pipeline_variant = "address_review"
         step = ResolveExternalReviewsStep()
 
         with (

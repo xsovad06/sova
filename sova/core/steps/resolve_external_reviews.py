@@ -103,14 +103,32 @@ async def _post_address_summary(ctx: ExecutionContext) -> bool:
     Never raises: a failed post is logged and returns False, which does leave
     the cycle uncounted (an accepted gap: no local record of it survives).
     """
+    if ctx.pipeline_variant != "address_review":
+        # A non-default configured pipeline can include this step outside the
+        # address-review pipeline; posting sova-addressed there would let
+        # review history count a cycle that never ran the address-review flow
+        # and could mark an older verdict as addressed.
+        return False
     if ctx.pr_number is None:
         return False
     findings = ctx.addressed_review_findings
 
     head_sha: str | None = None
-    head = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
-    if head.success:
-        head_sha = head.stdout.strip() or None
+    try:
+        head = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
+    except OSError:
+        # A pruned or never-created ``working_dir`` makes the spawn itself
+        # raise (FileNotFoundError on the cwd), which would abort the post
+        # entirely. The commit anchor is cosmetic; the marker is not, so
+        # degrade to an unanchored summary instead of losing the cycle.
+        log.warning(
+            "step.resolve_external_reviews.head_lookup_failed",
+            cwd=str(ctx.working_dir),
+            exc_info=True,
+        )
+    else:
+        if head.success:
+            head_sha = head.stdout.strip() or None
 
     round_no = 1
     try:
