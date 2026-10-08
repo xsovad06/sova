@@ -1486,15 +1486,30 @@ class TestSyncRuntimeSkillsAndReport:
         assert not (tmp_path / ".agents").exists()
         assert capsys.readouterr().err == ""
 
-    def test_codex_runtime_preexisting_unmanaged_skill_is_a_conflict_not_an_overwrite(
+    def test_codex_runtime_preexisting_unmanaged_command_derived_skill_is_a_conflict_not_an_overwrite(
         self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """A locally-modified file already at the Codex mirror target must be reported, not clobbered."""
+        """A locally-modified file already at the Codex mirror target must be reported, not clobbered.
+
+        Uses a command-derived skill's prefixed name: that name is reserved for
+        SOVA's own output, so pre-existing content there always goes through
+        the ordinary manifest-conflict path. A standalone skill's bare name
+        instead goes through materialize_combined_skill_sources()'s
+        existing-content check and is silently preserved, never reported (see
+        test_codex_runtime_preserves_preexisting_unmanaged_standalone_skill).
+        """
         from sova.cli.commands.commands import _sync_runtime_skills_and_report
         from sova.config.models import ProjectConfig
 
         monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
-        preexisting = tmp_path / ".agents" / "skills" / "sova-alpha"
+        commands_dir = tmp_path / "real-canonical-commands"
+        commands_dir.mkdir()
+        (commands_dir / "foo.md").write_text(
+            "---\nname: foo\ndescription: Foo command.\nuser-invocable: true\n---\nDo the foo thing.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sova.agents.sync.get_canonical_dir", lambda: commands_dir)
+        preexisting = tmp_path / ".agents" / "skills" / "sova-foo"
         preexisting.mkdir(parents=True)
         (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
 
@@ -1504,18 +1519,47 @@ class TestSyncRuntimeSkillsAndReport:
         _sync_runtime_skills_and_report(tmp_path, cfg)
 
         err = capsys.readouterr().err
-        assert "sova-alpha/SKILL.md" in err
+        assert "sova-foo/SKILL.md" in err
         assert "Conflicts" in err
         assert (preexisting / "SKILL.md").read_text(encoding="utf-8") == "Hand-authored, not canonical.\n"
 
-    def test_codex_runtime_force_overwrites_preexisting_unmanaged_skill(
+    def test_codex_runtime_preserves_preexisting_unmanaged_standalone_skill(
+        self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A standalone skill's bare name is where its own sync would also write (issue #1136):
+        pre-existing unmanaged content there is preserved by never being attempted at all, even
+        with force=True, since materialize_combined_skill_sources() excludes it upfront."""
+        from sova.cli.commands.commands import _sync_runtime_skills_and_report
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
+        preexisting = tmp_path / ".agents" / "skills" / "alpha"
+        preexisting.mkdir(parents=True)
+        (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
+
+        cfg = ProjectConfig()
+        cfg.agent.runtime = "codex"
+
+        _sync_runtime_skills_and_report(tmp_path, cfg, force=True)
+
+        assert (preexisting / "SKILL.md").read_text(encoding="utf-8") == "Hand-authored, not canonical.\n"
+        assert "Conflicts" not in capsys.readouterr().err
+
+    def test_codex_runtime_force_overwrites_preexisting_unmanaged_command_derived_skill(
         self, tmp_path: Path, skills_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         from sova.cli.commands.commands import _sync_runtime_skills_and_report
         from sova.config.models import ProjectConfig
 
         monkeypatch.setattr("sova.cli.commands.commands.get_skills_dir", lambda: skills_dir)
-        preexisting = tmp_path / ".agents" / "skills" / "sova-alpha"
+        commands_dir = tmp_path / "real-canonical-commands"
+        commands_dir.mkdir()
+        (commands_dir / "foo.md").write_text(
+            "---\nname: foo\ndescription: Foo command.\nuser-invocable: true\n---\nDo the foo thing.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sova.agents.sync.get_canonical_dir", lambda: commands_dir)
+        preexisting = tmp_path / ".agents" / "skills" / "sova-foo"
         preexisting.mkdir(parents=True)
         (preexisting / "SKILL.md").write_text("Hand-authored, not canonical.\n", encoding="utf-8")
 
@@ -1539,7 +1583,7 @@ class TestSyncRuntimeSkillsAndReport:
 
         _sync_runtime_skills_and_report(tmp_path, cfg)
 
-        assert (tmp_path / ".agents" / "skills" / "sova-alpha" / "SKILL.md").is_file()
+        assert (tmp_path / ".agents" / "skills" / "alpha" / "SKILL.md").is_file()
         assert "Skills synced for runtime 'codex': 2" in capsys.readouterr().err
 
     def test_warns_about_orphaned_codex_mirror_after_switch_to_claude_code(

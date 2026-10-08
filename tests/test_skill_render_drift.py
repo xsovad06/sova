@@ -34,8 +34,17 @@ _RERUN = "Run `make skills-render` and commit the result."
 
 # Pre-existing, independently-maintained content under plain names (e.g.
 # testing-patterns, database-patterns) is deliberately not SOVA-managed and
-# must not be touched by this guard; only sova-<name> entries are ours.
+# must not be touched by this guard. A command-derived entry is always
+# prefixed; a standalone one (e.g. design-taste, issue-template) is managed
+# too but installs bare, so "managed" can no longer be read off the name
+# alone (issue #1136) and must come from the manifest instead.
 _MANAGED_PREFIX = SKILL_NAME_PREFIX
+
+
+def _checked_in_managed_names() -> set[str]:
+    """Directory names the checked-in manifest marks as SOVA-managed, bare or prefixed alike."""
+    manifest = json.loads((_RENDERED_DIR / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    return {name.removesuffix("/SKILL.md") for name in manifest["commands"]}
 
 
 @pytest.fixture(scope="module")
@@ -47,11 +56,11 @@ def rendered_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 class TestNoDrift:
-    """The checked-in sova-<name> skills must equal a fresh render of canonical."""
+    """The checked-in managed skills must equal a fresh render of canonical."""
 
     def test_every_rendered_skill_is_checked_in(self, rendered_dir: Path) -> None:
         produced = {p.name for p in rendered_dir.iterdir() if p.is_dir()}
-        checked_in = {p.name for p in _RENDERED_DIR.iterdir() if p.is_dir() and p.name.startswith(_MANAGED_PREFIX)}
+        checked_in = _checked_in_managed_names()
         assert produced == checked_in, f"{produced.symmetric_difference(checked_in)}. {_RERUN}"
 
     def test_rendered_skill_matches_canonical(self, rendered_dir: Path) -> None:
@@ -107,8 +116,9 @@ class TestNoUnrenderedPlaceholders:
         )
 
     def test_no_rendered_skill_has_a_placeholder(self) -> None:
+        managed = _checked_in_managed_names()
         for path in sorted(_RENDERED_DIR.glob("*/SKILL.md")):
-            if not path.parent.name.startswith(SKILL_NAME_PREFIX):
+            if path.parent.name not in managed:
                 continue
             leftovers = PLACEHOLDER_RE.findall(path.read_text(encoding="utf-8"))
             assert not leftovers, (
@@ -131,20 +141,22 @@ class TestRenderedTreeShape:
         )
 
     def test_no_rendered_skill_is_a_symlink(self) -> None:
+        managed = _checked_in_managed_names()
         links = sorted(
             p.name
             for p in _RENDERED_DIR.iterdir()
-            if p.is_dir() and p.name.startswith(_MANAGED_PREFIX) and (p / "SKILL.md").is_symlink()
+            if p.is_dir() and p.name in managed and (p / "SKILL.md").is_symlink()
         )
         assert not links, f"rendered skills must be regular files, found symlinks: {links}"
 
     def test_frontmatter_name_matches_directory_name(self) -> None:
-        """A dir/frontmatter mismatch is exactly the collision the sova- prefix exists to prevent.
+        """A dir/frontmatter mismatch is exactly the collision the sova- prefix (or, for a
+        standalone skill, the bare name itself) exists to prevent.
 
         A runtime that keys skills by the declared ``name:`` rather than the
         directory would otherwise see two differently-named-on-disk packages
-        (e.g. ``sova-issue-template`` and a pre-existing ``issue-template``)
-        collapse onto the same identity.
+        (e.g. a command-derived ``sova-foo`` and a pre-existing hand-authored
+        ``foo``) collapse onto the same identity.
         """
         mismatches = []
         for skill_md in sorted(_RENDERED_DIR.glob("*/SKILL.md")):

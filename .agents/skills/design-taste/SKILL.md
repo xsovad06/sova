@@ -1,7 +1,6 @@
 ---
 name: design-taste
-description: Generic UI design review checklist and best practices, adaptable to any project's design system. Auto-activates when reviewing or validating UI changes for visual quality.
-allowed_tools: Read, Grep, Glob
+description: "Generic UI design review checklist and best practices, adaptable to any project's design system. Auto-activates when reviewing or validating UI changes for visual quality."
 ---
 
 # Design Taste

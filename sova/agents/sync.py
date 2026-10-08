@@ -69,13 +69,20 @@ def sync_runtime_skills(
     a "cold" target with no manifest yet: a destination directory could in
     principle already hold hand-authored content that must be reported as a
     conflict rather than silently overwritten on the first sync. (Codex's
-    target, ``.agents/skills/``, installs every entry under a ``sova-``
-    prefix for exactly this reason; see ``CodexAdapter``.)
+    target, ``.agents/skills/``, installs every command-derived entry under
+    a ``sova-`` prefix for exactly this reason; see ``CodexAdapter``. A
+    standalone skill under ``skills_src_dir`` installs under its own bare
+    name instead, relying on ``materialize_combined_skill_sources()``'s
+    separate existing-content check rather than the prefix, since it is a
+    different artifact class from a command-derived skill; see that
+    function's docstring, issue #1136.)
 
     The adapter's ``extra_skill_sources()`` (Codex's command-derived skills)
     are merged with ``skills_src_dir`` into a scratch directory first, so a
     single ``update_skills()`` call produces one coherent manifest for both
-    source kinds.
+    source kinds. No further ``name_prefix`` is passed to ``update_skills()``
+    itself: ``materialize_combined_skill_sources()`` already named every
+    entry in the scratch directory exactly as it should land in ``target``.
     """
     adapter = create_runtime_adapter(cfg.agent.runtime)
     target = adapter.skills_dir(project_dir)
@@ -88,7 +95,7 @@ def sync_runtime_skills(
         materialize_combined_skill_sources(
             skills_src_dir, extra, scratch, name_prefix=adapter.skill_name_prefix, existing_target_dir=target
         )
-        return update_skills(scratch, target, cfg, force=force, name_prefix=adapter.skill_name_prefix)
+        return update_skills(scratch, target, cfg, force=force)
 
 
 def report_runtime_skills_sync(

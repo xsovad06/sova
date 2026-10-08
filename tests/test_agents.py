@@ -110,6 +110,16 @@ class TestSyncRuntimeSkills:
         empty.mkdir()
         monkeypatch.setattr("sova.agents.sync.get_canonical_dir", lambda: empty)
 
+    def _use_real_commands_dir_with_foo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Override ``_empty_canonical_commands`` with one real canonical command, "foo"."""
+        commands_dir = tmp_path / "real-canonical-commands"
+        commands_dir.mkdir()
+        (commands_dir / "foo.md").write_text(
+            "---\nname: foo\ndescription: Foo command.\nuser-invocable: true\n---\nDo the foo thing.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sova.agents.sync.get_canonical_dir", lambda: commands_dir)
+
     def test_claude_code_runtime_is_a_noop(self, tmp_path: Path, skills_src_dir: Path) -> None:
         """Claude's .claude/skills/ is already installed unconditionally by the caller."""
         cfg = ProjectConfig()
@@ -119,25 +129,21 @@ class TestSyncRuntimeSkills:
         assert not (tmp_path / ".claude").exists()
 
     def test_codex_runtime_installs_into_agents_skills(self, tmp_path: Path, skills_src_dir: Path) -> None:
+        """A standalone skill installs under its own bare name, not sova-<name> (issue #1136)."""
         cfg = ProjectConfig()
         cfg.agent.runtime = "codex"
         result = sync_runtime_skills(skills_src_dir, tmp_path, cfg)
         assert result is not None
         assert result.updated == 1
         assert result.conflicts == []
-        assert (tmp_path / ".agents" / "skills" / "sova-a-skill" / "SKILL.md").is_file()
+        assert (tmp_path / ".agents" / "skills" / "a-skill" / "SKILL.md").is_file()
 
     def test_codex_runtime_merges_command_derived_skills(
         self, tmp_path: Path, skills_src_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Codex's sync also mechanically renders each canonical command as its own skill."""
-        commands_dir = tmp_path / "real-canonical-commands"
-        commands_dir.mkdir()
-        (commands_dir / "foo.md").write_text(
-            "---\nname: foo\ndescription: Foo command.\nuser-invocable: true\n---\nDo the foo thing.\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("sova.agents.sync.get_canonical_dir", lambda: commands_dir)
+        """Codex's sync also mechanically renders each canonical command as its own skill,
+        which (unlike the standalone skill above) installs under the sova- prefix."""
+        self._use_real_commands_dir_with_foo(tmp_path, monkeypatch)
 
         cfg = ProjectConfig()
         cfg.agent.runtime = "codex"
@@ -145,7 +151,7 @@ class TestSyncRuntimeSkills:
 
         assert result is not None
         assert result.updated == 2
-        assert (tmp_path / ".agents" / "skills" / "sova-a-skill" / "SKILL.md").is_file()
+        assert (tmp_path / ".agents" / "skills" / "a-skill" / "SKILL.md").is_file()
         assert (tmp_path / ".agents" / "skills" / "sova-foo" / "SKILL.md").is_file()
 
     def test_codex_runtime_second_call_updates_not_duplicates(self, tmp_path: Path, skills_src_dir: Path) -> None:
@@ -158,32 +164,60 @@ class TestSyncRuntimeSkills:
         assert result.skipped == 1
         assert result.conflicts == []
 
-    def test_codex_runtime_preserves_preexisting_unmanaged_skill(self, tmp_path: Path, skills_src_dir: Path) -> None:
+    def test_codex_runtime_preserves_preexisting_unmanaged_command_derived_skill(
+        self, tmp_path: Path, skills_src_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A skill directory that already existed before SOVA ever managed it must not be clobbered.
 
-        Pre-existing unmanaged content here uses the plain name ``a-skill``
-        (no ``sova-`` prefix), matching this repo's real
-        ``.agents/skills/testing-patterns`` etc.: SOVA's own prefixed entry
-        never shares a path with it, so this only exercises the ordinary
-        manifest-conflict path (SOVA itself re-installing under a name it
-        already owns), not the collision-avoidance the prefix exists for.
+        Pre-existing unmanaged content here uses a command-derived skill's
+        prefixed name (``sova-foo``): that name is reserved for SOVA's own
+        output, so this exercises the ordinary manifest-conflict path (SOVA
+        itself re-installing under a name it already owns), not the
+        collision-avoidance ``materialize_combined_skill_sources()``'s
+        existing-content check provides for a standalone skill's bare name
+        (see ``test_codex_runtime_preserves_preexisting_unmanaged_standalone_skill``
+        below for that path).
         """
-        target = tmp_path / ".agents" / "skills" / "sova-a-skill"
+        self._use_real_commands_dir_with_foo(tmp_path, monkeypatch)
+
+        target = tmp_path / ".agents" / "skills" / "sova-foo"
         target.mkdir(parents=True)
-        (target / "SKILL.md").write_text("---\nname: a-skill\n---\nHand-authored, not canonical.\n", encoding="utf-8")
+        (target / "SKILL.md").write_text("---\nname: sova-foo\n---\nHand-authored, not canonical.\n", encoding="utf-8")
 
         cfg = ProjectConfig()
         cfg.agent.runtime = "codex"
         result = sync_runtime_skills(skills_src_dir, tmp_path, cfg)
 
         assert result is not None
-        assert result.conflicts == ["sova-a-skill/SKILL.md"]
+        assert result.conflicts == ["sova-foo/SKILL.md"]
         assert "Hand-authored, not canonical." in (target / "SKILL.md").read_text(encoding="utf-8")
 
-    def test_codex_runtime_force_overwrites_preexisting_unmanaged_skill(
+    def test_codex_runtime_force_overwrites_preexisting_unmanaged_command_derived_skill(
+        self, tmp_path: Path, skills_src_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._use_real_commands_dir_with_foo(tmp_path, monkeypatch)
+
+        target = tmp_path / ".agents" / "skills" / "sova-foo"
+        target.mkdir(parents=True)
+        (target / "SKILL.md").write_text("---\nname: sova-foo\n---\nHand-authored, not canonical.\n", encoding="utf-8")
+
+        cfg = ProjectConfig()
+        cfg.agent.runtime = "codex"
+        result = sync_runtime_skills(skills_src_dir, tmp_path, cfg, force=True)
+
+        assert result is not None
+        assert result.conflicts == []
+        assert result.updated == 2  # "foo" (forced) and the standalone "a-skill" (fresh)
+        assert "Hand-authored, not canonical." not in (target / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_codex_runtime_preserves_preexisting_unmanaged_standalone_skill(
         self, tmp_path: Path, skills_src_dir: Path
     ) -> None:
-        target = tmp_path / ".agents" / "skills" / "sova-a-skill"
+        """A standalone skill's bare name is where its own sync would also write (issue #1136),
+        so pre-existing unmanaged content there is preserved by never being attempted at all,
+        the same way this repo's own real .agents/skills/testing-patterns is: even force=True
+        does not reach it, since materialize_combined_skill_sources() excludes it upfront."""
+        target = tmp_path / ".agents" / "skills" / "a-skill"
         target.mkdir(parents=True)
         (target / "SKILL.md").write_text("---\nname: a-skill\n---\nHand-authored, not canonical.\n", encoding="utf-8")
 
@@ -193,8 +227,8 @@ class TestSyncRuntimeSkills:
 
         assert result is not None
         assert result.conflicts == []
-        assert result.updated == 1
-        assert "Hand-authored, not canonical." not in (target / "SKILL.md").read_text(encoding="utf-8")
+        assert result.updated == 0
+        assert "Hand-authored, not canonical." in (target / "SKILL.md").read_text(encoding="utf-8")
 
 
 class TestWarnOrphanedRuntimeArtifacts:

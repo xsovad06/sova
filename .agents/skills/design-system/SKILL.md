@@ -1,5 +1,5 @@
 ---
-name: sova-design-system
+name: design-system
 description: "Frontend design conventions for SOVA: layout hierarchy, spacing, typography, anti-slop rules. Auto-activates when creating or modifying templates, CSS, or frontend components."
 ---
 

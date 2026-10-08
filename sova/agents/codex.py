@@ -25,9 +25,16 @@ class CodexAdapter(RuntimeAdapter):
     content under plain names (e.g. ``testing-patterns``) that predates this
     adapter. Rather than avoiding that directory entirely (as a prior version
     of this adapter did, targeting ``.codex/skills/`` instead), every
-    SOVA-managed entry here is written under ``sova-<name>`` via
+    command-derived entry here is written under ``sova-<name>`` via
     ``skill_name_prefix``, so it can never collide with that pre-existing
-    content no matter what plain name it uses.
+    content no matter what plain name it uses. A standalone, distributed
+    skill from the shared ``skills/`` directory (e.g. ``design-taste``,
+    ``issue-template``) is a different artifact class and installs under its
+    own bare name instead: it keeps its namespace separate from
+    ``sova-<name>`` on its own terms, and relies on
+    ``materialize_combined_skill_sources()``'s existing-content check, not
+    this prefix, if that bare name already collides with something already
+    on disk (issue #1136).
     """
 
     @property

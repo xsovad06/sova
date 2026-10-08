@@ -1,6 +1,18 @@
 {
   "version": 1,
   "commands": {
+    "design-system/SKILL.md": {
+      "hash": "a1af424e92ece669",
+      "managed": true
+    },
+    "design-taste/SKILL.md": {
+      "hash": "38e4314131377ba0",
+      "managed": true
+    },
+    "issue-template/SKILL.md": {
+      "hash": "807e3a01429a33b9",
+      "managed": true
+    },
     "sova-address-pr/SKILL.md": {
       "hash": "b5f25262a3b477d5",
       "managed": true
@@ -19,10 +31,6 @@
     },
     "sova-debug/SKILL.md": {
       "hash": "93ac1cafce4cc51f",
-      "managed": true
-    },
-    "sova-design-system/SKILL.md": {
-      "hash": "a0f747ba4be9a77e",
       "managed": true
     },
     "sova-develop/SKILL.md": {
@@ -59,10 +67,6 @@
     },
     "sova-issue/SKILL.md": {
       "hash": "525f6aeb761e3beb",
-      "managed": true
-    },
-    "sova-issue-template/SKILL.md": {
-      "hash": "29127aa85a93b3f6",
       "managed": true
     },
     "sova-new-feature/SKILL.md": {

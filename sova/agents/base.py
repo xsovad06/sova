@@ -51,13 +51,18 @@ class RuntimeAdapter(ABC):
 
     @property
     def skill_name_prefix(self) -> str:
-        """Prefix applied to every skill name this runtime installs.
+        """Prefix applied to every command-derived skill name this runtime installs.
 
         Empty by default. A runtime whose skills directory risks colliding
         with pre-existing, independently-maintained content under a plain
         name (e.g. Codex's ``.agents/skills/``) overrides this so every
-        SOVA-managed entry is written under a name nothing else could
-        already occupy, rather than needing per-directory conflict checks.
+        command-derived entry (``extra_skill_sources()``) is written under a
+        name nothing else could already occupy. A standalone, distributed
+        skill from the shared ``skills/`` directory is a different artifact
+        class and always installs under its own bare name regardless of this
+        prefix, instead relying on a per-directory existing-content check
+        (``materialize_combined_skill_sources()``) the first time it would
+        collide with something already there (issue #1136).
         """
         return ""
 
