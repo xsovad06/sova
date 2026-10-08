@@ -83,6 +83,13 @@ def sync_runtime_skills(
     source kinds. No further ``name_prefix`` is passed to ``update_skills()``
     itself: ``materialize_combined_skill_sources()`` already named every
     entry in the scratch directory exactly as it should land in ``target``.
+
+    ``prune_stale=True`` on that call removes any manifest-tracked entry
+    absent from the scratch tree entirely (when unmodified), not just ones
+    whose content changed: a prior install's ``sova-<name>`` standalone
+    skill (from before issue #1136 removed that prefix for standalone
+    skills) would otherwise sit on disk forever alongside the new bare-named
+    one, discoverable twice under the runtime's own skill lookup.
     """
     adapter = create_runtime_adapter(cfg.agent.runtime)
     target = adapter.skills_dir(project_dir)
@@ -95,7 +102,7 @@ def sync_runtime_skills(
         materialize_combined_skill_sources(
             skills_src_dir, extra, scratch, name_prefix=adapter.skill_name_prefix, existing_target_dir=target
         )
-        return update_skills(scratch, target, cfg, force=force)
+        return update_skills(scratch, target, cfg, force=force, prune_stale=True)
 
 
 def report_runtime_skills_sync(
@@ -112,6 +119,12 @@ def report_runtime_skills_sync(
     """
     if result is not None:
         console.print(f"{indent}[green]Skills synced for runtime {cfg.agent.runtime!r}: {result.updated}[/green]")
+        if result.removed:
+            console.print(
+                f"{indent}[dim]Removed {len(result.removed)} stale entr(ies) from a prior naming scheme:[/dim]"
+            )
+            for name in result.removed:
+                console.print(f"{indent}  - {name}")
         if result.conflicts:
             console.print(f"{indent}[yellow]Conflicts ({len(result.conflicts)}):[/yellow]")
             for name in result.conflicts:

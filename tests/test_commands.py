@@ -1396,6 +1396,83 @@ class TestSkillsDistribution:
         assert result.updated == 1
         assert result.skipped == 1
 
+    def test_update_skills_prune_stale_removes_unmodified_retired_entry(
+        self, skills_dir: Path, skills_target: Path
+    ) -> None:
+        """A managed entry no longer in the source tree, with unmodified on-disk content,
+        is deleted and its manifest entry dropped: this is the issue #1136 migration case
+        where a standalone skill lost its `sova-` prefix and the old `sova-<name>/SKILL.md`
+        would otherwise sit on disk forever alongside the new bare-named one."""
+        from sova.commands.distribution import install_skills, update_skills
+        from sova.commands.manifest import read_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg, name_prefix="sova-")
+        assert (skills_target / "sova-alpha" / "SKILL.md").is_file()
+
+        # Simulate the renamed source tree: "alpha" now installs bare, with no
+        # prefixed sibling in the new source at all.
+        bare_source = skills_dir.parent / "skills-bare"
+        bare_source.mkdir()
+        (bare_source / "alpha").mkdir()
+        (bare_source / "alpha" / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+        result = update_skills(bare_source, skills_target, cfg, prune_stale=True)
+
+        assert "sova-alpha/SKILL.md" in result.removed
+        assert not (skills_target / "sova-alpha").exists()
+        assert (skills_target / "alpha" / "SKILL.md").is_file()
+        manifest = read_manifest(skills_target)
+        assert manifest is not None
+        assert "sova-alpha/SKILL.md" not in manifest.commands
+
+    def test_update_skills_prune_stale_preserves_locally_modified_entry(
+        self, skills_dir: Path, skills_target: Path
+    ) -> None:
+        """A managed but locally-modified retired entry is reported as a conflict, not deleted:
+        project-owned edits to a since-renamed skill must survive a migration."""
+        from sova.commands.distribution import install_skills, update_skills
+        from sova.commands.manifest import read_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg, name_prefix="sova-")
+        (skills_target / "sova-alpha" / "SKILL.md").write_text("# Locally edited\n")
+
+        bare_source = skills_dir.parent / "skills-bare"
+        bare_source.mkdir()
+        (bare_source / "alpha").mkdir()
+        (bare_source / "alpha" / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+        result = update_skills(bare_source, skills_target, cfg, prune_stale=True)
+
+        assert "sova-alpha/SKILL.md" in result.conflicts
+        assert (skills_target / "sova-alpha" / "SKILL.md").read_text() == "# Locally edited\n"
+        manifest = read_manifest(skills_target)
+        assert manifest is not None
+        assert "sova-alpha/SKILL.md" in manifest.commands
+
+    def test_update_skills_without_prune_stale_leaves_retired_entry(
+        self, skills_dir: Path, skills_target: Path
+    ) -> None:
+        """Default behavior (prune_stale=False) is unchanged: a retired entry is left alone."""
+        from sova.commands.distribution import install_skills, update_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg, name_prefix="sova-")
+
+        bare_source = skills_dir.parent / "skills-bare"
+        bare_source.mkdir()
+        (bare_source / "alpha").mkdir()
+        (bare_source / "alpha" / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+        result = update_skills(bare_source, skills_target, cfg)
+
+        assert result.removed == []
+        assert (skills_target / "sova-alpha" / "SKILL.md").is_file()
+
     def test_diff_skills(self, skills_dir: Path, skills_target: Path) -> None:
         """diff_skills() detects changed and new skills."""
         from sova.commands.distribution import diff_skills, install_skills
