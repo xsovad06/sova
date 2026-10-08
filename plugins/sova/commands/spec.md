@@ -228,7 +228,7 @@ If the user gives feedback:
 
 When the user approves, update the spec:
 - Change `**Status**: draft` to `**Status**: approved`
-- Confirm: "Spec approved. Run `/develop {issue-number}` to start implementation."
+- Confirm: "Spec approved. Run `/develop` with the issue number to start implementation."
 
 ### Step 8: Write Back to Tracker (optional)
 
@@ -264,8 +264,8 @@ If the user declines, skip this step: the spec file in `.claude/specs/` is the p
 
 ## Cross-References
 
-- **Before spec**: Run `/find-task` to pick the next issue
-- **After spec**: Run `/develop {issue-number}` or `/develop-full {issue-number}` to implement
+- **Before spec**: Select the next issue from the project's task source
+- **After spec**: Run `/develop` with the issue number to implement; for the full cycle, continue with `/test`, `/review`, and `/pr`
 
 ## Rules
 

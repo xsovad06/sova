@@ -2,7 +2,7 @@
   "version": 1,
   "commands": {
     "address-pr.md": {
-      "hash": "8e65c4c1cc17c639",
+      "hash": "8b81964c970c9e5e",
       "managed": true
     },
     "after-merge.md": {
@@ -30,7 +30,7 @@
       "managed": true
     },
     "develop.md": {
-      "hash": "4d3f799d7f783be2",
+      "hash": "19b8ade5bdf4ebc3",
       "managed": true
     },
     "extract-knowledge.md": {
@@ -66,7 +66,7 @@
       "managed": true
     },
     "pr.md": {
-      "hash": "5f250cb5970acbb0",
+      "hash": "2dd7aad50e5d2c98",
       "managed": true
     },
     "rearrange-commits.md": {
@@ -74,7 +74,7 @@
       "managed": true
     },
     "research.md": {
-      "hash": "cd1cf8cd7222b118",
+      "hash": "d4be1b9edd49d0ee",
       "managed": true
     },
     "review-full.md": {
@@ -86,7 +86,7 @@
       "managed": true
     },
     "review.md": {
-      "hash": "3b5f579bfc71ecda",
+      "hash": "82738d178b9e15e2",
       "managed": true
     },
     "simplify.md": {
@@ -94,7 +94,7 @@
       "managed": true
     },
     "spec.md": {
-      "hash": "22333e46acf26ef2",
+      "hash": "af9976f63fa70458",
       "managed": true
     },
     "standup.md": {
@@ -106,7 +106,7 @@
       "managed": true
     },
     "test.md": {
-      "hash": "4078cf1be5bb0054",
+      "hash": "e8decbe82462d227",
       "managed": true
     },
     "update-docs.md": {

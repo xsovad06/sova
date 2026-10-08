@@ -66,7 +66,7 @@ Repeat Steps 2-4 until both linter and tests pass completely.
 ## Cross-References
 
 - **After tests pass**: Run `/review` to self-review before pushing
-- **Full workflow**: Use `/develop-full` for the complete develop-test-review-pr cycle
+- **Full workflow**: For the complete develop-test-review-pr cycle, run `/develop`, `/test`, `/review`, and `/pr` in sequence
 
 ## Rules
 

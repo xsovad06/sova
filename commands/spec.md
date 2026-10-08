@@ -14,24 +14,24 @@ outputs:
 
 Produce a structured specification document for a task before development starts. Shifts architectural and UX decisions to the cheap planning phase instead of the expensive coding phase.
 
-**Task**: $ARGUMENTS
+**Task**: {{ arguments }}
 
 ## Instructions
 
 ### Step 1: Fetch the Task
 
-If `$ARGUMENTS` is a text description (not a number or ticket key), use it directly as the problem statement and skip to Step 2.
+If `{{ arguments }}` is a text description (not a number or ticket key), use it directly as the problem statement and skip to Step 2.
 
 Determine the task source by running `sova config` and reading the `task_source` row (configuration lives in `.claude/sova.db`, not in a file).
 
 **GitHub** (the default):
 ```bash
-gh issue view $ARGUMENTS --json number,title,body,labels,milestone
+gh issue view {{ arguments }} --json number,title,body,labels,milestone
 ```
 
 **JIRA** (`task_source.type = "jira"`):
 ```bash
-jira issue view $ARGUMENTS --plain
+jira issue view {{ arguments }} --plain
 ```
 Extract: title, description, status, linked/blocked tickets, components.
 
@@ -201,7 +201,7 @@ Items that require user input before development can start: business rules, scop
 
 Show the full spec to the user. Ask:
 
-> Spec written to `.claude/specs/{filename}`. Review the plan above -- anything to change, add, or remove? Say "approved" to mark it ready for `/develop`.
+> Spec written to `.claude/specs/{filename}`. Review the plan above: anything to change, add, or remove? Say "approved" to mark it ready for the `develop` workflow.
 
 ### Step 6: Iterate
 
@@ -214,7 +214,7 @@ If the user gives feedback:
 
 When the user approves, update the spec:
 - Change `**Status**: draft` to `**Status**: approved`
-- Confirm: "Spec approved. Run `/develop {issue-number}` to start implementation."
+- Confirm: "Spec approved. Run the `develop` workflow with the issue number to start implementation."
 
 ### Step 8: Write Back to Tracker (optional)
 
@@ -225,12 +225,12 @@ If the user agrees, update the tracker with the spec appended to the original de
 **GitHub**:
 ```bash
 echo "<updated body>" > /tmp/issue_body.md
-gh issue edit $ARGUMENTS --body-file /tmp/issue_body.md
+gh issue edit {{ arguments }} --body-file /tmp/issue_body.md
 ```
 
 **JIRA** (requires `jira-cli` by ankitpokhrel):
 ```bash
-jira issue edit $ARGUMENTS -b "<updated body>" --no-input
+jira issue edit {{ arguments }} -b "<updated body>" --no-input
 ```
 
 Format the updated body as:
@@ -250,8 +250,8 @@ If the user declines, skip this step -- the spec file in `.claude/specs/` is the
 
 ## Cross-References
 
-- **Before spec**: Run `/find-task` to pick the next issue
-- **After spec**: Run `/develop {issue-number}` or `/develop-full {issue-number}` to implement
+- **Before spec**: Run the `find-task` workflow to pick the next issue
+- **After spec**: Run the `develop` workflow or the `develop-full` workflow with the issue number to implement
 
 ## Rules
 

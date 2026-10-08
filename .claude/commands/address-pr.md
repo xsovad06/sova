@@ -80,14 +80,16 @@ This command runs as a headless agent. You MUST execute every step below through
 
    This is the only place in the PR lifecycle where documentation and knowledge
    can be written for free. The branch is about to be squashed and pushed
-   anyway, so anything folded in here rides that push. Anything left until
-   `/integrate-pr` would need a push of its own on an otherwise-ready PR, which
-   costs a full CI cycle and delays the merge by the length of the suite.
+   anyway, so anything folded in here rides that push. Anything left until the
+   `/integrate-pr` workflow would need a push of its own on an otherwise-ready
+   PR, which costs a full CI cycle and delays the merge by the length of the
+   suite.
 
    a. **Drain the pending queue**: `.claude/agent-control/pending-docs.md` in
       the PRIMARY checkout, if it exists, holds documentation and knowledge
-      that a previous `/integrate-pr` run found missing and deferred rather
-      than pushing. This step usually runs inside a per-issue worktree (per
+      that a previous run of the `/integrate-pr` workflow found missing and
+      deferred rather than pushing. This step usually runs inside a per-issue
+      worktree (per
       step 3 above), not the main checkout, and `.claude/agent-control/` is
       not mirrored into worktrees, so resolve the primary checkout explicitly
       rather than checking a bare relative path:
@@ -339,7 +341,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
 ## Cross-References
 
-- **Want to learn from the feedback?** Run `/ingest-review <PR_NUMBER>` after merge
+- **Want to learn from the feedback?** Run the `/ingest-review` workflow with the PR number after merge
 
 ## Rules
 

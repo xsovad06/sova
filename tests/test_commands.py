@@ -256,6 +256,23 @@ class TestTemplates:
         result = render_command(content, variables)
         assert "agent, dashboard, cli" in result
 
+    def test_build_variables_includes_arguments_as_claude_literal_token(self) -> None:
+        """{{ arguments }} must render as Claude's own $ARGUMENTS substitution token."""
+        from sova.commands.templates import build_variables, render_command
+        from sova.config.models import ProjectConfig
+
+        variables = build_variables(ProjectConfig())
+        assert variables["arguments"] == "$ARGUMENTS"
+        assert render_command("Task: {{ arguments }}\n", variables) == "Task: $ARGUMENTS\n"
+
+    def test_workflow_reference_re_matches_name_followed_by_workflow(self) -> None:
+        from sova.commands.templates import workflow_reference_re
+
+        pattern = workflow_reference_re("test")
+        assert pattern.search("Run the `test` workflow now.")
+        assert not pattern.search("Run the `test-full` workflow now.")
+        assert not pattern.search("Run the `test` command now.")
+
 
 class TestFenceAwareProse:
     """split_fenced_lines()/dedash_prose(): the shared code-vs-prose split both renderers rely on."""
@@ -474,6 +491,40 @@ class TestDistribution:
         assert not (target_dir / "claude-only.md").exists()
         assert (target_dir / "develop.md").exists()
         assert result.skipped >= 1
+
+    def test_install_rewrites_workflow_reference_to_claude_slash_syntax(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """The provider-neutral `name` workflow syntax becomes a real `/name` slash reference for Claude."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        (canonical_dir / "develop.md").write_text(
+            (canonical_dir / "develop.md").read_text() + "\nSee the `standup` workflow for daily context.\n"
+        )
+
+        install_commands(canonical_dir, target_dir, ProjectConfig(), include_autonomous=True)
+
+        content = (target_dir / "develop.md").read_text()
+        assert "the `/standup` workflow" in content
+        assert "`standup` workflow" not in content
+
+    def test_install_rewrites_arguments_placeholder_to_claude_token(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """{{ arguments }} in a canonical command installs as Claude's literal $ARGUMENTS token."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        (canonical_dir / "develop.md").write_text(
+            (canonical_dir / "develop.md").read_text() + "\nTask: {{ arguments }}\n"
+        )
+
+        install_commands(canonical_dir, target_dir, ProjectConfig(), include_autonomous=True)
+
+        content = (target_dir / "develop.md").read_text()
+        assert "Task: $ARGUMENTS" in content
+        assert "{{ arguments }}" not in content
 
     def test_install_commands_with_adapter_keeps_matching_runtime(self, canonical_dir: Path, target_dir: Path) -> None:
         from sova.agents.claude_code import ClaudeCodeAdapter

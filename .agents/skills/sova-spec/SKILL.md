@@ -207,7 +207,7 @@ If the user gives feedback:
 
 When the user approves, update the spec:
 - Change `**Status**: draft` to `**Status**: approved`
-- Confirm: "Spec approved. Run the `sova-develop` skill {issue-number} to start implementation."
+- Confirm: "Spec approved. Run the `sova-develop` skill with the issue number to start implementation."
 
 ### Step 8: Write Back to Tracker (optional)
 
@@ -244,7 +244,7 @@ If the user declines, skip this step: the spec file in `.claude/specs/` is the p
 ## Cross-References
 
 - **Before spec**: Run the `sova-find-task` skill to pick the next issue
-- **After spec**: Run the `sova-develop` skill {issue-number} or the `sova-develop-full` skill {issue-number} to implement
+- **After spec**: Run the `sova-develop` skill or the `sova-develop-full` skill with the issue number to implement
 
 ## Rules
 

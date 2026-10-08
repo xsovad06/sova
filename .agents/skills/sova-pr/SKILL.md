@@ -151,15 +151,15 @@ These phases run after the PR is created/updated. They enable autonomous operati
     - **CI still pending after max wait**: report current status and the PR URL. Suggest the user check back later.
 
 16. **Self-review the PR diff**:
-    Run the `sova-review-pr` skill workflow against this PR to review the actual diff that will be merged:
+    Run the `sova-review-pr` skill against this PR to review the actual diff that will be merged:
     1. Fetch the PR number from the branch
-    2. Execute the `sova-review-pr` skill analysis in full (fetch diff, read files, deep analysis)
+    2. Execute the `sova-review-pr` skill's analysis in full (fetch diff, read files, deep analysis)
     3. Post the review on GitHub
     4. If the verdict has no findings >= 3/10: skip step 17, go to step 18
     5. If there are findings >= 3/10: continue to step 17
 
 17. **Address review findings**:
-    Run the `sova-address-pr` skill workflow to fix the findings:
+    Run the `sova-address-pr` skill to fix the findings:
     1. Score and address each finding (fix or acknowledge)
     2. Commit fixes
     3. Reply to review comments on GitHub

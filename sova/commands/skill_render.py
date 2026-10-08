@@ -29,7 +29,7 @@ from typing import Callable, Union
 from sova.commands.catalog import CommandEntry, discover, get_canonical_dir, parse_frontmatter
 from sova.commands.distribution import InstallResult, install_skills
 from sova.commands.self_render import repo_root, self_config
-from sova.commands.templates import build_variables, dedash_prose, split_fenced_lines
+from sova.commands.templates import build_variables, dedash_prose, split_fenced_lines, workflow_reference_re
 from sova.config.models import ProjectConfig
 from sova.utils.logging import get_logger
 
@@ -70,6 +70,13 @@ class SkillRenderError(ValueError):
 # known, deferred placeholders rather than leftover idioms.
 _CODEX_SUBSTITUTIONS: list[tuple[re.Pattern[str], _Replacement]] = [
     (re.compile(r"\$ARGUMENTS"), "the arguments provided when this skill is invoked"),
+    # The provider-neutral counterpart to $ARGUMENTS (see
+    # sova.commands.templates.build_variables()): canonical commands written
+    # against the neutral syntax use `{{ arguments }}` instead, which Claude's
+    # own install path fills in as the literal $ARGUMENTS token. Consumed here
+    # before _assert_fully_rendered() runs, same as $ARGUMENTS above, so a
+    # Codex skill never receives Claude's literal substitution token.
+    (re.compile(r"\{\{\s*arguments\s*\}\}"), "the arguments provided when this skill is invoked"),
     # Non-canonical Claude slash commands with no Codex-skill counterpart:
     # rewritten to neutral prose rather than left as a dangling `/name`
     # reference (which _assert_fully_rendered()'s residual-reference check
@@ -111,6 +118,7 @@ _CODEX_SUBSTITUTIONS: list[tuple[re.Pattern[str], _Replacement]] = [
 
 _CODEX_FENCE_SUBSTITUTIONS: list[tuple[re.Pattern[str], _Replacement]] = [
     (re.compile(r"\$ARGUMENTS"), "<arguments>"),
+    (re.compile(r"\{\{\s*arguments\s*\}\}"), "<arguments>"),
 ]
 
 
@@ -130,7 +138,13 @@ _CODEX_FENCE_SUBSTITUTIONS: list[tuple[re.Pattern[str], _Replacement]] = [
 # config value, so skipping validation/env-reading entirely costs nothing.
 @lru_cache(maxsize=1)
 def _known_deferred_placeholders() -> frozenset[str]:
-    return frozenset(build_variables(ProjectConfig.model_construct()))
+    # "arguments" is deliberately excluded even though build_variables() defines
+    # it: that value ("$ARGUMENTS") is Claude's literal substitution token, not
+    # something a Codex skill can defer to install time. render_codex_skill()
+    # must consume {{ arguments }} itself (via _CODEX_SUBSTITUTIONS) before this
+    # check runs; if it ever doesn't, the placeholder should fail loudly here
+    # rather than silently surviving to be filled in with $ARGUMENTS.
+    return frozenset(build_variables(ProjectConfig.model_construct())) - {"arguments"}
 
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -262,6 +276,19 @@ def _cross_reference_substitutions(skill_names: list[str]) -> list[tuple[re.Patt
     return substitutions
 
 
+def _workflow_reference_substitutions(skill_names: list[str]) -> list[tuple[re.Pattern[str], _Replacement]]:
+    """Rewrite the provider-neutral `name` workflow syntax to `sova-name` skill.
+
+    Companion to ``_cross_reference_substitutions()`` above, which still
+    handles the legacy ``/name`` syntax used by commands not yet converted to
+    the neutral form (see ``sova.commands.templates.workflow_reference_re()``).
+    """
+    return [(workflow_reference_re(name), f"`{SKILL_NAME_PREFIX}{name}` skill") for name in skill_names]
+
+
+_RESIDUAL_WORKFLOW_REFERENCE_RE = re.compile(r"`[a-z][a-z0-9-]*`\s+workflow\b")
+
+
 def _apply_substitutions(
     body: str,
     prose_substitutions: list[tuple[re.Pattern[str], _Replacement]],
@@ -308,6 +335,12 @@ def _assert_fully_rendered(command_name: str, text: str, *, label: str = "body")
     if residual:
         raise SkillRenderError(
             f"commands/{command_name}.md: unrendered command reference(s) {residual} reached the Codex skill {label}"
+        )
+    residual_workflow = _RESIDUAL_WORKFLOW_REFERENCE_RE.findall(prose)
+    if residual_workflow:
+        raise SkillRenderError(
+            f"commands/{command_name}.md: unrendered workflow reference(s) {residual_workflow} reached the "
+            f"Codex skill {label}"
         )
 
 
@@ -369,7 +402,7 @@ def render_codex_skill(entry: CommandEntry, skill_names: list[str]) -> str:
     _fields, body = parsed
 
     cross_references = _cross_reference_substitutions(skill_names)
-    prose_substitutions = _CODEX_SUBSTITUTIONS + cross_references
+    prose_substitutions = _CODEX_SUBSTITUTIONS + cross_references + _workflow_reference_substitutions(skill_names)
     body = dedash_prose(_apply_substitutions(body, prose_substitutions, _CODEX_FENCE_SUBSTITUTIONS)).strip("\n")
     _assert_fully_rendered(entry.name, body, label="body")
 
@@ -590,7 +623,7 @@ def materialize_combined_skill_sources(
     combined = dict(extra)
     skill_names = list(extra)
     cross_references = _cross_reference_substitutions(skill_names)
-    prose_substitutions = _CODEX_SUBSTITUTIONS + cross_references
+    prose_substitutions = _CODEX_SUBSTITUTIONS + cross_references + _workflow_reference_substitutions(skill_names)
 
     if standalone_skills_dir.is_dir():
         for skill_dir in sorted(standalone_skills_dir.iterdir()):

@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them. Run before /pr to catch issues early.
+description: Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them. Run before the `/pr` workflow to catch issues early.
 user-invocable: true
 category: core
 inputs:
@@ -155,13 +155,13 @@ Run the full CI-equivalent checks: `make check`. If any check fails, fix the iss
 
 After fixes are applied, review the session for reusable patterns. Skip this step if no new patterns were found.
 
-Run `/extract-knowledge` to capture any reusable patterns, gotchas, or lessons into the project's knowledge system.
+Run the `/extract-knowledge` workflow to capture any reusable patterns, gotchas, or lessons into the project's knowledge system.
 
 ## Cross-References
 
-- **Came from**: `/develop-full` (Phase 2) or manual pre-push check
-- **Next step**: `/pr` to create the pull request
-- **Reviewing someone else's PR?** Use `/review-pr` instead
+- **Came from**: the `/develop-full` workflow (Phase 2) or manual pre-push check
+- **Next step**: the `/pr` workflow to create the pull request
+- **Reviewing someone else's PR?** Use the `/review-pr` workflow instead
 
 ## Rules
 

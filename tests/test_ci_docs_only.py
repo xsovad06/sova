@@ -736,5 +736,19 @@ class TestAddressPRCapturesEarly:
         numbers = [int(m) for m in re.findall(r"^(\d+)\. ", text, re.MULTILINE)]
         assert numbers == list(range(1, len(numbers) + 1)), numbers
 
-    def test_variants_stay_in_sync(self, address_sova_text: str, address_dist_text: str) -> None:
-        assert address_sova_text == address_dist_text
+    def test_variants_stay_in_sync(self, address_sova_text: str, address_dist_text: str, tmp_path: Path) -> None:
+        """The rendered .claude/commands/ copy must match canonical once rendering is applied.
+
+        Byte-for-byte equality broke once address-pr.md started using the
+        provider-neutral {{ arguments }} placeholder and `name` workflow
+        cross-reference syntax (see sova.commands.templates): the installed
+        copy fills those in, canonical does not. Rendering canonical through
+        the real install_commands() path restores the actual invariant (no
+        drift beyond what rendering is expected to change).
+        """
+        from sova.commands.distribution import install_commands
+        from sova.commands.self_render import self_config
+
+        install_commands(REPO_ROOT / "commands", tmp_path, self_config())
+        rendered_dist = (tmp_path / "address-pr.md").read_text()
+        assert address_sova_text == rendered_dist

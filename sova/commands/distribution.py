@@ -20,7 +20,7 @@ from sova.commands.manifest import (
     read_manifest,
     write_manifest,
 )
-from sova.commands.templates import build_variables, render_command
+from sova.commands.templates import build_variables, render_command, split_fenced_lines, workflow_reference_re
 from sova.config.models import ProjectConfig
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
@@ -101,6 +101,27 @@ class ListResult:
     local: list[ListEntry] = field(default_factory=list)
 
 
+def _render_workflow_references(content: str, workflow_names: list[str] | None) -> str:
+    """Rewrite a `name` workflow cross-reference back to Claude's `/name` slash syntax.
+
+    ``workflow_names`` is ``None`` for every non-command target (guidelines,
+    skills): only the commands_dir() render path needs this, since Claude's
+    actual slash-command mechanics belong there, not baked into a generic
+    helper every caller pays for. Scoped to prose lines the same way the
+    Codex-side equivalent is (``sova.commands.skill_render``), so a reference
+    inside a shell fence is left untouched.
+    """
+    if not workflow_names:
+        return content
+    lines: list[str] = []
+    for fenced, line in split_fenced_lines(content):
+        if not fenced:
+            for name in workflow_names:
+                line = workflow_reference_re(name).sub(f"`/{name}` workflow", line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _write_rendered(target_dir: Path, target_path: Path, rendered: str) -> None:
     """Write *rendered* into *target_dir* at *target_path*, never through a symlink.
 
@@ -157,6 +178,8 @@ def _install_files(
     source_files: list[tuple[str, Path]],
     target_dir: Path,
     variables: dict[str, str],
+    *,
+    workflow_names: list[str] | None = None,
 ) -> InstallResult:
     """Render and install source files into a target directory with manifest tracking."""
     result = InstallResult()
@@ -165,7 +188,7 @@ def _install_files(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     for filename, source_path in source_files:
-        content = source_path.read_text(encoding="utf-8")
+        content = _render_workflow_references(source_path.read_text(encoding="utf-8"), workflow_names)
         rendered = render_command(content, variables)
 
         target_path = target_dir / filename
@@ -185,6 +208,7 @@ def _update_files(
     *,
     force: bool = False,
     filenames: list[str] | None = None,
+    workflow_names: list[str] | None = None,
 ) -> UpdateResult:
     """Incrementally update installed files with conflict detection.
 
@@ -203,7 +227,7 @@ def _update_files(
     result = UpdateResult()
 
     for filename, source_path in source_files:
-        content = source_path.read_text(encoding="utf-8")
+        content = _render_workflow_references(source_path.read_text(encoding="utf-8"), workflow_names)
         rendered = render_command(content, variables)
         new_hash = file_hash(rendered)
 
@@ -325,7 +349,7 @@ def install_commands(
     ]
     skipped = len(commands) - len(files)
 
-    result = _install_files(files, target_dir, build_variables(cfg))
+    result = _install_files(files, target_dir, build_variables(cfg), workflow_names=[cmd.name for cmd in commands])
     result.skipped = skipped
     log.info("commands.installed", count=result.installed, skipped=result.skipped)
     return result
@@ -357,7 +381,14 @@ def update_commands(
     ]
     skipped = len(commands) - len(files)
 
-    result = _update_files(files, target_dir, build_variables(cfg), force=force, filenames=filenames)
+    result = _update_files(
+        files,
+        target_dir,
+        build_variables(cfg),
+        force=force,
+        filenames=filenames,
+        workflow_names=[cmd.name for cmd in commands],
+    )
     result.skipped += skipped
     return result
 
@@ -366,6 +397,8 @@ def _diff_files(
     source_files: list[tuple[str, Path]],
     target_dir: Path,
     variables: dict[str, str],
+    *,
+    workflow_names: list[str] | None = None,
 ) -> DiffResult:
     """Compare source files against installed manifest to find changes."""
     manifest = read_manifest(target_dir)
@@ -392,6 +425,7 @@ def _diff_files(
             log.warning("commands.diff.unreadable_canonical_file", filename=filename)
             continue
 
+        content = _render_workflow_references(content, workflow_names)
         rendered = render_command(content, variables)
         new_hash = file_hash(rendered)
 
@@ -414,6 +448,8 @@ def _reverse_diff_files(
     source_files: list[tuple[str, Path]],
     target_dir: Path,
     variables: dict[str, str],
+    *,
+    workflow_names: list[str] | None = None,
 ) -> ReverseDiffResult:
     """Compare installed files against canonical source to find local modifications.
 
@@ -461,6 +497,7 @@ def _reverse_diff_files(
                 log.warning("commands.reverse_diff.unreadable_canonical_file", filename=filename)
                 canonical_removed = True
             else:
+                raw_canonical = _render_workflow_references(raw_canonical, workflow_names)
                 canonical_content = render_command(raw_canonical, variables)
                 canonical_hash = file_hash(canonical_content)
                 upstream_also_changed = canonical_hash != entry.hash
@@ -507,7 +544,7 @@ def diff_commands(
     commands = discover(canonical_dir)
     supports = _runtime_filter(adapter)
     files = [(cmd.path.name, cmd.path) for cmd in commands if supports(cmd)]
-    return _diff_files(files, target_dir, build_variables(cfg))
+    return _diff_files(files, target_dir, build_variables(cfg), workflow_names=[cmd.name for cmd in commands])
 
 
 def reverse_diff_commands(
@@ -524,7 +561,7 @@ def reverse_diff_commands(
     commands = discover(canonical_dir)
     supports = _runtime_filter(adapter)
     files = [(cmd.path.name, cmd.path) for cmd in commands if supports(cmd)]
-    return _reverse_diff_files(files, target_dir, build_variables(cfg))
+    return _reverse_diff_files(files, target_dir, build_variables(cfg), workflow_names=[cmd.name for cmd in commands])
 
 
 def diff_guidelines(

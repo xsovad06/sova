@@ -201,7 +201,7 @@ Items that require user input before development can start: business rules, scop
 
 Show the full spec to the user. Ask:
 
-> Spec written to `.claude/specs/{filename}`. Review the plan above -- anything to change, add, or remove? Say "approved" to mark it ready for `/develop`.
+> Spec written to `.claude/specs/{filename}`. Review the plan above: anything to change, add, or remove? Say "approved" to mark it ready for the `/develop` workflow.
 
 ### Step 6: Iterate
 
@@ -214,7 +214,7 @@ If the user gives feedback:
 
 When the user approves, update the spec:
 - Change `**Status**: draft` to `**Status**: approved`
-- Confirm: "Spec approved. Run `/develop {issue-number}` to start implementation."
+- Confirm: "Spec approved. Run the `/develop` workflow with the issue number to start implementation."
 
 ### Step 8: Write Back to Tracker (optional)
 
@@ -250,8 +250,8 @@ If the user declines, skip this step -- the spec file in `.claude/specs/` is the
 
 ## Cross-References
 
-- **Before spec**: Run `/find-task` to pick the next issue
-- **After spec**: Run `/develop {issue-number}` or `/develop-full {issue-number}` to implement
+- **Before spec**: Run the `/find-task` workflow to pick the next issue
+- **After spec**: Run the `/develop` workflow or the `/develop-full` workflow with the issue number to implement
 
 ## Rules
 

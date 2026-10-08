@@ -153,8 +153,8 @@ Ready for development.
 ## Cross-References
 
 - **Before research**: Issue should be triaged (has labels, is in TRIAGED state)
-- **After research**: Run the `sova-develop` skill {issue-number} or the `sova-develop-full` skill {issue-number} to implement
-- **Interactive alternative**: Use the `sova-spec` skill {issue-number} for human-in-the-loop planning
+- **After research**: Run the `sova-develop` skill or the `sova-develop-full` skill with the issue number to implement
+- **Interactive alternative**: Use the `sova-spec` skill with the issue number for human-in-the-loop planning
 
 ## Rules
 

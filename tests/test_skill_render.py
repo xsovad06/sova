@@ -56,6 +56,51 @@ class TestRenderCodexSkill:
         assert "$ARGUMENTS" not in rendered
         assert "the arguments provided when this skill is invoked" in rendered
 
+    def test_neutral_arguments_placeholder_is_substituted(self, tmp_path: Path) -> None:
+        """{{ arguments }}, the provider-neutral counterpart to $ARGUMENTS, renders to the same prose."""
+        _write_command(tmp_path, "foo.md", name="foo", body="Use {{ arguments }} to find the target.")
+        entry = CommandEntry(
+            name="foo", description="d", category="core", user_invocable=True, path=tmp_path / "foo.md"
+        )
+
+        rendered = render_codex_skill(entry, skill_names=[])
+
+        assert "{{ arguments }}" not in rendered
+        assert "the arguments provided when this skill is invoked" in rendered
+
+    def test_in_fence_neutral_arguments_placeholder_renders_as_shell_metavariable(self, tmp_path: Path) -> None:
+        body = "Run the checks:\n\n```bash\ngh issue view {{ arguments }} --json number\n```\n"
+        _write_command(tmp_path, "foo.md", name="foo", body=body)
+        entry = CommandEntry(
+            name="foo", description="d", category="core", user_invocable=True, path=tmp_path / "foo.md"
+        )
+
+        rendered = render_codex_skill(entry, skill_names=[])
+
+        assert "gh issue view <arguments> --json number" in rendered
+
+    def test_workflow_reference_syntax_is_rewritten_to_the_skill_name(self, tmp_path: Path) -> None:
+        """The provider-neutral `name` workflow syntax (no slash) becomes `sova-name` skill."""
+        _write_command(tmp_path, "foo.md", name="foo", body="Run the `bar` workflow to continue.")
+        entry = CommandEntry(
+            name="foo", description="d", category="core", user_invocable=True, path=tmp_path / "foo.md"
+        )
+
+        rendered = render_codex_skill(entry, skill_names=["bar"])
+
+        assert "`bar` workflow" not in rendered
+        assert f"Run the `{SKILL_NAME_PREFIX}bar` skill to continue." in rendered
+
+    def test_unknown_workflow_reference_raises(self, tmp_path: Path) -> None:
+        """A `name` workflow reference to a command not in skill_names must fail loudly, not ship."""
+        _write_command(tmp_path, "foo.md", name="foo", body="Run the `bar` workflow to continue.")
+        entry = CommandEntry(
+            name="foo", description="d", category="core", user_invocable=True, path=tmp_path / "foo.md"
+        )
+
+        with pytest.raises(SkillRenderError, match="workflow reference"):
+            render_codex_skill(entry, skill_names=[])
+
     def test_cross_reference_is_rewritten_to_the_other_skill_name(self, tmp_path: Path) -> None:
         _write_command(tmp_path, "foo.md", name="foo", body="Run /bar to continue.")
         entry = CommandEntry(

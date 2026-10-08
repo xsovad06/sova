@@ -199,7 +199,7 @@ These phases run after the PR is created/updated. They enable autonomous operati
 - **Before this**: Run `/review` to catch issues before pushing
 - **Full workflow**: `/develop` -> `/review` -> `/pr`
 - **After merge**: merge the PR, delete the branch, and capture anything learned
-- **Need to reorganize commits first?** Run `/rearrange-commits`
+- **Need to reorganize commits first?** Reorganize the branch's commits into clean, logical units
 
 ## Rules
 
