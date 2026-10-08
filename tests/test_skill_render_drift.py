@@ -180,3 +180,40 @@ class TestRenderedTreeShape:
             else:
                 names[declared] = skill_md.parent.name
         assert not duplicates, duplicates
+
+
+# .claude/skills/ has no render step of its own (make skills-render only regenerates
+# .agents/skills/, per the Makefile), so a distributable skill with no SOVA-specific
+# override must stay byte-identical to skills/ by hand. issue-template and
+# testing-patterns are deliberate SOVA-specific variants (see
+# tests/test_issue_template_skill.py and .claude/rules/workflow.md) and are excluded
+# here on purpose, not because they're hand-authored like dashboard-design/
+# database-patterns/visual-audit above.
+_CLAUDE_SKILLS_DIR = _ROOT / ".claude" / "skills"
+_IDENTICAL_CLAUDE_SKILLS = frozenset({"design-taste"})
+
+
+class TestClaudeSkillsNoDrift:
+    """.claude/skills/ entries with no SOVA-specific override must mirror skills/ exactly.
+
+    Unlike .agents/skills/, there is no manifest and no render step here, so this is the
+    only thing standing between skills/<name>/SKILL.md and silent drift in the Claude Code
+    copy (issue #1136 finding; CodeRabbit never reviews .claude/** either, so nothing else
+    would catch it).
+    """
+
+    @pytest.mark.parametrize("name", sorted(_IDENTICAL_CLAUDE_SKILLS))
+    def test_identical_copy_matches_canonical(self, name: str) -> None:
+        canonical = (_STANDALONE_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+        claude_copy = (_CLAUDE_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+        assert claude_copy == canonical, (
+            f".claude/skills/{name}/SKILL.md has drifted from skills/{name}/SKILL.md. Copy the canonical "
+            "file over it: these two must stay byte-identical (see .claude/rules/workflow.md)."
+        )
+
+    def test_no_leftover_sibling_files(self) -> None:
+        """A prior three-file layout (README.md, design-standards.md) must not linger once
+        its content is folded into a single SKILL.md (issue #1136)."""
+        for name in sorted(_IDENTICAL_CLAUDE_SKILLS):
+            extras = sorted(p.name for p in (_CLAUDE_SKILLS_DIR / name).iterdir() if p.name != "SKILL.md")
+            assert not extras, f".claude/skills/{name}/ has leftover file(s) {extras} from a prior layout"

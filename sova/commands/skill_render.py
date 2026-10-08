@@ -456,8 +456,9 @@ def render_codex_skills(
     """Render every Codex-eligible canonical command into {name: SKILL.md content}.
 
     Keyed by the bare command name (``develop``, not ``sova-develop``): the
-    ``sova-`` prefix is applied once, at installation time, by
-    ``name_prefix`` on ``install_skills()``/``update_skills()``, not here.
+    ``sova-`` prefix is applied once, when the result is merged into a
+    scratch directory, by ``name_prefix`` on
+    ``materialize_combined_skill_sources()``, not here.
 
     ``supports``, when given, restricts output to the commands it accepts;
     pass an adapter's own ``supports_command`` (e.g.

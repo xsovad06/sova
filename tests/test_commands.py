@@ -1396,6 +1396,19 @@ class TestSkillsDistribution:
         assert result.updated == 1
         assert result.skipped == 1
 
+    @staticmethod
+    def _install_prefixed_alpha(skills_dir: Path, skills_target: Path, cfg: object) -> None:
+        """Write a `sova-alpha/SKILL.md` directly, simulating a prior install from before
+        issue #1136 removed `name_prefix` support from `install_skills()`: prefixing is now
+        solely `materialize_combined_skill_sources()`'s job, so these tests build the
+        pre-existing on-disk state by hand instead."""
+        from sova.commands.distribution import _install_files
+        from sova.commands.templates import build_variables
+
+        target_rel = "sova-alpha/SKILL.md"
+        source_path = skills_dir / "alpha" / "SKILL.md"
+        _install_files([(target_rel, source_path)], skills_target, build_variables(cfg))
+
     def test_update_skills_prune_stale_removes_unmodified_retired_entry(
         self, skills_dir: Path, skills_target: Path
     ) -> None:
@@ -1403,12 +1416,12 @@ class TestSkillsDistribution:
         is deleted and its manifest entry dropped: this is the issue #1136 migration case
         where a standalone skill lost its `sova-` prefix and the old `sova-<name>/SKILL.md`
         would otherwise sit on disk forever alongside the new bare-named one."""
-        from sova.commands.distribution import install_skills, update_skills
+        from sova.commands.distribution import update_skills
         from sova.commands.manifest import read_manifest
         from sova.config.models import ProjectConfig
 
         cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
-        install_skills(skills_dir, skills_target, cfg, name_prefix="sova-")
+        self._install_prefixed_alpha(skills_dir, skills_target, cfg)
         assert (skills_target / "sova-alpha" / "SKILL.md").is_file()
 
         # Simulate the renamed source tree: "alpha" now installs bare, with no
@@ -1432,12 +1445,12 @@ class TestSkillsDistribution:
     ) -> None:
         """A managed but locally-modified retired entry is reported as a conflict, not deleted:
         project-owned edits to a since-renamed skill must survive a migration."""
-        from sova.commands.distribution import install_skills, update_skills
+        from sova.commands.distribution import update_skills
         from sova.commands.manifest import read_manifest
         from sova.config.models import ProjectConfig
 
         cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
-        install_skills(skills_dir, skills_target, cfg, name_prefix="sova-")
+        self._install_prefixed_alpha(skills_dir, skills_target, cfg)
         (skills_target / "sova-alpha" / "SKILL.md").write_text("# Locally edited\n")
 
         bare_source = skills_dir.parent / "skills-bare"
@@ -1457,11 +1470,11 @@ class TestSkillsDistribution:
         self, skills_dir: Path, skills_target: Path
     ) -> None:
         """Default behavior (prune_stale=False) is unchanged: a retired entry is left alone."""
-        from sova.commands.distribution import install_skills, update_skills
+        from sova.commands.distribution import update_skills
         from sova.config.models import ProjectConfig
 
         cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
-        install_skills(skills_dir, skills_target, cfg, name_prefix="sova-")
+        self._install_prefixed_alpha(skills_dir, skills_target, cfg)
 
         bare_source = skills_dir.parent / "skills-bare"
         bare_source.mkdir()
@@ -1495,27 +1508,6 @@ class TestSkillsDistribution:
         keys = [k for k, _ in files]
         assert not any("stray-file" in k for k in keys)
         assert "alpha/SKILL.md" in keys
-
-    def test_collect_skills_with_name_prefix(self, skills_dir: Path) -> None:
-        """A name_prefix is applied to the installed name, not the source directory name."""
-        from sova.commands.distribution import _collect_skills
-
-        files = _collect_skills(skills_dir, name_prefix="sova-")
-        keys = [k for k, _ in files]
-        assert "sova-alpha/SKILL.md" in keys
-        assert "sova-beta/SKILL.md" in keys
-        assert "alpha/SKILL.md" not in keys
-
-    def test_install_skills_with_name_prefix(self, skills_dir: Path, skills_target: Path) -> None:
-        from sova.commands.distribution import install_skills
-        from sova.config.models import ProjectConfig
-
-        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
-        result = install_skills(skills_dir, skills_target, cfg, name_prefix="sova-")
-
-        assert result.installed == 2
-        assert (skills_target / "sova-alpha" / "SKILL.md").exists()
-        assert not (skills_target / "alpha").exists()
 
     def test_update_skills_empty_dir(self, tmp_path: Path, skills_target: Path) -> None:
         """update_skills() handles missing skills directory gracefully."""

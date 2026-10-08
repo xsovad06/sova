@@ -684,15 +684,15 @@ def update_guidelines(
     return _update_files(files, target_dir, build_variables(cfg), force=force, filenames=filenames)
 
 
-def _collect_skills(skills_dir: Path, *, name_prefix: str = "") -> list[tuple[str, Path]]:
+def _collect_skills(skills_dir: Path) -> list[tuple[str, Path]]:
     """Collect SKILL.md files from subdirectories of a skills directory.
 
-    ``name_prefix`` is applied to the installed directory name, not the
-    source directory name, so a runtime that needs a collision-safe target
-    (e.g. Codex's ``.agents/skills/``, which pre-existing hand-authored
-    content under plain names already occupies) can install the same
-    canonical source tree under ``sova-<name>`` without a second,
-    prefixed copy of that source tree.
+    No prefixing: a runtime that needs a collision-safe target (e.g.
+    Codex's ``.agents/skills/``, which pre-existing hand-authored content
+    under plain names already occupies) handles that upstream of this
+    function, in ``materialize_combined_skill_sources()``, which bakes the
+    prefix directly into the scratch directory it hands this one (issue
+    #1136).
     """
     if not skills_dir.is_dir():
         return []
@@ -702,20 +702,13 @@ def _collect_skills(skills_dir: Path, *, name_prefix: str = "") -> list[tuple[st
             continue
         skill_file = skill_dir / "SKILL.md"
         if skill_file.is_file():
-            rel_key = f"{name_prefix}{skill_dir.name}/SKILL.md"
-            result.append((rel_key, skill_file))
+            result.append((f"{skill_dir.name}/SKILL.md", skill_file))
     return result
 
 
-def install_skills(
-    skills_dir: Path,
-    target_dir: Path,
-    cfg: ProjectConfig,
-    *,
-    name_prefix: str = "",
-) -> InstallResult:
+def install_skills(skills_dir: Path, target_dir: Path, cfg: ProjectConfig) -> InstallResult:
     """Install skill templates into a target project's skills directory."""
-    files = _collect_skills(skills_dir, name_prefix=name_prefix)
+    files = _collect_skills(skills_dir)
     if not files:
         return InstallResult()
     result = _install_files(files, target_dir, build_variables(cfg))
@@ -729,7 +722,6 @@ def update_skills(
     cfg: ProjectConfig,
     *,
     force: bool = False,
-    name_prefix: str = "",
     prune_stale: bool = False,
 ) -> UpdateResult:
     """Update installed skills incrementally.
@@ -740,30 +732,20 @@ def update_skills(
     the filtered-out names as "retired" and delete them, so it defaults to
     off and only ``sova.agents.sync.sync_runtime_skills()`` opts in today.
     """
-    files = _collect_skills(skills_dir, name_prefix=name_prefix)
+    files = _collect_skills(skills_dir)
     if not files:
         return UpdateResult()
     return _update_files(files, target_dir, build_variables(cfg), force=force, prune_stale=prune_stale)
 
 
 def diff_skills(skills_dir: Path, target_dir: Path, cfg: ProjectConfig) -> DiffResult:
-    """Show what changed between canonical skills and installed ones.
-
-    No ``name_prefix`` parameter: unlike ``install_skills()``/``update_skills()``,
-    nothing calls this against a prefixed runtime mirror (e.g. Codex's
-    ``.agents/skills/``) today, so there is no caller to thread it through to.
-    Add one back only alongside an actual caller resolving that mirror's
-    ``skills_dir()`` and ``skill_name_prefix``.
-    """
+    """Show what changed between canonical skills and installed ones."""
     files = _collect_skills(skills_dir)
     return _diff_files(files, target_dir, build_variables(cfg))
 
 
 def reverse_diff_skills(skills_dir: Path, target_dir: Path, cfg: ProjectConfig) -> ReverseDiffResult:
-    """Show local modifications to installed skills that could be back-ported.
-
-    See ``diff_skills()`` for why this has no ``name_prefix`` parameter.
-    """
+    """Show local modifications to installed skills that could be back-ported."""
     files = _collect_skills(skills_dir)
     return _reverse_diff_files(files, target_dir, build_variables(cfg))
 
