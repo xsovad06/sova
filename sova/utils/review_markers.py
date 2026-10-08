@@ -11,12 +11,12 @@ Two markers exist:
   verdict and the reviewed commit from it.
 * ``<!-- sova-addressed: sha={sha} -->`` opens the summary an address cycle
   posts once it has pushed its fixes. It is posted as a COMMENT-state PR
-  review, not an issue comment, so it arrives through the same
-  ``get_pr_reviews()`` fetch (with a server timestamp) that the verdict scan
-  already uses: a review body newer than the verdict carrying this marker
-  means the verdict has been addressed. Both the autonomous address-review
-  pipeline (``ResolveExternalReviewsStep``) and the ``/address-pr`` command
-  emit it, so the two address paths are tracked the same way.
+  review, not an issue comment, so it arrives in the same review history
+  (with a server timestamp) that the verdict scan already reads: a review body
+  newer than the verdict carrying this marker means the verdict has been
+  addressed. Both the autonomous address-review pipeline
+  (``ResolveExternalReviewsStep``) and the ``/address-pr`` command emit it, so
+  the two address paths are tracked the same way.
 """
 
 from __future__ import annotations
@@ -28,10 +28,29 @@ SOVA_ADDRESSED_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+SOVA_VERDICT_MARKER_RE = re.compile(
+    r"<!--\s*sova-review:\s*(approve|revise|block)(?:\s+sha=([0-9a-f]{7,40}))?\s*-->",
+    re.IGNORECASE,
+)
+
 # A git object id: 7 to 40 hex digits. Shared with sova.roles._review_format so
 # both markers accept exactly the same anchor.
 SHA_RE = re.compile(r"[0-9a-f]{7,40}", re.IGNORECASE)
 _FINDING_TEXT_MAX = 140
+
+
+def parse_verdict_marker(body: str) -> tuple[str, str | None] | None:
+    """Read (verdict, reviewed sha) from a ``sova-review`` marker, or None if absent.
+
+    The marker is the sole source of a SOVA verdict: a review body without one
+    (a human review, or a pre-marker SOVA review) is not recognizable and must
+    be skipped by the caller rather than guessed at.
+    """
+    m = SOVA_VERDICT_MARKER_RE.search(body)
+    if not m:
+        return None
+    sha = m.group(2)
+    return m.group(1).lower(), (sha.lower() if sha else None)
 
 
 def addressed_marker(sha: str | None = None) -> str:

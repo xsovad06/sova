@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sova.db.models import StepExecution, TaskRun
+from sova.db.models import TaskRun
 from sova.db.session import close_db, get_session, init_db
 
 # agent_handoff.py resolves `get_session` via a function-local `from sova.db.session
@@ -169,7 +169,7 @@ class TestAutoHandoffIssueMismatch:
 
     async def test_persists_handoff_details_to_completing_run(self) -> None:
         """_process_auto_handoff must persist reviewer handoff details to TaskRun.handoff_json
-        before clearing the file, so get_sova_review_verdict() finds the real verdict later."""
+        before clearing the file, so every other consumer of it finds the real verdict later."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_handoff import _process_auto_handoff
@@ -303,20 +303,7 @@ class TestAutoHandoffCircuitBreaker:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_handoff import _process_auto_handoff
-        from sova.db.session import get_session as real_get_session
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
-
-        # Seed 2 completed address-review runs for issue 115, PR 130
-        # Each needs an "address_review" StepExecution to be counted
-        async with await get_session() as session:
-            async with session.begin():
-                r1 = TaskRun(issue_number="115", role="developer", status="done", pr_number=130)
-                r2 = TaskRun(issue_number="115", role="developer", status="done", pr_number=130)
-                session.add_all([r1, r2])
-            await session.flush()
-            async with session.begin():
-                session.add(StepExecution(task_run_id=r1.id, step_name="address_review", status="done"))
-                session.add(StepExecution(task_run_id=r2.id, step_name="address_review", status="done"))
 
         agent = type(
             "AgentState",
@@ -341,11 +328,6 @@ class TestAutoHandoffCircuitBreaker:
             ],
         )
 
-        original = real_get_session
-
-        async def _ignore_project_dir(**_kw):
-            return await original()
-
         mock_start = AsyncMock()
         mock_clear = MagicMock()
         mock_write = MagicMock()
@@ -359,7 +341,11 @@ class TestAutoHandoffCircuitBreaker:
             patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
             patch("sova.ipc.handoff.write_handoff_file", mock_write),
             patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch(
+                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                new_callable=AsyncMock,
+                return_value={"has_sova_review": True, "verdict": "revise", "address_cycles": 2},
+            ),
             patch("sova.dashboard.services.agent_handoff.emit_safe", mock_emit),
             patch("sova.dashboard.services.agent_handoff._notify_budget_exhausted", mock_notify),
         ):
@@ -382,17 +368,7 @@ class TestAutoHandoffCircuitBreaker:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_handoff import _process_auto_handoff
-        from sova.db.session import get_session as real_get_session
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
-
-        # Seed only 1 completed address-review run (limit is 2)
-        async with await get_session() as session:
-            async with session.begin():
-                r1 = TaskRun(issue_number="116", role="developer", status="done", pr_number=131)
-                session.add(r1)
-            await session.flush()
-            async with session.begin():
-                session.add(StepExecution(task_run_id=r1.id, step_name="address_review", status="done"))
 
         agent = type(
             "AgentState",
@@ -417,11 +393,6 @@ class TestAutoHandoffCircuitBreaker:
             ],
         )
 
-        original = real_get_session
-
-        async def _ignore_project_dir(**_kw):
-            return await original()
-
         mock_start = AsyncMock(return_value={"run_id": 12})
         mock_clear = MagicMock()
         mock_cfg = MagicMock()
@@ -431,11 +402,37 @@ class TestAutoHandoffCircuitBreaker:
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
             patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
             patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch(
+                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                new_callable=AsyncMock,
+                return_value={"has_sova_review": True, "verdict": "revise", "address_cycles": 1},
+            ),
         ):
             await _process_auto_handoff(agent)
 
         mock_start.assert_awaited_once()
+
+    async def test_blocks_when_cycle_count_is_unverifiable(self) -> None:
+        """An unreadable review history means an unknown count, never zero cycles."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_handoff import _check_address_review_circuit_breaker
+        from sova.dashboard.services.work_verdict import _NO_REVIEW, UNRESOLVED_KEY
+
+        mock_cfg = MagicMock()
+        mock_cfg.pipeline.max_address_review_cycles = 3
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                new_callable=AsyncMock,
+                return_value={**_NO_REVIEW, UNRESOLVED_KEY: True},
+            ),
+        ):
+            reason = await _check_address_review_circuit_breaker("118", 132, "developer", Path("/tmp/test"))
+
+        assert reason is not None
+        assert "unverifiable" in reason
 
     async def test_skips_when_pr_number_is_none(self) -> None:
         """Circuit breaker should not fire when pr_number is None."""
@@ -524,21 +521,7 @@ class TestAutoHandoffCircuitBreaker:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_handoff import _process_auto_handoff
-        from sova.db.session import get_session as real_get_session
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
-
-        # Seed many completed address-review runs
-        async with await get_session() as session:
-            runs = []
-            async with session.begin():
-                for _ in range(10):
-                    r = TaskRun(issue_number="119", role="developer", status="done", pr_number=133)
-                    session.add(r)
-                    runs.append(r)
-            await session.flush()
-            async with session.begin():
-                for r in runs:
-                    session.add(StepExecution(task_run_id=r.id, step_name="address_review", status="done"))
 
         agent = type(
             "AgentState",
@@ -563,11 +546,6 @@ class TestAutoHandoffCircuitBreaker:
             ],
         )
 
-        original = real_get_session
-
-        async def _ignore_project_dir(**_kw):
-            return await original()
-
         mock_start = AsyncMock(return_value={"run_id": 18})
         mock_clear = MagicMock()
         mock_cfg = MagicMock()
@@ -577,144 +555,9 @@ class TestAutoHandoffCircuitBreaker:
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
             patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
             patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
         ):
             await _process_auto_handoff(agent)
 
-        mock_start.assert_awaited_once()
-
-    async def test_initial_dev_run_not_counted(self) -> None:
-        """Initial developer run (with pr_number but no address_review step) should not count."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_handoff import _process_auto_handoff
-        from sova.db.session import get_session as real_get_session
-        from sova.ipc.handoff import DashboardHandoff, HandoffAction
-
-        # Seed: 1 initial dev run (no address_review step) + 1 address-review run
-        async with await get_session() as session:
-            async with session.begin():
-                initial = TaskRun(issue_number="120", role="developer", status="done", pr_number=134)
-                ar1 = TaskRun(issue_number="120", role="developer", status="done", pr_number=134)
-                session.add_all([initial, ar1])
-            await session.flush()
-            async with session.begin():
-                # Only the address-review run has the step record
-                session.add(StepExecution(task_run_id=ar1.id, step_name="address_review", status="done"))
-
-        agent = type(
-            "AgentState",
-            (),
-            {"run_id": 19, "issue": "120", "project_dir": Path("/tmp/test")},
-        )()
-
-        handoff = DashboardHandoff(
-            source="reviewer",
-            status="awaiting_action",
-            issue="120",
-            pr_number=134,
-            summary="Findings to address",
-            next_actions=[
-                HandoffAction(
-                    id="address",
-                    label="Address Review",
-                    auto_execute=True,
-                    mode="agent",
-                    args={"issue": "120", "role": "developer", "pr": 134},
-                ),
-            ],
-        )
-
-        original = real_get_session
-
-        async def _ignore_project_dir(**_kw):
-            return await original()
-
-        mock_start = AsyncMock(return_value={"run_id": 20})
-        mock_clear = MagicMock()
-        mock_cfg = MagicMock()
-        mock_cfg.pipeline.max_address_review_cycles = 2
-        with (
-            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
-            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
-        ):
-            await _process_auto_handoff(agent)
-
-        # Should proceed: only 1 address-review run counted (not 2)
-        mock_start.assert_awaited_once()
-
-    async def test_circuit_breaker_isolates_by_issue(self) -> None:
-        """Runs for issue 115 should not block address-review for issue 121.
-
-        Seeded runs share PR 141 with the issue-121 handoff (not a distinct PR
-        number) so this test actually exercises issue-based isolation: a filter
-        that only matched on pr_number would incorrectly count these runs too.
-        """
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sqlalchemy import select
-
-        from sova.dashboard.services.agent_handoff import _process_auto_handoff
-        from sova.db.session import get_session as real_get_session
-        from sova.ipc.handoff import DashboardHandoff, HandoffAction
-
-        # Seed 3 completed address-review runs for issue 115 (over limit)
-        async with await get_session() as session:
-            async with session.begin():
-                for _ in range(3):
-                    r = TaskRun(issue_number="115", role="developer", status="done", pr_number=141)
-                    session.add(r)
-            await session.flush()
-            async with session.begin():
-                for r in (await session.execute(select(TaskRun).where(TaskRun.pr_number == 141))).scalars():
-                    session.add(StepExecution(task_run_id=r.id, step_name="address_review", status="done"))
-
-        # Handoff is for issue 121 (no prior runs)
-        agent = type(
-            "AgentState",
-            (),
-            {"run_id": 21, "issue": "121", "project_dir": Path("/tmp/test")},
-        )()
-
-        handoff = DashboardHandoff(
-            source="reviewer",
-            status="awaiting_action",
-            issue="121",
-            pr_number=141,
-            summary="Findings to address",
-            next_actions=[
-                HandoffAction(
-                    id="address",
-                    label="Address Review",
-                    auto_execute=True,
-                    mode="agent",
-                    args={"issue": "121", "role": "developer", "pr": 141},
-                ),
-            ],
-        )
-
-        original = real_get_session
-
-        async def _ignore_project_dir(**_kw):
-            return await original()
-
-        mock_start = AsyncMock(return_value={"run_id": 22})
-        mock_clear = MagicMock()
-        mock_cfg = MagicMock()
-        mock_cfg.pipeline.max_address_review_cycles = 2
-        with (
-            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
-            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
-        ):
-            await _process_auto_handoff(agent)
-
-        # Issue 121 should NOT be blocked by issue 115's runs
         mock_start.assert_awaited_once()
 
 
@@ -944,7 +787,7 @@ class TestAutoHandoff:
         with (
             patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
             patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={"has_sova_review": True, "verdict": "approve"},
             ),
@@ -958,7 +801,7 @@ class TestAutoHandoff:
 
     async def test_auto_handoff_spawns_rereview_when_verdict_is_addressed(self) -> None:
         """The address-review pipeline now ends by handing off to the Reviewer. At that
-        point get_sova_review_verdict() reports "addressed" (a review exists, but an
+        point resolve_sova_verdict() reports "addressed" (a review exists, but an
         address cycle completed after it), which the stale-review guard must read as
         "re-review the new head", not as a duplicate review to suppress."""
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -990,7 +833,7 @@ class TestAutoHandoff:
         with (
             patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
             patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
                 return_value={"has_sova_review": True, "verdict": "addressed"},
             ),

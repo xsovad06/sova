@@ -4735,8 +4735,8 @@ class TestExecuteDecisionReviewLoop:
     @patch("sova.dashboard.services.agent_lifecycle.start_command", new_callable=AsyncMock)
     async def test_spawn_address_pr_runs_the_command(self, mock_command: AsyncMock, _slug: MagicMock) -> None:
         """The command name (not the role string) is passed, so start_command() records
-        the run as role "command:address-pr", which is exactly what
-        count_address_review_runs() matches on for the circuit breaker."""
+        the run as role "command:address-pr", matching the address-pr pipeline's own
+        address-review-budget accounting."""
         mock_command.return_value = {"run_id": 8}
         engine = _make_engine()
         decision = ProgressionDecision(

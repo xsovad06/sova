@@ -68,28 +68,7 @@ from sova.dashboard.services.work_state import (
     resolve_next_action as resolve_next_action,
 )
 from sova.dashboard.services.work_verdict import (  # re-export facade
-    _SOVA_MARKER_RE as _SOVA_MARKER_RE,
-)
-from sova.dashboard.services.work_verdict import (
-    _SOVA_VERDICT_LABEL_MAP as _SOVA_VERDICT_LABEL_MAP,
-)
-from sova.dashboard.services.work_verdict import (
-    _SOVA_VERDICT_LINE_RE as _SOVA_VERDICT_LINE_RE,
-)
-from sova.dashboard.services.work_verdict import (
-    _VERDICT_NORMALIZE as _VERDICT_NORMALIZE,
-)
-from sova.dashboard.services.work_verdict import (
-    _extract_sova_verdict_from_labels as _extract_sova_verdict_from_labels,
-)
-from sova.dashboard.services.work_verdict import (
-    _fetch_github_review_fallback as _fetch_github_review_fallback,
-)
-from sova.dashboard.services.work_verdict import (
     _fetch_sova_verdicts as _fetch_sova_verdicts,
-)
-from sova.dashboard.services.work_verdict import (
-    _parse_sova_review_from_github as _parse_sova_review_from_github,
 )
 from sova.dashboard.services.work_verdict import (
     _sova_verdict_cache as _sova_verdict_cache,
@@ -439,17 +418,8 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     handoffs_by_issue = _index_handoffs(handoffs)
     prs_by_issue = _index_prs_by_issue(prs)
 
-    labels_by_issue: dict[str, list[str]] = {}
-    for task in queue:
-        issue_num = str(task["issue"])
-        task_labels = task.get("labels", [])
-        if task_labels:
-            labels_by_issue[issue_num] = task_labels
-
     unlinked_prs = [pr for pr in prs if not pr.get("linked_issue")]
-    verdicts_by_issue = await _fetch_sova_verdicts(
-        prs_by_issue, unlinked_prs=unlinked_prs, project_dir=project_dir, labels_by_issue=labels_by_issue
-    )
+    verdicts_by_issue = await _fetch_sova_verdicts(prs_by_issue, unlinked_prs=unlinked_prs, project_dir=project_dir)
 
     linked_issue_numbers: set[str] = set()
 

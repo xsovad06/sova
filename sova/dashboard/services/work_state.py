@@ -238,6 +238,11 @@ class PRFacts:
     external_reviews_enabled: bool
     address_cycles: int  # completed address-review runs for this PR (0 when no PR exists yet)
     max_address_cycles: int  # pipeline.max_address_review_cycles; 0 means unlimited
+    # True when resolve_sova_verdict() could not fetch the review history at all (GitHub
+    # unreachable), distinct from "no review yet": address_cycles is meaningless (defaults
+    # to 0) in this case, so review_budget_exhausted must fail closed on this flag the same
+    # way agent_handoff.py's circuit breaker already does, rather than reading "0 cycles".
+    review_history_unresolved: bool = False
 
 
 @dataclass(frozen=True)
@@ -394,7 +399,9 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     # verdict- and thread-based rule below, including a standing revise/block
     # verdict, so the loop actually stops rather than spawning one more cycle.
     chain.append("review_budget_exhausted")
-    if facts.max_address_cycles > 0 and facts.address_cycles >= facts.max_address_cycles:
+    if facts.max_address_cycles > 0 and (
+        facts.review_history_unresolved or facts.address_cycles >= facts.max_address_cycles
+    ):
         return resolved(WorkItemState.PR_REVIEW_EXHAUSTED, "integrate")
 
     # A stale verdict falls through to "no current review" (rule 10).
@@ -492,6 +499,8 @@ def _fact_ci_running(facts: PRFacts) -> str:
 def _fact_review_budget_exhausted(facts: PRFacts) -> str:
     if facts.max_address_cycles <= 0:
         return "address-review budget is unlimited"
+    if facts.review_history_unresolved:
+        return "address-review history is unresolved (GitHub unreachable); failing closed"
     if facts.address_cycles >= facts.max_address_cycles:
         return f"address-review budget exhausted ({facts.address_cycles}/{facts.max_address_cycles} cycles)"
     return f"address-review budget not exhausted ({facts.address_cycles}/{facts.max_address_cycles} cycles)"
@@ -612,6 +621,8 @@ def _build_pr_facts(
     max_address_cycles: int = 0,
 ) -> PRFacts:
     """Translate raw pr_data/sova_verdict dicts into a PRFacts snapshot."""
+    from sova.dashboard.services.work_verdict import UNRESOLVED_KEY
+
     verdict = sova_verdict or {}
     has_review = verdict.get("has_sova_review", False)
     raw_verdict = verdict.get("verdict") if has_review else None
@@ -637,6 +648,7 @@ def _build_pr_facts(
         # is not obliged to carry one.
         address_cycles=verdict.get("address_cycles", 0),
         max_address_cycles=max_address_cycles,
+        review_history_unresolved=bool(verdict.get(UNRESOLVED_KEY, False)),
     )
 
 

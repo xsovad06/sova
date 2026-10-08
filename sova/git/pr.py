@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from urllib.parse import urlparse
 
@@ -427,6 +427,12 @@ class PRReviewData:
     other bots (fail closed on the unknown one), since GitHub does not
     auto-dismiss bot reviews on push and an unresolvable bot's status relative
     to head cannot be determined.
+
+    ``review_history`` is the last 30 reviews (any state, including DISMISSED
+    and COMMENT), each as ``{"state", "body", "submitted_at"}``, for
+    ``sova.dashboard.services.work_verdict.parse_review_history()`` to scan for
+    SOVA markers. Fetched in the same GraphQL call as the thread/bot-CR fields
+    above so a SOVA verdict costs no extra API round trip.
     """
 
     thread_total: int
@@ -434,6 +440,7 @@ class PRReviewData:
     head_sha: str
     bot_cr_commit_sha: str = ""
     bot_cr_superseded: bool = False
+    review_history: list[dict] = field(default_factory=list)
 
 
 async def _fetch_pr_review_data(
@@ -460,7 +467,10 @@ async def _fetch_pr_review_data(
             f" reviewThreads(first:100) {{ totalCount pageInfo {{ hasNextPage }} nodes {{ isResolved }} }}"
             f" reviews: latestOpinionatedReviews(last:10) {{"
             f" pageInfo {{ hasPreviousPage }}"
-            f" nodes {{ state commit {{ oid }} author {{ login }} submittedAt }} }} }}"
+            f" nodes {{ state commit {{ oid }} author {{ login }} submittedAt }} }}"
+            f" history: reviews(last:30) {{"
+            f" pageInfo {{ hasPreviousPage }}"
+            f" nodes {{ state body submittedAt }} }} }}"
         )
 
     query = f'{{ repository(owner:"{owner}", name:"{name}") {{ {" ".join(aliases)} }} }}'
@@ -541,12 +551,28 @@ async def _fetch_pr_review_data(
         all_known = bool(bot_cr_shas) and all(bool(sha) for sha in bot_cr_shas)
         bot_cr_superseded = not reviews_truncated and all_known and all(sha != head_sha for sha in bot_cr_shas)
 
+        history_conn = pr_data.get("history") or {}
+        if (history_conn.get("pageInfo") or {}).get("hasPreviousPage", False):
+            # A SOVA verdict/address cycle older than the last 30 reviews is
+            # dropped rather than guessed at; see parse_review_history()'s
+            # docstring for the accepted-limitation rationale.
+            log.warning("git.review_data.history_truncated", pr_number=pr_num)
+        review_history = [
+            {
+                "state": n.get("state") or "",
+                "body": n.get("body") or "",
+                "submitted_at": n.get("submittedAt") or "",
+            }
+            for n in history_conn.get("nodes", []) or []
+        ]
+
         out[pr_num] = PRReviewData(
             thread_total=total,
             thread_resolved=resolved,
             head_sha=head_sha,
             bot_cr_commit_sha=bot_cr_sha,
             bot_cr_superseded=bot_cr_superseded,
+            review_history=review_history,
         )
     return out
 

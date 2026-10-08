@@ -8619,7 +8619,10 @@ class TestResolveExternalReviewsStep:
             result = await step.execute(ctx)
 
         assert result.success
-        assert "No external review threads" in result.summary
+        # Nothing to resolve or dismiss, but the cycle still records its
+        # sova-addressed marker: that marker is the only thing the
+        # address-review budget counts.
+        assert result.summary == "address summary posted"
 
     async def test_can_skip_without_pr(self) -> None:
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep

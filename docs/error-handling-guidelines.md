@@ -168,7 +168,7 @@ LLM agents may commit directly, leaving working-tree diffs empty. **Never return
 
 The cap lives in `resolve_next_action()` (`sova/dashboard/services/work_state.py`), the one resolver both the dashboard and the supervisor read, so neither can propose an extra cycle:
 
-1. `count_address_review_runs()` (`sova/supervisor/gates/utils.py`) counts completed address cycles per PR; `resolve_sova_verdict()` carries that count on the verdict as `address_cycles`
+1. `resolve_sova_verdict()` (`sova/dashboard/services/work_verdict.py`) derives `address_cycles` from `parse_review_history()`'s count of `sova-addressed` GitHub review markers and carries it on the verdict
 2. At `pipeline.max_address_review_cycles` (default 3, 0=unlimited) the resolver's `review_budget_exhausted` rule returns `PR_REVIEW_EXHAUSTED` with an Integrate action, ahead of every verdict- and thread-based rule
 3. `_check_address_review_circuit_breaker()` (`sova/dashboard/services/agent_handoff.py`) still runs at agent exit to stop the handoff chain auto-spawning one more cycle before the next poll, and invalidates the PR's verdict cache so the new count is visible immediately
 

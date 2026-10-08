@@ -87,13 +87,25 @@ async def _post_address_summary(ctx: ExecutionContext) -> bool:
     and CI so the marker is anchored to the commit that actually carries the
     fixes; the dashboard reads the marker from the PR's review list to tell
     that the standing SOVA verdict has been addressed, so without this post a
-    pipeline-addressed PR keeps showing "SOVA Changes Requested". Never
-    raises: a failed post is logged, and the local DB record of the completed
-    address cycle still supersedes the verdict on this machine.
+    pipeline-addressed PR keeps showing "SOVA Changes Requested".
+
+    Posted for every execution of this step, including one whose
+    ``addressed_review_findings`` is empty (the "drained the pending
+    documentation queue" outcome of ``AddressReviewStep``). This step only
+    runs in the address-review pipeline, so reaching it at all means a cycle
+    completed, and the marker is now the only record of that: it is what
+    ``parse_review_history()`` counts into ``address_cycles``, which bounds
+    the Reviewer -> Developer chain via ``pipeline.max_address_review_cycles``.
+    Skipping the post for a findings-free cycle would hide the cycle from that
+    budget and let the chain loop past its cap. ``format_address_summary()``
+    renders the empty case with its own sentence instead of an empty table.
+
+    Never raises: a failed post is logged and returns False, which does leave
+    the cycle uncounted (an accepted gap: no local record of it survives).
     """
-    findings = ctx.addressed_review_findings
-    if not findings or ctx.pr_number is None:
+    if ctx.pr_number is None:
         return False
+    findings = ctx.addressed_review_findings
 
     head_sha: str | None = None
     head = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)

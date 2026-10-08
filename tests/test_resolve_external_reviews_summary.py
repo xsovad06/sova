@@ -79,8 +79,21 @@ class TestPostAddressSummary:
         assert "## Address Review: Round 2" in ctx.adapter.post_pr_review.call_args.kwargs["body"]
 
     @pytest.mark.asyncio
-    async def test_nothing_posted_without_findings(self, tmp_path: Path) -> None:
+    async def test_findings_free_cycle_still_posts_its_marker(self, tmp_path: Path) -> None:
+        """A cycle with no findings is still a cycle the address budget must see."""
         ctx = _ctx([], tmp_path)
+        with patch("sova.core.steps.resolve_external_reviews.run", new=_git_head_ok()):
+            posted = await _post_address_summary(ctx)
+
+        assert posted is True
+        body = ctx.adapter.post_pr_review.call_args.kwargs["body"]
+        assert body.startswith(f"<!-- sova-addressed: sha={_HEAD} -->")
+        assert "No review findings were pending" in body
+
+    @pytest.mark.asyncio
+    async def test_nothing_posted_without_a_pr(self, tmp_path: Path) -> None:
+        ctx = _ctx([], tmp_path)
+        ctx.pr_number = None
         with patch("sova.core.steps.resolve_external_reviews.run", new=_git_head_ok()):
             posted = await _post_address_summary(ctx)
 

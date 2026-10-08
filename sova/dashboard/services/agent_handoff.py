@@ -8,7 +8,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.dashboard.services.agent_validation import check_memory_pressure
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
-from sova.supervisor.gates.utils import count_address_review_runs
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -30,27 +29,41 @@ async def _check_address_review_circuit_breaker(
     review_budget_exhausted rule already resolves an over-budget PR to
     PR_REVIEW_EXHAUSTED with an Integrate action the dashboard renders
     directly, so the caller only has to stop auto-spawning the next cycle.
-    The verdict cache is invalidated unconditionally once the cycle count is
-    computed, not only when the budget turns out to be exhausted, so a verdict
-    served from cache always reflects this run's just-completed cycle rather
-    than waiting out the cache TTL.
+    The verdict cache is invalidated before resolving, not after, so this
+    call's own ``address_cycles`` reflects this run's just-completed cycle
+    (already posted as a ``sova-addressed`` marker on GitHub by this point)
+    rather than a pre-cycle cached count.
+
+    Fails closed when the count could not be read at all: the cycle count now
+    lives entirely in GitHub's review history, so an unreachable GitHub makes
+    it unknown rather than zero, and authorizing one more cycle on an unknown
+    count is how a capped loop silently runs uncapped. ``/address-pr`` step 16
+    takes the same position for the same decision, and the blocked state is
+    recoverable by a human click rather than a dead end.
     """
     if role != "developer" or pr_number is None:
         return None
 
     from sova.config.loader import load_config
+    from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, invalidate_verdict, resolve_verdict_for_pr
 
     cfg = load_config(project_dir)
     max_cycles = cfg.pipeline.max_address_review_cycles
     if max_cycles <= 0:
         return None
 
-    count = await count_address_review_runs(issue, pr_number, project_dir)
-
-    from sova.dashboard.services.work_verdict import invalidate_verdict
-
     invalidate_verdict(project_dir, pr_number)
+    verdict = await resolve_verdict_for_pr(issue, pr_number=pr_number, project_dir=project_dir, config=cfg)
 
+    if verdict.get(UNRESOLVED_KEY):
+        return (
+            f"Address-review budget unverifiable: GitHub did not return the review "
+            f"history for PR #{pr_number} on issue #{issue}, so the completed-cycle "
+            f"count is unknown (max allowed: {max_cycles}). Routed to Integrate for a "
+            f"manual decision rather than risking an uncapped review loop."
+        )
+
+    count = verdict.get("address_cycles", 0)
     if count >= max_cycles:
         return (
             f"Address-review budget exhausted: {count} cycles completed for "
@@ -96,8 +109,9 @@ async def _persist_completing_agent_handoff(run_id: int, handoff: "DashboardHand
     Called from _process_auto_handoff before the file is cleared. This backstops
     write_handoff() in the subprocess, which may write to the wrong DB when the
     subprocess CWD is a linked worktree rather than the project root. Persisting
-    here (dashboard context with the correct project_dir) ensures
-    get_sova_review_verdict() can always find the real verdict.
+    here (dashboard context with the correct project_dir) ensures every other
+    consumer of TaskRun.handoff_json (address-review, rebase, the watchdog) can
+    always find it.
 
     Only writes if handoff_json is not already set (subprocess may have written it
     correctly when the CWD worktree fix is in place).
@@ -173,9 +187,9 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 # cycle completed after that review, so the handoff is a re-review
                 # request for the new head, not a stale duplicate.
                 if action.id in {"review", "review_pr"} and pr_num is not None:
-                    from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+                    from sova.dashboard.services.work_verdict import resolve_verdict_for_pr
 
-                    verdict = await get_sova_review_verdict(
+                    verdict = await resolve_verdict_for_pr(
                         target_issue, pr_number=pr_num, project_dir=agent.project_dir
                     )
                     if verdict.get("has_sova_review") and verdict.get("verdict") != "addressed":

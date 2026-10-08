@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,7 +15,6 @@ from sova.dashboard.services.work_item_service import (
     _build_pr_item,
     _build_task_item,
     _extract_handoff_summary,
-    _extract_sova_verdict_from_labels,
     _format_pr_details,
     _format_running_agent,
     _format_sova_context,
@@ -26,7 +23,6 @@ from sova.dashboard.services.work_item_service import (
     _index_prs_by_issue,
     _index_running_agents,
     _sort_items,
-    clear_verdict_cache,
     compute_work_item_resolution,
     compute_work_item_state,
     describe_reason_chain,
@@ -690,6 +686,7 @@ def _facts(**overrides: object) -> PRFacts:
         "external_reviews_enabled": True,
         "address_cycles": 0,
         "max_address_cycles": 0,
+        "review_history_unresolved": False,
     }
     defaults.update(overrides)
     return PRFacts(**defaults)
@@ -741,6 +738,28 @@ class TestResolveNextAction:
             (
                 "review_budget_unlimited_never_exhausts",
                 _facts(sova_verdict="revise", address_cycles=1000, max_address_cycles=0),
+                WorkItemState.PR_SOVA_CHANGES,
+                "address_review",
+            ),
+            (
+                "review_history_unresolved_fails_closed",
+                _facts(
+                    sova_verdict="revise",
+                    address_cycles=0,
+                    max_address_cycles=3,
+                    review_history_unresolved=True,
+                ),
+                WorkItemState.PR_REVIEW_EXHAUSTED,
+                "integrate",
+            ),
+            (
+                "review_history_unresolved_ignored_when_budget_unlimited",
+                _facts(
+                    sova_verdict="revise",
+                    address_cycles=0,
+                    max_address_cycles=0,
+                    review_history_unresolved=True,
+                ),
                 WorkItemState.PR_SOVA_CHANGES,
                 "address_review",
             ),
@@ -1819,33 +1838,473 @@ class TestAttachMergeBlockers:
         assert secondary[0]["merge_blockers"] == ["PR state could not be determined (PR data unavailable)"]
 
 
-class TestVerdictCacheProjectScoping:
-    """The verdict cache must not let one project answer for another's PR number."""
+class TestParseReviewHistory:
+    """parse_review_history() computes verdict, anchor, addressed state, and rounds."""
 
-    @pytest.mark.asyncio()
-    async def test_same_pr_number_in_two_projects_does_not_share_verdict(self) -> None:
-        from pathlib import Path as _Path
+    def test_empty_history_has_no_review(self) -> None:
+        from sova.dashboard.services.work_verdict import parse_review_history
 
+        result = parse_review_history([])
+        assert result["has_sova_review"] is False
+        assert result["verdict"] is None
+        assert result["address_cycles"] == 0
+
+    def test_verdict_marker_is_recognized(self) -> None:
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- sova-review: revise sha=abc1234 -->\nbody",
+                "submitted_at": "2026-01-01T00:00:00Z",
+            },
+        ]
+        result = parse_review_history(reviews)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+        assert result["review_head_sha"] == "abc1234"
+        assert result["address_cycles"] == 0
+
+    def test_review_without_marker_is_skipped(self) -> None:
+        """A human review (no SOVA marker) must not satisfy the verdict scan."""
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [{"state": "APPROVED", "body": "Looks good to me!", "submitted_at": "2026-01-01T00:00:00Z"}]
+        result = parse_review_history(reviews)
+        assert result["has_sova_review"] is False
+
+    def test_dismissed_review_is_skipped_for_verdict(self) -> None:
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "DISMISSED",
+                "body": "<!-- sova-review: block sha=deadbee -->",
+                "submitted_at": "2026-01-02T00:00:00Z",
+            },
+            {
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- sova-review: revise sha=abc1234 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+            },
+        ]
+        result = parse_review_history(reviews)
+        assert result["verdict"] == "revise"
+        assert result["review_head_sha"] == "abc1234"
+
+    def test_dismissed_addressed_marker_not_counted_in_rounds(self) -> None:
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "DISMISSED",
+                "body": "<!-- sova-addressed: sha=aaa1111 -->",
+                "submitted_at": "2026-01-03T00:00:00Z",
+            },
+            {
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- sova-review: revise sha=abc1234 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+            },
+        ]
+        result = parse_review_history(reviews)
+        assert result["address_cycles"] == 0
+        assert result["verdict"] == "revise"
+
+    def test_addressed_marker_newer_than_verdict_supersedes_it(self) -> None:
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "COMMENT",
+                "body": "<!-- sova-addressed: sha=def5678 -->",
+                "submitted_at": "2026-01-02T00:00:00Z",
+            },
+            {
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- sova-review: revise sha=abc1234 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+            },
+        ]
+        result = parse_review_history(reviews)
+        assert result["verdict"] == "addressed"
+        assert result["review_head_sha"] is None
+        assert result["address_cycles"] == 1
+
+    def test_verdict_newer_than_addressed_marker_is_not_superseded(self) -> None:
+        """A re-review after an address cycle must report the fresh verdict, not 'addressed'."""
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "APPROVED",
+                "body": "<!-- sova-review: approve sha=fff0000 -->",
+                "submitted_at": "2026-01-03T00:00:00Z",
+            },
+            {
+                "state": "COMMENT",
+                "body": "<!-- sova-addressed: sha=def5678 -->",
+                "submitted_at": "2026-01-02T00:00:00Z",
+            },
+            {
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- sova-review: revise sha=abc1234 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+            },
+        ]
+        result = parse_review_history(reviews)
+        assert result["verdict"] == "approve"
+        assert result["review_head_sha"] == "fff0000"
+        assert result["address_cycles"] == 1
+
+    def test_submitted_at_is_the_ordering_key_not_array_position(self) -> None:
+        """Entries out of chronological order in the list must still scan newest-first."""
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- sova-review: revise sha=abc1234 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "state": "APPROVED",
+                "body": "<!-- sova-review: approve sha=fff0000 -->",
+                "submitted_at": "2026-01-03T00:00:00Z",
+            },
+        ]
+        result = parse_review_history(reviews)
+        assert result["verdict"] == "approve"
+
+    def test_multiple_addressed_markers_count_as_multiple_rounds(self) -> None:
+        from sova.dashboard.services.work_verdict import parse_review_history
+
+        reviews = [
+            {
+                "state": "COMMENT",
+                "body": "<!-- sova-addressed: sha=1111111 -->",
+                "submitted_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "state": "COMMENT",
+                "body": "<!-- sova-addressed: sha=2222222 -->",
+                "submitted_at": "2026-01-02T00:00:00Z",
+            },
+            {
+                "state": "COMMENT",
+                "body": "<!-- sova-addressed: sha=3333333 -->",
+                "submitted_at": "2026-01-03T00:00:00Z",
+            },
+        ]
+        result = parse_review_history(reviews)
+        assert result["address_cycles"] == 3
+
+
+class TestResolveSovaVerdict:
+    """resolve_sova_verdict() is a thin adapter over parse_review_history()."""
+
+    @pytest.mark.asyncio
+    async def test_no_pr_number_returns_no_review(self) -> None:
         from sova.dashboard.services.work_verdict import resolve_sova_verdict
 
+        result = await resolve_sova_verdict("42", pr_number=None)
+        assert result["has_sova_review"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_adapter_returns_no_review(self) -> None:
+        """Without an adapter (no repo), there's nothing to fetch; fail open."""
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+
+        result = await resolve_sova_verdict("42", pr_number=1, use_cache=False)
+        assert result["has_sova_review"] is False
+
+    @pytest.mark.asyncio
+    async def test_marker_found_via_adapter_is_reported(self, monkeypatch) -> None:
+        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+        from sova.git.pr import PRReviewData
+
+        async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
+            return {
+                pr_numbers[0]: PRReviewData(
+                    thread_total=0,
+                    thread_resolved=0,
+                    head_sha="abc1234",
+                    review_history=[
+                        {
+                            "state": "CHANGES_REQUESTED",
+                            "body": "<!-- sova-review: revise sha=abc1234 -->",
+                            "submitted_at": "2026-01-01T00:00:00Z",
+                        }
+                    ],
+                )
+            }
+
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
+        adapter = MagicMock(repo="owner/repo", github_user="bot")
+
+        result = await resolve_sova_verdict("42", pr_number=1, adapter=adapter, use_cache=False)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+        assert result["review_head_sha"] == "abc1234"
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_fails_open(self, monkeypatch) -> None:
+        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, resolve_sova_verdict
+
+        async def _boom(pr_numbers, *, repo, github_user=""):
+            raise RuntimeError("API down")
+
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", _boom)
+        adapter = MagicMock(repo="owner/repo", github_user="bot")
+
+        result = await resolve_sova_verdict("42", pr_number=1, adapter=adapter, use_cache=False)
+        assert result["has_sova_review"] is False
+        assert result[UNRESOLVED_KEY] is True
+
+    @pytest.mark.asyncio
+    async def test_unreachable_github_is_not_zero_cycles(self, monkeypatch) -> None:
+        """get_pr_review_data() maps an unreachable GitHub to None, not an empty history."""
+        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, clear_verdict_cache, resolve_sova_verdict
+
         clear_verdict_cache()
-        verdicts = {
-            "/tmp/project-a": {"has_sova_review": True, "verdict": "approve", "finding_count": 0},
-            "/tmp/project-b": {"has_sova_review": True, "verdict": "revise", "finding_count": 2},
-        }
 
-        async def fake_db_verdict(issue_number, *, pr_number=None, project_dir=None):
-            return dict(verdicts[str(project_dir)])
+        async def _unavailable(pr_numbers, *, repo, github_user=""):
+            return dict.fromkeys(pr_numbers)
 
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new=fake_db_verdict,
-        ):
-            a = await resolve_sova_verdict("10", pr_number=42, project_dir=_Path("/tmp/project-a"))
-            b = await resolve_sova_verdict("10", pr_number=42, project_dir=_Path("/tmp/project-b"))
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", _unavailable)
+        adapter = MagicMock(repo="owner/repo", github_user="bot")
+
+        result = await resolve_sova_verdict("42", pr_number=1, adapter=adapter)
+        assert result[UNRESOLVED_KEY] is True
+        assert result["address_cycles"] == 0
+
+    @pytest.mark.asyncio
+    async def test_unresolved_verdict_is_not_cached(self, monkeypatch) -> None:
+        """A non-answer must not occupy the cache for the negative TTL."""
+        from sova.dashboard.services.work_verdict import clear_verdict_cache, resolve_sova_verdict
+        from sova.git.pr import PRReviewData
+
+        clear_verdict_cache()
+        calls = 0
+
+        async def _flaky(pr_numbers, *, repo, github_user=""):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return dict.fromkeys(pr_numbers)
+            return {
+                pr_numbers[0]: PRReviewData(
+                    thread_total=0,
+                    thread_resolved=0,
+                    head_sha="abc1234",
+                    review_history=[
+                        {
+                            "state": "COMMENTED",
+                            "body": "<!-- sova-addressed: sha=abc1234 -->",
+                            "submitted_at": "2026-01-01T00:00:00Z",
+                        }
+                    ],
+                )
+            }
+
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", _flaky)
+        adapter = MagicMock(repo="owner/repo", github_user="bot")
+
+        await resolve_sova_verdict("42", pr_number=77, adapter=adapter)
+        second = await resolve_sova_verdict("42", pr_number=77, adapter=adapter)
+
+        assert calls == 2
+        assert second["address_cycles"] == 1
+
+    @pytest.mark.asyncio
+    async def test_prewarm_resolves_many_prs_in_one_call(self, monkeypatch) -> None:
+        from sova.dashboard.services.work_verdict import _fetch_sova_verdicts, clear_verdict_cache
+        from sova.git.pr import PRReviewData
+
+        clear_verdict_cache()
+        seen: list[list[int]] = []
+
+        async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
+            seen.append(list(pr_numbers))
+            return {
+                n: PRReviewData(
+                    thread_total=0,
+                    thread_resolved=0,
+                    head_sha="abc1234",
+                    review_history=[
+                        {
+                            "state": "CHANGES_REQUESTED",
+                            "body": "<!-- sova-review: revise sha=abc1234 -->",
+                            "submitted_at": "2026-01-01T00:00:00Z",
+                        }
+                    ],
+                )
+                for n in pr_numbers
+            }
+
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_verdict.build_verdict_adapter",
+            lambda project_dir, *, config=None: MagicMock(repo="owner/repo", github_user="bot"),
+        )
+
+        verdicts = await _fetch_sova_verdicts(
+            {"1": {"number": 11}, "2": {"number": 12}},
+            unlinked_prs=[{"number": 13}],
+        )
+
+        assert seen == [[11, 12, 13]]
+        assert verdicts["1"]["verdict"] == "revise"
+        assert verdicts["pr:13"]["verdict"] == "revise"
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_refetch(self, monkeypatch) -> None:
+        from sova.dashboard.services.work_verdict import clear_verdict_cache, resolve_sova_verdict
+        from sova.git.pr import PRReviewData
+
+        clear_verdict_cache()
+        calls = 0
+
+        async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
+            nonlocal calls
+            calls += 1
+            return {
+                pr_numbers[0]: PRReviewData(thread_total=0, thread_resolved=0, head_sha="abc1234", review_history=[])
+            }
+
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
+        adapter = MagicMock(repo="owner/repo", github_user="bot")
+
+        first = await resolve_sova_verdict("42", pr_number=50, adapter=adapter)
+        second = await resolve_sova_verdict("42", pr_number=50, adapter=adapter)
+        assert first == second
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_same_pr_number_in_two_projects_does_not_share_verdict(self, monkeypatch) -> None:
+        """The verdict cache must not let one project answer for another's PR number."""
+        from pathlib import Path as _Path
+
+        from sova.dashboard.services.work_verdict import clear_verdict_cache, resolve_sova_verdict
+        from sova.git.pr import PRReviewData
+
+        clear_verdict_cache()
+        repo_verdicts = {"org/project-a": "approve", "org/project-b": "revise"}
+
+        async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
+            verdict = repo_verdicts[repo]
+            state = "APPROVED" if verdict == "approve" else "CHANGES_REQUESTED"
+            return {
+                pr_numbers[0]: PRReviewData(
+                    thread_total=0,
+                    thread_resolved=0,
+                    head_sha="abc1234",
+                    review_history=[
+                        {
+                            "state": state,
+                            "body": f"<!-- sova-review: {verdict} sha=abc1234 -->",
+                            "submitted_at": "2026-01-01T00:00:00Z",
+                        }
+                    ],
+                )
+            }
+
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
+        adapter_a = MagicMock(repo="org/project-a", github_user="bot")
+        adapter_b = MagicMock(repo="org/project-b", github_user="bot")
+
+        a = await resolve_sova_verdict("10", pr_number=42, project_dir=_Path("/tmp/project-a"), adapter=adapter_a)
+        b = await resolve_sova_verdict("10", pr_number=42, project_dir=_Path("/tmp/project-b"), adapter=adapter_b)
 
         assert a["verdict"] == "approve"
         assert b["verdict"] == "revise"
+
+    @pytest.mark.asyncio
+    async def test_invalidate_verdict_forces_a_fresh_fetch(self, monkeypatch) -> None:
+        from sova.dashboard.services.work_verdict import clear_verdict_cache, invalidate_verdict, resolve_sova_verdict
+
+        clear_verdict_cache()
+        calls = 0
+
+        async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
+            nonlocal calls
+            calls += 1
+            return {pr_numbers[0]: None}
+
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
+        adapter = MagicMock(repo="owner/repo", github_user="bot")
+
+        await resolve_sova_verdict("42", pr_number=60, adapter=adapter)
+        invalidate_verdict(None, 60)
+        await resolve_sova_verdict("42", pr_number=60, adapter=adapter)
+        assert calls == 2
+
+    def test_invalidate_verdict_is_a_noop_without_a_cache_entry(self) -> None:
+        from sova.dashboard.services.work_verdict import invalidate_verdict
+
+        invalidate_verdict(None, 9999)  # must not raise
+
+    def test_invalidate_verdict_is_a_noop_when_pr_number_is_none(self) -> None:
+        from sova.dashboard.services.work_verdict import invalidate_verdict
+
+        invalidate_verdict(None, None)  # must not raise
+
+
+class TestFetchSovaVerdictsBatch:
+    """_fetch_sova_verdicts() batches resolve_sova_verdict() across issues and unlinked PRs."""
+
+    @pytest.mark.asyncio
+    async def test_linked_and_unlinked_prs_both_resolve(self, monkeypatch) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        monkeypatch.setattr("sova.config.loader.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            "sova.adapters.create_adapter",
+            MagicMock(return_value=MagicMock(repo="owner/repo", github_user="bot")),
+        )
+
+        async def fake_get_pr_review_data(pr_numbers, *, repo, github_user=""):
+            return {pr_numbers[0]: None}
+
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
+
+        result = await _fetch_sova_verdicts({"42": {"number": 100}}, unlinked_prs=[{"number": 200}])
+
+        assert result["42"]["has_sova_review"] is False
+        assert result["pr:200"]["has_sova_review"] is False
+
+    @pytest.mark.asyncio
+    async def test_unlinked_pr_without_number_is_skipped(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        result = await _fetch_sova_verdicts({}, unlinked_prs=[{"number": None}])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_adapter_build_failure_still_resolves_to_no_review(self, monkeypatch) -> None:
+        """When adapter construction fails, every verdict fails open rather than raising."""
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        def _boom(_cfg):
+            raise RuntimeError("adapter broken")
+
+        monkeypatch.setattr("sova.adapters.create_adapter", _boom)
+
+        result = await _fetch_sova_verdicts({"42": {"number": 100}})
+        assert result["42"]["has_sova_review"] is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_sova_verdict_exception_does_not_abort_the_batch(self, monkeypatch) -> None:
+        from sova.dashboard.services import work_verdict
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(work_verdict, "resolve_sova_verdict", _boom)
+
+        result = await _fetch_sova_verdicts({"42": {"number": 100}})
+        assert result["42"]["has_sova_review"] is False
 
 
 class TestGetWorkItemsConfigLoadFailure:
@@ -1872,87 +2331,6 @@ class TestGetWorkItemsConfigLoadFailure:
             assert "config_load_failed" in str(mock_log.warning.call_args)
 
         assert result["items"] == []
-
-
-class TestExtractSovaVerdictFromLabels:
-    """Tests for _extract_sova_verdict_from_labels."""
-
-    def test_approved_label(self) -> None:
-        result = _extract_sova_verdict_from_labels(["agent:in-review", "sova:approved"])
-        assert result is not None
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
-        assert result["review_head_sha"] is None
-
-    def test_revise_label(self) -> None:
-        result = _extract_sova_verdict_from_labels(["sova:revise", "type:feature"])
-        assert result is not None
-        assert result["verdict"] == "revise"
-        assert result["review_head_sha"] is None
-
-    def test_block_label(self) -> None:
-        result = _extract_sova_verdict_from_labels(["sova:block"])
-        assert result is not None
-        assert result["verdict"] == "block"
-        assert result["review_head_sha"] is None
-
-    def test_no_verdict_label(self) -> None:
-        result = _extract_sova_verdict_from_labels(["agent:in-review", "type:feature"])
-        assert result is None
-
-    def test_empty_labels(self) -> None:
-        result = _extract_sova_verdict_from_labels([])
-        assert result is None
-
-    def test_unknown_sova_label_ignored(self) -> None:
-        result = _extract_sova_verdict_from_labels(["sova:unknown"])
-        assert result is None
-
-    def test_multiple_sova_labels_takes_first(self) -> None:
-        result = _extract_sova_verdict_from_labels(["sova:approved", "sova:revise"])
-        assert result is not None
-        assert result["verdict"] == "approve"
-
-    def test_label_verdict_never_stale_unanchored(self) -> None:
-        """Label-derived verdicts carry no SHA, so they are never reported stale: the verdict
-        is still applied even though the PR head has since advanced."""
-        verdict = _extract_sova_verdict_from_labels(["sova:block"])
-        assert verdict is not None
-        assert verdict["review_head_sha"] is None
-        assert (
-            _state(
-                pr_data={"computed_state": "approved_ci_green", "state": "OPEN", "head_sha": "abc123"},
-                sova_verdict=verdict,
-            )
-            == WorkItemState.PR_SOVA_CHANGES
-        )
-
-    def test_label_verdict_not_stale_without_pr_head_sha(self) -> None:
-        verdict = _extract_sova_verdict_from_labels(["sova:revise"])
-        assert verdict is not None
-        assert (
-            _state(
-                pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
-                sova_verdict=verdict,
-            )
-            == WorkItemState.PR_SOVA_CHANGES
-        )
-
-    def test_label_verdict_overrides_state_despite_pr_advancing(self) -> None:
-        """A label-derived block verdict is unanchored, so it still downgrades the state
-        even though the PR head has moved on since the verdict was recorded."""
-        label_verdict = _extract_sova_verdict_from_labels(["sova:block"])
-        assert (
-            _state(
-                pr_data={
-                    "computed_state": "approved_ci_green",
-                    "state": "OPEN",
-                    "head_sha": "def456",
-                },
-                sova_verdict=label_verdict,
-            )
-            == WorkItemState.PR_SOVA_CHANGES
-        )
 
 
 class TestFetchAllSourcesProjectDir:
@@ -1992,223 +2370,6 @@ class TestFetchAllSourcesProjectDir:
         mock_prs.assert_awaited_once_with(tmp_path)
 
 
-class TestFetchSovaVerdicts:
-    """Direct tests for _fetch_sova_verdicts covering the unlinked PR path."""
-
-    @pytest.mark.asyncio()
-    async def test_fetches_verdicts_for_linked_prs(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        mock_verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=mock_verdict,
-            ) as mock_call,
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            result = await _fetch_sova_verdicts({"42": {"number": 100}})
-
-        assert "42" in result
-        assert result["42"]["has_sova_review"] is False
-        mock_call.assert_called_once_with("42", pr_number=100, project_dir=None)
-
-    @pytest.mark.asyncio()
-    async def test_fetches_verdicts_for_unlinked_prs(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        mock_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
-
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            return_value=mock_verdict,
-        ) as mock_call:
-            result = await _fetch_sova_verdicts(
-                {},
-                unlinked_prs=[{"number": 200}],
-            )
-
-        assert "pr:200" in result
-        assert result["pr:200"]["has_sova_review"] is True
-        assert result["pr:200"]["verdict"] == "approve"
-        mock_call.assert_called_once_with(None, pr_number=200, project_dir=None)
-
-    @pytest.mark.asyncio()
-    async def test_unlinked_pr_without_number_is_skipped(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-        ) as mock_verdict:
-            result = await _fetch_sova_verdicts({}, unlinked_prs=[{"number": None}])
-
-        assert result == {}
-        mock_verdict.assert_not_called()
-
-    @pytest.mark.asyncio()
-    async def test_label_used_when_db_has_no_review(self) -> None:
-        """A sova:* label supplies the verdict when this machine's DB knows nothing."""
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        clear_verdict_cache()
-        labels_by_issue = {"42": ["agent:in-review", "sova:approved"]}
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value={"has_sova_review": False, "verdict": None},
-            ),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            result = await _fetch_sova_verdicts(
-                {"42": {"number": 100}},
-                labels_by_issue=labels_by_issue,
-            )
-
-        assert result["42"]["has_sova_review"] is True
-        assert result["42"]["verdict"] == "approve"
-        assert result["42"]["review_head_sha"] is None
-
-    @pytest.mark.asyncio()
-    async def test_labels_absent_falls_through_to_db(self) -> None:
-        """When no sova:* label exists, the DB lookup path runs."""
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        clear_verdict_cache()
-        labels_by_issue = {"42": ["agent:in-review"]}
-        mock_db_verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=mock_db_verdict,
-            ) as mock_call,
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            result = await _fetch_sova_verdicts(
-                {"42": {"number": 100}},
-                labels_by_issue=labels_by_issue,
-            )
-
-        assert result["42"]["has_sova_review"] is False
-        mock_call.assert_called_once()
-
-    @pytest.mark.asyncio()
-    async def test_labels_cache_overflow_clears(self) -> None:
-        """When the verdict cache exceeds 1000 entries, it is cleared before adding."""
-        from sova.dashboard.services.work_item_service import (
-            _fetch_sova_verdicts,
-            _sova_verdict_cache,
-        )
-
-        clear_verdict_cache()
-        # Seed the cache with >1000 entries to trigger the overflow path.
-        import time
-
-        for i in range(1001):
-            _sova_verdict_cache[("", i)] = (time.monotonic(), {"has_sova_review": False})
-
-        labels_by_issue = {"42": ["sova:revise"]}
-
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            return_value={"has_sova_review": False, "verdict": None},
-        ):
-            result = await _fetch_sova_verdicts(
-                {"42": {"number": 9999}},
-                labels_by_issue=labels_by_issue,
-            )
-
-        assert result["42"]["verdict"] == "revise"
-        # Cache was cleared and only the new entry remains.
-        assert len(_sova_verdict_cache) == 1
-        assert ("", 9999) in _sova_verdict_cache
-
-    @pytest.mark.asyncio()
-    async def test_labels_no_pr_number_skips_cache(self) -> None:
-        """When pr_number is None, the label verdict is returned without caching."""
-        from sova.dashboard.services.work_item_service import (
-            _fetch_sova_verdicts,
-            _sova_verdict_cache,
-        )
-
-        clear_verdict_cache()
-        labels_by_issue = {"42": ["sova:approved"]}
-
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            return_value={"has_sova_review": False, "verdict": None},
-        ):
-            result = await _fetch_sova_verdicts(
-                {"42": {"number": None}},
-                labels_by_issue=labels_by_issue,
-            )
-
-        assert result["42"]["verdict"] == "approve"
-        assert len(_sova_verdict_cache) == 0
-
-
-class TestMergeLabelVerdict:
-    """_merge_label_verdict reconciles the local DB record with the sova:* label."""
-
-    def test_no_label_keeps_db_verdict(self) -> None:
-        from sova.dashboard.services.work_verdict import _merge_label_verdict
-
-        db = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc"}
-        assert _merge_label_verdict(db, None) is db
-
-    def test_label_used_when_db_empty(self) -> None:
-        from sova.dashboard.services.work_verdict import _merge_label_verdict
-
-        db = {"has_sova_review": False, "verdict": None}
-        label = _extract_sova_verdict_from_labels(["sova:revise"])
-        assert _merge_label_verdict(db, label)["verdict"] == "revise"
-
-    def test_addressed_supersedes_stale_label(self) -> None:
-        """The address cycle never clears the reviewer's label, so the DB must win here."""
-        from sova.dashboard.services.work_verdict import _merge_label_verdict
-
-        db = {"has_sova_review": True, "verdict": "addressed", "review_head_sha": None}
-        label = _extract_sova_verdict_from_labels(["sova:revise"])
-        assert _merge_label_verdict(db, label)["verdict"] == "addressed"
-
-    def test_agreeing_db_wins_to_keep_the_commit_anchor(self) -> None:
-        from sova.dashboard.services.work_verdict import _merge_label_verdict
-
-        db = {"has_sova_review": True, "verdict": "revise", "review_head_sha": "abc123"}
-        label = _extract_sova_verdict_from_labels(["sova:revise"])
-        assert _merge_label_verdict(db, label)["review_head_sha"] == "abc123"
-
-    def test_disagreeing_label_wins_as_cross_machine_source(self) -> None:
-        from sova.dashboard.services.work_verdict import _merge_label_verdict
-
-        db = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc123"}
-        label = _extract_sova_verdict_from_labels(["sova:block"])
-        merged = _merge_label_verdict(db, label)
-        assert merged["verdict"] == "block"
-        assert merged["review_head_sha"] is None
-
-
 class TestBuildPrFactsMergeState:
     """_build_pr_facts() reads merge_state from pr_data (#1109)."""
 
@@ -2234,295 +2395,28 @@ class TestBuildPrFactsMergeState:
         )
         assert facts.merge_state == ""
 
-
-class TestCanonicalVerdictPath:
-    """resolve_sova_verdict() is the one assembly path the dashboard and supervisor share."""
-
-    @pytest.mark.asyncio()
-    async def test_addressed_db_verdict_beats_label_for_both_callers(self) -> None:
-        """Regression: a stale sova:revise label used to route the dashboard to
-        address_review while the supervisor saw "addressed" and routed to review_pr."""
+    def test_unresolved_verdict_sets_review_history_unresolved(self) -> None:
+        """A verdict dict carrying UNRESOLVED_KEY (GitHub unreachable) must flow
+        through to PRFacts so resolve_next_action() can fail closed on it."""
         from sova.dashboard.services.work_state import _build_pr_facts
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY
 
-        clear_verdict_cache()
-        db_verdict = {
-            "has_sova_review": True,
-            "verdict": "addressed",
-            "finding_count": 0,
-            "reviewed_at": None,
-            "run_status": "done",
-            "review_head_sha": None,
-        }
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            return_value=db_verdict,
-        ):
-            verdict = await resolve_sova_verdict("42", pr_number=100, issue_labels=["sova:revise"])
-
-        assert verdict["verdict"] == "addressed"
         facts = _build_pr_facts(
-            {"state": "OPEN", "ci_status": "passed", "head_sha": "abc", "mergeable": "MERGEABLE"},
-            verdict,
+            {"state": "OPEN", "ci_status": "passed", "mergeable": "MERGEABLE"},
+            {"has_sova_review": False, "address_cycles": 0, UNRESOLVED_KEY: True},
             external_reviews_enabled=False,
         )
-        assert resolve_next_action(facts).action_id == "review_pr"
+        assert facts.review_history_unresolved is True
 
-    @pytest.mark.asyncio()
-    async def test_db_lookup_failure_degrades_to_label(self) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
+    def test_resolved_verdict_leaves_review_history_unresolved_false(self) -> None:
+        from sova.dashboard.services.work_state import _build_pr_facts
 
-        clear_verdict_cache()
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("db down"),
-        ):
-            verdict = await resolve_sova_verdict("42", pr_number=101, issue_labels=["sova:block"])
-
-        assert verdict["verdict"] == "block"
-
-    @pytest.mark.asyncio()
-    async def test_db_lookup_failure_without_label_yields_no_review(self) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        clear_verdict_cache()
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("db down"),
-            ),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            verdict = await resolve_sova_verdict("42", pr_number=102, issue_labels=[])
-
-        assert verdict["has_sova_review"] is False
-
-    @pytest.mark.asyncio()
-    async def test_cached_result_is_reused_by_a_second_caller(self) -> None:
-        """The dashboard and supervisor share one cache, so a PR cannot flip
-        verdicts between the two within a poll cycle."""
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        clear_verdict_cache()
-        db_verdict = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc"}
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            return_value=db_verdict,
-        ) as mock_db:
-            first = await resolve_sova_verdict("42", pr_number=103, issue_labels=[])
-            second = await resolve_sova_verdict("42", pr_number=103, issue_labels=[])
-
-        assert first == second
-        assert mock_db.call_count == 1
-
-    @pytest.mark.asyncio()
-    async def test_cache_hit_still_reconciles_against_current_labels(self) -> None:
-        """A cache hit must not bypass label reconciliation: caching the merged verdict
-        from the first call must not let a newer sova:revise/sova:block label be ignored
-        for the remainder of the positive TTL."""
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        clear_verdict_cache()
-        db_verdict = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "abc"}
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            return_value=db_verdict,
-        ) as mock_db:
-            first = await resolve_sova_verdict("42", pr_number=104, issue_labels=["sova:approved"])
-            second = await resolve_sova_verdict("42", pr_number=104, issue_labels=["sova:revise"])
-
-        assert first["verdict"] == "approve"
-        assert second["verdict"] == "revise"
-        # The DB is not re-queried on the cache-hit path: reconciliation uses the
-        # already-cached db_verdict merged against the freshly supplied label.
-        assert mock_db.call_count == 1
-
-    @pytest.mark.asyncio()
-    async def test_label_only_approve_does_not_survive_a_later_empty_label_lookup(self) -> None:
-        """A verdict resolved purely from a sova:* label (no local DB record, the
-        cross-instance case) must not freeze into the cache as a standing "approve".
-        If a later call's label lookup comes back empty, whether the label was
-        actually removed or the lookup itself failed transiently, the result must
-        fall back to the unmerged source verdict rather than keep serving the
-        stale label-derived approval for the rest of the positive TTL."""
-        from sova.dashboard.services.work_verdict import _NO_REVIEW, resolve_sova_verdict
-
-        clear_verdict_cache()
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=dict(_NO_REVIEW),
-            ),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            first = await resolve_sova_verdict("42", pr_number=105, issue_labels=["sova:approved"])
-            second = await resolve_sova_verdict("42", pr_number=105, issue_labels=[])
-
-        assert first["has_sova_review"] is True
-        assert first["verdict"] == "approve"
-        assert second["has_sova_review"] is False
-
-
-@contextlib.contextmanager
-def _patched_cycle_count(**count_kwargs: object) -> Iterator[AsyncMock]:
-    """Patch resolve_sova_verdict()'s DB source to "no review" and its cycle counter.
-
-    ``count_kwargs`` goes straight to the counter's AsyncMock, so a caller
-    passes return_value for a fixed count or side_effect for a sequence or a
-    raise. Yields that mock so a test can assert how it was awaited.
-    """
-    from sova.dashboard.services.work_verdict import _NO_REVIEW
-
-    clear_verdict_cache()
-    with (
-        patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            return_value=dict(_NO_REVIEW),
-        ),
-        patch(
-            "sova.supervisor.gates.utils.count_address_review_runs",
-            new_callable=AsyncMock,
-            **count_kwargs,
-        ) as mock_count,
-    ):
-        yield mock_count
-
-
-class TestAddressCycleBudget:
-    """resolve_sova_verdict() reports address_cycles; invalidate_verdict() clears one entry."""
-
-    @pytest.mark.asyncio()
-    async def test_verdict_carries_address_cycles_from_count(self) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        with _patched_cycle_count(return_value=2):
-            verdict = await resolve_sova_verdict("42", pr_number=200, issue_labels=[])
-
-        assert verdict["address_cycles"] == 2
-
-    @pytest.mark.asyncio()
-    async def test_no_pr_number_skips_the_count_and_stays_zero(self) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        with _patched_cycle_count() as mock_count:
-            verdict = await resolve_sova_verdict("42", pr_number=None, issue_labels=[])
-
-        assert verdict["address_cycles"] == 0
-        mock_count.assert_not_awaited()
-
-    @pytest.mark.asyncio()
-    async def test_count_failure_fails_open_to_zero(self) -> None:
-        """A raising count must never propagate out of resolve_sova_verdict()."""
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        with _patched_cycle_count(side_effect=Exception("DB locked")):
-            verdict = await resolve_sova_verdict("42", pr_number=201, issue_labels=[])
-
-        assert verdict["address_cycles"] == 0
-
-    @pytest.mark.asyncio()
-    async def test_cache_hit_recomputes_the_count(self) -> None:
-        """A cache hit must not serve a stale address_cycles count.
-
-        A command:address-pr completion never invalidates the verdict
-        cache (invalidate_verdict() is only called from the developer
-        agent-exit path), so a cache hit has to recompute the count itself
-        rather than trust the value the cache entry was written with.
-        """
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        with _patched_cycle_count(side_effect=[1, 2]) as mock_count:
-            first = await resolve_sova_verdict("42", pr_number=202, issue_labels=[])
-            second = await resolve_sova_verdict("42", pr_number=202, issue_labels=[])
-
-        assert first["address_cycles"] == 1
-        assert second["address_cycles"] == 2
-        assert mock_count.await_count == 2
-
-    @pytest.mark.asyncio()
-    async def test_invalidate_verdict_forces_a_fresh_count_on_the_next_call(self) -> None:
-        from sova.dashboard.services.work_verdict import invalidate_verdict, resolve_sova_verdict
-
-        with _patched_cycle_count(side_effect=[1, 2]) as mock_count:
-            first = await resolve_sova_verdict("42", pr_number=203, issue_labels=[])
-            invalidate_verdict(None, 203)
-            second = await resolve_sova_verdict("42", pr_number=203, issue_labels=[])
-
-        assert first["address_cycles"] == 1
-        assert second["address_cycles"] == 2
-        assert mock_count.await_count == 2
-
-    def test_invalidate_verdict_is_a_noop_without_a_cache_entry(self) -> None:
-        from sova.dashboard.services.work_verdict import invalidate_verdict
-
-        clear_verdict_cache()
-        invalidate_verdict(None, 9999)  # must not raise
-
-    def test_invalidate_verdict_is_a_noop_when_pr_number_is_none(self) -> None:
-        from sova.dashboard.services.work_verdict import invalidate_verdict
-
-        invalidate_verdict(None, None)  # must not raise
-
-    @pytest.mark.asyncio()
-    async def test_label_win_preserves_address_cycles(self) -> None:
-        """A label-sourced verdict must not reset the PR's cycle count to 0.
-
-        address_cycles belongs to the PR, not to whichever source won the
-        verdict, and only the DB-derived dict carries it. Dropping it when the
-        label wins would silently disable the review_budget_exhausted rule for
-        exactly the cross-instance PRs most likely to be over budget.
-        """
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        with _patched_cycle_count(return_value=4):
-            verdict = await resolve_sova_verdict("42", pr_number=204, issue_labels=["sova:revise"])
-
-        # No DB record, so the label wins outright.
-        assert verdict["verdict"] == "revise"
-        assert verdict["address_cycles"] == 4
-
-    @pytest.mark.asyncio()
-    async def test_label_disagreeing_with_db_still_preserves_address_cycles(self) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        clear_verdict_cache()
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value={
-                    "has_sova_review": True,
-                    "verdict": "approve",
-                    "finding_count": 0,
-                    "reviewed_at": "2026-01-01",
-                    "review_head_sha": "abc1234",
-                },
-            ),
-            patch(
-                "sova.supervisor.gates.utils.count_address_review_runs",
-                new_callable=AsyncMock,
-                return_value=3,
-            ),
-        ):
-            verdict = await resolve_sova_verdict("42", pr_number=205, issue_labels=["sova:revise"])
-
-        assert verdict["verdict"] == "revise"
-        assert verdict["address_cycles"] == 3
+        facts = _build_pr_facts(
+            {"state": "OPEN", "ci_status": "passed", "mergeable": "MERGEABLE"},
+            {"has_sova_review": True, "verdict": "approve", "address_cycles": 1},
+            external_reviews_enabled=False,
+        )
+        assert facts.review_history_unresolved is False
 
 
 class TestReviewBudgetExhaustedIntegrate:
@@ -2569,453 +2463,6 @@ class TestReviewBudgetExhaustedIntegrate:
         assert item["primary_action"]["id"] == "integrate"
         assert "merge_blockers" not in item["primary_action"]
         assert all(a["id"] != "integrate" for a in item["secondary_actions"])
-
-
-class TestParseSovaReviewFromGithub:
-    """_parse_sova_review_from_github detects cross-instance SOVA reviews."""
-
-    def _review(
-        self,
-        body: str,
-        state: str = "APPROVED",
-        submitted_at: str = "2026-07-21T10:00:00Z",
-        is_bot: bool = False,
-    ) -> object:
-        """Build a minimal PRReview-like object."""
-        from sova.adapters.base import PRReview
-
-        return PRReview(reviewer="dsova06", state=state, body=body, submitted_at=submitted_at, is_bot=is_bot)
-
-    def test_detects_marker_approve(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        review = self._review("<!-- sova-review: approve -->\n\n## PR Summary\n...")
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
-
-    def test_detects_marker_revise(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        review = self._review("<!-- sova-review: revise -->\n\n## Review: REVISE")
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["verdict"] == "revise"
-
-    def test_detects_marker_block(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        review = self._review("<!-- sova-review: block -->\n\n## Review: BLOCK")
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["verdict"] == "block"
-
-    def test_marker_case_insensitive(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        review = self._review("<!-- SOVA-REVIEW: Approve -->")
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["verdict"] == "approve"
-
-    def test_detects_marker_with_sha(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        review = self._review("<!-- sova-review: revise sha=abc1234 -->\n\n## Review: REVISE")
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["verdict"] == "revise"
-        assert result["review_head_sha"] == "abc1234"
-
-    def test_marker_without_sha_is_unanchored(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        review = self._review("<!-- sova-review: approve -->")
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["review_head_sha"] is None
-
-    def test_heuristic_fallback_is_unanchored(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        body = "## PR Summary\nX.\n\n## Verdict\n\n**Approve.** Clean.\n"
-        review = self._review(body)
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["review_head_sha"] is None
-
-    def test_skips_dismissed_reviews(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        review = self._review("<!-- sova-review: approve -->", state="DISMISSED")
-        result = _parse_sova_review_from_github([review])
-        assert result is None
-
-    def test_newest_first_ordering(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        old = self._review("<!-- sova-review: revise -->", submitted_at="2026-07-20T10:00:00Z")
-        new = self._review("<!-- sova-review: approve -->", submitted_at="2026-07-21T10:00:00Z")
-        result = _parse_sova_review_from_github([old, new])
-        assert result is not None
-        assert result["verdict"] == "approve"
-
-    def test_returns_none_when_no_sova_review(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        review = self._review("LGTM, nice work!")
-        result = _parse_sova_review_from_github([review])
-        assert result is None
-
-    def test_returns_none_for_empty_list(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        assert _parse_sova_review_from_github([]) is None
-
-    def test_heuristic_fallback_approve(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        body = (
-            "## PR Summary\nThis PR does X.\n\n"
-            "## Findings\n\nNone.\n\n"
-            "## Verdict\n\n**Approve.** Clean implementation.\n\n"
-            "## What's Done Well\nGood tests."
-        )
-        review = self._review(body)
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
-
-    def test_heuristic_fallback_request_changes(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        body = "## PR Summary\nThis PR does X.\n\n## Verdict\n\n**Request changes.** Must fix Y.\n\n"
-        review = self._review(body)
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["verdict"] == "revise"
-
-    def test_heuristic_fallback_block(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        body = "## PR Summary\nX.\n\n## Verdict\n\n**Block.** Critical issue.\n"
-        review = self._review(body)
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["verdict"] == "block"
-
-    def test_heuristic_requires_both_sections(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        # Only ## Verdict, no ## PR Summary (not a SOVA review)
-        body = "## Verdict\n\n**Approve.** LGTM."
-        review = self._review(body)
-        result = _parse_sova_review_from_github([review])
-        assert result is None
-
-    def test_heuristic_requires_pr_summary_section(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        # Only ## PR Summary, no ## Verdict (not a SOVA review)
-        body = "## PR Summary\nThis PR does X."
-        review = self._review(body)
-        result = _parse_sova_review_from_github([review])
-        assert result is None
-
-    def test_dismissed_review_skipped_even_when_next_has_no_sova_marker(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        # The dismissed review has the marker; the non-dismissed one is a plain human review.
-        # Expected: None. The dismissed review is skipped and the human review is not SOVA.
-        dismissed = self._review(
-            "<!-- sova-review: approve -->", state="DISMISSED", submitted_at="2026-07-21T12:00:00Z"
-        )
-        human = self._review("LGTM!", state="APPROVED", submitted_at="2026-07-20T10:00:00Z")
-        result = _parse_sova_review_from_github([dismissed, human])
-        assert result is None
-
-    def test_submitted_at_propagated(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        ts = "2026-07-21T12:34:56Z"
-        review = self._review("<!-- sova-review: approve -->", submitted_at=ts)
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        assert result["reviewed_at"] == ts
-
-
-class TestFetchSovaVerdictsGithubFallback:
-    """_fetch_sova_verdicts uses GitHub review fallback when DB has no SOVA review."""
-
-    def setup_method(self) -> None:
-        clear_verdict_cache()
-
-    @pytest.mark.asyncio()
-    async def test_github_fallback_used_when_no_db_review(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-        gh_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
-        mock_adapter = MagicMock()
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=no_review,
-            ),
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
-            patch("sova.adapters.create_adapter", return_value=mock_adapter),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=gh_verdict,
-            ) as mock_fallback,
-        ):
-            result = await _fetch_sova_verdicts({"42": {"number": 100}})
-
-        mock_fallback.assert_called_once_with(100, mock_adapter)
-        assert result["42"]["has_sova_review"] is True
-        assert result["42"]["verdict"] == "approve"
-
-    @pytest.mark.asyncio()
-    async def test_github_fallback_not_called_when_db_has_review(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        db_verdict = {"has_sova_review": True, "verdict": "revise", "finding_count": 2, "reviewed_at": None}
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=db_verdict,
-            ),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-            ) as mock_fallback,
-        ):
-            result = await _fetch_sova_verdicts({"42": {"number": 100}})
-
-        mock_fallback.assert_not_called()
-        assert result["42"]["has_sova_review"] is True
-        assert result["42"]["verdict"] == "revise"
-
-    @pytest.mark.asyncio()
-    async def test_github_fallback_not_called_when_no_pr_number(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=no_review,
-            ),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-            ) as mock_fallback,
-        ):
-            result = await _fetch_sova_verdicts({"42": {}})  # no pr number
-
-        mock_fallback.assert_not_called()
-        assert result["42"]["has_sova_review"] is False
-
-    @pytest.mark.asyncio()
-    async def test_github_fallback_returning_none_preserves_no_review(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=no_review,
-            ),
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
-            patch("sova.adapters.create_adapter", return_value=MagicMock()),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            result = await _fetch_sova_verdicts({"42": {"number": 100}})
-
-        assert result["42"]["has_sova_review"] is False
-
-    @pytest.mark.asyncio()
-    async def test_cache_suppresses_second_github_call(self) -> None:
-        """After a verdict is cached, the next call returns from cache without API calls."""
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        gh_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
-        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-        mock_adapter = MagicMock()
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=no_review,
-            ),
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
-            patch("sova.adapters.create_adapter", return_value=mock_adapter),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=gh_verdict,
-            ) as mock_fallback,
-        ):
-            # First call: cache miss, hits GitHub.
-            result1 = await _fetch_sova_verdicts({"42": {"number": 100}})
-            assert mock_fallback.call_count == 1
-
-            # Second call: cache hit, no additional GitHub API call.
-            result2 = await _fetch_sova_verdicts({"42": {"number": 100}})
-            assert mock_fallback.call_count == 1
-
-        assert result1["42"]["has_sova_review"] is True
-        assert result2["42"]["verdict"] == "approve"
-
-
-class TestFetchGithubReviewFallback:
-    """Direct tests for _fetch_github_review_fallback."""
-
-    def setup_method(self) -> None:
-        clear_verdict_cache()
-
-    @pytest.mark.asyncio()
-    async def test_returns_parsed_verdict_on_success(self) -> None:
-        from sova.adapters.base import PRReview
-        from sova.dashboard.services.work_item_service import _fetch_github_review_fallback
-
-        review = PRReview(
-            reviewer="dsova06",
-            state="APPROVED",
-            body="<!-- sova-review: approve -->",
-            submitted_at="2026-07-21T10:00:00Z",
-            is_bot=False,
-        )
-        mock_adapter = AsyncMock()
-        mock_adapter.get_pr_reviews.return_value = [review]
-
-        result = await _fetch_github_review_fallback(100, mock_adapter)
-
-        assert result is not None
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
-
-    @pytest.mark.asyncio()
-    async def test_returns_none_when_no_sova_review_found(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_github_review_fallback
-
-        mock_adapter = AsyncMock()
-        mock_adapter.get_pr_reviews.return_value = []
-
-        result = await _fetch_github_review_fallback(100, mock_adapter)
-
-        assert result is None
-
-    @pytest.mark.asyncio()
-    async def test_skips_fallback_when_adapter_build_fails(self) -> None:
-        """When adapter build fails in _fetch_sova_verdicts, fallback is not called."""
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=no_review,
-            ),
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("config broken")),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-            ) as mock_fallback,
-        ):
-            result = await _fetch_sova_verdicts({"42": {"number": 100}})
-
-        mock_fallback.assert_not_called()
-        assert result["42"]["has_sova_review"] is False
-
-    @pytest.mark.asyncio()
-    async def test_returns_none_on_adapter_api_exception(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_github_review_fallback
-
-        mock_adapter = AsyncMock()
-        mock_adapter.get_pr_reviews.side_effect = RuntimeError("API failure")
-
-        result = await _fetch_github_review_fallback(100, mock_adapter)
-
-        assert result is None
-
-
-class TestFetchSovaVerdictsExceptionHandling:
-    """_fetch_sova_verdicts handles per-item exceptions in fetch_one gracefully."""
-
-    def setup_method(self) -> None:
-        clear_verdict_cache()
-
-    @pytest.mark.asyncio()
-    async def test_exception_in_get_sova_review_verdict_returns_no_review(self) -> None:
-        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
-
-        # The GitHub fallback is patched out: without it this test built a real
-        # adapter from the repo's own config and fetched PR #100's live reviews,
-        # which carry a genuine (heuristic-style) SOVA review, so the DB-failure
-        # path under test was masked by network state.
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("DB error"),
-            ),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            result = await _fetch_sova_verdicts({"42": {"number": 100}})
-
-        assert "42" in result
-        assert result["42"]["has_sova_review"] is False
-        assert result["42"]["verdict"] is None
-        assert result["42"]["finding_count"] == 0
-
-
-class TestHeuristicVerdictRegexScope:
-    """Heuristic verdict regex is scoped to the ## Verdict section only."""
-
-    def test_bold_line_in_findings_not_matched_as_verdict(self) -> None:
-        """A bold 'Approve' line inside ## Findings must not override the ## Verdict verdict."""
-        from sova.adapters.base import PRReview
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        body = (
-            "## PR Summary\nThis PR does X.\n\n"
-            "## Findings\n\n**Approve this approach but fix the test.**\n\n"
-            "## Verdict\n\n**Request changes.** Fix the issue.\n"
-        )
-        review = PRReview(
-            reviewer="dsova06",
-            state="CHANGES_REQUESTED",
-            body=body,
-            submitted_at="2026-07-21T10:00:00Z",
-            is_bot=False,
-        )
-        result = _parse_sova_review_from_github([review])
-        assert result is not None
-        # Must be "revise" (from ## Verdict), not "approve" (from ## Findings bold line)
-        assert result["verdict"] == "revise"
 
 
 class TestApiHealth:
@@ -3215,161 +2662,3 @@ class TestJiraDisplayName:
 
         result = await get_work_items(project_dir=tmp_path)
         assert result["jira_display_name"] == ""
-
-
-class TestParseSovaReviewAddressedMarker:
-    """A sova-addressed review newer than the verdict marks the verdict addressed (#1063)."""
-
-    def _review(self, body: str, submitted_at: str, state: str = "COMMENTED") -> object:
-        from sova.adapters.base import PRReview
-
-        return PRReview(reviewer="xsovad06", state=state, body=body, submitted_at=submitted_at, is_bot=False)
-
-    def test_addressed_marker_newer_than_verdict_yields_addressed(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        reviews = [
-            self._review("<!-- sova-review: revise -->\n## Review: REVISE", "2026-09-17T21:12:22Z"),
-            self._review("<!-- sova-addressed: sha=892372e -->\n## Address Review: Round 1", "2026-09-17T22:16:00Z"),
-        ]
-        result = _parse_sova_review_from_github(reviews)
-        assert result is not None
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "addressed"
-        assert result["reviewed_at"] == "2026-09-17T21:12:22Z"
-        assert result["review_head_sha"] is None
-
-    def test_addressed_marker_older_than_verdict_is_ignored(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        reviews = [
-            self._review("<!-- sova-addressed: sha=abcdef1 -->", "2026-09-17T20:00:00Z"),
-            self._review("<!-- sova-review: revise sha=892372e -->", "2026-09-17T21:12:22Z"),
-        ]
-        result = _parse_sova_review_from_github(reviews)
-        assert result is not None
-        assert result["verdict"] == "revise"
-        assert result["review_head_sha"] == "892372e"
-
-    def test_addressed_marker_alone_is_not_a_review(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        assert _parse_sova_review_from_github([self._review("<!-- sova-addressed -->", "2026-09-17T22:00:00Z")]) is None
-
-    def test_addressed_applies_to_heuristic_reviews_too(self) -> None:
-        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
-
-        old_style = "## PR Summary\n...\n## Verdict\n**Request changes**: fix it"
-        reviews = [
-            self._review(old_style, "2026-09-17T21:00:00Z"),
-            self._review("<!-- sova-addressed -->", "2026-09-17T22:00:00Z"),
-        ]
-        result = _parse_sova_review_from_github(reviews)
-        assert result is not None
-        assert result["verdict"] == "addressed"
-
-
-class TestResolveSovaVerdictLocalAddressCycle:
-    """A GitHub-sourced verdict is superseded by an address cycle recorded in the local DB."""
-
-    def setup_method(self) -> None:
-        clear_verdict_cache()
-
-    @pytest.mark.asyncio
-    async def test_github_verdict_superseded_by_local_address_cycle(self) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-        gh_verdict = {
-            "has_sova_review": True,
-            "verdict": "revise",
-            "finding_count": 0,
-            "reviewed_at": "2026-09-17T21:12:22Z",
-            "review_head_sha": None,
-        }
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=no_review,
-            ),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=gh_verdict,
-            ),
-            patch(
-                "sova.dashboard.services.agent_recovery.has_address_cycle_since",
-                new_callable=AsyncMock,
-                return_value=True,
-            ) as mock_since,
-        ):
-            result = await resolve_sova_verdict("1065", pr_number=1063, fallback_adapter=MagicMock())
-
-        assert result["verdict"] == "addressed"
-        assert result["has_sova_review"] is True
-        assert result["review_head_sha"] is None
-        since = mock_since.call_args.args[0]
-        assert since.isoformat() == "2026-09-17T21:12:22+00:00"
-        assert mock_since.call_args.kwargs["pr_number"] == 1063
-
-    @pytest.mark.asyncio
-    async def test_github_verdict_stands_without_local_address_cycle(self) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-        gh_verdict = {
-            "has_sova_review": True,
-            "verdict": "revise",
-            "finding_count": 0,
-            "reviewed_at": "2026-09-17T21:12:22Z",
-            "review_head_sha": "cf02928",
-        }
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=no_review,
-            ),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=gh_verdict,
-            ),
-            patch(
-                "sova.dashboard.services.agent_recovery.has_address_cycle_since",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-        ):
-            result = await resolve_sova_verdict("1065", pr_number=1063, fallback_adapter=MagicMock())
-
-        assert result["verdict"] == "revise"
-        assert result["review_head_sha"] == "cf02928"
-
-    @pytest.mark.asyncio
-    async def test_github_verdict_without_timestamp_skips_db_check(self) -> None:
-        from sova.dashboard.services.work_verdict import resolve_sova_verdict
-
-        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
-        gh_verdict = {"has_sova_review": True, "verdict": "revise", "finding_count": 0, "reviewed_at": None}
-        with (
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                new_callable=AsyncMock,
-                return_value=no_review,
-            ),
-            patch(
-                "sova.dashboard.services.work_verdict._fetch_github_review_fallback",
-                new_callable=AsyncMock,
-                return_value=gh_verdict,
-            ),
-            patch(
-                "sova.dashboard.services.agent_recovery.has_address_cycle_since",
-                new_callable=AsyncMock,
-            ) as mock_since,
-        ):
-            result = await resolve_sova_verdict("1065", pr_number=1063, fallback_adapter=MagicMock())
-
-        mock_since.assert_not_called()
-        assert result["verdict"] == "revise"
