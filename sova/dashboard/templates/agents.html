@@ -301,12 +301,12 @@ var _taskStateFilter = localStorage.getItem('sova-task-state-filter') || '';
 var _STATE_FILTER_GROUPS = {
   running: ['agent_running'],
   pr_stage: ['pr_draft', 'pr_conflicted', 'pr_ci_running', 'pr_ci_failed', 'pr_awaiting_review',
-    'pr_sova_pending', 'pr_changes_requested', 'pr_sova_changes', 'pr_external_changes',
-    'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge', 'pr_review_exhausted'],
+    'pr_sova_pending', 'pr_sova_changes', 'pr_external_changes',
+    'pr_review_addressed', 'pr_ready_to_merge', 'pr_review_exhausted'],
   ci_failed: ['pr_ci_failed'],
   needs_review: ['pr_awaiting_review', 'pr_sova_pending'],
-  changes_requested: ['pr_changes_requested', 'pr_sova_changes', 'pr_external_changes'],
-  ready_to_merge: ['pr_ready_to_merge', 'pr_approved', 'pr_review_exhausted'],
+  changes_requested: ['pr_sova_changes', 'pr_external_changes'],
+  ready_to_merge: ['pr_ready_to_merge', 'pr_review_exhausted'],
   backlog: ['backlog', 'triaged', 'researched', 'needs_spec']
 };
 
@@ -320,8 +320,8 @@ var _llmSuggestionFetching = new Set();
 var _PR_STAGE_STATES = new Set([
   'pr_draft', 'pr_conflicted', 'pr_ci_running', 'pr_ci_failed',
   'pr_awaiting_review', 'pr_sova_pending',
-  'pr_changes_requested', 'pr_sova_changes', 'pr_external_changes',
-  'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge', 'pr_review_exhausted'
+  'pr_sova_changes', 'pr_external_changes',
+  'pr_review_addressed', 'pr_ready_to_merge', 'pr_review_exhausted'
 ]);
 
 async function loadWorkItems() {
@@ -355,7 +355,7 @@ async function loadWorkItems() {
 
     var attentionCount = _workItems.filter(function(i) {
       return i.state === 'spec_review' ||
-        i.state === 'pr_ready_to_merge' || i.state === 'pr_changes_requested' ||
+        i.state === 'pr_ready_to_merge' ||
         i.state === 'pr_review_exhausted';
     }).length;
     var badge = document.getElementById('tasks-attention-badge');
@@ -502,16 +502,6 @@ var _actionStyles = {
   neutral: 'bg-gray-600/30 text-gray-400 hover:bg-gray-600/50',
 };
 
-function _renderGateBlockedBtn(gateResult, label, cssClass) {
-  if (!gateResult || gateResult.passed) return null;
-  var reasons = (gateResult.gates || [])
-    .filter(function(g) { return g.enabled && !g.passed; })
-    .map(function(g) { return g.reason || g.name; });
-  var tooltip = 'Blocked: ' + reasons.join('; ');
-  return '<button disabled class="' + cssClass + '" aria-label="' + escapeHtml(tooltip) + '" data-tooltip="' + escapeHtml(tooltip) + '">' +
-    escapeHtml(label) + '</button>';
-}
-
 function _renderActionBtn(action, issueKey) {
   if (!action) return '';
   var cls = _actionStyles[action.style] || _actionStyles.primary;
@@ -535,9 +525,6 @@ function _renderActionBtn(action, issueKey) {
   } else {
     return '';
   }
-  var blocked = _renderGateBlockedBtn(action.gate_result, action.label,
-    'text-xs px-3 py-1 rounded whitespace-nowrap bg-gray-600/30 text-gray-500 cursor-not-allowed');
-  if (blocked) return blocked;
   return '<button onclick="' + onclick + '" ' +
     'class="text-xs px-3 py-1 rounded transition-colors whitespace-nowrap ' + cls + '">' +
     escapeHtml(action.label) + '</button>';
@@ -746,15 +733,21 @@ function renderTaskCard(item) {
             var sep = item.issue_number ? '<hr class="border-gray-700/50 my-1">' : '';
             return sep + (item.secondary_actions || []).map(function(sa) {
               if (/run_command/.test(sa.handler)) {
-                var saBlocked = _renderGateBlockedBtn(sa.gate_result, sa.label,
-                  'w-full text-left px-3 py-1.5 text-xs text-gray-500 cursor-not-allowed');
-                if (saBlocked) return saBlocked;
                 var cmd = (sa.handler_args || {}).command || '';
-                var cmdArgs = '{' +
-                  (sa.handler_args.issue ? 'issue: \'' + escapeJsStr(sa.handler_args.issue) + '\', ' : '') +
-                  (sa.handler_args.pr ? 'pr: ' + sa.handler_args.pr : '') +
-                '}';
-                return '<button onclick="runCommand(\'' + escapeJsStr(cmd) + '\', ' + cmdArgs + ')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">' + escapeHtml(sa.label) + '</button>';
+                var args = {};
+                if (sa.handler_args.issue) args.issue = String(sa.handler_args.issue);
+                if (sa.handler_args.pr) args.pr = sa.handler_args.pr;
+                // JSON.stringify (not hand-built string concatenation) so newlines,
+                // control characters, and quotes in the interpolated backend strings
+                // (merge_blockers carries free-form GitHub merge states and verdict
+                // text) can never produce a syntactically broken JS literal. escapeHtml
+                // still runs over the whole thing for the surrounding onclick="..."
+                // HTML attribute.
+                var onclick = 'runCommandWithMergeBlockers(' +
+                  JSON.stringify(cmd) + ', ' +
+                  JSON.stringify(args) + ', ' +
+                  JSON.stringify(sa.merge_blockers || []) + ')';
+                return '<button onclick="' + escapeHtml(onclick) + '" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">' + escapeHtml(sa.label) + '</button>';
               }
               return '';
             }).join('');
@@ -1384,6 +1377,14 @@ async function runCommand(command, args) {
   }
   loadAgents();
   loadTaskCards();
+}
+
+function runCommandWithMergeBlockers(command, args, blockers) {
+  if (blockers && blockers.length) {
+    var msg = 'This PR is not fully ready to merge:\n\n' + blockers.join('\n') + '\n\nIntegrate anyway?';
+    if (!confirm(msg)) return;
+  }
+  runCommand(command, args);
 }
 
 var logCursor = 0;

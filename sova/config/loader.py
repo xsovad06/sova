@@ -111,7 +111,6 @@ _NESTED_SECTIONS = (
     "feed",
     "monitoring",
     "knowledge",
-    "integration_gates",
     "integration",
     "rtk",
     "compression",

@@ -98,11 +98,6 @@ class TestPlanFiltering:
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_ci_budget_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch(
-                "sova.dashboard.services.pr_service.get_pr_mergeability_map",
-                new_callable=AsyncMock,
-                return_value={},
-            ),
         ):
             # Build a mock graph that returns our tasks
             graph = MagicMock()

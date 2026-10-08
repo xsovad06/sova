@@ -214,7 +214,8 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - `start_agent()` recovers pr_number from DB history for developer role
 - `PR_CHANGES_REQUESTED` split into `PR_SOVA_CHANGES` and `PR_EXTERNAL_CHANGES`
 - Review-completed gate: three-source check plus thread resolution and run-completion requirements
-- Integration gates default to on, and the label source of the review-completed gate excludes explicit rejections
+- Integration gates default to on, and the label source of the review-completed gate excludes explicit rejections (integration-gates half superseded; the review-completed label source still applies, see the next entry)
+- `IntegrationGatesConfig` and its three independent evaluators: REMOVED. `resolve_next_action()` is the sole source of truth for whether Integrate is offered
 - Unresolved-thread state is three-valued, but only an explicit unknown fails closed
 - One shared next-action resolver replaces two independently-computed state machines
 - Dual-evaluation PR state experiment

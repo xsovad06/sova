@@ -32,14 +32,11 @@ class WorkItemState(StrEnum):
     PR_CI_RUNNING = "pr_ci_running"
     PR_CI_FAILED = "pr_ci_failed"
     PR_AWAITING_REVIEW = "pr_awaiting_review"
-    # kept for backward compat; new code should use PR_SOVA_CHANGES or PR_EXTERNAL_CHANGES
-    PR_CHANGES_REQUESTED = "pr_changes_requested"
     # SOVA reviewer said revise/block; developer agent addresses via handoff
     PR_SOVA_CHANGES = "pr_sova_changes"
     # external reviewer (CodeRabbit/human) requested changes; /address-pr command handles thread management
     PR_EXTERNAL_CHANGES = "pr_external_changes"
     PR_REVIEW_ADDRESSED = "pr_review_addressed"
-    PR_APPROVED = "pr_approved"
     PR_READY_TO_MERGE = "pr_ready_to_merge"
     PR_SOVA_PENDING = "pr_sova_pending"
     # address-review cycle budget exhausted; routed to Integrate for a human decision
@@ -66,11 +63,9 @@ _STATE_LABELS: dict[WorkItemState, str] = {
     WorkItemState.PR_CI_RUNNING: "CI Running",
     WorkItemState.PR_CI_FAILED: "CI Failed",
     WorkItemState.PR_AWAITING_REVIEW: "Awaiting Review",
-    WorkItemState.PR_CHANGES_REQUESTED: "Changes Requested",
     WorkItemState.PR_SOVA_CHANGES: "SOVA Changes Requested",
     WorkItemState.PR_EXTERNAL_CHANGES: "Changes Requested",
     WorkItemState.PR_REVIEW_ADDRESSED: "Review Addressed",
-    WorkItemState.PR_APPROVED: "Approved",
     WorkItemState.PR_READY_TO_MERGE: "Ready to Merge",
     WorkItemState.PR_SOVA_PENDING: "Sova Review Pending",
     WorkItemState.PR_REVIEW_EXHAUSTED: "Review Budget Exhausted",
@@ -98,11 +93,9 @@ _STATE_COLORS: dict[WorkItemState, str] = {
     WorkItemState.PR_CI_RUNNING: _CLR_YELLOW,
     WorkItemState.PR_CI_FAILED: "bg-accent-red/20 text-accent-red",
     WorkItemState.PR_AWAITING_REVIEW: "bg-accent/20 text-accent",
-    WorkItemState.PR_CHANGES_REQUESTED: _CLR_PEACH,
     WorkItemState.PR_SOVA_CHANGES: _CLR_PEACH,
     WorkItemState.PR_EXTERNAL_CHANGES: _CLR_PEACH,
     WorkItemState.PR_REVIEW_ADDRESSED: "bg-accent-lavender/20 text-accent-lavender",
-    WorkItemState.PR_APPROVED: _CLR_GREEN,
     WorkItemState.PR_READY_TO_MERGE: _CLR_GREEN,
     WorkItemState.PR_SOVA_PENDING: _CLR_PEACH,
     WorkItemState.PR_REVIEW_EXHAUSTED: _CLR_PEACH,
@@ -203,11 +196,9 @@ def _get_actions(
         S.PR_CI_FAILED: (cmd("address_pr", "Address PR", "danger", "address-pr"), [review]),
         S.PR_AWAITING_REVIEW: (cmd("review_pr", "Review", "success", "review-pr"), [address, integrate]),
         S.PR_SOVA_PENDING: (cmd("review_pr", "Review PR", "warning", "review-pr"), [address, integrate]),
-        S.PR_CHANGES_REQUESTED: (agent("address_review", "Address", "warning", "developer"), [review, integrate]),
         S.PR_SOVA_CHANGES: (agent("address_review", "Address", "warning", "developer"), [review, integrate]),
         S.PR_EXTERNAL_CHANGES: (cmd("address_pr", "Address PR", "warning", "address-pr"), [review, integrate]),
         S.PR_REVIEW_ADDRESSED: (cmd("review_pr", "Review", "purple", "review-pr"), [address, integrate]),
-        S.PR_APPROVED: (cmd("integrate", "Integrate", "success", "integrate-pr"), [review, address]),
         S.PR_READY_TO_MERGE: (
             cmd("integrate", "Integrate", "success", "integrate-pr"),
             [review, address],
@@ -254,6 +245,9 @@ class Resolution:
     state: WorkItemState
     action_id: str | None  # e.g. "integrate", "address_review", "review_pr", "rebase"
     reason_chain: tuple[str, ...]  # every rule name evaluated, last entry is the match
+    # unmet merge preconditions at resolution time (empty when none, or when there's no PR);
+    # attached to the secondary Integrate action so the confirm() dialog can list them
+    merge_blockers: tuple[str, ...] = ()
 
 
 def _verdict_is_stale(facts: PRFacts) -> bool:
@@ -329,8 +323,12 @@ def _github_will_merge(facts: PRFacts) -> bool:
 def _unmet_merge_conditions(facts: PRFacts) -> list[str]:
     """Every merge precondition the PR currently fails, phrased for the reason chain.
 
-    Empty means the PR satisfies all of them. Shared by the ladder's
-    "ready_to_merge" rule and its renderer so the two cannot diverge. The
+    Empty means the PR satisfies all of them. Shared by three consumers that must
+    never diverge: the ladder's "ready_to_merge" rule, its renderer
+    (_fact_ready_to_merge), and Resolution.merge_blockers -> _attach_merge_blockers()
+    -> the dashboard's confirm() dialog ("This PR is not fully ready to merge:").
+    Because of that third consumer, every string here must also read as a
+    standalone, user-facing sentence, not just internal resolver jargon. The
     GitHub-merge-state message mirrors _github_will_merge()'s own branching
     exactly (merge_state when it is one of the recognised unmergeable states,
     mergeable otherwise) rather than an `or` chain over both fields, so the
@@ -339,6 +337,8 @@ def _unmet_merge_conditions(facts: PRFacts) -> list[str]:
     unmet: list[str] = []
     if facts.sova_verdict != "approve":
         unmet.append(f"verdict is {facts.sova_verdict or 'none'}, not approve")
+    if facts.external_changes_requested:
+        unmet.append("an external reviewer has requested changes")
     if facts.thread_signal != "clear":
         unmet.append(f"threads are {facts.thread_signal}")
     if facts.ci_status not in ("passed", "none"):
@@ -359,30 +359,34 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     cannot disagree about what a work item should do next. No I/O.
     """
     chain: list[str] = []
+    merge_blockers = tuple(_unmet_merge_conditions(facts))
+
+    def resolved(state: WorkItemState, action_id: str | None) -> Resolution:
+        return Resolution(state, action_id, tuple(chain), merge_blockers)
 
     chain.append("agent_running")
     if facts.running_agent:
-        return Resolution(WorkItemState.AGENT_RUNNING, None, tuple(chain))
+        return resolved(WorkItemState.AGENT_RUNNING, None)
 
     chain.append("merged")
     if facts.pr_state == "MERGED":
-        return Resolution(WorkItemState.MERGED, None, tuple(chain))
+        return resolved(WorkItemState.MERGED, None)
 
     chain.append("conflicting")
     if facts.mergeable == "CONFLICTING" or facts.merge_state == "DIRTY":
-        return Resolution(WorkItemState.PR_CONFLICTED, "rebase", tuple(chain))
+        return resolved(WorkItemState.PR_CONFLICTED, "rebase")
 
     chain.append("draft")
     if facts.is_draft:
-        return Resolution(WorkItemState.PR_DRAFT, None, tuple(chain))
+        return resolved(WorkItemState.PR_DRAFT, None)
 
     chain.append("ci_failed")
     if facts.ci_status == "failed":
-        return Resolution(WorkItemState.PR_CI_FAILED, "address_pr", tuple(chain))
+        return resolved(WorkItemState.PR_CI_FAILED, "address_pr")
 
     chain.append("ci_running")
     if facts.ci_status in ("pending", "running"):
-        return Resolution(WorkItemState.PR_CI_RUNNING, None, tuple(chain))
+        return resolved(WorkItemState.PR_CI_RUNNING, None)
 
     # The address-review budget is a hard cap: once exhausted, nothing short
     # of a conflict, a draft, or red/pending CI (all evaluated above) keeps
@@ -391,14 +395,14 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     # verdict, so the loop actually stops rather than spawning one more cycle.
     chain.append("review_budget_exhausted")
     if facts.max_address_cycles > 0 and facts.address_cycles >= facts.max_address_cycles:
-        return Resolution(WorkItemState.PR_REVIEW_EXHAUSTED, "integrate", tuple(chain))
+        return resolved(WorkItemState.PR_REVIEW_EXHAUSTED, "integrate")
 
     # A stale verdict falls through to "no current review" (rule 10).
     verdict_stale = _verdict_is_stale(facts)
 
     chain.append("sova_standing_changes")
     if _has_standing_sova_changes(facts):
-        return Resolution(WorkItemState.PR_SOVA_CHANGES, "address_review", tuple(chain))
+        return resolved(WorkItemState.PR_SOVA_CHANGES, "address_review")
 
     chain.append("sova_verdict_stale")
     # No direct match: a stale verdict falls through to "no current review" (below).
@@ -411,16 +415,16 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     # unresolved threads gated integration.
     chain.append("external_changes_or_unresolved_threads")
     if facts.external_changes_requested or facts.thread_signal in ("pending", "unknown"):
-        return Resolution(WorkItemState.PR_EXTERNAL_CHANGES, "address_pr", tuple(chain))
+        return resolved(WorkItemState.PR_EXTERNAL_CHANGES, "address_pr")
 
     chain.append("sova_verdict_addressed")
     if facts.sova_verdict_addressed:
-        return Resolution(WorkItemState.PR_REVIEW_ADDRESSED, "review_pr", tuple(chain))
+        return resolved(WorkItemState.PR_REVIEW_ADDRESSED, "review_pr")
 
     chain.append("no_sova_review")
     if facts.sova_verdict is None or verdict_stale:
         state = WorkItemState.PR_SOVA_PENDING if facts.external_reviews_enabled else WorkItemState.PR_AWAITING_REVIEW
-        return Resolution(state, "review_pr", tuple(chain))
+        return resolved(state, "review_pr")
 
     chain.append("merge_blocked_by_github")
     if facts.merge_state in _MERGE_STATES_BLOCKED_BY_GITHUB:
@@ -432,14 +436,14 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
         # review can unblock; None routes it to CHECKPOINT_NEEDED for a human
         # instead. The dashboard is unaffected: its buttons come from
         # _get_actions(state), not from action_id.
-        return Resolution(WorkItemState.PR_AWAITING_REVIEW, None, tuple(chain))
+        return resolved(WorkItemState.PR_AWAITING_REVIEW, None)
 
     chain.append("ready_to_merge")
-    if not _unmet_merge_conditions(facts):
-        return Resolution(WorkItemState.PR_READY_TO_MERGE, "integrate", tuple(chain))
+    if not merge_blockers:
+        return resolved(WorkItemState.PR_READY_TO_MERGE, "integrate")
 
     chain.append("awaiting_review")
-    return Resolution(WorkItemState.PR_AWAITING_REVIEW, "review_pr", tuple(chain))
+    return resolved(WorkItemState.PR_AWAITING_REVIEW, "review_pr")
 
 
 def _short_sha(sha: str | None) -> str:
@@ -709,11 +713,9 @@ _STATE_SORT_ORDER: dict[str, int] = {
     WorkItemState.AGENT_RUNNING: 0,
     WorkItemState.SPEC_REVIEW: 1,
     WorkItemState.PR_READY_TO_MERGE: 2,
-    WorkItemState.PR_APPROVED: 2,
     WorkItemState.PR_REVIEW_EXHAUSTED: 2,
     WorkItemState.PR_CONFLICTED: 3,
     WorkItemState.PR_CI_FAILED: 3,
-    WorkItemState.PR_CHANGES_REQUESTED: 3,
     WorkItemState.PR_SOVA_CHANGES: 3,
     WorkItemState.PR_EXTERNAL_CHANGES: 3,
     WorkItemState.PR_SOVA_PENDING: 3,

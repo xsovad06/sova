@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from sova.dashboard.services.work_state import (
     _AWAITING_APPROVAL as _AWAITING_APPROVAL,
@@ -99,9 +98,6 @@ from sova.dashboard.services.work_verdict import (
     clear_verdict_cache as clear_verdict_cache,
 )
 from sova.utils.logging import get_logger
-
-if TYPE_CHECKING:
-    from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.work_item")
 
@@ -229,6 +225,7 @@ def _build_task_item(
         issue_num=issue_num,
         pr_number=pr_number,
     )
+    _attach_merge_blockers(primary, secondary, resolution, facts)
 
     return _build_item(
         issue_number=issue_num,
@@ -286,6 +283,7 @@ def _build_pr_item(
     reason_chain = _reason_chain_payload(resolution, facts)
     matched_reason = reason_chain[-1] if reason_chain else ""
     primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr["number"])
+    _attach_merge_blockers(primary, secondary, resolution, facts)
 
     return _build_item(
         issue_number=issue_num,
@@ -364,89 +362,42 @@ def _append_standalone_pr_items(
         )
 
 
-# Integration gates ----------------------------------------------------------
+# Merge blockers -------------------------------------------------------------
 
 
-def _find_integrate_action(item: dict) -> dict | None:
-    """Find the integrate action in primary or secondary actions."""
-    primary = item.get("primary_action")
-    if primary and primary.get("id") == "integrate":
-        return primary
-    for sa in item.get("secondary_actions", []):
-        if sa.get("id") == "integrate":
-            return sa
-    return None
-
-
-def _item_verdict(item: dict, verdicts_by_issue: dict[str, dict] | None) -> dict | None:
-    """Look up an item's already-resolved verdict, keyed as _fetch_sova_verdicts() stores it."""
-    if not verdicts_by_issue:
-        return None
-    issue_number = item.get("issue_number")
-    if issue_number:
-        return verdicts_by_issue.get(str(issue_number))
-    pr_number = item.get("pr_number")
-    return verdicts_by_issue.get(f"pr:{pr_number}") if pr_number else None
-
-
-async def _attach_integration_gates(
-    items: list[dict],
-    prs_by_issue: dict[str, dict],
-    config: ProjectConfig | None,
-    project_dir: Path | None = None,
-    verdicts_by_issue: dict[str, dict] | None = None,
+def _attach_merge_blockers(
+    primary_action: dict | None,
+    secondary_actions: list[dict],
+    resolution: Resolution,
+    facts: PRFacts | None,
 ) -> None:
-    """Check integration gates for items with integrate actions and attach results.
+    """Attach merge_blockers to every Integrate action for the confirm-before-proceeding UX.
 
-    ``verdicts_by_issue`` is the batch already resolved through
-    resolve_sova_verdict() for this listing; forwarding it keeps the gate that
-    enables/disables the Integrate button on the same verdict that produced the
-    button, and avoids a second per-item DB lookup on every dashboard poll.
+    The "primary Integrate never prompts" guarantee is structural, not incidental to
+    which slot _get_actions() happens to put "integrate" in: it is keyed off
+    resolution.action_id == "integrate", the exact condition under which
+    resolve_next_action() assigns Integrate as the state's one primary action
+    (PR_READY_TO_MERGE once merge conditions are satisfied, PR_REVIEW_EXHAUSTED once
+    the address-review budget forces a human decision either way). Both
+    primary_action and secondary_actions are still scanned when that condition is
+    false, so a future state that maps "integrate" into either slot gets the confirm
+    by default rather than losing it by default.
+
+    facts is None when no PR data could be resolved at all (e.g. a label-only item
+    whose last-run PR reference didn't resolve): attach an explicit blocker rather
+    than an empty list, since an empty list claims the PR is known to be mergeable.
     """
-    if config is None:
+    if resolution.action_id == "integrate":
         return
-
-    gates_cfg = config.integration_gates
-    if not (
-        gates_cfg.ci_passed or gates_cfg.sova_reviewed or gates_cfg.coderabbit_reviewed or gates_cfg.threads_resolved
-    ):
-        return
-
-    from sova.dashboard.services.pr_service import check_integration_gates
-
-    async def check_item(item: dict) -> None:
-        action = _find_integrate_action(item)
-        if not action:
-            return
-        if item.get("state") == WorkItemState.PR_REVIEW_EXHAUSTED:
-            # An over-budget PR must show an enabled Integrate button even
-            # when a standing revise/block verdict would otherwise fail the
-            # sova_reviewed gate: that gate exists to require re-review after
-            # a fix, but once the address-review budget is exhausted there is
-            # no more autonomous fixing left to re-review. Leaving
-            # action["gate_result"] unset renders the button enabled.
-            return
-        pr_data = prs_by_issue.get(item.get("issue_number") or "")
-        if not pr_data and item.get("pr_details"):
-            pr_data = item["pr_details"]
-        if not pr_data:
-            return
-        try:
-            result = await check_integration_gates(
-                pr_data=pr_data,
-                issue_number=item.get("issue_number"),
-                config=config,
-                project_dir=project_dir,
-                sova_verdict=_item_verdict(item, verdicts_by_issue),
-            )
-            action["gate_result"] = result
-        except Exception:  # noqa: BLE001 (a raising gate check must fail the gate, not the listing)
-            log.warning("work_items.gate_check_failed", issue=item.get("issue_number"), exc_info=True)
-            action["gate_result"] = {"passed": False, "gates": [], "error": "Gate check failed"}
-
-    tasks = [check_item(item) for item in items if _find_integrate_action(item)]
-    if tasks:
-        await asyncio.gather(*tasks)
+    blockers = list(resolution.merge_blockers)
+    if facts is None:
+        blockers = ["PR state could not be determined (PR data unavailable)"]
+    actions = list(secondary_actions)
+    if primary_action is not None:
+        actions.append(primary_action)
+    for action in actions:
+        if action.get("id") == "integrate":
+            action["merge_blockers"] = blockers
 
 
 # Main entry point ------------------------------------------------------------
@@ -532,8 +483,6 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     )
 
     _sort_items(items)
-
-    await _attach_integration_gates(items, prs_by_issue, cfg, project_dir, verdicts_by_issue)
 
     pa = _get_project_agents(slug)
     max_concurrent = pa.max_concurrent if pa else 3

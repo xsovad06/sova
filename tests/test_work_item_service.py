@@ -10,14 +10,14 @@ import pytest
 
 from sova.dashboard.services.work_item_service import (
     PRFacts,
+    Resolution,
     WorkItemState,
     _append_standalone_pr_items,
-    _attach_integration_gates,
+    _attach_merge_blockers,
     _build_pr_item,
     _build_task_item,
     _extract_handoff_summary,
     _extract_sova_verdict_from_labels,
-    _find_integrate_action,
     _format_pr_details,
     _format_running_agent,
     _format_sova_context,
@@ -486,15 +486,10 @@ class TestGetActions:
         assert "address_pr" in secondary_ids
         assert "integrate" in secondary_ids
 
-    def test_pr_changes_requested_has_address(self) -> None:
-        primary, _ = _get_actions(WorkItemState.PR_CHANGES_REQUESTED, issue_number="42", pr_number=123)
-        assert primary["id"] == "address_review"
-        assert primary["handler"] == "start_agent"
-
-    def test_pr_changes_requested_has_integrate_in_secondary(self) -> None:
-        """PR_CHANGES_REQUESTED should always expose integrate-pr in the secondary menu
+    def test_sova_changes_has_integrate_in_secondary(self) -> None:
+        """PR_SOVA_CHANGES should always expose integrate-pr in the secondary menu
         so users can manually override SOVA verdict when the PR is actually ready."""
-        _, secondary = _get_actions(WorkItemState.PR_CHANGES_REQUESTED, issue_number="42", pr_number=123)
+        _, secondary = _get_actions(WorkItemState.PR_SOVA_CHANGES, issue_number="42", pr_number=123)
         secondary_ids = [a["id"] for a in secondary]
         assert "integrate" in secondary_ids, f"integrate missing from secondary actions: {secondary_ids}"
         assert "review_pr" in secondary_ids
@@ -518,7 +513,7 @@ class TestGetActions:
         assert "issue" not in primary["handler_args"]
 
     def test_standalone_agent_omits_empty_issue(self) -> None:
-        primary, _ = _get_actions(WorkItemState.PR_CHANGES_REQUESTED, issue_number=None, pr_number=99)
+        primary, _ = _get_actions(WorkItemState.PR_SOVA_CHANGES, issue_number=None, pr_number=99)
         assert "issue" not in primary["handler_args"]
         assert primary["handler_args"]["pr"] == 99
 
@@ -962,6 +957,40 @@ class TestResolveNextAction:
         with pytest.raises(AttributeError):
             resolution.state = WorkItemState.MERGED  # type: ignore[misc]
 
+    def test_merge_blockers_populated_on_a_non_ready_resolution(self) -> None:
+        """merge_blockers must carry the unmet conditions even when the ladder matched an
+        earlier rule, since that is exactly when the secondary Integrate needs to confirm.
+        Without this the dashboard's confirm() would silently never fire (#1111)."""
+        resolution = resolve_next_action(_facts(sova_verdict="revise", thread_signal="pending"))
+        assert resolution.state == WorkItemState.PR_SOVA_CHANGES
+        assert "verdict is revise, not approve" in resolution.merge_blockers
+        assert "threads are pending" in resolution.merge_blockers
+
+    def test_merge_blockers_empty_on_ready_to_merge(self) -> None:
+        resolution = resolve_next_action(_facts())
+        assert resolution.state == WorkItemState.PR_READY_TO_MERGE
+        assert resolution.merge_blockers == ()
+
+    def test_merge_blockers_reports_standing_external_changes_request(self) -> None:
+        """A standing external CHANGES_REQUESTED reached via the
+        external_changes_or_unresolved_threads rule (threads otherwise clear, SOVA
+        approved, CI green, GitHub reports CLEAN) must not yield empty merge_blockers:
+        PR_EXTERNAL_CHANGES has "integrate" in its secondary actions, so an empty list
+        here would let the dashboard's confirm() skip entirely on a PR an external
+        reviewer explicitly asked to change (#1111)."""
+        resolution = resolve_next_action(
+            _facts(
+                external_changes_requested=True,
+                sova_verdict="approve",
+                thread_signal="clear",
+                ci_status="passed",
+                merge_state="CLEAN",
+            )
+        )
+        assert resolution.state == WorkItemState.PR_EXTERNAL_CHANGES
+        assert resolution.merge_blockers != ()
+        assert "an external reviewer has requested changes" in resolution.merge_blockers
+
 
 class TestDescribeReasonChain:
     """Renders resolve_next_action()'s reason_chain identifiers to sentences (#992)."""
@@ -1267,6 +1296,17 @@ class TestBuildTaskItem:
         assert item["jira_priority"] == ""
         assert item["updated_at"] == ""
 
+    def test_secondary_integrate_carries_merge_blockers_end_to_end(self) -> None:
+        """_attach_merge_blockers() is wired into _build_task_item() before the item is
+        returned: deleting that call site would leave this green on every other test
+        (#1111 review) since they don't inspect secondary_actions' merge_blockers key."""
+        task = {"issue": "42", "title": "Fix bug", "state": "in_review", "labels": [], "priority": -1}
+        pr = {"number": 100, "computed_state": "awaiting_review", "state": "OPEN"}
+        item = _build_task_item(task, pr_data=pr, running=None, handoff=None)
+        assert item["state"] == "pr_sova_pending"
+        integrate = next(a for a in item["secondary_actions"] if a["id"] == "integrate")
+        assert integrate["merge_blockers"]
+
 
 class TestBuildPrItem:
     def test_standalone_pr(self) -> None:
@@ -1307,6 +1347,16 @@ class TestBuildPrItem:
         pr = {"number": 200, "title": "Done", "computed_state": "approved_ci_green", "state": "MERGED"}
         item = _build_pr_item(pr, running=None, handoff=None, issue_num=None)
         assert item["state"] == "merged"
+
+    def test_secondary_integrate_carries_merge_blockers_end_to_end(self) -> None:
+        """_attach_merge_blockers() is wired into _build_pr_item() before the item is
+        returned: deleting that call site would leave this green on every other test
+        (#1111 review) since they don't inspect secondary_actions' merge_blockers key."""
+        pr = {"number": 200, "title": "Quick fix", "computed_state": "awaiting_review", "state": "OPEN"}
+        item = _build_pr_item(pr, running=None, handoff=None, issue_num=None)
+        assert item["state"] == "pr_sova_pending"
+        integrate = next(a for a in item["secondary_actions"] if a["id"] == "integrate")
+        assert integrate["merge_blockers"]
 
 
 class TestFormatHelpers:
@@ -1688,172 +1738,85 @@ class TestAppendStandalonePrItems:
         assert items[0]["state"] == "pr_awaiting_review"
 
 
-class TestFindIntegrateAction:
-    def test_finds_in_primary(self) -> None:
-        item = {"primary_action": {"id": "integrate", "label": "Integrate"}, "secondary_actions": []}
-        assert _find_integrate_action(item) is not None
-        assert _find_integrate_action(item)["id"] == "integrate"
-
-    def test_finds_in_secondary(self) -> None:
-        item = {
-            "primary_action": {"id": "review_pr", "label": "Review"},
-            "secondary_actions": [{"id": "integrate", "label": "Integrate"}],
-        }
-        assert _find_integrate_action(item) is not None
-        assert _find_integrate_action(item)["id"] == "integrate"
-
-    def test_returns_none_when_absent(self) -> None:
-        item = {
-            "primary_action": {"id": "review_pr", "label": "Review"},
-            "secondary_actions": [{"id": "address_pr", "label": "Address"}],
-        }
-        assert _find_integrate_action(item) is None
-
-    def test_returns_none_for_no_actions(self) -> None:
-        item = {"primary_action": None, "secondary_actions": []}
-        assert _find_integrate_action(item) is None
-
-
 # ---------------------------------------------------------------------------
-# _attach_integration_gates
+# _attach_merge_blockers
 # ---------------------------------------------------------------------------
 
 
-class TestAttachIntegrationGates:
-    @pytest.mark.asyncio
-    async def test_gate_check_failure_sets_failed_result(self, monkeypatch) -> None:
-        """When check_integration_gates raises, gate_result should fail-closed."""
-        from sova.config.models import IntegrationGatesConfig, ProjectConfig
-
-        cfg = ProjectConfig(
-            github_repo="owner/repo",
-            github_user="testuser",
-            integration_gates=IntegrationGatesConfig(ci_passed=True),
+class TestAttachMergeBlockers:
+    def test_attaches_blockers_to_secondary_integrate(self) -> None:
+        """A secondary Integrate carries the resolver's unmet merge conditions so the
+        dashboard can list them in a confirm before overriding."""
+        primary = {"id": "review_pr"}
+        secondary = [{"id": "review_pr"}, {"id": "integrate"}]
+        resolution = Resolution(
+            WorkItemState.PR_AWAITING_REVIEW,
+            "review_pr",
+            ("awaiting_review",),
+            ("CI status is failed", "threads are pending"),
         )
-        item = {
-            "issue_number": "42",
-            "pr_details": {"number": 1, "ci_status": "passed"},
-            "primary_action": {"id": "integrate", "label": "Integrate PR"},
-            "secondary_actions": [],
-        }
+        _attach_merge_blockers(primary, secondary, resolution, _facts())
+        integrate = next(a for a in secondary if a["id"] == "integrate")
+        assert integrate["merge_blockers"] == ["CI status is failed", "threads are pending"]
+        assert "merge_blockers" not in secondary[0]
+        assert "merge_blockers" not in primary
 
-        async def _boom(**kwargs):
-            raise RuntimeError("gate explosion")
-
-        monkeypatch.setattr(
-            "sova.dashboard.services.pr_service.check_integration_gates",
-            _boom,
+    def test_no_integrate_action_is_a_noop(self) -> None:
+        primary = {"id": "address_review"}
+        secondary = [{"id": "review_pr"}, {"id": "address_pr"}]
+        _attach_merge_blockers(
+            primary,
+            secondary,
+            Resolution(WorkItemState.PR_SOVA_CHANGES, "address_review", (), ("verdict is revise, not approve",)),
+            _facts(),
         )
-        await _attach_integration_gates([item], {}, cfg)
-        action = _find_integrate_action(item)
-        assert action is not None
-        assert action["gate_result"]["passed"] is False
+        assert all("merge_blockers" not in a for a in secondary)
+        assert "merge_blockers" not in primary
 
-    @pytest.mark.asyncio
-    async def test_skips_when_config_none(self) -> None:
-        """When config is None, gates are not attached."""
-        item = {
-            "issue_number": "42",
-            "primary_action": {"id": "integrate", "label": "Integrate PR"},
-            "secondary_actions": [],
-        }
-        await _attach_integration_gates([item], {}, None)
-        action = _find_integrate_action(item)
-        assert "gate_result" not in action
-
-    @pytest.mark.asyncio
-    async def test_passes_project_dir_through_to_check_integration_gates(self, monkeypatch) -> None:
-        """project_dir must reach check_integration_gates for correct multi-project verdict lookup."""
-        from pathlib import Path
-
-        from sova.config.models import IntegrationGatesConfig, ProjectConfig
-
-        cfg = ProjectConfig(
-            github_repo="owner/repo",
-            github_user="testuser",
-            integration_gates=IntegrationGatesConfig(sova_reviewed=True),
+    def test_primary_integrate_path_never_attaches_even_if_integrate_also_in_secondary(self) -> None:
+        """Structural guarantee (#1111 review): the skip is keyed off
+        resolution.action_id == "integrate" (exactly the condition under which
+        resolve_next_action() assigns PR_READY_TO_MERGE/PR_REVIEW_EXHAUSTED), not off
+        the current _get_actions() table never listing "integrate" in both slots. A
+        hypothetical future _get_actions() edit that also lists "integrate" in the
+        secondary menu for one of those states must still not get a confirm."""
+        primary = {"id": "integrate"}
+        secondary = [{"id": "integrate"}, {"id": "review_pr"}]
+        resolution = Resolution(
+            WorkItemState.PR_REVIEW_EXHAUSTED,
+            "integrate",
+            ("review_budget_exhausted",),
+            ("verdict is revise, not approve",),
         )
-        item = {
-            "issue_number": "42",
-            "pr_details": {"number": 1, "ci_status": "passed"},
-            "primary_action": {"id": "integrate", "label": "Integrate PR"},
-            "secondary_actions": [],
-        }
-        expected_project_dir = Path("/tmp/some-project")
-        captured: dict = {}
+        _attach_merge_blockers(primary, secondary, resolution, _facts())
+        assert "merge_blockers" not in primary
+        assert all("merge_blockers" not in a for a in secondary)
 
-        async def _fake_check(**kwargs):
-            captured.update(kwargs)
-            return {"passed": True, "gates": []}
-
-        monkeypatch.setattr(
-            "sova.dashboard.services.pr_service.check_integration_gates",
-            _fake_check,
+    def test_future_primary_integrate_state_gets_confirm_by_default(self) -> None:
+        """A state that maps "integrate" to the primary slot without the resolver's
+        action_id agreeing must still get merge_blockers attached: the exemption is
+        opt-in (action_id == "integrate"), not "any action literally named integrate",
+        so a new state is confirmed by default rather than silently exempted."""
+        primary = {"id": "integrate"}
+        secondary: list[dict] = []
+        resolution = Resolution(
+            WorkItemState.PR_AWAITING_REVIEW,
+            "review_pr",
+            ("awaiting_review",),
+            ("threads are pending",),
         )
-        await _attach_integration_gates([item], {}, cfg, expected_project_dir)
-        assert captured["project_dir"] == expected_project_dir
+        _attach_merge_blockers(primary, secondary, resolution, _facts())
+        assert primary["merge_blockers"] == ["threads are pending"]
 
-    @pytest.mark.asyncio
-    async def test_forwards_resolved_verdict_to_check_integration_gates(self, monkeypatch) -> None:
-        """The gate must be handed the same verdict that produced the Integrate action."""
-        from sova.config.models import IntegrationGatesConfig, ProjectConfig
-
-        cfg = ProjectConfig(
-            github_repo="owner/repo",
-            github_user="testuser",
-            integration_gates=IntegrationGatesConfig(sova_reviewed=True),
-        )
-        item = {
-            "issue_number": "42",
-            "pr_number": 7,
-            "pr_details": {"number": 7, "ci_status": "passed"},
-            "primary_action": {"id": "integrate", "label": "Integrate PR"},
-            "secondary_actions": [],
-        }
-        verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
-        captured: dict = {}
-
-        async def _fake_check(**kwargs):
-            captured.update(kwargs)
-            return {"passed": True, "gates": []}
-
-        monkeypatch.setattr(
-            "sova.dashboard.services.pr_service.check_integration_gates",
-            _fake_check,
-        )
-        await _attach_integration_gates([item], {}, cfg, None, {"42": verdict})
-        assert captured["sova_verdict"] == verdict
-
-    @pytest.mark.asyncio
-    async def test_forwards_unlinked_pr_verdict_by_pr_key(self, monkeypatch) -> None:
-        """A standalone PR item resolves its verdict under the "pr:{number}" key."""
-        from sova.config.models import IntegrationGatesConfig, ProjectConfig
-
-        cfg = ProjectConfig(
-            github_repo="owner/repo",
-            github_user="testuser",
-            integration_gates=IntegrationGatesConfig(sova_reviewed=True),
-        )
-        item = {
-            "issue_number": None,
-            "pr_number": 7,
-            "pr_details": {"number": 7, "ci_status": "passed"},
-            "primary_action": {"id": "integrate", "label": "Integrate PR"},
-            "secondary_actions": [],
-        }
-        verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
-        captured: dict = {}
-
-        async def _fake_check(**kwargs):
-            captured.update(kwargs)
-            return {"passed": True, "gates": []}
-
-        monkeypatch.setattr(
-            "sova.dashboard.services.pr_service.check_integration_gates",
-            _fake_check,
-        )
-        await _attach_integration_gates([item], {}, cfg, None, {"pr:7": verdict})
-        assert captured["sova_verdict"] == verdict
+    def test_facts_none_attaches_explicit_unknown_blocker(self) -> None:
+        """A label-only item whose PR data could not be resolved (e.g. a stale PR
+        reference) must not silently imply the PR is clear to merge: attach an explicit
+        blocker instead of the empty tuple Resolution defaults to."""
+        primary = {"id": "resume"}
+        secondary = [{"id": "integrate"}]
+        resolution = Resolution(WorkItemState.IN_PROGRESS, None, ())
+        _attach_merge_blockers(primary, secondary, resolution, None)
+        assert secondary[0]["merge_blockers"] == ["PR state could not be determined (PR data unavailable)"]
 
 
 class TestVerdictCacheProjectScoping:
@@ -2562,31 +2525,50 @@ class TestAddressCycleBudget:
         assert verdict["address_cycles"] == 3
 
 
-class TestReviewBudgetExhaustedIntegrationGates:
-    """An over-budget PR must show an enabled Integrate button unconditionally."""
+class TestReviewBudgetExhaustedIntegrate:
+    """An over-budget PR must offer Integrate unconditionally, with no confirmation."""
 
-    @pytest.mark.asyncio
-    async def test_exhausted_state_skips_gate_evaluation(self) -> None:
-        from sova.config.models import ProjectConfig
+    def test_exhausted_state_primary_integrate_carries_no_blockers(self) -> None:
+        """PR_REVIEW_EXHAUSTED hands the decision to the human via the primary Integrate:
+        a standing revise verdict is exactly why the budget ran out, so listing it as a
+        merge blocker would re-prompt on the one action left. Driven end-to-end through
+        resolve_next_action() and _build_pr_item() rather than a hand-built Resolution, so
+        this actually fails if a ladder change stops reaching PR_REVIEW_EXHAUSTED here."""
+        facts = _facts(
+            sova_verdict="revise",
+            sova_verdict_addressed=False,
+            address_cycles=3,
+            max_address_cycles=3,
+        )
+        resolution = resolve_next_action(facts)
+        assert resolution.state == WorkItemState.PR_REVIEW_EXHAUSTED
+        assert resolution.action_id == "integrate"
 
-        config = ProjectConfig()
-        config.integration_gates.sova_reviewed = True
-        item = {
-            "issue_number": "42",
-            "pr_number": 100,
-            "state": WorkItemState.PR_REVIEW_EXHAUSTED.value,
-            "primary_action": {"id": "integrate"},
-            "secondary_actions": [],
-            "pr_details": {"number": 100},
+        pr = {
+            "number": 100,
+            "title": "Some PR",
+            "url": "https://github.com/example/repo/pull/100",
+            "state": "OPEN",
+            "is_draft": False,
+            "mergeable": "MERGEABLE",
+            "merge_state": "CLEAN",
+            "ci_status": "passed",
+            "head_sha": "sha-head",
         }
-        with patch(
-            "sova.dashboard.services.pr_service.check_integration_gates",
-            new_callable=AsyncMock,
-        ) as mock_gates:
-            await _attach_integration_gates([item], {"42": {"number": 100}}, config, None, {})
+        sova_verdict = {
+            "has_sova_review": True,
+            "verdict": "revise",
+            "review_head_sha": "sha-head",
+            "address_cycles": 3,
+        }
+        item = _build_pr_item(
+            pr, running=None, handoff=None, issue_num="42", sova_verdict=sova_verdict, max_address_cycles=3
+        )
 
-        mock_gates.assert_not_awaited()
-        assert "gate_result" not in item["primary_action"]
+        assert item["state"] == "pr_review_exhausted"
+        assert item["primary_action"]["id"] == "integrate"
+        assert "merge_blockers" not in item["primary_action"]
+        assert all(a["id"] != "integrate" for a in item["secondary_actions"])
 
 
 class TestParseSovaReviewFromGithub:
@@ -3210,10 +3192,6 @@ class TestJiraDisplayName:
         mock_cfg.external_reviews.enabled = False
         mock_cfg.github_user = "dsova06"
         mock_cfg.task_source.jira_display_name = "Damian Sova"
-        mock_cfg.integration_gates.ci_passed = False
-        mock_cfg.integration_gates.sova_reviewed = False
-        mock_cfg.integration_gates.coderabbit_reviewed = False
-        mock_cfg.integration_gates.threads_resolved = False
         monkeypatch.setattr("sova.config.loader.load_config", lambda _path: mock_cfg)
 
         result = await get_work_items(project_dir=tmp_path)
