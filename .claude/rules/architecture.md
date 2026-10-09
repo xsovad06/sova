@@ -241,6 +241,8 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Termination provenance is recorded at the point the signal is sent, not guessed at exit
 - The memory guard's runtime check lives in the watchdog's existing poll loop, not a new gate or poller
 - `sova run` installs its own SIGTERM handler so the grace period before SIGKILL is spent preserving work, not lost to the default disposition
+- A cross-vendor credential leak needs an allowlist, not a denylist, of routes that may receive the resolved key
+- A headless server has no display to open a browser on, and the UI must detect that before offering a browser-based reconnect action
 - Codex skills are mechanically rendered from `commands/*.md`, not hand-authored, and every command-derived `.agents/skills/` entry is name-prefixed rather than directory-separated; a standalone, distributed skill from `skills/` installs under its own bare name there instead
 
 ## Cross-References (domain-specific details)
