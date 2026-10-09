@@ -697,6 +697,17 @@ class LiteLLMProvider(LLMProvider):
         }
         if self.api_base:
             kwargs["api_base"] = self.api_base
+        if self.vendor == "vertex":
+            # litellm's Vertex AI dialect resolves the project/region itself
+            # from these kwargs rather than SOVA's ANTHROPIC_VERTEX_PROJECT_ID/
+            # CLOUD_ML_REGION env vars (it has no knowledge of either), so
+            # without them it falls back to its own ADC project and default
+            # us-central1 location, where Claude models are usually not
+            # enabled, silently missing the operator's configured deployment.
+            project = _vertex_project_id()
+            if project:
+                kwargs["vertex_project"] = project
+                kwargs["vertex_location"] = _vertex_region()
         return kwargs
 
     def _report_unpriced(self, model: str, requested_model: str, *, exc_info: bool = False) -> CostSource:
