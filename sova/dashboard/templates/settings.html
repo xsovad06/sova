@@ -133,7 +133,7 @@ function renderSettingRow(s) {
     '</td>' +
     '<td class="px-4 py-3 align-top text-right">' +
       '<div class="flex items-center gap-2 justify-end"' + clickAttr + '>' +
-        '<span class="config-val" data-key="' + escapeHtml(s.key) + '" data-type="' + escapeHtml(s.value_type) + '" data-options="' + escapeHtml(JSON.stringify(s.options || [])) + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
+        '<span class="config-val" data-key="' + escapeHtml(s.key) + '" data-type="' + escapeHtml(s.value_type) + '" data-options="' + escapeHtml(JSON.stringify(s.options || [])) + '" data-options-source="' + escapeHtml(s.options_source || '') + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
         moveToKeychainBtn +
         editBtn +
       '</div>' +
@@ -377,7 +377,13 @@ function _rawToInputString(raw) {
 
 function editConfig(key) {
   var span = document.querySelector('.config-val[data-key="' + key + '"]');
-  if (!span || span.querySelector('input')) return;
+  // A live editor is either an input or a select. renderSettingRow() only
+  // wires editConfig() for non-boolean, non-object rows, and formatValue()
+  // renders no input or select for those types, so either element present
+  // here is a live editor. Re-entering while one is mounted would overwrite
+  // origHtml with the editor's own markup, so a later cancel would restore a
+  // dead widget instead of the value.
+  if (!span || span.querySelector('input') || span.querySelector('select')) return;
 
   var currentVal;
   if (span.dataset.raw) {
@@ -389,11 +395,34 @@ function editConfig(key) {
 
   var fieldType = span.dataset.type || 'string';
 
+  // Captured here, before any editor replaces the cell, so cancelEdit()
+  // restores the pre-edit display even when one editor hands off to another
+  // (the enumerable upgrade below).
+  span.dataset.origHtml = span.innerHTML;
+
   if (fieldType === 'select') {
     editSelectConfig(key, span, currentVal);
-    return;
+  } else if (span.dataset.optionsSource && fieldType === 'list') {
+    editEnumerableListConfig(key, span, currentVal, span.dataset.optionsSource);
+  } else if (span.dataset.optionsSource) {
+    editEnumerableConfig(key, span, currentVal, span.dataset.optionsSource);
+  } else {
+    renderPlainTextEditor(key, span, currentVal, fieldType);
   }
+}
 
+// Swap the live editor into the value cell and hide the row's edit button.
+function _mountEditor(span, el) {
+  span.innerHTML = '';
+  span.appendChild(el);
+  var btn = span.closest('td').querySelector('button');
+  if (btn) btn.style.display = 'none';
+}
+
+// Plain free-text editor: the default for every field, and the fail-open
+// fallback for an enumerable field while its options are still being
+// fetched (or if that fetch never succeeds).
+function renderPlainTextEditor(key, span, currentVal, fieldType) {
   var input = document.createElement('input');
   if (fieldType === 'secret') {
     input.type = 'password';
@@ -409,21 +438,6 @@ function editConfig(key) {
   if (fieldType === 'list') {
     input.placeholder = _LIST_INPUT_HINT;
     input.title = _LIST_INPUT_HINT;
-  }
-
-  // Add datalist for model field with suggested values
-  if (key === 'agent.model') {
-    var datalistId = 'datalist-agent-model';
-    input.setAttribute('list', datalistId);
-    var datalist = document.createElement('datalist');
-    datalist.id = datalistId;
-    var modelOptions = ['opus', 'sonnet', 'haiku', 'fast', 'smart', 'cheap'];
-    modelOptions.forEach(function(opt) {
-      var option = document.createElement('option');
-      option.value = opt;
-      datalist.appendChild(option);
-    });
-    span.appendChild(datalist);
   }
 
   var saving = false;
@@ -443,13 +457,258 @@ function editConfig(key) {
     }
   };
 
-  span.dataset.origHtml = span.innerHTML;
-  span.innerHTML = '';
-  span.appendChild(input);
-  var btn = span.closest('td').querySelector('button');
-  if (btn) btn.style.display = 'none';
+  _mountEditor(span, input);
   input.focus();
   input.select();
+  return input;
+}
+
+// Per-source cache of the model-discovery fetch, keyed by options_source
+// (e.g. "llm" for GET /api/models/available?layer=llm). A rejected fetch, or
+// a 200 carrying models_service's own curated fallback, resolves to null so
+// every caller can fail open to the plain text input instead of leaving the
+// field stuck mid-request or stuck on the wrong provider's models.
+var _enumerableOptionsCache = {};
+
+function fetchEnumerableOptions(source) {
+  if (!_enumerableOptionsCache[source]) {
+    _enumerableOptionsCache[source] = fetchAPI(apiUrl('/models/available?layer=' + encodeURIComponent(source)))
+      .then(function(data) {
+        var byFamily = {};
+        (data.models || []).forEach(function(m) {
+          var family = m.family || 'unknown';
+          if (!byFamily[family]) byFamily[family] = [];
+          byFamily[family].push(m);
+        });
+        if (Object.keys(byFamily).length === 0) throw new Error('no models enumerated');
+        // models_service.get_available_models() answers 200 with source
+        // "curated" (an Anthropic-only fallback list) while a provider is
+        // unauthenticated, misconfigured, or timed out, rather than a 503.
+        // It deliberately never caches that result server-side so the next
+        // poll retries; a "curated" answer here must not be retained either,
+        // or the dropdown stays wrong (e.g. an Ollama/LiteLLM deployment
+        // shown Anthropic-only options) for the rest of the page's life.
+        if (data.source === 'curated') throw new Error('curated fallback, not a real answer');
+        return byFamily;
+      })
+      .catch(function() {
+        delete _enumerableOptionsCache[source];
+        return null;
+      });
+  }
+  return _enumerableOptionsCache[source];
+}
+
+var _ENUMERABLE_CUSTOM_VALUE = '__custom__';
+
+// Vendor-facing labels for optgroup headers, and the order groups render in.
+// Families not listed here (future ModelFamily additions) are appended
+// after the known ones, sorted alphabetically, so a new family never goes
+// missing, just unordered until this map catches up.
+var _FAMILY_LABELS = {
+  anthropic: 'Claude',
+  google: 'Gemini',
+  openai: 'OpenAI',
+  'openai-oss': 'gpt-oss',
+  local: 'Local',
+  unknown: 'Other',
+};
+var _FAMILY_ORDER = ['anthropic', 'google', 'openai', 'openai-oss', 'local', 'unknown'];
+
+function _familyLabel(family) {
+  return _FAMILY_LABELS[family] || family;
+}
+
+function _sortedFamilies(byFamily) {
+  var known = _FAMILY_ORDER.filter(function(f) { return byFamily[f]; });
+  var rest = Object.keys(byFamily)
+    .filter(function(f) { return _FAMILY_ORDER.indexOf(f) === -1; })
+    .sort();
+  return known.concat(rest);
+}
+
+// An enumerable field (e.g. agent.model) starts as the plain text editor so
+// it is always usable, then upgrades in place to a grouped <select> once
+// discovery resolves. Fetch failure or an empty result leaves the text
+// editor as the final state (fail open), per #1035's edge cases.
+function editEnumerableConfig(key, span, currentVal, source) {
+  var input = renderPlainTextEditor(key, span, currentVal, 'string');
+
+  fetchEnumerableOptions(source).then(function(byFamily) {
+    // The field may have been saved, cancelled, or re-edited while the
+    // fetch was in flight; only upgrade if our own text input is still live.
+    if (!byFamily || span.querySelector('input') !== input) return;
+    // A value the user has already typed is left alone too. The dropdown's
+    // blur semantics cancel rather than save (an untouched custom box must
+    // not clear the setting), so swapping the editor out from under a typed
+    // value would silently discard it on the next click away.
+    if (input.value !== currentVal) return;
+    renderEnumerableSelect(key, span, currentVal, byFamily);
+  });
+}
+
+// A list-valued enumerable field (e.g. agent.fallback_models) keeps the
+// plain comma-separated list editor as the source of truth and adds a
+// grouped <select> beside it that appends the chosen model id to that text
+// instead of replacing it. This avoids a dedicated repeatable-row list
+// editor while still making each entry typo-proof against the discovered
+// model catalog; the existing text input's own save/cancel handling is
+// untouched.
+function editEnumerableListConfig(key, span, currentVal, source) {
+  var input = renderPlainTextEditor(key, span, currentVal, 'list');
+
+  fetchEnumerableOptions(source).then(function(byFamily) {
+    if (!byFamily || span.querySelector('input') !== input) return;
+
+    var select = document.createElement('select');
+    select.className = 'sova-input text-xs py-1 mt-1';
+    var picker = document.createElement('option');
+    picker.value = '';
+    picker.textContent = 'Add model...';
+    picker.selected = true;
+    select.appendChild(picker);
+    _sortedFamilies(byFamily).forEach(function(family) {
+      var group = document.createElement('optgroup');
+      group.label = _familyLabel(family);
+      byFamily[family].forEach(function(m) {
+        var o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = m.display_name || m.id;
+        group.appendChild(o);
+      });
+      select.appendChild(group);
+    });
+
+    select.onchange = function() {
+      if (!select.value) return;
+      var parts = input.value.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+      if (parts.indexOf(select.value) === -1) parts.push(select.value);
+      input.value = parts.join(', ');
+      select.value = '';
+      input.focus();
+    };
+
+    // Clicking the picker blurs the text input first, and that input's own
+    // onblur (shared with every plain-text field) would otherwise tear the
+    // whole editor down via cancelEdit() before the click reaches the
+    // select. Treat a blur that hands focus to this select as internal,
+    // same as the full enumerable editor does for its select/custom-input
+    // pair.
+    var originalInputOnblur = input.onblur;
+    input.onblur = function(e) {
+      if (e && e.relatedTarget === select) return;
+      originalInputOnblur.call(input, e);
+    };
+
+    span.appendChild(select);
+  });
+}
+
+function renderEnumerableSelect(key, span, currentVal, byFamily) {
+  var select = document.createElement('select');
+  select.className = 'sova-input text-xs py-1';
+
+  var matched = false;
+  _sortedFamilies(byFamily).forEach(function(family) {
+    var group = document.createElement('optgroup');
+    group.label = _familyLabel(family);
+    byFamily[family].forEach(function(m) {
+      var o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.display_name || m.id;
+      if (m.id === currentVal) {
+        o.selected = true;
+        matched = true;
+      }
+      group.appendChild(o);
+    });
+    select.appendChild(group);
+  });
+
+  var customOpt = document.createElement('option');
+  customOpt.value = _ENUMERABLE_CUSTOM_VALUE;
+  customOpt.textContent = 'Custom...';
+  if (!matched) customOpt.selected = true;
+  select.appendChild(customOpt);
+
+  var customInput = document.createElement('input');
+  customInput.type = 'text';
+  customInput.className = 'sova-input text-xs py-1 mt-1';
+  customInput.placeholder = 'Custom model ID';
+  customInput.value = matched ? '' : currentVal;
+  customInput.style.display = matched ? 'none' : '';
+
+  var wrap = document.createElement('div');
+  wrap.appendChild(select);
+  wrap.appendChild(customInput);
+
+  var saving = false;
+
+  // cancelEdit() clears onblur only on the element it is handed, and this
+  // editor hands it the wrapper, so the custom box's own handler has to be
+  // dropped here or it stays armed on a detached node.
+  function cancelEnumerable() {
+    customInput.onblur = null;
+    cancelEdit(span, wrap);
+  }
+
+  // Focus moving between the select and the custom box is a handoff inside
+  // this editor, not an abandoned edit. Without this the unmatched state
+  // (custom box visible and focused, which is every field whose stored ID is
+  // not in the discovered list) tears itself down the instant the user
+  // reaches for the dropdown: the mousedown blurs the box, the blur removes
+  // the editor, and the click never lands on the select at all.
+  function isInternalFocusHandoff(e) {
+    return !!(e && e.relatedTarget && wrap.contains(e.relatedTarget));
+  }
+
+  select.onchange = function() {
+    if (select.value === _ENUMERABLE_CUSTOM_VALUE) {
+      customInput.style.display = '';
+      customInput.focus();
+      return;
+    }
+    saving = true;
+    saveConfig(key, select.value, span, wrap);
+  };
+  select.onblur = function(e) {
+    if (saving || isInternalFocusHandoff(e)) return;
+    // Belt and braces for the programmatic focus() above: whenever the custom
+    // box is showing AND actually holds focus, its own onblur owns the exit
+    // from this editor. Checking visibility alone is not enough: once focus
+    // has already moved from the box to the select, the box's onblur fired
+    // and returned early as an internal handoff, so no handler would own the
+    // exit if this one also deferred to it.
+    if (customInput.style.display !== 'none' && document.activeElement === customInput) return;
+    cancelEnumerable();
+  };
+  select.onkeydown = function(e) {
+    if (e.key === 'Escape') cancelEnumerable();
+  };
+
+  customInput.onkeydown = function(e) {
+    if (e.key === 'Enter') { saving = true; saveConfig(key, customInput.value, span, wrap); }
+    if (e.key === 'Escape') { cancelEnumerable(); }
+  };
+  customInput.onblur = function(e) {
+    if (saving || isInternalFocusHandoff(e)) return;
+    // Compare against the field's real original value, not the box's own
+    // (possibly blanked-for-display) contents: picking "Custom..." for a
+    // matched value shows the box empty even though currentVal is not, so a
+    // deliberate "pick Custom, leave it blank" is how an optional model
+    // field (e.g. roles.developer_model, which defaults to "") gets cleared,
+    // and must save the empty value rather than being treated as an
+    // abandoned pick that reverts to the old value.
+    if (customInput.value !== currentVal) {
+      saving = true;
+      saveConfig(key, customInput.value, span, wrap);
+    } else {
+      cancelEnumerable();
+    }
+  };
+
+  _mountEditor(span, wrap);
+  if (matched) select.focus(); else customInput.focus();
 }
 
 function editSelectConfig(key, span, currentVal) {
@@ -480,11 +739,7 @@ function editSelectConfig(key, span, currentVal) {
     if (e.key === 'Escape') cancelEdit(span, select);
   };
 
-  span.dataset.origHtml = span.innerHTML;
-  span.innerHTML = '';
-  span.appendChild(select);
-  var btn = span.closest('td').querySelector('button');
-  if (btn) btn.style.display = 'none';
+  _mountEditor(span, select);
   select.focus();
 }
 

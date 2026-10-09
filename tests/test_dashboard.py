@@ -5960,6 +5960,49 @@ class TestSettingsAPI:
                 assert "value" in s
                 assert "value_type" in s
 
+    async def test_grouped_config_exposes_options_source(self, client: AsyncClient) -> None:
+        """A model field must reach the client marked enumerable, or the settings
+        page has no way to know it should render a dropdown instead of a text box.
+        """
+        resp = await client.get("/api/settings/config/grouped")
+        assert resp.status_code == 200
+        settings = {s["key"]: s for g in resp.json()["groups"] for s in g["settings"]}
+        assert settings["agent.model"]["options_source"] == "llm"
+        assert settings["roles.developer_model"]["options_source"] == "llm"
+        # A non-model field must stay free text.
+        assert settings["llm.api_base"]["options_source"] == ""
+
+    def test_enumerable_editor_fails_open_on_fetch_failure(self) -> None:
+        """The enumerable model editor must never block on the discovery fetch:
+        editEnumerableConfig() has to mount the plain text editor first (synchronously)
+        and only upgrade to the grouped <select> afterwards, and fetchEnumerableOptions()'s
+        .catch() has to resolve to null rather than re-raising, or a slow/failed/empty
+        GET /api/models/available leaves a model field permanently unusable instead of
+        falling back to free text. This is a source-level regression guard (no JS test
+        harness exists in this repo) for the behavior that the Python-side tests above
+        cannot exercise.
+        """
+        template_path = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / "settings.html"
+        source = template_path.read_text(encoding="utf-8")
+
+        editor_start = source.index("function editEnumerableConfig(")
+        editor_body = source[editor_start : source.index("function renderEnumerableSelect(")]
+        mount_pos = editor_body.index("var input = renderPlainTextEditor(")
+        fetch_pos = editor_body.index("fetchEnumerableOptions(source)")
+        assert mount_pos < fetch_pos, (
+            "editEnumerableConfig() must mount the plain text editor before fetching "
+            "discovery options, so a slow fetch never blocks an editable field"
+        )
+
+        fetch_start = source.index("function fetchEnumerableOptions(")
+        fetch_body = source[fetch_start : source.index("var _ENUMERABLE_CUSTOM_VALUE")]
+        catch_pos = fetch_body.index(".catch(function()")
+        catch_body = fetch_body[catch_pos:]
+        assert "return null;" in catch_body, (
+            "fetchEnumerableOptions()'s .catch() must resolve to null (fail open) "
+            "rather than leaving the caller's .then() unresolved or throwing"
+        )
+
     async def test_grouped_config_has_descriptions(self, client: AsyncClient) -> None:
         resp = await client.get("/api/settings/config/grouped")
         data = resp.json()
