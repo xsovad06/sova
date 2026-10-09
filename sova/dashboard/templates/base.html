@@ -86,6 +86,14 @@
         <span class="sidebar-icon-wrap w-6 mr-3 flex items-center justify-center shrink-0">{{ icon("plus-circle", "w-[18px] h-[18px]") }}</span>
         <span class="sidebar-label">Add Project</span>
       </a>
+      <a href="{{ prefix }}/connections"
+         aria-label="Connections"
+         data-tooltip="Connections"
+         class="sidebar-nav-link flex items-center px-5 py-3 text-sm transition-colors
+                {{ 'bg-sidebar-active text-white' if page == 'connections' else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
+        <span class="sidebar-icon-wrap w-6 mr-3 flex items-center justify-center shrink-0">{{ icon("link", "w-[18px] h-[18px]") }}</span>
+        <span class="sidebar-label">Connections</span>
+      </a>
       <a href="{{ prefix }}/settings"
          aria-label="Settings"
          data-tooltip="Settings"
@@ -304,6 +312,9 @@
       </div>
       <div id="aw-error-section" class="px-3 py-2 border-t border-gray-700/50 hidden">
         <span class="text-xs text-red-400">Status unavailable</span>
+      </div>
+      <div class="px-3 py-2 border-t border-gray-700/50">
+        <a href="{{ prefix }}/connections" class="text-xs text-accent hover:underline">Manage connections &rarr;</a>
       </div>
     </div>
   </div>

@@ -8,11 +8,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from sova.config.models import ProjectConfig
 from sova.dashboard.project_context import get_project_dir
+from sova.dashboard.security import require_same_origin_csrf
 from sova.dashboard.services import settings_service
 from sova.dashboard.settings_meta import get_grouped_config, get_meta
 from sova.utils.logging import get_logger
@@ -218,6 +219,7 @@ async def get_config_grouped() -> dict:
 @router.post(
     "/settings/config/migrate-secret",
     responses={500: {"description": "Failed to migrate secret"}},
+    dependencies=[Depends(require_same_origin_csrf)],
 )
 async def migrate_secret_to_keyring(req: SecretKeyRequest) -> dict:
     """Move an already plaintext-stored secret into the OS keyring.
@@ -452,7 +454,11 @@ async def _reload_oversight_config_with_cfg(cfg: ProjectConfig) -> None:
                 agent.start()
 
 
-@router.post("/settings/config", responses={500: {"description": "Failed to update configuration"}})
+@router.post(
+    "/settings/config",
+    responses={500: {"description": "Failed to update configuration"}},
+    dependencies=[Depends(require_same_origin_csrf)],
+)
 async def update_config(req: ConfigUpdateRequest) -> dict:
     """Update a single configuration key."""
     try:

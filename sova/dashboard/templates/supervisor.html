@@ -329,7 +329,7 @@ async function enableSupervisor() {
   // 1. Save config
   const r = await fetch(`${apiBase}/settings/config`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonCsrfHeaders(),
     body: JSON.stringify({ key: 'supervisor.enabled', value: 'true' }),
   });
   const rBody = await r.json().catch(() => ({}));
@@ -373,7 +373,7 @@ async function disableSupervisor() {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
   const r = await fetch(`${apiBase}/settings/config`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonCsrfHeaders(),
     body: JSON.stringify({ key: 'supervisor.enabled', value: 'false' }),
   });
   const rBody = await r.json().catch(() => ({}));

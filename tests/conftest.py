@@ -159,3 +159,24 @@ def seed_config():
         _seed_project_settings(Path(project_dir), merged)
 
     return _seed
+
+
+def csrf_request_headers(client: Any) -> dict[str, str]:
+    """Build a legitimate double-submit CSRF pair for a require_same_origin_csrf route.
+
+    ``create_app()`` builds ``app.state.allowed_origins`` from the default
+    host/port (127.0.0.1:8111), not from the test transport's base_url
+    ("http://test"), so the Origin header must match that default bind rather
+    than the client's own base_url. Sets the cookie on *client* (httpx persists
+    cookies across requests on the same client) and returns the matching
+    Origin + X-CSRF-Token headers.
+
+    Shared here rather than copied per test module: three dashboard test files
+    need the same pair, and SonarCloud's new-code duplication gate counts
+    near-identical helper bodies.
+    """
+    from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
+
+    token = "test-csrf-token"
+    client.cookies.set(CSRF_COOKIE_NAME, token)
+    return {"origin": "http://localhost:8111", CSRF_HEADER_NAME: token}

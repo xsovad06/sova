@@ -232,12 +232,19 @@ class LiteLLMProvider(LLMProvider):
         fallback_model: str | None = None,
         api_base: str | None = None,
         timeout: float | None = None,
+        vendor: str = "litellm",
     ) -> None:
         _check_litellm()
         self.model = model
         self.fallback_model = fallback_model
         self.api_base = api_base
         self.timeout = timeout or self._DEFAULT_TIMEOUT
+        # Which cfg.llm.provider value constructed this instance (litellm,
+        # hybrid, openai, ollama, or vertex; see create_provider()).
+        # check_available() uses it to run a vendor-specific credential
+        # check instead of reporting "litellm is importable" as authenticated
+        # for a vendor it has no actual evidence about.
+        self.vendor = vendor
         # Warn once per model per provider instance: a long-running process can
         # invoke the same unpriced model many times, and repeating the warning
         # on every call would bury the signal it is meant to raise. Scoped to
@@ -591,9 +598,49 @@ class LiteLLMProvider(LLMProvider):
         yield StreamEvent(type="result", text=accumulated_text, result=result)
 
     async def check_available(self) -> tuple[bool, str]:
+        """Check LiteLLM availability plus, for a known vendor, its credentials.
+
+        ``litellm`` being importable only proves the package is installed; it
+        says nothing about whether the active vendor (openai/ollama/vertex)
+        can actually serve a request. ``vendor="litellm"``/``"hybrid"`` (generic
+        routing, no fixed vendor) keep the package-only check, since there is
+        no single credential shape to probe.
+        """
         if not _HAS_LITELLM:
             return False, "litellm is not installed -- pip install sova[litellm]"
         version = getattr(litellm, "__version__", "unknown")
+
+        if self.vendor == "openai":
+            if not os.environ.get("OPENAI_API_KEY", "").strip():
+                return False, f"litellm {version} but OPENAI_API_KEY is not set"
+            return True, f"litellm {version} (OPENAI_API_KEY set)"
+
+        if self.vendor == "ollama":
+            base = (self.api_base or _OLLAMA_DEFAULT_BASE).rstrip("/")
+            # api_base is caller-supplied (the Connections page lets an operator
+            # test a candidate endpoint before activating it), so only http/https
+            # are allowed: a file://, gopher://, or other exotic scheme turned
+            # this reachability probe into an SSRF primitive with a stronger
+            # blast radius than "is this host up".
+            if urlsplit(base).scheme not in ("http", "https"):
+                return False, f"litellm {version} but {base!r} is not an http(s) URL"
+            try:
+                async with httpx.AsyncClient(timeout=_ENUMERATION_HTTP_TIMEOUT) as client:
+                    resp = await client.get(f"{base}/api/tags")
+                resp.raise_for_status()
+            except Exception:  # noqa: BLE001 (any connectivity failure means "not reachable", detail not load-bearing)
+                return False, f"litellm {version} but Ollama is not reachable at {base}"
+            return True, f"litellm {version} (Ollama reachable at {base})"
+
+        if self.vendor == "vertex":
+            if not _vertex_project_id():
+                return False, f"litellm {version} but ANTHROPIC_VERTEX_PROJECT_ID is not set"
+            try:
+                await self._vertex_token_provider.get_token()
+            except Exception:  # noqa: BLE001 (ADC unavailable/expired all mean "not authenticated" here)
+                return False, f"litellm {version} but Google Application Default Credentials are not available"
+            return True, f"litellm {version} (Vertex AI credentials available)"
+
         return True, f"litellm {version}"
 
     async def _call(

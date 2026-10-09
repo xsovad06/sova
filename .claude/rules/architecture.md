@@ -31,7 +31,7 @@ SOVA has four main components:
 ### 3. Dashboard (`sova/dashboard/`)
 - Python/FastAPI web UI with app factory pattern (`create_app(project_dir=None)`)
 - Jinja2 templates + Tailwind CSS (prebuilt via `make css`), Catppuccin dark theme
-- 29 pages: dashboard, agents, run_detail, lifecycle, costs, pr_metrics, queue, reliability, specs, logs, settings, memory, setup, home, style_guide, roles, role_editor, commands, spec, control, overview, runs, tasks, base, supervisor, fleet, oversight, briefing, dependency_health
+- 30 pages: dashboard, agents, run_detail, lifecycle, costs, pr_metrics, queue, reliability, specs, logs, settings, connections, memory, setup, home, style_guide, roles, role_editor, commands, spec, control, overview, runs, tasks, base, supervisor, fleet, oversight, briefing, dependency_health
 - **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, Tailwind config in `tailwind.config.js` (repo root), SVG icon macro in `_icons.html`, component macros in `_components.html`. Run `make css` after adding or removing Tailwind classes in templates/JS (the prebuilt `static/tailwind.min.css` is checked in, not built by CI)
 - 33 API routers under `/api`: auth, overview, runs, costs, control, feed, handoff, lifecycle, memory, models, logs, tasks, queue, quota, reliability, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp, briefing, dependency_health
 - 49 services: run, cost, memory, models, control (facade), feed, handoff, lifecycle, queue, batch, reliability, work, work_item, work_state, work_verdict, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, output (re-export facade for core/output), role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness, dependency_health
@@ -138,6 +138,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Subprocess isolation via `start_new_session=True`
 - Environment scrubbing at the spawn boundary is the only correct fix for inherited provider-routing variables
 - `check_available()` must report authentication, not just installation
+- The Connections page builds a candidate provider without an `LLMConfig`, and only persists one that re-validates
 - Codex credential ownership: keyring-first, `CODEX_API_KEY` opt-in scoped to the Codex child only
 - Reviewer spawns as a trusted subprocess, not through a coding-agent runtime sandbox
 - `OPENAI_API_KEY` is scrubbed like `CODEX_API_KEY` and re-injected only for `spawn_direct()`'s trusted pipeline subprocess, and Codex prompt delivery moves to stdin when the CLI documents support for it
