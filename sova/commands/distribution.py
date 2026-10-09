@@ -37,6 +37,7 @@ class InstallResult:
 
     installed: int = 0
     skipped: int = 0
+    installed_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -51,6 +52,13 @@ class UpdateResult:
     # gone entirely, removed because its on-disk content still matched the
     # last-installed hash.
     removed: list[str] = field(default_factory=list)
+    updated_files: list[str] = field(default_factory=list)
+    # True when ``.sova-manifest.json`` itself was rewritten. A manifest repair
+    # (adopting an already-canonical file, or refreshing a stale recorded hash)
+    # counts as ``skipped`` and writes no command file, yet still dirties the
+    # target's working tree, so an event reporting only ``updated``/``files``
+    # would read as a pure no-op (issue #1139).
+    manifest_written: bool = False
 
 
 @dataclass
@@ -104,6 +112,49 @@ class ListResult:
 
     managed: list[ListEntry] = field(default_factory=list)
     local: list[ListEntry] = field(default_factory=list)
+
+
+def _log_install(event: str, target_dir: Path, result: InstallResult) -> None:
+    """Log one structured event naming every file an install wrote.
+
+    ``result.skipped`` here is always an upfront exclusion count (an install
+    never examines-then-skips a file the way an update does), so it is
+    reported as ``filtered`` to stay directly comparable with
+    ``_log_update()``'s ``filtered`` field, and ``skipped`` is a literal 0
+    since that population doesn't exist on the install side.
+    """
+    log.info(
+        event,
+        target_dir=str(target_dir),
+        written=result.installed,
+        skipped=0,
+        filtered=result.skipped,
+        files=result.installed_files,
+    )
+
+
+def _log_update(event: str, target_dir: Path, result: UpdateResult, *, filtered: int = 0) -> None:
+    """Log one structured event naming every file an update wrote, conflicted on, or pruned.
+
+    ``result.skipped`` conflates two different populations for commands: files
+    excluded upfront by the runtime adapter or ``include_autonomous`` (never
+    examined), and files ``_update_files()`` examined but found unchanged or
+    adopted as managed. ``filtered`` carries the former as its own field so a
+    log line can distinguish "excluded before inspection" from "inspected and
+    found current" instead of folding both into one ``skipped`` count.
+    """
+    log.info(
+        event,
+        target_dir=str(target_dir),
+        updated=result.updated,
+        written=result.updated,
+        skipped=result.skipped - filtered,
+        filtered=filtered,
+        files=result.updated_files,
+        conflicts=result.conflicts,
+        removed=result.removed,
+        manifest_written=result.manifest_written,
+    )
 
 
 def _render_workflow_references(content: str, workflow_names: list[str] | None) -> str:
@@ -185,9 +236,19 @@ def _install_files(
     variables: dict[str, str],
     *,
     workflow_names: list[str] | None = None,
+    result: InstallResult | None = None,
 ) -> InstallResult:
-    """Render and install source files into a target directory with manifest tracking."""
-    result = InstallResult()
+    """Render and install source files into a target directory with manifest tracking.
+
+    ``result``, when given, is mutated in place and also returned, so a
+    caller can hold a reference to it before calling and still see every file
+    written so far if this function raises partway through the loop (e.g. a
+    non-UTF-8 canonical source, or a path-traversal write). Without this, a
+    caller's own exception handling would lose the very "what already
+    happened" information it needs to log accurately.
+    """
+    if result is None:
+        result = InstallResult()
     hashes: dict[str, str] = {}
 
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -201,6 +262,7 @@ def _install_files(
         _write_rendered(target_dir, target_path, rendered)
         hashes[filename] = file_hash(rendered)
         result.installed += 1
+        result.installed_files.append(filename)
 
     create_manifest(target_dir, hashes)
     return result
@@ -215,8 +277,17 @@ def _update_files(
     filenames: list[str] | None = None,
     workflow_names: list[str] | None = None,
     prune_stale: bool = False,
+    result: UpdateResult | None = None,
 ) -> UpdateResult:
     """Incrementally update installed files with conflict detection.
+
+    ``result``, when given, is mutated in place and also returned, so a
+    caller can hold a reference to it before calling and still see every
+    file updated, conflicted, or pruned so far if this function raises
+    partway through the loop (e.g. a non-UTF-8 canonical source, or a
+    path-traversal write). Without this, a caller's own exception handling
+    would lose the very "what already happened" information it needs to log
+    accurately.
 
     ``filenames``, when not ``None``, restricts the update to that explicit
     subset of ``source_files`` (an empty list means "update nothing").
@@ -238,16 +309,18 @@ def _update_files(
     at all, so project-owned content can't be silently deleted no matter
     what ``force`` is.
     """
+    if result is None:
+        result = UpdateResult()
+
     if filenames is not None:
         allowed = set(filenames)
         source_files = [(filename, path) for filename, path in source_files if filename in allowed]
         if not source_files:
-            return UpdateResult()
+            return result
 
     manifest = read_manifest(target_dir)
     working = manifest if manifest is not None else Manifest()
     manifest_dirty = False
-    result = UpdateResult()
 
     for filename, source_path in source_files:
         content = _render_workflow_references(source_path.read_text(encoding="utf-8"), workflow_names)
@@ -288,6 +361,7 @@ def _update_files(
             working.commands[filename] = ManifestEntry(hash=new_hash, managed=True)
             manifest_dirty = True
             result.updated += 1
+            result.updated_files.append(filename)
             continue
 
         if not force and manifest_entry.hash == new_hash:
@@ -332,6 +406,7 @@ def _update_files(
         working.commands[filename] = ManifestEntry(hash=new_hash, managed=True)
         manifest_dirty = True
         result.updated += 1
+        result.updated_files.append(filename)
 
     if prune_stale and filenames is None:
         canonical_names = {filename for filename, _ in source_files}
@@ -376,6 +451,7 @@ def _update_files(
 
     if manifest_dirty:
         write_manifest(target_dir, working)
+        result.manifest_written = True
 
     return result
 
@@ -413,9 +489,18 @@ def install_commands(
     ]
     skipped = len(commands) - len(files)
 
-    result = _install_files(files, target_dir, build_variables(cfg), workflow_names=[cmd.name for cmd in commands])
+    result = InstallResult()
     result.skipped = skipped
-    log.info("commands.installed", count=result.installed, skipped=result.skipped)
+    try:
+        _install_files(
+            files,
+            target_dir,
+            build_variables(cfg),
+            workflow_names=[cmd.name for cmd in commands],
+            result=result,
+        )
+    finally:
+        _log_install("commands.installed", target_dir, result)
     return result
 
 
@@ -445,15 +530,20 @@ def update_commands(
     ]
     skipped = len(commands) - len(files)
 
-    result = _update_files(
-        files,
-        target_dir,
-        build_variables(cfg),
-        force=force,
-        filenames=filenames,
-        workflow_names=[cmd.name for cmd in commands],
-    )
-    result.skipped += skipped
+    result = UpdateResult()
+    try:
+        _update_files(
+            files,
+            target_dir,
+            build_variables(cfg),
+            force=force,
+            filenames=filenames,
+            workflow_names=[cmd.name for cmd in commands],
+            result=result,
+        )
+    finally:
+        result.skipped += skipped
+        _log_update("commands.updated", target_dir, result, filtered=skipped)
     return result
 
 
@@ -663,10 +753,15 @@ def install_guidelines(
     """Install guideline templates into a target project's rules directory."""
     files = _collect_guidelines(guidelines_dir)
     if not files:
-        return InstallResult()
+        result = InstallResult()
+        _log_install("guidelines.installed", target_dir, result)
+        return result
 
-    result = _install_files(files, target_dir, build_variables(cfg))
-    log.info("guidelines.installed", count=result.installed)
+    result = InstallResult()
+    try:
+        _install_files(files, target_dir, build_variables(cfg), result=result)
+    finally:
+        _log_install("guidelines.installed", target_dir, result)
     return result
 
 
@@ -685,9 +780,16 @@ def update_guidelines(
     """
     files = _collect_guidelines(guidelines_dir)
     if not files:
-        return UpdateResult()
+        result = UpdateResult()
+        _log_update("guidelines.updated", target_dir, result)
+        return result
 
-    return _update_files(files, target_dir, build_variables(cfg), force=force, filenames=filenames)
+    result = UpdateResult()
+    try:
+        _update_files(files, target_dir, build_variables(cfg), force=force, filenames=filenames, result=result)
+    finally:
+        _log_update("guidelines.updated", target_dir, result)
+    return result
 
 
 def _collect_skills(skills_dir: Path) -> list[tuple[str, Path]]:
@@ -716,9 +818,15 @@ def install_skills(skills_dir: Path, target_dir: Path, cfg: ProjectConfig) -> In
     """Install skill templates into a target project's skills directory."""
     files = _collect_skills(skills_dir)
     if not files:
-        return InstallResult()
-    result = _install_files(files, target_dir, build_variables(cfg))
-    log.info("skills.installed", count=result.installed)
+        result = InstallResult()
+        _log_install("skills.installed", target_dir, result)
+        return result
+
+    result = InstallResult()
+    try:
+        _install_files(files, target_dir, build_variables(cfg), result=result)
+    finally:
+        _log_install("skills.installed", target_dir, result)
     return result
 
 
@@ -750,8 +858,16 @@ def update_skills(
     """
     files = _collect_skills(skills_dir)
     if not files:
-        return UpdateResult()
-    return _update_files(files, target_dir, build_variables(cfg), force=force, prune_stale=prune_stale)
+        result = UpdateResult()
+        _log_update("skills.updated", target_dir, result)
+        return result
+
+    result = UpdateResult()
+    try:
+        _update_files(files, target_dir, build_variables(cfg), force=force, prune_stale=prune_stale, result=result)
+    finally:
+        _log_update("skills.updated", target_dir, result)
+    return result
 
 
 def diff_skills(skills_dir: Path, target_dir: Path, cfg: ProjectConfig) -> DiffResult:

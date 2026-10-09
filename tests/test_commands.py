@@ -4,8 +4,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def one_log_event(mock_info: MagicMock, event: str) -> dict[str, object]:
+    """Return the kwargs of the single `event` logged through `mock_info`."""
+    calls = [call for call in mock_info.call_args_list if call.args and call.args[0] == event]
+    assert len(calls) == 1
+    return calls[0].kwargs
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -600,6 +613,168 @@ class TestDistribution:
         assert len(result.conflicts) >= 1
         assert "standup.md" in result.conflicts
 
+    def test_update_commands_logs_outcome(self, canonical_dir: Path, target_dir: Path) -> None:
+        """update_commands() logs one structured event naming the updated files."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (canonical_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Updated.\nuser-invocable: true\ncategory: core\n---\n\nNew content.\n"
+        )
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            result = update_commands(canonical_dir, target_dir, cfg)
+
+        kwargs = one_log_event(mock_info, "commands.updated")
+        assert kwargs["target_dir"] == str(target_dir)
+        assert kwargs["updated"] == result.updated
+        assert kwargs["skipped"] == result.skipped
+        assert "develop.md" in kwargs["files"]
+
+    def test_update_commands_logs_filtered_separately_from_skipped(self, canonical_dir: Path, target_dir: Path) -> None:
+        """A command excluded upfront by include_autonomous=False is reported as
+        `filtered`, distinct from `skipped` (examined by _update_files and found
+        unchanged), rather than folded into the same count."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg, include_autonomous=False)
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            result = update_commands(canonical_dir, target_dir, cfg, include_autonomous=False)
+
+        kwargs = one_log_event(mock_info, "commands.updated")
+        assert kwargs["filtered"] == 1
+        assert kwargs["skipped"] == result.skipped - 1
+        assert kwargs["skipped"] >= 0
+
+    def test_update_commands_logs_partial_result_on_mid_loop_exception(
+        self, canonical_dir: Path, target_dir: Path
+    ) -> None:
+        """A write failure partway through the update loop must not drop the
+        `commands.updated` event: the files already written before the raise are
+        still named in it, not discarded along with the stack frame."""
+        from unittest.mock import patch
+
+        from sova.commands import distribution
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (canonical_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Updated.\nuser-invocable: true\ncategory: core\n---\n\nNew content.\n"
+        )
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Updated.\nuser-invocable: true\ncategory: management\n---\n\n"
+            "New content.\n"
+        )
+
+        real_write_rendered = distribution._write_rendered
+        written: list[str] = []
+
+        def flaky_write_rendered(target_dir_arg: Path, target_path: Path, rendered: str) -> None:
+            if len(written) == 1:
+                raise ValueError("boom")
+            real_write_rendered(target_dir_arg, target_path, rendered)
+            written.append(target_path.name)
+
+        with (
+            patch.object(distribution, "_write_rendered", side_effect=flaky_write_rendered),
+            patch("sova.commands.distribution.log.info") as mock_info,
+            pytest.raises(ValueError, match="boom"),
+        ):
+            update_commands(canonical_dir, target_dir, cfg)
+
+        assert written == ["develop.md"]
+        kwargs = one_log_event(mock_info, "commands.updated")
+        assert kwargs["files"] == ["develop.md"]
+
+    def test_install_commands_logs_target_and_filenames(self, canonical_dir: Path, target_dir: Path) -> None:
+        """install_commands() names the target directory and every file it wrote."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            result = install_commands(canonical_dir, target_dir, cfg)
+
+        kwargs = one_log_event(mock_info, "commands.installed")
+        assert kwargs["target_dir"] == str(target_dir)
+        assert kwargs["written"] == result.installed
+        assert kwargs["skipped"] == 0
+        assert kwargs["filtered"] == result.skipped
+        assert sorted(kwargs["files"]) == ["develop.md", "review-pr.md", "standup.md"]
+
+    def test_update_commands_logs_locally_modified_filename(self, canonical_dir: Path, target_dir: Path) -> None:
+        """A file skipped for local modification is named in the event, not folded into a count."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# My Custom Standup\n")
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Updated standup.\nuser-invocable: true\ncategory: management\n---\n\n"
+            "New standup.\n"
+        )
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            result = update_commands(canonical_dir, target_dir, cfg)
+
+        kwargs = one_log_event(mock_info, "commands.updated")
+        assert "standup.md" in kwargs["conflicts"]
+        assert kwargs["conflicts"] == result.conflicts
+        assert "standup.md" not in kwargs["files"]
+
+    def test_update_commands_logs_manifest_only_rewrite(self, canonical_dir: Path, target_dir: Path) -> None:
+        """A manifest repair writes no command file but still dirties the target, so it is logged."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.commands.manifest import ManifestEntry, read_manifest, write_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        # Corrupt one recorded hash so the next sync repairs the manifest only:
+        # the on-disk file already matches canonical, so nothing is rewritten.
+        manifest = read_manifest(target_dir)
+        assert manifest is not None
+        manifest.commands["develop.md"] = ManifestEntry(hash="stale", managed=True)
+        write_manifest(target_dir, manifest)
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            result = update_commands(canonical_dir, target_dir, cfg)
+
+        kwargs = one_log_event(mock_info, "commands.updated")
+        assert result.updated == 0
+        assert kwargs["files"] == []
+        assert kwargs["manifest_written"] is True
+        assert read_manifest(target_dir).commands["develop.md"].hash != "stale"  # type: ignore[union-attr]
+
+        # A genuine no-op leaves the manifest alone, so the two are distinguishable.
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            update_commands(canonical_dir, target_dir, cfg)
+
+        assert one_log_event(mock_info, "commands.updated")["manifest_written"] is False
+
     def test_update_non_utf8_local_file_does_not_raise(self, canonical_dir: Path, target_dir: Path) -> None:
         """update_commands() must not crash reading a locally-corrupted (non-UTF-8) managed file."""
         from sova.commands.distribution import install_commands, update_commands
@@ -789,6 +964,23 @@ class TestUpdateFilenamesAllowList:
 
         assert result.updated == 0
         assert "New develop." not in (target_dir / "develop.md").read_text()
+
+    def test_empty_filenames_still_logs_one_event(self, canonical_dir: Path, target_dir: Path) -> None:
+        """An explicit empty selection is a no-op, but it must still log exactly once."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_commands, update_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            update_commands(canonical_dir, target_dir, cfg, filenames=[])
+
+        kwargs = one_log_event(mock_info, "commands.updated")
+        assert kwargs["updated"] == 0
+        assert kwargs["files"] == []
 
     def test_empty_filenames_on_fresh_target_creates_no_manifest(self, canonical_dir: Path, target_dir: Path) -> None:
         """An explicit empty selection on a never-installed target must not create a manifest."""
@@ -1171,6 +1363,56 @@ class TestGuidelines:
         assert "security.md" not in forced.conflicts
         assert forced.updated == 1
 
+    def test_update_guidelines_logs_outcome(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """update_guidelines() logs one structured event naming the updated files."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_guidelines, update_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+        (guidelines_dir / "security.md").write_text("# Updated security guide for {{ project_name }}\n")
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            result = update_guidelines(guidelines_dir, rules_dir, cfg)
+
+        kwargs = one_log_event(mock_info, "guidelines.updated")
+        assert kwargs["target_dir"] == str(rules_dir)
+        assert kwargs["updated"] == result.updated
+        assert "security.md" in kwargs["files"]
+
+    def test_update_guidelines_missing_source_dir_still_logs_once(self, tmp_path: Path, rules_dir: Path) -> None:
+        """A missing guidelines source directory returns early, but must still log once."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import update_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            update_guidelines(tmp_path / "nonexistent", rules_dir, cfg)
+
+        kwargs = one_log_event(mock_info, "guidelines.updated")
+        assert kwargs["updated"] == 0
+        assert kwargs["files"] == []
+
+    def test_install_guidelines_missing_source_dir_still_logs_once(self, tmp_path: Path, rules_dir: Path) -> None:
+        """A missing guidelines source directory installs nothing, but must still log once."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_guidelines
+        from sova.config.models import ProjectConfig
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            install_guidelines(tmp_path / "nonexistent", rules_dir, ProjectConfig())
+
+        kwargs = one_log_event(mock_info, "guidelines.installed")
+        assert kwargs["target_dir"] == str(rules_dir)
+        assert kwargs["written"] == 0
+        assert kwargs["files"] == []
+
     def test_install_guidelines_empty_dir(self, tmp_path: Path, rules_dir: Path) -> None:
         """install_guidelines() handles missing guidelines directory gracefully."""
         from sova.commands.distribution import install_guidelines
@@ -1545,6 +1787,79 @@ class TestSkillsDistribution:
         cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
         result = update_skills(tmp_path / "nonexistent", skills_target, cfg)
         assert result.updated == 0
+
+    def test_update_skills_logs_outcome(self, skills_dir: Path, skills_target: Path) -> None:
+        """update_skills() logs one structured event naming the updated files."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_skills, update_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+        (skills_dir / "alpha" / "SKILL.md").write_text("# Updated alpha\n")
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            result = update_skills(skills_dir, skills_target, cfg)
+
+        kwargs = one_log_event(mock_info, "skills.updated")
+        assert kwargs["target_dir"] == str(skills_target)
+        assert kwargs["updated"] == result.updated
+        assert "alpha/SKILL.md" in kwargs["files"]
+        assert kwargs["removed"] == result.removed
+
+    def test_update_skills_logs_prune_stale_removals(self, skills_dir: Path, skills_target: Path) -> None:
+        """A prune_stale removal is visible in the logged event's `removed` field."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import update_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        self._install_prefixed_alpha(skills_dir, skills_target, cfg)
+
+        bare_source = skills_dir.parent / "skills-bare"
+        bare_source.mkdir()
+        (bare_source / "alpha").mkdir()
+        (bare_source / "alpha" / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            result = update_skills(bare_source, skills_target, cfg, prune_stale=True)
+
+        kwargs = one_log_event(mock_info, "skills.updated")
+        assert kwargs["removed"] == result.removed
+        assert "sova-alpha/SKILL.md" in kwargs["removed"]
+
+    def test_update_skills_missing_source_dir_still_logs_once(self, tmp_path: Path, skills_target: Path) -> None:
+        """A missing skills source directory returns early, but must still log once."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import update_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            update_skills(tmp_path / "nonexistent", skills_target, cfg)
+
+        kwargs = one_log_event(mock_info, "skills.updated")
+        assert kwargs["updated"] == 0
+        assert kwargs["files"] == []
+
+    def test_install_skills_missing_source_dir_still_logs_once(self, tmp_path: Path, skills_target: Path) -> None:
+        """A missing skills source directory installs nothing, but must still log once."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_skills
+        from sova.config.models import ProjectConfig
+
+        with patch("sova.commands.distribution.log.info") as mock_info:
+            install_skills(tmp_path / "nonexistent", skills_target, ProjectConfig())
+
+        kwargs = one_log_event(mock_info, "skills.installed")
+        assert kwargs["target_dir"] == str(skills_target)
+        assert kwargs["written"] == 0
+        assert kwargs["files"] == []
 
     def test_install_skills_empty_dir(self, tmp_path: Path, skills_target: Path) -> None:
         """install_skills() handles missing skills directory gracefully."""
