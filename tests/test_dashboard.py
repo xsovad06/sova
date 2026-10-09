@@ -7828,9 +7828,14 @@ class TestWaitAndFinalizeGraphBroadcast:
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        mock_ws_manager.broadcast_event.assert_awaited_once_with("graph_invalidated", Path("/tmp/test-project"))
+        project = Path("/tmp/test-project")
+        assert [c.args for c in mock_ws_manager.broadcast_event.await_args_list] == [
+            ("agent_finished", project),
+            ("graph_invalidated", project),
+        ]
 
-    async def test_skips_broadcast_when_already_terminal(self) -> None:
+    async def test_sends_only_agent_finished_when_already_terminal(self) -> None:
+        """A run that reached a terminal status on its own (awaiting_approval) still refreshes the Tasks list."""
         from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7863,7 +7868,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        mock_ws_manager.broadcast_event.assert_not_awaited()
+        mock_ws_manager.broadcast_event.assert_awaited_once_with("agent_finished", Path("/tmp/test-project"))
 
     async def test_broadcasts_even_when_auto_handoff_raises(self) -> None:
         from pathlib import Path
@@ -7905,7 +7910,188 @@ class TestWaitAndFinalizeGraphBroadcast:
             with pytest.raises(RuntimeError, match="handoff exploded"):
                 await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        mock_ws_manager.broadcast_event.assert_awaited_once_with("graph_invalidated", Path("/tmp/test-project"))
+        events = [c.args[0] for c in mock_ws_manager.broadcast_event.await_args_list]
+        assert events == ["agent_finished", "graph_invalidated"]
+
+    async def test_broadcasts_after_agent_removed_from_pool(self) -> None:
+        """A client refetching on agent_finished must not still see the agent as running (#1149)."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+        agent = AgentState(
+            run_id=45,
+            issue="1148",
+            role="researcher",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+        pa = ProjectAgents()
+        pa.agents[45] = agent
+
+        seen_running: list[bool] = []
+
+        async def _record(_event: str, _project_dir: Path) -> None:
+            seen_running.append(45 in pa.agents)
+
+        mock_ws_manager = MagicMock()
+        mock_ws_manager.broadcast_event = AsyncMock(side_effect=_record)
+
+        with (
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        assert seen_running == [False, False]
+
+    async def test_invalidates_queue_and_pr_caches(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_finalize, agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+        agent = AgentState(
+            run_id=46,
+            issue="1148",
+            role="researcher",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+        pa = ProjectAgents()
+        pa.agents[46] = agent
+
+        cfg = MagicMock()
+        cfg.github_repo = "owner/repo"
+        mock_ws_manager = MagicMock()
+        mock_ws_manager.broadcast_event = AsyncMock()
+
+        with (
+            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=False),
+            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.ipc.notifications.notify"),
+            patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
+            patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
+            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        invalidate_queue.assert_called_once_with(Path("/tmp/test-project"))
+        invalidate_prs.assert_called_once_with("owner/repo")
+
+    def test_queue_cache_invalidated_even_when_config_load_fails(self) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from sova.dashboard.services import agent_finalize
+
+        with (
+            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+            patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
+            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
+        ):
+            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"))
+
+        invalidate_queue.assert_called_once_with(Path("/tmp/test-project"))
+        invalidate_prs.assert_not_called()
+
+    def test_pr_cache_invalidated_even_when_queue_cache_invalidation_fails(self) -> None:
+        """A failed queue cache invalidation degrades to stale-until-TTL, not a propagated exception (#1149 review)."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services import agent_finalize
+
+        cfg = MagicMock()
+        cfg.github_repo = "owner/repo"
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.queue_service.invalidate_queue_cache", side_effect=OSError("stale symlink")),
+            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
+        ):
+            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"))
+
+        invalidate_prs.assert_called_once_with("owner/repo")
+
+    def test_pr_cache_untouched_without_github_repo(self) -> None:
+        """A Jira-only project has no repo-keyed PR cache entry to drop."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services import agent_finalize
+
+        cfg = MagicMock()
+        cfg.github_repo = ""
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
+            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
+        ):
+            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"))
+
+        invalidate_prs.assert_not_called()
+
+    async def test_broadcast_failure_does_not_raise(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_finalize
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState(run_id=47, issue="1", role="developer", process=None, project_dir=Path("/tmp/test-project"))
+        mock_ws_manager = MagicMock()
+        mock_ws_manager.broadcast_event = AsyncMock(side_effect=RuntimeError("socket gone"))
+
+        with (
+            patch.object(agent_finalize, "_invalidate_work_item_caches"),
+            patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
+        ):
+            await agent_finalize._announce_agent_finished(agent, status_changed=True)
+
+        mock_ws_manager.broadcast_event.assert_awaited_once()
+
+
+class TestAgentsPageRefreshWiring:
+    """The Agents page must refetch the Tasks list on agent exit, not only on its 30 s poll (#1149)."""
+
+    def _template(self) -> str:
+        from pathlib import Path
+
+        import sova.dashboard
+
+        return (Path(sova.dashboard.__file__).parent / "templates" / "agents.html").read_text(encoding="utf-8")
+
+    def test_handles_agent_finished_event(self) -> None:
+        html = self._template()
+        start = html.index("msg.type === 'agent_finished'")
+        handler = html[start : html.index("return;", start)]
+        assert "_scheduleWorkItemsRefresh()" in handler
+
+    def test_status_update_change_schedules_refresh(self) -> None:
+        html = self._template()
+        start = html.index("msg.type === 'status_update'")
+        handler = html[start : html.index("_wsLastRunStatuses = runStatuses;", start)]
+        assert "_scheduleWorkItemsRefresh()" in handler
+
+    def test_status_update_first_snapshot_schedules_refresh(self) -> None:
+        """The first snapshot (_wsLastRunStatuses still null) must also refresh (#1152)."""
+        html = self._template()
+        start = html.index("msg.type === 'status_update'")
+        condition_start = html.index("if (", start)
+        condition = html[condition_start : html.index(") {", condition_start)]
+        assert "_wsLastRunStatuses === null" in condition
 
 
 # ---------------------------------------------------------------------------
