@@ -2612,7 +2612,7 @@ function _connectAgentWs() {
           // before this connection opened, so it can carry a run's changed
           // status the page hasn't seen yet. But the far more common case is
           // the normal page-load sequence, where loadWorkItems() already ran
-          // moments ago and reports the exact same active runs -- only
+          // moments ago and reports the exact same active runs: only
           // refresh here if the two actually disagree.
           var activeRunIds = msg.runs
             .filter(function(r) { return !_STATUS_TERMINAL[r.status]; })
