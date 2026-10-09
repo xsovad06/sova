@@ -2061,6 +2061,33 @@ class TestCodexRuntime:
 
         mock_probe.assert_called_once()
 
+    async def test_resolve_stdin_capable_serializes_concurrent_first_probes(self) -> None:
+        """Two spawns racing the first, uncached resolution must share one
+        probe outcome instead of each entering the uncached branch and
+        letting whichever result lands last silently win (CodeRabbit
+        finding, runtime.py:971): an ambiguous first outcome must never be
+        overwritten by a later False."""
+        from sova.ipc.runtime import CodexRuntime, CodexStdinProbeAmbiguousError
+
+        rt = CodexRuntime()
+        release = asyncio.Event()
+
+        async def slow_ambiguous_probe() -> bool:
+            await release.wait()
+            raise CodexStdinProbeAmbiguousError("no PROMPT line found")
+
+        with patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", slow_ambiguous_probe):
+            task_a = asyncio.create_task(rt._resolve_stdin_capable())
+            task_b = asyncio.create_task(rt._resolve_stdin_capable())
+            await asyncio.sleep(0)
+            release.set()
+            with pytest.raises(CodexStdinProbeAmbiguousError):
+                await task_a
+            with pytest.raises(CodexStdinProbeAmbiguousError):
+                await task_b
+
+        assert isinstance(rt._stdin_capable, CodexStdinProbeAmbiguousError)
+
     @pytest.mark.parametrize(
         "prompt",
         [
@@ -2648,6 +2675,37 @@ class TestProbeCodexStdinPromptSupport:
         with patch("sova.ipc.runtime.run", return_value=probe):
             assert await _probe_codex_stdin_prompt_support() is False
 
+    async def test_returns_false_when_option_definition_contains_prompt_marker(self) -> None:
+        """An option like `--template <PROMPT>` carries the same `<PROMPT>`
+        marker as the real positional argument, but it is not PROMPT's own
+        definition line. A plain substring check would misread its stdin
+        mention as PROMPT's own support (CodeRabbit finding, runtime.py:725);
+        only a line that *leads* with the marker counts."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = (
+            "Options:\n"
+            "  --template <PROMPT>  Read a prompt template from stdin.\n"
+            "Arguments:\n"
+            "  <PROMPT>  Prompt to use.\n"
+        )
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
+    async def test_returns_false_when_stdin_mention_says_never(self) -> None:
+        """ "PROMPT is never read from stdin" must be recognized as a
+        negative: "never" was missing from the negation marker list, so a
+        clause containing only that word read as an unnegated "stdin"
+        mention and confirmed support that the CLI explicitly denies
+        (CodeRabbit finding, runtime.py:797)."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = "Arguments:\n  [PROMPT]\n          Prompt to use. PROMPT is never read\n          from stdin.\n"
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
     async def test_returns_true_for_alternate_prompt_wording(self) -> None:
         """A differently-worded but still PROMPT-scoped confirmation must match."""
         from sova.ipc.runtime import _probe_codex_stdin_prompt_support
@@ -2694,6 +2752,57 @@ class TestProbeCodexStdinPromptSupport:
         with patch("sova.ipc.runtime.run", return_value=probe):
             assert await _probe_codex_stdin_prompt_support() is False
 
+    async def test_recognizes_stdin_mention_on_wrapped_continuation_line(self) -> None:
+        """clap wraps a long description onto further, more-indented lines
+        with no blank line between them and PROMPT's own definition line.
+        Scanning only PROMPT's own line misses a stdin mention that landed on
+        a continuation line, silently failing this probe closed on real
+        multiline --help output even when stdin really is supported
+        (issue #1148)."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = (
+            "Arguments:\n"
+            "  [PROMPT]\n"
+            "          Prompt to use. If not specified as an argument, this\n"
+            "          will read the prompt from stdin.\n"
+        )
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is True
+
+    async def test_wrapped_continuation_negation_still_rejects(self) -> None:
+        """A negated stdin mention on a wrapped continuation line must still
+        not be read as confirmation."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = "Arguments:\n  [PROMPT]\n          Prompt to use. PROMPT is not read\n          from stdin ever.\n"
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
+    async def test_continuation_block_stops_at_next_argument_definition(self) -> None:
+        """A stdin mention under the NEXT argument's own block must not bleed
+        into PROMPT's block and falsely confirm support."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = (
+            "Arguments:\n  [PROMPT]\n          Prompt to use.\n  [OTHER]\n          Reads other config from stdin.\n"
+        )
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
+    async def test_continuation_block_stops_at_blank_line(self) -> None:
+        """A stdin mention in a later, unrelated section (separated by a
+        blank line) must not bleed into PROMPT's block."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = "Arguments:\n  [PROMPT]\n          Prompt to use.\n\nOptions:\n  --foo  Reads from stdin.\n"
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is False
+
     async def test_never_logs_help_text_verbatim_at_info_level(self) -> None:
         """Probe outcomes are debug-only noise; must never surface at info/warning."""
         from sova.ipc.runtime import _probe_codex_stdin_prompt_support
@@ -2706,6 +2815,79 @@ class TestProbeCodexStdinPromptSupport:
 
         mock_log.info.assert_not_called()
         mock_log.warning.assert_not_called()
+
+    async def test_raises_when_help_output_has_no_prompt_argument_line(self) -> None:
+        """Real --help output came back, but no PROMPT argument line can be
+        found at all: this is neither a confirmed yes nor no, and must fail
+        closed to an explicit error rather than silently defaulting to argv
+        (issue #1148), so a future CLI format change is loud, not invisible."""
+        from sova.ipc.runtime import CodexStdinProbeAmbiguousError, _probe_codex_stdin_prompt_support
+
+        help_text = "Arguments:\n  QUERY  Something unrelated to the prompt entirely.\n"
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            with pytest.raises(CodexStdinProbeAmbiguousError):
+                await _probe_codex_stdin_prompt_support()
+
+    async def test_spawn_raises_when_probe_is_ambiguous(self) -> None:
+        """An ambiguous probe must surface as an explicit spawn error, never
+        a silent fallback to argv delivery."""
+        from sova.ipc.runtime import CodexRuntime, CodexStdinProbeAmbiguousError
+
+        rt = CodexRuntime()
+        with patch(
+            "sova.ipc.runtime._probe_codex_stdin_prompt_support",
+            AsyncMock(side_effect=CodexStdinProbeAmbiguousError("no PROMPT line found")),
+        ):
+            with pytest.raises(CodexStdinProbeAmbiguousError):
+                await rt.spawn("fix the bug", Path("/tmp"))
+
+    async def test_usage_line_does_not_shadow_arguments_section(self) -> None:
+        """clap's synopsis line (`usage: codex exec [options] [prompt]`)
+        carries a [PROMPT] marker too, but never describes stdin support.
+        Matching it first would return the bare usage line as the only
+        block, missing the real Arguments section entry below it, and
+        wrongly report no stdin support (or wrongly raise ambiguous) on
+        every real CLI build (issue #1148 regression)."""
+        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+
+        help_text = (
+            "usage: codex exec [options] [prompt]\n"
+            "\n"
+            "Arguments:\n"
+            "  [PROMPT]  Prompt to use. If omitted, read from stdin.\n"
+        )
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            assert await _probe_codex_stdin_prompt_support() is True
+
+    async def test_usage_line_alone_is_still_ambiguous(self) -> None:
+        """A usage line is always skipped as a candidate PROMPT block, so if
+        it is the only line mentioning PROMPT at all, the probe must still
+        raise rather than treat the skipped usage line as a confirmed block."""
+        from sova.ipc.runtime import CodexStdinProbeAmbiguousError, _probe_codex_stdin_prompt_support
+
+        help_text = "usage: codex exec [options] [prompt]\n"
+        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
+        with patch("sova.ipc.runtime.run", return_value=probe):
+            with pytest.raises(CodexStdinProbeAmbiguousError):
+                await _probe_codex_stdin_prompt_support()
+
+    async def test_resolve_stdin_capable_caches_ambiguous_error(self) -> None:
+        """An ambiguous outcome must be cached like a definite True/False,
+        so the probe subprocess runs at most once per instance even when
+        every spawn would otherwise re-probe and re-raise."""
+        from sova.ipc.runtime import CodexRuntime, CodexStdinProbeAmbiguousError
+
+        rt = CodexRuntime()
+        probe = AsyncMock(side_effect=CodexStdinProbeAmbiguousError("no PROMPT line found"))
+        with patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", probe):
+            with pytest.raises(CodexStdinProbeAmbiguousError):
+                await rt._resolve_stdin_capable()
+            with pytest.raises(CodexStdinProbeAmbiguousError):
+                await rt._resolve_stdin_capable()
+
+        assert probe.call_count == 1
 
 
 class TestClaudeCodeParseEdgeCases:

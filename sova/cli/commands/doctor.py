@@ -257,7 +257,7 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
         cfg = load_config(project_dir)
         provider_type = cfg.llm.provider
         try:
-            provider = create_provider(cfg.llm)
+            provider = create_provider(cfg.llm, project_dir)
         except ValueError as exc:
             # Only ValueError from create_provider (unknown provider type).
             # pydantic.ValidationError also inherits ValueError in v2 but
@@ -284,13 +284,21 @@ async def _check_keyring_secrets(project_dir: Path) -> list[_Check]:
     """
     checks: list[_Check] = []
     try:
+        from sova.config.loader import load_config
         from sova.dashboard.services.settings_service import get_secret_locations
         from sova.llm import keyring_store
 
+        cfg = load_config(project_dir)
         for key, location in get_secret_locations(project_dir).items():
             if location != "keyring":
                 continue
-            if keyring_store.get_secret(key):
+            # Secrets are written to the per-(project, provider) scoped name
+            # (see scoped_secret_name()), not the bare key: a bare-key lookup
+            # here would only ever find the legacy unscoped entry, reporting
+            # a mismatch for every secret resolved through the scoped path
+            # even though it resolves correctly.
+            scoped = keyring_store.scoped_secret_name(key, project_dir, cfg.llm.provider)
+            if keyring_store.get_secret(scoped) or keyring_store.get_secret(key):
                 continue
             checks.append(
                 (

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 
@@ -106,6 +106,13 @@ class TestValidateValueType:
         result = _validate_value_type("agent.max_budget", "--1")
         assert result is not None
         assert "number" in result
+
+    def test_secret_value_never_echoed_in_validation_error(self) -> None:
+        """A settings update that fails validation must never leak the
+        submitted secret value in the error response (issue #1148 edge
+        case). Secrets return None (no error) here unconditionally, since
+        they have no options/number/boolean shape worth rejecting."""
+        assert _validate_value_type("llm.api_key", "sk-super-secret-value") is None
 
 
 class TestUpdateConfigIntegration:
@@ -326,6 +333,99 @@ class TestCrossFieldValidation:
         assert any("error" in r for r in results)
 
 
+class TestUpdateConfigMany:
+    """update_config_many(): atomic, all-or-nothing activation writes (issue #1148)."""
+
+    async def test_writes_all_keys_in_one_call(self, tmp_path) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config_many
+        from sova.db.session import get_session
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\n')
+
+        result = await update_config_many(
+            tmp_path, {"llm.provider": "ollama", "llm.model": "ollama/llama3.1", "llm.api_base": ""}
+        )
+        assert result == {"status": "ok"}
+
+        async with await get_session(project_dir=tmp_path) as session:
+            assert await get_setting(session, "llm.provider") == "ollama"
+            assert await get_setting(session, "llm.model") == "ollama/llama3.1"
+
+    async def test_validates_combined_state_not_per_key(self, tmp_path) -> None:
+        """Switching to a model-required provider while also setting its model
+        must succeed even though neither key alone would pass in isolation
+        against the starting state (the write-order dependency this function
+        replaces in activate_llm_candidate)."""
+        from sova.dashboard.services.settings_service import update_config_many
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\n')
+
+        result = await update_config_many(tmp_path, {"llm.provider": "ollama", "llm.model": "ollama/llama3.1"})
+        assert result == {"status": "ok"}
+
+    async def test_rejects_combination_that_is_never_loadable(self, tmp_path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import update_config_many
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\n')
+        original = toml_file.read_text()
+
+        result = await update_config_many(tmp_path, {"llm.provider": "ollama", "llm.model": ""})
+        assert "error" in result
+        assert toml_file.read_text() == original
+        assert load_config(tmp_path).llm.provider == "claude-code"
+
+    async def test_db_failure_rolls_back_every_key_not_just_the_failing_one(self, tmp_path) -> None:
+        """A mid-transaction DB failure must leave the previously active provider
+        fully intact, not a partial mix of old provider + new model (edge case)."""
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config_many
+        from sova.db.session import get_session
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\nmodel = "claude-opus-5"\n')
+
+        async def _boom(session, key, value):
+            if key == "llm.api_base":
+                raise RuntimeError("DB connection lost")
+
+        with patch("sova.config.db_loader.save_setting", side_effect=_boom):
+            result = await update_config_many(
+                tmp_path, {"llm.provider": "ollama", "llm.model": "ollama/llama3.1", "llm.api_base": ""}
+            )
+
+        assert "error" in result
+        async with await get_session(project_dir=tmp_path) as session:
+            # Neither llm.provider nor llm.model (written before the key that
+            # raised) made it into the database: the transaction rolled back
+            # as a whole rather than committing the earlier keys.
+            assert await get_setting(session, "llm.provider") is None
+            assert await get_setting(session, "llm.model") is None
+
+    async def test_unknown_key_is_rejected(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import update_config_many
+
+        result = await update_config_many(tmp_path, {"not.a.real.key": "x"})
+        assert "error" in result
+
+    async def test_secret_key_is_rejected(self, tmp_path) -> None:
+        """Secrets route through _save_secret's keyring-aware path, not a bulk DB write."""
+        from sova.dashboard.services.settings_service import update_config_many
+
+        result = await update_config_many(tmp_path, {"llm.api_key": "sk-ant-real"})
+        assert "error" in result
+
+    async def test_invalid_value_type_is_rejected(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import update_config_many
+
+        result = await update_config_many(tmp_path, {"agent.max_budget": "not-a-number"})
+        assert "error" in result
+
+
 class TestSecretMaskRoundTrip:
     async def test_masked_secret_is_noop(self, tmp_path) -> None:
         from sova.config.db_loader import get_setting
@@ -389,7 +489,11 @@ class TestSecretKeyringRouting:
 
         assert result.get("status") == "ok"
         assert "warning" not in result
-        mock_set.assert_called_once_with("llm.api_key", "sk-ant-real")
+        expected_name = keyring_store.scoped_secret_name("llm.api_key", tmp_path, "claude-code")
+        mock_set.assert_called_once_with(expected_name, "sk-ant-real")
+        # The submitted secret must never be echoed back verbatim in the
+        # response body (devtools/HAR captures, reverse-proxy access logs).
+        assert "sk-ant-real" not in result["value"]
 
         async with await get_session(project_dir=tmp_path) as session:
             db_value = await get_setting(session, "llm.api_key")
@@ -428,6 +532,41 @@ class TestSecretKeyringRouting:
             db_value = await get_setting(session, "llm.api_key")
         assert db_value == "sk-ant-real"
 
+    async def test_write_scopes_to_explicit_provider_not_active_one(self, tmp_path) -> None:
+        """The Connections page submits a provider-specific card; the write
+        must scope to the provider the key is *for*, not whichever provider
+        happens to be active (default is claude-code here), or every reader
+        (which scopes by the real target provider) would never find it."""
+        from sova.dashboard.services.settings_service import update_config
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret", return_value=True) as mock_set,
+        ):
+            result = await update_config(tmp_path, key="llm.api_key", value="sk-openai-real", provider="openai")
+
+        assert result.get("status") == "ok"
+        expected_name = keyring_store.scoped_secret_name("llm.api_key", tmp_path, "openai")
+        mock_set.assert_called_once_with(expected_name, "sk-openai-real")
+
+    async def test_unresolvable_provider_fails_the_write_instead_of_an_unknown_scope(self, tmp_path) -> None:
+        """A config-load failure during provider resolution must be a hard
+        write failure, not a silent write into an unreadable "unknown"
+        scope while reporting success (issue #1148)."""
+        from sova.dashboard.services import settings_service
+        from sova.llm import keyring_store
+
+        with (
+            patch.object(settings_service, "_active_llm_provider", return_value=None),
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret") as mock_set,
+        ):
+            result = await settings_service.update_config(tmp_path, key="llm.api_key", value="sk-ant-real")
+
+        assert "error" in result
+        mock_set.assert_not_called()
+
     async def test_empty_value_clears_keyring_and_db(self, tmp_path) -> None:
         from sova.config.db_loader import get_setting
         from sova.dashboard.services.settings_service import update_config
@@ -442,7 +581,11 @@ class TestSecretKeyringRouting:
 
         assert result.get("status") == "ok"
         assert "warning" not in result
-        mock_delete.assert_called_once_with("llm.api_key")
+        expected_name = keyring_store.scoped_secret_name("llm.api_key", tmp_path, "claude-code")
+        # The scoped entry is deleted, and so is the legacy unscoped entry
+        # (since "claude-code" is the currently-active provider here, and a
+        # clear is an explicit user action, not a read-only fallback).
+        assert mock_delete.call_args_list == [call(expected_name), call("llm.api_key")]
         async with await get_session(project_dir=tmp_path) as session:
             db_value = await get_setting(session, "llm.api_key")
         assert db_value == ""
@@ -492,6 +635,44 @@ class TestSecretKeyringRouting:
         async with await get_session(project_dir=tmp_path) as session:
             db_value = await get_setting(session, "mcp.token_secret")
         assert db_value == "hmac-secret"
+
+    async def test_write_scoped_to_active_provider(self, tmp_path) -> None:
+        """Switching llm.provider changes which scoped keyring entry a later
+        secret save targets, so two providers configured within the same
+        project over time never collide (issue #1148 edge case)."""
+        from sova.dashboard.services.settings_service import update_config
+        from sova.llm import keyring_store
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "openai"\nmodel = "gpt-5"\n')
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret", return_value=True) as mock_set,
+        ):
+            await update_config(tmp_path, key="llm.api_key", value="sk-openai-real")
+
+        expected_name = keyring_store.scoped_secret_name("llm.api_key", tmp_path, "openai")
+        mock_set.assert_called_once_with(expected_name, "sk-openai-real")
+
+    async def test_write_scoped_to_project_directory(self, tmp_path_factory) -> None:
+        """Two projects on the same machine must write to distinct scoped names."""
+        from sova.dashboard.services.settings_service import update_config
+        from sova.llm import keyring_store
+
+        project_a = tmp_path_factory.mktemp("project-a")
+        project_b = tmp_path_factory.mktemp("project-b")
+
+        with (
+            patch.object(keyring_store, "is_keyring_available", return_value=True),
+            patch.object(keyring_store, "set_secret", return_value=True) as mock_set,
+        ):
+            await update_config(project_a, key="llm.api_key", value="sk-a")
+            await update_config(project_b, key="llm.api_key", value="sk-b")
+
+        name_a = mock_set.call_args_list[0].args[0]
+        name_b = mock_set.call_args_list[1].args[0]
+        assert name_a != name_b
 
 
 class TestGetConfigMasking:
@@ -587,7 +768,8 @@ class TestMigrateSecretToKeyring:
             result = await migrate_secret_to_keyring(tmp_path, "llm.api_key")
 
         assert result.get("status") == "ok"
-        mock_migrate.assert_called_once_with("llm.api_key", "sk-ant-real")
+        expected_name = keyring_store.scoped_secret_name("llm.api_key", tmp_path, "claude-code")
+        mock_migrate.assert_called_once_with(expected_name, "sk-ant-real")
         async with await get_session(project_dir=tmp_path) as session:
             db_value = await get_setting(session, "llm.api_key")
         assert db_value == keyring_store.SENTINEL

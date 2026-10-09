@@ -13,7 +13,7 @@ import os
 import re
 import shutil
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
@@ -662,7 +662,17 @@ _CODEX_STDIN_PROBE_TIMEOUT = _VERSION_CHECK_TIMEOUT
 # Scanning line-by-line, rather than the whole blob, keeps an unrelated flag
 # elsewhere in --help that happens to mention "stdin" from forcing this same
 # negation check onto text that has nothing to do with it.
-_STDIN_NEGATION_MARKERS = ("not ", "cannot", "can't", "no stdin", "unsupported", "doesn't", "does not", "won't")
+_STDIN_NEGATION_MARKERS = (
+    "not ",
+    "cannot",
+    "can't",
+    "no stdin",
+    "unsupported",
+    "doesn't",
+    "does not",
+    "won't",
+    "never",
+)
 
 # clap (Codex CLI's arg parser) names the PROMPT positional inside <> when
 # required or [] when optional on its own definition line. Requiring one of
@@ -670,6 +680,76 @@ _STDIN_NEGATION_MARKERS = ("not ", "cannot", "can't", "no stdin", "unsupported",
 # incidental stdin mention (e.g. "--input reads additional config from
 # stdin") from being misread as PROMPT's own stdin support.
 _PROMPT_ARG_MARKERS = ("<prompt>", "[prompt]")
+
+
+class CodexStdinProbeAmbiguousError(RuntimeError):
+    """Raised when ``codex exec --help`` succeeded but its PROMPT argument
+    line could not be located at all.
+
+    This is distinct from a probe that could not run (CLI missing, timed
+    out, non-zero exit): those are infrastructure failures and keep the
+    pre-#1148 fallback to argv delivery, since a broken or absent CLI can't
+    attempt a spawn either way. This error is the one case the probe spec
+    calls out explicitly: real output came back but didn't match the
+    documented shape at all (e.g. a future CLI's ``--help`` restructures its
+    positional-argument section), so neither "stdin supported" nor "stdin
+    unsupported" can be asserted. Silently defaulting to argv here would mean
+    a CLI format change permanently and invisibly reverts every spawn to the
+    argv-visibility hazard this probe exists to close, with nothing in the
+    logs to say why. Raising instead surfaces that drift at spawn time as an
+    explicit, actionable error (issue #1148).
+    """
+
+
+def _prompt_argument_blocks(lines: list[str]) -> Iterator[str]:
+    """Yield every PROMPT argument block: its definition line plus wrapped continuation lines.
+
+    clap (and many other CLI arg parsers) wraps a long argument description
+    onto further lines indented deeper than the argument's own definition
+    line, with no blank line separating them. Scanning only the single line
+    carrying the ``<prompt>``/``[prompt]`` marker misses a stdin mention that
+    landed on one of those continuation lines, which silently failed this
+    probe closed on the installed CLI's actual (multiline) ``--help`` output
+    even when stdin delivery really was documented: every build gets argv
+    delivery instead of stdin, defeating the hazard this probe exists to
+    close (issue #1148). This groups each wrapped block before any "stdin"
+    mention is checked, so a description that happens to wrap still counts.
+
+    The CLI's synopsis/usage line (e.g. ``usage: codex exec [options]
+    [prompt]``) also carries a ``[prompt]`` marker but never describes stdin
+    support; it is skipped so it cannot shadow the real Arguments section
+    entry that follows it. Every remaining marker line yields its own block,
+    since the installed CLI's actual PROMPT documentation might not be the
+    first marker line found.
+
+    A continuation line is identified by strictly deeper indentation than
+    the marker line itself, and the block ends at the first blank line or a
+    line indented no deeper than the marker line (the start of the next
+    argument/option's own definition). Yields nothing when no line carries
+    a PROMPT marker at all.
+    """
+    for idx, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("usage:"):
+            continue
+        # The marker must lead the stripped line (clap's own positional
+        # argument definition, e.g. "[PROMPT]  Description..."), not appear
+        # embedded inside another option's own definition (e.g.
+        # "--template <PROMPT>  ..."), which would otherwise match this
+        # substring check and let that unrelated option's description
+        # stand in for PROMPT's own stdin support.
+        if not any(stripped.startswith(marker) for marker in _PROMPT_ARG_MARKERS):
+            continue
+        indent = len(line) - len(line.lstrip())
+        block = [line]
+        for cont in lines[idx + 1 :]:
+            if not cont.strip():
+                break
+            cont_indent = len(cont) - len(cont.lstrip())
+            if cont_indent <= indent:
+                break
+            block.append(cont)
+        yield "\n".join(block)
 
 
 async def _probe_codex_stdin_prompt_support() -> bool:
@@ -684,17 +764,28 @@ async def _probe_codex_stdin_prompt_support() -> bool:
 
     Uses the shared ``run()`` helper, like ``_probe_codex_auth()`` above,
     including the same scrubbed environment (``--help`` needs no credential
-    at all, so no ``extra_env`` re-injection is needed here): any failure,
-    timeout, non-zero exit, or ambiguous output fails closed to ``False``
-    (argv delivery, today's behavior): wrongly assuming stdin support risks
-    the child blocking on an interactive terminal read instead of the prompt
-    it was supposed to receive, a hang strictly worse than the
-    argv-visibility hazard this probe exists to close. Confirmation requires
-    the line to be PROMPT's own argument-definition line (see
+    at all, so no ``extra_env`` re-injection is needed here). A probe that
+    could not run at all (CLI missing, timed out, non-zero exit) fails
+    closed to ``False`` (argv delivery, today's behavior): wrongly assuming
+    stdin support risks the child blocking on an interactive terminal read
+    instead of the prompt it was supposed to receive, a hang strictly worse
+    than the argv-visibility hazard this probe exists to close. Confirmation
+    requires the line to be PROMPT's own argument-definition line (see
     ``_PROMPT_ARG_MARKERS``); an unrelated option that happens to mention
     "stdin" must not match, and a line mentioning "stdin" in a negated sense
-    (e.g. "not read from stdin") is exactly this kind of ambiguous case and
-    must not be read as confirmation either.
+    (e.g. "not read from stdin") is a confirmed negative, not an ambiguous
+    one. The PROMPT line is grouped with its wrapped continuation lines
+    (``_prompt_argument_block()``) before any of this is checked, since a
+    real CLI's description commonly wraps onto further, more-indented lines
+    rather than staying on PROMPT's own line.
+
+    If real ``--help`` output came back but no PROMPT argument line can be
+    found at all, that is neither a confirmed yes nor a confirmed no: it
+    means this probe no longer understands the installed CLI's ``--help``
+    shape. That case raises ``CodexStdinProbeAmbiguousError`` instead of
+    silently defaulting to argv, so a future CLI format change is a loud
+    spawn-time error rather than a silent, permanent reversion to the
+    argv-visibility hazard (issue #1148).
     """
     probe_env = _inject_agent_marker(None, extra_scrub=ANTHROPIC_CREDENTIAL_VARS)
     try:
@@ -705,16 +796,30 @@ async def _probe_codex_stdin_prompt_support() -> bool:
 
     if result.timed_out or not result.success:
         return False
-    for line in result.stdout.lower().splitlines():
-        if not any(marker in line for marker in _PROMPT_ARG_MARKERS):
-            continue
+
+    lines = result.stdout.lower().splitlines()
+    found_any = False
+    for block in _prompt_argument_blocks(lines):
+        found_any = True
         # Negation is checked per clause, not per line: a line like "if not
         # provided as an argument, read from stdin" negates "provided as an
         # argument", not "read from stdin". Checking the whole line would
-        # misread that unrelated "not" as negating stdin support.
-        for clause in re.split(r"[.,]", line):
+        # misread that unrelated "not" as negating stdin support. The
+        # block's lines are joined with a space (not kept as separate
+        # lines) before splitting into clauses, so a sentence that wraps
+        # exactly at a continuation line's boundary (e.g. "...is not
+        # read\nfrom stdin...") still reads as one clause rather than
+        # splitting the negation away from the "stdin" mention it governs.
+        joined = " ".join(block.splitlines())
+        for clause in re.split(r"[.,]", joined):
             if "stdin" in clause and not any(marker in clause for marker in _STDIN_NEGATION_MARKERS):
                 return True
+
+    if not found_any:
+        raise CodexStdinProbeAmbiguousError(
+            "codex exec --help did not contain a recognizable PROMPT argument line; "
+            "cannot confirm stdin prompt delivery support"
+        )
     return False
 
 
@@ -807,12 +912,19 @@ class CodexRuntime(AgentRuntime):
     ``codex exec --help`` once per runtime instance (cached on
     ``self._stdin_capable``) and ``spawn()`` only omits the PROMPT positional
     (delivering the prompt via ``stdin_payload`` instead, the same mechanism
-    ``ClaudeCodeRuntime.spawn()`` uses) when that probe answered yes. A CLI
-    build the probe cannot read, or one that fails/times out, keeps the
-    prompt on argv exactly as before (issue #1127), which still widens the
-    known ``ps``/``pkill -f`` argv-visibility hazard (see
-    ``sova/llm/cli_args.py``) on that fallback path, since the guardrail
-    preamble makes the argv string longer. The preamble's COMMAND
+    ``ClaudeCodeRuntime.spawn()`` uses) when that probe answered yes. There
+    are two distinct failure modes, handled differently: a probe that could
+    not run at all (CLI missing, timed out, non-zero exit) keeps the prompt
+    on argv exactly as before (issue #1127), which still widens the known
+    ``ps``/``pkill -f`` argv-visibility hazard (see ``sova/llm/cli_args.py``)
+    on that fallback path, since the guardrail preamble makes the argv
+    string longer. A probe that *did* run but whose output no longer
+    matches the documented PROMPT-argument shape (a future CLI restructuring
+    its ``--help``) is a different, louder failure: it raises
+    ``CodexStdinProbeAmbiguousError`` out of ``spawn()`` instead of silently
+    defaulting to argv (issue #1148), since silent fallback there would mean
+    a CLI format change permanently and invisibly reopens the
+    argv-visibility hazard with nothing in the logs to say why. The preamble's COMMAND
     INTERPRETATION clause deliberately avoids embedding a literal
     ``sova run N``-shaped example for exactly this reason (a fixed example
     substring would put every Codex agent's argv inside reach of a
@@ -838,8 +950,20 @@ class CodexRuntime(AgentRuntime):
         self._parser = CodexStreamParser()
         # Cached on first spawn: None means "not probed yet", so the real
         # probe only ever runs once per runtime instance rather than once per
-        # spawn. See _resolve_stdin_capable().
-        self._stdin_capable: bool | None = None
+        # spawn. An ambiguous outcome is cached too (as the raised
+        # exception instance), not just a definite True/False, so a CLI
+        # build whose --help the probe cannot read still only pays the
+        # subprocess cost once per instance instead of re-probing (and
+        # re-raising) on every spawn. See _resolve_stdin_capable().
+        self._stdin_capable: bool | CodexStdinProbeAmbiguousError | None = None
+        # Guards the first-probe race: concurrent spawns on the same runtime
+        # instance both seeing _stdin_capable is None would otherwise both
+        # enter the uncached branch, and whichever call's result lands last
+        # (True/False/exc) wins, silently overwriting an ambiguous outcome
+        # with a plain False. The lock serializes resolution so only one
+        # subprocess probe ever runs, and every concurrent caller waits for
+        # and shares that single outcome.
+        self._stdin_capable_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -857,9 +981,31 @@ class CodexRuntime(AgentRuntime):
     async def _resolve_stdin_capable(self) -> bool:
         """Resolve, and cache on this instance, whether the installed Codex
         CLI supports a stdin-delivered prompt (see
-        ``_probe_codex_stdin_prompt_support()``)."""
+        ``_probe_codex_stdin_prompt_support()``).
+
+        An ambiguous outcome (``CodexStdinProbeAmbiguousError``) is cached
+        too, and re-raised on every subsequent call, so the probe subprocess
+        runs at most once per instance even when the installed CLI's
+        ``--help`` is unrecognizable: without this, every ``spawn()`` would
+        re-probe and re-raise instead of failing once and staying failed.
+
+        The first resolution is serialized by ``self._stdin_capable_lock``:
+        without it, two concurrent spawns racing past the ``is None`` check
+        both probe, and whichever result is assigned last wins, able to
+        silently overwrite a cached ``CodexStdinProbeAmbiguousError`` with a
+        plain ``False``. Only the probe itself needs the lock; once
+        ``self._stdin_capable`` is set, every caller returns (or re-raises)
+        from cache without reacquiring it.
+        """
         if self._stdin_capable is None:
-            self._stdin_capable = await _probe_codex_stdin_prompt_support()
+            async with self._stdin_capable_lock:
+                if self._stdin_capable is None:
+                    try:
+                        self._stdin_capable = await _probe_codex_stdin_prompt_support()
+                    except CodexStdinProbeAmbiguousError as exc:
+                        self._stdin_capable = exc
+        if isinstance(self._stdin_capable, CodexStdinProbeAmbiguousError):
+            raise self._stdin_capable
         return self._stdin_capable
 
     async def spawn(

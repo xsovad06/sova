@@ -1124,7 +1124,7 @@ class TestReloadAllConfigs:
             err = await _reload_all_configs(project_dir, "llm.model")
 
         assert err is None
-        mock_reload.assert_called_once_with(cfg)
+        mock_reload.assert_called_once_with(cfg, project_dir)
 
     @pytest.mark.asyncio
     async def test_runtime_key_reloads_runtime(self) -> None:

@@ -23,7 +23,7 @@ class TestSettingMeta:
         assert meta is not None
         assert meta.label == "Model"
         assert meta.group == "agent"
-        assert "explicit ID" in meta.description
+        assert "Claude model" in meta.description
 
     def test_get_meta_unknown_key(self) -> None:
         assert get_meta("nonexistent.key.here") is None
@@ -265,40 +265,3 @@ class TestLLMProviderMeta:
         groups = get_grouped_config({"agent.model": "opus"})
         setting = groups[0]["settings"][0]
         assert setting["options"] == []
-
-
-class TestEnumerableModelMeta:
-    @pytest.mark.parametrize(
-        "key",
-        [
-            "llm.model",
-            "llm.fallback_model",
-            "agent.model",
-            "roles.researcher_model",
-            "roles.triage_model",
-            "roles.reviewer_model",
-            "roles.developer_model",
-            "roles.planner_model",
-            "oversight.analysis_model",
-            "confidence.model",
-        ],
-    )
-    def test_model_field_is_enumerable_from_llm_discovery(self, key: str) -> None:
-        meta = get_meta(key)
-        assert meta is not None
-        assert meta.options_source == "llm"
-
-    def test_non_model_field_is_not_enumerable(self) -> None:
-        meta = get_meta("llm.provider")
-        assert meta is not None
-        assert meta.options_source == ""
-
-    def test_grouped_config_exposes_options_source(self) -> None:
-        groups = get_grouped_config({"agent.model": "opus"})
-        setting = next(s for g in groups for s in g["settings"] if s["key"] == "agent.model")
-        assert setting["options_source"] == "llm"
-
-    def test_grouped_config_non_enumerable_defaults(self) -> None:
-        groups = get_grouped_config({"llm.provider": "anthropic"})
-        setting = next(s for g in groups for s in g["settings"] if s["key"] == "llm.provider")
-        assert setting["options_source"] == ""

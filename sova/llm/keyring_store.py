@@ -21,6 +21,8 @@ literal ``SENTINEL`` string.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sova.utils.logging import get_logger
 
 try:
@@ -116,8 +118,31 @@ def delete_secret(name: str) -> bool:
         return False
 
 
-def resolve_secret(name: str, db_value: str | None) -> str:
+def scoped_secret_name(name: str, project_dir: str | Path, provider: str) -> str:
+    """Build the per-project, per-provider keyring entry name for *name*.
+
+    A bare, global name (e.g. ``"llm.api_key"``) would let two SOVA projects
+    on the same machine, or two providers configured within the same
+    project over time, read or overwrite each other's credential in the one
+    shared OS keychain namespace (``SERVICE_NAME``). The scoped name embeds
+    the resolved absolute project path and the provider id, so each
+    (project, provider) pair gets its own keyring entry. The bare ``name``
+    remains the legacy, unscoped entry that ``resolve_secret()`` can still
+    read as a read-only fallback via its ``legacy_name`` parameter.
+    """
+    resolved_dir = str(Path(project_dir).resolve())
+    return f"{name}:{provider}:{resolved_dir}"
+
+
+def resolve_secret(name: str, db_value: str | None, *, legacy_name: str | None = None) -> str:
     """Resolve a secret's live value: keyring first, then a plaintext database value.
+
+    ``name`` is normally a scoped key built by :func:`scoped_secret_name`.
+    When the scoped entry is absent, ``legacy_name`` (if given and different
+    from ``name``) is read as a read-only fallback: a pre-upgrade global
+    entry (e.g. the old unscoped ``"llm.api_key"``) is never written to or
+    deleted by this function, only read, so upgrading to scoped storage never
+    destructively migrates it.
 
     ``db_value`` is treated as absent when it equals ``SENTINEL`` (the value
     was moved to the keyring but the keychain entry is now gone: deleted from
@@ -128,6 +153,10 @@ def resolve_secret(name: str, db_value: str | None) -> str:
     value = get_secret(name)
     if value:
         return value
+    if legacy_name and legacy_name != name:
+        legacy_value = get_secret(legacy_name)
+        if legacy_value:
+            return legacy_value
     if db_value and db_value != SENTINEL:
         return db_value
     return ""

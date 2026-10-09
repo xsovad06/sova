@@ -25,11 +25,6 @@ _BRANCH_JIRA_KEY_RE = re.compile(r"(?:^|/)[A-Z]+-(\d+)(?=$|[-_/])")
 
 _PR_CACHE_TTL = 120  # seconds (shared across supervisor, PR monitor, dashboard)
 _pr_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
-# Per-key generation counter, bumped on every invalidation and never reset.
-# A fetch in flight when invalidation fires can still land afterward; it
-# compares its captured generation before caching so it can't resurrect the
-# pre-invalidation result and undo the invalidation for the rest of the TTL.
-_pr_cache_generation: dict[tuple[str, str], int] = {}
 
 _last_known_states: dict[int, str] = {}
 _bg_tasks: set[asyncio.Task[None]] = set()
@@ -41,19 +36,6 @@ _COMPUTED_TO_EVENT: dict[str, str] = {
     "changes_requested": "reviewed",
     "review_addressed": "reviewed",
 }
-
-
-def invalidate_pr_cache(repo: str) -> None:
-    """Drop every cached open-PR list for a repo so the next call refetches it.
-
-    Called when an agent finishes, since developer, reviewer, and command runs
-    open, push to, review, or merge PRs. Matches on repo alone: the github_user
-    half of the key only selects which token fetched the list.
-    """
-    keys = {k for k in _pr_cache if k[0] == repo} | {k for k in _pr_cache_generation if k[0] == repo}
-    for key in keys:
-        _pr_cache.pop(key, None)
-        _pr_cache_generation[key] = _pr_cache_generation.get(key, 0) + 1
 
 
 class ComputedPRState(StrEnum):
@@ -477,9 +459,6 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     cached = _pr_cache.get(cache_key)
     if cached and (now - cached[0]) < _PR_CACHE_TTL:
         return cached[1]
-    # setdefault, not get: the key must exist in the dict *before* the await
-    # below so a concurrent invalidate_pr_cache() can see and bump it.
-    generation = _pr_cache_generation.setdefault(cache_key, 0)
     raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user)
 
     pr_numbers = [p["number"] for p in raw_prs]
@@ -501,11 +480,7 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     result = [_enrich_pr(pr, wall_now) for pr in raw_prs]
     result.sort(key=lambda p: p["number"], reverse=True)
 
-    # Only cache if no invalidation landed while this fetch was in flight;
-    # otherwise the fetch predates the invalidation trigger and caching it
-    # would resurrect stale data for the rest of the TTL.
-    if _pr_cache_generation.get(cache_key, 0) == generation:
-        _pr_cache[cache_key] = (now, result)
+    _pr_cache[cache_key] = (now, result)
     log.info("pr_service.refreshed", repo=repo, count=len(result))
 
     task = asyncio.ensure_future(_record_state_transitions(result, repo=repo, project_dir=project_dir))

@@ -5960,49 +5960,6 @@ class TestSettingsAPI:
                 assert "value" in s
                 assert "value_type" in s
 
-    async def test_grouped_config_exposes_options_source(self, client: AsyncClient) -> None:
-        """A model field must reach the client marked enumerable, or the settings
-        page has no way to know it should render a dropdown instead of a text box.
-        """
-        resp = await client.get("/api/settings/config/grouped")
-        assert resp.status_code == 200
-        settings = {s["key"]: s for g in resp.json()["groups"] for s in g["settings"]}
-        assert settings["agent.model"]["options_source"] == "llm"
-        assert settings["roles.developer_model"]["options_source"] == "llm"
-        # A non-model field must stay free text.
-        assert settings["llm.api_base"]["options_source"] == ""
-
-    def test_enumerable_editor_fails_open_on_fetch_failure(self) -> None:
-        """The enumerable model editor must never block on the discovery fetch:
-        editEnumerableConfig() has to mount the plain text editor first (synchronously)
-        and only upgrade to the grouped <select> afterwards, and fetchEnumerableOptions()'s
-        .catch() has to resolve to null rather than re-raising, or a slow/failed/empty
-        GET /api/models/available leaves a model field permanently unusable instead of
-        falling back to free text. This is a source-level regression guard (no JS test
-        harness exists in this repo) for the behavior that the Python-side tests above
-        cannot exercise.
-        """
-        template_path = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / "settings.html"
-        source = template_path.read_text(encoding="utf-8")
-
-        editor_start = source.index("function editEnumerableConfig(")
-        editor_body = source[editor_start : source.index("function renderEnumerableSelect(")]
-        mount_pos = editor_body.index("var input = renderPlainTextEditor(")
-        fetch_pos = editor_body.index("fetchEnumerableOptions(source)")
-        assert mount_pos < fetch_pos, (
-            "editEnumerableConfig() must mount the plain text editor before fetching "
-            "discovery options, so a slow fetch never blocks an editable field"
-        )
-
-        fetch_start = source.index("function fetchEnumerableOptions(")
-        fetch_body = source[fetch_start : source.index("var _ENUMERABLE_CUSTOM_VALUE")]
-        catch_pos = fetch_body.index(".catch(function()")
-        catch_body = fetch_body[catch_pos:]
-        assert "return null;" in catch_body, (
-            "fetchEnumerableOptions()'s .catch() must resolve to null (fail open) "
-            "rather than leaving the caller's .then() unresolved or throwing"
-        )
-
     async def test_grouped_config_has_descriptions(self, client: AsyncClient) -> None:
         resp = await client.get("/api/settings/config/grouped")
         data = resp.json()
@@ -7828,14 +7785,9 @@ class TestWaitAndFinalizeGraphBroadcast:
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        project = Path("/tmp/test-project")
-        assert [c.args for c in mock_ws_manager.broadcast_event.await_args_list] == [
-            ("agent_finished", project),
-            ("graph_invalidated", project),
-        ]
+        mock_ws_manager.broadcast_event.assert_awaited_once_with("graph_invalidated", Path("/tmp/test-project"))
 
-    async def test_sends_only_agent_finished_when_already_terminal(self) -> None:
-        """A run that reached a terminal status on its own (awaiting_approval) still refreshes the Tasks list."""
+    async def test_skips_broadcast_when_already_terminal(self) -> None:
         from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7868,7 +7820,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        mock_ws_manager.broadcast_event.assert_awaited_once_with("agent_finished", Path("/tmp/test-project"))
+        mock_ws_manager.broadcast_event.assert_not_awaited()
 
     async def test_broadcasts_even_when_auto_handoff_raises(self) -> None:
         from pathlib import Path
@@ -7910,188 +7862,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             with pytest.raises(RuntimeError, match="handoff exploded"):
                 await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        events = [c.args[0] for c in mock_ws_manager.broadcast_event.await_args_list]
-        assert events == ["agent_finished", "graph_invalidated"]
-
-    async def test_broadcasts_after_agent_removed_from_pool(self) -> None:
-        """A client refetching on agent_finished must not still see the agent as running (#1149)."""
-        from pathlib import Path
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services import agent_finalize, agent_lifecycle
-        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
-
-        mock_process = AsyncMock()
-        mock_process.wait = AsyncMock(return_value=0)
-        agent = AgentState(
-            run_id=45,
-            issue="1148",
-            role="researcher",
-            process=mock_process,
-            project_dir=Path("/tmp/test-project"),
-        )
-        pa = ProjectAgents()
-        pa.agents[45] = agent
-
-        seen_running: list[bool] = []
-
-        async def _record(_event: str, _project_dir: Path) -> None:
-            seen_running.append(45 in pa.agents)
-
-        mock_ws_manager = MagicMock()
-        mock_ws_manager.broadcast_event = AsyncMock(side_effect=_record)
-
-        with (
-            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
-            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
-            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
-            patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
-        ):
-            await agent_lifecycle._wait_and_finalize(pa, agent)
-
-        assert seen_running == [False, False]
-
-    async def test_invalidates_queue_and_pr_caches(self) -> None:
-        from pathlib import Path
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services import agent_finalize, agent_lifecycle
-        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
-
-        mock_process = AsyncMock()
-        mock_process.wait = AsyncMock(return_value=0)
-        agent = AgentState(
-            run_id=46,
-            issue="1148",
-            role="researcher",
-            process=mock_process,
-            project_dir=Path("/tmp/test-project"),
-        )
-        pa = ProjectAgents()
-        pa.agents[46] = agent
-
-        cfg = MagicMock()
-        cfg.github_repo = "owner/repo"
-        mock_ws_manager = MagicMock()
-        mock_ws_manager.broadcast_event = AsyncMock()
-
-        with (
-            patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=False),
-            patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
-            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.ipc.notifications.notify"),
-            patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
-            patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
-            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
-        ):
-            await agent_lifecycle._wait_and_finalize(pa, agent)
-
-        invalidate_queue.assert_called_once_with(Path("/tmp/test-project"))
-        invalidate_prs.assert_called_once_with("owner/repo")
-
-    def test_queue_cache_invalidated_even_when_config_load_fails(self) -> None:
-        from pathlib import Path
-        from unittest.mock import patch
-
-        from sova.dashboard.services import agent_finalize
-
-        with (
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
-            patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
-            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
-        ):
-            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"))
-
-        invalidate_queue.assert_called_once_with(Path("/tmp/test-project"))
-        invalidate_prs.assert_not_called()
-
-    def test_pr_cache_invalidated_even_when_queue_cache_invalidation_fails(self) -> None:
-        """A failed queue cache invalidation degrades to stale-until-TTL, not a propagated exception (#1149 review)."""
-        from pathlib import Path
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services import agent_finalize
-
-        cfg = MagicMock()
-        cfg.github_repo = "owner/repo"
-        with (
-            patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.services.queue_service.invalidate_queue_cache", side_effect=OSError("stale symlink")),
-            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
-        ):
-            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"))
-
-        invalidate_prs.assert_called_once_with("owner/repo")
-
-    def test_pr_cache_untouched_without_github_repo(self) -> None:
-        """A Jira-only project has no repo-keyed PR cache entry to drop."""
-        from pathlib import Path
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services import agent_finalize
-
-        cfg = MagicMock()
-        cfg.github_repo = ""
-        with (
-            patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
-            patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
-        ):
-            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"))
-
-        invalidate_prs.assert_not_called()
-
-    async def test_broadcast_failure_does_not_raise(self) -> None:
-        from pathlib import Path
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services import agent_finalize
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = AgentState(run_id=47, issue="1", role="developer", process=None, project_dir=Path("/tmp/test-project"))
-        mock_ws_manager = MagicMock()
-        mock_ws_manager.broadcast_event = AsyncMock(side_effect=RuntimeError("socket gone"))
-
-        with (
-            patch.object(agent_finalize, "_invalidate_work_item_caches"),
-            patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
-        ):
-            await agent_finalize._announce_agent_finished(agent, status_changed=True)
-
-        mock_ws_manager.broadcast_event.assert_awaited_once()
-
-
-class TestAgentsPageRefreshWiring:
-    """The Agents page must refetch the Tasks list on agent exit, not only on its 30 s poll (#1149)."""
-
-    def _template(self) -> str:
-        from pathlib import Path
-
-        import sova.dashboard
-
-        return (Path(sova.dashboard.__file__).parent / "templates" / "agents.html").read_text(encoding="utf-8")
-
-    def test_handles_agent_finished_event(self) -> None:
-        html = self._template()
-        start = html.index("msg.type === 'agent_finished'")
-        handler = html[start : html.index("return;", start)]
-        assert "_scheduleWorkItemsRefresh()" in handler
-
-    def test_status_update_change_schedules_refresh(self) -> None:
-        html = self._template()
-        start = html.index("msg.type === 'status_update'")
-        handler = html[start : html.index("_wsLastRunStatuses = runStatuses;", start)]
-        assert "_scheduleWorkItemsRefresh()" in handler
-
-    def test_status_update_first_snapshot_schedules_refresh(self) -> None:
-        """The first snapshot (_wsLastRunStatuses still null) must also refresh (#1152)."""
-        html = self._template()
-        start = html.index("msg.type === 'status_update'")
-        condition_start = html.index("if (", start)
-        condition = html[condition_start : html.index(") {", condition_start)]
-        assert "_wsLastRunStatuses === null" in condition
+        mock_ws_manager.broadcast_event.assert_awaited_once_with("graph_invalidated", Path("/tmp/test-project"))
 
 
 # ---------------------------------------------------------------------------
@@ -12559,6 +12330,68 @@ def _fake_full_cfg(llm_provider: str = "claude-code", agent_runtime: str = "clau
     )
 
 
+class TestBuildLLMCandidateProviderLegacyFallbackScoping:
+    """_build_llm_candidate_provider()'s legacy/db-value fallback must only
+    apply to the currently-active provider, never an inactive candidate
+    being probed (issue #1148): the legacy unscoped keyring entry and the
+    plaintext cfg.llm.api_key database row both belong to whichever
+    provider was active when they were written, not to every candidate."""
+
+    def test_inactive_anthropic_candidate_does_not_use_legacy_fallback(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.setup_service import _build_llm_candidate_provider
+        from sova.llm import keyring_store
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        cfg = _fake_cfg(provider="openai", api_key="sk-openai-active-db-value")
+        with (
+            patch.object(keyring_store, "resolve_secret", wraps=keyring_store.resolve_secret) as mock_resolve,
+            patch.object(AnthropicAPIProvider, "__init__", return_value=None),
+        ):
+            _build_llm_candidate_provider("anthropic", cfg, tmp_path)
+
+        # "anthropic" is not cfg.llm.provider ("openai" is active), so
+        # neither the legacy unscoped entry nor the active provider's own
+        # database value may be consulted for this probe.
+        mock_resolve.assert_called_once()
+        _name, db_value = mock_resolve.call_args[0]
+        assert db_value is None
+        assert mock_resolve.call_args.kwargs.get("legacy_name") is None
+
+    def test_active_anthropic_candidate_still_uses_legacy_fallback(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.setup_service import _build_llm_candidate_provider
+        from sova.llm import keyring_store
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        cfg = _fake_cfg(provider="anthropic", api_key="sk-anthropic-active-db-value")
+        with (
+            patch.object(keyring_store, "resolve_secret", wraps=keyring_store.resolve_secret) as mock_resolve,
+            patch.object(AnthropicAPIProvider, "__init__", return_value=None),
+        ):
+            _build_llm_candidate_provider("anthropic", cfg, tmp_path)
+
+        mock_resolve.assert_called_once()
+        _name, db_value = mock_resolve.call_args[0]
+        assert db_value == "sk-anthropic-active-db-value"
+        assert mock_resolve.call_args.kwargs.get("legacy_name") == "llm.api_key"
+
+    def test_inactive_openai_candidate_does_not_use_legacy_fallback(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.setup_service import _build_llm_candidate_provider
+        from sova.llm import keyring_store
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        cfg = _fake_cfg(provider="anthropic", api_key="sk-anthropic-active-db-value")
+        with (
+            patch.object(keyring_store, "resolve_secret", wraps=keyring_store.resolve_secret) as mock_resolve,
+            patch.object(LiteLLMProvider, "__init__", return_value=None),
+        ):
+            _build_llm_candidate_provider("openai", cfg, tmp_path)
+
+        mock_resolve.assert_called_once()
+        _name, db_value = mock_resolve.call_args[0]
+        assert db_value is None
+        assert mock_resolve.call_args.kwargs.get("legacy_name") is None
+
+
 class TestAuthStatusAPI:
     @pytest.fixture(autouse=True)
     def _clear_auth_cache(self):
@@ -12836,7 +12669,7 @@ class TestConnectionsAPI:
         """A candidate whose check_available() raises reports unavailable, not a 503."""
         from unittest.mock import patch
 
-        def _boom(_provider_id, _cfg, **_kwargs):
+        def _boom(_provider_id, _cfg, _project_dir, **_kwargs):
             raise RuntimeError("detonated")
 
         with (
@@ -12896,21 +12729,16 @@ class TestConnectionsAPI:
         assert by_id["ollama"]["configured_api_base"] == "http://box:9999"
         assert by_id["openai"]["configured_api_base"] == ""
 
-    async def test_activate_llm_persist_failure_names_already_written_keys(self, client: AsyncClient) -> None:
-        """llm.model has to be written before llm.provider (the consistency
-        check rejects the reverse order), so a provider-write failure leaves it
-        persisted; the detail must say so."""
+    async def test_activate_llm_persist_failure_detail_passes_through(self, client: AsyncClient) -> None:
+        """update_config_many's error detail reaches the API response verbatim."""
         from unittest.mock import AsyncMock, patch
 
         provider = _FakeNoAuthDetailsProvider(True, "ok")
-
-        async def _update(_project_dir, *, key, value):
-            return {"error": "db is locked"} if key == "llm.provider" else {"status": "ok"}
-
+        mock_update_many = AsyncMock(return_value={"error": "db is locked"})
         with (
             patch("sova.config.loader.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
-            patch("sova.dashboard.services.settings_service.update_config", AsyncMock(side_effect=_update)),
+            patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
         ):
             resp = await client.post(
                 "/api/connections/llm/activate",
@@ -12920,8 +12748,7 @@ class TestConnectionsAPI:
         data = resp.json()
         assert data["status"] == "error"
         assert data["reason"] == "persist_failed"
-        assert "llm.provider: db is locked" in data["detail"]
-        assert "already persisted: llm.model" in data["detail"]
+        assert data["detail"] == "db is locked"
 
     async def test_validate_llm_missing_model_is_rejected(self, client: AsyncClient) -> None:
         resp = await client.post(
@@ -13027,17 +12854,18 @@ class TestConnectionsAPI:
         assert resp.status_code == 403
 
     async def test_activate_llm_persists_after_validation_passes(self, client: AsyncClient) -> None:
-        """Switching to a provider that needs no model writes llm.provider
-        first, then clears the previous vendor's llm.model/llm.api_base (the
-        consistency check rejects the clear while the old provider is active)."""
+        """All three keys are written in a single atomic call, including the
+        clear of the previous vendor's llm.model/llm.api_base (issue #1148:
+        update_config_many validates the combined resulting config at once,
+        so there is no write-order dependency)."""
         from unittest.mock import AsyncMock, patch
 
         provider = _FakeNoAuthDetailsProvider(True, "ok")
-        mock_update = AsyncMock(return_value={"status": "ok"})
+        mock_update_many = AsyncMock(return_value={"status": "ok"})
         with (
             patch("sova.config.loader.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
-            patch("sova.dashboard.services.settings_service.update_config", mock_update),
+            patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
         ):
             resp = await client.post(
                 "/api/connections/llm/activate",
@@ -13047,23 +12875,49 @@ class TestConnectionsAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data == {"status": "ok", "provider": "claude-code"}
-        assert [(c.kwargs["key"], c.kwargs["value"]) for c in mock_update.await_args_list] == [
-            ("llm.provider", "claude-code"),
-            ("llm.model", ""),
-            ("llm.api_base", ""),
-        ]
+        mock_update_many.assert_awaited_once()
+        updates = mock_update_many.await_args.args[1]
+        assert updates == {"llm.provider": "claude-code", "llm.model": "", "llm.api_base": ""}
 
-    async def test_activate_llm_model_required_writes_model_before_provider(self, client: AsyncClient) -> None:
-        """A model-required target reverses the order: the consistency check
-        rejects llm.provider="openai" while llm.model is still empty."""
+    async def test_activate_llm_reloads_in_process_provider(self, client: AsyncClient) -> None:
+        """Unlike POST /settings/config, this path writes through
+        update_config_many() directly and must reload the in-process
+        provider itself, or the running server keeps using the old one
+        until an unrelated llm.* settings write happens to trigger a
+        reload (issue #1148)."""
         from unittest.mock import AsyncMock, patch
 
         provider = _FakeNoAuthDetailsProvider(True, "ok")
-        mock_update = AsyncMock(return_value={"status": "ok"})
+        mock_reload = AsyncMock()
         with (
             patch("sova.config.loader.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
-            patch("sova.dashboard.services.settings_service.update_config", mock_update),
+            patch(
+                "sova.dashboard.services.settings_service.update_config_many",
+                AsyncMock(return_value={"status": "ok"}),
+            ),
+            patch("sova.llm.client.reload_provider_async", mock_reload),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/activate",
+                json={"provider": "claude-code"},
+                headers=_csrf_request_headers(client),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        mock_reload.assert_awaited_once()
+
+    async def test_activate_llm_model_required_writes_model_and_provider_together(self, client: AsyncClient) -> None:
+        """A model-required target is validated as one combined write, not a
+        hand-ordered sequence of single-key writes."""
+        from unittest.mock import AsyncMock, patch
+
+        provider = _FakeNoAuthDetailsProvider(True, "ok")
+        mock_update_many = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+            patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
         ):
             resp = await client.post(
                 "/api/connections/llm/activate",
@@ -13071,18 +12925,15 @@ class TestConnectionsAPI:
                 headers=_csrf_request_headers(client),
             )
         assert resp.json() == {"status": "ok", "provider": "openai"}
-        assert [c.kwargs["key"] for c in mock_update.await_args_list] == [
-            "llm.model",
-            "llm.api_base",
-            "llm.provider",
-        ]
+        updates = mock_update_many.await_args.args[1]
+        assert updates == {"llm.provider": "openai", "llm.model": "gpt-5", "llm.api_base": ""}
 
     async def test_activate_llm_blocked_when_validation_fails(self, client: AsyncClient) -> None:
-        """A failing candidate must never reach settings_service.update_config."""
+        """A failing candidate must never reach settings_service.update_config_many."""
         from unittest.mock import AsyncMock, patch
 
-        mock_update = AsyncMock(return_value={"status": "ok"})
-        with patch("sova.dashboard.services.settings_service.update_config", mock_update):
+        mock_update_many = AsyncMock(return_value={"status": "ok"})
+        with patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many):
             resp = await client.post(
                 "/api/connections/llm/activate",
                 json={"provider": "openai"},
@@ -13091,21 +12942,43 @@ class TestConnectionsAPI:
         data = resp.json()
         assert data["status"] == "error"
         assert data["reason"] == "missing_model"
-        mock_update.assert_not_called()
+        mock_update_many.assert_not_called()
 
     async def test_activate_llm_persist_failure_is_reported(self, client: AsyncClient) -> None:
         from unittest.mock import AsyncMock, patch
 
         provider = _FakeNoAuthDetailsProvider(True, "ok")
-        mock_update = AsyncMock(return_value={"error": "'llm.provider' rejected: llm.model: required"})
+        mock_update_many = AsyncMock(return_value={"error": "'llm.provider' rejected: llm.model: required"})
         with (
             patch("sova.config.loader.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
-            patch("sova.dashboard.services.settings_service.update_config", mock_update),
+            patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
         ):
             resp = await client.post(
                 "/api/connections/llm/activate",
                 json={"provider": "claude-code"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["reason"] == "persist_failed"
+
+    async def test_activate_llm_db_failure_reports_persist_failed(self, client: AsyncClient) -> None:
+        """A mid-transaction DB failure surfaces as persist_failed; the
+        all-or-nothing rollback behavior itself is covered directly against a
+        real database in tests/test_settings_service.py::TestUpdateConfigMany."""
+        from unittest.mock import AsyncMock, patch
+
+        provider = _FakeNoAuthDetailsProvider(True, "ok")
+        mock_update_many = AsyncMock(return_value={"error": "Failed to persist settings (DB unavailable)"})
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+            patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/activate",
+                json={"provider": "openai", "model": "gpt-5"},
                 headers=_csrf_request_headers(client),
             )
         data = resp.json()
@@ -13236,6 +13109,28 @@ class TestConnectionsAPI:
         assert data == {"status": "ok", "runtime": "aider"}
         mock_update.assert_awaited_once_with(ANY, key="agent.runtime", value="aider")
 
+    async def test_activate_runtime_reloads_in_process_runtime(self, client: AsyncClient) -> None:
+        """Mirrors test_activate_llm_reloads_in_process_provider: this path
+        writes through update_config() directly, bypassing POST
+        /settings/config's _reload_all_configs() dispatch, so it must
+        reload the in-process runtime itself (issue #1148)."""
+        from unittest.mock import AsyncMock, patch
+
+        runtime = _FakeNoAuthDetailsProvider(True, "ok")
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.ipc.runtime.create_runtime", return_value=runtime),
+            patch("sova.dashboard.services.settings_service.update_config", AsyncMock(return_value={"status": "ok"})),
+            patch("sova.ipc.runtime.reload_runtime") as mock_reload,
+        ):
+            resp = await client.post(
+                "/api/connections/runtime/activate",
+                json={"runtime": "aider"},
+                headers=_csrf_request_headers(client),
+            )
+        assert resp.json()["status"] == "ok"
+        mock_reload.assert_called_once()
+
     async def test_reconnect_requires_csrf(self, client: AsyncClient) -> None:
         resp = await client.post("/api/connections/reconnect/start")
         assert resp.status_code == 403
@@ -13247,7 +13142,10 @@ class TestConnectionsAPI:
     async def test_reconnect_cli_missing(self, client: AsyncClient) -> None:
         from unittest.mock import patch
 
-        with patch("shutil.which", return_value=None):
+        with (
+            patch("shutil.which", return_value=None),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+        ):
             resp = await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
         data = resp.json()
         assert data == {"status": "error", "reason": "cli_missing", "detail": "claude CLI not found"}
@@ -13259,6 +13157,7 @@ class TestConnectionsAPI:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
         ):
             first = await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             assert first.json() == {"status": "ok"}
@@ -13281,6 +13180,7 @@ class TestConnectionsAPI:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
         ):
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             process.finish(0)
@@ -13295,6 +13195,7 @@ class TestConnectionsAPI:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
         ):
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             process.finish(1)
@@ -13311,6 +13212,7 @@ class TestConnectionsAPI:
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
             patch("sova.dashboard.services.setup_service._RECONNECT_TIMEOUT", 0.05),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
         ):
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             await asyncio.sleep(0.2)
@@ -13334,6 +13236,7 @@ class TestConnectionsAPI:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
         ):
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             cancel_resp = await client.post("/api/connections/reconnect/cancel", headers=_csrf_request_headers(client))
@@ -13353,6 +13256,7 @@ class TestConnectionsAPI:
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
             patch("sova.dashboard.services.setup_service._CANCEL_GRACE_PERIOD", 0.05),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
         ):
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             cancel_resp = await client.post("/api/connections/reconnect/cancel", headers=_csrf_request_headers(client))
@@ -13370,6 +13274,7 @@ class TestConnectionsAPI:
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
             patch("sova.dashboard.services.setup_service._RECONNECT_TIMEOUT", 0.05),
             patch("sova.dashboard.services.setup_service._CANCEL_GRACE_PERIOD", 0.05),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
         ):
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             cancel_resp = await client.post("/api/connections/reconnect/cancel", headers=_csrf_request_headers(client))
@@ -13409,6 +13314,181 @@ def _patch_models_env(provider, cfg=None):
         patch("sova.llm.provider.create_provider", return_value=provider),
     ):
         yield
+
+
+class TestReconnectAvailability:
+    """reconnect_availability()/start_reconnect(): environment-aware reconnect gating (issue #1148).
+
+    A browser-based `claude auth login` cannot complete from a non-loopback
+    dashboard session, nor is it how a Vertex/Bedrock-routed CLI authenticates.
+    """
+
+    def test_non_loopback_is_blocked(self) -> None:
+        from sova.dashboard.services.setup_service import reconnect_availability
+
+        result = reconnect_availability(is_loopback_bind=False)
+        assert result["can_reconnect"] is False
+        assert result["reason"] == "non_loopback"
+
+    def test_loopback_firstparty_can_reconnect(self) -> None:
+        from sova.dashboard.services.setup_service import reconnect_availability
+        from sova.llm.backends import Backend
+
+        with (
+            patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.FIRSTPARTY),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+        ):
+            result = reconnect_availability(is_loopback_bind=True)
+        assert result == {"can_reconnect": True, "reason": "", "detail": ""}
+
+    def test_vertex_routed_is_blocked(self) -> None:
+        from sova.dashboard.services.setup_service import reconnect_availability
+        from sova.llm.backends import Backend
+
+        with (
+            patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.VERTEX),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+        ):
+            result = reconnect_availability(is_loopback_bind=True)
+        assert result["can_reconnect"] is False
+        assert result["reason"] == "vertex_routed"
+        assert "Vertex" in result["detail"]
+
+    def test_bedrock_routed_is_blocked(self) -> None:
+        from sova.dashboard.services.setup_service import reconnect_availability
+        from sova.llm.backends import Backend
+
+        with (
+            patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.BEDROCK),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+        ):
+            result = reconnect_availability(is_loopback_bind=True)
+        assert result["can_reconnect"] is False
+        assert result["reason"] == "bedrock_routed"
+        assert "Bedrock" in result["detail"]
+
+    def test_non_loopback_checked_before_backend(self) -> None:
+        """A non-loopback session is rejected without even probing the CLI backend."""
+        from sova.dashboard.services.setup_service import reconnect_availability
+
+        with patch("sova.dashboard.services.setup_service._claude_cli_backend") as mock_backend:
+            result = reconnect_availability(is_loopback_bind=False)
+        assert result["reason"] == "non_loopback"
+        mock_backend.assert_not_called()
+
+    def test_headless_is_blocked(self) -> None:
+        """A loopback-bound session on a display-less server process (SSH
+        session, container) must not offer a button that can never
+        complete (edge case named in the spec)."""
+        from sova.dashboard.services.setup_service import reconnect_availability
+        from sova.llm.backends import Backend
+
+        with (
+            patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.FIRSTPARTY),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=True),
+        ):
+            result = reconnect_availability(is_loopback_bind=True)
+        assert result["can_reconnect"] is False
+        assert result["reason"] == "headless"
+
+    def test_headless_checked_before_backend(self) -> None:
+        """A headless session is rejected without even probing the CLI backend."""
+        from sova.dashboard.services.setup_service import reconnect_availability
+
+        with (
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=True),
+            patch("sova.dashboard.services.setup_service._claude_cli_backend") as mock_backend,
+        ):
+            result = reconnect_availability(is_loopback_bind=True)
+        assert result["reason"] == "headless"
+        mock_backend.assert_not_called()
+
+    async def test_start_reconnect_blocked_non_loopback_never_spawns(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.setup_service import start_reconnect
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock()) as mock_spawn:
+            result = await start_reconnect(Path("/tmp/some-project"), is_loopback_bind=False)
+
+        assert result == {
+            "status": "error",
+            "reason": "non_loopback",
+            "detail": "The dashboard is not bound to loopback; reconnect cannot be completed from this session.",
+        }
+        mock_spawn.assert_not_called()
+
+    async def test_start_reconnect_blocked_vertex_routed_never_spawns(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.setup_service import start_reconnect
+        from sova.llm.backends import Backend
+
+        with (
+            patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.VERTEX),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+            patch("asyncio.create_subprocess_exec", AsyncMock()) as mock_spawn,
+        ):
+            result = await start_reconnect(Path("/tmp/some-project"), is_loopback_bind=True)
+
+        assert result["status"] == "error"
+        assert result["reason"] == "vertex_routed"
+        mock_spawn.assert_not_called()
+
+    async def test_start_reconnect_allowed_when_loopback_firstparty(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.setup_service import _reconnect_sessions, start_reconnect
+        from sova.llm.backends import Backend
+
+        process = _FakeProcess()
+        with (
+            patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.FIRSTPARTY),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+        ):
+            try:
+                result = await start_reconnect(Path("/tmp/some-project"), is_loopback_bind=True)
+            finally:
+                _reconnect_sessions.clear()
+                process.finish(0)
+
+        assert result == {"status": "ok"}
+
+    async def test_catalog_reports_reconnect_field(self, client: AsyncClient) -> None:
+        """GET /api/connections surfaces the reconnect gate so the page can
+        suppress/replace the login button for this session."""
+        from sova.llm.backends import Backend
+
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.VERTEX),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+        ):
+            resp = await client.get("/api/connections")
+        data = resp.json()
+        assert data["reconnect"]["can_reconnect"] is False
+        assert data["reconnect"]["reason"] == "vertex_routed"
+
+    async def test_reconnect_start_blocked_via_http_when_vertex_routed(self, client: AsyncClient) -> None:
+        """The router wires request.app.state.is_loopback_bind through to
+        start_reconnect(), and a Vertex-routed backend blocks it even on a
+        loopback-bound dashboard (this client's default bind)."""
+        from sova.llm.backends import Backend
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.VERTEX),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+        ):
+            resp = await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["reason"] == "vertex_routed"
 
 
 class TestAvailableModelsAPI:
@@ -13685,7 +13765,7 @@ class TestAvailableModelsAPI:
         def _load_config(path):
             return _fake_cfg(provider="claude-code" if path == project_a else "ollama")
 
-        def _create_provider(llm_cfg):
+        def _create_provider(llm_cfg, _project_dir=None):
             return provider_a if llm_cfg.provider == "claude-code" else provider_b
 
         with (

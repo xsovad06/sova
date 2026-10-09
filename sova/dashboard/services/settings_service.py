@@ -142,12 +142,18 @@ def get_config_file_path(project_dir: Path | None = None) -> Path:
     return project_dir / "sova.toml"
 
 
-async def update_config(project_dir: Path | None = None, *, key: str, value: str) -> dict:
+async def update_config(project_dir: Path | None = None, *, key: str, value: str, provider: str = "") -> dict:
     """Update a single config key in the DB and sova.toml.
 
     Writes to the DB first (authoritative store read by load_config),
     then best-effort updates sova.toml for human readability.
     Only registered settings (present in settings_meta) can be updated.
+
+    *provider* scopes a keyring-backed secret write to the provider the key
+    is *for* (e.g. the Connections page's per-provider card), as opposed to
+    whichever provider happens to be active right now. Ignored for
+    non-secret keys. Empty (the settings-page edit of ``llm.api_key`` with
+    no per-card context) falls back to the currently-active provider.
     """
     from sova.dashboard.settings_meta import _META_BY_KEY
 
@@ -173,10 +179,16 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
 
         # Secrets are DB-only: never written to sova.toml in plaintext.
         if meta.value_type == "secret":
-            db_ok, warning = await _save_secret(project_dir, key, str(cast))
+            db_ok, warning = await _save_secret(project_dir, key, str(cast), provider=provider)
             if not db_ok:
-                return {"error": "Failed to persist setting (DB unavailable)"}
-            result = {"status": "ok", "key": key, "value": value}
+                return {"error": warning or "Failed to persist setting (DB unavailable)"}
+            # The submitted secret must never be echoed back verbatim in the
+            # response body (devtools/HAR captures, reverse-proxy access
+            # logs): mask it, mirroring the unchanged-mask branch above. An
+            # empty value (a deliberate clear) stays empty rather than
+            # being masked, since masking it would misleadingly imply a key
+            # is still set.
+            result = {"status": "ok", "key": key, "value": _SECRET_MASK_PLACEHOLDER if value else ""}
             if warning:
                 result["warning"] = warning
             return result
@@ -194,12 +206,144 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
     return {"status": "ok", "key": key, "value": value}
 
 
-async def _save_secret(project_dir: Path | None, key: str, value: str) -> tuple[bool, str | None]:
+async def update_config_many(project_dir: Path | None, updates: dict[str, str]) -> dict:
+    """Persist several non-secret config keys in one all-or-nothing DB transaction.
+
+    Unlike ``update_config()`` (one key validated and persisted at a time),
+    this validates the *combined* resulting config once and writes every key
+    inside a single DB transaction: a failure partway through rolls back
+    every key in *updates*, so a provider activation (``llm.provider``,
+    ``llm.model``, ``llm.api_base``) can never land as a partial mix of the
+    old provider plus a new model (issue #1148). Validating per-key, as a
+    loop of ``update_config()`` calls would, also rejects some valid combined
+    states outright: switching to a model-required provider while also
+    setting its model fails the per-key consistency check on whichever key
+    lands first, which is why ``activate_llm_candidate`` previously had to
+    pick a write order by hand.
+
+    Secret keys are rejected: they route through ``_save_secret``'s
+    keyring-aware path, which has no place in a bulk DB-only write.
+    Returns ``{"status": "ok"}`` or ``{"error": ...}``; ``sova.toml`` is
+    updated best-effort per key afterward, same as ``update_config()``: a
+    TOML write failure never rolls back the authoritative DB transaction.
+    """
+    from sova.dashboard.settings_meta import _META_BY_KEY
+
+    casted: dict[str, object] = {}
+    for key, value in updates.items():
+        meta = _META_BY_KEY.get(key)
+        if meta is None:
+            return {"error": f"Unknown setting: '{key}'"}
+        if meta.value_type == "secret":
+            return {"error": f"'{key}' is a secret setting and cannot be written via update_config_many"}
+
+        validation_error = _validate_value_type(key, value)
+        if validation_error:
+            return {"error": validation_error}
+        casted[key] = _cast_value(value, meta.value_type)
+
+    async with _get_update_lock(project_dir):
+        consistency_error = _validate_config_consistency_many(project_dir, casted)
+        if consistency_error:
+            return {"error": consistency_error}
+
+        try:
+            from sova.config.db_loader import save_setting
+            from sova.db.session import get_session
+
+            async with await get_session(project_dir=project_dir) as session, session.begin():
+                for key, value in casted.items():
+                    await save_setting(session, key, value)
+        except Exception:  # noqa: BLE001 (any persist failure must return the error contract, never escape uncaught)
+            log.warning("settings.atomic_db_write_failed", keys=sorted(casted), exc_info=True)
+            return {"error": "Failed to persist settings (DB unavailable); no keys were changed"}
+
+    for key, value in casted.items():
+        if not _save_setting_to_toml(project_dir, key, value):
+            log.debug("settings.toml_write_skipped", key=key)
+
+    return {"status": "ok"}
+
+
+def _validate_config_consistency_many(project_dir: Path | None, updates: dict[str, object]) -> str | None:
+    """Like ``_validate_config_consistency``, but applies every key in *updates* together.
+
+    Validating one key at a time rejects a multi-key change whose
+    intermediate states are individually invalid even though the final
+    combined state is fine. Fails open, same as the single-key version: only
+    errors whose location touches an edited section are reported.
+    """
+    from pydantic import ValidationError
+
+    from sova.config.loader import load_config
+    from sova.config.models import ProjectConfig
+
+    try:
+        data = load_config(project_dir).model_dump()
+    except Exception:  # noqa: BLE001 (fails open; an unloadable base config is not this save's fault)
+        return None
+
+    sections: set[str] = set()
+    for key, value in updates.items():
+        section, _, field = key.partition(".")
+        sections.add(section)
+        if field:
+            target = data.get(section)
+            if not isinstance(target, dict) or field not in target:
+                continue
+            target[field] = value
+        elif key in data:
+            data[key] = value
+
+    try:
+        ProjectConfig(**data)
+    except ValidationError as exc:
+        related = [
+            f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
+            for err in exc.errors()
+            if err.get("loc") and str(err["loc"][0]) in sections
+        ]
+        if related:
+            return f"Activation rejected: {'; '.join(related)}"
+    except Exception:  # noqa: BLE001 (unrelated validation failure must not block this save)
+        return None
+    return None
+
+
+def _active_llm_provider(project_dir: Path | None) -> str | None:
+    """Resolve the provider id used to scope a keyring-backed secret.
+
+    Read via a fresh ``load_config()`` rather than any cached config, so the
+    scope always matches whichever provider is actually active for this
+    project right now: a secret saved after switching providers must be
+    scoped to the new provider, not a stale one. Returns ``None`` on a
+    config load failure rather than falling open to a fixed bucket name:
+    nothing ever reads back from an "unknown" scope (every reader scopes by
+    the real ``cfg.provider``/``provider_id``), so writing there would
+    silently discard the credential while reporting success, the opposite
+    of this codebase's "never silently discard credential state" posture.
+    Callers must treat ``None`` as a hard failure for a write.
+    """
+    from sova.config.loader import load_config
+
+    try:
+        return load_config(project_dir).llm.provider
+    except Exception:  # noqa: BLE001 (any load failure is reported to the caller as unresolvable)
+        return None
+
+
+async def _save_secret(
+    project_dir: Path | None, key: str, value: str, *, provider: str = ""
+) -> tuple[bool, str | None]:
     """Persist a secret, preferring the OS keyring over a plaintext database row.
 
     An empty value clears the secret entirely (keyring entry deleted, database
     row cleared) rather than falling back to plaintext storage of nothing, so
     the user can deliberately fall back to an environment-variable credential.
+    Clearing also attempts to delete the legacy unscoped keyring entry (if
+    the resolved provider owns it; see below): a clear is an explicit user
+    action, unlike the read-only legacy fallback applied elsewhere, so
+    deleting it here is not a destructive auto-migration.
 
     Only ``key in keyring_store.RESOLVED_SECRET_KEYS`` is actually routed
     through the keyring: every other ``value_type="secret"`` setting keeps
@@ -207,20 +351,49 @@ async def _save_secret(project_dir: Path | None, key: str, value: str) -> tuple[
     also updating its one read site to call ``resolve_secret()`` would
     silently replace a working credential with the literal sentinel string.
 
+    The keyring entry is scoped to ``(project_dir, provider)`` via
+    ``keyring_store.scoped_secret_name()`` (issue #1148): two projects on the
+    same machine, or a provider switch within one project, must never read or
+    overwrite each other's credential. *provider* names the provider the key
+    is *for* (e.g. the Connections page's per-provider card); when empty, it
+    falls back to the project's currently-active provider (the settings
+    page's generic ``llm.api_key`` edit, with no per-card context). The
+    database row (``key`` itself, unscoped) still only ever holds the
+    non-secret ``SENTINEL`` marker or a plaintext fallback value, matching
+    today's shape, and is therefore only ever meaningful for whichever
+    provider was active at write time.
+
     Returns ``(db_ok, warning)``; ``warning`` is set when a keyring-backed key
     fell back to plaintext because the keyring write did not succeed (no
     backend, or a backend that refused the write), or when a clear could not
-    confirm the keyring entry was actually removed.
+    confirm the keyring entry was actually removed. A provider that cannot be
+    resolved at all (config load failure, with no explicit *provider* given)
+    is a hard failure, not a fallback bucket: returns ``(False, ...)`` rather
+    than writing to an unreadable scope while reporting success.
     """
     from sova.llm import keyring_store
 
     if key not in keyring_store.RESOLVED_SECRET_KEYS:
         return await _save_setting_to_db(project_dir, key, value), None
 
+    resolved_dir = project_dir if project_dir is not None else Path.cwd()
+    resolved_provider = provider or _active_llm_provider(project_dir)
+    if not resolved_provider:
+        return False, "Could not determine the active LLM provider; the key was not saved"
+    scoped_name = keyring_store.scoped_secret_name(key, resolved_dir, resolved_provider)
+    # The legacy unscoped entry only ever belonged to whichever provider was
+    # active when it was written, so it is only deleted here (never for an
+    # arbitrary other provider's clear) when the resolved provider is also
+    # the currently-active one.
+    legacy_owned = resolved_provider == _active_llm_provider(project_dir)
+
     if not value:
-        deleted = keyring_store.delete_secret(key)
+        deleted = keyring_store.delete_secret(scoped_name)
+        legacy_deleted = True
+        if legacy_owned:
+            legacy_deleted = keyring_store.delete_secret(key)
         db_ok = await _save_setting_to_db(project_dir, key, "")
-        if not deleted and keyring_store.is_keyring_available():
+        if keyring_store.is_keyring_available() and (not deleted or not legacy_deleted):
             # A real delete failure (locked keychain, backend error, permission
             # denied), not just "no backend". The database row is cleared, but
             # the old key may still live in the keyring and would be picked up
@@ -229,7 +402,7 @@ async def _save_secret(project_dir: Path | None, key: str, value: str) -> tuple[
             return db_ok, "Could not confirm the OS keychain entry was removed; the old key may still be used"
         return db_ok, None
 
-    if keyring_store.set_secret(key, value):
+    if keyring_store.set_secret(scoped_name, value):
         return await _save_setting_to_db(project_dir, key, keyring_store.SENTINEL), None
 
     db_ok = await _save_setting_to_db(project_dir, key, value)
@@ -245,7 +418,9 @@ async def migrate_secret_to_keyring(project_dir: Path | None, key: str) -> dict:
     never triggered automatically on config load, startup, or migration.
     Fails without touching the database if the keyring write can't be
     confirmed by reading it back, so a partial migration never leaves the
-    secret in neither place.
+    secret in neither place. Written under the same ``(project_dir, active
+    provider)``-scoped keyring name ``_save_secret`` uses, so a later
+    ``resolve_secret()`` scoped lookup finds it (issue #1148).
     """
     from sova.dashboard.settings_meta import _META_BY_KEY
     from sova.llm import keyring_store
@@ -258,13 +433,19 @@ async def migrate_secret_to_keyring(project_dir: Path | None, key: str) -> dict:
     if not keyring_store.is_keyring_available():
         return {"error": "OS keyring is not available on this machine"}
 
+    resolved_dir = project_dir if project_dir is not None else Path.cwd()
+    provider = _active_llm_provider(project_dir)
+    if not provider:
+        return {"error": "Could not determine the active LLM provider; the key was not migrated"}
+    scoped_name = keyring_store.scoped_secret_name(key, resolved_dir, provider)
+
     async with _get_update_lock(project_dir):
         raw = _get_raw_config(project_dir)
         current = raw.get(key)
         if not current or current == keyring_store.SENTINEL:
             return {"error": f"'{key}' is not currently stored in the database as plaintext"}
 
-        if not keyring_store.migrate_plaintext_to_keyring(key, str(current)):
+        if not keyring_store.migrate_plaintext_to_keyring(scoped_name, str(current)):
             return {"error": "Failed to write the secret to the OS keyring"}
 
         db_ok = await _save_setting_to_db(project_dir, key, keyring_store.SENTINEL)
@@ -339,11 +520,21 @@ def _validate_value_type(key: str, value: str) -> str | None:
     """Validate the value against the expected type from settings metadata.
 
     Returns an error message string if invalid, None if valid.
+
+    A secret's raw value must never appear in the returned message: every
+    branch below otherwise echoes the submitted value back verbatim (e.g.
+    "'{key}' must be one of {options}, got '{value}'"), which is fine for an
+    ordinary setting but would leak a credential straight back to the client
+    in an error response for ``value_type="secret"`` (issue #1148). Secrets
+    have no ``options``/number/boolean shape to validate in practice, so this
+    returns early rather than threading a redaction through every branch.
     """
     from sova.dashboard.settings_meta import _META_BY_KEY
 
     meta = _META_BY_KEY.get(key)
     if meta is None:
+        return None
+    if meta.value_type == "secret":
         return None
 
     # Validate against allowed options if present

@@ -177,6 +177,11 @@ async def _reload_oversight_config() -> None:
 class ConfigUpdateRequest(BaseModel):
     key: str
     value: str | bool | int | float
+    # Scopes a keyring-backed secret write (e.g. llm.api_key) to the
+    # provider the key is *for*, e.g. the Connections page's per-provider
+    # card. Empty falls back to the currently-active provider (the
+    # settings page's generic secret edit, with no per-card context).
+    provider: str = ""
 
 
 class SecretKeyRequest(BaseModel):
@@ -405,7 +410,7 @@ async def _dispatch_config_reload(
     elif target == "llm":
         from sova.llm.client import reload_provider_async
 
-        await reload_provider_async(cfg)
+        await reload_provider_async(cfg, project_dir)
     elif target == "runtime":
         from sova.ipc.runtime import reload_runtime
 
@@ -469,7 +474,7 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
             value_str = "true" if raw else "false"
         else:
             value_str = str(raw)
-        result = await settings_service.update_config(project_dir, key=req.key, value=value_str)
+        result = await settings_service.update_config(project_dir, key=req.key, value=value_str, provider=req.provider)
         if result.get("status") == "ok":
             if req.key == "max_parallel_agents":
                 from sova.dashboard.services.agent_pool import sync_max_concurrent

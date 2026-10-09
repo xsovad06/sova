@@ -233,12 +233,21 @@ class LiteLLMProvider(LLMProvider):
         api_base: str | None = None,
         timeout: float | None = None,
         vendor: str = "litellm",
+        api_key: str | None = None,
     ) -> None:
         _check_litellm()
         self.model = model
         self.fallback_model = fallback_model
         self.api_base = api_base
         self.timeout = timeout or self._DEFAULT_TIMEOUT
+        # Passed explicitly into every acompletion()/completion() call via
+        # _base_kwargs() rather than mutated into os.environ: a credential
+        # resolved for this one provider instance must never leak into the
+        # whole process's environment, where any other subprocess SOVA spawns
+        # would inherit it (issue #1148). None (the default) means "let
+        # LiteLLM resolve its own env var", preserving the documented
+        # env-var contract for a deployment that sets OPENAI_API_KEY itself.
+        self.api_key = api_key
         # Which cfg.llm.provider value constructed this instance (litellm,
         # hybrid, openai, ollama, or vertex; see create_provider()).
         # check_available() uses it to run a vendor-specific credential
@@ -403,15 +412,17 @@ class LiteLLMProvider(LLMProvider):
         publisher catalog ``_enumerate_vertex()`` reads, so two deployments
         differing only in those would otherwise share one cached catalog.
 
-        ``OPENAI_API_KEY`` is folded in the same way, as a SHA-256
-        fingerprint rather than the raw key (matching
+        The resolved OpenAI-compatible key (``self.api_key``, falling back to
+        ``OPENAI_API_KEY`` for a deployment that sets it directly rather than
+        through SOVA's resolved credential) is folded in the same way, as a
+        SHA-256 fingerprint rather than the raw key (matching
         ``_anthropic_api_enumeration_identity()``'s never-leaks-the-key
-        contract): ``_enumerate_openai_compatible()`` resolves this same env
-        var at call time, so two different accounts hitting the same
+        contract): ``_enumerate_openai_compatible()`` resolves this same key
+        at call time, so two different accounts hitting the same
         ``api_base`` would otherwise share one cached catalog for up to the
         enumeration TTL.
         """
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        api_key = self.api_key or os.environ.get("OPENAI_API_KEY", "").strip()
         key_fingerprint = hashlib.sha256(api_key.encode()).hexdigest()[:12] if api_key else ""
         return f"litellm:{self.model}:{self.api_base or ''}:{key_fingerprint}:{_vertex_project_id()}:{_vertex_region()}"
 
@@ -504,7 +515,7 @@ class LiteLLMProvider(LLMProvider):
         # endpoint gets a 401, which _fetch_json_entries silently turns into
         # an empty list, so enumeration never caches and keeps retrying.
         headers = None
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        api_key = self.api_key or os.environ.get("OPENAI_API_KEY", "").strip()
         if api_key and _credential_safe_target(url):
             headers = {"Authorization": f"Bearer {api_key}"}
         entries = await _fetch_json_entries(
@@ -612,9 +623,11 @@ class LiteLLMProvider(LLMProvider):
         version = getattr(litellm, "__version__", "unknown")
 
         if self.vendor == "openai":
-            if not os.environ.get("OPENAI_API_KEY", "").strip():
-                return False, f"litellm {version} but OPENAI_API_KEY is not set"
-            return True, f"litellm {version} (OPENAI_API_KEY set)"
+            if not (self.api_key or os.environ.get("OPENAI_API_KEY", "").strip()):
+                return False, (
+                    f"litellm {version} but no OpenAI API key is configured (set llm.api_key or export OPENAI_API_KEY)"
+                )
+            return True, f"litellm {version} (API key configured)"
 
         if self.vendor == "ollama":
             base = (self.api_base or _OLLAMA_DEFAULT_BASE).rstrip("/")
@@ -690,6 +703,37 @@ class LiteLLMProvider(LLMProvider):
             stop_reason=stop if stop != "stop" else "end_turn",
         )
 
+    def _model_matches_key_vendor(self, model: str) -> bool:
+        """Return True when *model* actually routes to the vendor ``self.api_key`` was resolved for.
+
+        Only ``self.vendor == "openai"`` is checked against *model*:
+        ``create_provider()`` only ever resolves ``self.api_key`` for that
+        vendor, and an explicitly cross-vendor-prefixed *model* (a
+        ``fallback_model`` or ``llm.routing.*`` entry naming a Claude,
+        Gemini, Vertex, or Ollama model, which LiteLLM happily routes) must
+        never receive it: an explicit ``api_key=`` kwarg overrides LiteLLM's
+        own per-provider env resolution, so attaching the OpenAI key to a
+        non-OpenAI-routed call sends that credential to the wrong vendor's
+        endpoint (issue #1148). Every other vendor keeps today's unconditional
+        behavior: a caller that constructs this provider directly with its
+        own explicit ``api_key=`` (e.g. a custom ``vendor="litellm"``
+        endpoint) still gets it forwarded to every call that provider makes.
+        """
+        if self.vendor != "openai":
+            return True
+        lowered = model.lower()
+        if lowered.startswith("openai/"):
+            return True
+        # Allowlist, not denylist: a bare model id (no "<provider>/" prefix)
+        # routes to OpenAI by LiteLLM's default, but any other prefixed id
+        # (azure/, groq/, mistral/, bedrock/, openrouter/, together_ai/,
+        # deepseek/, cohere/, claude-, anthropic/, vertex_ai/, gemini/,
+        # ollama/, ...) routes elsewhere and must never receive this key.
+        # Denying only a handful of known prefixes left every other
+        # LiteLLM-routed vendor exposed to the same cross-vendor leak this
+        # method exists to prevent.
+        return "/" not in lowered and not lowered.startswith(("claude", "gemini"))
+
     def _base_kwargs(self, model: str, *, max_tokens: int | None = None) -> dict:
         kwargs: dict = {
             "model": model,
@@ -708,6 +752,8 @@ class LiteLLMProvider(LLMProvider):
             if project:
                 kwargs["vertex_project"] = project
                 kwargs["vertex_location"] = _vertex_region()
+        if self.api_key and self._model_matches_key_vendor(model):
+            kwargs["api_key"] = self.api_key
         return kwargs
 
     def _report_unpriced(self, model: str, requested_model: str, *, exc_info: bool = False) -> CostSource:
