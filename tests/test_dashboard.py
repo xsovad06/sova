@@ -8042,6 +8042,14 @@ class TestAgentsPageRefreshWiring:
         handler = html[start : html.index("_wsLastRunStatuses = runStatuses;", start)]
         assert "_scheduleWorkItemsRefresh()" in handler
 
+    def test_status_update_first_snapshot_schedules_refresh(self) -> None:
+        """The first snapshot (_wsLastRunStatuses still null) must also refresh (#1152)."""
+        html = self._template()
+        start = html.index("msg.type === 'status_update'")
+        condition_start = html.index("if (", start)
+        condition = html[condition_start : html.index(") {", condition_start)]
+        assert "_wsLastRunStatuses === null" in condition
+
 
 # ---------------------------------------------------------------------------
 # Per-issue budget check
