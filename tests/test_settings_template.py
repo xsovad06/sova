@@ -81,6 +81,34 @@ class TestFormatValueKeyParameter:
             )
 
 
+class TestEnumerableListPicker:
+    """agent.fallback_models' grouped-<select> picker beside the plain list editor."""
+
+    def test_list_input_is_normalized_before_the_picker_operates_on_it(self, template_source: str) -> None:
+        """A non-empty list renders as a JSON array literal (_rawToInputString()); the
+        picker must never split that literal on ',' directly, or appending a model to an
+        already-non-empty agent.fallback_models corrupts the other entries (issue #1162).
+        """
+        assert "function _parseListInput(" in template_source
+        start = template_source.index("function editEnumerableListConfig(")
+        end = template_source.index("\n}\n", start)
+        body = template_source[start:end]
+        assert "_parseListInput(input.value)" in body
+        assert "input.value.split(',')" not in body
+
+    def test_picker_commits_only_on_explicit_action_not_bare_change(self, template_source: str) -> None:
+        """A native <select> fires 'change' for every option an arrow-key traversal lands
+        on, not just the one the user settles on: acting on 'change' alone silently
+        appends every model passed over and is unreachable by keyboard without corrupting
+        the list.
+        """
+        start = template_source.index("function editEnumerableListConfig(")
+        end = template_source.index("\n}\n", start)
+        body = template_source[start:end]
+        assert "select.onchange" not in body
+        assert "addBtn.onclick" in body
+
+
 class TestRegistryCoverage:
     def test_list_settings_exist_to_justify_the_gate(self) -> None:
         """If this ever hits zero the gate test above is vacuous."""
