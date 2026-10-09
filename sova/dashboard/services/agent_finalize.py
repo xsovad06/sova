@@ -382,6 +382,58 @@ async def _drain_stream_reader(agent: AgentState) -> None:
     _log_if_task_failed(next(iter(done)), agent.run_id)
 
 
+def _invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None) -> None:
+    """Drop the cached task, PR, and verdict state an exiting agent may have just made stale.
+
+    Without this the Tasks list keeps serving pre-run labels, PR state, and the
+    superseded SOVA verdict/next-action until the caches expire on their own TTLs
+    (#1149, #1152). Best-effort: a failure only means the next refresh waits out
+    the TTL as before.
+    """
+    try:
+        from sova.dashboard.services.queue_service import invalidate_queue_cache
+
+        invalidate_queue_cache(project_dir)
+    except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
+        log.debug("finalize.queue_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
+    try:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.pr_service import invalidate_pr_cache
+
+        repo = load_config(project_dir).github_repo
+        if repo:
+            invalidate_pr_cache(repo)
+    except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
+        log.debug("finalize.pr_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
+    try:
+        from sova.dashboard.services.work_verdict import invalidate_verdict
+
+        invalidate_verdict(project_dir, pr_number)
+    except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
+        log.debug("finalize.verdict_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
+
+
+async def _announce_agent_finished(agent: AgentState, *, status_changed: bool) -> None:
+    """Invalidate stale caches and tell connected dashboards that an agent exited.
+
+    ``agent_finished`` is sent on every exit, including when the run had already
+    reached a terminal status on its own (a researcher writing awaiting_approval,
+    or the inner ``sova run`` finalizing first), since that is exactly when
+    ``status_changed`` is False and the Tasks list still needs to refresh.
+    ``graph_invalidated`` keeps its narrower contract: only a status this
+    finalization actually transitioned.
+    """
+    _invalidate_work_item_caches(agent.project_dir, agent.pr_number)
+    try:
+        from sova.dashboard.routers.agents import _ws_manager
+
+        await _ws_manager.broadcast_event("agent_finished", agent.project_dir)
+        if status_changed:
+            await _ws_manager.broadcast_event("graph_invalidated", agent.project_dir)
+    except Exception:  # noqa: BLE001 (best-effort UI notification must not crash finalization)
+        log.debug("ws.agent_finished_broadcast_failed", run_id=agent.run_id, exc_info=True)
+
+
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     """Wait for the process to exit, then finalize the DB record."""
     from sova.dashboard.services.agent_handoff import _process_auto_handoff
@@ -501,14 +553,6 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                 status=status,
             )
 
-    if status_changed:
-        try:
-            from sova.dashboard.routers.agents import _ws_manager
-
-            await _ws_manager.broadcast_event("graph_invalidated", agent.project_dir)
-        except Exception:  # noqa: BLE001 (best-effort UI notification must not crash finalization)
-            log.debug("ws.graph_invalidated_failed", run_id=run_id, exc_info=True)
-
     async with pa._lock:
         pa.agents.pop(run_id, None)
         pa.recently_completed.append(
@@ -520,6 +564,10 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                 cost=cost,
             )
         )
+
+    # After the pop, so a client refetching on these events no longer sees the
+    # agent as running.
+    await _announce_agent_finished(agent, status_changed=status_changed)
 
     # Finalize lifecycle phase (only for issue-based runs)
     if agent.issue:

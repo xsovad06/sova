@@ -269,6 +269,7 @@ var _agentHistory = [];
 var _suggested = [];
 var _runningIssues = new Set();
 var _runningAgents = {};
+var _lastLoadedRunIds = null;
 
 var _roleLabels = {
   'command:integrate-pr': 'Integrating',
@@ -347,6 +348,13 @@ async function loadWorkItems() {
       }
     });
     _runningIssues = new Set(Object.keys(_runningAgents));
+    // Snapshot of currently-running run_ids as the Tasks list itself knows
+    // them, so the WebSocket's first status_update after connect can tell a
+    // genuinely new run apart from the common case of the socket opening
+    // moments after this same data already loaded.
+    _lastLoadedRunIds = Object.keys(_runningAgents).map(function(k) {
+      return _runningAgents[k].run_id;
+    }).sort().join(',');
 
     _agentHistory = _workItems.filter(function(i) { return i.last_run || i.pr_number; });
     _suggested = _workItems.filter(function(i) {
@@ -2534,7 +2542,32 @@ var _wsMaxReconnectDelay = 16000;
 var _wsReconnectAttempts = 0;
 var _wsMaxReconnectAttempts = 10;
 var _wsLastRunIds = null;
+var _wsLastRunStatuses = null;
 var _wsPreviousStatuses = {};
+var _workItemsRefreshTimer = null;
+var _agentsRefreshTimer = null;
+
+// Refetch the Tasks list shortly after an agent changes state, instead of
+// waiting for the 30 s poll. Debounced so a burst of WebSocket messages (or an
+// agent_finished event arriving alongside a status change) costs one request.
+function _scheduleWorkItemsRefresh() {
+  if (_workItemsRefreshTimer) clearTimeout(_workItemsRefreshTimer);
+  _workItemsRefreshTimer = setTimeout(function() {
+    _workItemsRefreshTimer = null;
+    loadWorkItems();
+  }, 300);
+}
+
+// Same debounce for the Agents list: a parallel batch finishing fires one
+// agent_finished per agent, and without this each exit costs its own
+// unthrottled GET /api/agents/active.
+function _scheduleAgentsRefresh() {
+  if (_agentsRefreshTimer) clearTimeout(_agentsRefreshTimer);
+  _agentsRefreshTimer = setTimeout(function() {
+    _agentsRefreshTimer = null;
+    loadAgents();
+  }, 300);
+}
 
 function _connectAgentWs() {
   if (_wsReconnectAttempts > _wsMaxReconnectAttempts) {
@@ -2556,7 +2589,43 @@ function _connectAgentWs() {
   _agentWs.onmessage = function(event) {
     try {
       var msg = JSON.parse(event.data);
+      if (msg.type === 'agent_finished') {
+        // A dashboard-managed agent exited and the server dropped its cached
+        // task, PR, and verdict state: refresh both views now. This covers
+        // supervisor-spawned runs too, since those go through the same
+        // dashboard agent pool (agent_lifecycle.start_agent()/start_command())
+        // and so emit this event like any other. A genuine CLI `sova run`
+        // started outside the dashboard does not: for that case the
+        // status_update branch below is what eventually catches the change,
+        // and only once the server's own queue/PR caches have expired on
+        // their TTL, since nothing invalidates them for an external run.
+        _scheduleAgentsRefresh();
+        _scheduleWorkItemsRefresh();
+        return;
+      }
       if (msg.type === 'status_update' && Array.isArray(msg.runs)) {
+        // Any run changing status, starting, or leaving the active set can
+        // change a task's state.
+        var runStatuses = msg.runs.map(function(r) { return r.run_id + ':' + r.status; }).sort().join(',');
+        if (_wsLastRunStatuses === null) {
+          // First snapshot since connect: the Tasks list may have loaded
+          // before this connection opened, so it can carry a run's changed
+          // status the page hasn't seen yet. But the far more common case is
+          // the normal page-load sequence, where loadWorkItems() already ran
+          // moments ago and reports the exact same active runs -- only
+          // refresh here if the two actually disagree.
+          var activeRunIds = msg.runs
+            .filter(function(r) { return !_STATUS_TERMINAL[r.status]; })
+            .map(function(r) { return r.run_id; })
+            .sort()
+            .join(',');
+          if (activeRunIds !== _lastLoadedRunIds) {
+            _scheduleWorkItemsRefresh();
+          }
+        } else if (runStatuses !== _wsLastRunStatuses) {
+          _scheduleWorkItemsRefresh();
+        }
+        _wsLastRunStatuses = runStatuses;
         // Fire browser notifications on terminal state transitions
         var _activeRunIds = {};
         msg.runs.forEach(function(run) {
