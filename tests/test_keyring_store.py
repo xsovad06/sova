@@ -194,6 +194,83 @@ def test_resolve_secret_empty_keyring_value_falls_through() -> None:
         assert keyring_store.resolve_secret("llm.api_key", "from-db") == "from-db"
 
 
+def test_resolve_secret_falls_back_to_legacy_name() -> None:
+    """Scoped entry absent, legacy global entry present: legacy wins over the db value.
+
+    Covers the upgrade edge case: a user with an existing global llm.api_key
+    and no per-provider scoped entry must still authenticate correctly.
+    """
+
+    def _get(name: str) -> str | None:
+        return "from-legacy" if name == "llm.api_key" else None
+
+    with patch.object(keyring_store, "get_secret", side_effect=_get):
+        resolved = keyring_store.resolve_secret("llm.api_key:anthropic:/proj", "from-db", legacy_name="llm.api_key")
+    assert resolved == "from-legacy"
+
+
+def test_resolve_secret_scoped_entry_wins_over_legacy() -> None:
+    def _get(name: str) -> str | None:
+        if name == "llm.api_key:anthropic:/proj":
+            return "from-scoped"
+        if name == "llm.api_key":
+            return "from-legacy"
+        return None
+
+    with patch.object(keyring_store, "get_secret", side_effect=_get):
+        resolved = keyring_store.resolve_secret("llm.api_key:anthropic:/proj", "from-db", legacy_name="llm.api_key")
+    assert resolved == "from-scoped"
+
+
+def test_resolve_secret_legacy_name_equal_to_name_is_not_double_read() -> None:
+    """legacy_name identical to name must not trigger a second lookup/semantics change."""
+    calls: list[str] = []
+
+    def _get(name: str) -> str | None:
+        calls.append(name)
+        return None
+
+    with patch.object(keyring_store, "get_secret", side_effect=_get):
+        assert keyring_store.resolve_secret("llm.api_key", "from-db", legacy_name="llm.api_key") == "from-db"
+    assert calls == ["llm.api_key"]
+
+
+def test_resolve_secret_no_legacy_name_given_skips_legacy_lookup() -> None:
+    with patch.object(keyring_store, "get_secret", return_value=None) as mock_get:
+        assert keyring_store.resolve_secret("llm.api_key:anthropic:/proj", "from-db") == "from-db"
+    mock_get.assert_called_once_with("llm.api_key:anthropic:/proj")
+
+
+# scoped_secret_name
+
+
+def test_scoped_secret_name_distinguishes_projects() -> None:
+    a = keyring_store.scoped_secret_name("llm.api_key", "/home/user/project-a", "anthropic")
+    b = keyring_store.scoped_secret_name("llm.api_key", "/home/user/project-b", "anthropic")
+    assert a != b
+
+
+def test_scoped_secret_name_distinguishes_providers() -> None:
+    a = keyring_store.scoped_secret_name("llm.api_key", "/home/user/project", "anthropic")
+    b = keyring_store.scoped_secret_name("llm.api_key", "/home/user/project", "openai")
+    assert a != b
+
+
+def test_scoped_secret_name_resolves_relative_paths() -> None:
+    """Two different relative spellings of the same directory must scope identically."""
+    import os
+
+    cwd = os.getcwd()
+    a = keyring_store.scoped_secret_name("llm.api_key", ".", "anthropic")
+    b = keyring_store.scoped_secret_name("llm.api_key", cwd, "anthropic")
+    assert a == b
+
+
+def test_scoped_secret_name_never_collides_with_bare_legacy_name() -> None:
+    scoped = keyring_store.scoped_secret_name("llm.api_key", "/home/user/project", "anthropic")
+    assert scoped != "llm.api_key"
+
+
 # migrate_plaintext_to_keyring
 
 

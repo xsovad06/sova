@@ -14,7 +14,6 @@ class SettingMeta:
     value_type: str = "string"
     requires_restart: bool = False
     options: tuple[str, ...] = ()
-    options_source: str = ""
 
 
 _LABEL_POLL_INTERVAL = "Poll interval (s)"
@@ -148,14 +147,12 @@ _REGISTRY: list[SettingMeta] = [
         "Model",
         "Default model for LiteLLM and Anthropic providers (e.g. claude-sonnet-5, gpt-4o, ollama/qwen3-coder)",
         "llm",
-        options_source="llm",
     ),
     SettingMeta(
         "llm.fallback_model",
         "Fallback model",
         "Fallback model if primary fails (LiteLLM only)",
         "llm",
-        options_source="llm",
     ),
     SettingMeta(
         "llm.api_base",
@@ -265,21 +262,13 @@ _REGISTRY: list[SettingMeta] = [
         "select",
         options=("claude-code", "aider", "codex"),
     ),
-    SettingMeta(
-        "agent.model",
-        "Model",
-        "Model for agent work; pin an explicit ID (e.g. claude-sonnet-5), not a bare alias",
-        "agent",
-        options_source="llm",
-    ),
+    SettingMeta("agent.model", "Model", "Claude model to use for agent work (opus, sonnet, haiku)", "agent"),
     SettingMeta(
         "agent.fallback_models",
         "Fallback models",
-        "Ordered list of models to try when the primary hits billing or rate-limit errors. "
-        "Pin explicit IDs (e.g. claude-sonnet-5), not bare aliases",
+        "Ordered list of models to try when the primary hits billing or rate-limit errors (e.g. sonnet, haiku)",
         "agent",
         "list",
-        options_source="llm",
     ),
     SettingMeta(
         "agent.max_budget", "Max budget (USD)", "Maximum spend per agent run before auto-abort", "agent", "number"
@@ -774,7 +763,6 @@ _REGISTRY: list[SettingMeta] = [
         "LLM model used for confidence scoring",
         "confidence",
         "string",
-        options_source="llm",
     ),
     SettingMeta(
         "confidence.max_budget_usd",
@@ -929,41 +917,16 @@ _REGISTRY: list[SettingMeta] = [
         "Role to assign when none is specified (developer, researcher, triage)",
         "roles",
     ),
-    SettingMeta(
-        "roles.researcher_model",
-        "Researcher model",
-        "Claude model for the researcher role",
-        "roles",
-        options_source="llm",
-    ),
-    SettingMeta(
-        "roles.triage_model",
-        "Triage model",
-        "Claude model for the triage role",
-        "roles",
-        options_source="llm",
-    ),
-    SettingMeta(
-        "roles.reviewer_model",
-        "Reviewer model",
-        "Claude model for the reviewer role",
-        "roles",
-        options_source="llm",
-    ),
+    SettingMeta("roles.researcher_model", "Researcher model", "Claude model for the researcher role", "roles"),
+    SettingMeta("roles.triage_model", "Triage model", "Claude model for the triage role", "roles"),
+    SettingMeta("roles.reviewer_model", "Reviewer model", "Claude model for the reviewer role", "roles"),
     SettingMeta(
         "roles.developer_model",
         "Developer model",
         "Claude model for the developer role (leave empty to route by task complexity)",
         "roles",
-        options_source="llm",
     ),
-    SettingMeta(
-        "roles.planner_model",
-        "Planner model",
-        "Claude model for the supervisor planner",
-        "roles",
-        options_source="llm",
-    ),
+    SettingMeta("roles.planner_model", "Planner model", "Claude model for the supervisor planner", "roles"),
     SettingMeta(
         "roles.nicknames", "Role nicknames", "Short aliases for role names (e.g. dev=developer)", "roles", "object"
     ),
@@ -2132,9 +2095,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "oversight.analysis_model",
         "Analysis model",
-        "LLM model for oversight analysis; pin an explicit ID (e.g. claude-sonnet-5), not a bare alias",
+        "LLM model tier for oversight analysis (e.g. sonnet, haiku)",
         "oversight",
-        options_source="llm",
     ),
     SettingMeta(
         "oversight.dedup_window_days",
@@ -2205,11 +2167,7 @@ def get_grouped_config(flat_config: dict, secret_locations: dict[str, str] | Non
     Returns a list of group dicts:
       [{"id": "agent", "label": "Agent", "settings": [...]}, ...]
 
-    Each setting in a group has: key, label, description, value, value_type, raw_key,
-    options_source. A non-empty ``options_source`` tells the settings page to render
-    the field as a dropdown fetched from that source (e.g. "llm" for
-    ``GET /api/models/available?layer=llm``) instead of a plain text input, with a
-    "Custom" fallback that keeps the underlying value free text.
+    Each setting in a group has: key, label, description, value, value_type, raw_key.
     A ``value_type="secret"`` entry additionally carries ``secret_location``
     ("keyring"/"database"/"unset", from ``secret_locations``) and
     ``keyring_capable`` (whether this key is actually resolved through the
@@ -2239,7 +2197,6 @@ def get_grouped_config(flat_config: dict, secret_locations: dict[str, str] | Non
                 "value_type": meta.value_type,
                 "requires_restart": meta.requires_restart,
                 "options": list(meta.options),
-                "options_source": meta.options_source,
             }
             if meta.value_type == "secret":
                 entry["secret_location"] = secret_locations.get(key, "unset")

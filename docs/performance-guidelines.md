@@ -85,8 +85,6 @@ Tests MUST monkeypatch `get_project_dir` to `tmp_path` and may need to clear `_h
 
 PR synthesis and issue-PR lookups in `agent_recovery.py` use `time.monotonic()` with a 60-second TTL (`_SYNTHESIS_TTL_SECONDS = 60`, `_check_ttl_cache()`). Use `time.monotonic()` (not `time.time()`) for TTL checks -- immune to clock skew.
 
-The Agents page Tasks list reads two 120-second caches: `queue_service._queue_cache` (the adapter's sorted task list) and `pr_service._pr_cache` (open PRs). Cache only the remote round trip, never local data derived alongside it: `get_priority_queue()` rebuilds `last_run` (DB) and `spec_status` (spec files) on every call, because baking them into the cached entry hid a finished run's `awaiting_approval` status for the full TTL (#1149). Agent finalization drops both caches (`invalidate_queue_cache()`, `invalidate_pr_cache()`) and broadcasts an `agent_finished` WebSocket event after the agent leaves `pa.agents`, which the Agents page answers with a debounced work-items refetch. Both caches also carry a generation counter (`_queue_cache_generation`, `_pr_cache_generation`), bumped alongside the pop: a fetch already in flight when invalidation fires captures its generation via `setdefault` before awaiting and skips caching its result if the generation moved, so it can't resurrect the pre-invalidation data for the rest of the TTL (#1149, PR #1152).
-
 ### LRU caches
 
 `@lru_cache(maxsize=1)` on `get_builtin_roles()` and `get_available_commands()` in `role_service.py`. These cache static discovery results that never change at runtime.

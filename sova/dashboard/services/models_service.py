@@ -230,7 +230,7 @@ async def get_available_models(project_dir: Path, *, layer: str = "llm", refresh
         provider_identity = f"{cfg.llm.provider}:{detect_backend(cfg.llm)}"
 
         try:
-            provider = create_provider(cfg.llm)
+            provider = create_provider(cfg.llm, project_dir)
         except (ValueError, ImportError) as exc:
             # A misconfigured/unknown provider type, or a configured provider
             # whose optional SDK extra (litellm, anthropic) isn't installed,

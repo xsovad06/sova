@@ -23,11 +23,13 @@ provider = "openai"
 model = "gpt-5"
 ```
 
-Requires `OPENAI_API_KEY` in the environment, plus the LiteLLM extra (`pip install sova[litellm]`).
-No local daemon is needed. `sova doctor`'s "llm provider" check (`LiteLLMProvider.check_available()`)
-confirms both that LiteLLM is importable and that `OPENAI_API_KEY` is set; it does not validate that
-the key is actually valid or that the model name exists. A bad key or model surfaces on the first
-real invocation.
+Requires a credential, plus the LiteLLM extra (`pip install sova[litellm]`). `llm.api_key` (set via the
+Connections page or `sova config set llm.api_key <key>`, stored in the OS keyring when available) is the
+first-class source and takes precedence; an `OPENAI_API_KEY` exported in the environment is only a
+fallback when `llm.api_key` is not configured. No local daemon is needed. `sova doctor`'s "llm provider"
+check (`LiteLLMProvider.check_available()`) confirms both that LiteLLM is importable and that a credential
+is configured (either source); it does not validate that the key is actually valid or that the model name
+exists. A bad key or model surfaces on the first real invocation.
 
 ## Ollama (local, no daemon needed for tests)
 

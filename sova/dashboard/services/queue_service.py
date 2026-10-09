@@ -8,7 +8,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from sova.adapters.base import Task, TaskState
+from sova.adapters.base import TaskState
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
 
@@ -99,32 +99,7 @@ def _extract_label_priority(labels: list[str]) -> int:
 _PHASE_RE = re.compile(r"(?:Phase\s*|P)(\d+)", re.IGNORECASE)
 
 _QUEUE_CACHE_TTL = 120  # seconds
-# Caches only the adapter's sorted task list (the GitHub/Jira round trip). The
-# local enrichment (last_run from the DB, spec_status from spec files) is
-# rebuilt on every call: baking it into the cached entry hid a just-finished
-# run's status (e.g. awaiting_approval) for up to the full TTL (#1149).
-_queue_cache: dict[str, tuple[float, list[Task]]] = {}
-# Per-key generation counter, bumped on every invalidation and never reset.
-# A fetch in flight when invalidation fires can still land afterward; it
-# compares its captured generation before caching so it can't resurrect the
-# pre-invalidation result and undo the invalidation for the rest of the TTL.
-_queue_cache_generation: dict[str, int] = {}
-
-
-def invalidate_queue_cache(project_dir: Path) -> None:
-    """Drop the cached task list for a project so the next call refetches it.
-
-    Called when an agent finishes, since an agent often changes the labels the
-    queue's states come from. Cache keys are whatever path the caller passed
-    (or "" when none), while agents carry a resolved path, so entries are
-    matched by resolved path and the "" single-project entry is always dropped.
-    """
-    target = project_dir.resolve()
-    keys = set(_queue_cache) | set(_queue_cache_generation)
-    for key in keys:
-        if not key or Path(key).resolve() == target:
-            _queue_cache.pop(key, None)
-            _queue_cache_generation[key] = _queue_cache_generation.get(key, 0) + 1
+_queue_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
 def _extract_phase_order(milestone: str | None) -> int:
@@ -143,61 +118,13 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
 
     Uses the GitHub adapter via the project's SOVA config.
     Returns a list of dicts with: priority, issue, title, state, action, labels, url, last_run.
-    The adapter's task list is cached for 120 seconds per project to reduce API
-    calls; last_run and spec_status are local reads, refreshed on every call.
+    Results are cached for 120 seconds per project to reduce API calls.
     """
-    actionable = await _get_actionable_tasks(project_dir)
-    if not actionable:
-        return []
-
-    last_runs = await _get_last_runs_by_issue(project_dir)
-
-    queue = []
-    for t in actionable:
-        priority = _STATE_PRIORITY.get(t.state, 99)
-        phase_order = _extract_phase_order(t.milestone)
-        queue.append(
-            {
-                "issue": t.id,
-                "title": t.title,
-                "state": t.state.value,
-                "priority": priority,
-                "priority_label": _milestone_badge(t.milestone),
-                "phase_order": phase_order,
-                "action": _RECOMMENDED_ACTION.get(t.state, "triage"),
-                # Copied, not aliased: t.labels/assignees/components are the
-                # cached Task's own lists, and a caller mutating the queue
-                # result in place would otherwise corrupt later cache hits.
-                "labels": list(t.labels),
-                "url": t.url,
-                "last_run": last_runs.get(t.id),
-                "created_at": t.metadata.get("created_at", ""),
-                "assignees": list(t.assignees),
-                "issue_type": t.issue_type,
-                "jira_status": t.metadata.get("status", ""),
-                "jira_priority": t.metadata.get("jira_priority", ""),
-                "jira_key": t.metadata.get("key", ""),
-                "story_points": t.story_points,
-                "sprint": t.sprint,
-                "components": list(t.components),
-                "updated_at": t.metadata.get("updated_at", ""),
-            }
-        )
-
-    await _enrich_spec_status(queue, project_dir)
-    return queue
-
-
-async def _get_actionable_tasks(project_dir: Path | None) -> list[Task]:
-    """Return the priority-sorted actionable tasks from the adapter, cached per project."""
     cache_key = str(project_dir or "")
     now = time.monotonic()
     cached = _queue_cache.get(cache_key)
     if cached and (now - cached[0]) < _QUEUE_CACHE_TTL:
         return cached[1]
-    # setdefault, not get: the key must exist in the dict *before* the await
-    # below so a concurrent invalidate_queue_cache() can see and bump it.
-    generation = _queue_cache_generation.setdefault(cache_key, 0)
 
     from sova.adapters import create_adapter
     from sova.config.loader import load_config
@@ -239,12 +166,41 @@ async def _get_actionable_tasks(project_dir: Path | None) -> list[Task]:
         )
     )
 
-    # Only cache if no invalidation landed while this fetch was in flight;
-    # otherwise the fetch predates the invalidation trigger and caching it
-    # would resurrect stale data for the rest of the TTL.
-    if _queue_cache_generation.get(cache_key, 0) == generation:
-        _queue_cache[cache_key] = (time.monotonic(), actionable)
-    return actionable
+    last_runs = await _get_last_runs_by_issue(project_dir)
+
+    queue = []
+    for t in actionable:
+        priority = _STATE_PRIORITY.get(t.state, 99)
+        phase_order = _extract_phase_order(t.milestone)
+        queue.append(
+            {
+                "issue": t.id,
+                "title": t.title,
+                "state": t.state.value,
+                "priority": priority,
+                "priority_label": _milestone_badge(t.milestone),
+                "phase_order": phase_order,
+                "action": _RECOMMENDED_ACTION.get(t.state, "triage"),
+                "labels": t.labels,
+                "url": t.url,
+                "last_run": last_runs.get(t.id),
+                "created_at": t.metadata.get("created_at", ""),
+                "assignees": t.assignees,
+                "issue_type": t.issue_type,
+                "jira_status": t.metadata.get("status", ""),
+                "jira_priority": t.metadata.get("jira_priority", ""),
+                "jira_key": t.metadata.get("key", ""),
+                "story_points": t.story_points,
+                "sprint": t.sprint,
+                "components": t.components,
+                "updated_at": t.metadata.get("updated_at", ""),
+            }
+        )
+
+    await _enrich_spec_status(queue, project_dir)
+
+    _queue_cache[cache_key] = (time.monotonic(), queue)
+    return queue
 
 
 async def _enrich_spec_status(queue: list[dict], project_dir: Path | None) -> None:

@@ -595,7 +595,7 @@ def create_app(
         from sova.llm.client import reload_provider_async
 
         cfg = _load_config_or_fail(resolved)
-        await reload_provider_async(cfg)
+        await reload_provider_async(cfg, resolved)
         reload_runtime(cfg)
 
         from sova.core.output import cleanup_old_output

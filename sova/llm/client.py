@@ -91,18 +91,27 @@ def reset_provider() -> None:
 _last_warned_provider_type: str | None = None
 
 
-def reload_provider(cfg: ProjectConfig) -> None:
+def reload_provider(cfg: ProjectConfig, project_dir: Path | None = None) -> None:
     """Recreate the global LLM provider from fresh config.
 
     Python's GIL ensures the reference swap is atomic. In-flight calls hold
     their own reference to the old provider, which stays alive via refcount.
+
+    ``project_dir`` scopes the keyring lookup for a resolved API key (issue
+    #1148) and must be passed explicitly by any caller that already knows the
+    project this config was loaded for (e.g. the dashboard lifespan's
+    resolved project directory, which does not match the ambient
+    ``sova.config.context`` contextvar outside of a request): leaving it
+    unset falls back to that contextvar, then the process's CWD, which is
+    only correct when this call happens to run inside the right request or
+    the right working directory.
     """
     global _last_warned_provider_type  # noqa: PLW0603
 
     # The whole llm section, not a hand-picked subset: forwarding individual
     # kwargs is what let a new field keep applying at startup but silently stop
     # applying after a settings hot-reload (R12).
-    provider = create_provider(cfg.llm)
+    provider = create_provider(cfg.llm, project_dir)
     set_provider(provider)
 
     # Single chokepoint for the CLI callback, dashboard lifespan, and the
@@ -134,7 +143,7 @@ def reset_provider_warning_state() -> None:
     _last_warned_provider_type = None
 
 
-async def reload_provider_async(cfg: ProjectConfig) -> None:
+async def reload_provider_async(cfg: ProjectConfig, project_dir: Path | None = None) -> None:
     """Async wrapper for ``reload_provider()``, safe to call from a request handler.
 
     ``create_provider()``'s anthropic branch resolves ``llm.api_key`` through
@@ -146,8 +155,10 @@ async def reload_provider_async(cfg: ProjectConfig) -> None:
     dashboard lifespan and the settings hot-reload path never pay for it
     in-line; ``reload_provider()`` itself stays synchronous for the CLI
     callback, which runs before any event loop exists.
+
+    ``project_dir``: see ``reload_provider()``.
     """
-    await asyncio.to_thread(reload_provider, cfg)
+    await asyncio.to_thread(reload_provider, cfg, project_dir)
 
 
 # ---------------------------------------------------------------------------

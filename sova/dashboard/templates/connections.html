@@ -89,24 +89,37 @@ function renderReconnectBlock(c) {
       '(<code class="bg-black/30 px-1 rounded">gcloud auth application-default login</code>), then click Validate above.' +
       '</div>';
   }
+  var reconnect = CATALOG.reconnect || {can_reconnect: true, detail: ''};
+  if (!reconnect.can_reconnect) {
+    // The server already decided this session cannot complete a
+    // browser-based `claude auth login` (non-loopback dashboard access, or
+    // a routing backend that doesn't use it at all): show its reasoning
+    // and the terminal fallback instead of a button that can never succeed.
+    return '<div class="mt-3 pt-3 border-t border-gray-700/40 text-xs text-gray-400">' +
+      escapeHtml(reconnect.detail || 'Reconnect cannot be completed from this session.') + ' Use ' +
+      '<code class="bg-black/30 px-1 rounded">claude auth login</code> in a terminal on the server that has a browser, ' +
+      'then click Validate above to recheck.' +
+      '</div>';
+  }
   return '<div class="mt-3 pt-3 border-t border-gray-700/40">' +
     '<div class="flex items-center gap-2">' +
       '<button type="button" class="sova-btn sova-btn-primary" id="reconnect-start-btn" onclick="startReconnect()">Start reconnect (claude auth login)</button>' +
       '<button type="button" class="sova-btn sova-btn-danger hidden" id="reconnect-cancel-btn" onclick="cancelReconnect()">Cancel</button>' +
       '<span class="text-xs text-gray-500" id="reconnect-status-text"></span>' +
     '</div>' +
-    '<p class="text-xs text-gray-500 mt-2">A browser window opens for the Claude.ai login. If no browser is available (SSH, container, headless), use <code class="bg-black/30 px-1 rounded">claude auth login</code> in a terminal that has one, or sign in on another machine and copy the credentials file.</p>' +
+    '<p class="text-xs text-gray-500 mt-2">A browser window opens for the Claude.ai login. If no browser is available (SSH, container, headless), use <code class="bg-black/30 px-1 rounded">claude auth login</code> in a terminal on the server that has one, then click Validate above to recheck.</p>' +
   '</div>';
 }
 
 /* Both the Anthropic API and OpenAI (via LiteLLM) providers read llm.api_key
-   (see create_provider): for openai, the resolved value is injected into the
-   OPENAI_API_KEY environment variable (only if not already exported), since
-   litellm itself only ever reads that env var, never cfg.api_key directly. */
+   (see create_provider), scoped per (project, provider): for openai, the
+   resolved value is threaded explicitly as the api_key= argument to the
+   underlying LiteLLM call, taking precedence over any OPENAI_API_KEY
+   exported in the server's own environment. */
 function renderApiKeyBlock(providerId) {
   var keyringNote = CATALOG.keyring_available ? '' : '<span class="text-accent-yellow"> (OS keyring unavailable; stored as plaintext in the project database)</span>';
   var envNote = providerId === 'openai'
-    ? ' Takes effect only if the process has no OPENAI_API_KEY already exported.'
+    ? ' Used in preference to any OPENAI_API_KEY exported in the server\'s environment.'
     : '';
   return '<div class="mt-3 pt-3 border-t border-gray-700/40">' +
     '<div class="flex items-center gap-2">' +
@@ -256,7 +269,7 @@ async function saveApiKey(providerId) {
     var res = await fetch(apiUrl('/settings/config'), {
       method: 'POST',
       headers: jsonCsrfHeaders(),
-      body: JSON.stringify({key: 'llm.api_key', value: input.value}),
+      body: JSON.stringify({key: 'llm.api_key', value: input.value, provider: providerId}),
     });
     if (!res.ok) {
       showToast(await getErrorDetail(res, 'Failed to save key'), 'error');

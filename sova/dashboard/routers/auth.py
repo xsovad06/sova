@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from sova.config.context import get_project_dir
@@ -27,11 +27,12 @@ async def auth_status() -> dict:
 
 
 @router.get("/connections", responses={503: {"description": "Connection catalog unavailable"}})
-async def connections_catalog() -> dict:
+async def connections_catalog(request: Request) -> dict:
     """List every supported LLM provider and agent runtime with its readiness state."""
     project_dir = get_project_dir() or Path.cwd()
+    is_loopback_bind = bool(getattr(request.app.state, "is_loopback_bind", True))
     try:
-        return await setup_service.get_connection_catalog(project_dir)
+        return await setup_service.get_connection_catalog(project_dir, is_loopback_bind=is_loopback_bind)
     except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
         log.warning("auth.connections.catalog.error", exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to fetch connection catalog") from exc
@@ -112,10 +113,11 @@ async def activate_runtime_connection(req: _RuntimeCandidateRequest) -> dict:
     "/connections/reconnect/start",
     dependencies=[Depends(require_same_origin_csrf)],
 )
-async def start_reconnect() -> dict:
+async def start_reconnect(request: Request) -> dict:
     """Start a CLI-owned `claude auth login` subprocess for local reconnect."""
     project_dir = get_project_dir() or Path.cwd()
-    return await setup_service.start_reconnect(project_dir)
+    is_loopback_bind = bool(getattr(request.app.state, "is_loopback_bind", True))
+    return await setup_service.start_reconnect(project_dir, is_loopback_bind=is_loopback_bind)
 
 
 @router.get("/connections/reconnect/status")

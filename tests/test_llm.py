@@ -1805,6 +1805,75 @@ class TestLLMProvider:
         with pytest.raises(ValueError, match="requires an explicit llm.model"):
             LLMConfig(provider="ollama")
 
+    def test_create_provider_openai_never_mutates_process_environment(self) -> None:
+        """A resolved openai credential must reach LiteLLM via api_key=, never os.environ (#1148).
+
+        Mutating os.environ["OPENAI_API_KEY"] would leak the credential to
+        every other subprocess SOVA spawns (including sandboxed coding-agent
+        runtimes), not just the LiteLLM call it was resolved for.
+        """
+        from sova.config.models import LLMConfig
+        from sova.llm.provider import create_provider
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.dict("sys.modules", {"litellm": MagicMock(__version__="1.0.0")}),
+            patch("sova.llm.keyring_store.get_secret", return_value="sk-resolved-openai-key"),
+        ):
+            import sova.llm.litellm_provider as llm_mod
+
+            llm_mod._HAS_LITELLM = True
+            llm_mod.litellm = MagicMock()
+
+            provider = create_provider(LLMConfig(provider="openai", model="gpt-5"))
+
+            assert "OPENAI_API_KEY" not in os.environ
+        assert provider.api_key == "sk-resolved-openai-key"
+
+    def test_create_provider_openai_api_key_scoped_to_project_and_provider(self) -> None:
+        """The keyring lookup for openai's api_key must use a (project, provider)-scoped name."""
+        from sova.config.models import LLMConfig
+        from sova.llm.provider import create_provider
+
+        with (
+            patch.dict("sys.modules", {"litellm": MagicMock(__version__="1.0.0")}),
+            patch("sova.llm.keyring_store.get_secret") as mock_get_secret,
+        ):
+            import sova.llm.litellm_provider as llm_mod
+
+            llm_mod._HAS_LITELLM = True
+            llm_mod.litellm = MagicMock()
+            mock_get_secret.return_value = None
+
+            create_provider(LLMConfig(provider="openai", model="gpt-5"), project_dir=Path("/tmp/proj-a"))
+
+        scoped_call = mock_get_secret.call_args_list[0]
+        name = scoped_call.args[0]
+        assert "openai" in name
+        assert "proj-a" in name
+
+    def test_create_provider_two_projects_do_not_share_openai_key_lookup(self) -> None:
+        """Two projects must resolve distinct scoped keyring names for the same provider."""
+        from sova.config.models import LLMConfig
+        from sova.llm.provider import create_provider
+
+        with (
+            patch.dict("sys.modules", {"litellm": MagicMock(__version__="1.0.0")}),
+            patch("sova.llm.keyring_store.get_secret", return_value=None) as mock_get_secret,
+        ):
+            import sova.llm.litellm_provider as llm_mod
+
+            llm_mod._HAS_LITELLM = True
+            llm_mod.litellm = MagicMock()
+
+            create_provider(LLMConfig(provider="openai", model="gpt-5"), project_dir=Path("/tmp/proj-a"))
+            name_a = mock_get_secret.call_args_list[0].args[0]
+            mock_get_secret.reset_mock()
+            create_provider(LLMConfig(provider="openai", model="gpt-5"), project_dir=Path("/tmp/proj-b"))
+            name_b = mock_get_secret.call_args_list[0].args[0]
+
+        assert name_a != name_b
+
     def test_get_provider_default(self) -> None:
         from sova.llm.client import get_provider
         from sova.llm.providers.claude_code import ClaudeCodeProvider
@@ -2716,6 +2785,107 @@ class TestLiteLLMProvider:
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
 
+    async def test_invoke_passes_explicit_api_key_not_env(self, mock_litellm: MagicMock) -> None:
+        """A provider constructed with api_key= forwards it to acompletion() directly,
+        rather than relying on an OPENAI_API_KEY environment variable (#1148)."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.return_value = _MockResponse(content="ok", model="gpt-4o")
+
+        provider = LiteLLMProvider(model="gpt-4o", api_key="sk-explicit-litellm-key")
+        await provider.invoke("Hello")
+
+        call_kwargs = mock_litellm.acompletion.call_args
+        assert call_kwargs[1]["api_key"] == "sk-explicit-litellm-key"
+
+    async def test_invoke_omits_api_key_when_not_configured(self, mock_litellm: MagicMock) -> None:
+        """No api_key= at all when none was resolved, preserving the env-var fallback contract."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.return_value = _MockResponse(content="ok", model="gpt-4o")
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        await provider.invoke("Hello")
+
+        call_kwargs = mock_litellm.acompletion.call_args
+        assert "api_key" not in call_kwargs[1]
+
+    async def test_openai_key_not_sent_to_cross_vendor_fallback_model(self, mock_litellm: MagicMock) -> None:
+        """An OpenAI-resolved api_key must never reach a non-OpenAI-routed call.
+
+        self.api_key is only ever resolved for vendor="openai" (see
+        create_provider), but fallback_model/llm.routing.* can still name a
+        Claude/Gemini/Vertex/Ollama model, which LiteLLM happily routes. An
+        explicit api_key= kwarg overrides LiteLLM's own per-provider env
+        resolution, so sending the OpenAI key there would leak it to the
+        wrong vendor's endpoint (issue #1148)."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = [
+            RuntimeError("Primary model unavailable"),
+            _MockResponse(content="Fallback response", model="claude-sonnet-4-6"),
+        ]
+
+        provider = LiteLLMProvider(
+            model="gpt-4o", fallback_model="claude-sonnet-4-6", vendor="openai", api_key="sk-openai-secret"
+        )
+        await provider.invoke("Hello")
+
+        assert mock_litellm.acompletion.call_count == 2
+        primary_kwargs, fallback_kwargs = (c[1] for c in mock_litellm.acompletion.call_args_list)
+        assert primary_kwargs["api_key"] == "sk-openai-secret"
+        assert "api_key" not in fallback_kwargs
+
+    @pytest.mark.parametrize("model", ["gpt-4o", "openai/gpt-4o"])
+    def test_model_matches_key_vendor_allows_openai_routed_models(self, mock_litellm: MagicMock, model: str) -> None:
+        """A bare model id or one explicitly prefixed `openai/` both route to
+        OpenAI and may receive the OpenAI key."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(model=model, vendor="openai", api_key="sk-openai-secret")
+        assert provider._model_matches_key_vendor(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-sonnet-4-6",
+            "anthropic/claude-sonnet-4-6",
+            "vertex_ai/gemini-2.5-pro",
+            "gemini/gemini-2.5-pro",
+            "ollama/llama3.1",
+            # A denylist of five known prefixes left every other
+            # LiteLLM-routed vendor exposed: an explicit api_key= kwarg
+            # overrides LiteLLM's own per-provider env resolution, so any of
+            # these would have received the OpenAI key under the old check
+            # (CodeRabbit finding, litellm_provider.py:724).
+            "azure/gpt-4o",
+            "groq/llama3-70b",
+            "mistral/mistral-large",
+            "bedrock/anthropic.claude-3",
+            "openrouter/openai/gpt-4o",
+            "together_ai/meta-llama/Llama-3",
+            "deepseek/deepseek-chat",
+            "cohere/command-r",
+        ],
+    )
+    def test_model_matches_key_vendor_rejects_other_vendor_prefixes(self, mock_litellm: MagicMock, model: str) -> None:
+        """Any model id routed to a vendor other than OpenAI must never
+        receive the OpenAI-resolved api_key, whether or not that prefix was
+        on the old five-entry denylist."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(model=model, vendor="openai", api_key="sk-openai-secret")
+        assert provider._model_matches_key_vendor(model) is False
+
+    def test_model_matches_key_vendor_always_true_for_non_openai_vendor(self, mock_litellm: MagicMock) -> None:
+        """A caller that constructs this provider directly with its own
+        explicit api_key= (e.g. a custom vendor="litellm" endpoint) keeps
+        today's unconditional forwarding behavior."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(model="azure/gpt-4o", vendor="litellm", api_key="sk-custom")
+        assert provider._model_matches_key_vendor("azure/gpt-4o") is True
+
     async def test_ollama_provider_round_trip_no_daemon(self, mock_litellm: MagicMock) -> None:
         """create_provider('ollama', ...) -> invoke(...) works against a faked backend.
 
@@ -3228,7 +3398,17 @@ class TestLiteLLMProvider:
             available, detail = await provider.check_available()
 
         assert available is True
-        assert "OPENAI_API_KEY set" in detail
+        assert "API key configured" in detail
+
+    async def test_check_available_openai_with_explicit_api_key_no_env(self, mock_litellm: MagicMock) -> None:
+        """A key resolved from the keyring (self.api_key) is enough, with no env var set at all."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        with patch.dict(os.environ, {}, clear=True):
+            provider = LiteLLMProvider(model="gpt-5", vendor="openai", api_key="sk-from-keyring")
+            available, _detail = await provider.check_available()
+
+        assert available is True
 
     @respx.mock
     async def test_check_available_ollama_daemon_reachable_is_available(self, mock_litellm: MagicMock) -> None:

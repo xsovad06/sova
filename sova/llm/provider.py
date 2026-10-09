@@ -6,7 +6,6 @@ The default provider (ClaudeCodeProvider) wraps the Claude Code CLI.
 
 from __future__ import annotations
 
-import os
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -260,7 +259,25 @@ class LLMProvider(ABC):
         return ProviderCapabilities()
 
 
-def create_provider(cfg: LLMConfig) -> LLMProvider:
+def _resolve_scoped_api_key(cfg: LLMConfig, project_dir: Path | None) -> str:
+    """Resolve ``llm.api_key`` scoped to this project and the active provider.
+
+    The keyring entry is scoped by ``(project_dir, provider)`` (issue #1148):
+    two projects on the same machine, or a provider switch within the same
+    project, must never read each other's credential. Falls back to the
+    legacy, unscoped ``"llm.api_key"`` keyring entry (read-only, never
+    migrated or deleted) for a user upgrading from before this scoping
+    existed, then to ``cfg.api_key`` as stored in the database.
+    """
+    from sova.config.context import get_project_dir
+    from sova.llm.keyring_store import resolve_secret, scoped_secret_name
+
+    resolved_dir = project_dir if project_dir is not None else (get_project_dir() or Path.cwd())
+    scoped_name = scoped_secret_name("llm.api_key", resolved_dir, cfg.provider)
+    return resolve_secret(scoped_name, cfg.api_key, legacy_name="llm.api_key")
+
+
+def create_provider(cfg: LLMConfig, project_dir: Path | None = None) -> LLMProvider:
     """Create an LLM provider instance from the whole ``llm`` config section.
 
     Takes the entire :class:`~sova.config.models.LLMConfig` rather than a
@@ -274,17 +291,26 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
             backend; the remaining fields are read per backend (``model``,
             ``fallback_model`` and ``api_base`` for LiteLLM; ``model`` and
             ``api_key`` for the Anthropic API). ``api_key`` is resolved through
-            ``sova.llm.keyring_store.resolve_secret`` first (OS keyring, then
+            ``_resolve_scoped_api_key`` (OS keyring, scoped to this project and
+            provider, then the legacy unscoped keyring entry, then
             ``cfg.api_key`` as stored in the database), then falls back to the
             ``ANTHROPIC_API_KEY`` env var when still empty. The ``openai``
-            vendor reuses the same ``api_key`` field: the resolved value is
-            injected into ``OPENAI_API_KEY`` (via ``os.environ.setdefault``,
-            so an already-exported value is never overwritten) since LiteLLM
-            itself only reads that env var, never ``cfg.api_key`` directly.
-            ``model`` and
-            ``fallback_model`` are resolved through ``cfg.model_aliases`` first,
-            so a deployment can point a generic tier name (e.g. ``"smart"``) at
-            these fields exactly as it can at a per-call ``model=`` argument.
+            vendor reuses the same ``api_key`` field, passed explicitly into
+            ``LiteLLMProvider`` (which forwards it as the ``api_key=`` argument
+            to the underlying LiteLLM call) rather than mutating
+            ``os.environ["OPENAI_API_KEY"]``: a resolved credential must never
+            leak into the whole process's environment, where every other
+            subprocess spawned by SOVA (including sandboxed coding-agent
+            runtimes) would inherit it. ``model`` and ``fallback_model`` are
+            resolved through ``cfg.model_aliases`` first, so a deployment can
+            point a generic tier name (e.g. ``"smart"``) at these fields
+            exactly as it can at a per-call ``model=`` argument.
+        project_dir: The project this provider is being created for, used to
+            scope the keyring lookup. Defaults to the dashboard's
+            request-scoped project (multi-project mode) or the current
+            working directory (single-project/CLI mode), matching the
+            convention used elsewhere for project-scoped file paths (e.g.
+            ``sova/dashboard/services/settings_service.py:get_config_file_path``).
 
     Returns:
         An LLMProvider instance.
@@ -307,33 +333,21 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
         # them, so the Claude default below only ever applies to litellm/hybrid.
         model = resolve_alias(cfg.model, cfg) if cfg.model else cfg.model
         fallback_model = resolve_alias(cfg.fallback_model, cfg) if cfg.fallback_model else cfg.fallback_model
-        if cfg.provider == "openai":
-            # Reuses the one llm.api_key field (keyring-first, same as the
-            # Anthropic path below) instead of a second secret shape: litellm
-            # itself only ever reads OPENAI_API_KEY from the environment, so
-            # the resolved key is injected there. setdefault() means an
-            # OPENAI_API_KEY already exported in the process environment
-            # still wins, matching the documented env-var contract when no
-            # llm.api_key is configured.
-            from sova.llm.keyring_store import resolve_secret
-
-            openai_key = resolve_secret("llm.api_key", cfg.api_key)
-            if openai_key:
-                os.environ.setdefault("OPENAI_API_KEY", openai_key)
+        openai_key = _resolve_scoped_api_key(cfg, project_dir) if cfg.provider == "openai" else ""
         return LiteLLMProvider(
             model=model or "claude-sonnet-4-6",
             fallback_model=fallback_model or None,
             api_base=cfg.api_base or None,
             vendor=cfg.provider,
+            api_key=openai_key or None,
         )
 
     if cfg.provider == "anthropic":
         from sova.llm.client import resolve_alias
-        from sova.llm.keyring_store import resolve_secret
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
         model = resolve_alias(cfg.model, cfg) if cfg.model else cfg.model
-        api_key = resolve_secret("llm.api_key", cfg.api_key)
+        api_key = _resolve_scoped_api_key(cfg, project_dir)
         return AnthropicAPIProvider(model=model or "", api_key=api_key)
 
     available = ["claude-code", "litellm", "hybrid", "anthropic", "openai", "ollama", "vertex"]

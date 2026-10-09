@@ -613,7 +613,7 @@ async def get_auth_status(project_dir: Path) -> dict:
         }
 
         try:
-            provider = create_provider(cfg.llm)
+            provider = create_provider(cfg.llm, project_dir)
         except ValueError as exc:
             result["detail"] = str(exc)
         else:
@@ -685,7 +685,9 @@ _RECONNECT_TIMEOUT = 300.0
 _CANCEL_GRACE_PERIOD = 2.0
 
 
-def _build_llm_candidate_provider(provider_id: str, cfg, *, model: str = "", api_base: str = "") -> LLMProvider:
+def _build_llm_candidate_provider(
+    provider_id: str, cfg, project_dir: Path, *, model: str = "", api_base: str = ""
+) -> LLMProvider:
     """Construct the provider class for *provider_id* without going through LLMConfig.
 
     ``create_provider(cfg.llm)`` takes the project's single, already-validated
@@ -694,24 +696,49 @@ def _build_llm_candidate_provider(provider_id: str, cfg, *, model: str = "", api
     contract without that validated object (openai/ollama/vertex require a
     non-empty model at the ``LLMConfig`` level, which an inactive candidate
     may not have), so this builds the provider class directly instead.
+
+    The resolved API key is scoped to ``(project_dir, provider_id)``, not the
+    project's currently-active provider: this lets an operator probe a
+    not-yet-active candidate's own previously-saved credential (issue #1148).
+
+    The legacy unscoped keyring entry and the plaintext database value are
+    both artifacts of whichever provider was active at the time they were
+    written (``cfg.llm.api_key`` is a single, unscoped database row, not
+    keyed by provider). Both are therefore only passed as fallbacks when
+    *provider_id* is the project's currently-active provider; an inactive
+    candidate (e.g. probing "openai" while "anthropic" is active) must
+    resolve purely from its own scoped keyring entry, never fall through to
+    a different vendor's leftover legacy/database credential (CodeRabbit,
+    issue #1148).
     """
+    from sova.llm.keyring_store import resolve_secret, scoped_secret_name
+
+    is_active = provider_id == cfg.llm.provider
+    legacy_name = "llm.api_key" if is_active else None
+    db_value = cfg.llm.api_key if is_active else None
+
     if provider_id == "claude-code":
         from sova.llm.providers.claude_code import ClaudeCodeProvider
 
         return ClaudeCodeProvider()
 
     if provider_id == "anthropic":
-        from sova.llm.keyring_store import resolve_secret
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
-        return AnthropicAPIProvider(model=model, api_key=resolve_secret("llm.api_key", cfg.llm.api_key))
+        scoped_name = scoped_secret_name("llm.api_key", project_dir, provider_id)
+        api_key = resolve_secret(scoped_name, db_value, legacy_name=legacy_name)
+        return AnthropicAPIProvider(model=model, api_key=api_key)
 
     from sova.llm.litellm_provider import LiteLLMProvider
 
-    return LiteLLMProvider(model=model or "claude-sonnet-4-6", api_base=api_base or None, vendor=provider_id)
+    scoped_name = scoped_secret_name("llm.api_key", project_dir, provider_id)
+    api_key = resolve_secret(scoped_name, db_value, legacy_name=legacy_name) if provider_id == "openai" else ""
+    return LiteLLMProvider(
+        model=model or "claude-sonnet-4-6", api_base=api_base or None, vendor=provider_id, api_key=api_key or None
+    )
 
 
-async def _check_llm_candidate(provider_id: str, cfg) -> dict:
+async def _check_llm_candidate(provider_id: str, cfg, project_dir: Path) -> dict:
     """Run check_available() for one llm.provider catalog candidate.
 
     Never raises: any construction or probe failure is reported as
@@ -721,7 +748,7 @@ async def _check_llm_candidate(provider_id: str, cfg) -> dict:
     model = cfg.llm.model if is_active and cfg.llm.model else _CATALOG_PLACEHOLDER_MODEL
     api_base = cfg.llm.api_base if is_active else ""
     try:
-        provider = _build_llm_candidate_provider(provider_id, cfg, model=model, api_base=api_base)
+        provider = _build_llm_candidate_provider(provider_id, cfg, project_dir, model=model, api_base=api_base)
         available, detail = await provider.check_available()
     except Exception as exc:  # noqa: BLE001 (a broken candidate reports unavailable, never breaks the catalog)
         log.info("setup.connections.llm_candidate_check_failed", provider=provider_id, exc_info=True)
@@ -765,12 +792,18 @@ def _claude_cli_backend() -> Backend:
     return detect_backend(SimpleNamespace(provider="claude-code"), env=env)
 
 
-async def get_connection_catalog(project_dir: Path) -> dict:
+async def get_connection_catalog(project_dir: Path, *, is_loopback_bind: bool = True) -> dict:
     """List every supported LLM provider and agent runtime with its readiness state.
 
     Backs the Connections page. Every candidate is probed concurrently (each
     ``check_available()`` is an independent CLI/network call), and a failing
     candidate never prevents the others from reporting.
+
+    ``is_loopback_bind`` feeds ``reconnect_availability()`` so the page can
+    suppress/replace the `claude auth login` button when this dashboard
+    session cannot complete it. Defaults to ``True`` (today's assumed-local
+    behavior) for any caller that does not thread the dashboard's own bind
+    signal through.
     """
     from sova.config.loader import load_config
     from sova.llm import keyring_store
@@ -780,7 +813,7 @@ async def get_connection_catalog(project_dir: Path) -> dict:
     llm_ids = list(_LLM_PROVIDER_LABELS)
     runtime_ids = list(_RUNTIME_LABELS)
     llm_checks, runtime_checks = await asyncio.gather(
-        asyncio.gather(*(_check_llm_candidate(pid, cfg) for pid in llm_ids)),
+        asyncio.gather(*(_check_llm_candidate(pid, cfg, project_dir) for pid in llm_ids)),
         asyncio.gather(*(_check_runtime_candidate(rid, cfg) for rid in runtime_ids)),
     )
 
@@ -825,6 +858,7 @@ async def get_connection_catalog(project_dir: Path) -> dict:
         "runtimes": runtime_candidates,
         "api_key_configured": bool(cfg.llm.api_key),
         "keyring_available": keyring_store.is_keyring_available(),
+        "reconnect": reconnect_availability(is_loopback_bind=is_loopback_bind),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -850,7 +884,7 @@ async def _build_llm_candidate_for_request(
 
     cfg = await asyncio.to_thread(load_config, project_dir)
     try:
-        return _build_llm_candidate_provider(provider, cfg, model=model, api_base=api_base), None
+        return _build_llm_candidate_provider(provider, cfg, project_dir, model=model, api_base=api_base), None
     except Exception as exc:  # noqa: BLE001 (construction failure is reported, not raised, to the caller)
         return None, {"ok": False, "reason": "create_failed", "detail": str(exc)}
 
@@ -944,18 +978,14 @@ async def activate_llm_candidate(project_dir: Path, provider: str, *, model: str
     (``cost_service`` to ``agent.model``, ``reviewer`` to its own default), so
     clearing it is safe.
 
-    The write order depends on the direction of the switch, because
-    settings_service's consistency check rejects either half in isolation: a
-    model-required target (openai/ollama/vertex) needs llm.model written first,
-    since the check rejects that provider while llm.model is still empty, while
-    clearing llm.model needs llm.provider written first, since the check
-    rejects the clear while a model-required provider is still active.
-
-    A failure partway through therefore leaves the earlier writes in place.
-    Those keys are named in the returned detail rather than rolled back: a
-    rollback would itself be a second write that can fail, and the honest
-    answer is to tell the operator which keys landed so the settings page can
-    show the real state.
+    All three keys are written in a single, all-or-nothing DB transaction via
+    ``settings_service.update_config_many()`` instead of three sequential
+    ``update_config()`` calls: the combined resulting config is validated
+    once, so there is no write-order dependency between a model-required
+    target needing its model set first and a clear of llm.model needing the
+    provider switched first, and a failure partway through the write can
+    never leave a partial mix of the old provider plus the new model
+    persisted (issue #1148).
     """
     validation = await validate_llm_candidate(project_dir, provider, model=model, api_base=api_base)
     if not validation["ok"]:
@@ -965,38 +995,25 @@ async def activate_llm_candidate(project_dir: Path, provider: str, *, model: str
 
     model = model.strip()
     api_base = api_base.strip()
-    writes = [("llm.model", model), ("llm.api_base", api_base)]
-    if provider in _LLM_MODEL_REQUIRED:
-        writes.append(("llm.provider", provider))
-    else:
-        writes.insert(0, ("llm.provider", provider))
+    result = await settings_service.update_config_many(
+        project_dir, {"llm.provider": provider, "llm.model": model, "llm.api_base": api_base}
+    )
+    if "error" in result:
+        return {"status": "error", "reason": "persist_failed", "detail": result["error"]}
 
-    persisted: list[str] = []
-    for key, value in writes:
-        result = await settings_service.update_config(project_dir, key=key, value=value)
-        if "error" in result:
-            return {
-                "status": "error",
-                "reason": "persist_failed",
-                "detail": _persist_failure_detail(key, result["error"], persisted),
-            }
-        persisted.append(key)
+    # Unlike POST /settings/config (which dispatches to _reload_all_configs()
+    # on every write), this path writes straight through update_config_many()
+    # and must reload the in-process provider itself: otherwise the running
+    # server keeps serving LLM calls through the old provider until an
+    # unrelated settings write happens to touch the llm.* prefix.
+    from sova.config.loader import load_config
+    from sova.llm.client import reload_provider_async
+
+    cfg = await asyncio.to_thread(load_config, project_dir)
+    await reload_provider_async(cfg, project_dir)
 
     _invalidate_auth_status_cache(project_dir)
     return {"status": "ok", "provider": provider}
-
-
-def _persist_failure_detail(failed_key: str, error: str, persisted: list[str]) -> str:
-    """Name the keys that were already written when a later write failed.
-
-    Without this the operator sees only the failing key's error and has no way
-    to know the activation left llm.model/llm.api_base pointing at a provider
-    that was never switched to.
-    """
-    detail = f"{failed_key}: {error}"
-    if persisted:
-        detail += f" (already persisted: {', '.join(persisted)})"
-    return detail
 
 
 async def test_llm_candidate(project_dir: Path, provider: str, *, model: str = "", api_base: str = "") -> dict:
@@ -1065,8 +1082,98 @@ async def activate_runtime_candidate(project_dir: Path, runtime: str) -> dict:
     result = await settings_service.update_config(project_dir, key="agent.runtime", value=runtime)
     if "error" in result:
         return {"status": "error", "reason": "persist_failed", "detail": result["error"]}
+
+    # Mirrors activate_llm_candidate(): this path writes straight through
+    # update_config() rather than POST /settings/config, so it must reload
+    # the in-process runtime itself.
+    from sova.config.loader import load_config
+    from sova.ipc.runtime import reload_runtime
+
+    cfg = await asyncio.to_thread(load_config, project_dir)
+    reload_runtime(cfg)
+
     _invalidate_auth_status_cache(project_dir)
     return {"status": "ok", "runtime": runtime}
+
+
+def _is_headless_environment() -> bool:
+    """Return True when this server process has no display to open a browser on.
+
+    POSIX convention only: a GUI session sets ``DISPLAY`` (X11) or
+    ``WAYLAND_DISPLAY`` (Wayland), and ``BROWSER`` is an explicit operator
+    override for either. Always False on Windows/macOS, where that
+    convention does not apply and no equivalent headless signal is checked.
+    A separate function (rather than inlined in ``reconnect_availability``)
+    so tests can patch this one signal directly, the same way
+    ``_claude_cli_backend`` is mocked for the routing-backend signal.
+    """
+    import os
+    import sys
+
+    if sys.platform in ("win32", "darwin"):
+        return False
+    return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or os.environ.get("BROWSER"))
+
+
+def reconnect_availability(*, is_loopback_bind: bool) -> dict:
+    """Determine whether the CLI-owned `claude auth login` reconnect flow can run.
+
+    Combines three independent signals (issue #1148, design decision 4): the
+    dashboard's own loopback-only bind (the same ``app.state.is_loopback_bind``
+    signal ``sova/dashboard/security.py`` uses to distinguish local from
+    remote access), whether this server process itself has any browser to
+    open (POSIX with neither ``DISPLAY`` nor ``WAYLAND_DISPLAY`` set and no
+    ``BROWSER`` override; always assumed available on non-POSIX, where that
+    convention does not apply), and the absence of ``CLAUDE_CODE_USE_VERTEX``/
+    ``CLAUDE_CODE_USE_BEDROCK`` routing on the Claude CLI child this process
+    would actually spawn (``_claude_cli_backend()``, already environment-aware
+    rather than reading this process's raw ``os.environ``). A browser-based
+    `claude auth login` cannot complete from a non-loopback dashboard session
+    (the browser opens on the server's own machine, not the operator's) or a
+    headless server process (an SSH session or container bound to loopback
+    still has no display to open a browser on), and it is not how a Vertex-
+    or Bedrock-routed CLI authenticates at all.
+
+    Returns ``{"can_reconnect": bool, "reason": "" | "non_loopback" |
+    "headless" | "vertex_routed" | "bedrock_routed", "detail": str}`` so the
+    frontend can suppress the login button and show accurate guidance
+    instead of a button that can never succeed.
+    """
+    from sova.llm.backends import Backend
+
+    if not is_loopback_bind:
+        return {
+            "can_reconnect": False,
+            "reason": "non_loopback",
+            "detail": "The dashboard is not bound to loopback; reconnect cannot be completed from this session.",
+        }
+
+    if _is_headless_environment():
+        return {
+            "can_reconnect": False,
+            "reason": "headless",
+            "detail": "This server process has no display to open a browser on; reconnect cannot run here.",
+        }
+
+    backend = _claude_cli_backend()
+    if backend == Backend.VERTEX:
+        return {
+            "can_reconnect": False,
+            "reason": "vertex_routed",
+            "detail": (
+                "This Claude CLI is routed through Vertex AI; set up Application Default Credentials "
+                "instead of `claude auth login`."
+            ),
+        }
+    if backend == Backend.BEDROCK:
+        return {
+            "can_reconnect": False,
+            "reason": "bedrock_routed",
+            "detail": (
+                "This Claude CLI is routed through Bedrock; configure AWS credentials instead of `claude auth login`."
+            ),
+        }
+    return {"can_reconnect": True, "reason": "", "detail": ""}
 
 
 # Connections page: CLI-owned `claude auth login` reconnect ------------------
@@ -1125,7 +1232,7 @@ async def _watch_reconnect(session: _ReconnectSession, project_dir: Path) -> Non
         session.detail = f"claude auth login exited with code {session.process.returncode}"
 
 
-async def start_reconnect(project_dir: Path) -> dict:
+async def start_reconnect(project_dir: Path, *, is_loopback_bind: bool = True) -> dict:
     """Start a CLI-owned `claude auth login` subprocess for local reconnect.
 
     Single-flight per project: a second call while one is already running is
@@ -1133,7 +1240,17 @@ async def start_reconnect(project_dir: Path) -> dict:
     never read by SOVA; only the subprocess's exit code is observed, and the
     real post-login state is re-derived afterward via get_auth_status()'s own
     `claude auth status --json` probe.
+
+    Rejected up front, before ever spawning a subprocess, when
+    ``reconnect_availability()`` reports this session cannot complete the
+    flow (a non-loopback dashboard bind, or a Vertex/Bedrock-routed CLI):
+    see that function's docstring for why a browser-based login cannot
+    succeed in either case (issue #1148).
     """
+    availability = reconnect_availability(is_loopback_bind=is_loopback_bind)
+    if not availability["can_reconnect"]:
+        return {"status": "error", "reason": availability["reason"], "detail": availability["detail"]}
+
     claude_path = shutil.which("claude")
     if not claude_path:
         return {"status": "error", "reason": "cli_missing", "detail": "claude CLI not found"}

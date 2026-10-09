@@ -64,6 +64,32 @@ async def test_reports_sentinel_when_keyring_available_but_entry_missing(tmp_pat
     assert checks[0][0] == "keyring: llm.api_key"
 
 
+async def test_no_checks_when_scoped_entry_resolves_but_bare_entry_does_not(tmp_path: Path) -> None:
+    """Secrets are written to the per-(project, provider) scoped name, not
+    the bare key (see scoped_secret_name()). A lookup using only the bare
+    key would never find a secret saved through the normal scoped path and
+    would wrongly report a mismatch on every healthy installation
+    (CodeRabbit finding, doctor.py:290-294)."""
+    from sova.dashboard.services import settings_service
+    from sova.llm import keyring_store
+
+    scoped_name = keyring_store.scoped_secret_name("llm.api_key", tmp_path, "anthropic")
+
+    def fake_get_secret(name: str) -> str | None:
+        return "sk-ant-real" if name == scoped_name else None
+
+    with (
+        patch.object(settings_service, "_get_raw_config", return_value={"llm.api_key": keyring_store.SENTINEL}),
+        patch("sova.config.loader.load_config") as mock_load_config,
+        patch.object(keyring_store, "is_keyring_available", return_value=True),
+        patch.object(keyring_store, "get_secret", side_effect=fake_get_secret),
+    ):
+        mock_load_config.return_value.llm.provider = "anthropic"
+        checks = await _check_keyring_secrets(tmp_path)
+
+    assert checks == []
+
+
 async def test_plaintext_value_not_reported(tmp_path: Path) -> None:
     """A plaintext-stored secret (not the sentinel) is normal and not flagged."""
     from sova.dashboard.services import settings_service
