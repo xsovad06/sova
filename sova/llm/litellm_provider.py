@@ -265,6 +265,7 @@ class LiteLLMProvider(LLMProvider):
         timeout: float | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
+        isolated: bool = False,  # noqa: ARG002 (no workspace/hook context to isolate from; see ABC docstring)
     ) -> LLMResult:
         target_model = model or self.model
         effective_timeout = timeout if timeout is not None else self.timeout

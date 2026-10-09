@@ -82,6 +82,7 @@ class BatchProvider(LLMProvider):
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
         timeout: float | None = None,
+        isolated: bool = False,
     ) -> LLMResult:
         raise NotImplementedError("BatchProvider is batch-only; use invoke_batch()")
 

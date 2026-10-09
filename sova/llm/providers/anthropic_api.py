@@ -193,6 +193,7 @@ class AnthropicAPIProvider(LLMProvider):
         timeout: float | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
+        isolated: bool = False,  # noqa: ARG002 (no workspace/hook context to isolate from; see ABC docstring)
     ) -> LLMResult:
         resolved_model = self.normalize_model_name(model or self._default_model)
         resolved_max_tokens = max_tokens if max_tokens is not None else self._default_max_tokens

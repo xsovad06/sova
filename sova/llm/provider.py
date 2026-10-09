@@ -123,8 +123,19 @@ class LLMProvider(ABC):
         timeout: float | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
+        isolated: bool = False,
     ) -> LLMResult:
-        """Run a prompt and return the parsed result."""
+        """Run a prompt and return the parsed result.
+
+        ``isolated=True`` asks a provider that spawns a workspace-aware
+        subprocess (``ClaudeCodeProvider``) to run this turn tool-free and
+        without project hook/MCP discovery, matching ``_probe_model()``'s
+        ``--safe-mode``/``--tools ""`` argv: appropriate for an advisory,
+        tool-free call (a model probe, a dashboard suggestion) that has no
+        business touching the inherited cwd's hooks or executing commands.
+        Providers that never load workspace context (LiteLLM, the Anthropic
+        API) accept and ignore it, since there is nothing to isolate from.
+        """
         ...
 
     @abstractmethod

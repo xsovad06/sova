@@ -648,6 +648,7 @@ async def invoke(
     timeout: float | None = None,
     system_prompt: str | None = None,
     max_tokens: int | None = None,
+    isolated: bool = False,
 ) -> LLMResult:
     """Run a prompt via the active LLM provider.
 
@@ -660,6 +661,8 @@ async def invoke(
             it (``litellm`` or ``hybrid``).
         system_prompt: Optional system prompt for the LLM call.
         max_tokens: Optional max output tokens (provider-dependent).
+        isolated: See ``LLMProvider.invoke()``: forces a tool-free, hook-free
+            turn on a provider that would otherwise load workspace context.
     """
     from sova.llm.guard import guard_prompt
 
@@ -694,6 +697,7 @@ async def invoke(
             timeout=attempt_timeout,
             system_prompt=system_prompt,
             max_tokens=max_tokens,
+            isolated=isolated,
         )
 
     result = await _invoke_with_fallback(
