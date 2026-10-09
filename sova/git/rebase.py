@@ -229,14 +229,49 @@ async def _unresolved_paths(files: list[str], *, cwd: Path) -> list[str] | None:
 def _load_consensus_config(
     cwd: Path,
 ) -> tuple[list[str], float, dict[str, str], float | None]:
-    """Load conflict resolution config. Returns (models, threshold, templates, timeout)."""
+    """Load conflict resolution config. Returns (models, threshold, templates, timeout).
+
+    ``cr.models`` are invoked directly via ``LiteLLMProvider`` (see
+    ``_create_providers``), with no vendor and no dialect prefix, which
+    litellm routes straight to the Anthropic direct API against
+    ``ANTHROPIC_API_KEY``. They are Anthropic model IDs by convention (the
+    consensus feature was designed around Claude), so when the *actual*
+    active backend is not ``Backend.FIRSTPARTY`` (``sova.llm.backends.
+    detect_backend()``), those entries are dropped here rather than silently
+    reaching Anthropic. This is deliberately a route check, not just a vendor
+    check (``is_anthropic_capable()`` alone): ``llm.provider="claude-code"``
+    is Anthropic-capable unconditionally, but ``CLAUDE_CODE_USE_VERTEX``/
+    ``CLAUDE_CODE_USE_BEDROCK`` redirect it off FIRSTPARTY, and
+    ``llm.provider="vertex"``/``"litellm"``/``"hybrid"`` route through
+    LiteLLM under a backend that is never FIRSTPARTY either, even when
+    ``cfg.llm.model`` itself names an Anthropic model (#924). Entries naming
+    some other vendor are kept: an explicitly listed ``"gpt-5"`` under
+    ``llm.provider="openai"`` is a coherent operator choice, not the implicit
+    Anthropic assumption this guards. If fewer than two entries survive, the
+    caller's existing ``use_consensus = len(cr_models) >= 2`` check degrades
+    to the single-model path, which is already provider-routed through
+    ``invoke_command``.
+    """
     try:
         from sova.config.loader import load_config
+        from sova.llm.backends import Backend, detect_backend, is_anthropic_model_id
 
         cfg = load_config(cwd)
         cr = cfg.conflict_resolution
         timeout = float(cfg.llm.cli_timeout) if cfg.llm.cli_timeout else None
-        return list(cr.models), cr.consensus_threshold, dict(cr.prompt_templates), timeout
+        models = list(cr.models)
+        if models and detect_backend(cfg.llm) is not Backend.FIRSTPARTY:
+            kept = [model_id for model_id in models if not is_anthropic_model_id(model_id)]
+            if kept != models:
+                log.info(
+                    "git.rebase.consensus_anthropic_models_dropped",
+                    provider=cfg.llm.provider,
+                    dropped=len(models) - len(kept),
+                    msg="The active backend cannot serve the Anthropic consensus models "
+                    "without a route bypass; dropping those entries.",
+                )
+                models = kept
+        return models, cr.consensus_threshold, dict(cr.prompt_templates), timeout
     except Exception:  # noqa: BLE001 (conflict resolution falls back to defaults when config is unavailable)
         log.debug("git.rebase.config_load_failed", exc_info=True)
         from sova.config.models import ConflictResolutionConfig
