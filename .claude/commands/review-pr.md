@@ -287,8 +287,9 @@ main attempt.
 1. **Self-review** (422 mentioning "your own pull request"): GitHub rejects
    `APPROVE` and `REQUEST_CHANGES` on your own PR. This path is not a rare
    corner case: it fires on every self-review. Rebuild with `build_payload
-   COMMENT`, then append the required note to the payload's `body` field
-   before retrying:
+   COMMENT` and retry. Do not append any explanation of the downgrade to the
+   body: the `### Verdict` line already carries the verdict, and the Reviewer
+   role posts every review as `COMMENT` the same way:
    ```bash
    ARTIFACT_PREFIX="<the exact value computed in Step 1>"
    SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
@@ -320,7 +321,6 @@ print(build_review_payload_from_json(
    }
    build_payload COMMENT
    P="${ARTIFACT_PREFIX}-payload.json"
-   python3 -c "import json, sys; d=json.load(open(sys.argv[1])); d['body']+='\n\n(Posted as comment -- GitHub does not allow self-reviews with formal approval/rejection state.)'; json.dump(d, open(sys.argv[1],'w'))" "$P"
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "$P"
    ```
 2. **Rejected inline comment** (422 naming a line or position): one finding
