@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from sova.dashboard.services.settings_service import _cast_value, _is_masked_secret, _validate_value_type
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 
 class TestIsMaskedSecret:
@@ -803,7 +804,9 @@ class TestSettingsRouterErrors:
             raise RuntimeError("disk full")
 
         monkeypatch.setattr("sova.dashboard.services.settings_service.update_config", raise_generic)
-        resp = await client.post("/api/settings/config", json={"key": "a.b", "value": "1"})
+        resp = await client.post(
+            "/api/settings/config", json={"key": "a.b", "value": "1"}, headers=_csrf_request_headers(client)
+        )
         assert resp.status_code == 500
         assert resp.json()["detail"] == "Failed to update configuration"
 
@@ -815,7 +818,9 @@ class TestSettingsRouterErrors:
             "sova.dashboard.services.settings_service.update_config",
             reject_validation,
         )
-        resp = await client.post("/api/settings/config", json={"key": "x", "value": "abc"})
+        resp = await client.post(
+            "/api/settings/config", json={"key": "x", "value": "abc"}, headers=_csrf_request_headers(client)
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "error" in data
@@ -837,7 +842,11 @@ class TestSettingsRouterErrors:
             return {"status": "ok", "key": "llm.api_key"}
 
         monkeypatch.setattr("sova.dashboard.services.settings_service.migrate_secret_to_keyring", fake_migrate)
-        resp = await client.post("/api/settings/config/migrate-secret", json={"key": "llm.api_key"})
+        resp = await client.post(
+            "/api/settings/config/migrate-secret",
+            json={"key": "llm.api_key"},
+            headers=_csrf_request_headers(client),
+        )
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok", "key": "llm.api_key"}
 
@@ -846,7 +855,11 @@ class TestSettingsRouterErrors:
             return {"error": "OS keyring is not available on this machine"}
 
         monkeypatch.setattr("sova.dashboard.services.settings_service.migrate_secret_to_keyring", fake_migrate)
-        resp = await client.post("/api/settings/config/migrate-secret", json={"key": "llm.api_key"})
+        resp = await client.post(
+            "/api/settings/config/migrate-secret",
+            json={"key": "llm.api_key"},
+            headers=_csrf_request_headers(client),
+        )
         assert resp.status_code == 200
         assert "error" in resp.json()
 
@@ -855,7 +868,11 @@ class TestSettingsRouterErrors:
             raise RuntimeError("disk full")
 
         monkeypatch.setattr("sova.dashboard.services.settings_service.migrate_secret_to_keyring", raise_generic)
-        resp = await client.post("/api/settings/config/migrate-secret", json={"key": "llm.api_key"})
+        resp = await client.post(
+            "/api/settings/config/migrate-secret",
+            json={"key": "llm.api_key"},
+            headers=_csrf_request_headers(client),
+        )
         assert resp.status_code == 500
         assert resp.json()["detail"] == "Failed to migrate secret"
 

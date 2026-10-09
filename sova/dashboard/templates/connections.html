@@ -1,0 +1,376 @@
+{% extends "base.html" %}
+{% block title %}Connections - SOVA{% endblock %}
+{% block content %}
+{% from "_icons.html" import icon %}
+<h2 class="text-2xl font-semibold mb-1">Connections</h2>
+<p class="text-sm text-gray-500 mb-6">Pick which AI provider SOVA uses for its own calls, and which coding agent runs pipeline steps. Validating never changes anything; activating only persists a candidate after it validates clean.</p>
+
+<section class="mb-8">
+  <h3 class="text-sm font-semibold text-gray-300 uppercase tracking-wide mb-3">AI provider for SOVA calls</h3>
+  <div id="llm-provider-list" class="space-y-3">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</section>
+
+<section>
+  <h3 class="text-sm font-semibold text-gray-300 uppercase tracking-wide mb-3">Coding agent</h3>
+  <div id="runtime-list" class="space-y-3">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var CATALOG = null;
+var RECONNECT_POLL_MS = 2000;
+var reconnectTimer = null;
+
+var ACTIVE_BADGE = '<span class="sova-badge bg-accent-green/15 text-accent-green">active</span>';
+
+/* Named apart from app.js's global statusDot(), which maps a run status to a
+   color class rather than rendering an availability dot. */
+function availabilityDot(available) {
+  return '<span class="resource-widget-dot ' + (available ? 'resource-dot-green' : 'resource-dot-red') + ' inline-block mr-1.5"></span>';
+}
+
+async function loadCatalog() {
+  try {
+    CATALOG = await fetchAPI(apiUrl('/connections'));
+  } catch (e) {
+    document.getElementById('llm-provider-list').innerHTML = '<p class="text-red-400 text-sm">Failed to load: ' + escapeHtml(e.message) + '</p>';
+    document.getElementById('runtime-list').innerHTML = '';
+    return;
+  }
+  document.getElementById('llm-provider-list').innerHTML = CATALOG.llm_providers.map(renderLLMCard).join('');
+  document.getElementById('runtime-list').innerHTML = CATALOG.runtimes.map(renderRuntimeCard).join('');
+  syncReconnectState();
+}
+
+function renderLLMCard(c) {
+  var modelPlaceholder = c.requires_model ? 'model (required)' : 'model (optional)';
+  var modelField = '<input type="text" class="sova-input text-xs" style="width:auto" id="model-' + c.id +
+    '" placeholder="' + modelPlaceholder + '" value="' + escapeHtml(c.configured_model) + '">';
+
+  var apiBaseField = '<input type="text" class="sova-input text-xs" style="width:auto" id="apibase-' + c.id +
+    '" placeholder="api base (optional)" value="' + escapeHtml(c.configured_api_base) + '">';
+
+  var reconnectHtml = c.id === 'claude-code' ? renderReconnectBlock(c) : '';
+  var apiKeyHtml = (c.id === 'anthropic' || c.id === 'openai') ? renderApiKeyBlock(c.id) : '';
+
+  return '' +
+  '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-4" id="card-llm-' + c.id + '">' +
+    '<div class="flex items-center justify-between flex-wrap gap-2">' +
+      '<div class="flex items-center gap-2">' +
+        availabilityDot(c.available) +
+        '<span class="text-sm font-medium text-gray-200">' + escapeHtml(c.label) + '</span>' +
+        (c.active ? ACTIVE_BADGE : '') +
+      '</div>' +
+      '<div class="flex items-center gap-2">' +
+        modelField +
+        apiBaseField +
+        '<button type="button" class="sova-btn sova-btn-primary" onclick="validateLLM(\'' + c.id + '\')">Validate</button>' +
+        '<button type="button" class="sova-btn sova-btn-success" onclick="activateLLM(\'' + c.id + '\')">Activate</button>' +
+        '<button type="button" class="sova-btn sova-btn-warning" onclick="testLLM(\'' + c.id + '\')">Test</button>' +
+      '</div>' +
+    '</div>' +
+    '<p class="text-xs text-gray-500 mt-2">' + escapeHtml(c.detail || '') + '</p>' +
+    '<p class="text-xs mt-1" id="result-llm-' + c.id + '"></p>' +
+    reconnectHtml +
+    apiKeyHtml +
+  '</div>';
+}
+
+function renderReconnectBlock(c) {
+  var vertexRouted = c.routing_backend === 'vertex' || c.routing_backend === 'bedrock';
+  if (vertexRouted) {
+    return '<div class="mt-3 pt-3 border-t border-gray-700/40 text-xs text-gray-400">' +
+      'This deployment routes Claude Code through ' + escapeHtml(c.routing_backend) + '. Reconnect by refreshing your Google Application Default Credentials ' +
+      '(<code class="bg-black/30 px-1 rounded">gcloud auth application-default login</code>), then click Validate above.' +
+      '</div>';
+  }
+  return '<div class="mt-3 pt-3 border-t border-gray-700/40">' +
+    '<div class="flex items-center gap-2">' +
+      '<button type="button" class="sova-btn sova-btn-primary" id="reconnect-start-btn" onclick="startReconnect()">Start reconnect (claude auth login)</button>' +
+      '<button type="button" class="sova-btn sova-btn-danger hidden" id="reconnect-cancel-btn" onclick="cancelReconnect()">Cancel</button>' +
+      '<span class="text-xs text-gray-500" id="reconnect-status-text"></span>' +
+    '</div>' +
+    '<p class="text-xs text-gray-500 mt-2">A browser window opens for the Claude.ai login. If no browser is available (SSH, container, headless), use <code class="bg-black/30 px-1 rounded">claude auth login</code> in a terminal that has one, or sign in on another machine and copy the credentials file.</p>' +
+  '</div>';
+}
+
+/* Both the Anthropic API and OpenAI (via LiteLLM) providers read llm.api_key
+   (see create_provider): for openai, the resolved value is injected into the
+   OPENAI_API_KEY environment variable (only if not already exported), since
+   litellm itself only ever reads that env var, never cfg.api_key directly. */
+function renderApiKeyBlock(providerId) {
+  var keyringNote = CATALOG.keyring_available ? '' : '<span class="text-accent-yellow"> (OS keyring unavailable; stored as plaintext in the project database)</span>';
+  var envNote = providerId === 'openai'
+    ? ' Takes effect only if the process has no OPENAI_API_KEY already exported.'
+    : '';
+  return '<div class="mt-3 pt-3 border-t border-gray-700/40">' +
+    '<div class="flex items-center gap-2">' +
+      '<input type="password" class="sova-input text-xs" style="width:auto" id="apikey-' + providerId + '" placeholder="' + (CATALOG.api_key_configured ? '••••••••' : 'API key') + '">' +
+      '<button type="button" class="sova-btn sova-btn-primary" onclick="saveApiKey(\'' + providerId + '\')">Save key</button>' +
+    '</div>' +
+    '<p class="text-xs text-gray-500 mt-1">Stored as llm.api_key.' + envNote + keyringNote + '</p>' +
+  '</div>';
+}
+
+function renderRuntimeCard(c) {
+  return '' +
+  '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">' +
+    '<div class="flex items-center justify-between flex-wrap gap-2">' +
+      '<div class="flex items-center gap-2">' +
+        availabilityDot(c.available) +
+        '<span class="text-sm font-medium text-gray-200">' + escapeHtml(c.label) + '</span>' +
+        (c.active ? ACTIVE_BADGE : '') +
+      '</div>' +
+      '<div class="flex items-center gap-2">' +
+        '<button type="button" class="sova-btn sova-btn-primary" onclick="validateRuntime(\'' + c.id + '\')">Validate</button>' +
+        '<button type="button" class="sova-btn sova-btn-success" onclick="activateRuntime(\'' + c.id + '\')">Activate</button>' +
+      '</div>' +
+    '</div>' +
+    '<p class="text-xs text-gray-500 mt-2">' + escapeHtml(c.detail || '') + '</p>' +
+    '<p class="text-xs mt-1" id="result-runtime-' + c.id + '"></p>' +
+  '</div>';
+}
+
+/* Request body shared by the validate/activate/test LLM calls: all three read
+   the same per-card model and api base inputs. */
+function llmPayload(id) {
+  var model = (document.getElementById('model-' + id) || {}).value || '';
+  var apiBase = (document.getElementById('apibase-' + id) || {}).value || '';
+  return JSON.stringify({provider: id, model: model, api_base: apiBase});
+}
+
+function showResult(elId, ok, detail) {
+  var el = document.getElementById(elId);
+  if (!el) return;
+  el.className = 'text-xs mt-1 ' + (ok ? 'text-accent-green' : 'text-red-400');
+  el.textContent = detail || (ok ? 'OK' : 'Failed');
+}
+
+async function validateLLM(id) {
+  try {
+    var data = await fetchAPI(apiUrl('/connections/llm/validate'), {
+      method: 'POST',
+      headers: jsonCsrfHeaders(),
+      body: llmPayload(id),
+    });
+    showResult('result-llm-' + id, data.ok, data.detail);
+  } catch (e) {
+    showResult('result-llm-' + id, false, e.message);
+  }
+}
+
+async function activateLLM(id) {
+  try {
+    var res = await fetch(apiUrl('/connections/llm/activate'), {
+      method: 'POST',
+      headers: jsonCsrfHeaders(),
+      body: llmPayload(id),
+    });
+    if (!res.ok) {
+      showResult('result-llm-' + id, false, await getErrorDetail(res, 'Activation failed'));
+      return;
+    }
+    var data = await res.json();
+    if (data.status === 'ok') {
+      showToast(data.provider + ' activated', 'success');
+      loadCatalog();
+    } else {
+      showResult('result-llm-' + id, false, data.detail || 'Activation failed');
+    }
+  } catch (e) {
+    showResult('result-llm-' + id, false, e.message);
+  }
+}
+
+async function testLLM(id) {
+  showResult('result-llm-' + id, true, 'Running test call...');
+  try {
+    var res = await fetch(apiUrl('/connections/llm/test'), {
+      method: 'POST',
+      headers: jsonCsrfHeaders(),
+      body: llmPayload(id),
+    });
+    if (!res.ok) {
+      showResult('result-llm-' + id, false, await getErrorDetail(res, 'Test call failed'));
+      return;
+    }
+    var data = await res.json();
+    if (data.ok) {
+      showResult('result-llm-' + id, true, 'Reply: "' + data.text + '" (model ' + data.model + ', $' + parseFloat(data.cost_usd || 0).toFixed(4) + ')');
+    } else {
+      showResult('result-llm-' + id, false, data.detail || 'Test call failed');
+    }
+  } catch (e) {
+    showResult('result-llm-' + id, false, e.message);
+  }
+}
+
+async function validateRuntime(id) {
+  try {
+    var data = await fetchAPI(apiUrl('/connections/runtime/validate'), {
+      method: 'POST',
+      headers: jsonCsrfHeaders(),
+      body: JSON.stringify({runtime: id}),
+    });
+    showResult('result-runtime-' + id, data.ok, data.detail);
+  } catch (e) {
+    showResult('result-runtime-' + id, false, e.message);
+  }
+}
+
+async function activateRuntime(id) {
+  try {
+    var res = await fetch(apiUrl('/connections/runtime/activate'), {
+      method: 'POST',
+      headers: jsonCsrfHeaders(),
+      body: JSON.stringify({runtime: id}),
+    });
+    if (!res.ok) {
+      showResult('result-runtime-' + id, false, await getErrorDetail(res, 'Activation failed'));
+      return;
+    }
+    var data = await res.json();
+    if (data.status === 'ok') {
+      showToast(data.runtime + ' activated', 'success');
+      loadCatalog();
+    } else {
+      showResult('result-runtime-' + id, false, data.detail || 'Activation failed');
+    }
+  } catch (e) {
+    showResult('result-runtime-' + id, false, e.message);
+  }
+}
+
+async function saveApiKey(providerId) {
+  var input = document.getElementById('apikey-' + providerId);
+  if (!input || !input.value) {
+    showToast('Enter a key first', 'warning');
+    return;
+  }
+  try {
+    var res = await fetch(apiUrl('/settings/config'), {
+      method: 'POST',
+      headers: jsonCsrfHeaders(),
+      body: JSON.stringify({key: 'llm.api_key', value: input.value}),
+    });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to save key'), 'error');
+      return;
+    }
+    var data = await res.json();
+    if (data.error) {
+      showToast(data.error, 'error');
+    } else {
+      showToast(data.warning || 'API key saved', data.warning ? 'warning' : 'success');
+      input.value = '';
+      loadCatalog();
+    }
+  } catch (e) {
+    showToast('Failed to save key: ' + e.message, 'error');
+  }
+}
+
+/* The reconnect block is a single shared control (one claude-code card owns
+   it), so its two buttons and status line are flipped through these helpers
+   rather than mutated ad hoc at each of the start/poll/cancel call sites.
+   All three tolerate a missing block: it is not rendered at all when the
+   deployment routes Claude Code through Vertex/Bedrock. */
+function setReconnectStatus(text) {
+  var el = document.getElementById('reconnect-status-text');
+  if (el) el.textContent = text;
+}
+
+function setReconnectRunning(running) {
+  var start = document.getElementById('reconnect-start-btn');
+  var cancel = document.getElementById('reconnect-cancel-btn');
+  if (!start || !cancel) return;
+  start.classList.toggle('hidden', running);
+  cancel.classList.toggle('hidden', !running);
+}
+
+/* A reconnect started before this page load (or before a refresh) is still
+   running server-side, so adopt it instead of showing an idle Start button
+   that would only come back with already_in_progress. */
+async function syncReconnectState() {
+  if (!document.getElementById('reconnect-start-btn')) return;
+  try {
+    var data = await fetchAPI(apiUrl('/connections/reconnect/status'));
+  } catch (e) {
+    return;
+  }
+  if (data.status !== 'running') return;
+  setReconnectRunning(true);
+  setReconnectStatus('Waiting for browser login... (' + Math.round(data.elapsed_seconds) + 's)');
+  pollReconnect();
+}
+
+async function startReconnect() {
+  try {
+    var res = await fetch(apiUrl('/connections/reconnect/start'), {
+      method: 'POST',
+      headers: csrfHeaders(),
+    });
+    if (!res.ok) {
+      setReconnectStatus(await getErrorDetail(res, 'Failed to start reconnect'));
+      return;
+    }
+    var data = await res.json();
+    if (data.status !== 'ok') {
+      setReconnectStatus(data.detail || 'Failed to start reconnect');
+      return;
+    }
+    setReconnectRunning(true);
+    setReconnectStatus('Waiting for browser login...');
+    pollReconnect();
+  } catch (e) {
+    setReconnectStatus('Failed to start reconnect: ' + e.message);
+  }
+}
+
+function pollReconnect() {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(async function () {
+    try {
+      var data = await fetchAPI(apiUrl('/connections/reconnect/status'));
+      if (data.status === 'running') {
+        setReconnectStatus('Waiting for browser login... (' + Math.round(data.elapsed_seconds) + 's)');
+        pollReconnect();
+        return;
+      }
+      setReconnectRunning(false);
+      if (data.status === 'completed') {
+        showToast('Reconnected', 'success');
+        loadCatalog();
+      } else if (data.status === 'idle') {
+        setReconnectStatus('');
+      } else {
+        setReconnectStatus(data.detail || data.status);
+      }
+    } catch (e) {
+      setReconnectStatus('Failed to check reconnect status: ' + e.message);
+    }
+  }, RECONNECT_POLL_MS);
+}
+
+async function cancelReconnect() {
+  clearTimeout(reconnectTimer);
+  try {
+    var res = await fetch(apiUrl('/connections/reconnect/cancel'), {method: 'POST', headers: csrfHeaders()});
+    if (!res.ok) throw new Error(await getErrorDetail(res, 'HTTP ' + res.status));
+  } catch (e) {
+    showToast('Failed to cancel: ' + e.message, 'error');
+    pollReconnect();
+    return;
+  }
+  setReconnectRunning(false);
+  setReconnectStatus('Cancelled');
+}
+
+loadCatalog();
+</script>
+{% endblock %}

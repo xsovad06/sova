@@ -2738,6 +2738,22 @@ class TestLiteLLMProvider:
         call_kwargs = mock_litellm.acompletion.call_args
         assert call_kwargs[1]["model"] == "ollama/llama3.1"
 
+    @pytest.mark.parametrize("provider_type", ["openai", "ollama", "vertex", "litellm", "hybrid"])
+    def test_create_provider_passes_vendor_for_credential_check(
+        self, mock_litellm: MagicMock, provider_type: str
+    ) -> None:
+        """create_provider() must forward cfg.provider as vendor so
+        check_available() can run the matching credential check (#1120) rather
+        than silently defaulting to the generic litellm/hybrid behavior."""
+        from sova.config.models import LLMConfig
+        from sova.llm.provider import create_provider
+
+        model = {"openai": "gpt-5", "ollama": "ollama/llama3.1", "vertex": "vertex_ai/gemini-2.5-pro"}.get(
+            provider_type, ""
+        )
+        provider = create_provider(LLMConfig(provider=provider_type, model=model))
+        assert provider.vendor == provider_type
+
     async def test_invoke_with_model_override(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
 
@@ -3182,6 +3198,104 @@ class TestLiteLLMProvider:
 
         assert available is True
         assert "1.0.0" in detail
+
+    async def test_check_available_generic_vendor_ignores_credentials(self, mock_litellm: MagicMock) -> None:
+        """litellm/hybrid have no fixed vendor, so the default vendor keeps
+        the package-only check even with no credentials in the environment."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        with patch.dict(os.environ, {}, clear=True):
+            provider = LiteLLMProvider(model="gpt-4o", vendor="litellm")
+            available, _detail = await provider.check_available()
+
+        assert available is True
+
+    async def test_check_available_openai_no_key_is_unavailable(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        with patch.dict(os.environ, {}, clear=True):
+            provider = LiteLLMProvider(model="gpt-5", vendor="openai")
+            available, detail = await provider.check_available()
+
+        assert available is False
+        assert "OPENAI_API_KEY" in detail
+
+    async def test_check_available_openai_with_key_is_available(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            provider = LiteLLMProvider(model="gpt-5", vendor="openai")
+            available, detail = await provider.check_available()
+
+        assert available is True
+        assert "OPENAI_API_KEY set" in detail
+
+    @respx.mock
+    async def test_check_available_ollama_daemon_reachable_is_available(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        respx.get("http://localhost:11434/api/tags").mock(return_value=httpx.Response(200, json={"models": []}))
+
+        provider = LiteLLMProvider(model="ollama/llama3", vendor="ollama")
+        available, detail = await provider.check_available()
+
+        assert available is True
+        assert "Ollama reachable" in detail
+
+    @respx.mock
+    async def test_check_available_ollama_daemon_down_is_unavailable(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        respx.get("http://localhost:11434/api/tags").mock(side_effect=httpx.ConnectError("refused"))
+
+        provider = LiteLLMProvider(model="ollama/llama3", vendor="ollama")
+        available, detail = await provider.check_available()
+
+        assert available is False
+        assert "not reachable" in detail
+
+    async def test_check_available_ollama_rejects_non_http_scheme(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(model="ollama/llama3", api_base="file:///etc/passwd", vendor="ollama")
+        available, detail = await provider.check_available()
+
+        assert available is False
+        assert "not an http(s) URL" in detail
+
+    async def test_check_available_vertex_no_project_id_is_unavailable(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_VERTEX_PROJECT_ID", None)
+            provider = LiteLLMProvider(model="vertex_ai/gemini-2.5-pro", vendor="vertex")
+            available, detail = await provider.check_available()
+
+        assert available is False
+        assert "ANTHROPIC_VERTEX_PROJECT_ID" in detail
+
+    async def test_check_available_vertex_adc_available(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        with patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "proj"}):
+            provider = LiteLLMProvider(model="vertex_ai/gemini-2.5-pro", vendor="vertex")
+            with patch.object(provider._vertex_token_provider, "get_token", AsyncMock(return_value="tok")):
+                available, detail = await provider.check_available()
+
+        assert available is True
+        assert "credentials available" in detail
+
+    async def test_check_available_vertex_adc_unavailable(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        with patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "proj"}):
+            provider = LiteLLMProvider(model="vertex_ai/gemini-2.5-pro", vendor="vertex")
+            mock_get_token = AsyncMock(side_effect=RuntimeError("no ADC"))
+            with patch.object(provider._vertex_token_provider, "get_token", mock_get_token):
+                available, detail = await provider.check_available()
+
+        assert available is False
+        assert "not available" in detail
 
     async def test_list_available_models_allow_probe_false_skips_everything(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider

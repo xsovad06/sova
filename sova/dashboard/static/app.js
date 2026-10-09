@@ -37,8 +37,33 @@ async function fetchAPI(url, options) {
 }
 
 async function getErrorDetail(res, fallback) {
-  try { var body = await res.json(); return body.detail || fallback; }
+  try {
+    var body = await res.json();
+    if (!body.detail) return fallback;
+    if (Array.isArray(body.detail)) {
+      return body.detail.map(function (item) {
+        return (item && typeof item === 'object' && item.msg) ? item.msg : JSON.stringify(item);
+      }).join('; ') || fallback;
+    }
+    return body.detail;
+  }
   catch (_e) { return fallback; }
+}
+
+/* Double-submit CSRF header for a state-changing fetch(): reads the
+   sova_csrf cookie (set by issue_csrf_cookie() on a page's own GET route)
+   and echoes it back as X-CSRF-Token, matching require_same_origin_csrf()'s
+   comparison. Empty on a page that never issued the cookie, which the guard
+   rejects the same as a mismatch -- there is no silent bypass either way. */
+function csrfHeaders() {
+  var match = document.cookie.match(/(?:^|; )sova_csrf=([^;]*)/);
+  return match ? {'X-CSRF-Token': decodeURIComponent(match[1])} : {};
+}
+
+/* Headers for a state-changing fetch() that sends a JSON body: every guarded
+   POST in the dashboard needs both the content type and the CSRF echo. */
+function jsonCsrfHeaders() {
+  return Object.assign({'Content-Type': 'application/json'}, csrfHeaders());
 }
 
 function escapeHtml(str) {

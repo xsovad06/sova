@@ -145,7 +145,7 @@ async function moveSecretToKeychain(key) {
   try {
     var res = await fetch(apiUrl('/settings/config/migrate-secret'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: jsonCsrfHeaders(),
       body: JSON.stringify({key: key}),
     });
     var data = await res.json();
@@ -352,7 +352,7 @@ async function toggleBool(key, checked) {
   try {
     var res = await fetch(apiUrl('/settings/config'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: jsonCsrfHeaders(),
       body: JSON.stringify({key: key, value: String(checked)}),
     });
     var data = await res.json();
@@ -607,7 +607,7 @@ async function saveConfig(key, value, span, input) {
   try {
     var res = await fetch(apiUrl('/settings/config'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: jsonCsrfHeaders(),
       body: JSON.stringify({key: key, value: value}),
     });
     var data = await res.json();

@@ -6,6 +6,7 @@ The default provider (ClaudeCodeProvider) wraps the Claude Code CLI.
 
 from __future__ import annotations
 
+import os
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -264,7 +265,12 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
             ``api_key`` for the Anthropic API). ``api_key`` is resolved through
             ``sova.llm.keyring_store.resolve_secret`` first (OS keyring, then
             ``cfg.api_key`` as stored in the database), then falls back to the
-            ``ANTHROPIC_API_KEY`` env var when still empty. ``model`` and
+            ``ANTHROPIC_API_KEY`` env var when still empty. The ``openai``
+            vendor reuses the same ``api_key`` field: the resolved value is
+            injected into ``OPENAI_API_KEY`` (via ``os.environ.setdefault``,
+            so an already-exported value is never overwritten) since LiteLLM
+            itself only reads that env var, never ``cfg.api_key`` directly.
+            ``model`` and
             ``fallback_model`` are resolved through ``cfg.model_aliases`` first,
             so a deployment can point a generic tier name (e.g. ``"smart"``) at
             these fields exactly as it can at a per-call ``model=`` argument.
@@ -290,10 +296,24 @@ def create_provider(cfg: LLMConfig) -> LLMProvider:
         # them, so the Claude default below only ever applies to litellm/hybrid.
         model = resolve_alias(cfg.model, cfg) if cfg.model else cfg.model
         fallback_model = resolve_alias(cfg.fallback_model, cfg) if cfg.fallback_model else cfg.fallback_model
+        if cfg.provider == "openai":
+            # Reuses the one llm.api_key field (keyring-first, same as the
+            # Anthropic path below) instead of a second secret shape: litellm
+            # itself only ever reads OPENAI_API_KEY from the environment, so
+            # the resolved key is injected there. setdefault() means an
+            # OPENAI_API_KEY already exported in the process environment
+            # still wins, matching the documented env-var contract when no
+            # llm.api_key is configured.
+            from sova.llm.keyring_store import resolve_secret
+
+            openai_key = resolve_secret("llm.api_key", cfg.api_key)
+            if openai_key:
+                os.environ.setdefault("OPENAI_API_KEY", openai_key)
         return LiteLLMProvider(
             model=model or "claude-sonnet-4-6",
             fallback_model=fallback_model or None,
             api_base=cfg.api_base or None,
+            vendor=cfg.provider,
         )
 
     if cfg.provider == "anthropic":

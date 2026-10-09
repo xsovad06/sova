@@ -72,7 +72,7 @@ from sova.dashboard.routers import (
     tasks,
     work,
 )
-from sova.dashboard.security import build_allowed_origins, is_loopback_host, is_wildcard_host
+from sova.dashboard.security import build_allowed_origins, is_loopback_host, is_wildcard_host, issue_csrf_cookie
 from sova.dashboard.services import awareness_service, control_service, handoff_service
 from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
@@ -1129,7 +1129,11 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/settings")
     async def project_settings(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "settings.html", "settings")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "settings.html", "settings"))
+
+    @app.get("/p/{slug}/connections")
+    async def project_connections(request: Request, slug: str) -> Response:
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "connections.html", "connections"))
 
     @app.get("/p/{slug}/memory")
     async def project_memory(request: Request, slug: str) -> Response:
@@ -1166,7 +1170,8 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
             cfg = _try_load_config(proj_path)
             if cfg is not None:
                 github_repo = cfg.github_repo or ""
-        return _project_page(request, templates, slug, "supervisor.html", "supervisor", github_repo=github_repo)
+        page = _project_page(request, templates, slug, "supervisor.html", "supervisor", github_repo=github_repo)
+        return _with_csrf_cookie(request, page)
 
     @app.get("/p/{slug}/fleet")
     async def project_fleet(request: Request, slug: str) -> Response:
@@ -1221,6 +1226,16 @@ def _project_page(
         **extra,
     }
     return templates.TemplateResponse(request, template, ctx)
+
+
+def _with_csrf_cookie(request: Request, response: Response) -> Response:
+    """Issue a fresh double-submit CSRF cookie on a page that POSTs to a guarded endpoint.
+
+    Only the pages whose own JS calls a ``require_same_origin_csrf`` route need
+    the cookie, so it is attached per route rather than by middleware.
+    """
+    issue_csrf_cookie(response, request)
+    return response
 
 
 def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
@@ -1291,7 +1306,12 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/settings")
     async def settings_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "settings.html", {"page": "settings"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "settings.html", {"page": "settings"}))
+
+    @app.get("/connections")
+    async def connections_page(request: Request) -> Response:
+        page = templates.TemplateResponse(request, "connections.html", {"page": "connections"})
+        return _with_csrf_cookie(request, page)
 
     @app.get("/memory")
     async def memory_page(request: Request) -> Response:
@@ -1329,9 +1349,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         except Exception:  # noqa: BLE001 (page renders without the repo name if config is unavailable)
             log.debug("Failed to load github_repo for supervisor page", exc_info=True)
             github_repo = ""
-        return templates.TemplateResponse(
+        page = templates.TemplateResponse(
             request, "supervisor.html", {"page": "supervisor", "github_repo": github_repo}
         )
+        return _with_csrf_cookie(request, page)
 
     @app.get("/dependency-health")
     async def dependency_health_page(request: Request) -> Response:

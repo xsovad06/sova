@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sova.db.session import close_db, init_db
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 
 @pytest.fixture(autouse=True)
@@ -294,6 +295,7 @@ class TestSettingsRouterErrors:
             resp = await client.post(
                 "/api/settings/config",
                 json={"key": "base_branch", "value": "main"},
+                headers=_csrf_request_headers(client),
             )
         assert resp.status_code == 500
         assert "Failed to update configuration" in resp.json()["detail"]

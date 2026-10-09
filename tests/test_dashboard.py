@@ -18,6 +18,7 @@ from sova.dashboard.app import create_app
 from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_same_origin_csrf
 from sova.db.models import CostRecord, Memory, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 
 @pytest.fixture(autouse=True)
@@ -12240,6 +12241,20 @@ def _fake_cfg(provider: str = "claude-code", api_key: str = ""):
     return SimpleNamespace(llm=LLMConfig(provider=provider, api_key=api_key, model="claude-sonnet-4-6"))
 
 
+def _fake_full_cfg(llm_provider: str = "claude-code", agent_runtime: str = "claude-code"):
+    """Like _fake_cfg, plus the `agent`/`codex` sections the Connections
+    catalog and runtime candidates read (cfg.agent.runtime, cfg.codex)."""
+    from types import SimpleNamespace
+
+    from sova.config.models import LLMConfig
+
+    return SimpleNamespace(
+        llm=LLMConfig(provider=llm_provider, api_key="", model="claude-sonnet-4-6"),
+        agent=SimpleNamespace(runtime=agent_runtime),
+        codex=None,
+    )
+
+
 class TestAuthStatusAPI:
     @pytest.fixture(autouse=True)
     def _clear_auth_cache(self):
@@ -12445,6 +12460,619 @@ class TestAuthStatusAPI:
         body = resp.text
         assert "sk-ant-secret" not in body
         assert resp.json()["account"] == {"email": "u@e.com"}
+
+
+class _FakeCatalogProvider:
+    """Fake LLM candidate that is available and enumerates a fixed catalog."""
+
+    def __init__(self, models: list) -> None:
+        self._models = models
+
+    async def check_available(self):
+        return True, "ok"
+
+    async def list_available_models(self, *, allow_probe: bool = True):
+        return list(self._models)
+
+
+class _FakeProcess:
+    """Fake asyncio subprocess for reconnect tests: `.wait()` blocks on an Event."""
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.killed = False
+        self.terminated = False
+        self._event = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self._event.wait()
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def finish(self, code: int = 0) -> None:
+        self.returncode = code
+        self._event.set()
+
+
+class TestConnectionsAPI:
+    """Tests for GET/POST /api/connections* (the Connections page backend)."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_connection_state(self):
+        from sova.dashboard.services.setup_service import _auth_status_cache, _reconnect_sessions
+
+        _auth_status_cache.clear()
+        _reconnect_sessions.clear()
+        yield
+        _auth_status_cache.clear()
+        _reconnect_sessions.clear()
+
+    async def test_catalog_lists_every_provider_and_runtime(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.config.loader.load_config", return_value=_fake_full_cfg()):
+            resp = await client.get("/api/connections")
+        assert resp.status_code == 200
+        data = resp.json()
+        llm_ids = {c["id"] for c in data["llm_providers"]}
+        assert llm_ids == {"claude-code", "anthropic", "openai", "ollama", "vertex", "litellm", "hybrid"}
+        runtime_ids = {c["id"] for c in data["runtimes"]}
+        assert runtime_ids == {"claude-code", "aider", "codex"}
+        active = next(c for c in data["llm_providers"] if c["id"] == "claude-code")
+        assert active["active"] is True
+        assert "keyring_available" in data
+        assert "checked_at" in data
+
+    async def test_catalog_candidate_failure_does_not_break_others(self, client: AsyncClient) -> None:
+        """A candidate whose check_available() raises reports unavailable, not a 503."""
+        from unittest.mock import patch
+
+        def _boom(_provider_id, _cfg, **_kwargs):
+            raise RuntimeError("detonated")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", side_effect=_boom),
+        ):
+            resp = await client.get("/api/connections")
+        assert resp.status_code == 200
+        for candidate in resp.json()["llm_providers"]:
+            assert candidate["available"] is False
+            assert "detonated" in candidate["detail"]
+
+    def test_catalog_tables_match_config(self) -> None:
+        """The Connections catalog re-lists provider/runtime ids that are owned
+        elsewhere; pin all three tables so adding one there cannot leave the
+        page silently missing it (or offering an optional model field for a
+        provider whose model is mandatory)."""
+        from typing import get_args
+
+        from sova.config.models import _VENDOR_MODEL_EXAMPLES, AgentConfig, LLMConfig
+        from sova.dashboard.services.setup_service import (
+            _LLM_MODEL_REQUIRED,
+            _LLM_PROVIDER_LABELS,
+            _RUNTIME_LABELS,
+        )
+
+        assert set(_LLM_PROVIDER_LABELS) == set(get_args(LLMConfig.model_fields["provider"].annotation))
+        assert set(_RUNTIME_LABELS) == set(get_args(AgentConfig.model_fields["runtime"].annotation))
+        assert _LLM_MODEL_REQUIRED == frozenset(_VENDOR_MODEL_EXAMPLES)
+
+    async def test_validate_llm_requires_csrf(self, client: AsyncClient) -> None:
+        """The probe reaches a caller-supplied api_base and spawns provider
+        CLIs, so it is guarded even though it persists nothing."""
+        resp = await client.post("/api/connections/llm/validate", json={"provider": "claude-code"})
+        assert resp.status_code == 403
+
+    async def test_validate_runtime_requires_csrf(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/connections/runtime/validate", json={"runtime": "aider"})
+        assert resp.status_code == 403
+
+    async def test_catalog_reports_active_api_base_for_prefill(self, client: AsyncClient) -> None:
+        """Only the active candidate carries configured_api_base; the page
+        prefills it so Validate probes the configured host, not the default."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.config.models import LLMConfig
+
+        cfg = SimpleNamespace(
+            llm=LLMConfig(provider="ollama", model="ollama/llama3", api_base="http://box:9999"),
+            agent=SimpleNamespace(runtime="claude-code"),
+            codex=None,
+        )
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            resp = await client.get("/api/connections")
+        by_id = {c["id"]: c for c in resp.json()["llm_providers"]}
+        assert by_id["ollama"]["configured_api_base"] == "http://box:9999"
+        assert by_id["openai"]["configured_api_base"] == ""
+
+    async def test_activate_llm_persist_failure_names_already_written_keys(self, client: AsyncClient) -> None:
+        """llm.model has to be written before llm.provider (the consistency
+        check rejects the reverse order), so a provider-write failure leaves it
+        persisted; the detail must say so."""
+        from unittest.mock import AsyncMock, patch
+
+        provider = _FakeNoAuthDetailsProvider(True, "ok")
+
+        async def _update(_project_dir, *, key, value):
+            return {"error": "db is locked"} if key == "llm.provider" else {"status": "ok"}
+
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+            patch("sova.dashboard.services.settings_service.update_config", AsyncMock(side_effect=_update)),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/activate",
+                json={"provider": "openai", "model": "gpt-5"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["reason"] == "persist_failed"
+        assert "llm.provider: db is locked" in data["detail"]
+        assert "already persisted: llm.model" in data["detail"]
+
+    async def test_validate_llm_missing_model_is_rejected(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/connections/llm/validate",
+            json={"provider": "openai"},
+            headers=_csrf_request_headers(client),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["reason"] == "missing_model"
+
+    async def test_validate_llm_unknown_provider_is_rejected(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/connections/llm/validate",
+            json={"provider": "not-a-provider"},
+            headers=_csrf_request_headers(client),
+        )
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["reason"] == "unknown_provider"
+
+    async def test_validate_llm_success(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        provider = _FakeNoAuthDetailsProvider(True, "ok")
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/validate",
+                json={"provider": "claude-code"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data == {"ok": True, "detail": "ok"}
+
+    async def test_validate_llm_not_authenticated(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        provider = _FakeNoAuthDetailsProvider(False, "not logged in")
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/validate",
+                json={"provider": "claude-code"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data == {"ok": False, "reason": "not_authenticated", "detail": "not logged in"}
+
+    async def _validate_with_catalog(self, client: AsyncClient, *, provider: str, model: str, catalog: list) -> dict:
+        """Validate *model* against a candidate whose enumeration returns *catalog*."""
+        from unittest.mock import patch
+
+        candidate = _FakeCatalogProvider(catalog)
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=candidate),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/validate",
+                json={"provider": provider, "model": model},
+                headers=_csrf_request_headers(client),
+            )
+        return resp.json()
+
+    async def test_validate_llm_curated_fallback_never_rejects_the_model(self, client: AsyncClient) -> None:
+        """list_available_models() falls back to CURATED_MODELS (four Anthropic
+        ids) when no vendor source is configured, which is the normal case for
+        plain OpenAI with no api_base. Treating that as the vendor's catalog
+        rejected every documented openai/ollama/vertex config outright."""
+        from sova.llm.models import CURATED_MODELS
+
+        data = await self._validate_with_catalog(client, provider="openai", model="gpt-5", catalog=list(CURATED_MODELS))
+        assert data == {"ok": True, "detail": "ok"}
+
+    async def test_validate_llm_unknown_model_is_advisory_not_a_rejection(self, client: AsyncClient) -> None:
+        data = await self._validate_with_catalog(client, provider="openai", model="gpt-5", catalog=[_model("gpt-4o")])
+        assert data["ok"] is True
+        assert "may be a typo" in data["detail"]
+
+    async def test_validate_llm_vertex_prefix_matches_bare_catalog_id(self, client: AsyncClient) -> None:
+        """The Vertex publisher catalog reports bare ids while llm.model carries
+        litellm's `vertex_ai/` prefix; the two must still compare equal."""
+        data = await self._validate_with_catalog(
+            client, provider="vertex", model="vertex_ai/gemini-2.5-pro", catalog=[_model("gemini-2.5-pro")]
+        )
+        assert data == {"ok": True, "detail": "ok"}
+
+    async def test_validate_llm_ollama_untagged_model_matches_latest_tag(self, client: AsyncClient) -> None:
+        """`ollama pull llama3.1` is reported by /api/tags as `llama3.1:latest`."""
+        data = await self._validate_with_catalog(
+            client, provider="ollama", model="ollama/llama3.1", catalog=[_model("ollama/llama3.1:latest")]
+        )
+        assert data == {"ok": True, "detail": "ok"}
+
+    async def test_activate_llm_requires_csrf(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/connections/llm/activate", json={"provider": "claude-code"})
+        assert resp.status_code == 403
+
+    async def test_activate_llm_persists_after_validation_passes(self, client: AsyncClient) -> None:
+        """Switching to a provider that needs no model writes llm.provider
+        first, then clears the previous vendor's llm.model/llm.api_base (the
+        consistency check rejects the clear while the old provider is active)."""
+        from unittest.mock import AsyncMock, patch
+
+        provider = _FakeNoAuthDetailsProvider(True, "ok")
+        mock_update = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+            patch("sova.dashboard.services.settings_service.update_config", mock_update),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/activate",
+                json={"provider": "claude-code"},
+                headers=_csrf_request_headers(client),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"status": "ok", "provider": "claude-code"}
+        assert [(c.kwargs["key"], c.kwargs["value"]) for c in mock_update.await_args_list] == [
+            ("llm.provider", "claude-code"),
+            ("llm.model", ""),
+            ("llm.api_base", ""),
+        ]
+
+    async def test_activate_llm_model_required_writes_model_before_provider(self, client: AsyncClient) -> None:
+        """A model-required target reverses the order: the consistency check
+        rejects llm.provider="openai" while llm.model is still empty."""
+        from unittest.mock import AsyncMock, patch
+
+        provider = _FakeNoAuthDetailsProvider(True, "ok")
+        mock_update = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+            patch("sova.dashboard.services.settings_service.update_config", mock_update),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/activate",
+                json={"provider": "openai", "model": "gpt-5"},
+                headers=_csrf_request_headers(client),
+            )
+        assert resp.json() == {"status": "ok", "provider": "openai"}
+        assert [c.kwargs["key"] for c in mock_update.await_args_list] == [
+            "llm.model",
+            "llm.api_base",
+            "llm.provider",
+        ]
+
+    async def test_activate_llm_blocked_when_validation_fails(self, client: AsyncClient) -> None:
+        """A failing candidate must never reach settings_service.update_config."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_update = AsyncMock(return_value={"status": "ok"})
+        with patch("sova.dashboard.services.settings_service.update_config", mock_update):
+            resp = await client.post(
+                "/api/connections/llm/activate",
+                json={"provider": "openai"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["reason"] == "missing_model"
+        mock_update.assert_not_called()
+
+    async def test_activate_llm_persist_failure_is_reported(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        provider = _FakeNoAuthDetailsProvider(True, "ok")
+        mock_update = AsyncMock(return_value={"error": "'llm.provider' rejected: llm.model: required"})
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+            patch("sova.dashboard.services.settings_service.update_config", mock_update),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/activate",
+                json={"provider": "claude-code"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["reason"] == "persist_failed"
+
+    async def test_test_llm_requires_csrf(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/connections/llm/test", json={"provider": "claude-code"})
+        assert resp.status_code == 403
+
+    async def test_test_llm_runs_real_invoke(self, client: AsyncClient) -> None:
+        from decimal import Decimal
+        from unittest.mock import AsyncMock, patch
+
+        from sova.llm.models import LLMResult
+
+        provider = _FakeNoAuthDetailsProvider(True, "ok")
+        provider.invoke = AsyncMock(
+            return_value=LLMResult(text="pong", model="claude-sonnet-4-6", cost_usd=Decimal("0.001"))
+        )
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/test",
+                json={"provider": "claude-code"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data == {"ok": True, "text": "pong", "model": "claude-sonnet-4-6", "cost_usd": "0.001"}
+
+    async def test_test_llm_unknown_provider_never_reaches_invoke(self, client: AsyncClient) -> None:
+        """Without the catalog check, an unknown id falls through to the LiteLLM
+        branch and spends a real invoke() against the submitted api_base."""
+        from unittest.mock import patch
+
+        with patch("sova.dashboard.services.setup_service._build_llm_candidate_provider") as mock_build:
+            resp = await client.post(
+                "/api/connections/llm/test",
+                json={"provider": "not-a-provider", "model": "x", "api_base": "http://10.0.0.1:8080"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["reason"] == "unknown_provider"
+        mock_build.assert_not_called()
+
+    async def test_catalog_routing_backend_ignores_a_scrubbed_routing_var(self, client: AsyncClient) -> None:
+        """CLAUDE_CODE_USE_VERTEX set on the server but not in agent.env_passthrough
+        is stripped from the spawned CLI's environment, so the page must not
+        report Vertex routing (and hide the `claude auth login` button) for it."""
+        from unittest.mock import patch
+
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch.dict(os.environ, {"CLAUDE_CODE_USE_VERTEX": "1"}),
+            patch("sova.dashboard.services.setup_service.configured_passthrough", return_value=()),
+        ):
+            resp = await client.get("/api/connections")
+        claude_code = next(c for c in resp.json()["llm_providers"] if c["id"] == "claude-code")
+        assert claude_code["routing_backend"] == "firstparty"
+
+    async def test_catalog_routing_backend_honors_a_passed_through_routing_var(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch.dict(os.environ, {"CLAUDE_CODE_USE_VERTEX": "1"}),
+            patch(
+                "sova.dashboard.services.setup_service.configured_passthrough",
+                return_value=("CLAUDE_CODE_USE_VERTEX",),
+            ),
+        ):
+            resp = await client.get("/api/connections")
+        claude_code = next(c for c in resp.json()["llm_providers"] if c["id"] == "claude-code")
+        assert claude_code["routing_backend"] == "vertex"
+
+    async def test_test_llm_invoke_failure_is_reported(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        provider = _FakeNoAuthDetailsProvider(True, "ok")
+        provider.invoke = AsyncMock(side_effect=RuntimeError("rate limited"))
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
+        ):
+            resp = await client.post(
+                "/api/connections/llm/test",
+                json={"provider": "claude-code"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["reason"] == "invoke_failed"
+        assert "rate limited" in data["detail"]
+
+    async def test_validate_runtime_unknown_is_rejected(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/connections/runtime/validate",
+            json={"runtime": "not-a-runtime"},
+            headers=_csrf_request_headers(client),
+        )
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["reason"] == "unknown_runtime"
+
+    async def test_activate_runtime_requires_csrf(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/connections/runtime/activate", json={"runtime": "aider"})
+        assert resp.status_code == 403
+
+    async def test_activate_runtime_persists_after_validation_passes(self, client: AsyncClient) -> None:
+        from unittest.mock import ANY, AsyncMock, patch
+
+        runtime = _FakeNoAuthDetailsProvider(True, "ok")
+        mock_update = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.ipc.runtime.create_runtime", return_value=runtime),
+            patch("sova.dashboard.services.settings_service.update_config", mock_update),
+        ):
+            resp = await client.post(
+                "/api/connections/runtime/activate",
+                json={"runtime": "aider"},
+                headers=_csrf_request_headers(client),
+            )
+        data = resp.json()
+        assert data == {"status": "ok", "runtime": "aider"}
+        mock_update.assert_awaited_once_with(ANY, key="agent.runtime", value="aider")
+
+    async def test_reconnect_requires_csrf(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/connections/reconnect/start")
+        assert resp.status_code == 403
+
+    async def test_reconnect_status_idle_by_default(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/connections/reconnect/status")
+        assert resp.json() == {"status": "idle"}
+
+    async def test_reconnect_cli_missing(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("shutil.which", return_value=None):
+            resp = await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+        data = resp.json()
+        assert data == {"status": "error", "reason": "cli_missing", "detail": "claude CLI not found"}
+
+    async def test_reconnect_second_start_while_running_is_rejected(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        process = _FakeProcess()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+        ):
+            first = await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            assert first.json() == {"status": "ok"}
+
+            status = await client.get("/api/connections/reconnect/status")
+            assert status.json()["status"] == "running"
+
+            second = await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            assert second.json() == {
+                "status": "error",
+                "reason": "already_in_progress",
+                "detail": "A reconnect is already in progress",
+            }
+        process.finish(0)
+
+    async def test_reconnect_completes_successfully(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        process = _FakeProcess()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+        ):
+            await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            process.finish(0)
+            await asyncio.sleep(0)  # let the watcher task observe the finished process
+            status = await client.get("/api/connections/reconnect/status")
+        assert status.json()["status"] == "completed"
+
+    async def test_reconnect_failure_is_reported(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        process = _FakeProcess()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+        ):
+            await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            process.finish(1)
+            await asyncio.sleep(0)
+            status = await client.get("/api/connections/reconnect/status")
+        assert status.json()["status"] == "failed"
+        assert "exited with code 1" in status.json()["detail"]
+
+    async def test_reconnect_hard_timeout_kills_process(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        process = _FakeProcess()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+            patch("sova.dashboard.services.setup_service._RECONNECT_TIMEOUT", 0.05),
+        ):
+            await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            await asyncio.sleep(0.2)
+            status = await client.get("/api/connections/reconnect/status")
+        assert status.json()["status"] == "timeout"
+        assert process.killed is True
+
+    async def test_cancel_reconnect_requires_csrf(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/connections/reconnect/cancel")
+        assert resp.status_code == 403
+
+    async def test_cancel_reconnect_with_no_session_is_an_error(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/connections/reconnect/cancel", headers=_csrf_request_headers(client))
+        data = resp.json()
+        assert data["status"] == "error"
+
+    async def test_cancel_reconnect_terminates_process(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        process = _FakeProcess()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+        ):
+            await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            cancel_resp = await client.post("/api/connections/reconnect/cancel", headers=_csrf_request_headers(client))
+            assert cancel_resp.json() == {"status": "ok"}
+            assert process.terminated is True
+            process.finish(-15)
+            await asyncio.sleep(0)
+            status = await client.get("/api/connections/reconnect/status")
+        assert status.json()["status"] == "cancelled"
+
+    async def test_cancel_reconnect_escalates_to_kill_after_grace_period(self, client: AsyncClient) -> None:
+        """A process that ignores terminate() must be killed once the grace period elapses."""
+        from unittest.mock import AsyncMock, patch
+
+        process = _FakeProcess()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+            patch("sova.dashboard.services.setup_service._CANCEL_GRACE_PERIOD", 0.05),
+        ):
+            await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            cancel_resp = await client.post("/api/connections/reconnect/cancel", headers=_csrf_request_headers(client))
+            assert cancel_resp.json() == {"status": "ok"}
+            assert process.terminated is True
+            assert process.killed is True
+
+    async def test_watch_reconnect_does_not_overwrite_cancelled_status_on_timeout(self, client: AsyncClient) -> None:
+        """If the hard timeout fires after cancellation, the status must stay 'cancelled', not flip to 'timeout'."""
+        from unittest.mock import AsyncMock, patch
+
+        process = _FakeProcess()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+            patch("sova.dashboard.services.setup_service._RECONNECT_TIMEOUT", 0.05),
+            patch("sova.dashboard.services.setup_service._CANCEL_GRACE_PERIOD", 0.05),
+        ):
+            await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            cancel_resp = await client.post("/api/connections/reconnect/cancel", headers=_csrf_request_headers(client))
+            assert cancel_resp.json() == {"status": "ok"}
+            await asyncio.sleep(0.2)
+            status = await client.get("/api/connections/reconnect/status")
+        assert status.json()["status"] == "cancelled"
 
 
 class _FakeModelsProvider:
@@ -16917,6 +17545,7 @@ class TestSettingsMaxParallelSync:
         resp = await client.post(
             "/api/settings/config",
             json={"key": "max_parallel_agents", "value": "5"},
+            headers=_csrf_request_headers(client),
         )
         assert resp.status_code == 200
         assert len(sync_called) == 1
@@ -16936,6 +17565,7 @@ class TestSettingsMaxParallelSync:
         resp = await client.post(
             "/api/settings/config",
             json={"key": "github_repo", "value": "org/repo"},
+            headers=_csrf_request_headers(client),
         )
         assert resp.status_code == 200
         assert len(sync_called) == 0
@@ -16948,11 +17578,24 @@ class TestSettingsMaxParallelSync:
         resp = await client.post(
             "/api/settings/config",
             json={"key": "supervisor.enabled", "value": True},
+            headers=_csrf_request_headers(client),
         )
         assert resp.status_code == 200
         mock_service.update_config.assert_called_once()
         _, kwargs = mock_service.update_config.call_args
         assert kwargs["value"] == "true"
+
+    async def test_update_config_without_csrf_is_rejected(self, client: AsyncClient, monkeypatch):
+        """`/settings/config` is one of the two pre-existing routes the
+        Connections work wired into require_same_origin_csrf; a request
+        missing the double-submit pair must never reach settings_service."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_service = MagicMock(update_config=AsyncMock(return_value={"status": "ok"}))
+        monkeypatch.setattr("sova.dashboard.routers.settings.settings_service", mock_service)
+        resp = await client.post("/api/settings/config", json={"key": "github_repo", "value": "org/repo"})
+        assert resp.status_code == 403
+        mock_service.update_config.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

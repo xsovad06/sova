@@ -24,9 +24,10 @@ model = "gpt-5"
 ```
 
 Requires `OPENAI_API_KEY` in the environment, plus the LiteLLM extra (`pip install sova[litellm]`).
-No local daemon is needed. Note that `sova doctor`'s "llm provider" check only confirms that LiteLLM
-is importable (`LiteLLMProvider.check_available()` reports the LiteLLM version); it does not validate
-`OPENAI_API_KEY` or the model name. A bad key surfaces on the first real invocation.
+No local daemon is needed. `sova doctor`'s "llm provider" check (`LiteLLMProvider.check_available()`)
+confirms both that LiteLLM is importable and that `OPENAI_API_KEY` is set; it does not validate that
+the key is actually valid or that the model name exists. A bad key or model surfaces on the first
+real invocation.
 
 ## Ollama (local, no daemon needed for tests)
 
@@ -37,9 +38,10 @@ model = "ollama/llama3.1"
 ```
 
 Requires a local `ollama serve` daemon, the model pulled (`ollama pull llama3.1`), and the LiteLLM
-extra (`pip install sova[litellm]`). No API key needed. `sova doctor` scans `llm.model`,
-`llm.fallback_model`, `llm.routing`, and `llm.model_aliases` for `ollama/`-prefixed values and
-reports whether the daemon is running and the model is pulled.
+extra (`pip install sova[litellm]`). No API key needed. `LiteLLMProvider.check_available()` reports
+whether the daemon answers `GET /api/tags` at `llm.api_base` (default `http://localhost:11434`).
+`sova doctor` additionally scans `llm.model`, `llm.fallback_model`, `llm.routing`, and
+`llm.model_aliases` for `ollama/`-prefixed values and reports whether the specific model is pulled.
 
 The `ollama/` prefix is mandatory: LiteLLM routes on the model prefix, not on SOVA's `llm.provider`
 name, so `model = "llama3.1"` under `provider = "ollama"` reaches a different vendor entirely.
@@ -70,7 +72,8 @@ Requires the LiteLLM extra (`pip install sova[litellm]`) and Google Cloud auth f
 integration: either
 `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account key, or Application Default
 Credentials (`gcloud auth application-default login`), plus the project/region environment
-variables LiteLLM's Vertex integration expects.
+variables LiteLLM's Vertex integration expects. `LiteLLMProvider.check_available()` confirms
+`ANTHROPIC_VERTEX_PROJECT_ID` is set and that a token can actually be minted from those credentials.
 
 ## Verifying a switch locally
 
@@ -78,10 +81,9 @@ variables LiteLLM's Vertex integration expects.
 sova doctor
 ```
 
-`_check_llm_provider` reports backend availability for whichever provider is configured (for the
-three LiteLLM-backed types this means "LiteLLM is installed", not "your credentials work");
-`_check_ollama` additionally verifies the daemon and pulled models when an `ollama/`-prefixed
-model is in play.
+`_check_llm_provider` reports backend availability for whichever provider is configured, including
+the vendor-specific credential check described above for `openai`/`ollama`/`vertex`; `_check_ollama`
+additionally verifies the daemon and pulled models when an `ollama/`-prefixed model is in play.
 
 Selecting one of these providers from the dashboard settings dropdown without also setting
 `llm.model` is rejected at save time rather than persisted, so the settings page cannot lock
