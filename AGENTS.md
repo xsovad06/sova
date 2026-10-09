@@ -162,6 +162,11 @@ Examples:
 - `ci: add invariants job to CI pipeline`
 - `docs(readme): update installation instructions`
 
+### Silent Reverts
+- A rebase, squash, or conflict resolution done from a stale tree can drop code another PR already merged, with no conflict and a green CI (the reverted PR's tests disappear with its code). `invariants/silent-revert-guard.sh` runs in pre-push and CI and fails a commit that removes most of what a recent `origin/main` commit added.
+- After any rebase or amend against a moved `main`, run `git diff origin/main...HEAD --stat` and confirm it lists only this PR's files. An unrelated file, or a deletion count far above the PR's scope, is a revert.
+- When the guard fires, restore the code. Add `silent-revert-ok: <reason>` to the commit body only for a deliberate removal, and give the reason: a bare acknowledgment does not exempt the commit.
+
 ### Pull Requests
 - Always assign PRs to the user configured as `github_user` in `sova.toml`
 - Link to issue via `Closes #<number>` in PR body
