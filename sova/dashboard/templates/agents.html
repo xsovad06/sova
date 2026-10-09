@@ -2534,7 +2534,20 @@ var _wsMaxReconnectDelay = 16000;
 var _wsReconnectAttempts = 0;
 var _wsMaxReconnectAttempts = 10;
 var _wsLastRunIds = null;
+var _wsLastRunStatuses = null;
 var _wsPreviousStatuses = {};
+var _workItemsRefreshTimer = null;
+
+// Refetch the Tasks list shortly after an agent changes state, instead of
+// waiting for the 30 s poll. Debounced so a burst of WebSocket messages (or an
+// agent_finished event arriving alongside a status change) costs one request.
+function _scheduleWorkItemsRefresh() {
+  if (_workItemsRefreshTimer) clearTimeout(_workItemsRefreshTimer);
+  _workItemsRefreshTimer = setTimeout(function() {
+    _workItemsRefreshTimer = null;
+    loadWorkItems();
+  }, 300);
+}
 
 function _connectAgentWs() {
   if (_wsReconnectAttempts > _wsMaxReconnectAttempts) {
@@ -2556,7 +2569,25 @@ function _connectAgentWs() {
   _agentWs.onmessage = function(event) {
     try {
       var msg = JSON.parse(event.data);
+      if (msg.type === 'agent_finished') {
+        // A dashboard-managed agent exited and the server dropped its cached
+        // task and PR lists: refresh both views now.
+        loadAgents();
+        _scheduleWorkItemsRefresh();
+        return;
+      }
       if (msg.type === 'status_update' && Array.isArray(msg.runs)) {
+        // Any run changing status, starting, or leaving the active set can
+        // change a task's state. This also covers runs spawned outside the
+        // dashboard (CLI, supervisor), which never send agent_finished.
+        var runStatuses = msg.runs.map(function(r) { return r.run_id + ':' + r.status; }).sort().join(',');
+        // Also refresh on the very first snapshot: the Tasks list may have
+        // loaded before this connection opened, so that snapshot can already
+        // carry a run's changed status that the page hasn't seen yet.
+        if (_wsLastRunStatuses === null || runStatuses !== _wsLastRunStatuses) {
+          _scheduleWorkItemsRefresh();
+        }
+        _wsLastRunStatuses = runStatuses;
         // Fire browser notifications on terminal state transitions
         var _activeRunIds = {};
         msg.runs.forEach(function(run) {
