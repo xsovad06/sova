@@ -17452,9 +17452,37 @@ class TestGetPrimaryWorktreeRoot:
 class TestPrSuggestionEndpoint:
     """Tests for POST /api/prs/{pr_number}/suggestion."""
 
-    async def test_returns_204_when_provider_fails(self, client: AsyncClient) -> None:
-        import os
+    @staticmethod
+    @contextmanager
+    def _patch_suggestion_provider(invoke_mock: object):
+        """Patch the service's two seams: the config load and ``sova.llm.client.invoke()``.
+
+        The suggestion service reaches its LLM only through
+        ``sova.llm.client.invoke()`` (#924), the same choke point every other
+        provider-routed caller in SOVA uses, so an endpoint test stubs that
+        call directly rather than a transport, a provider factory, or an
+        env-var credential check. ``asyncio.to_thread`` is the service's
+        config-load call.
+        """
         from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        cfg.llm.provider = "anthropic"  # type: ignore[assignment]
+        cfg.llm.model = "claude-haiku-4-5-20251001"
+        cfg.dashboard.llm_suggestions = True
+        with (
+            patch(
+                "sova.dashboard.services.llm_suggestion_service.asyncio.to_thread",
+                new=AsyncMock(return_value=cfg),
+            ),
+            patch("sova.dashboard.services.llm_suggestion_service.llm_invoke", new=invoke_mock),
+        ):
+            yield
+
+    async def test_returns_204_when_provider_fails(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock
 
         from sova.dashboard.services.llm_suggestion_service import clear_cache
 
@@ -17469,51 +17497,29 @@ class TestPrSuggestionEndpoint:
             "review_decision": "APPROVED",
             "ci_passed": True,
         }
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(side_effect=RuntimeError("provider unavailable"))
-        ctx_manager = AsyncMock()
-        ctx_manager.__aenter__ = AsyncMock(return_value=mock_client)
-        ctx_manager.__aexit__ = AsyncMock(return_value=False)
-        with (
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}),
-            patch("sova.dashboard.services.llm_suggestion_service._detect_backend", return_value="anthropic"),
-            patch("sova.dashboard.services.llm_suggestion_service.httpx.AsyncClient", return_value=ctx_manager),
-            patch("sova.dashboard.services.llm_suggestion_service._is_enabled", return_value=True),
-        ):
+        invoke_mock = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+        with self._patch_suggestion_provider(invoke_mock):
             resp = await client.post("/api/prs/378/suggestion", json=body)
         assert resp.status_code == 204
 
     async def test_returns_suggestion_when_llm_disagrees(self, client: AsyncClient) -> None:
         import json
-        import os
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock
 
         from sova.dashboard.services.llm_suggestion_service import clear_cache
+        from sova.llm.models import LLMResult
 
         clear_cache()
 
         action_json = json.dumps({"action_id": "integrate", "reasoning": "CI green and approved"})
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"content": [{"type": "text", "text": action_json}]}
-        mock_resp.raise_for_status = MagicMock()
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
-        ctx_manager = AsyncMock()
-        ctx_manager.__aenter__ = AsyncMock(return_value=mock_client)
-        ctx_manager.__aexit__ = AsyncMock(return_value=False)
+        invoke_mock = AsyncMock(return_value=LLMResult(text=action_json, model="claude-haiku-4-5-20251001"))
 
         body = {
             "deterministic_state": "pr_sova_pending",
             "deterministic_action_id": "review_pr",
             "pr_computed_state": "approved_ci_green",
         }
-        with (
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}),
-            patch("sova.dashboard.services.llm_suggestion_service._detect_backend", return_value="anthropic"),
-            patch("sova.dashboard.services.llm_suggestion_service.httpx.AsyncClient", return_value=ctx_manager),
-            patch("sova.dashboard.services.llm_suggestion_service._is_enabled", return_value=True),
-        ):
+        with self._patch_suggestion_provider(invoke_mock):
             resp = await client.post("/api/prs/378/suggestion", json=body)
 
         assert resp.status_code == 200

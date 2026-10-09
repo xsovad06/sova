@@ -5,13 +5,16 @@ Vertex AI's REST API. This is credential-handling code, so a hand-rolled copy
 per caller is a real hazard (see the ``read_text_or_none()``/
 ``_write_rendered()`` precedents in .claude/rules/architecture.md).
 
-Routed through here: batch submission
-(``sova/llm/providers/anthropic_batch.py``) and model enumeration
-(``sova/llm/litellm_provider.py``). Still hand-rolled, and the next thing to
-fold in: ``_get_vertex_token()`` in
-``sova/dashboard/services/llm_suggestion_service.py``, whose tests patch its
-module-level ``_vertex_credentials`` global and ``asyncio.to_thread`` directly,
-so converting it is a test rewrite rather than a drop-in substitution.
+Routed through here: batch submission (``sova/llm/providers/anthropic_batch.py``)
+and model enumeration (``sova/llm/litellm_provider.py``).
+``sova/dashboard/services/llm_suggestion_service.py`` used to hand-roll its own
+ADC token fetch for a direct Vertex REST call; #924 removed that call site
+entirely, so there is nothing left there to fold into this module. The
+suggestion service now routes its completion calls through
+``sova.llm.client.invoke()``, whose completion path (``LiteLLMProvider._call()``)
+resolves ADC itself via litellm, never touching this module; ``VertexTokenProvider``
+remains used only by batch submission, model enumeration, and
+``LiteLLMProvider.check_available()``.
 
 ``google-auth`` is an optional dependency (``pip install sova[vertex]`` /
 ``sova[batch]``); every caller must handle the ``ImportError`` this raises.
