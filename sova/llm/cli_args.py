@@ -23,6 +23,7 @@ def build_claude_cli_args(
     max_budget_usd: Decimal | None = None,
     output_format: str = "json",
     system_prompt_file: Path | str | None = None,
+    isolated: bool = False,
 ) -> list[str]:
     """Build the ``claude -p`` argv shared by every CLI invocation path.
 
@@ -44,6 +45,16 @@ def build_claude_cli_args(
     ``"stream-json"``: the Claude CLI requires it alongside ``-p`` plus
     ``--output-format stream-json``, and every streaming call site wants it
     whenever it requests that format.
+
+    ``isolated=True`` adds ``--safe-mode --tools ""``: ``--safe-mode``
+    disables CLAUDE.md auto-discovery, hooks, MCP servers, and custom
+    commands/agents for this one invocation, and ``--tools ""`` disables
+    every built-in tool. Together they keep a tool-free, advisory-only turn
+    (e.g. a model-availability probe, or a dashboard suggestion call) from
+    loading whatever project hooks and MCP config sit in the inherited cwd:
+    without both, ``bypassPermissions`` mode would let that turn execute
+    commands with the authenticated user's privileges merely by running
+    against an untrusted or unexpected cwd.
     """
     args = [
         "claude",
@@ -68,6 +79,9 @@ def build_claude_cli_args(
 
     if system_prompt_file:
         args.extend(["--system-prompt-file", str(system_prompt_file)])
+
+    if isolated:
+        args.extend(["--safe-mode", "--tools", ""])
 
     return args
 

@@ -400,6 +400,78 @@ class TestLoadConsensusConfig:
         assert templates == {}
         assert timeout is None
 
+    @patch("sova.config.loader.load_config")
+    def test_empties_models_when_provider_not_anthropic_capable(self, mock_load: MagicMock) -> None:
+        """A non-Anthropic llm.provider must not reach the direct LiteLLM consensus
+        call, even if agent.cr_models still lists Anthropic model IDs (#924)."""
+        from sova.config.models import ConflictResolutionConfig, LLMConfig
+
+        mock_cfg = MagicMock()
+        mock_cfg.conflict_resolution = ConflictResolutionConfig(
+            models=["claude-sonnet-4-6", "claude-opus-4-1"], consensus_threshold=0.8
+        )
+        mock_cfg.llm = LLMConfig(provider="openai", model="gpt-5")
+        mock_load.return_value = mock_cfg
+        models, threshold, _templates, _timeout = _load_consensus_config(Path("/fake"))
+        assert models == []
+        assert threshold == 0.8
+
+    @patch("sova.config.loader.load_config")
+    def test_keeps_explicitly_non_anthropic_models_under_matching_provider(self, mock_load: MagicMock) -> None:
+        """Only the implicit Anthropic assumption is guarded: an explicitly listed
+        OpenAI consensus pair under llm.provider="openai" is a coherent operator
+        choice and must keep working (#924)."""
+        from sova.config.models import ConflictResolutionConfig, LLMConfig
+
+        mock_cfg = MagicMock()
+        mock_cfg.conflict_resolution = ConflictResolutionConfig(models=["gpt-5", "gpt-5-mini", "claude-opus-4-1"])
+        mock_cfg.llm = LLMConfig(provider="openai", model="gpt-5")
+        mock_load.return_value = mock_cfg
+        models, _threshold, _templates, _timeout = _load_consensus_config(Path("/fake"))
+        assert models == ["gpt-5", "gpt-5-mini"]
+
+    @patch("sova.config.loader.load_config")
+    def test_keeps_models_when_provider_anthropic_capable(self, mock_load: MagicMock) -> None:
+        from sova.config.models import ConflictResolutionConfig, LLMConfig
+
+        mock_cfg = MagicMock()
+        mock_cfg.conflict_resolution = ConflictResolutionConfig(models=["claude-sonnet-4-6", "claude-opus-4-1"])
+        mock_cfg.llm = LLMConfig(provider="claude-code")
+        mock_load.return_value = mock_cfg
+        models, _threshold, _templates, _timeout = _load_consensus_config(Path("/fake"))
+        assert models == ["claude-sonnet-4-6", "claude-opus-4-1"]
+
+    @patch("sova.config.loader.load_config")
+    def test_empties_models_when_vertex_provider_even_though_anthropic_capable(self, mock_load: MagicMock) -> None:
+        """llm.provider="vertex" with an Anthropic llm.model is Anthropic-capable, but
+        _create_providers() still builds a bare, unprefixed LiteLLMProvider(model=model_id)
+        for each cr.models entry, which litellm routes to the direct Anthropic API, leaving
+        the operator's configured Vertex project entirely. The gate must key off the actual
+        route (detect_backend), not just vendor capability (#924)."""
+        from sova.config.models import ConflictResolutionConfig, LLMConfig
+
+        mock_cfg = MagicMock()
+        mock_cfg.conflict_resolution = ConflictResolutionConfig(models=["claude-sonnet-4-6", "claude-opus-4-1"])
+        mock_cfg.llm = LLMConfig(provider="vertex", model="vertex_ai/claude-sonnet-4-5")
+        mock_load.return_value = mock_cfg
+        models, _threshold, _templates, _timeout = _load_consensus_config(Path("/fake"))
+        assert models == []
+
+    @patch("sova.config.loader.load_config")
+    def test_empties_models_when_claude_code_redirected_to_vertex(self, mock_load: MagicMock) -> None:
+        """CLAUDE_CODE_USE_VERTEX redirects the CLI off FIRSTPARTY even though
+        llm.provider="claude-code" is Anthropic-capable unconditionally; the bare consensus
+        model IDs must still be dropped rather than reaching the direct Anthropic API (#924)."""
+        from sova.config.models import ConflictResolutionConfig, LLMConfig
+
+        mock_cfg = MagicMock()
+        mock_cfg.conflict_resolution = ConflictResolutionConfig(models=["claude-sonnet-4-6", "claude-opus-4-1"])
+        mock_cfg.llm = LLMConfig(provider="claude-code")
+        mock_load.return_value = mock_cfg
+        with patch.dict("os.environ", {"CLAUDE_CODE_USE_VERTEX": "1"}):
+            models, _threshold, _templates, _timeout = _load_consensus_config(Path("/fake"))
+        assert models == []
+
 
 class TestCreateProviders:
     @patch("sova.llm.litellm_provider.LiteLLMProvider")

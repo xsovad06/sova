@@ -95,16 +95,72 @@ _CANDIDATE_TO_TIER: dict[str, str] = {
 }
 
 # Bedrock's model-ID dialect (Anthropic models via the Bedrock Converse/Invoke
-# API): a region-prefixed inference profile ID ("us.anthropic.claude-...") or
-# the bare provider-prefixed form ("anthropic.claude-..."). Neither is valid
-# on any other backend: Anthropic's direct API and Vertex both reject the
-# "anthropic." prefix outright.
-_BEDROCK_ID_PREFIXES: tuple[str, ...] = ("anthropic.", "us.anthropic.")
+# API): a region-prefixed inference profile ID ("us.anthropic.claude-...",
+# also published for "eu."/"apac." regions) or the bare provider-prefixed form
+# ("anthropic.claude-..."). None of these are valid on any other backend:
+# Anthropic's direct API and Vertex both reject the "anthropic." prefix
+# outright.
+_BEDROCK_ID_PREFIXES: tuple[str, ...] = ("anthropic.", "us.anthropic.", "eu.anthropic.", "apac.anthropic.")
 
 
 def tier_for_known_candidate(model_id: str) -> str | None:
     """Return the tier a known Vertex/Bedrock-pinned candidate ID belongs to, else None."""
     return _CANDIDATE_TO_TIER.get(model_id)
+
+
+def is_anthropic_model_id(model: str) -> bool:
+    """Return whether *model* names an Anthropic (Claude) model, in any backend's dialect.
+
+    Covers a bare generic tier name (``"haiku"``, ...), a firstParty/Vertex-style
+    ``"claude-..."`` ID, and a Bedrock-dialect ``"anthropic.claude-..."``/
+    ``"us.anthropic.claude-..."``/``"eu.anthropic.claude-..."``/
+    ``"apac.anthropic.claude-..."`` ID, each optionally carrying the litellm
+    vendor prefix its route needs (``"anthropic/claude-..."``,
+    ``"vertex_ai/claude-..."``, ``"bedrock/us.anthropic.claude-..."``,
+    ``"openrouter/anthropic/claude-..."``): a config reached through litellm
+    names its vendor in the ID, so matching only the first path segment would
+    miss a multi-segment route (``"openrouter/anthropic/..."``) where the
+    Anthropic marker sits one segment deeper. Every leading segment is
+    therefore checked in turn, not just the first. ``"ollama/"`` is rejected
+    rather than stripped, since a locally-served model is not Anthropic
+    whatever it was named. Used to decide whether a vendor-agnostic provider
+    type is still pointed at Claude, per ``is_anthropic_capable()`` below.
+    """
+    if not model or model.startswith("ollama/"):
+        return False
+    segments = model.split("/")
+    if any(segment == "anthropic" for segment in segments[:-1]):
+        return True
+    bare = segments[-1]
+    if bare in TIER_NAMES:
+        return True
+    if bare.startswith("claude-"):
+        return True
+    return bare.startswith(_BEDROCK_ID_PREFIXES)
+
+
+def is_anthropic_capable(cfg: LLMConfig) -> bool:
+    """Return whether *cfg* can serve an Anthropic (Claude) model call.
+
+    ``"claude-code"`` and ``"anthropic"`` are Anthropic-capable unconditionally:
+    those provider types exist specifically to reach Claude (the CLI or the
+    direct API), and both default to a Claude model when ``cfg.model`` is
+    empty. ``"vertex"``, ``"litellm"`` and ``"hybrid"`` are all LiteLLM under a
+    more discoverable name and can serve any vendor the route reaches
+    (``_VENDOR_MODEL_EXAMPLES`` in ``sova/config/models.py`` documents
+    ``"vertex_ai/gemini-2.5-pro"`` as the example ``"vertex"`` model), so
+    capability there depends on whether ``cfg.model`` actually names an
+    Anthropic model. A leftover Anthropic model id in ``cfg.model`` does not
+    matter for ``"openai"``/``"ollama"``, which forward to a non-Anthropic
+    vendor regardless of what ``cfg.model`` says. Used to gate code paths that
+    must only ever reach an Anthropic model, never silently fall through to
+    whatever vendor is actually configured (#924).
+    """
+    if cfg.provider in ("claude-code", "anthropic"):
+        return True
+    if cfg.provider in ("vertex", "litellm", "hybrid"):
+        return is_anthropic_model_id(cfg.model)
+    return False
 
 
 def _env_flag(source: Mapping[str, str], name: str) -> bool:

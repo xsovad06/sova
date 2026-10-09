@@ -11,13 +11,26 @@ from pydantic import BaseModel, field_validator
 
 from sova.config.loader import load_config
 from sova.dashboard.project_context import get_project_dir
-from sova.dashboard.services.pr_service import list_open_prs_with_state
+from sova.dashboard.services.pr_service import ComputedPRState, list_open_prs_with_state
 from sova.dashboard.services.work_state import VALID_MERGE_STATES
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.prs")
 
 router = APIRouter(prefix="/prs", tags=["prs"])
+
+# GitHub GraphQL MergeableState enum values, plus "" for "not fetched at all".
+VALID_MERGEABLE_STATES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN", ""})
+
+# GitHub GraphQL PullRequestReviewDecision enum values, plus "" for "not fetched".
+VALID_REVIEW_DECISIONS = frozenset({"APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", ""})
+
+# SOVA's own review verdict values (sova/dashboard/services/work_state.py's
+# PRFacts.sova_verdict docstring), plus "" for "no verdict yet".
+VALID_SOVA_VERDICTS = frozenset({"approve", "revise", "block", "post_failed", ""})
+
+# ComputedPRState's values, plus "" for "not yet computed".
+VALID_PR_COMPUTED_STATES = frozenset({state.value for state in ComputedPRState} | {""})
 
 
 class PRSuggestionRequest(BaseModel):
@@ -37,6 +50,42 @@ class PRSuggestionRequest(BaseModel):
     def validate_merge_state(cls, v: str) -> str:
         if v not in VALID_MERGE_STATES:
             raise ValueError(f"unsupported merge_state {v!r}, expected one of: {', '.join(sorted(VALID_MERGE_STATES))}")
+        return v
+
+    @field_validator("mergeable")
+    @classmethod
+    def validate_mergeable(cls, v: str) -> str:
+        if v not in VALID_MERGEABLE_STATES:
+            raise ValueError(
+                f"unsupported mergeable {v!r}, expected one of: {', '.join(sorted(VALID_MERGEABLE_STATES))}"
+            )
+        return v
+
+    @field_validator("review_decision")
+    @classmethod
+    def validate_review_decision(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_REVIEW_DECISIONS:
+            raise ValueError(
+                f"unsupported review_decision {v!r}, expected one of: {', '.join(sorted(VALID_REVIEW_DECISIONS))}"
+            )
+        return v
+
+    @field_validator("sova_verdict")
+    @classmethod
+    def validate_sova_verdict(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_SOVA_VERDICTS:
+            raise ValueError(
+                f"unsupported sova_verdict {v!r}, expected one of: {', '.join(sorted(VALID_SOVA_VERDICTS))}"
+            )
+        return v
+
+    @field_validator("pr_computed_state")
+    @classmethod
+    def validate_pr_computed_state(cls, v: str) -> str:
+        if v not in VALID_PR_COMPUTED_STATES:
+            raise ValueError(
+                f"unsupported pr_computed_state {v!r}, expected one of: {', '.join(sorted(VALID_PR_COMPUTED_STATES))}"
+            )
         return v
 
 

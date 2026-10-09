@@ -76,6 +76,7 @@ class ClaudeCodeProvider(LLMProvider):
         timeout: float | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
+        isolated: bool = False,
     ) -> LLMResult:
         system_prompt_path = write_system_prompt_file(system_prompt) if system_prompt else None
         try:
@@ -85,6 +86,7 @@ class ClaudeCodeProvider(LLMProvider):
                 max_budget_usd=max_budget_usd,
                 output_format="json",
                 system_prompt_file=system_prompt_path,
+                isolated=isolated,
             )
 
             log.info("llm.invoke", model=model, prompt_len=len(prompt))
@@ -360,10 +362,7 @@ async def _probe_model(model_id: str) -> bool:
     """
     try:
         result = await run(
-            *_build_args(model=model_id, output_format="json"),
-            "--safe-mode",
-            "--tools",
-            "",
+            *_build_args(model=model_id, output_format="json", isolated=True),
             timeout=_MODEL_PROBE_TIMEOUT,
             env=scrub_agent_env(passthrough=configured_passthrough()),
             stdin="hi",

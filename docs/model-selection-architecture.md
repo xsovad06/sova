@@ -49,8 +49,9 @@ crash path. The verified root causes are:
 3. **Role hardcoding.** Seven literal model names bypass all config:
    `reviewer.py:471,489` (`"sonnet"`), `panel_review.py:231` (`"sonnet"` default),
    `supervisor/planner.py:36` (`"sonnet"`), `develop.py:96` (`"haiku"` fallback),
-   `knowledge/lifecycle.py:340` (`"haiku"`), and `llm_suggestion_service.py:31-32`
-   (full version strings, via a direct httpx bypass of the abstraction). Correction to the
+   `knowledge/lifecycle.py:340` (`"haiku"`), and `llm_suggestion_service.py`
+   (full version strings, via a direct httpx bypass of the abstraction; resolved by #924,
+   which replaced both literals with the `"haiku"` tier resolved through `resolve_alias()`). Correction to the
    briefing: `RolesConfig` has `researcher_model` and `triage_model` but **no**
    `reviewer_model` ([models.py:288-297](sova/config/models.py#L288-L297)), so the reviewer
    literally has no config field to read even if we un-hardcode it.
@@ -189,9 +190,14 @@ part of PR4.
 ### 2.5 Invocation inventory (32 sites)
 
 22 direct `invoke()` and 10 `invoke_command()` sites across `roles/`, `core/steps/`,
-`supervisor/`, `dashboard/services/`, `git/`, `knowledge/`, `cli/commands/`, `mcp/`. Two
-deliberately bypass the client abstraction: `git/rebase.py:146` (multi-model consensus fan-out)
-and `dashboard/services/llm_suggestion_service.py` (direct httpx to Anthropic/Vertex). The
+`supervisor/`, `dashboard/services/`, `git/`, `knowledge/`, `cli/commands/`, `mcp/`. One
+deliberately bypasses the client abstraction: `git/rebase.py:146` (multi-model consensus
+fan-out). `dashboard/services/llm_suggestion_service.py` was the second until #924 moved it onto
+`create_provider()`, and a later pass moved it again onto `sova.llm.client.invoke()` itself (so
+its cost is recorded and it counts against the runaway-call guard); it passes
+`task_type="pr_suggestion"` (unrouted by default, since no `llm.routing` entry matches) and
+`isolated=True` (so the default CLI provider runs it `--safe-mode --tools ""`, matching the
+model-availability probe). The
 batch path (`triage.py` -> `invoke_batch` -> `anthropic_batch.py`) used to send bare aliases to
 an API that needs full model IDs; `invoke_batch()` now resolves `task_type` routing and expands
 aliases via `models.py:resolve_model_alias()` before either backend is reached.
@@ -416,6 +422,58 @@ alias won" rather than "what the provider echoed"; that is PR8 scope. Until then
 mitigation is the availability cache's TTL: keep it short enough that a dead model is not retried
 across steps for long, and long enough to avoid re-probing a model that is actually still down.
 
+**Audit note (#924): `_advance_fallback` is a rollback path, not a provider bypass.**
+`WorkflowEngine._advance_fallback()` (`sova/core/workflow.py:750-761`) only walks
+`agent.fallback_models` and returns the next model-name string; it never invokes a provider
+itself, so it does not join the inventory of direct-API bypasses that issue audited. It is
+reachable only when `WorkflowEngine._has_fallback_models()` (`sova/core/workflow.py:731-748`)
+returns `True`, which requires `llm.engine_owned_fallback=True`
+(`sova/config/models.py:129`), which is `False` by default, matching the "neutered behind a single
+flag" design above. With the flag off (the default), `_try_step_with_retries()` never produces
+the `"billing_exhausted"` status that would trigger `_advance_fallback`, so the method is live
+code guarded by a flag, not dead code: flipping `engine_owned_fallback` back on is the documented
+rollback path to the legacy engine-driven advance, exercised by the
+`llm={"engine_owned_fallback": True}` cases in `tests/test_core.py` and by
+`tests/test_llm_fallback_loop.py`. It is kept, not removed, exactly per this file's Q5 design.
+
+**Audit note (#924): rebase consensus resolution is gated on `is_anthropic_capable()`.**
+`sova/git/rebase.py:_create_providers()` instantiates `LiteLLMProvider` directly, one per
+`[conflict_resolution].models` entry, bypassing `sova.llm.provider.create_provider()` and the
+operator's configured `llm.provider` entirely. Those model IDs are Anthropic model names by
+convention (the consensus feature was designed around Claude), so running them unconditionally
+would silently reach Anthropic even when the operator configured `llm.provider="openai"` or
+another non-Anthropic backend. `_load_consensus_config()` (`sova/git/rebase.py`) now checks
+`sova.llm.backends.is_anthropic_capable(cfg.llm)` and drops the entries
+`is_anthropic_model_id()` recognizes when the configured provider cannot serve them. Entries
+naming some other vendor survive: an explicitly listed `"gpt-5"` pair under
+`llm.provider="openai"` is a coherent operator choice, not the implicit Anthropic assumption
+this guards, so emptying the whole list would have broken a valid config. When fewer than two
+entries survive, `rebase_with_conflict_resolution()`'s existing
+`use_consensus = len(cr_models) >= 2` check degrades automatically to the single-model
+`_resolve_conflicts_with_llm()` path, which calls `invoke_command()` and so is already routed
+through the configured provider. A config-load failure still falls back to the pre-existing
+defaults (empty models list), which was already fail-closed for this path.
+
+**Audit note (#924): an advisory widget's model must be tier-named, not pinned.**
+`llm_suggestion_service.py` pinned two literal IDs (`"claude-haiku-4-5-20251001"` for the
+direct API, `"claude-haiku-4-5"` for Vertex) because it built both requests itself and so knew
+which dialect each one spoke. Routing it through `create_provider()` (and, in a later pass,
+`sova.llm.client.invoke()`) removes that knowledge: a per-call `model=` argument never passes
+through `resolve_alias()` on its own (only `select_model()` and `create_provider()`'s own
+`cfg.model`/`cfg.fallback_model` do), so a literal would reach the provider verbatim and only one
+backend's dialect can be written down at a time. The service
+therefore names the tier (`_TIER = "haiku"`) and resolves it through `resolve_alias(_TIER,
+cfg.llm)`, which yields the firstParty ID on `claude-code`/`anthropic`, the `@`-pinned snapshot
+on a `CLAUDE_CODE_USE_VERTEX`-routed CLI (which rejects the firstParty form), and the
+`vertex_ai/`-prefixed snapshot on `llm.provider="vertex"` (without which litellm reads a bare
+`claude-...` ID as Anthropic-direct and leaves the operator's Vertex project entirely).
+`litellm`/`hybrid` also resolve the cheap tier (rather than deferring to the operator's own
+configured model, which may be a deliberately expensive pin): the vendor prefix is taken from
+`cfg.model` (e.g. `"anthropic/"`, `"vertex_ai/"`) and reapplied to the resolved tier, falling
+back to `model=None` only when `cfg.model` is bare and carries no prefix to infer. That gate also treats
+`llm.provider="vertex"` as conditional rather than Claude-only, since `vertex` is generic LiteLLM
+Vertex routing whose documented example model is `vertex_ai/gemini-2.5-pro`.
+
 ### Q6. Keeping `agent.model="opus"` working
 
 Guaranteed by: (a) generic aliases stay in the default alias set and resolve to native IDs;
@@ -488,10 +546,15 @@ ModelAvailabilityCache (process-local, JIT, fail-open, reset hook)
 CostRecord (model, model_selection_reason)  ->  per-tier aggregation (dashboard)
 ```
 
-Residual uncovered surface (explicitly decided, not hand-waved): `git/rebase.py` consensus
-fan-out and `llm_suggestion_service.py` httpx bypass do not pass through `client.py`. They are
-brought onto the abstraction (or documented as intentional exceptions) in the final cleanup PR,
-so no plan overstates "one authoritative place" while these exist.
+Residual uncovered surface (explicitly decided, not hand-waved): `git/rebase.py`'s consensus
+fan-out still does not pass through `client.py`, and is documented as an intentional exception
+whose Anthropic-by-convention model IDs are gated on `detect_backend() is Backend.FIRSTPARTY`,
+not just `is_anthropic_capable()` (#924): a route check, since `is_anthropic_capable()` alone
+passes `llm.provider="vertex"`/a Vertex/Bedrock-redirected `claude-code` CLI, both of which the
+bare, unprefixed consensus model IDs would still misroute to the direct Anthropic API.
+`llm_suggestion_service.py`'s httpx bypass is gone: #924 moved it onto `create_provider()`, and a
+later pass moved it again onto `sova.llm.client.invoke()`, so only the one exception above
+qualifies "one authoritative place".
 
 ---
 

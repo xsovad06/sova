@@ -151,7 +151,11 @@ An in-dashboard-process provider/availability cache does not affect `developer`/
 ### R14: Batch and consensus/httpx bypass paths escape the choke point
 `invoke_batch` sent bare aliases to an API needing full IDs; `git/rebase.py:146` and
 `llm_suggestion_service.py` bypass `client.py` entirely. "One authoritative place" is overstated
-until these are handled.
+until these are handled. #924 closed the suggestion-service half (now `sova.llm.client.invoke()`,
+gated on `is_anthropic_capable()` and keyed off the actual route via `detect_backend()`); the
+rebase consensus fan-out remains a deliberate exception (it must invoke several models in
+parallel, which `client.py`'s single-provider contract has no way to express), with the same
+route-aware gate applied to its model list.
 - Mitigation: batch alias normalization (PR9, done). `invoke_batch()` now runs each request through
   `_resolve_task_type_model()` and `models.py:resolve_model_alias()` inside its existing
   `dataclasses.replace` rebuild loop, so both batch backends receive full model IDs. This normalizes
