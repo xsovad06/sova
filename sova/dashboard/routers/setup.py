@@ -257,7 +257,8 @@ async def sync_commands(req: SyncCommandsRequest | None = None) -> dict[str, obj
     # into projects that never opted into managed guidelines.
     rules_dir = project_dir / ".claude" / "rules"
     sync_guidelines = no_selection or guideline_filenames is not None
-    if sync_guidelines and rules_dir.is_dir() and read_manifest(rules_dir) is not None:
+    guidelines_synced = sync_guidelines and rules_dir.is_dir() and read_manifest(rules_dir) is not None
+    if guidelines_synced:
         guidelines_dir = get_guidelines_dir()
         guide_result = await asyncio.to_thread(
             update_guidelines,
@@ -269,6 +270,19 @@ async def sync_commands(req: SyncCommandsRequest | None = None) -> dict[str, obj
         )
     else:
         guide_result = UpdateResult()
+
+    log.info(
+        "setup.commands.sync",
+        project=str(project_dir),
+        commands_synced=should_sync_commands,
+        commands_updated=cmd_result.updated,
+        commands_skipped=cmd_result.skipped,
+        commands_conflicts=cmd_result.conflicts,
+        guidelines_synced=guidelines_synced,
+        guidelines_updated=guide_result.updated,
+        guidelines_skipped=guide_result.skipped,
+        guidelines_conflicts=guide_result.conflicts,
+    )
 
     return {
         "status": "ok",

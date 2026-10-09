@@ -6391,6 +6391,42 @@ class TestSetupAPI:
         assert data["skipped"] == 1
         assert data["conflicts"] == ["foo.md"]
 
+    async def test_sync_commands_logs_combined_outcome(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        """/api/setup/commands/sync logs one structured event covering both halves."""
+        from sova.commands.distribution import UpdateResult
+        from sova.commands.manifest import create_manifest
+
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        create_manifest(rules_dir, {})
+
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "sova.commands.distribution.update_commands",
+            lambda *a, **kw: UpdateResult(updated=3, skipped=1, conflicts=["foo.md"]),
+        )
+        monkeypatch.setattr(
+            "sova.commands.distribution.update_guidelines",
+            lambda *a, **kw: UpdateResult(updated=2, skipped=5, conflicts=["bar.md"]),
+        )
+
+        with patch("sova.dashboard.routers.setup.log.info") as mock_info:
+            resp = await client.post("/api/setup/commands/sync")
+        assert resp.status_code == 200
+
+        calls = [call for call in mock_info.call_args_list if call.args and call.args[0] == "setup.commands.sync"]
+        assert len(calls) == 1
+        kwargs = calls[0].kwargs
+        assert kwargs["project"] == str(tmp_path)
+        assert kwargs["commands_synced"] is True
+        assert kwargs["commands_updated"] == 3
+        assert kwargs["commands_skipped"] == 1
+        assert kwargs["commands_conflicts"] == ["foo.md"]
+        assert kwargs["guidelines_synced"] is True
+        assert kwargs["guidelines_updated"] == 2
+        assert kwargs["guidelines_skipped"] == 5
+        assert kwargs["guidelines_conflicts"] == ["bar.md"]
+
     async def test_sync_commands_no_project(self, client: AsyncClient, monkeypatch) -> None:
         monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: None)
         resp = await client.post("/api/setup/commands/sync")
@@ -6545,11 +6581,50 @@ class TestSetupAPI:
             lambda *a, **kw: UpdateResult(updated=1),
         )
 
-        resp = await client.post("/api/setup/commands/sync", json={"guideline_filenames": ["security.md"]})
+        with patch("sova.dashboard.routers.setup.log.info") as mock_info:
+            resp = await client.post("/api/setup/commands/sync", json={"guideline_filenames": ["security.md"]})
         assert resp.status_code == 200
         data = resp.json()
         assert data["commands"]["updated"] == 0
         assert data["guidelines"]["updated"] == 1
+
+        calls = [call for call in mock_info.call_args_list if call.args and call.args[0] == "setup.commands.sync"]
+        assert len(calls) == 1
+        assert calls[0].kwargs["commands_synced"] is False
+        assert calls[0].kwargs["commands_updated"] == 0
+        assert calls[0].kwargs["guidelines_synced"] is True
+        assert calls[0].kwargs["guidelines_updated"] == 1
+
+    async def test_sync_commands_no_rules_manifest_skips_guidelines_but_syncs_commands(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        """A project with no guidelines manifest reports `guidelines_synced=False`
+        while `commands_synced=True`, so the two halves are shown to be
+        independently reported rather than coupled to one shared flag."""
+        from sova.commands.distribution import UpdateResult
+
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "sova.commands.distribution.update_commands",
+            lambda *a, **kw: UpdateResult(updated=1),
+        )
+
+        def fail_if_called(*_a, **_kw):
+            raise AssertionError("update_guidelines must not be called")
+
+        monkeypatch.setattr("sova.commands.distribution.update_guidelines", fail_if_called)
+
+        with patch("sova.dashboard.routers.setup.log.info") as mock_info:
+            resp = await client.post("/api/setup/commands/sync", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["commands"]["updated"] == 1
+        assert data["guidelines"]["updated"] == 0
+
+        calls = [call for call in mock_info.call_args_list if call.args and call.args[0] == "setup.commands.sync"]
+        assert len(calls) == 1
+        assert calls[0].kwargs["commands_synced"] is True
+        assert calls[0].kwargs["guidelines_synced"] is False
 
     async def test_sync_commands_empty_body_syncs_guidelines_like_no_body(
         self, client: AsyncClient, tmp_path, monkeypatch
