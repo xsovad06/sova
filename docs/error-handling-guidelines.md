@@ -52,6 +52,8 @@ from sova.utils.logging import get_logger
 log = get_logger(component="module.name")
 ```
 
+**Enforced by `invariants/structured-logging.sh`**: a new `logging.getLogger(...)` under `sova/` fails the pre-push hook. A stdlib logger accepts `exc_info=True` but raises `TypeError` on context keywords such as `branch=name`, and only when that line runs. End the line with `# stdlib-logging: <reason>` when a stdlib logger is genuinely needed (for example to quiet a third-party library).
+
 - **Event names**: dot-delimited keys (`step.create_pr.assign_failed`, `workflow.gate.failed`)
 - **Always pass `exc_info=True`** in warning/error calls inside except blocks
 - **Never use bare `print()`** for diagnostics -- use the logger

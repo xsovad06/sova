@@ -131,6 +131,10 @@ Jinja2's `{{ var }}` uses HTML escaping, not JavaScript string escaping. A value
 
 `_remove_managed_commands()` in `sova/cli/commands/project.py` reads filenames from `.sova-manifest.json`. A tampered entry like `../../sova.toml` could escape the managed directory. Guard with `resolve()` + `is_relative_to()`.
 
+## Third-Party Browser Assets
+
+The dashboard loads a few libraries from public CDNs, including DOMPurify, which sanitizes rendered markdown. Each remote `<script>` or stylesheet must pin an exact version and carry `integrity="sha384-..."` and `crossorigin="anonymous"`, so a compromised CDN or package account cannot run code in the dashboard. The version must be exact because a range such as `@15` changes the served bytes on the next release and the hash then blocks the script. `invariants/cdn-integrity.sh` enforces all three.
+
 ## Force Push Safety
 
 `sova/git/branch.py:push()` always uses `--force-with-lease` instead of `--force`, protecting against data loss from concurrent work.

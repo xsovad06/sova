@@ -116,6 +116,18 @@ else
   echo "  PASS"
 fi
 
+# Refresh origin/main so the diff-based invariants below (silent-revert-guard in
+# particular, whose range is origin/main..HEAD) compare against the real base.
+# A stale ref would count commits that already merged as part of this push. A
+# failed fetch must not block the push: an offline developer gets the older base.
+echo ""
+echo "[*] Refreshing origin/main..."
+if git fetch origin +main:refs/remotes/origin/main --quiet 2>/dev/null; then
+  echo "  OK"
+else
+  echo "  SKIP (fetch failed; invariants will use the existing origin/main)"
+fi
+
 # 6. Invariant checks (mirrors CI invariants job)
 echo ""
 echo "[6/7] Invariants..."

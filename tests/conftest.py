@@ -11,6 +11,7 @@ an auto-migration fallback that epic #550 intends to remove. See issue #557.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -180,3 +181,83 @@ def csrf_request_headers(client: Any) -> dict[str, str]:
     token = "test-csrf-token"
     client.cookies.set(CSRF_COOKIE_NAME, token)
     return {"origin": "http://localhost:8111", CSRF_HEADER_NAME: token}
+
+
+INVARIANTS_DIR = Path(__file__).parent.parent / "invariants"
+
+# Default date for commits that stand for settled history, well outside any
+# recency window an invariant applies.
+INVARIANT_REPO_EPOCH = "2020-01-01T12:00:00+00:00"
+
+
+class InvariantRepo:
+    """A throwaway clone of a bare ``origin``, with ``main`` pushed so ``origin/main`` exists.
+
+    The scripts under ``invariants/`` judge a branch against ``origin/main``, so
+    their tests need a real remote-tracking ref rather than a single local repo.
+    Global and system git config are ignored, so a developer's signing or hook
+    settings cannot change the outcome. Shared here rather than copied per test
+    module: every invariant test needs the same setup, and SonarCloud's new-code
+    duplication gate counts near-identical helper bodies.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.origin = root / "origin.git"
+        self.dir = root / "work"
+        self.env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        }
+        self.git("init", "-q", "--bare", "--initial-branch=main", str(self.origin), cwd=root)
+        self.git("clone", "-q", str(self.origin), str(self.dir), cwd=root)
+        self.git("checkout", "-q", "-b", "main")
+        self.write("README.md", "# project\n")
+        self.land_on_main("chore(docs): init")
+
+    def git(self, *args: str, cwd: Path | None = None, when: str | None = None) -> str:
+        env = dict(self.env)
+        if when:
+            env["GIT_AUTHOR_DATE"] = when
+            env["GIT_COMMITTER_DATE"] = when
+        result = subprocess.run(
+            ["git", *args], cwd=cwd or self.dir, env=env, capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+
+    def write(self, path: str, content: str) -> None:
+        target = self.dir / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    def commit(self, message: str, when: str | None = None) -> str:
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message, when=when)
+        return self.git("rev-parse", "HEAD")
+
+    def land_on_main(self, message: str, when: str | None = INVARIANT_REPO_EPOCH) -> str:
+        """Commit on main and push it, as if another PR had just merged."""
+        sha = self.commit(message, when=when)
+        self.git("push", "-q", "origin", "main")
+        return sha
+
+    def start_branch(self, name: str = "feat/work") -> None:
+        self.git("checkout", "-q", "-b", name)
+
+    def run(self, script: str, **env: str) -> subprocess.CompletedProcess[str]:
+        """Run ``invariants/<script>`` against this repo, as the pre-push hook does."""
+        return subprocess.run(
+            ["bash", str(INVARIANTS_DIR / script), str(self.dir), "main"],
+            env={**self.env, **env},
+            capture_output=True,
+            text=True,
+        )
+
+
+@pytest.fixture
+def invariant_repo(tmp_path: Path) -> InvariantRepo:
+    return InvariantRepo(tmp_path)
