@@ -136,6 +136,26 @@ def _jira_ticket_link(task_source: TaskSourceConfig, issue_number: str) -> str:
     return f"JIRA: {task_source.jira_browse_url(issue_number)}"
 
 
+def _closing_keyword_re(issue_number: str) -> re.Pattern[str]:
+    """Match a GitHub closing keyword for *issue_number*.
+
+    Covers every keyword form GitHub recognizes for auto-closing
+    (close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved), not
+    just the present-tense forms: an LLM-generated Jira PR body that writes
+    "Fix #42" instead of "Fixes #42" previously kept a live GitHub
+    closing reference that this function was supposed to strip.
+
+    Requires the keyword immediately before the issue reference, not just the
+    bare ``#N`` substring: a stacked PR's body can legitimately mention
+    ``Closes #12`` for a different issue while still needing its own closing
+    line appended for ``ctx.issue_number``.
+    """
+    return re.compile(
+        rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#{re.escape(issue_number)}\b",
+        re.IGNORECASE,
+    )
+
+
 _BRANCH_PREFIX_RE = re.compile(r"^(?:feat|fix|refactor|chore)/")
 _ISSUE_PREFIX_RE = re.compile(r"^issue-\d+-?")
 _JIRA_KEY_PREFIX_RE = re.compile(r"^[A-Z]+-\d+-?")
@@ -466,16 +486,13 @@ class CreatePRStep(BaseStep):
         ctx.add_usage(result)
         body = strip_preamble(result.text)
         if ctx.has_issue:
+            close_re = _closing_keyword_re(ctx.issue_number)
             if ts.is_jira:
-                close_re = re.compile(
-                    rf"(?:closes|fixes|resolves)\s+#{re.escape(ctx.issue_number)}\b",
-                    re.IGNORECASE,
-                )
                 body = close_re.sub("", body)
                 jira_link = _jira_ticket_link(ts, ctx.issue_number)
                 if jira_link not in body:
                     body += f"\n\n{jira_link}"
-            elif f"#{ctx.issue_number}" not in body:
+            elif not close_re.search(body):
                 body += f"\n\nCloses #{ctx.issue_number}"
         return body
 

@@ -50,6 +50,44 @@ def _make_ctx(**kwargs) -> ExecutionContext:
     return ExecutionContext(**defaults)
 
 
+class TestClosingKeywordRe:
+    """_closing_keyword_re must not match a keyword as a word suffix, and must
+    recognize the colon form (`Closes: #42`)."""
+
+    def test_matches_bare_closes(self) -> None:
+        from sova.core.steps.create_pr import _closing_keyword_re
+
+        assert _closing_keyword_re("42").search("Closes #42")
+
+    def test_matches_colon_form(self) -> None:
+        from sova.core.steps.create_pr import _closing_keyword_re
+
+        assert _closing_keyword_re("42").search("Closes: #42")
+
+    def test_does_not_match_suffix_of_longer_word(self) -> None:
+        from sova.core.steps.create_pr import _closing_keyword_re
+
+        assert not _closing_keyword_re("42").search("encloses #42")
+        assert not _closing_keyword_re("42").search("postfixes #42")
+
+    def test_matches_every_github_supported_keyword_form(self) -> None:
+        """All nine GitHub-recognized forms: close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved."""
+        from sova.core.steps.create_pr import _closing_keyword_re
+
+        for keyword in (
+            "close",
+            "closes",
+            "closed",
+            "fix",
+            "fixes",
+            "fixed",
+            "resolve",
+            "resolves",
+            "resolved",
+        ):
+            assert _closing_keyword_re("42").search(f"{keyword.capitalize()} #42"), keyword
+
+
 class TestCreatePRStepLLMFailureFallback:
     """Test that LLM failure in PR body generation triggers fallback."""
 

@@ -2732,6 +2732,64 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_appends_closes_for_bare_issue_mention(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
+        """A bare '#42' mention (no Closes/Fixes/Resolves keyword) does not count as closing the issue."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- See issue #42 for context", model="sonnet", cost_usd=Decimal("0.01")
+        )
+        mock_create_pr.return_value = MagicMock(number=13, url="https://github.com/x/y/pull/13")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "Closes #42" in body_arg
+        assert body_arg.count("#42") == 2
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_appends_closes_even_when_body_closes_a_different_issue(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
+        """A stacked PR's body can legitimately close a different issue; ours still gets appended."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- stuff\n\nCloses #12", model="sonnet", cost_usd=Decimal("0.01")
+        )
+        mock_create_pr.return_value = MagicMock(number=14, url="https://github.com/x/y/pull/14")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "Closes #12" in body_arg
+        assert "Closes #42" in body_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_execute_body_includes_commits_and_diff(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
