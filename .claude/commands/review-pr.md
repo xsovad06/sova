@@ -213,7 +213,7 @@ print(format_from_json(sys.stdin.read(), revise_at=int(os.environ['REVISE_AT']),
 " < "${ARTIFACT_PREFIX}-findings.json") || REVIEW_BODY=""
 ```
 
-The formatter produces: `<!-- sova-review: {verdict} sha={sha} -->` marker, `## Review:` heading, findings split into `### Findings` (severity >= `REVISE_AT`, blocking) and `### Advisory (not blocking)` (severity < `REVISE_AT`, still recorded but does not block), `### What's Done Well` section (if positives provided), and `### Verdict` section. The verdict is determined automatically from the highest finding severity: `BLOCK_AT` or above = block, `REVISE_AT` up to `BLOCK_AT` = revise, below `REVISE_AT` or no findings = approve.
+The formatter produces: `<!-- sova-review: {verdict} sha={sha} -->` marker, `## Review:` heading, findings split into `### Findings` (severity >= `REVISE_AT`, blocking) and `### Advisory (not blocking)` (severity < `REVISE_AT`, still recorded but does not block), `### What's Done Well` section (if positives provided), and `### Verdict` section. This call passes no `inline_comment_keys`, so `REVIEW_BODY` here always carries every finding's full text; the collapse to `see inline comment above.` only happens in Step 7, where `build_payload` knows which findings also became inline comments (which is why fallback 3 below is safe to post as-is). The `### Verdict` line states finding counts by severity, not the top finding's description. The verdict is determined automatically from the highest finding severity: `BLOCK_AT` or above = block, `REVISE_AT` up to `BLOCK_AT` = revise, below `REVISE_AT` or no findings = approve.
 
 **Fallback**: if `python3` fails (SOVA not installed, import error, malformed JSON), `REVIEW_BODY` will be empty. In that case, write the review body manually: first line `<!-- sova-review: {verdict} sha={headRefOid} -->`, then `### Findings` heading, then findings as `- **[LABEL N/10]** [category] \`file:line\`: description. Fix: suggestion`. Determine the verdict from the highest severity in your JSON against `REVISE_AT`/`BLOCK_AT` (defaults 3/7 if unresolved): `BLOCK_AT` or above = block, `REVISE_AT` or above = revise, below `REVISE_AT` or no findings = approve. A finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely.
 
@@ -235,7 +235,11 @@ an address cycle closes them one by one. A body-only review leaves nothing to
 resolve. Findings that do not map to a diff line stay in the body.
 
 The payload is built by the same SOVA helper the Reviewer role uses, so a
-command-driven review and an autonomous one produce identical output:
+command-driven review and an autonomous one produce identical output. A
+blocking finding that maps to a diff line becomes its own inline comment, and
+`build_payload` collapses that same finding's body entry to
+`see inline comment above.` rather than repeating its full text; `/address-pr`
+reads the text back out of the inline comment.
 
 ```bash
 # ARTIFACT_PREFIX must equal the exact value computed in Step 1 (this block
@@ -325,13 +329,47 @@ print(build_review_payload_from_json(
    ```
 2. **Rejected inline comment** (422 naming a line or position): one finding
    pointed at a line GitHub will not accept. Strip the comments and retry so the
-   review still lands. This only removes the inline placement: `build_payload`'s
-   `body` already lists every finding's full text regardless of whether it also
-   became an inline comment, so no finding disappears from the posted review.
+   review still lands. The payload's `body` collapsed that finding to
+   `see inline comment above.` on the assumption the inline comment would also
+   post; since it will not, the body must be rebuilt without `inline_comment_keys`
+   (same call as Step 6) so no finding disappears from the posted review.
    ```bash
    ARTIFACT_PREFIX="<the exact value computed in Step 1>"
    P="${ARTIFACT_PREFIX}-payload.json"
-   python3 -c "import json, sys; d=json.load(open(sys.argv[1])); d['comments']=[]; json.dump(d, open(sys.argv[1],'w'))" "$P"
+   # REVISE_AT/BLOCK_AT must equal the values resolved in Step 6 (re-read here
+   # since this is a separate shell invocation): rebuilding the body with the
+   # default thresholds instead can split findings differently and emit a
+   # verdict marker that disagrees with the payload's own `event`.
+   SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+   RAW_REVISE=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
+     "SELECT value FROM project_settings WHERE key='review.revise_severity';" 2>/dev/null || true)
+   RAW_BLOCK=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
+     "SELECT value FROM project_settings WHERE key='review.block_severity';" 2>/dev/null || true)
+   case "$RAW_REVISE" in
+     [1-9]|10) REVISE_AT="$RAW_REVISE" ;;
+     *) REVISE_AT=3 ;;
+   esac
+   case "$RAW_BLOCK" in
+     [1-9]|10) BLOCK_AT="$RAW_BLOCK" ;;
+     *) BLOCK_AT=7 ;;
+   esac
+   [ "$REVISE_AT" -le "$BLOCK_AT" ] || {
+     REVISE_AT=3
+     BLOCK_AT=7
+   }
+   UNCOLLAPSED_BODY=$(REVISE_AT="$REVISE_AT" BLOCK_AT="$BLOCK_AT" python3 -c "
+import os, sys
+from sova.roles._review_format import format_from_json
+print(format_from_json(open(sys.argv[1]).read(),
+    revise_at=int(os.environ['REVISE_AT']), block_at=int(os.environ['BLOCK_AT'])))
+" "${ARTIFACT_PREFIX}-findings.json")
+   python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+d['comments'] = []
+d['body'] = sys.argv[2]
+json.dump(d, open(sys.argv[1], 'w'))
+" "$P" "$UNCOLLAPSED_BODY"
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "$P"
    ```
 3. **Helper unavailable** (SOVA not importable or the diff file missing, so the

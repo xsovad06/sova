@@ -1614,7 +1614,7 @@ class TestReviewerRole:
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         call_count = 0
 
-        async def fail_with_inline_succeed_without(pr_number, body, event, comments):
+        async def fail_with_inline_succeed_without(pr_number, body, event, comments, fallback_body=None):
             nonlocal call_count
             call_count += 1
             if comments:
@@ -1655,6 +1655,9 @@ class TestReviewerRole:
 
         assert result.success
         assert call_count == 2
+        first_call = adapter.post_pr_review.call_args_list[0]
+        assert "Issue" in first_call[1]["fallback_body"]
+        assert "see inline comment above" not in first_call[1]["fallback_body"]
         second_call = adapter.post_pr_review.call_args_list[1]
         assert second_call[1]["comments"] == []
         adapter.post_pr_comment.assert_not_called()

@@ -286,6 +286,7 @@ class GitHubAdapter(TaskAdapter):
         body: str,
         event: str,
         comments: list[dict],
+        fallback_body: str | None = None,
     ) -> None:
         payload = json.dumps({"body": body, "event": event, "comments": comments})
         result = await self._gh(
@@ -305,7 +306,7 @@ class GitHubAdapter(TaskAdapter):
                 comment_count=len(comments),
                 stderr=result.stderr[:200],
             )
-            body_payload = json.dumps({"body": body, "event": event, "comments": []})
+            body_payload = json.dumps({"body": fallback_body or body, "event": event, "comments": []})
             result = await self._gh(
                 "api",
                 f"repos/{self.repo}/pulls/{pr_number}/reviews",

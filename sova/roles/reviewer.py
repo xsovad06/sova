@@ -413,8 +413,27 @@ class ReviewerRole(AgentRole):
 
         diff_lines = parse_diff_lines(diff)
         inline_comments, body_only = _build_review_comments(review.blocking(revise_at), diff_lines)
+        inline_comment_keys = {(c["path"], c["line"]) for c in inline_comments}
 
-        body = _format_review_body(review.findings, review.summary, sha, revise_at=revise_at, block_at=block_at)
+        body = _format_review_body(
+            review.findings,
+            review.summary,
+            sha,
+            revise_at=revise_at,
+            block_at=block_at,
+            inline_comment_keys=inline_comment_keys,
+        )
+        # Rebuild without the inline-comment collapse: the adapter retries body-only
+        # internally (without raising) when GitHub rejects the inline comments, so
+        # the uncollapsed text must be threaded down rather than relying on an
+        # exception from post_pr_review to trigger a second, separate attempt here.
+        fallback_body = _format_review_body(
+            review.findings,
+            review.summary,
+            sha,
+            revise_at=revise_at,
+            block_at=block_at,
+        )
 
         try:
             await ctx.adapter.post_pr_review(
@@ -422,6 +441,7 @@ class ReviewerRole(AgentRole):
                 body=body,
                 event="COMMENT",
                 comments=inline_comments,
+                fallback_body=fallback_body,
             )
             log.info("reviewer.posted_review", inline=len(inline_comments), body_only=len(body_only))
             return True
@@ -431,7 +451,7 @@ class ReviewerRole(AgentRole):
                 try:
                     await ctx.adapter.post_pr_review(
                         ctx.pr_number,
-                        body=body,
+                        body=fallback_body,
                         event="COMMENT",
                         comments=[],
                     )

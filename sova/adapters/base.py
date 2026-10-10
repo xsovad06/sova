@@ -185,13 +185,27 @@ class TaskAdapter(ABC):
         body: str,
         event: str,
         comments: list[dict],
+        fallback_body: str | None = None,
     ) -> None:
-        """Post a review on a pull request with optional inline comments (egress-filtered)."""
+        """Post a review on a pull request with optional inline comments (egress-filtered).
+
+        ``fallback_body`` is used instead of ``body`` if the implementation needs to
+        retry without inline comments (e.g. GitHub rejecting a comment's line/position):
+        ``body`` may have collapsed finding text into "see inline comment above" stubs
+        that only make sense when the inline comments are actually posted alongside it.
+        """
         mode = _get_egress_mode()
         filtered_body = filter_egress(body, mode=mode, destination="post_pr_review.body")
         if filtered_body is None:
             _log.warning(_EGRESS_BLOCKED, method="post_pr_review", pr=pr_number)
             return
+
+        filtered_fallback_body = filtered_body
+        if fallback_body is not None and fallback_body != body:
+            filtered_fallback_body = filter_egress(fallback_body, mode=mode, destination="post_pr_review.fallback_body")
+            if filtered_fallback_body is None:
+                _log.warning(_EGRESS_BLOCKED, method="post_pr_review.fallback_body", pr=pr_number)
+                return
 
         filtered_comments = []
         for comment in comments:
@@ -202,7 +216,9 @@ class TaskAdapter(ABC):
                 return
             filtered_comments.append({**comment, "body": filtered_comment_body})
 
-        await self._do_post_pr_review(pr_number, filtered_body, event, filtered_comments)
+        await self._do_post_pr_review(
+            pr_number, filtered_body, event, filtered_comments, fallback_body=filtered_fallback_body
+        )
 
     @abstractmethod
     async def _do_post_pr_review(
@@ -211,6 +227,7 @@ class TaskAdapter(ABC):
         body: str,
         event: str,
         comments: list[dict],
+        fallback_body: str | None = None,
     ) -> None:
         """Post a review on a pull request (implementation)."""
 
