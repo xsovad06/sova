@@ -679,18 +679,15 @@ async def invoke(
 
     guard_prompt(prompt)
     original_prompt = prompt
-    # Loaded unconditionally, and before compression: the fallback chain lives
-    # in agent.fallback_models, so it is needed even when both model and
-    # timeout are supplied, and passing it into maybe_compress avoids loading
-    # config twice per call (it would otherwise reload internally). Also
-    # needed before the counter increments, so the runaway call-limit check
-    # can reject the invocation before any provider attempt.
-    cfg = await _try_load_config_async(cwd)
-    _check_runaway_call_limit(cfg)
-    _increment_call_counter()
+    # Config is loaded unconditionally, and before compression: the fallback
+    # chain lives in agent.fallback_models, so it is needed even when both
+    # model and timeout are supplied, and reusing the returned config in
+    # maybe_compress avoids loading it twice per call (it would otherwise
+    # reload internally).
+    cfg, resolved, resolved_timeout = await prepare_invocation(
+        model=model, task_type=task_type, timeout=timeout, cwd=cwd
+    )
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
-    resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
-    resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
 
     async def _attempt(
         provider: LLMProvider,
@@ -1019,6 +1016,37 @@ def _resolve_timeout(
     return float(resolved_cfg.llm.cli_timeout)
 
 
+async def prepare_invocation(
+    *,
+    model: str | None,
+    task_type: str | None,
+    timeout: float | None,
+    cwd: Path | str | None,
+) -> tuple[ProjectConfig | None, str | None, float]:
+    """Run the pre-flight shared by every invocation path and resolve model/timeout.
+
+    Returns the loaded config (so a caller that also compresses its payload
+    does not reload it), the routed and alias-resolved model, and the
+    config-defaulted timeout. Counts the call against ``runaway.max_llm_calls``
+    and rejects it if that ceiling is already reached, before any provider or
+    runtime attempt.
+
+    Public because ``sova.core.agent_dispatch`` needs the identical pre-flight
+    for its AgentRuntime path, which bypasses the ``invoke*`` entry points
+    entirely. Reaching the runtime without it would leave a tool-using step
+    uncounted by the runaway guard, silently ignore a configured
+    ``llm.routing[task_type]`` route (which outranks the ``model`` every
+    pipeline step passes, so dropping it disables routing for that step), hand
+    an unresolved alias to a backend that cannot serve it (the #1033 failure
+    mode), and wait without a timeout when the caller supplied none.
+    """
+    cfg = await _try_load_config_async(cwd)
+    _check_runaway_call_limit(cfg)
+    _increment_call_counter()
+    resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
+    return cfg, resolved, _resolve_timeout(timeout, cfg=cfg)
+
+
 _DIFF_PREFIXES = ("diff --git", "--- ", "+++ ", "@@ ")
 _CODE_PREFIXES = ("def ", "class ", "import ", "from ", "function ", "const ", "public ", "package ", "#include")
 
@@ -1097,19 +1125,17 @@ async def invoke_command(
             key only, never part of the payload: it is neither appended to
             *command*/*args* nor compressed.
     """
-    # Loaded before compression so args is compressed with the same cfg used
-    # for timeout/chain resolution below, instead of loading config twice.
-    cfg = await _try_load_config_async(cwd)
-    _check_runaway_call_limit(cfg)
-    _increment_call_counter()
+    # Config is loaded before compression so args is compressed with the same
+    # cfg used for timeout/chain resolution, instead of loading it twice.
+    cfg, resolved, resolved_timeout = await prepare_invocation(
+        model=model, task_type=task_type, timeout=timeout, cwd=cwd
+    )
     if args:
         from sova.llm.guard import guard_prompt
 
         assembled = f"{command} {args}".strip()
         guard_prompt(assembled)
         args = maybe_compress(args, cwd, cfg=cfg)
-    resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
-    resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
 
     async def _attempt(
         provider: LLMProvider,

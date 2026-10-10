@@ -101,7 +101,7 @@ class TestStepInvokesFallback:
 
         # Mock the invoke_command to capture what was passed
         mock_result = LLMResult(text="ok", model="opus", cost_usd=Decimal("1.0"), session_id="test-session")
-        with patch("sova.core.steps.develop.invoke_command", return_value=mock_result) as mock_invoke:
+        with patch("sova.core.steps.develop.dispatch_command", return_value=mock_result) as mock_invoke:
             # Also mock _append_implementation_notes and the inner check loop
             with patch("sova.core.steps.develop._append_implementation_notes", return_value=None):
                 with patch.object(step, "_run_inner_check_loop", return_value=(True, "")):
@@ -138,7 +138,7 @@ class TestStepInvokesFallback:
         step = DevelopStep()
 
         mock_result = LLMResult(text="ok", model="sonnet", cost_usd=Decimal("1.0"), session_id="test-session")
-        with patch("sova.core.steps.develop.invoke_command", return_value=mock_result) as mock_invoke:
+        with patch("sova.core.steps.develop.dispatch_command", return_value=mock_result) as mock_invoke:
             with patch("sova.core.steps.develop._append_implementation_notes", return_value=None):
                 with patch.object(step, "_run_inner_check_loop", return_value=(True, "")):
                     await step.execute(ctx)
@@ -174,7 +174,7 @@ class TestStepInvokesFallback:
         step = DevelopStep()
 
         mock_result = LLMResult(text="ok", model="haiku", cost_usd=Decimal("1.0"), session_id="test-session")
-        with patch("sova.core.steps.develop.invoke_command", return_value=mock_result) as mock_invoke:
+        with patch("sova.core.steps.develop.dispatch_command", return_value=mock_result) as mock_invoke:
             with patch("sova.core.steps.develop._append_implementation_notes", return_value=None):
                 with patch.object(step, "_run_inner_check_loop", return_value=(True, "")):
                     await step.execute(ctx)
