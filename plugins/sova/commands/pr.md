@@ -86,16 +86,17 @@ Create a pull request for the current branch using the project's standard PR tem
 
    ```markdown
    ## Summary
-   In 1-3 bullet points, describe what changed and why.
-
-   ## Changes
-   Brief description of each logical change grouped by area.
+   3-5 bullet points: WHAT changed and WHY, folding in the file-by-file
+   breakdown (which files/areas each bullet touches) rather than repeating it
+   in a separate section.
 
    ## Review guidance
    What should a reviewer focus on? Any trade-offs or shortcuts?
 
    ## Test plan
-   How were these changes verified?
+   Name the specific test file(s) (and test names, where relevant) that cover
+   this change, and how they were run. Do not write a generic statement like
+   "tests were run" without naming which ones.
    ```
 
    Do not include preamble or commentary before the first heading. Do not use emojis.
