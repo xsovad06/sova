@@ -501,6 +501,7 @@ class JiraAdapter(TaskAdapter):
         body: str,
         event: str,
         comments: list[dict],
+        fallback_body: str | None = None,
     ) -> None:
         log.info("post_pr_review.no_op_for_jira", pr=pr_number)
 

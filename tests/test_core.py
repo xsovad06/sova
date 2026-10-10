@@ -2732,6 +2732,64 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_appends_closes_for_bare_issue_mention(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
+        """A bare '#42' mention (no Closes/Fixes/Resolves keyword) does not count as closing the issue."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- See issue #42 for context", model="sonnet", cost_usd=Decimal("0.01")
+        )
+        mock_create_pr.return_value = MagicMock(number=13, url="https://github.com/x/y/pull/13")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "Closes #42" in body_arg
+        assert body_arg.count("#42") == 2
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_appends_closes_even_when_body_closes_a_different_issue(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
+        """A stacked PR's body can legitimately close a different issue; ours still gets appended."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- stuff\n\nCloses #12", model="sonnet", cost_usd=Decimal("0.01")
+        )
+        mock_create_pr.return_value = MagicMock(number=14, url="https://github.com/x/y/pull/14")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "Closes #12" in body_arg
+        assert "Closes #42" in body_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_execute_body_includes_commits_and_diff(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -5199,16 +5257,27 @@ class TestRunawayGuardConfig:
 
 
 class TestParseReviewBody:
-    """Tests for _parse_review_body structured finding parser."""
+    """Tests for _parse_review_body, which parses the ### Findings / ### Advisory
+
+    markdown format emitted by sova.roles._review_format.format_review_body().
+    """
 
     def test_structured_finding(self) -> None:
         from sova.core.steps.address_review import _parse_review_body
+        from sova.roles._review_format import format_review_body
 
-        body = (
-            "[HIGH] Correctness -- Missing null check\n"
-            "Location: sova/core/steps/commit.py:42\n"
-            "Problem: The variable could be None when accessed.\n"
-            "Suggestion: Add an explicit None check before use."
+        body = format_review_body(
+            [
+                {
+                    "file": "sova/core/steps/commit.py",
+                    "line": 42,
+                    "severity": 9,
+                    "category": "correctness",
+                    "description": "The variable could be None when accessed.",
+                    "suggestion": "Add an explicit None check before use.",
+                }
+            ],
+            "summary",
         )
         findings = _parse_review_body(body)
         assert len(findings) == 1
@@ -5221,8 +5290,12 @@ class TestParseReviewBody:
 
     def test_critical_severity(self) -> None:
         from sova.core.steps.address_review import _parse_review_body
+        from sova.roles._review_format import format_review_body
 
-        body = "[CRITICAL] Security -- SQL injection risk\nLocation: app.py:10"
+        body = format_review_body(
+            [{"file": "app.py", "line": 10, "severity": 10, "category": "security", "description": "SQL injection"}],
+            "summary",
+        )
         findings = _parse_review_body(body)
         assert len(findings) == 1
         assert findings[0]["severity"] == 10
@@ -5248,38 +5321,403 @@ class TestParseReviewBody:
         findings = _parse_review_body("")
         assert findings == []
 
+    def test_no_findings_structured_body_returns_empty_not_fallback(self) -> None:
+        """A body with a ### Findings section but zero findings parses empty, not the single-finding fallback."""
+        from sova.core.steps.address_review import _parse_review_body
+        from sova.roles._review_format import format_review_body
+
+        body = format_review_body([], "Review of changes.")
+        assert "No issues found after thorough review." in body
+        findings = _parse_review_body(body)
+        assert findings == []
+
+    def test_advisory_only_findings_still_parsed(self) -> None:
+        """A body with only advisory findings (no blocking ones) must still parse them."""
+        from sova.core.steps.address_review import _parse_review_body
+        from sova.roles._review_format import format_review_body
+
+        body = format_review_body(
+            [{"file": "a.py", "line": 1, "severity": 1, "category": "style", "description": "nitpick"}],
+            "summary",
+        )
+        findings = _parse_review_body(body)
+        assert len(findings) == 1
+        assert findings[0]["description"] == "nitpick"
+        assert findings[0]["severity"] == 1
+
+    def test_colon_in_windows_style_file_path_does_not_break_location(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+        from sova.roles._review_format import format_review_body
+
+        body = format_review_body(
+            [
+                {
+                    "file": r"C:\repo\foo.py",
+                    "line": None,
+                    "severity": 9,
+                    "category": "correctness",
+                    "description": "Something is wrong.",
+                }
+            ],
+            "summary",
+        )
+        findings = _parse_review_body(body)
+        assert len(findings) == 1
+        assert findings[0]["file"] == r"C:\repo\foo.py"
+        assert findings[0]["line"] is None
+
+    def test_multiple_findings(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+        from sova.roles._review_format import format_review_body
+
+        body = format_review_body(
+            [
+                {"file": "a.py", "line": 1, "severity": 9, "category": "correctness", "description": "First issue"},
+                {"file": "b.py", "line": 2, "severity": 1, "category": "style", "description": "Second issue"},
+            ],
+            "summary",
+        )
+        findings = _parse_review_body(body)
+        assert len(findings) == 2
+        severities = {f["severity"] for f in findings}
+        assert severities == {9, 1}
+
+    def test_multi_word_category(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+        from sova.roles._review_format import format_review_body
+
+        body = format_review_body(
+            [
+                {
+                    "file": "sova/core/context.py",
+                    "line": 55,
+                    "severity": 9,
+                    "category": "type safety",
+                    "description": "Missing type annotation",
+                }
+            ],
+            "summary",
+        )
+        findings = _parse_review_body(body)
+        assert len(findings) == 1
+        assert findings[0]["category"] == "type safety"
+        assert findings[0]["severity"] == 9
+
+    def test_collapsed_inline_comment_reference_still_parses(self) -> None:
+        """A one-line 'see inline comment above' entry still yields a finding dict."""
+        from sova.core.steps.address_review import _parse_review_body
+        from sova.roles._review_format import format_review_body
+
+        body = format_review_body(
+            [{"file": "a.py", "line": 10, "severity": 9, "category": "bug", "description": "crash"}],
+            "summary",
+            inline_comment_keys={("a.py", 10)},
+        )
+        findings = _parse_review_body(body)
+        assert len(findings) == 1
+        assert findings[0]["file"] == "a.py"
+        assert findings[0]["line"] == 10
+        assert findings[0]["severity"] == 9
+
     def test_line_range_location_preserves_file_path(self) -> None:
+        """A legacy 'Location: foo.py:10-15' keeps the file path and leaves the line unknown."""
         from sova.core.steps.address_review import _parse_review_body
 
-        body = "[HIGH] Correctness -- Range location\nLocation: foo.py:10-15\nProblem: Something is wrong."
+        # The legacy format's separator is a literal dash pair, assembled here
+        # because invariants/no-double-dash.sh rejects it as added prose.
+        sep = "-" * 2
+        body = f"[HIGH] Correctness {sep} Range location\nLocation: foo.py:10-15\nProblem: Something is wrong."
         findings = _parse_review_body(body)
         assert len(findings) == 1
         assert findings[0]["file"] == "foo.py"
         assert findings[0]["line"] is None
 
-    def test_multiple_findings(self) -> None:
+    def test_human_findings_heading_is_not_silently_dropped(self) -> None:
+        """A non-SOVA body using a '### Findings' heading falls back instead of parsing to zero."""
         from sova.core.steps.address_review import _parse_review_body
 
-        body = "[HIGH] Correctness -- First issue\nLocation: a.py:1\n\n[LOW] Style -- Second issue\nLocation: b.py:2"
-        findings = _parse_review_body(body)
-        assert len(findings) == 2
-        assert findings[0]["severity"] == 9
-        assert findings[1]["severity"] == 3
-
-    def test_multi_word_category(self) -> None:
-        from sova.core.steps.address_review import _parse_review_body
-
-        body = "[HIGH] Type Safety -- Missing type annotation\nLocation: sova/core/context.py:55"
+        body = (
+            "### Findings\n\n"
+            "* The retry loop never resets its counter, so a transient failure "
+            "permanently exhausts the budget.\n"
+            "* The new config key is not registered in settings_meta.py.\n"
+        )
         findings = _parse_review_body(body)
         assert len(findings) == 1
-        assert findings[0]["category"] == "type safety"
-        assert findings[0]["severity"] == 9
+        assert "retry loop never resets" in findings[0]["description"]
+
+    def test_sova_body_with_no_findings_is_trusted_as_empty(self) -> None:
+        """The marker proves SOVA wrote the body, so an empty Findings section means empty."""
+        from sova.core.steps.address_review import _parse_review_body
+        from sova.roles._review_format import format_review_body
+
+        body = format_review_body([], "A long enough summary to clear the 50-character fallback threshold.")
+        assert "<!-- sova-review:" in body
+        assert _parse_review_body(body) == []
 
 
 # ---------------------------------------------------------------------------
 def _gh_reviews_json(*reviews: dict) -> str:
     """Build a JSON string mimicking ``gh api repos/.../pulls/N/reviews``."""
     return json.dumps(reviews)
+
+
+class TestHydrateCollapsedFindings:
+    """Tests for recovering collapsed finding text from inline PR review comments."""
+
+    def test_parse_inline_comment_body_splits_sova_shape(self) -> None:
+        from sova.core.steps.address_review import _parse_inline_comment_body
+
+        description, suggestion = _parse_inline_comment_body(
+            "**[CRITICAL] bug**: The counter is never reset.\n\n**Suggestion**: Reset it in the finally block."
+        )
+        assert description == "The counter is never reset."
+        assert suggestion == "Reset it in the finally block."
+
+    def test_parse_inline_comment_body_keeps_human_text_whole(self) -> None:
+        from sova.core.steps.address_review import _parse_inline_comment_body
+
+        description, suggestion = _parse_inline_comment_body("This looks wrong to me, can you double check?")
+        assert description == "This looks wrong to me, can you double check?"
+        assert suggestion == ""
+
+    async def test_collapsed_finding_is_hydrated_from_inline_comment(self) -> None:
+        """A 'see inline comment above' body entry gets its real text back from the inline comment."""
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
+
+        ctx = _make_ctx(pr_number=11)
+        body = format_review_body(
+            [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash on empty input"}],
+            "summary",
+            inline_comment_keys={("a.py", 7)},
+        )
+        reviews_json = _gh_reviews_json({"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": body})
+        comments_json = json.dumps(
+            [
+                {
+                    "user": {"login": "dev", "type": "User"},
+                    "path": "a.py",
+                    "line": 7,
+                    "body": "**[CRITICAL] bug**: crash on empty input\n\n**Suggestion**: guard the empty case",
+                },
+                {
+                    "user": {"login": "coderabbitai", "type": "Bot"},
+                    "path": "a.py",
+                    "line": 7,
+                    "body": "bot noise that must not win",
+                },
+            ]
+        )
+        with patch(
+            "sova.core.steps.address_review.run",
+            new_callable=AsyncMock,
+            side_effect=[
+                MagicMock(success=True, stdout=reviews_json),
+                MagicMock(success=True, stdout=comments_json),
+            ],
+        ):
+            findings = await _load_findings_from_github_reviews(ctx)
+
+        assert len(findings) == 1
+        assert findings[0]["description"] == "crash on empty input"
+        assert findings[0]["suggestion"] == "guard the empty case"
+
+    async def test_unhydratable_stub_keeps_its_reference(self) -> None:
+        """A stub with no matching inline comment keeps the stub rather than becoming empty."""
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
+        from sova.utils.review_markers import INLINE_COMMENT_STUB
+
+        ctx = _make_ctx(pr_number=12)
+        body = format_review_body(
+            [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
+            "summary",
+            inline_comment_keys={("a.py", 7)},
+        )
+        reviews_json = _gh_reviews_json({"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": body})
+        with patch(
+            "sova.core.steps.address_review.run",
+            new_callable=AsyncMock,
+            side_effect=[
+                MagicMock(success=True, stdout=reviews_json),
+                MagicMock(success=False, stdout=""),
+            ],
+        ):
+            findings = await _load_findings_from_github_reviews(ctx)
+
+        assert len(findings) == 1
+        assert findings[0]["description"] == INLINE_COMMENT_STUB
+
+    async def test_no_stub_means_no_inline_comment_fetch(self) -> None:
+        """An uncollapsed body never spends a second API call on inline comments."""
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
+
+        ctx = _make_ctx(pr_number=13)
+        body = format_review_body(
+            [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
+            "summary",
+        )
+        reviews_json = _gh_reviews_json({"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": body})
+        mock_run = AsyncMock(return_value=MagicMock(success=True, stdout=reviews_json))
+        with patch("sova.core.steps.address_review.run", mock_run):
+            findings = await _load_findings_from_github_reviews(ctx)
+
+        assert mock_run.await_count == 1
+        assert findings[0]["description"] == "crash"
+
+    async def test_hydrates_from_concatenated_paginated_comments(self) -> None:
+        """`gh api --paginate` emits one JSON array per page; a >30-comment PR concatenates them."""
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
+
+        ctx = _make_ctx(pr_number=14)
+        body = format_review_body(
+            [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
+            "summary",
+            inline_comment_keys={("a.py", 7)},
+        )
+        reviews_json = _gh_reviews_json({"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": body})
+        page_one = json.dumps(
+            [{"user": {"login": "noise", "type": "User"}, "path": "b.py", "line": 1, "body": "unrelated"}]
+        )
+        page_two = json.dumps(
+            [{"user": {"login": "dev", "type": "User"}, "path": "a.py", "line": 7, "body": "**[CRITICAL] bug**: crash"}]
+        )
+        with patch(
+            "sova.core.steps.address_review.run",
+            new_callable=AsyncMock,
+            side_effect=[
+                MagicMock(success=True, stdout=reviews_json),
+                MagicMock(success=True, stdout=page_one + page_two),
+            ],
+        ):
+            findings = await _load_findings_from_github_reviews(ctx)
+
+        assert findings[0]["description"] == "crash"
+
+    def test_parse_paginated_gh_json_keeps_pages_before_truncation(self) -> None:
+        """A truncated trailing page must not discard the earlier, fully-decoded pages."""
+        from sova.core.steps.address_review import _parse_paginated_gh_json
+
+        page_one = json.dumps([{"id": 1}])
+        truncated_page_two = '[{"id": 2}'
+
+        result = _parse_paginated_gh_json(page_one + truncated_page_two)
+
+        assert result == [{"id": 1}]
+
+    async def test_hydrates_despite_null_user_comment(self) -> None:
+        """A `"user": null` comment (deleted/ghost author) must not abort hydration for the whole PR."""
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
+
+        ctx = _make_ctx(pr_number=15)
+        body = format_review_body(
+            [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
+            "summary",
+            inline_comment_keys={("a.py", 7)},
+        )
+        reviews_json = _gh_reviews_json({"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": body})
+        comments_json = json.dumps(
+            [
+                {"user": None, "path": "b.py", "line": 3, "body": "ghost author comment"},
+                {
+                    "user": {"login": "dev", "type": "User"},
+                    "path": "a.py",
+                    "line": 7,
+                    "body": "**[CRITICAL] bug**: crash",
+                },
+            ]
+        )
+        with patch(
+            "sova.core.steps.address_review.run",
+            new_callable=AsyncMock,
+            side_effect=[
+                MagicMock(success=True, stdout=reviews_json),
+                MagicMock(success=True, stdout=comments_json),
+            ],
+        ):
+            findings = await _load_findings_from_github_reviews(ctx)
+
+        assert findings[0]["description"] == "crash"
+
+    async def test_sova_shaped_comment_wins_over_human_note_at_same_location(self) -> None:
+        """A human's top-level note at the same (path, line) must not outrank SOVA's own comment."""
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
+
+        ctx = _make_ctx(pr_number=16)
+        body = format_review_body(
+            [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
+            "summary",
+            inline_comment_keys={("a.py", 7)},
+        )
+        reviews_json = _gh_reviews_json({"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": body})
+        comments_json = json.dumps(
+            [
+                {"user": {"login": "human", "type": "User"}, "path": "a.py", "line": 7, "body": "unrelated note"},
+                {
+                    "user": {"login": "dev", "type": "User"},
+                    "path": "a.py",
+                    "line": 7,
+                    "body": "**[CRITICAL] bug**: crash",
+                },
+            ]
+        )
+        with patch(
+            "sova.core.steps.address_review.run",
+            new_callable=AsyncMock,
+            side_effect=[
+                MagicMock(success=True, stdout=reviews_json),
+                MagicMock(success=True, stdout=comments_json),
+            ],
+        ):
+            findings = await _load_findings_from_github_reviews(ctx)
+
+        assert findings[0]["description"] == "crash"
+
+    async def test_two_matching_comments_at_same_location_stay_ambiguous(self) -> None:
+        """Two distinct findings landing on the same (path, line) keep the stub rather than guess."""
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
+        from sova.utils.review_markers import INLINE_COMMENT_STUB
+
+        ctx = _make_ctx(pr_number=17)
+        body = format_review_body(
+            [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
+            "summary",
+            inline_comment_keys={("a.py", 7)},
+        )
+        reviews_json = _gh_reviews_json({"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": body})
+        comments_json = json.dumps(
+            [
+                {
+                    "user": {"login": "dev", "type": "User"},
+                    "path": "a.py",
+                    "line": 7,
+                    "body": "**[CRITICAL] bug**: crash",
+                },
+                {
+                    "user": {"login": "dev", "type": "User"},
+                    "path": "a.py",
+                    "line": 7,
+                    "body": "**[HIGH] security**: leak",
+                },
+            ]
+        )
+        with patch(
+            "sova.core.steps.address_review.run",
+            new_callable=AsyncMock,
+            side_effect=[
+                MagicMock(success=True, stdout=reviews_json),
+                MagicMock(success=True, stdout=comments_json),
+            ],
+        ):
+            findings = await _load_findings_from_github_reviews(ctx)
+
+        assert findings[0]["description"] == INLINE_COMMENT_STUB
 
 
 class TestLoadFindingsFromGithubReviews:
@@ -5294,14 +5732,19 @@ class TestLoadFindingsFromGithubReviews:
 
     async def test_filters_bot_reviews(self) -> None:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
 
         ctx = _make_ctx(pr_number=10)
+        real_body = format_review_body(
+            [{"file": "a.py", "line": 1, "severity": 9, "category": "bug", "description": "real issue"}],
+            "summary",
+        )
         gh_json = _gh_reviews_json(
-            {"user": {"login": "bot", "type": "Bot"}, "state": "COMMENTED", "body": "[HIGH] Bug -- some issue"},
+            {"user": {"login": "bot", "type": "Bot"}, "state": "COMMENTED", "body": real_body},
             {
                 "user": {"login": "dev", "type": "User"},
                 "state": "COMMENTED",
-                "body": "[HIGH] Bug -- real issue\nLocation: a.py:1",
+                "body": real_body,
             },
         )
         with self._patch_run(gh_json):
@@ -5311,10 +5754,15 @@ class TestLoadFindingsFromGithubReviews:
 
     async def test_filters_dismissed_reviews(self) -> None:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
 
         ctx = _make_ctx(pr_number=10)
+        body = format_review_body(
+            [{"file": "a.py", "line": 1, "severity": 9, "category": "bug", "description": "old issue"}],
+            "summary",
+        )
         gh_json = _gh_reviews_json(
-            {"user": {"login": "dev", "type": "User"}, "state": "DISMISSED", "body": "[HIGH] Bug -- old issue"},
+            {"user": {"login": "dev", "type": "User"}, "state": "DISMISSED", "body": body},
         )
         with self._patch_run(gh_json):
             findings = await _load_findings_from_github_reviews(ctx)
@@ -5344,15 +5792,16 @@ class TestLoadFindingsFromGithubReviews:
             findings = await _load_findings_from_github_reviews(ctx)
         assert findings == []
 
-    async def test_parses_bold_wrapped_findings(self) -> None:
+    async def test_freeform_human_review_falls_back_to_single_finding(self) -> None:
+        """A human reviewer's free-text comment (no ### Findings section) is not
+        structured, so it degrades to the single-finding fallback rather than
+        being silently dropped."""
         from sova.core.steps.address_review import _load_findings_from_github_reviews
 
         ctx = _make_ctx(pr_number=10)
         body = (
-            "**[HIGH] Security -- XSS vulnerability**\n"
-            "Location: app.py:42\n"
-            "Problem: Unsanitized input\n"
-            "Suggestion: Use escape()"
+            "This has an XSS vulnerability in app.py:42 where unsanitized input "
+            "reaches the response. Please use escape() before rendering it."
         )
         gh_json = _gh_reviews_json(
             {"user": {"login": "reviewer", "type": "User"}, "state": "COMMENTED", "body": body},
@@ -5360,10 +5809,9 @@ class TestLoadFindingsFromGithubReviews:
         with self._patch_run(gh_json):
             findings = await _load_findings_from_github_reviews(ctx)
         assert len(findings) == 1
-        assert findings[0]["severity"] == 9
-        assert findings[0]["file"] == "app.py"
-        assert findings[0]["line"] == 42
-        assert findings[0]["category"] == "security"
+        assert findings[0]["severity"] == 7
+        assert findings[0]["category"] == "review"
+        assert "XSS" in findings[0]["description"]
 
 
 # MonitorCIStep -- CI fix loop

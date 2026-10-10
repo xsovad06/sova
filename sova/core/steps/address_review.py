@@ -12,7 +12,11 @@ from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.handoff import read_handoff, read_handoff_file
 from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
-from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE
+from sova.utils.review_markers import (
+    INLINE_COMMENT_STUB,
+    SOVA_ADDRESSED_MARKER_RE,
+    SOVA_VERDICT_MARKER_RE,
+)
 from sova.utils.shell import run
 
 log = get_logger(component="step.address_review")
@@ -77,65 +81,164 @@ async def _load_review_findings_by_issue(issue_number: str) -> list[dict]:
     return []
 
 
-_SEVERITY_MAP = {"CRITICAL": 10, "HIGH": 9, "MEDIUM": 6, "LOW": 3}
+# Matches a finding line emitted by sova.roles._review_format._format_finding_line():
+#   - **[HIGH 7/10]** [bug] `path/to/file.py:42`: Description text Fix: suggestion
+# or, for a file-level finding with no line number:
+#   - **[HIGH 7/10]** [bug] `path/to/file.py`: Description text
+_FINDING_LINE_RE = re.compile(
+    r"^-\s+\*\*\[\w+\s+(?P<severity>\d+)/10\]\*\*\s*"
+    r"\[(?P<category>[^\]]*)\]\s*`(?P<location>[^`]*)`:\s*(?P<rest>.*)$"
+)
+_SECTION_HEADING_RE = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
+_FIX_SPLIT_RE = re.compile(r"\s+Fix:\s+")
 
-_FINDING_HEADER_RE = re.compile(r"\*{0,2}\[(\w+)\]\s*([\w][\w ]*?)\s*--\s*(.*?)\*{0,2}\s*$", re.MULTILINE)
-_LOCATION_RE = re.compile(r"Location:\s*(\S+?)(?:\n|$)")
-_PROBLEM_RE = re.compile(r"Problem:\s*(.*?)(?:\nSuggestion:|\Z)", re.DOTALL)
-_SUGGESTION_RE = re.compile(r"Suggestion:\s*(.*?)(?:\n\[|```|\Z)", re.DOTALL)
+
+_LINE_RANGE_RE = re.compile(r"^\d+\s*-\s*\d+$")
 
 
-def _parse_review_body(body: str) -> list[dict]:
-    """Parse structured findings from a single review body.
+def _split_location(location: str) -> tuple[str, int | None]:
+    """Split a ``file`` or ``file:line`` location into (file, line).
 
-    Expected format: ``[HIGH/MEDIUM/LOW] Category -- Description``
-    with optional ``Location:``, ``Problem:``, and ``Suggestion:`` fields.
-
-    Falls back to treating the whole body as a single finding when
-    no structured findings are found and the body is non-trivial.
+    A file path can itself contain a colon (e.g. a Windows-style path), so a
+    trailing segment is only stripped when it is a line number: all digits, or
+    a ``10-15`` range (which a hand-written review may use and which has no
+    single line to anchor to, so the file is kept and the line left unknown).
+    Anything else leaves the whole string as the file path unchanged.
     """
-    structured: list[dict] = []
-    blocks = re.split(r"\n(?=\*{0,2}\[(?:CRITICAL|HIGH|MEDIUM|LOW)\])", body)
-    for block in blocks:
-        m = _FINDING_HEADER_RE.match(block.strip())
+    file_path, sep, maybe_line = location.rpartition(":")
+    if sep and maybe_line.isdigit():
+        return file_path, int(maybe_line)
+    if sep and _LINE_RANGE_RE.match(maybe_line):
+        return file_path, None
+    return location, None
+
+
+def _extract_markdown_sections(body: str) -> dict[str, list[str]]:
+    """Split a markdown body into ``### Heading`` -> list of body-text sections.
+
+    A heading can repeat (e.g. a human-authored summary field that embeds its
+    own ``### Findings`` heading above the real one): accumulating into a list
+    per heading means a duplicate adds findings rather than silently shadowing
+    the genuine section.
+    """
+    headings = list(_SECTION_HEADING_RE.finditer(body))
+    sections: dict[str, list[str]] = {}
+    for i, m in enumerate(headings):
+        start = m.end()
+        end = headings[i + 1].start() if i + 1 < len(headings) else len(body)
+        sections.setdefault(m.group(1), []).append(body[start:end])
+    return sections
+
+
+def _parse_finding_lines(section_text: str) -> list[dict]:
+    """Parse every ``- **[LABEL N/10]** ...`` entry out of one section's text."""
+    findings: list[dict] = []
+    for line in section_text.splitlines():
+        m = _FINDING_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        file_path, line_num = _split_location(m.group("location"))
+        parts = _FIX_SPLIT_RE.split(m.group("rest"), maxsplit=1)
+        description = parts[0]
+        suggestion = parts[1] if len(parts) > 1 else ""
+        findings.append(
+            {
+                "file": file_path,
+                "line": line_num,
+                "severity": int(m.group("severity")),
+                "category": m.group("category").strip().lower(),
+                "description": description.strip(),
+                "suggestion": suggestion.strip(),
+                "source": "github-review",
+            }
+        )
+    return findings
+
+
+_LEGACY_SEVERITY_MAP = {"CRITICAL": 10, "HIGH": 9, "MEDIUM": 6, "LOW": 3}
+
+# Matches the pre-markdown review shape still found on older PRs and in
+# hand-written human reviews that follow SOVA's original documented layout:
+# a bracketed severity, a category, a dash-dash separator, a description,
+# then optional "Location:", "Problem:", and "Suggestion:" fields.
+_LEGACY_HEADER_RE = re.compile(r"\*{0,2}\[(\w+)\]\s*([\w][\w ]*?)\s*--\s*(.*?)\*{0,2}\s*$", re.MULTILINE)
+_LEGACY_BLOCK_SPLIT_RE = re.compile(r"\n(?=\*{0,2}\[(?:CRITICAL|HIGH|MEDIUM|LOW)\])")
+_LEGACY_LOCATION_RE = re.compile(r"Location:\s*(\S+?)(?:\n|$)")
+_LEGACY_PROBLEM_RE = re.compile(r"Problem:\s*(.*?)(?:\nSuggestion:|\Z)", re.DOTALL)
+_LEGACY_SUGGESTION_RE = re.compile(r"Suggestion:\s*(.*?)(?:\n\[|```|\Z)", re.DOTALL)
+
+
+def _parse_legacy_review_body(body: str) -> list[dict]:
+    """Parse the pre-markdown finding shape out of a review body.
+
+    SOVA no longer emits this layout, but review bodies posted before the
+    markdown format landed are still live on open PRs, and a human reviewer
+    may write it by hand. Parsing it is strictly better than degrading the
+    whole body to one opaque finding.
+    """
+    findings: list[dict] = []
+    for block in _LEGACY_BLOCK_SPLIT_RE.split(body):
+        m = _LEGACY_HEADER_RE.match(block.strip())
         if not m:
             continue
 
-        severity = _SEVERITY_MAP.get(m.group(1).upper(), 5)
         file_path = ""
-        line = None
-
-        loc_m = _LOCATION_RE.search(block)
+        line_num = None
+        loc_m = _LEGACY_LOCATION_RE.search(block)
         if loc_m:
-            loc = loc_m.group(1)
-            if ":" in loc:
-                parts = loc.rsplit(":", 1)
-                file_path = parts[0]
-                try:
-                    line = int(parts[1])
-                except ValueError:
-                    file_path = parts[0]
-            else:
-                file_path = loc
+            file_path, line_num = _split_location(loc_m.group(1))
 
-        problem_m = _PROBLEM_RE.search(block)
-        suggestion_m = _SUGGESTION_RE.search(block)
-
-        structured.append(
+        problem_m = _LEGACY_PROBLEM_RE.search(block)
+        suggestion_m = _LEGACY_SUGGESTION_RE.search(block)
+        findings.append(
             {
                 "file": file_path,
-                "line": line,
-                "severity": severity,
+                "line": line_num,
+                "severity": _LEGACY_SEVERITY_MAP.get(m.group(1).upper(), 5),
                 "category": m.group(2).lower(),
                 "description": problem_m.group(1).strip() if problem_m else m.group(3),
                 "suggestion": suggestion_m.group(1).strip() if suggestion_m else "",
                 "source": "github-review",
             }
         )
+    return findings
 
-    if structured:
-        return structured
 
+def _parse_review_body(body: str) -> list[dict]:
+    """Parse structured findings from a single review body.
+
+    Expects the ``### Findings`` / ``### Advisory (not blocking)`` markdown
+    format emitted by ``sova.roles._review_format.format_review_body()``
+    (used for both SOVA's own re-review and the ``/review-pr`` command).
+
+    When no such section is present, the older pre-markdown layout is tried
+    next (see ``_parse_legacy_review_body``), and only a body that matches
+    neither degrades to a single finding carrying the whole text (e.g. a
+    free-text human review comment).
+
+    A section that parses to zero findings is trusted as genuinely empty
+    (e.g. "No issues found after thorough review.") only when the body
+    carries SOVA's own ``<!-- sova-review: -->`` marker, proving the
+    formatter wrote it. A human who happens to write a ``### Findings``
+    heading above prose bullets still falls through to the whole-body
+    fallback rather than having their entire review silently dropped.
+    """
+    sections = _extract_markdown_sections(body)
+    structured_headings = [h for h in sections if h == "Findings" or h.startswith("Advisory")]
+
+    findings: list[dict] = []
+    for heading in structured_headings:
+        for section_text in sections[heading]:
+            findings.extend(_parse_finding_lines(section_text))
+    if findings:
+        return findings
+
+    if structured_headings and SOVA_VERDICT_MARKER_RE.search(body):
+        return []
+
+    legacy = _parse_legacy_review_body(body)
+    if legacy:
+        return legacy
     if len(body) > 50:
         return [
             {
@@ -151,6 +254,165 @@ def _parse_review_body(body: str) -> list[dict]:
     return []
 
 
+# Matches the inline-comment shape sova.roles._review_comments._format_inline_comment()
+# emits: "**[HIGH] bug**: description" then an optional "**Suggestion**: ..." block.
+_INLINE_COMMENT_HEAD_RE = re.compile(r"^\*\*\[\w+\]\s*[^*]*\*\*:\s*", re.DOTALL)
+_INLINE_SUGGESTION_RE = re.compile(r"\n+\*\*Suggestion\*\*:\s*", re.DOTALL)
+
+
+def _parse_inline_comment_body(text: str) -> tuple[str, str]:
+    """Split an inline review comment into (description, suggestion).
+
+    Understands SOVA's own inline shape and degrades to "all description" for
+    a hand-written comment, so a human's inline note is still usable.
+    """
+    parts = _INLINE_SUGGESTION_RE.split(text, maxsplit=1)
+    description = _INLINE_COMMENT_HEAD_RE.sub("", parts[0].strip(), count=1).strip()
+    suggestion = parts[1].strip() if len(parts) > 1 else ""
+    return description, suggestion
+
+
+def _parse_paginated_gh_json(stdout: str) -> list:
+    """Parse ``gh api --paginate`` stdout into a single flat list.
+
+    Per ``gh api --help``, each page is a separate JSON array, concatenated
+    with no separator (``[...][...]``), which ``json.loads`` rejects outright
+    once there is more than one page (default page size 30). ``JSONDecoder.raw_decode``
+    reads one JSON value at a time and reports where it stopped, so looping it
+    over the remaining text recovers every page without needing ``--slurp``
+    (not available on all installed `gh` versions).
+    """
+    import json as _json
+
+    decoder = _json.JSONDecoder()
+    pages: list = []
+    text = stdout.strip()
+    idx = 0
+    length = len(text)
+    while idx < length:
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+        except _json.JSONDecodeError:
+            log.warning("address_review.paginated_json_truncated", offset=idx, exc_info=True)
+            break
+        pages.append(obj)
+        idx = end
+        while idx < length and text[idx].isspace():
+            idx += 1
+
+    flat: list = []
+    for page in pages:
+        if isinstance(page, list):
+            flat.extend(page)
+        else:
+            flat.append(page)
+    return flat
+
+
+async def _load_inline_review_comments(ctx: ExecutionContext) -> dict[tuple[str, int], list[tuple[str, str, bool]]]:
+    """Fetch non-bot inline PR review comments, keyed by ``(path, line)``.
+
+    A review body collapses any finding that already has its own inline
+    comment down to ``INLINE_COMMENT_STUB``, so the body alone no longer
+    carries that finding's text. This is the other half of that trade: the
+    full text is read back out of the inline comments it was moved into.
+
+    Each location maps to a *list* of matches rather than the last one seen:
+    two distinct findings can land on the same ``(path, line)``, and a human's
+    own top-level comment on that line is a third candidate. Picking one
+    silently would risk attributing the wrong text to a finding. The third
+    tuple element flags whether the raw body matches SOVA's own inline-comment
+    shape (``_INLINE_COMMENT_HEAD_RE``), so a same-location human note never
+    outranks SOVA's own comment when both exist.
+    """
+    try:
+        from sova.utils.gh import resolve_gh_env
+
+        env = await resolve_gh_env(ctx.config.github_user)
+        result = await run(
+            "gh",
+            "api",
+            f"repos/{ctx.repo}/pulls/{ctx.pr_number}/comments",
+            "--paginate",
+            cwd=ctx.working_dir,
+            env=env,
+        )
+        if not result.success or not result.stdout.strip():
+            return {}
+
+        raw = _parse_paginated_gh_json(result.stdout)
+
+        by_location: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
+        for c in raw:
+            if not isinstance(c, dict):
+                continue
+            if (c.get("user") or {}).get("type", "") == "Bot" or c.get("in_reply_to_id") is not None:
+                continue
+            path = c.get("path") or ""
+            # "line" is null once the comment's line falls out of the current
+            # diff; "original_line" still pins it to the commit it was made on.
+            line = c.get("line")
+            if line is None:
+                line = c.get("original_line")
+            body = (c.get("body") or "").strip()
+            if not path or not isinstance(line, int) or isinstance(line, bool) or not body:
+                continue
+            is_sova_shaped = bool(_INLINE_COMMENT_HEAD_RE.match(body))
+            description, suggestion = _parse_inline_comment_body(body)
+            by_location.setdefault((path, line), []).append((description, suggestion, is_sova_shaped))
+        return by_location
+    except Exception:  # noqa: BLE001 (best-effort enrichment; the body text still stands in)
+        log.warning("address_review.inline_comment_fetch_failed", exc_info=True)
+        return {}
+
+
+async def _hydrate_collapsed_findings(ctx: ExecutionContext, findings: list[dict]) -> None:
+    """Replace every ``INLINE_COMMENT_STUB`` description with its inline comment text.
+
+    Mutates *findings* in place. A stub with no matching inline comment (the
+    comment was deleted, or its line no longer resolves) keeps the stub: it at
+    least tells the addressing agent where to look, which is strictly better
+    than an empty description.
+    """
+    stubs = [f for f in findings if f.get("description") == INLINE_COMMENT_STUB]
+    if not stubs:
+        return
+
+    inline = await _load_inline_review_comments(ctx)
+    if not inline:
+        log.warning("address_review.collapsed_findings_unhydrated", count=len(stubs))
+        return
+
+    hydrated = 0
+    for f in stubs:
+        matches = inline.get((f.get("file") or "", f.get("line")))
+        if not matches:
+            continue
+        # Prefer comments shaped like SOVA's own inline comment: a same-location
+        # human note (which never matches the shape) must not outrank it.
+        sova_shaped = [m for m in matches if m[2]]
+        candidates = sova_shaped or matches
+        if len(candidates) > 1:
+            # Ambiguous: more than one comment landed on this exact (file, line),
+            # so there is no safe way to tell which one belongs to this finding.
+            # Keep the stub rather than risk attributing the wrong text to it.
+            log.warning(
+                "address_review.ambiguous_inline_location",
+                file=f.get("file"),
+                line=f.get("line"),
+                candidates=len(candidates),
+            )
+            continue
+        description, suggestion, _ = candidates[0]
+        if not description:
+            continue
+        f["description"] = description
+        if suggestion:
+            f["suggestion"] = suggestion
+        hydrated += 1
+    log.info("address_review.hydrated_collapsed_findings", hydrated=hydrated, total=len(stubs))
+
+
 async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict]:
     """Fetch review findings from GitHub PR review bodies.
 
@@ -160,8 +422,6 @@ async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict
     if not ctx.pr_number:
         return []
     try:
-        import json as _json
-
         from sova.utils.gh import resolve_gh_env
 
         env = await resolve_gh_env(ctx.config.github_user)
@@ -176,9 +436,7 @@ async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict
         if not result.success or not result.stdout.strip():
             return []
 
-        raw_reviews = _json.loads(result.stdout)
-        if not isinstance(raw_reviews, list):
-            return []
+        raw_reviews = _parse_paginated_gh_json(result.stdout)
 
         findings: list[dict] = []
         for r in raw_reviews:
@@ -186,7 +444,7 @@ async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict
                 continue
             state = r.get("state", "")
             body = r.get("body", "") or ""
-            is_bot = r.get("user", {}).get("type", "") == "Bot"
+            is_bot = (r.get("user") or {}).get("type", "") == "Bot"
             if state == "DISMISSED" or is_bot or not body.strip():
                 continue
             # An address cycle's own summary is posted as a COMMENT review; it
@@ -194,6 +452,10 @@ async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict
             if SOVA_ADDRESSED_MARKER_RE.search(body):
                 continue
             findings.extend(_parse_review_body(body))
+
+        # Findings whose body entry was collapsed to a stub live in the inline
+        # comments instead; pull their real text back in before returning.
+        await _hydrate_collapsed_findings(ctx, findings)
 
         if findings:
             log.info("address_review.github_review_findings", count=len(findings))

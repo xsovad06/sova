@@ -820,6 +820,24 @@ class TestGitHubAdapter:
         assert retry_payload["body"] == "Summary"
         assert retry_payload["event"] == "COMMENT"
 
+    async def test_post_pr_review_retry_uses_fallback_body(self, mock_run: AsyncMock) -> None:
+        """The body-only retry must post `fallback_body`, not the collapsed `body`, when given one."""
+        comments = [{"path": "foo.py", "line": 999, "side": "RIGHT", "body": "Bad line ref"}]
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="Validation Failed: line 999 not in diff"),
+            _shell_result(stdout='{"id": 456}'),
+        ]
+
+        await self.adapter.post_pr_review(
+            82, "see inline comment above.", "COMMENT", comments, fallback_body="Full finding text: Issue"
+        )
+
+        assert mock_run.call_count == 2
+        retry_stdin = mock_run.call_args_list[1][1].get("stdin", "")
+        retry_payload = json.loads(retry_stdin)
+        assert retry_payload["body"] == "Full finding text: Issue"
+        assert retry_payload["comments"] == []
+
     async def test_post_pr_review_logs_zero_comments_after_fallback(self, mock_run: AsyncMock) -> None:
         """After a body-only retry succeeds, the completion log must report 0 comments, not the original count."""
         comments = [{"path": "foo.py", "line": 999, "side": "RIGHT", "body": "Bad line ref"}]

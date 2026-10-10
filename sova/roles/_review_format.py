@@ -8,8 +8,9 @@ and the /review-pr command (via format_from_json for CLI access).
 from __future__ import annotations
 
 import json
+from collections import Counter
 
-from sova.utils.review_markers import SHA_RE
+from sova.utils.review_markers import INLINE_COMMENT_STUB, SHA_RE
 
 _SEVERITY_CRITICAL = 7
 _SEVERITY_HIGH = 5
@@ -76,24 +77,48 @@ def _verdict_action(verdict: str) -> str:
     return "Request changes"
 
 
-def _verdict_rationale(verdict: str, findings: list[dict]) -> str:
+_SEVERITY_LABEL_ORDER = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+
+
+def _verdict_rationale(verdict: str, findings: list[dict], *, revise_at: int = _SEVERITY_MEDIUM) -> str:
+    """Summarize the findings driving a non-APPROVE verdict as a per-severity count.
+
+    e.g. "2 critical, 1 high finding(s) require changes". Only findings at or
+    above ``revise_at`` count: advisory findings never drove the verdict.
+    """
     if verdict == "APPROVE" or not findings:
         return "no issues found"
-    top = max(findings, key=lambda f: clamp_severity(f.get("severity", 5)))
-    desc = top.get("description", "issue found")
-    return desc.rstrip(".!?")
+    blocking = [s for s in (clamp_severity(f.get("severity", 5)) for f in findings) if s >= revise_at]
+    if not blocking:
+        return "no issues found"
+    counts = Counter(severity_label(s) for s in blocking)
+    parts = [f"{counts[label]} {label.lower()}" for label in _SEVERITY_LABEL_ORDER if label in counts]
+    return f"{', '.join(parts)} finding(s) require changes"
 
 
-def _format_finding_line(f: dict) -> str:
-    """Format a single finding dict as a markdown list entry."""
+def _format_finding_line(f: dict, inline_comment_keys: set[tuple[str, int]] | None = None) -> str:
+    """Format a single finding dict as a markdown list entry.
+
+    When the finding's ``(file, line)`` is in ``inline_comment_keys``, its
+    full text was already posted as an inline PR review comment, so the body
+    entry collapses to a one-line reference instead of repeating it.
+    """
     sev = clamp_severity(f.get("severity", 5))
     label = severity_label(sev)
     file_path = f.get("file") or "unknown"
     line_num = f.get("line")
     loc = f"`{file_path}:{line_num}`" if line_num is not None else f"`{file_path}`"
     cat = f.get("category", "other")
-    desc = f.get("description") or "Issue detected"
-    suggestion = f.get("suggestion", "")
+
+    if inline_comment_keys and (file_path, line_num) in inline_comment_keys:
+        return f"- **[{label} {sev}/10]** [{cat}] {loc}: {INLINE_COMMENT_STUB}"
+
+    # Flattened to a single physical line: _parse_finding_lines() in
+    # address_review.py reads findings line-by-line, so an embedded newline
+    # in an LLM-authored description would otherwise silently truncate it
+    # on round-trip.
+    desc = " ".join((f.get("description") or "Issue detected").split())
+    suggestion = " ".join((f.get("suggestion") or "").split())
 
     entry = f"- **[{label} {sev}/10]** [{cat}] {loc}: {desc}"
     if suggestion:
@@ -109,6 +134,7 @@ def format_review_body(
     *,
     revise_at: int = _SEVERITY_MEDIUM,
     block_at: int = _SEVERITY_CRITICAL,
+    inline_comment_keys: set[tuple[str, int]] | None = None,
 ) -> str:
     """Format a complete review body in markdown.
 
@@ -125,6 +151,9 @@ def format_review_body(
             ``### Advisory (not blocking)`` instead.
         block_at: Severity at or above which the verdict is ``BLOCK`` rather
             than ``REVISE``.
+        inline_comment_keys: ``(file, line)`` pairs that already got their own
+            inline PR review comment. Their body entry collapses to a
+            one-line reference instead of repeating the full text.
     """
     verdict = verdict_from_findings(findings, revise_at=revise_at, block_at=block_at)
     sha_suffix = f" sha={sha}" if sha else ""
@@ -153,7 +182,7 @@ def format_review_body(
             reverse=True,
         )
 
-        lines.extend(_format_finding_line(f) for f in sorted_blocking)
+        lines.extend(_format_finding_line(f, inline_comment_keys) for f in sorted_blocking)
 
     if advisory:
         lines.append("")
@@ -179,7 +208,7 @@ def format_review_body(
     lines.append("")
     lines.append("### Verdict")
     action = _verdict_action(verdict)
-    rationale = _verdict_rationale(verdict, findings)
+    rationale = _verdict_rationale(verdict, findings, revise_at=revise_at)
     lines.append(f"**{action}**: {rationale}.")
 
     return "\n".join(lines)
@@ -203,6 +232,7 @@ def format_from_data(
     *,
     revise_at: int = _SEVERITY_MEDIUM,
     block_at: int = _SEVERITY_CRITICAL,
+    inline_comment_keys: set[tuple[str, int]] | None = None,
 ) -> str:
     """Format an already-parsed review payload as a markdown review body.
 
@@ -217,6 +247,7 @@ def format_from_data(
         sha=normalize_sha(data.get("sha")),
         revise_at=revise_at,
         block_at=block_at,
+        inline_comment_keys=inline_comment_keys,
     )
 
 
@@ -225,6 +256,7 @@ def format_from_json(
     *,
     revise_at: int = _SEVERITY_MEDIUM,
     block_at: int = _SEVERITY_CRITICAL,
+    inline_comment_keys: set[tuple[str, int]] | None = None,
 ) -> str:
     """Parse JSON review data and format as markdown review body.
 
@@ -233,4 +265,9 @@ def format_from_json(
         python3 -c "import sys; from sova.roles._review_format import format_from_json; \\
             print(format_from_json(sys.stdin.read()))" < /tmp/review.json
     """
-    return format_from_data(json.loads(json_text), revise_at=revise_at, block_at=block_at)
+    return format_from_data(
+        json.loads(json_text),
+        revise_at=revise_at,
+        block_at=block_at,
+        inline_comment_keys=inline_comment_keys,
+    )
