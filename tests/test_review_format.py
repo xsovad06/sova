@@ -208,24 +208,24 @@ class TestFormatReviewBody:
 
     def test_verdict_section_block(self) -> None:
         body = format_review_body([_fd(severity=8, description="SQL injection")], "")
-        assert "**Block**: SQL injection." in body
+        assert "**Block**: 1 critical finding(s) require changes." in body
 
     def test_verdict_section_revise(self) -> None:
         body = format_review_body([_fd(severity=5, description="Missing check")], "")
-        assert "**Request changes**: Missing check." in body
+        assert "**Request changes**: 1 high finding(s) require changes." in body
 
-    def test_verdict_uses_highest_severity_description(self) -> None:
+    def test_verdict_counts_blocking_findings_by_severity(self) -> None:
         findings = [
-            _fd(severity=3, description="minor"),
             _fd(severity=7, description="critical issue"),
+            _fd(severity=5, description="moderate"),
         ]
         body = format_review_body(findings, "")
-        assert "**Block**: critical issue." in body
+        assert "**Block**: 1 critical, 1 high finding(s) require changes." in body
 
-    def test_verdict_strips_trailing_punctuation(self) -> None:
-        body = format_review_body([_fd(severity=8, description="SQL injection risk.")], "")
-        assert "**Block**: SQL injection risk." in body
-        assert "SQL injection risk.." not in body
+    def test_verdict_rationale_excludes_advisory_findings(self) -> None:
+        findings = [_fd(severity=8, description="crash"), _fd(severity=2, description="nit")]
+        body = format_review_body(findings, "")
+        assert "**Block**: 1 critical finding(s) require changes." in body
 
     def test_severity_clamped_in_label(self) -> None:
         body = format_review_body([_fd(severity=0)], "")
@@ -250,7 +250,7 @@ class TestFormatReviewBody:
         assert "### What's Done Well" in body
         assert "- Nice tests" in body
         assert "### Verdict" in body
-        assert "**Request changes**: bad." in body
+        assert "**Request changes**: 1 high finding(s) require changes." in body
 
 
 class TestFormatReviewBodyAdvisorySplit:
@@ -324,6 +324,27 @@ class TestFormatFindingLine:
         result = _format_finding_line(_fd(severity=0))
         assert "**[LOW 1/10]**" in result
 
+    def test_collapses_when_location_has_inline_comment(self) -> None:
+        result = _format_finding_line(_fd(file="a.py", line=10, description="bad"), {("a.py", 10)})
+        assert "bad" not in result
+        assert "see inline comment above" in result
+        assert "`a.py:10`" in result
+
+    def test_full_text_when_location_not_in_inline_keys(self) -> None:
+        result = _format_finding_line(_fd(file="a.py", line=10, description="bad"), {("b.py", 10)})
+        assert "bad" in result
+        assert "see inline comment above" not in result
+
+    def test_file_level_finding_never_collapses(self) -> None:
+        """A finding with line=None can never have an inline comment (those require a diff line)."""
+        result = _format_finding_line(_fd(file="a.py", line=None, description="bad"), {("a.py", 10)})
+        assert "bad" in result
+        assert "see inline comment above" not in result
+
+    def test_no_inline_keys_keeps_full_text(self) -> None:
+        result = _format_finding_line(_fd(file="a.py", line=10, description="bad"), None)
+        assert "bad" in result
+
 
 class TestVerdictAction:
     def test_approve(self) -> None:
@@ -349,17 +370,20 @@ class TestVerdictRationale:
     def test_non_approve_empty_findings(self) -> None:
         assert _verdict_rationale("REVISE", []) == "no issues found"
 
-    def test_uses_highest_severity_description(self) -> None:
-        findings = [_fd(severity=2, description="minor"), _fd(severity=8, description="critical")]
-        assert _verdict_rationale("BLOCK", findings) == "critical"
+    def test_non_approve_only_advisory_findings(self) -> None:
+        """Advisory findings (below revise_at) never drove a non-APPROVE verdict."""
+        assert _verdict_rationale("REVISE", [_fd(severity=1)]) == "no issues found"
 
-    def test_strips_trailing_punctuation(self) -> None:
-        assert _verdict_rationale("REVISE", [_fd(description="issue.")]) == "issue"
-        assert _verdict_rationale("REVISE", [_fd(description="issue!")]) == "issue"
-        assert _verdict_rationale("REVISE", [_fd(description="issue?")]) == "issue"
+    def test_single_blocking_finding(self) -> None:
+        assert _verdict_rationale("BLOCK", [_fd(severity=8)]) == "1 critical finding(s) require changes"
 
-    def test_missing_description_fallback(self) -> None:
-        assert _verdict_rationale("REVISE", [{}]) == "issue found"
+    def test_counts_grouped_by_severity_label(self) -> None:
+        findings = [_fd(severity=2), _fd(severity=8), _fd(severity=5), _fd(severity=9)]
+        assert _verdict_rationale("BLOCK", findings) == "2 critical, 1 high finding(s) require changes"
+
+    def test_ordered_most_severe_first(self) -> None:
+        findings = [_fd(severity=3), _fd(severity=8)]
+        assert _verdict_rationale("BLOCK", findings) == "1 critical, 1 medium finding(s) require changes"
 
 
 class TestFormatFromJson:

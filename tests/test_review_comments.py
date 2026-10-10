@@ -702,7 +702,7 @@ class TestBuildReviewPayloadFromJson:
         assert payload["comments"] == []
         assert "far" in payload["body"]
 
-    def test_body_matches_the_shared_formatter_and_keeps_every_finding(self) -> None:
+    def test_body_matches_the_shared_formatter_and_collapses_inline_findings(self) -> None:
         import json
 
         from sova.roles._review_format import format_from_json
@@ -713,8 +713,16 @@ class TestBuildReviewPayloadFromJson:
         ]
         raw = json.dumps({"findings": findings, "summary": "sum", "sha": "b" * 40})
         payload = self._payload(findings)
-        assert payload["body"] == format_from_json(raw)
-        assert "inline" in payload["body"]
+        # The inline-commented finding (a.py:2) collapses to a one-line reference in
+        # the body, since its full text was already posted as its own inline comment.
+        assert payload["body"] == format_from_json(raw, inline_comment_keys={("a.py", 2)})
+        assert "`a.py:2`: inline" not in payload["body"]
+        assert "see inline comment above" in payload["body"]
+        # The collapsed entry still carries its location, severity and category, so
+        # "no finding disappears from the body" remains true even though the text does.
+        assert "`a.py:2`" in payload["body"]
+        assert "[HIGH 6/10]" in payload["body"]
+        assert "[bug]" in payload["body"]
         assert "bodyonly" in payload["body"]
         assert len(payload["comments"]) == 1
 
@@ -730,7 +738,10 @@ class TestBuildReviewPayloadFromJson:
         )
         # Only the numeric string resolves to a diff line; the bool is rejected.
         assert [c["line"] for c in payload["comments"]] == [3]
-        assert all(t in payload["body"] for t in ("boolline", "strline", "noline"))
+        # The resolved-to-a-diff-line finding (strline) collapses in the body since
+        # it got its own inline comment; the other two stay body-only in full.
+        assert all(t in payload["body"] for t in ("boolline", "noline"))
+        assert "strline" not in payload["body"]
 
     def test_non_dict_findings_are_dropped_from_both_halves(self) -> None:
         """A stray non-dict entry must not reach either half. Dropping it only from
@@ -751,7 +762,10 @@ class TestBuildReviewPayloadFromJson:
         )
         payload = json.loads(build_review_payload_from_json(raw, self.DIFF, "COMMENT"))
         assert len(payload["comments"]) == 1
-        assert "real" in payload["body"]
+        # "real" collapses to a one-line reference in the body since it got its own
+        # inline comment; the location still appears.
+        assert "real" not in payload["body"]
+        assert "see inline comment above" in payload["body"]
         assert "not a finding" not in payload["body"]
         assert "**1 finding**" in payload["body"]
 

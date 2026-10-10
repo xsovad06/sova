@@ -36,6 +36,13 @@ SOVA_VERDICT_MARKER_RE = re.compile(
 # A git object id: 7 to 40 hex digits. Shared with sova.roles._review_format so
 # both markers accept exactly the same anchor.
 SHA_RE = re.compile(r"[0-9a-f]{7,40}", re.IGNORECASE)
+
+# Placeholder a review body carries instead of a finding's full text when that
+# finding already has its own inline PR review comment. Lives here, in the leaf
+# module, because both sides of the boundary need the exact same string:
+# sova.roles._review_format writes it, and sova.core.steps.address_review
+# recognizes it as "the real text is in the inline comment, go fetch it".
+INLINE_COMMENT_STUB = "see inline comment above."
 _FINDING_TEXT_MAX = 140
 
 

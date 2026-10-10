@@ -441,6 +441,7 @@ def _format_findings_body(
     *,
     revise_at: int = _SEVERITY_MEDIUM,
     block_at: int = _SEVERITY_CRITICAL,
+    inline_comment_keys: set[tuple[str, int]] | None = None,
 ) -> str:
     """Build the shared review body used by both review API and comment fallback."""
     finding_dicts = [
@@ -454,7 +455,14 @@ def _format_findings_body(
         }
         for f in findings
     ]
-    return format_review_body(finding_dicts, summary, sha=sha, revise_at=revise_at, block_at=block_at)
+    return format_review_body(
+        finding_dicts,
+        summary,
+        sha=sha,
+        revise_at=revise_at,
+        block_at=block_at,
+        inline_comment_keys=inline_comment_keys,
+    )
 
 
 def _format_findings_comment(
@@ -485,9 +493,17 @@ def _format_review_body(
     *,
     revise_at: int = _SEVERITY_MEDIUM,
     block_at: int = _SEVERITY_CRITICAL,
+    inline_comment_keys: set[tuple[str, int]] | None = None,
 ) -> str:
     """Format the review body for the PR review API (with inline comments)."""
-    return _format_findings_body(findings, summary, sha=sha, revise_at=revise_at, block_at=block_at)
+    return _format_findings_body(
+        findings,
+        summary,
+        sha=sha,
+        revise_at=revise_at,
+        block_at=block_at,
+        inline_comment_keys=inline_comment_keys,
+    )
 
 
 def _coerce_int(value: object) -> int | None:
@@ -581,7 +597,8 @@ def build_review_payload_from_json(
     ]
     blocking_findings = [f for f in all_findings if clamp_severity(f.severity) >= revise_at]
     inline_comments, _ = _build_review_comments(blocking_findings, parse_diff_lines(diff_text))
-    body = format_from_data(data, revise_at=revise_at, block_at=block_at)
+    inline_comment_keys = {(c["path"], c["line"]) for c in inline_comments}
+    body = format_from_data(data, revise_at=revise_at, block_at=block_at, inline_comment_keys=inline_comment_keys)
     return json.dumps({"body": body, "event": event, "comments": inline_comments})
 
 
