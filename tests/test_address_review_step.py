@@ -107,7 +107,7 @@ class TestAddressReviewStepPendingDocsQueue:
             patch("sova.core.steps.address_review._load_review_findings_by_issue", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_findings_from_github_reviews", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock()) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock()) as mock_invoke,
         ):
             result = await step.execute(execution_context)
 
@@ -148,14 +148,14 @@ class TestAddressReviewStepPendingDocsQueue:
             patch("sova.core.steps.address_review._load_findings_from_github_reviews", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
             patch(
-                "sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)
+                "sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)
             ) as mock_invoke,
         ):
             result = await step.execute(execution_context)
 
         assert result.success is True
         mock_invoke.assert_called_once()
-        prompt_arg = mock_invoke.call_args.args[0]
+        prompt_arg = mock_invoke.call_args.args[1]
         assert str(pending_docs) in prompt_arg
         assert "drained pending documentation queue" in result.summary
 
@@ -177,7 +177,7 @@ class TestAddressReviewStepPendingDocsQueue:
             patch("sova.core.steps.address_review._load_review_findings_by_issue", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_findings_from_github_reviews", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock()) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock()) as mock_invoke,
         ):
             result = await step.execute(execution_context)
 
@@ -209,7 +209,7 @@ class TestAddressReviewStepPendingDocsQueue:
             patch("sova.core.steps.address_review._load_review_findings_by_issue", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_findings_from_github_reviews", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock()) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock()) as mock_invoke,
             patch.object(Path, "read_text", side_effect=OSError("permission denied")),
         ):
             result = await step.execute(execution_context)
@@ -240,7 +240,7 @@ class TestAddressReviewStepPendingDocsQueue:
             ),
             patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)),
         ):
             result = await step.execute(execution_context)
 
@@ -271,7 +271,7 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
             ),
             patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)),
         ):
             result = await step.execute(execution_context)
             assert result.success is True
@@ -299,7 +299,7 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
             patch("sova.core.steps.address_review._load_review_findings_by_issue", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_findings_from_github_reviews", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock()),
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock()),
         ):
             result = await step.execute(execution_context)
 
@@ -333,7 +333,7 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
             patch("sova.core.steps.address_review._load_review_findings_by_issue", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_findings_from_github_reviews", new=AsyncMock(return_value=[])),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)),
         ):
             result = await step.execute(execution_context)
 
@@ -354,7 +354,7 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
             patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
             patch(
-                "sova.core.steps.address_review.invoke_command",
+                "sova.core.steps.address_review.dispatch_prompt",
                 new=AsyncMock(side_effect=RuntimeError("llm failed")),
             ),
         ):
@@ -400,7 +400,7 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
             ),
             patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)),
         ):
             result = await step.execute(execution_context)
             assert result.success is True
@@ -450,7 +450,7 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
             ),
             patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)),
         ):
             result = await step.execute(execution_context)
             assert result.success is True
@@ -505,7 +505,7 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
             ),
             patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)),
         ):
             result = await step.execute(execution_context)
             assert result.success is True
@@ -546,7 +546,7 @@ class TestAddressReviewStepRecordsAddressedFindings:
             ),
             patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
-            patch("sova.core.steps.address_review.invoke_command", new=AsyncMock(return_value=fake_result)),
+            patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)),
         ):
             await step.execute(execution_context)
 

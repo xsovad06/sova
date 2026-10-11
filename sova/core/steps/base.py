@@ -57,6 +57,13 @@ class BaseStep(ABC):
     # Routing category for llm.routing lookups, empty when the step is not
     # routable. Steps pass it to the LLM call via ctx.routing_task_type().
     TASK_TYPE: str = ""
+    # True when this step edits the working tree and therefore needs a real
+    # coding-agent runtime (sova.ipc.runtime.AgentRuntime), not a text-only
+    # LLMProvider. Steps that set this must dispatch through
+    # sova.core.agent_dispatch.dispatch_command() rather than calling
+    # sova.llm.client.invoke_command() directly, so a text-only provider
+    # fails fast instead of silently producing a no-op text response.
+    requires_tools: bool = False
 
     @abstractmethod
     async def execute(self, ctx: ExecutionContext) -> StepResult:

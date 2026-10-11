@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from sova.core.agent_dispatch import dispatch_command
 from sova.core.context import BUDGET_SKIP_OPTIONAL_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
 
 log = get_logger(component="step.self_review")
@@ -13,12 +13,14 @@ log = get_logger(component="step.self_review")
 class SelfReviewStep(BaseStep):
     name = "self_review"
     TASK_TYPE = "self_review"
+    requires_tools = True
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.self_review", cwd=str(ctx.working_dir))
 
         try:
-            result = await invoke_command(
+            result = await dispatch_command(
+                self,
                 "/review",
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),

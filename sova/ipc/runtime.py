@@ -232,6 +232,22 @@ class AgentRuntime(ABC):
         """Human-readable runtime name (e.g., 'claude-code', 'aider', 'codex')."""
         ...
 
+    @property
+    def enforces_budget_cap(self) -> bool:
+        """Whether this runtime's CLI enforces ``spawn(max_budget_usd=...)`` itself.
+
+        The runtime-side counterpart of
+        ``ProviderCapabilities.supports_budget_cap``: a caller that passes a
+        remaining-budget figure (every pipeline step passes ``max_budget -
+        ctx.cost_usd``) needs to know whether the spawned process will honour
+        it or merely log that it cannot. Defaults to False, the conservative
+        answer, so a new runtime is treated as unable to cap until it proves
+        otherwise; ``sova.core.agent_dispatch`` refuses to spawn such a
+        runtime once the remaining budget is non-positive, which is the only
+        enforcement point left for it.
+        """
+        return False
+
     @abstractmethod
     async def spawn(
         self,
@@ -354,12 +370,32 @@ class AgentRuntime(ABC):
         ...
 
 
+def _claude_result_stop_reason(data: dict) -> str:
+    """Return ``"error"`` when a Claude CLI result event reports a failed turn.
+
+    The CLI marks a failed turn with ``is_error: true`` and a ``subtype`` of
+    ``error_during_execution``/``error_max_turns``; a successful one carries
+    ``subtype: "success"``. A missing subtype is not treated as a failure:
+    older/partial payloads omit it, and inventing an error from an absent field
+    would fail a turn that actually succeeded.
+    """
+    subtype = str(data.get("subtype", "") or "")
+    if data.get("is_error") or (subtype and subtype != "success"):
+        return "error"
+    return ""
+
+
 class ClaudeCodeRuntime(AgentRuntime):
     """Runtime that spawns Claude Code CLI processes."""
 
     @property
     def name(self) -> str:
         return "claude-code"
+
+    @property
+    def enforces_budget_cap(self) -> bool:
+        # spawn() passes max_budget_usd to the CLI's own --max-budget-usd.
+        return True
 
     async def spawn(
         self,
@@ -432,6 +468,14 @@ class ClaudeCodeRuntime(AgentRuntime):
                 cache_creation_tokens=usage.get("cache_creation_tokens", 0),
                 duration_ms=data.get("duration_ms", 0),
                 session_id=str(data.get("session_id", "")),
+                # A terminal result event carries the turn's own verdict:
+                # ``is_error``, or a ``subtype`` other than "success"
+                # ("error_during_execution", "error_max_turns"). Mapping it onto
+                # stop_reason="error" is what makes the failure visible to a
+                # caller holding only the LLMResult (``LLMResult.is_error``,
+                # which the Codex parser already sets the same way); dropping it
+                # made a failed turn indistinguishable from a successful one.
+                stop_reason=_claude_result_stop_reason(data),
             )
             return StreamEvent(type="result", text=result_text, result=llm_result)
 

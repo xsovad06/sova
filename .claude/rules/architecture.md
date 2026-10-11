@@ -20,6 +20,7 @@ SOVA has four main components:
   - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory
   - **Planner pipeline** (4 steps): scan_project -> generate_tasks -> validate_tasks -> extract_memory
 - `core/dag.py` -- DAGExecutor: runs command-based workflow graphs with topological sort, condition evaluation, and cycle detection
+- `core/agent_dispatch.py`: dispatch boundary between the text-only LLMProvider path and AgentRuntime. `dispatch_command()`/`dispatch_prompt()` route a step declaring `requires_tools = True` through `sova.ipc.runtime.get_runtime()` and fail fast when that runtime is unusable, instead of silently degrading to a provider that cannot edit files. Every step whose own `/command` or assembled prompt edits the git worktree sets the flag and calls through this boundary: `DevelopStep`, `ValidateStep` and `MonitorCIStep` (their LLM fix loops, via `dispatch_prompt()`), `SelfReviewStep`, `SimplifyStep`, `AddressReviewStep` (its findings prompt, via `dispatch_prompt()` since it is not a named slash command), and `RearrangeCommitsStep`. `ResearchStep` deliberately stays on `invoke_command()`/LLMProvider: `/research` never edits the worktree, only appends a `## Research` section to the issue/ticket body via `gh`/`jira` CLI calls, and its own `validate_output()` already gates on that section actually existing, independent of which provider ran.
 - `roles/` -- AgentRole ABC with 6 implementations: triage, researcher, developer, reviewer, custom, planner
 - `roles/custom.py` -- CustomRole: executes user-defined DAG workflows via DAGExecutor
 - `roles/dispatcher.py` -- routes tasks to appropriate roles based on state; `get_role_async()` falls back to DB lookup for custom roles
@@ -245,6 +246,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A cross-vendor credential leak needs an allowlist, not a denylist, of routes that may receive the resolved key
 - A headless server has no display to open a browser on, and the UI must detect that before offering a browser-based reconnect action
 - Codex skills are mechanically rendered from `commands/*.md`, not hand-authored, and every command-derived `.agents/skills/` entry is name-prefixed rather than directory-separated; a standalone, distributed skill from `skills/` installs under its own bare name there instead
+- A tool-using step must never silently degrade to a text-only LLM call
 
 ## Cross-References (domain-specific details)
 

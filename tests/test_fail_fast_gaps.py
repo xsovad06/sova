@@ -146,8 +146,8 @@ class TestInnerCheckLoopTimeControl:
         mock_ctx.config.check_cmd = "make check"
 
         with (
-            patch("sova.core.steps.develop.invoke_command") as mock_invoke_cmd,
-            patch("sova.core.steps.develop.invoke") as mock_invoke_fix,
+            patch("sova.core.steps.develop.dispatch_command") as mock_invoke_cmd,
+            patch("sova.core.steps.develop.dispatch_prompt") as mock_invoke_fix,
             patch("sova.core.steps.develop.run") as mock_run,
             patch("time.monotonic", side_effect=[0, 650, 660]),
         ):
@@ -212,8 +212,8 @@ class TestInnerCheckLoopTimeControl:
             )
 
         with (
-            patch("sova.core.steps.develop.invoke_command") as mock_invoke_cmd,
-            patch("sova.core.steps.develop.invoke", side_effect=track_fix_attempts),
+            patch("sova.core.steps.develop.dispatch_command") as mock_invoke_cmd,
+            patch("sova.core.steps.develop.dispatch_prompt", side_effect=track_fix_attempts),
             patch("sova.core.steps.develop.run", side_effect=mock_run_check),
             patch("sova.core.steps.develop._get_dirty_test_files", return_value=set()),
         ):
@@ -262,8 +262,8 @@ class TestInnerCheckLoopTimeControl:
             return ShellResult(returncode=0, stdout="", stderr="")
 
         with (
-            patch("sova.core.steps.develop.invoke_command") as mock_invoke_cmd,
-            patch("sova.core.steps.develop.invoke") as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_command") as mock_invoke_cmd,
+            patch("sova.core.steps.develop.dispatch_prompt") as mock_invoke,
             patch("sova.core.steps.develop.run", side_effect=mock_run_func),
             patch("sova.core.steps.develop._get_dirty_test_files", return_value=set()),
         ):
@@ -305,9 +305,9 @@ class TestInnerCheckLoopTimeControl:
             return ShellResult(returncode=0, stdout="", stderr="")
 
         with (
-            patch("sova.core.steps.develop.invoke_command") as mock_invoke_cmd,
+            patch("sova.core.steps.develop.dispatch_command") as mock_invoke_cmd,
             patch(
-                "sova.core.steps.develop.invoke",
+                "sova.core.steps.develop.dispatch_prompt",
                 side_effect=LLMTimeoutError("Command timed out after 180s"),
             ),
             patch("sova.core.steps.develop.run", side_effect=mock_run_func),
@@ -343,8 +343,8 @@ class TestInnerCheckLoopTimeControl:
             return ShellResult(returncode=0, stdout="", stderr="")
 
         with (
-            patch("sova.core.steps.develop.invoke_command") as mock_invoke_cmd,
-            patch("sova.core.steps.develop.invoke", side_effect=RuntimeError("model unavailable")),
+            patch("sova.core.steps.develop.dispatch_command") as mock_invoke_cmd,
+            patch("sova.core.steps.develop.dispatch_prompt", side_effect=RuntimeError("model unavailable")),
             patch("sova.core.steps.develop.run", side_effect=mock_run_func),
         ):
             mock_invoke_cmd.return_value = MockLLMResult(
@@ -430,8 +430,8 @@ class TestInnerCheckLoopTimeControl:
             return ShellResult(returncode=0, stdout="", stderr="")
 
         with (
-            patch("sova.core.steps.develop.invoke_command") as mock_invoke_cmd,
-            patch("sova.core.steps.develop.invoke") as mock_invoke_fix,
+            patch("sova.core.steps.develop.dispatch_command") as mock_invoke_cmd,
+            patch("sova.core.steps.develop.dispatch_prompt") as mock_invoke_fix,
             patch("sova.core.steps.develop.run", side_effect=mock_run_func),
         ):
             mock_invoke_cmd.return_value = MockLLMResult(
@@ -458,7 +458,7 @@ class TestEarlyNoChangeDetection:
         step = DevelopStep()
 
         with (
-            patch("sova.core.steps.develop.invoke_command") as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_command") as mock_invoke,
             patch("sova.core.steps.develop.run") as mock_run,
         ):
             mock_invoke.return_value = MockLLMResult(
@@ -486,7 +486,7 @@ class TestEarlyNoChangeDetection:
         step = DevelopStep()
 
         with (
-            patch("sova.core.steps.develop.invoke_command") as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_command") as mock_invoke,
             patch("sova.core.steps.develop.run") as mock_run,
         ):
             mock_invoke.return_value = MockLLMResult(
