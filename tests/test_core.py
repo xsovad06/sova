@@ -8495,7 +8495,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.return_value = LLMResult(
@@ -8508,7 +8508,7 @@ class TestAddressReviewStepExecute:
         assert result.success
         assert "1 review findings" in result.summary
         assert ctx.cost_usd == Decimal("0.05")
-        prompt = mock_invoke.call_args[0][0]
+        prompt = mock_invoke.call_args[0][1]
         assert "Null check" in prompt
         assert "foo.py:10" in prompt
         assert mock_invoke.call_args.kwargs["task_type"] == "address_review"
@@ -8545,7 +8545,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=(cr_findings, ["thread-1"]),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.05"))
@@ -8553,7 +8553,7 @@ class TestAddressReviewStepExecute:
 
         assert result.success
         assert "2 review findings" in result.summary
-        prompt = mock_invoke.call_args[0][0]
+        prompt = mock_invoke.call_args[0][1]
         assert "SOVA finding" in prompt
         assert "CodeRabbit finding" in prompt
         assert "coderabbit" in prompt
@@ -8577,7 +8577,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123\n")
             mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.01"))
@@ -8606,7 +8606,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_db_handoff = MagicMock()
@@ -8621,7 +8621,7 @@ class TestAddressReviewStepExecute:
 
         assert result.success
         assert "1 review findings" in result.summary
-        prompt = mock_invoke.call_args[0][0]
+        prompt = mock_invoke.call_args[0][1]
         assert "Formatting" in prompt
 
     async def test_execute_handles_llm_failure(self) -> None:
@@ -8642,7 +8642,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.side_effect = RuntimeError("LLM crashed")
@@ -8854,7 +8854,7 @@ class TestAddressReviewHelpers:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.03"))
@@ -8862,7 +8862,7 @@ class TestAddressReviewHelpers:
 
         assert result.success
         assert "1 review findings" in result.summary
-        prompt = mock_invoke.call_args[0][0]
+        prompt = mock_invoke.call_args[0][1]
         assert "Needs fix" in prompt
 
 

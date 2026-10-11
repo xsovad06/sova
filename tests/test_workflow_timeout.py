@@ -567,7 +567,7 @@ hook_timeout = 150
 
         step = ValidateStep()
 
-        with patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke:
             from sova.llm.models import LLMResult
 
             mock_invoke.return_value = LLMResult(

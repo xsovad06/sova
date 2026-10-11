@@ -1174,7 +1174,7 @@ async def test_address_review_logs_spec_compression(tmp_path: Path) -> None:
 
     with (
         patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
-        patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock, return_value=mock_result),
+        patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock, return_value=mock_result),
         patch(
             "sova.core.steps.address_review._load_coderabbit_findings",
             new_callable=AsyncMock,
