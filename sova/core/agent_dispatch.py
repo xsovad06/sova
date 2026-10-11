@@ -45,7 +45,7 @@ from sova.commands.catalog import parse_frontmatter
 from sova.ipc.runtime import AgentRuntime, get_runtime
 from sova.llm import client
 from sova.llm.egress import scan_and_redact
-from sova.llm.errors import BillingError, LLMTimeoutError, classify_error
+from sova.llm.errors import BillingError, LLMInvocationError, LLMTimeoutError, classify_error
 from sova.llm.models import LLMResult
 from sova.llm.provider import _assert_command_exists
 from sova.utils.files import read_text_or_none
@@ -179,6 +179,26 @@ async def _require_runtime(step: BaseStep) -> AgentRuntime:
     return runtime
 
 
+def _guard_prompt_or_raise(prompt: str) -> None:
+    """Run ``guard_prompt()`` and re-raise a rejection as a classified ``LLMError``.
+
+    ``invoke()``/``invoke_command()`` let ``PromptInjectionError`` (a bare
+    ``Exception``, not a ``RuntimeError``) propagate uncaught, which is fine
+    there because nothing downstream of them catches ``RuntimeError``
+    specifically. Every migrated step's ``except RuntimeError`` handler
+    (``AddressReviewStep.execute()`` and peers) does catch specifically that,
+    so on the tool path a guard rejection must arrive as an ``LLMError``
+    (itself a ``RuntimeError``) or it escapes the step's own error handling
+    entirely instead of becoming an ordinary failed ``StepResult``.
+    """
+    from sova.llm.guard import PromptInjectionError, guard_prompt
+
+    try:
+        guard_prompt(prompt)
+    except PromptInjectionError as exc:
+        raise LLMInvocationError(str(exc)) from exc
+
+
 def _raise_if_budget_cap_unsupported(runtime: AgentRuntime, max_budget_usd: Decimal | None) -> None:
     """Raise before spawning a runtime that cannot enforce ``max_budget_usd`` itself.
 
@@ -249,6 +269,12 @@ async def _dispatch_to_runtime(
         caller_fallback=fallback_model,
         timeout=timeout,
         max_budget_usd=max_budget_usd,
+        # Scoped by runtime name, not client.provider_identity(cfg): the
+        # executor here is runtime.spawn(), independently configurable from
+        # llm.provider (agent.runtime="codex" with llm.provider="claude-code"
+        # is a valid combination), so a model marked unavailable on one must
+        # never suppress it on the other.
+        identity=f"runtime:{runtime.name}:{client.provider_identity(cfg)}",
     )
 
 
@@ -410,18 +436,17 @@ async def dispatch_command(
     cfg, resolved_model, resolved_timeout = await client.prepare_invocation(
         model=model, task_type=task_type, timeout=timeout, cwd=cwd
     )
+    original_args = args
     if args:
-        from sova.llm.guard import guard_prompt
-
         # Guarded and compressed exactly as invoke_command() does it, so moving
         # a step to the tool path does not drop the injection check or restore
         # the uncompressed payload (develop's args carry a whole spec section).
-        guard_prompt(f"{command} {args}".strip())
+        _guard_prompt_or_raise(f"{command} {args}".strip())
         args = client.maybe_compress(args, cwd, cfg=cfg)
 
     prompt = _assemble_prompt(body, args)
     log.info("agent_dispatch.invoke", step=step.name, command=command, runtime=runtime.name)
-    return await _dispatch_to_runtime(
+    result = await _dispatch_to_runtime(
         runtime,
         prompt,
         cfg=cfg,
@@ -431,6 +456,11 @@ async def dispatch_command(
         max_budget_usd=max_budget_usd,
         timeout=resolved_timeout,
     )
+    # original_args vs args (not the assembled prompt): compression ran only
+    # on args, and record_compression_savings()'s identity check needs the
+    # exact pre/post pair maybe_compress() saw, not the whole templated body.
+    client.record_compression_savings(result, original_args, args)
+    return result
 
 
 async def dispatch_prompt(
@@ -470,13 +500,12 @@ async def dispatch_prompt(
         model=model, task_type=task_type, timeout=timeout, cwd=cwd
     )
 
-    from sova.llm.guard import guard_prompt
-
-    guard_prompt(prompt)
+    _guard_prompt_or_raise(prompt)
+    original_prompt = prompt
     prompt = client.maybe_compress(prompt, cwd, cfg=cfg)
 
     log.info("agent_dispatch.invoke_prompt", step=step.name, runtime=runtime.name, prompt_len=len(prompt))
-    return await _dispatch_to_runtime(
+    result = await _dispatch_to_runtime(
         runtime,
         prompt,
         cfg=cfg,
@@ -486,3 +515,5 @@ async def dispatch_prompt(
         max_budget_usd=max_budget_usd,
         timeout=resolved_timeout,
     )
+    client.record_compression_savings(result, original_prompt, prompt)
+    return result

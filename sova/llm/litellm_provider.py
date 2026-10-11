@@ -399,7 +399,7 @@ class LiteLLMProvider(LLMProvider):
     def _enumeration_identity(self) -> str:
         """Return the enumeration cache key for this provider's deployment.
 
-        May differ from ``client._provider_identity()`` (the config-derived
+        May differ from ``client.provider_identity()`` (the config-derived
         key for the reactive negative cache): every vendor-alias provider
         type (litellm, vertex, openai, ollama, hybrid) constructs this same
         class, so this key is derived from what the instance actually knows

@@ -254,6 +254,11 @@ def _check_runaway_call_limit(cfg: ProjectConfig | None) -> None:
 # Floor for one attempt: a shorter slice is not worth starting.
 _MIN_ATTEMPT_SECONDS = 60.0
 
+# Sentinel for walk_model_chain()'s identity= default, distinguishing "caller
+# didn't pass one, derive it from cfg" from an explicit identity=None
+# ("disable the negative-availability cache for this walk").
+_IDENTITY_UNSET = object()
+
 # Multi-candidate chains stop just short of the caller's timeout so the loop
 # raises its own terminal error before the engine's outer asyncio.timeout fires
 # and mislabels the failure as step_hard_timeout (which also commits WIP work).
@@ -475,7 +480,7 @@ def _normalize_model(model: str | None) -> str | None:
     return get_provider().normalize_model_name(model)
 
 
-def _provider_identity(cfg: ProjectConfig | None) -> str:
+def provider_identity(cfg: ProjectConfig | None) -> str:
     """Return the availability cache's scoping key for the active deployment.
 
     Combines ``llm.provider`` and ``llm.api_base`` so two projects on the same
@@ -600,8 +605,21 @@ async def walk_model_chain(
     caller_fallback: str | None,
     timeout: float,
     max_budget_usd: Decimal | None = None,
+    identity: str | None = _IDENTITY_UNSET,  # type: ignore[assignment]
 ) -> LLMResult:
     """Walk the model chain until an attempt succeeds, sharing one deadline and budget.
+
+    *identity* scopes the negative-availability cache (``mark_unavailable()``/
+    ``is_unavailable()``). It defaults to ``provider_identity(cfg)``, correct
+    for the LLMProvider path where the executor *is* the configured provider.
+    The AgentRuntime path in ``sova.core.agent_dispatch`` executes through a
+    different component (``agent.runtime``, independently configurable from
+    ``llm.provider``) and must pass its own runtime-scoped identity instead:
+    reusing the provider's identity would let a model marked unavailable on
+    one executor silently suppress it on the other, even though the two can
+    disagree on what the model actually supports. Passing ``identity=None``
+    opts out of the negative cache entirely (every call treated as a fresh
+    probe).
 
     A single-candidate chain (the default, empty ``agent.fallback_models``)
     delegates straight through with the timeout, *max_budget_usd*, and the
@@ -634,8 +652,11 @@ async def walk_model_chain(
     own budget-cap pre-check: capability lives on the executor, which this walk
     deliberately knows nothing about.
     """
-    identity = _provider_identity(cfg)
-    chain = _drop_unavailable(_build_candidate_chain(primary, cfg), identity)
+    if identity is _IDENTITY_UNSET:
+        identity = provider_identity(cfg)
+    chain = _build_candidate_chain(primary, cfg)
+    if identity is not None:
+        chain = _drop_unavailable(chain, identity)
     if len(chain) == 1:
         return await attempt(chain[0], caller_fallback, timeout, max_budget_usd)
 
@@ -670,7 +691,7 @@ async def walk_model_chain(
             # unavailable-model signal both come from the resolved category,
             # never from the raised type alone.
             category = resolve_error_category(exc)
-            if category is ModelUnavailableError:
+            if category is ModelUnavailableError and identity is not None:
                 get_availability_cache().mark_unavailable(identity, _normalize_model(model))
             # A failed attempt reports no cost, so there is nothing to deduct.
             # The chain cannot spend the cap repeatedly: budget exhaustion
@@ -763,12 +784,18 @@ async def invoke(
     )
     # Runs once, against the winning attempt: failed attempts raise before
     # producing a result, so nothing is double-counted.
-    _record_compression_savings(result, original_prompt, prompt)
+    record_compression_savings(result, original_prompt, prompt)
     return result
 
 
-def _record_compression_savings(result: LLMResult, original: str, compressed: str) -> None:
+def record_compression_savings(result: LLMResult, original: str, compressed: str) -> None:
     """Estimate and record compression savings on *result*.
+
+    Public because ``sova.core.agent_dispatch`` needs it too: the AgentRuntime
+    path also calls ``maybe_compress()`` on its (often large) prompts, and
+    without this call its compression savings would silently read zero in the
+    same way the LLM call itself would have if it had skipped
+    ``prepare_invocation()``.
 
     ``maybe_compress`` returns the exact same string object on every passthrough
     path (compression disabled, unavailable, below ``min_chars``, or Headroom
