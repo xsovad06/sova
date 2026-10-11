@@ -14,11 +14,12 @@ produces a chat response with zero file changes, discovered only later by
 ``dispatch_command()`` (for a slash command) and ``dispatch_prompt()`` (for a
 step-assembled prompt) are the chokepoints every tool-using step must call
 instead of ``invoke_command()``/``invoke()`` directly. Neither ever falls back
-from AgentRuntime to LLMProvider: when the configured runtime's CLI is missing
-or unauthenticated, they raise immediately rather than silently degrading to a
-text-only call that cannot do the work (Design Decision 3 in issue #1125, the
-no-implicit-fallback rule already established for model selection in
-docs/model-selection-architecture.md).
+from AgentRuntime to LLMProvider: when the configured runtime's CLI is not
+installed or not runnable, they raise immediately rather than silently
+degrading to a text-only call that cannot do the work (Design Decision 3 in
+issue #1125, the no-implicit-fallback rule already established for model
+selection in docs/model-selection-architecture.md). This check does not probe
+authentication: see ``_require_runtime()``.
 
 Both tool paths run the same pre-flight the ``invoke*`` entry points run
 (``sova.llm.client.prepare_invocation()``), so bypassing the LLMProvider does
@@ -33,6 +34,9 @@ raises ``BillingError`` instead of spawning an uncapped agent.
 from __future__ import annotations
 
 import asyncio
+import re
+import time
+import weakref
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -55,8 +59,13 @@ if TYPE_CHECKING:
 log = get_logger(component="core.agent_dispatch")
 
 # The Claude Code CLI's own argument placeholder, as it appears in a rendered
-# command body under .claude/commands/. See _assemble_prompt().
+# command body under .claude/commands/. See _assemble_prompt(). Excludes a
+# backtick-quoted occurrence, which is a prose reference back to the slot
+# (e.g. "where issue-number matches `$ARGUMENTS`"), not the slot itself: a
+# command body can refer to its own placeholder more than once, and only the
+# bare, unquoted occurrence is the substitution point.
 _ARGUMENTS_PLACEHOLDER = "$ARGUMENTS"
+_ARGUMENTS_PLACEHOLDER_RE = re.compile(r"(?<!`)" + re.escape(_ARGUMENTS_PLACEHOLDER) + r"(?!`)")
 
 
 class AgentRuntimeUnavailableError(RuntimeError):
@@ -104,26 +113,68 @@ def _assemble_prompt(body: str, args: str) -> str:
     A body with no placeholder (not every command takes arguments inline)
     keeps the appended form, which is what the CLI's own prompt assembly
     produces for those.
+
+    Only the bare, unquoted placeholder is substituted
+    (``_ARGUMENTS_PLACEHOLDER_RE``): a backtick-quoted occurrence is prose
+    referring back to the real slot, not a second slot, and substituting it
+    too would duplicate the (potentially multi-KB) args payload into the
+    instruction text and garble the sentence around it.
     """
-    if _ARGUMENTS_PLACEHOLDER in body:
-        return body.replace(_ARGUMENTS_PLACEHOLDER, args).strip()
+    if _ARGUMENTS_PLACEHOLDER_RE.search(body):
+        return _ARGUMENTS_PLACEHOLDER_RE.sub(lambda _m: args, body).strip()
     return f"{body}\n\n{args}".strip() if args else body
+
+
+# Seconds an AgentRuntime.check_available() answer is trusted before being
+# re-probed. check_available() spawns a subprocess (e.g. `claude --version`,
+# up to a several-second timeout); a multi-attempt fix loop (DevelopStep,
+# ValidateStep, MonitorCIStep) calls _require_runtime() once per attempt, so
+# without this a single step could pay that probe cost many times over for an
+# answer that does not change within one step's lifetime.
+_RUNTIME_AVAILABILITY_TTL_SECONDS = 30.0
+
+# Keyed by the runtime instance itself, not id(runtime): reload_runtime() swaps
+# the module-level singleton to a new instance on a config change, and a plain
+# id()-keyed dict risks a stale hit after the old instance is garbage
+# collected and CPython reuses its id for an unrelated object (observed in
+# practice with short-lived fake runtimes across tests). A WeakKeyDictionary
+# ties each entry's lifetime to the actual runtime object, so that collision
+# cannot happen, and entries for a discarded runtime are reclaimed for free.
+_runtime_availability_cache: weakref.WeakKeyDictionary[AgentRuntime, tuple[float, bool, str]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 async def _require_runtime(step: BaseStep) -> AgentRuntime:
     """Return the configured runtime, or raise if it cannot actually run.
 
-    The no-implicit-fallback rule: a tool-using step whose runtime is missing
-    or unauthenticated fails here, rather than degrading to an LLMProvider
-    that has no way to edit files.
+    The no-implicit-fallback rule: a tool-using step whose runtime is not
+    installed or not runnable fails here, rather than degrading to an
+    LLMProvider that has no way to edit files.
+
+    This does not probe authentication. ``check_available()`` is implemented
+    per runtime: today only ``CodexRuntime`` checks login state (``codex
+    login status``); ``ClaudeCodeRuntime`` and ``AiderRuntime`` only run
+    ``<cli> --version``, so an installed-but-unauthenticated Claude Code CLI
+    passes this gate and fails later, inside the spawned process, which is
+    outside this function's reach.
     """
     runtime = get_runtime()
-    available, detail = await runtime.check_available()
+    cached = _runtime_availability_cache.get(runtime)
+    if cached is not None and cached[0] > time.monotonic():
+        _, available, detail = cached
+    else:
+        available, detail = await runtime.check_available()
+        _runtime_availability_cache[runtime] = (
+            time.monotonic() + _RUNTIME_AVAILABILITY_TTL_SECONDS,
+            available,
+            detail,
+        )
     if not available:
         raise AgentRuntimeUnavailableError(
             f"Step {step.name!r} requires tool execution but agent runtime {runtime.name!r} is "
-            f"unavailable: {detail}. Configure 'agent.runtime' to a working coding-agent CLI; a "
-            "text-only LLM provider cannot execute this step's file edits."
+            f"not installed or not runnable: {detail}. Configure 'agent.runtime' to a working "
+            "coding-agent CLI; a text-only LLM provider cannot execute this step's file edits."
         )
     return runtime
 
@@ -256,7 +307,16 @@ async def _run_agent_process(
 
     try:
         async with asyncio.timeout(timeout):
-            await asyncio.gather(_drain_stdout(), _drain_stderr())
+            # TaskGroup, not asyncio.gather(): when one drain task raises (the
+            # parser-error case this function handles below), a TaskGroup
+            # cancels its sibling and waits for it before propagating, so the
+            # other task is never left pending past this block. gather() alone
+            # leaves a failed sibling running until something else happens to
+            # await it (here, only incidentally via _stop_quietly() killing the
+            # process), which otherwise surfaces as an unawaited pending task.
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(_drain_stdout())
+                tg.create_task(_drain_stderr())
             await proc.wait()
     except TimeoutError as exc:
         await _stop_quietly(proc, runtime, cause="agent_dispatch_timeout")
@@ -264,9 +324,19 @@ async def _run_agent_process(
     except asyncio.CancelledError:
         await _stop_quietly(proc, runtime, cause="agent_dispatch_cancelled")
         raise
+    except ExceptionGroup as eg:
+        # A real failure inside _drain_stdout()/_drain_stderr() (a parser
+        # error, not a CancelledError) surfaces from the TaskGroup wrapped in
+        # an ExceptionGroup, even though only one of the two tasks ever raises
+        # in practice. Unwrapped back to that original exception so
+        # downstream classification (classify_error/resolve_error_category,
+        # which inspect the exception's own message) sees the real error
+        # rather than ExceptionGroup's own generic "N sub-exception(s)" text.
+        await _stop_quietly(proc, runtime, cause="agent_dispatch_error")
+        raise eg.exceptions[0] from eg
     except BaseException:
-        # Any other way out of the wait (a parser error, a drain task failing)
-        # is still an abandoned subprocess if it is not killed here.
+        # Any other way out of the wait (e.g. proc.wait() itself failing) is
+        # still an abandoned subprocess if it is not killed here.
         await _stop_quietly(proc, runtime, cause="agent_dispatch_error")
         raise
 

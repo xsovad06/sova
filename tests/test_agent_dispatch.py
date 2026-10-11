@@ -587,3 +587,24 @@ class TestRuntimeModelFallback:
             await dispatch_command(step, "/develop", args="42", fallback_model="caller-hop", cwd=tmp_path)
 
         assert runtime.spawn_calls[0]["fallback_model"] == "caller-hop"
+
+
+class TestAssemblePromptArgumentsPlaceholder:
+    """``$ARGUMENTS`` substitution must hit only the real slot, not a
+    backtick-quoted prose reference back to it (develop.md has both)."""
+
+    def test_real_develop_command_substitutes_args_exactly_once(self) -> None:
+        from sova.core.agent_dispatch import _assemble_prompt
+
+        repo_root = Path(__file__).resolve().parent.parent
+        body = (repo_root / ".claude" / "commands" / "develop.md").read_text(encoding="utf-8")
+        # Strip YAML frontmatter the way _resolve_command_body() does.
+        if body.startswith("---"):
+            _, _, body = body.partition("---\n")
+            _, _, body = body.partition("---\n")
+        args = "42\n\n## Spec Context\nSome spec body text."
+
+        prompt = _assemble_prompt(body, args)
+
+        assert prompt.count(args) == 1
+        assert "`$ARGUMENTS`" in prompt  # the backtick-quoted prose references survive untouched
