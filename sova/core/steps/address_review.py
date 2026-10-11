@@ -11,6 +11,7 @@ from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.handoff import read_handoff, read_handoff_file
+from sova.llm.guard import sanitize_external_input
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import (
     INLINE_COMMENT_STUB,
@@ -551,9 +552,21 @@ def _format_findings_prompt(
                 loc += f":{f['line']}"
             source_tag = f" [from {f['source']}]" if f.get("source") else ""
             lines.append(f"{i}. [{f.get('severity', '?')}/10] [{f.get('category', 'other')}] `{loc}`{source_tag}")
-            lines.append(f"   {f.get('description', '')}")
+            # Review/CodeRabbit comment bodies are the most untrusted text in
+            # this prompt. sanitize_external_input() only logs on a high-risk
+            # match (never raises, never rewrites the body), giving visibility
+            # into which finding tripped a pattern without corrupting a
+            # legitimate finding that merely quotes injection-looking text.
+            # dispatch_prompt() still runs guard_prompt() over the whole
+            # assembled prompt afterward as the one fail-closed check; a
+            # rejection there now surfaces as a classified LLMError the
+            # caller's `except RuntimeError` already handles.
+            source = f.get("source") or "review_finding"
+            description = sanitize_external_input(f.get("description", ""), source=source)
+            lines.append(f"   {description}")
             if f.get("suggestion"):
-                lines.append(f"   Fix: {f['suggestion']}")
+                suggestion = sanitize_external_input(f["suggestion"], source=source)
+                lines.append(f"   Fix: {suggestion}")
             lines.append("")
         lines.append("After fixing all issues, make sure all tests still pass.")
         lines.append("")
