@@ -28,6 +28,7 @@ log = get_logger(component="step.address_external_findings")
 class AddressExternalFindingsStep(BaseStep):
     name = "address_external_findings"
     max_retries = 0
+    requires_tools = True
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         if ctx.pr_number is None:
@@ -115,9 +116,12 @@ class AddressExternalFindingsStep(BaseStep):
         prompt = format_findings_for_prompt(all_findings)
         if coverage_prompt:
             prompt = f"{prompt}\n\n---\n\n{coverage_prompt}" if prompt else coverage_prompt
-        cost = await self._apply_fixes(ctx, prompt)
+        cost, has_changes, new_commits = await self._apply_fixes(ctx, prompt)
 
-        if coderabbit_thread_ids and cost > 0:
+        # Gated on actual evidence of edits, not billing: an agent run can be
+        # billed (cost > 0) while producing zero file changes, which must not
+        # resolve external review threads it never actually addressed.
+        if coderabbit_thread_ids and (has_changes or new_commits):
             try:
                 await resolve_coderabbit_threads(
                     coderabbit_thread_ids,
@@ -130,7 +134,7 @@ class AddressExternalFindingsStep(BaseStep):
             except RuntimeError:
                 log.warning("step.address_external_findings.resolve_failed", exc_info=True)
         elif coderabbit_thread_ids:
-            log.info("step.address_external_findings.threads_not_resolved", reason="llm_failed")
+            log.info("step.address_external_findings.threads_not_resolved", reason="no_changes_detected")
 
         parts: list[str] = []
         if all_findings:
@@ -162,32 +166,44 @@ class AddressExternalFindingsStep(BaseStep):
 
         return has_changes, new_commits
 
-    async def _apply_fixes(self, ctx: ExecutionContext, prompt: str) -> Decimal:
-        """Invoke the LLM to fix external findings, commit, and push."""
+    async def _apply_fixes(self, ctx: ExecutionContext, prompt: str) -> tuple[Decimal, bool, bool]:
+        """Invoke the agent to fix external findings, commit, and push.
+
+        Returns ``(cost, has_changes, new_commits)`` so the caller can gate
+        outward-facing side effects (resolving external review threads) on
+        actual evidence of edits rather than on whether the call was billed.
+        """
+        from sova.core.agent_dispatch import dispatch_prompt
         from sova.git import operations as git_ops
-        from sova.llm.client import invoke
+
+        # Captured before dispatch: the agent runtime commits directly to the
+        # worktree, so "previous" commit count must be read before it runs,
+        # not after (text-only invoke() could never move HEAD, so this ordering
+        # did not matter under the prior implementation).
+        log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
+        prev_commits = log_result.stdout.strip() if log_result.success else ""
+        prev_count = len(prev_commits.splitlines()) if prev_commits else 0
 
         try:
-            result = await invoke(
+            result = await dispatch_prompt(
+                self,
                 prompt,
                 model=ctx.resolved_model or ctx.config.agent.model,
+                fallback_model=ctx.get_cli_fallback_model(),
                 # Reuses "address_review" rather than a key of its own: both
                 # steps address reviewer findings against an open PR, and a
                 # second key would split one routing decision across two
                 # config entries (same reasoning as develop.py's "extraction"
                 # tag).
-                task_type="address_review",
+                task_type=ctx.routing_task_type("address_review"),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
+                timeout=ctx.config.agent.step_timeout,
             )
             ctx.add_usage(result)
         except RuntimeError:
             log.warning("step.address_external_findings.llm_failed", exc_info=True)
-            return Decimal("0")
-
-        log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
-        prev_commits = log_result.stdout.strip() if log_result.success else ""
-        prev_count = len(prev_commits.splitlines()) if prev_commits else 0
+            return Decimal("0"), False, False
 
         has_changes, new_commits = await self._detect_changes(ctx, prev_count)
 
@@ -212,7 +228,7 @@ class AddressExternalFindingsStep(BaseStep):
             except RuntimeError:
                 log.warning("step.address_external_findings.push_failed", exc_info=True)
 
-        return result.cost_usd
+        return result.cost_usd, has_changes, new_commits
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         ext = ctx.config.external_reviews

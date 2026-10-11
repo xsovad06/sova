@@ -608,3 +608,46 @@ class TestAssemblePromptArgumentsPlaceholder:
 
         assert prompt.count(args) == 1
         assert "`$ARGUMENTS`" in prompt  # the backtick-quoted prose references survive untouched
+
+
+class TestRequiresToolsOptIn:
+    """Locks the per-step opt-in the whole dispatch boundary depends on.
+
+    Each migrated step's own test patches ``dispatch_command``/
+    ``dispatch_prompt`` to assert the call happens, but none of those asserted
+    ``requires_tools`` itself: a future change that quietly set it back to
+    ``False`` (or dropped it) would keep every one of those tests green while
+    silently returning the step to the text-only LLMProvider, which is the
+    exact regression this dispatch boundary exists to prevent.
+    """
+
+    @pytest.mark.parametrize(
+        "step_path",
+        [
+            "sova.core.steps.develop.DevelopStep",
+            "sova.core.steps.validate.ValidateStep",
+            "sova.core.steps.monitor_ci.MonitorCIStep",
+            "sova.core.steps.self_review.SelfReviewStep",
+            "sova.core.steps.simplify.SimplifyStep",
+            "sova.core.steps.address_review.AddressReviewStep",
+            "sova.core.steps.address_external_findings.AddressExternalFindingsStep",
+            "sova.core.steps.rearrange_commits.RearrangeCommitsStep",
+        ],
+    )
+    def test_tool_using_step_requires_tools(self, step_path: str) -> None:
+        import importlib
+
+        module_path, _, class_name = step_path.rpartition(".")
+        step_cls = getattr(importlib.import_module(module_path), class_name)
+        assert step_cls.requires_tools is True
+
+    def test_research_step_holdout_stays_text_only(self) -> None:
+        """ResearchStep deliberately stays on invoke_command()/LLMProvider.
+
+        /research never edits the worktree, only appends a '## Research'
+        section to the issue/ticket body via gh/jira CLI calls, and its own
+        validate_output() already gates on that section existing.
+        """
+        from sova.core.steps.research import ResearchStep
+
+        assert ResearchStep.requires_tools is False
