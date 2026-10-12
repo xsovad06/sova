@@ -9,31 +9,37 @@ This guide explains how to configure SOVA to use different AI providers (Claude 
 3. [Anthropic API Direct](#anthropic-api-direct)
 4. [Google Vertex AI](#google-vertex-ai)
 5. [Troubleshooting](#troubleshooting)
-6. [Future: UI-Based Authentication Wizard](#future-ui-based-authentication-wizard)
+6. [Connections Page (Dashboard)](#connections-page-dashboard)
 
 ---
 
 ## Supported Providers
 
-SOVA supports three LLM provider backends:
+`llm.provider` (`sova/config/models.py`) accepts seven values: `claude-code`, `anthropic`, `vertex`, `openai`, `ollama`, `litellm`, and `hybrid`. This guide covers the three most common individual setups; `openai`, `ollama`, `litellm`, and `hybrid` all route through the same `LiteLLMProvider` and are covered in [docs/model-selection-migration-guide.md](model-selection-migration-guide.md).
 
 | Provider | Auth Method | Cost | Use Case | Config |
 |----------|-------------|------|----------|--------|
 | **Claude Code CLI** | Personal subscription login | Per-message billing | Recommended for individuals | `llm.provider = "claude-code"` |
-| **Anthropic API** | API key (`ANTHROPIC_API_KEY`) | Batch/streaming | Production deployments | `llm.provider = "anthropic"` |
-| **Google Vertex AI** | GCP service account (ADC) | GCP billing | Enterprise multi-cloud | `llm.provider = "vertex"` + env vars |
+| **Anthropic API** | API key (`llm.api_key`, falls back to `ANTHROPIC_API_KEY`) | Usage-based billing | Production deployments | `llm.provider = "anthropic"` |
+| **Google Vertex AI** | GCP ADC + `ANTHROPIC_VERTEX_PROJECT_ID` | GCP billing | Enterprise multi-cloud, Vertex-hosted models (typically Gemini) | `llm.provider = "vertex"` |
+
+**Vertex AI is three unrelated mechanisms, not one.** Mixing these up is the most common source of confusion in this guide's history:
+
+1. **`llm.provider = "vertex"`** (row above): a real provider choice, routed through `LiteLLMProvider`, for SOVA's own LLM calls against Vertex-hosted models. See [Google Vertex AI](#google-vertex-ai) below.
+2. **`CLAUDE_CODE_USE_VERTEX` / `CLAUDE_CODE_USE_BEDROCK`**: environment variables that redirect the Claude Code CLI subprocess itself to a Vertex or Bedrock deployment, independent of `llm.provider`. This is not a provider choice SOVA makes; it's inherited process environment that silently overrides `llm.provider = "claude-code"` when present. See [4. Environment Variable Scrubbing](#4-environment-variable-scrubbing) below.
+3. **`ANTHROPIC_VERTEX_PROJECT_ID` for the batch backend** (`sova/llm/providers/anthropic_batch.py`): a third, independent mechanism used only by the Anthropic Batch API path (`invoke_batch()`, e.g. triage), requiring that same env var plus `llm.batch_gcs_bucket`. It is selected independently of `llm.provider`: switching to or away from `llm.provider = "vertex"` neither enables nor disables it. Note that this is independence of configuration keys, not of environment: it reads the same `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` that mechanism 1 does, so setting those for one arms the other too once a GCS bucket is configured (see [4. Set Environment Variables](#4-set-environment-variables) under Vertex AI).
 
 ---
 
 ## Personal Subscription (Claude Code CLI)
 
-### What You Need
+### Claude Code: What You Need
 
 - Claude Code CLI installed: `claude --version` (v2.1.0+)
 - Active Anthropic subscription (free or paid)
 - No API keys or service accounts required
 
-### Setup Steps
+### Claude Code: Setup Steps
 
 #### 1. Install Claude Code CLI
 
@@ -71,16 +77,14 @@ Expected output:
 
 #### 3. Configure SOVA to Use Claude Code
 
-**Option A: Database Configuration (Recommended)**
-
-SOVA stores config in `.claude/sova.db`:
+**Option A: `sova config set` (recommended)**
 
 ```bash
-sqlite3 .claude/sova.db << 'EOF'
-UPDATE project_settings SET value = '"claude-code"' WHERE key = 'llm.provider';
-UPDATE project_settings SET value = '""' WHERE key = 'llm.model'; -- Let Claude Code choose
-EOF
+sova config set llm.provider claude-code
+sova config set llm.model ""   # let Claude Code choose
 ```
+
+This validates the value before writing it to `.claude/sova.db`. As a last resort, the same change can be made directly against the database (see CLAUDE.md's "Troubleshooting Config Load Errors"), but `sova config set` is the supported path.
 
 **Option B: Environment Variables (Temporary)**
 
@@ -89,59 +93,44 @@ export SOVA_LLM_PROVIDER="claude-code"
 export SOVA_LLM_MODEL=""
 ```
 
-#### 4. Clean Environment (Important!)
+#### 4. Environment Variable Scrubbing
 
-Remove any old Vertex AI or GCP environment variables that Claude Code might inherit:
+You do **not** need to edit your shell profile to scrub the provider-routing variables for SOVA's own agents. Every subprocess SOVA spawns, whether a long-lived agent (`sova/ipc/runtime.py`) or a per-step LLM invocation (`sova/llm/providers/claude_code.py`), has the variables listed in `PROVIDER_ROUTING_VARS` (`sova/utils/env.py`) scrubbed from its environment before it starts, unless a variable is explicitly listed in `agent.env_passthrough` (default: empty). That set includes `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_BEDROCK`, `ANTHROPIC_VERTEX_PROJECT_ID`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, and several related variables, regardless of where they came from: your shell profile or the terminal that started `sova server`.
 
-**Edit `~/.zshrc` (or `~/.bashrc`):**
+This does **not** cover the model-alias pins `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL`: they are not members of `PROVIDER_ROUTING_VARS`, so a shell-profile export of one is inherited by `sova server` and passed unscrubbed to every spawned agent, silently repinning `agent.model` when it is a bare alias like `opus`. This is a real reason to clean your shell profile; see ["Model Not Found" Error](#model-not-found-error) below, which this now also lists as a source to check.
+
+This scrubbing acts on the *inherited process environment* SOVA hands to the child; it cannot reach `~/.claude/settings.json`. The Claude CLI reads its own `env` block out of that file and applies it to itself after exec. No invocation path (`build_claude_cli_args()`, `sova/llm/cli_args.py`) ever passes `--restricted` or `--setting-sources`, the flags that make the CLI skip its settings files, so `~/.claude/settings.json` is always loaded, on the normal agent spawn path and on isolated, tool-free probe calls alike. (`isolated=True` only adds `--safe-mode --tools ""`, which disables CLAUDE.md auto-discovery, hooks, MCP servers, and custom commands/agents; per `claude --help`, auth and model selection are explicitly unaffected, so a settings.json `env` block still applies.) A routing variable set there still reaches every SOVA-spawned agent no matter what `agent.env_passthrough` says. See [Claude Code Shows "Vertex API"](#claude-code-shows-vertex-api) under Troubleshooting for how to check and clean that file.
+
+**What shell-profile cleanup is actually for**: removing a `PROVIDER_ROUTING_VARS` entry such as `CLAUDE_CODE_USE_VERTEX=1` from `~/.zshrc`/`~/.bashrc` will NOT change how SOVA's own agents behave; they already have it scrubbed. It only matters for that variable if you also run `claude` interactively in a terminal outside of SOVA: an interactively-run `claude` command inherits your shell's environment directly and is untouched by SOVA's scrubbing, so an old variable still reaches it. Removing a model-alias pin (`ANTHROPIC_DEFAULT_SONNET_MODEL` and friends) is different: that one does matter for SOVA's own agents, since it is never scrubbed. Clean up a routing variable in your shell profile only if you also want plain interactive `claude` sessions to use your personal subscription; clean up an alias pin regardless.
+
+If you genuinely need a routing variable inside a SOVA-spawned agent (e.g. you intentionally want `llm.provider = "claude-code"` agents to go through a Vertex-backed Claude deployment), opt it back in explicitly:
 
 ```bash
-# REMOVE or COMMENT OUT these lines:
-# export CLAUDE_CODE_USE_VERTEX=1
-# export ANTHROPIC_VERTEX_PROJECT_ID="..."
-# export GCP_PROJECT_ID="..."
-# export GOOGLE_CLOUD_QUOTA_PROJECT="..."
-```
-
-Also edit `~/.claude/settings.json`:
-
-```json
-{
-  "env": {
-    "GH_TOKEN": ""
-    // Remove ANTHROPIC_VERTEX_PROJECT_ID and CLAUDE_CODE_USE_VERTEX
-  }
-}
+sova config set agent.env_passthrough '["CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID"]'
 ```
 
 #### 5. Start SOVA Server
 
 ```bash
-# Use the provided wrapper to ensure clean environment
-sova-clean server start --multi
-
-# Or manually unset vars, then start normally
-unset ANTHROPIC_VERTEX_PROJECT_ID GCP_PROJECT_ID CLAUDE_CODE_USE_VERTEX GOOGLE_CLOUD_QUOTA_PROJECT
 sova server start --multi
 ```
 
-#### 6. Verify in Dashboard
+No wrapper script or manual `unset` is needed: the scrubbing described above runs automatically for every spawned agent, regardless of what the server process itself inherited.
 
-Open http://127.0.0.1:8111, go to **Settings** → **LLM Provider**, and confirm it shows:
-- Provider: Claude Code CLI
-- Auth Status: Authenticated (you@example.com)
-- Available Models: Shows your subscription tier
+#### 6. Verify in the Dashboard
+
+Open http://127.0.0.1:8111 and go to **Connections**. The "AI provider for SOVA calls" list shows a row for every supported provider, not just the active one: each row carries its own live readiness probe (all of them run concurrently on page load) plus Validate and Activate actions, and the active one is badged. The `claude-code` row additionally renders a "Start reconnect (claude auth login)" button. That button is not gated on whether `claude-code` is currently authenticated: it appears whenever this dashboard session could actually complete a browser login, and is replaced by terminal instructions when it could not (non-loopback access, a headless server process with no display to open a browser on, or a CLI routed through Vertex/Bedrock, where reconnecting means refreshing Google ADC instead). Its presence is therefore not a signal that you are logged out. On the headless case, the Connections page's fallback text points at plain `claude auth login` on a machine with a browser; it is the separate provider status widget shown on other dashboard pages (`sova/dashboard/static/provider-status-widget.js`), not this page, whose "Recovery command" block offers `claude setup-token` as the headless/remote alternative. The provider status widget shown on other dashboard pages calls `GET /api/auth/status`, which reports `authenticated`, the account identity (email, subscription tier) when confirmable, and any inherited routing variables under `routing_warnings`. See [Connections Page (Dashboard)](#connections-page-dashboard) below for the exact contract.
 
 ---
 
 ## Anthropic API Direct
 
-### What You Need
+### Anthropic API: What You Need
 
 - Anthropic API key from https://console.anthropic.com/api-keys
-- API key stored securely (env var or secrets file)
+- API key stored in the OS keyring via `llm.api_key` (recommended) or exported as `ANTHROPIC_API_KEY` (fallback); see [3. Set API Key](#3-set-api-key) below
 
-### Setup Steps
+### Anthropic API: Setup Steps
 
 #### 1. Create API Key
 
@@ -153,29 +142,29 @@ Open http://127.0.0.1:8111, go to **Settings** → **LLM Provider**, and confirm
 #### 2. Configure SOVA
 
 ```bash
-sqlite3 .claude/sova.db << 'EOF'
-UPDATE project_settings SET value = '"anthropic"' WHERE key = 'llm.provider';
-UPDATE project_settings SET value = '"claude-sonnet-5"' WHERE key = 'llm.model';
-EOF
+sova config set llm.provider anthropic
+sova config set llm.model claude-sonnet-5
 ```
 
 #### 3. Set API Key
 
+**Option A: Connections page or `sova config set` (recommended)**
+
 ```bash
-# Option A: Environment variable (temporary, this session only)
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# Option B: Claude Code settings (persistent)
-# Edit ~/.claude/settings.json:
-# {
-#   "env": {
-#     "ANTHROPIC_API_KEY": "sk-ant-..."
-#   }
-# }
-
-# Option C: .env file in project root (git-ignored)
-echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env
+sova config set llm.api_key "sk-ant-..."
 ```
+
+`llm.api_key` is stored in the OS keyring (Keychain/Credential Manager/Secret Service) when a usable backend exists, scoped to this project and provider (`sova/llm/keyring_store.py`); otherwise it falls back to the plaintext `project_settings` database column. It is the first-class credential source and takes precedence over the environment variable below.
+
+The provider in that scope is whichever `llm.provider` is active when the key is written, not whichever provider you later switch to: `sova config set` always resolves the scope from the currently active provider. Run step 2 (set `llm.provider`) before this step, as shown above. If you switch providers later, re-run `sova config set llm.api_key "sk-ant-..."` after the switch; the key saved under the old provider's scope is not carried over, and the Connections page's per-provider card avoids this entirely by saving its own `provider` in the request.
+
+**Option B: Environment variable (temporary, this session only)**
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+Only used when `llm.api_key` is not configured.
 
 #### 4. Start SOVA
 
@@ -187,14 +176,15 @@ sova server start --multi
 
 ## Google Vertex AI
 
-### What You Need
+### Vertex AI: What You Need
 
 - Google Cloud project with Vertex AI enabled
 - Service account with Vertex AI permissions
 - Application Default Credentials (ADC) configured
-- GCS bucket for batch processing (optional)
+- `pip install "sova[litellm,vertex]"`: `llm.provider = "vertex"` routes through `LiteLLMProvider`, which requires the LiteLLM extra (see `docs/model-selection-migration-guide.md`); the `vertex` extra supplies `google-auth`, which `check_available()` and model enumeration both need to mint an ADC bearer token (`VertexTokenProvider`, `sova/llm/gcp_auth.py`). A missing `google-auth` does not surface as an import error: `check_available()`'s broad exception handling reports it as "litellm X but Google Application Default Credentials are not available," which reads as a credentials problem even when ADC itself is configured correctly and the only thing missing is the Python package.
+- A GCS bucket is only needed for the separate batch backend (`llm.batch_gcs_bucket`, see [Supported Providers](#supported-providers) above), not for `llm.provider = "vertex"` itself
 
-### Setup Steps
+### Vertex AI: Setup Steps
 
 #### 1. Enable Vertex AI
 
@@ -221,12 +211,13 @@ gcloud iam service-accounts keys create ~/sova-key.json \
 
 #### 3. Configure SOVA
 
+`llm.provider = "vertex"` routes through `LiteLLMProvider`, using LiteLLM's generic `vertex_ai/<model>` routing for Vertex-hosted models (typically Gemini). It has no shared default model, so `llm.model` is mandatory. See the "Vertex AI" section of [docs/model-selection-migration-guide.md](model-selection-migration-guide.md#vertex-ai) for the exact config shape and what `sova doctor` checks. Do not set `llm.routing` here: that field maps task types to model tiers and is unrelated to Vertex project configuration (see `.claude/rules/architecture.md`'s "Model Selection System").
+
+`sova config set` validates each key against the whole resulting config (`_validate_config_consistency()`, `sova/dashboard/services/settings_service.py`), so set `llm.model` first: setting `llm.provider = "vertex"` while `llm.model` is still empty is rejected outright, since the combined state at that point has a model-required provider with no model. The same ordering applies to the `openai`/`ollama` shortcuts linked under [Supported Providers](#supported-providers) above. The Connections page's Activate button is not affected by this ordering, since it writes both keys together through `update_config_many()`, which validates the combined state in one call.
+
 ```bash
-sqlite3 .claude/sova.db << 'EOF'
-UPDATE project_settings SET value = '"vertex"' WHERE key = 'llm.provider';
-UPDATE project_settings SET value = '"claude-sonnet-5"' WHERE key = 'llm.model';
-UPDATE project_settings SET value = '"YOUR_PROJECT_ID"' WHERE key = 'llm.routing';
-EOF
+sova config set llm.model "vertex_ai/gemini-2.5-pro"
+sova config set llm.provider vertex
 ```
 
 #### 4. Set Environment Variables
@@ -234,8 +225,17 @@ EOF
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS="$HOME/sova-key.json"
 export ANTHROPIC_VERTEX_PROJECT_ID="YOUR_PROJECT_ID"
-export GOOGLE_CLOUD_QUOTA_PROJECT="YOUR_PROJECT_ID"
 ```
+
+`CLOUD_ML_REGION` defaults to `us-east5` if unset; set it explicitly if your Vertex project uses a different region. Both of these variables are read by this provider (`sova/llm/litellm_provider.py`: `_vertex_project_id()`, `_vertex_region()`) and, with the same names and the same `us-east5` default, by the separate batch backend (`sova/llm/providers/anthropic_batch.py:create_batch_provider()`). What makes the two independent is how each is selected, not which variables they read: the batch backend ignores `llm.provider` entirely and activates only once `llm.batch_gcs_bucket` is also set. So exporting these two variables to configure `llm.provider = "vertex"` will also point the batch backend at that same project and region if a GCS bucket is configured. See [Supported Providers](#supported-providers) above.
+
+**Two of these exports do not reach spawned agents.** `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` are both members of `PROVIDER_ROUTING_VARS` (`sova/utils/env.py`), so `scrub_agent_env()` strips them from every subprocess SOVA spawns unless explicitly opted back in. `GOOGLE_APPLICATION_CREDENTIALS` is not a provider-routing variable and is not scrubbed at all; it reaches every spawned agent untouched, so it needs no `agent.env_passthrough` entry. This matters for `llm.provider = "vertex"` in a way it does not for `llm.provider = "claude-code"`: a developer/researcher/planner pipeline run is spawned directly as `sova run N` (`sova/ipc/runtime.py`'s `spawn_direct()`), and that subprocess constructs its own `LiteLLMProvider` in-process, where a scrubbed `ANTHROPIC_VERTEX_PROJECT_ID` makes `_vertex_project_id()` return `""`. Exporting these variables and starting the server is enough for in-server calls, but every spawned pipeline agent needs the scrubbed one(s) passed through explicitly. Only include `CLOUD_ML_REGION` if you actually set it above; `_vertex_region()` already defaults to `us-east5`, so it needs no passthrough entry otherwise:
+
+```bash
+sova config set agent.env_passthrough '["ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION"]'
+```
+
+`agent.env_passthrough` is a single list shared by every spawn path across every runtime and provider, and `sova config set` replaces the whole list rather than appending to it. If you also followed [4. Environment Variable Scrubbing](#4-environment-variable-scrubbing)'s Claude Code snippet (`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`), running the command above without it drops that entry. Merge the variables you actually need into one list instead of running each snippet in isolation, e.g. `'["CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION"]'`.
 
 #### 5. Start SOVA
 
@@ -251,7 +251,13 @@ sova server start --multi
 
 **Problem:** `claude auth status` shows `"apiProvider": "vertex"` even though you want personal subscription.
 
-**Solution:**
+**Where this can happen:**
+
+1. **Inside a SOVA-spawned agent, via `agent.env_passthrough`**: SOVA scrubs `CLAUDE_CODE_USE_VERTEX`/`CLAUDE_CODE_USE_BEDROCK` (and the rest of `PROVIDER_ROUTING_VARS`, `sova/utils/env.py`) from every agent and LLM-invocation subprocess it spawns, from its own inherited environment. If you still see it, check for an entry re-admitting one of these variables: `sqlite3 .claude/sova.db "SELECT value FROM project_settings WHERE key='agent.env_passthrough';"` (or the Settings page in the dashboard).
+2. **Inside a SOVA-spawned agent, via `~/.claude/settings.json`**: SOVA's scrubbing only filters the process environment it hands to the child; it cannot touch the `env` block the Claude CLI itself reads from `~/.claude/settings.json` after it starts, since no invocation path passes `--restricted` or `--setting-sources` (the flags that skip settings files). `--safe-mode`, used only for isolated probe calls, does not disable settings.json either: it disables CLAUDE.md/hooks/MCP/commands, not the `env` block. A `CLAUDE_CODE_USE_VERTEX` entry there reaches every SOVA-spawned agent regardless of `agent.env_passthrough`. Check and clean step 3 below.
+3. **In your own interactive terminal**, running `claude` directly rather than through SOVA: SOVA's scrubbing only applies to its own spawned subprocesses. This is also fixed by the steps below.
+
+**Solution:** steps 1, 2, 4, and 5 address the interactive-terminal case (cause 3 above); step 3 (`~/.claude/settings.json`) fixes cause 2 as well, since that file reaches both an interactive `claude` session and every SOVA-spawned agent. Cause 1 (`agent.env_passthrough`) is fixed separately, by removing the re-admitted variable from that config list.
 
 1. Check for old env vars:
    ```bash
@@ -281,9 +287,11 @@ sova server start --multi
    claude auth login
    ```
 
+   On a headless machine or a second machine with no browser, use `claude setup-token` instead of `claude auth login` (see the recovery hint rendered by `sova/dashboard/static/provider-status-widget.js`). Issue #873 covers headless/second-machine authentication setup in more depth; this guide only notes the command exists.
+
 5. Verify:
    ```bash
-   claude auth status | jq .apiProvider
+   claude auth status --json | jq .apiProvider
    # Should show: "firstParty"
    ```
 
@@ -304,190 +312,92 @@ Check the `ANTHROPIC_DEFAULT_SONNET_MODEL` in your `~/.claude/settings.json` and
 }
 ```
 
+Also check your shell profile (`~/.zshrc`/`~/.bashrc`) for the same variable (or `ANTHROPIC_DEFAULT_OPUS_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL`): unlike the provider-routing variables covered in [4. Environment Variable Scrubbing](#4-environment-variable-scrubbing) above, these alias pins are never scrubbed from spawned agents, so a profile export is just as likely a cause as the settings file.
+
 Then restart SOVA:
 
 ```bash
-sova-clean server stop
-sova-clean server start --multi
+sova server stop
+sova server start --multi
 ```
 
 ### API Key Rejected
 
-**Problem:** `ANTHROPIC_API_KEY` is invalid or missing.
+**Problem:** the configured Anthropic API key is invalid, revoked, or not found.
 
 **Solution:**
 
-1. Verify the key is correct (starts with `sk-ant-`):
+1. Check `llm.api_key` first: it is keyring-resolved (`_resolve_scoped_api_key()`, `sova/llm/provider.py`) and takes precedence over `ANTHROPIC_API_KEY`, so an env var alone is not the whole picture (see [3. Set API Key](#3-set-api-key) above):
+   ```bash
+   sova config set llm.api_key "sk-ant-..."
+   ```
+   or set it from the Anthropic API card on the Connections page. If you recently switched `llm.provider`, re-run this command after the switch: the keyring entry is scoped to whichever provider was active when it was written, so a key saved under the old provider is not read for the new one.
+
+2. Run `sova doctor`. Its `keyring: llm.api_key` check catches the case where the database holds the `"keyring:stored"` migration sentinel but the matching keychain entry can't be read back, e.g. after copying `.claude/sova.db` to another machine without its keychain.
+
+3. Test the key directly rather than guessing: there is no `claude` CLI flag for this (`--api-key` does not exist; `claude --help` lists no such option). Use the Connections page's "Test" button (`POST /api/connections/llm/test`), which runs one real, billable `invoke()` call against the configured key, or `sova doctor`.
+
+4. Check it's not been revoked in https://console.anthropic.com/api-keys.
+
+5. If still unresolved and an env var is in play, verify it's actually set (note this is only the fallback source, checked above `llm.api_key`):
    ```bash
    echo $ANTHROPIC_API_KEY | head -c 10
    ```
 
-2. Test the key directly:
-   ```bash
-   claude -p "Test message" --api-key "$ANTHROPIC_API_KEY"
-   ```
-
-3. Check it's not been revoked in https://console.anthropic.com/api-keys
-
 ---
 
-## Future: UI-Based Authentication Wizard
+## Connections Page (Dashboard)
 
-**Current workflow is manual and terminal-based.** We're planning a dashboard UI that will:
+The manual, terminal-based workflow above has a dashboard equivalent: **Connections**, in the main nav. It replaced the modal setup wizard originally proposed for this doc with a simpler, always-visible page: there is no first-run modal, no server-driven OAuth flow, and no "Switch Provider" wizard. The issues behind it (#929 env scrubbing, #930 `check_available()` reporting authentication, #931 access control for credential-mutating endpoints, #932 keyring storage for `llm.api_key`, #933 the status widget and guided setup) are all closed and merged; this is what shipped. #921 is closed too, but it is a different thing: it added the `openai`/`ollama`/`vertex` provider types this page now lists, not any part of the dashboard auth flow.
 
-1. **Detect missing authentication** on startup
-2. **Show an auth wizard** with provider selection
-3. **Handle OAuth flows** (Claude Code login, Anthropic API key input)
-4. **Persist credentials securely** using the OS keychain/secrets manager
-5. **Prompt for re-authentication** when tokens expire
-6. **Display provider status** in Settings → Auth
+- **`GET /api/connections`** (`sova/dashboard/routers/auth.py`, `setup_service.get_connection_catalog()`): lists every `llm.provider` and `agent.runtime` value with its readiness state, for the "AI provider for SOVA calls" and "Coding agent" lists on the page.
+- **`POST /api/connections/llm/validate`**: a free readiness probe for a candidate provider (CLI presence, daemon reachability, credential presence). Persists nothing.
+- **`POST /api/connections/llm/test`**: runs one real, billable `invoke()` call against a candidate provider.
+- **`POST /api/connections/llm/activate`**: persists a candidate as `llm.provider`, after re-validating it.
+- **`POST /api/connections/runtime/validate`** / **`/activate`**: the same validate/activate pattern for `agent.runtime`.
+- **`POST /api/connections/reconnect/start`**, **`GET .../reconnect/status`**, **`POST .../reconnect/cancel`**: drives a `claude auth login` subprocess for local reconnect, polled from the page.
+- **`GET /api/auth/status`**: read-only status for the provider-status widget shown on every dashboard page.
+- **`POST /api/settings/config`** (`sova/dashboard/routers/settings.py`): not an auth endpoint, but the one the page's "Save key" button calls, with `{"key": "llm.api_key", "value": ..., "provider": ...}`. There is no `/api/connections` endpoint for credentials; secrets reuse the ordinary settings write path, which routes `RESOLVED_SECRET_KEYS` into the keyring.
 
-### Proposed Features (Issues to Create)
+Every `POST` above is guarded by `require_same_origin_csrf`, so these are driven by the dashboard page rather than by hand: a bare `curl` without the matching origin and CSRF headers is rejected. The three `GET` endpoints (`/api/auth/status`, `/api/connections`, `/api/connections/reconnect/status`) require no CSRF token or Origin match and have no side effects. That does not make them safe from every angle: they are also unauthenticated, since the dashboard has no login system (`sova/dashboard/security.py`), so on a non-loopback bind (which that module explicitly supports once a shared CSRF secret is configured) any caller who can reach the port can read them, including `/api/auth/status`'s `account` block (email, org name/ID, subscription tier). This matches the dashboard's single-user, loopback-by-default security model rather than a bug specific to these three endpoints.
 
-See [Authentication UI Epic](#authentication-ui-epic) below.
-
----
-
-## Authentication UI Epic
-
-### Issue Template: Auth Wizard Dashboard Component
-
-```markdown
-## Title: Authentication Wizard UI
-
-### Description
-Add a UI-based authentication setup wizard to the SOVA dashboard that guides users through provider selection and credential management.
-
-### Acceptance Criteria
-- [ ] Dashboard detects missing/invalid auth on startup
-- [ ] Shows provider selection modal (Claude Code CLI, Anthropic API, Vertex AI)
-- [ ] Claude Code CLI flow: "Click here to log in" → opens browser auth
-- [ ] Anthropic API flow: Text input for API key with validation
-- [ ] Vertex AI flow: GCP project ID + service account setup guide
-- [ ] Credentials stored securely (OS keychain on macOS/Linux, Credential Manager on Windows)
-- [ ] Settings page shows current provider and auth status
-- [ ] Alerts when tokens are expiring or invalid
-- [ ] "Switch Provider" button for changing auth method
-
-### Implementation Notes
-- Use FastAPI endpoint to check auth status at startup
-- Store sensitive data in OS keychain via `python-keyring` library
-- Decrypt from keychain when spawning agents
-- No secrets stored in `sova.db` or `.env` files
-- Handle provider-specific flows:
-  - Claude Code: subprocess `claude auth status`, detect browser prompt
-  - Anthropic: simple API key validation via test request
-  - Vertex AI: GCP CLI integration or manual key upload
-
-### Subtasks
-1. Create `sova/llm/auth_manager.py` for credential storage/retrieval
-2. Create FastAPI endpoint `POST /api/auth/setup`
-3. Create dashboard component `AuthWizard.vue` or similar
-4. Integrate keyring storage in `ClaudeCodeProvider`, `AnthropicProvider`
-5. Add Settings page section for auth management
-6. Add startup health check that redirects to auth if needed
+```bash
+curl http://127.0.0.1:8111/api/auth/status
 ```
 
-### Issue Template: Environment Variable Cleanup
-
-```markdown
-## Title: Automatically Clean Inherited Environment Variables
-
-### Description
-Claude Code can inherit Vertex AI env vars from the parent shell or previous configurations, causing authentication to fail silently. Implement automatic cleanup and detection.
-
-### Acceptance Criteria
-- [ ] SOVA detects Vertex AI env vars at startup and warns user
-- [ ] Provides one-click button to remove env vars from shell config
-- [ ] Offers to update `~/.zshrc`, `~/.bashrc`, `~/.claude/settings.json` automatically
-- [ ] Suggests `sova-clean` wrapper for starting server with clean env
-- [ ] Documents cleanup steps in dashboard Settings
-
-### Implementation Notes
-- Parse `~/.zshrc` for Vertex-related exports and comment them out
-- Parse `~/.claude/settings.json` and remove Vertex config
-- Show diff before applying changes
-- Add "Auto-Clean" button in Settings → Troubleshooting
-
-### Subtasks
-1. Create detection logic in `sova/llm/provider.py` that checks for Vertex vars
-2. Create `sova/utils/env_cleanup.py` for file modification
-3. Add Settings page warning banner when Vertex vars detected
-4. Document cleanup guide in docs/
+```json
+{
+  "provider": "claude-code",
+  "authenticated": true,
+  "detail": "2.1.0 (you@example.com)",
+  "account": {
+    "email": "you@example.com",
+    "authMethod": "claude.ai",
+    "apiProvider": "firstParty",
+    "subscriptionType": "max"
+  },
+  "api_key_configured": false,
+  "routing_warnings": [],
+  "checked_at": "2026-10-12T17:30:00Z",
+  "cached": false
+}
 ```
 
-### Issue Template: Provider Status Monitor
+`account` is a whitelisted subset of the `claude auth status --json` payload, filtered to `_ACCOUNT_FIELDS` (`sova/dashboard/services/setup_service.py`): `email`, `authMethod`, `apiProvider`, `orgId`, `orgName`, `subscriptionType`. Only the keys the probe actually returned are present, so the example above (a personal subscription) has no `orgId`/`orgName`. `account` is `None` whenever the provider has no `get_auth_details()` method, or that probe can't confirm a logged-in identity (CLI missing, unparseable `claude auth status --json`, `loggedIn` not `true`). `authenticated` is a separate field: for `claude-code`, `get_auth_status()` overrides it to `account is not None` so a fail-open `check_available()` result ("auth state unknown", used so an unconfirmed probe never blocks agent spawning) is never reported as a confirmed login; for every other provider (no `get_auth_details()`), `authenticated` is the raw `check_available()` result and can be `True` while `account` stays `None` forever. Never treat a populated `account` as the sole proof of being logged in, or a null one as proof of being logged out: check `authenticated` for that. `routing_warnings` lists any `PROVIDER_ROUTING_VARS` present in the server process's own environment as a diagnostic only; it does not mean one reached (or will reach) a spawned agent, since those are scrubbed independently at the spawn boundary (see [4. Environment Variable Scrubbing](#4-environment-variable-scrubbing) above).
 
-```markdown
-## Title: Real-Time Provider Health Check and Status Display
+An API key entered on the Connections page goes through the same OS-keyring-backed storage used by the CLI steps above (`sova/llm/keyring_store.py`), via `POST /api/settings/config` with `key: "llm.api_key"` and the card's `provider` for keyring scoping. There is no separate credentials database table and no audit log of auth events.
 
-### Description
-Monitor AI provider health, quota, and authentication status. Display in dashboard sidebar or status panel.
-
-### Acceptance Criteria
-- [ ] Dashboard displays current provider (Claude Code / Anthropic / Vertex)
-- [ ] Shows authentication status (logged in, expiring, failed)
-- [ ] Displays subscription tier (Max/Pro/Standard for personal, usage for API)
-- [ ] Shows available models for the provider
-- [ ] Alerts when API quota is low or rate-limited
-- [ ] Provides "Re-Authenticate" button when needed
-- [ ] Logs provider errors to UI (not just server logs)
-
-### Implementation Notes
-- Periodically call `claude auth status` for CLI provider
-- Call Anthropic API `/models` endpoint for API provider
-- Track rate limit headers from API responses
-- Store status in dashboard state with 5-minute TTL
-
-### Subtasks
-1. Create `sova/dashboard/services/auth_status_service.py`
-2. Add FastAPI endpoint `GET /api/auth/status`
-3. Create dashboard component `ProviderStatusPanel.vue`
-4. Integrate with Settings page
-5. Add WebSocket feed for real-time alerts
-```
-
-### Issue Template: Secure Credential Storage
-
-```markdown
-## Title: Implement Secure Credential Storage with Keychain Integration
-
-### Description
-Move from environment variables to OS-level secure storage (Keychain on macOS, Credential Manager on Windows, pass/Secret Service on Linux).
-
-### Acceptance Criteria
-- [ ] API keys stored in OS keychain, not in environment
-- [ ] Keychain entries encrypted and isolated per user
-- [ ] Dashboard can encrypt/decrypt without prompting user
-- [ ] Graceful fallback to env vars if keyring unavailable
-- [ ] Credentials cleared on logout/provider switch
-- [ ] No secrets in `.env` files or database
-
-### Implementation Notes
-- Use `python-keyring` library for cross-platform support
-- Store as: `sova_provider_auth` → JSON with `{provider, key/token, expires_at}`
-- On agent spawn, retrieve from keyring and pass to subprocess
-- Disable keyring in tests (use env vars instead)
-
-### Subtasks
-1. Add `keyring` to `pyproject.toml` dependencies
-2. Create `sova/llm/keyring_store.py` for abstraction
-3. Update all providers to use keyring store
-4. Migrate existing env var configs to keyring on first startup
-5. Update test fixtures to mock keyring
-```
-
----
+**The Claude Code credential is not SOVA's to store.** `llm.provider = "claude-code"` has no `llm.api_key`: the `claude` CLI owns its own OAuth credential in the OS keychain and refreshes it itself. `RESOLVED_SECRET_KEYS` (`sova/llm/keyring_store.py`) contains only `llm.api_key`, so nothing in SOVA's keyring namespace corresponds to a Claude Code login. The reconnect endpoints spawn `claude auth login` and observe only its exit code; SOVA never reads, copies, or persists the resulting token, and re-derives the login state afterwards by re-running the `claude auth status --json` probe.
 
 ## Summary
 
-| Step | Current (Manual) | Future (UI) |
-|------|------------------|-------------|
-| 1. Install Claude Code | Terminal | Terminal (pre-req) |
-| 2. Authenticate | `claude auth login` in terminal | "Click here" button in dashboard |
-| 3. Configure provider | Edit `sova.db` with SQL | Dropdown selection in Settings |
-| 4. Clean env vars | Edit `~/.zshrc` manually | One-click "Auto-Clean" button |
-| 5. Start server | `sova-clean server start` | Start via dashboard button |
-| 6. Monitor auth | Check logs | Real-time status panel |
+| Step | Manual (terminal) | Connections page (dashboard) |
+|------|--------------------|-------------------------------|
+| 1. Install Claude Code | Terminal | Terminal (prerequisite either way) |
+| 2. Authenticate | `claude auth login` (or `claude setup-token` headless) | "Start reconnect (claude auth login)" button |
+| 3. Configure provider | `sova config set llm.provider ...` | Row selection + "Activate" button |
+| 4. Clean env vars | For `llm.provider = "claude-code"`: shell-profile vars not needed (scrubbed automatically), but `~/.claude/settings.json` is not scrubbed and still needs manual cleanup (see [Troubleshooting](#claude-code-shows-vertex-api)). For `llm.provider = "vertex"`: the opposite, since spawned pipeline agents need `agent.env_passthrough` set to actually use Vertex (see [4. Set Environment Variables](#4-set-environment-variables) under Vertex AI) | Same per-provider distinction as the manual column |
+| 5. Start server | `sova server start --multi` | Same; the dashboard does not start the server for you |
+| 6. Monitor auth | `GET /api/auth/status` | Provider status widget, shown on every page |
 
-The UI-based workflow will reduce setup time from 15+ minutes to < 2 minutes and eliminate environment variable issues entirely.
+Both paths reach the same configured state; the Connections page is a UI for the operations the CLI/`sova config set` steps above already perform, not a separate credential system.
