@@ -18,7 +18,7 @@ SOVA is a standalone application that turns GitHub Issues into merged pull reque
 - **Quality by design** -- gate checks between every pipeline step catch problems early. Agents refuse to work on issues that haven't been properly triaged and researched.
 - **Learns from mistakes** -- a 4-tier knowledge system captures review feedback, common patterns, and gotchas. Each run is better than the last.
 - **You stay in control** -- agents are ephemeral (spawn, work, handoff, exit). The dashboard shows what they did, what they need, and lets you decide when to merge. Nothing ships without your approval.
-- **Works on any project** -- install once, configure with `sova config set` or the dashboard, and SOVA adapts to your stack via persona auto-detection (Django, FastAPI, Odoo, and more).
+- **Works on any project**: install once, configure with `sova config set` or the dashboard, and SOVA adapts to your stack via persona auto-detection (Django, FastAPI, Odoo, and more).
 
 ## Key Features
 
