@@ -4,56 +4,61 @@
 
 This document outlines the architecture for a dashboard-based authentication system that will replace manual terminal-based provider setup. The goal is to reduce setup friction and make SOVA accessible to users unfamiliar with environment variables and CLI tooling.
 
+## Implementation Status
+
+This is the original design proposal. The issues that delivered it (#929, #930, #931, #932, #933) are all closed and merged; #921, often listed alongside them, is closed as well but added the `openai`/`ollama`/`vertex` provider types rather than any part of this auth flow. What shipped is simpler than the modal wizard and OAuth-in-dashboard flow described below: a single, always-visible **Connections** page plus a read-only status endpoint, with credentials resolved through an OS keyring rather than a new database schema. The **Backend API**, **Credential Storage**, and **Implementation Phases** sections, and both layers of the architecture diagram immediately below (frontend and provider), have been corrected to describe the actual shipped behavior. Every other section below (**Current Pain Points**, **User Flows**, **UI Components**, **Testing Strategy**, **Security Considerations**, **Metrics**, **Future Enhancements**, **Rollout Plan**, and **Questions & Open Items**) is design history describing the original, unbuilt modal-wizard concept, not current behavior, with two exceptions: items in **Current Pain Points** and **Security Considerations** that have since been resolved are annotated in place with what actually shipped, and **UI Components** subsection 5, "Status Sidebar Widget," describes a widget that did ship as `sova/dashboard/static/provider-status-widget.js` (shown on every dashboard page, per the setup guide linked below). See [AI Provider Setup Guide](ai-provider-setup-guide.md#connections-page-dashboard) for how setup actually works today.
+
 ## Current Pain Points
 
 1. **Multiple configuration methods**: SQLite, env vars, `.claude/settings.json`, shell profiles
-2. **Silent failures**: inherited Vertex AI env vars cause cryptic "model not found" errors
-3. **No visibility**: users can't see auth status or know when re-authentication is needed
+2. **Silent failures**: inherited Vertex AI env vars caused cryptic "model not found" errors. Resolved by automatic env scrubbing at the subprocess spawn boundary (`sova/utils/env.py`; see [Backend API](#backend-api-what-actually-shipped) below), not by a dashboard detection UI.
+3. **No visibility**: users can't see auth status or know when re-authentication is needed. Resolved by the provider status widget and `GET /api/auth/status` (see [Backend API](#backend-api-what-actually-shipped) below).
 4. **Terminal-heavy**: OAuth flow (Claude Code login) requires manual browser interaction outside the UI
-5. **No validation**: API keys accepted without testing; errors only appear in server logs
+5. **No validation**: API keys accepted without testing; errors only appear in server logs. Resolved by `POST /api/connections/llm/test`, a separate, explicitly billable `invoke()` the operator triggers from the Connections page; activation itself only re-runs the free `check_available()` probe (see [Backend API](#backend-api-what-actually-shipped) below).
 
 ## Proposed Solution
 
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    SOVA Dashboard (Frontend)                │
-├─────────────────────────────────────────────────────────────┤
-│  ┌──────────────────┐  ┌──────────────────────┐             │
-│  │ Auth Wizard Modal│  │ Settings → Auth Page │             │
-│  │ (Setup Flow)     │  │ (Status + Management)│             │
-│  └────────┬─────────┘  └──────────┬───────────┘             │
-│           │                       │                          │
-│           └───────────┬───────────┘                          │
+┌───────────────────────────────────────────────────────────────┐
+│          SOVA Dashboard (Frontend): what actually shipped     │
+├───────────────────────────────────────────────────────────────┤
+│ ┌───────────────────────────┐  ┌───────────────────────────┐  │
+│ │ Connections page          │  │ Provider status           │  │
+│ │ (/connections)            │  │ widget (every page)       │  │
+│ └───────────────────────────┘  └───────────────────────────┘  │
+│           │                       │                           │
+│           └───────────┬───────────┘                           │
 │                       │                                       │
-├───────────────────────┼───────────────────────────────────────┤
-│                       ▼                                        │
+├───────────────────────────────────────────────────────────────┤
+│                       ▼                                       │
 │           FastAPI Backend (sova/dashboard)                    │
-├───────────────────────┬───────────────────────────────────────┤
-│                       │                                        │
-│   Auth Management API (routers/auth.py)                       │
-│   ├── POST /api/auth/setup          (wizard initiation)       │
-│   ├── POST /api/auth/login          (OAuth redirects)         │
-│   ├── POST /api/auth/validate-key   (API key test)            │
-│   ├── GET  /api/auth/status         (current provider)        │
-│   ├── POST /api/auth/switch         (change provider)         │
-│   └── POST /api/auth/logout         (clear credentials)       │
-│                                                                │
-│   Auth Service (services/auth_manager.py)                     │
-│   ├── Credential storage (keyring)                            │
-│   ├── Provider detection                                      │
-│   ├── Status polling                                          │
-│   └── Re-auth prompts                                         │
-│                                                                │
+├───────────────────────────────────────────────────────────────┤
+│                                                               │
+│   Auth API (routers/auth.py): what actually shipped           │
+│   ├── GET  /api/auth/status (read-only probe)                 │
+│   ├── GET  /api/connections (provider/runtime)                │
+│   ├── POST /api/connections/llm/validate (free probe)         │
+│   ├── POST /api/connections/llm/test (billable test)          │
+│   ├── POST /api/connections/llm/activate (persist choice)     │
+│   ├── POST /api/connections/runtime/validate (free probe)     │
+│   ├── POST /api/connections/runtime/activate (persist choice) │
+│   └── POST /api/connections/reconnect/* (claude auth login)   │
+│                                                               │
+│   Connections/auth logic (services/setup_service.py)          │
+│   ├── get_auth_status() / get_connection_catalog()            │
+│   ├── validate/test/activate_llm_candidate()                  │
+│   └── start/cancel_reconnect() (claude auth login subprocess) │
+│                                                               │
 │   LLM Provider Layer (llm/provider.py)                        │
-│   ├── ClaudeCodeProvider (OAuth via subprocess)               │
-│   ├── AnthropicProvider (API key)                             │
-│   └── VertexProvider (GCP ADC)                                │
-│                                                                │
+│   ├── ClaudeCodeProvider (claude CLI subprocess, OAuth login) │
+│   ├── AnthropicAPIProvider (API key)                          │
+│   └── LiteLLMProvider (vertex/openai/ollama/litellm/hybrid)   │
+│                                                               │
 │   Keyring Store (llm/keyring_store.py)                        │
 │   └── OS-level secure storage (Keychain/Credential Manager)   │
-│                                                                │
+│                                                               │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -287,164 +292,49 @@ Shown on all pages (top-right)
 └────────────────────────────────┘
 ```
 
-### Backend API Endpoints
+### Backend API: What Actually Shipped
+
+The four endpoints originally proposed here (`/api/auth/setup`, `/api/auth/login`, `/api/auth/validate-key`, `/api/auth/switch`) were not built as a stateful setup wizard. What shipped is simpler and stateless: a read-only status endpoint plus a provider/runtime catalog with free validate/test/activate actions (`sova/dashboard/routers/auth.py`, mounted under `/api`).
 
 #### `GET /api/auth/status`
 
-Returns current authentication status.
+Returns the current provider's auth status, cached per project directory for `_AUTH_STATUS_CACHE_TTL` seconds (60; `sova/dashboard/services/setup_service.py:get_auth_status()`). The response's `cached` field is a per-response boolean, not the TTL itself: it reports whether that particular reply was served from the cache or came from a fresh probe. The response shape, and the `account` versus `authenticated` contract (the two are not interchangeable, and neither alone proves a login state), are documented in the [AI Provider Setup Guide](ai-provider-setup-guide.md#connections-page-dashboard) rather than duplicated here.
 
-```bash
-curl http://127.0.0.1:8111/api/auth/status
-```
+`routing_warnings` lists any of `PROVIDER_ROUTING_VARS` (`sova/utils/env.py`) currently present in the server process's own environment, as a diagnostic only; it does not mean one reached (or will reach) a spawned agent, since those are scrubbed independently at the subprocess spawn boundary (see `.claude/rules/architecture.md`'s "Environment scrubbing at the spawn boundary..." entry).
 
-Response:
-```json
-{
-  "authenticated": true,
-  "provider": "claude-code",
-  "email": "damian.sova@gmail.com",
-  "subscription_type": "max",
-  "models": ["claude-sonnet-5", "claude-haiku-4-5"],
-  "last_checked": "2026-09-03T17:30:00Z",
-  "expires_at": null,
-  "needs_reauth": false,
-  "warnings": []
-}
-```
+#### Connections catalog and actions
 
-#### `POST /api/auth/setup`
+The remaining endpoints back the Connections dashboard page (`sova/dashboard/templates/connections.html`), served at `GET /connections`: `GET /api/connections` (the provider and runtime catalog), `POST /api/connections/llm/validate`, `/test` and `/activate`, `POST /api/connections/runtime/validate` and `/activate`, and `POST /api/connections/reconnect/start`, `GET .../reconnect/status` and `POST .../reconnect/cancel`. Each is described in the [AI Provider Setup Guide](ai-provider-setup-guide.md#connections-page-dashboard).
 
-Initiates authentication wizard. Returns provider-specific next steps.
+None of these persist a setup "session" the way the original `/api/auth/setup` wizard proposal implied: each call is a single, idempotent probe or activation. Every `POST` among them is guarded by `require_same_origin_csrf` (issue #931), which is what replaced the proposed `/api/auth/logout` and credential-mutation access model.
 
-Request:
-```json
-{
-  "provider": "claude-code"
-}
-```
+There is also no connections endpoint for credentials. The page's "Save key" button posts to the ordinary settings write path, `POST /api/settings/config` with `{"key": "llm.api_key", "value": ..., "provider": ...}`, which routes keys in `RESOLVED_SECRET_KEYS` into the keyring; the proposed `/api/auth/validate-key` (test a key without storing it) was not built, since `POST /api/connections/llm/test` covers the same need against an already-saved key.
 
-Response:
-```json
-{
-  "status": "pending",
-  "provider": "claude-code",
-  "step": 1,
-  "steps_total": 2,
-  "action": "open_browser",
-  "url": "https://claude.com/cai/oauth/authorize?...",
-  "instructions": "Please log in and approve Claude Code access"
-}
-```
+### Credential Storage: What Actually Shipped
 
-#### `POST /api/auth/validate-key`
+No `credentials` or `auth_events` table was added. Secrets stay in the existing `project_settings` table, resolved through `sova/llm/keyring_store.py`:
 
-Tests an API key without storing it. Returns validation result.
+- `RESOLVED_SECRET_KEYS` (today: `llm.api_key`) names which settings move into the OS keyring instead of the plaintext database value.
+- `scoped_secret_name(name, project_dir, provider)` builds a keyring entry scoped to `(name, provider, project_dir)`, so two projects, or two providers configured within the same project over time, never collide in the one shared OS keychain namespace (`SERVICE_NAME = "sova"`).
+- `resolve_secret()` reads the scoped keyring entry first, then an unscoped legacy keyring entry (read-only, never written), then the plaintext database value, unless that value is the sentinel string `"keyring:stored"` (meaning it was migrated and the keychain entry is the only remaining copy).
+- `migrate_plaintext_to_keyring()` writes to the keyring and verifies the round-trip before the caller replaces the plaintext database value with the sentinel; a failed round-trip leaves the plaintext value in place rather than losing the secret.
+- When no keyring backend is usable (`is_keyring_available()` is `False`: package not installed, or `keyring.get_keyring()` returns the null `fail.Keyring` backend, e.g. headless Linux with no Secret Service), the keyring accessors (`get_secret`, `set_secret`, `delete_secret`, `migrate_plaintext_to_keyring`) degrade to returning `None`/`False`, and `resolve_secret()` falls through to the plaintext database value (or `""` when there is none). No exception escapes this module.
+- `sova doctor` reports a `keyring: <key>` check failure when a secret's database value is the sentinel but no matching keychain entry can be read back (`sova/cli/commands/doctor.py:_check_keyring_secrets()`), e.g. after copying the database to another machine without its keychain.
 
-Request:
-```json
-{
-  "provider": "anthropic",
-  "key": "sk-ant-..."
-}
-```
+`RESOLVED_SECRET_KEYS` holds exactly one key, and that bounds what SOVA stores: there is no SOVA-held credential for `llm.provider = "claude-code"` at all. The `claude` CLI owns its own OAuth credential in the OS keychain and refreshes it itself, so the original plan's "persist credentials securely" step does not apply to the default provider. Reconnect spawns `claude auth login`, observes only its exit code, and never reads the token; the login state is re-derived from a fresh `claude auth status --json` probe instead. The same holds for `agent.runtime = "codex"`, whose credential is owned by the Codex CLI's own keyring storage.
 
-Response:
-```json
-{
-  "valid": true,
-  "provider": "anthropic",
-  "subscription_info": {
-    "model_access": ["claude-sonnet-5", "claude-opus-5"],
-    "usage_based": true,
-    "monthly_spend_estimate": "~$20-50"
-  }
-}
-```
+There is no audit log of auth events (login/logout/reauth/failure) anywhere in the codebase today.
 
-#### `POST /api/auth/switch`
+### Implementation Phases: What Actually Shipped
 
-Changes provider and credentials.
+What shipped, by original phase (the issue list and the structural divergence from this plan are summarized under [Implementation Status](#implementation-status) above):
 
-Request:
-```json
-{
-  "provider": "anthropic",
-  "credentials": {
-    "api_key": "sk-ant-..."
-  }
-}
-```
+- **Phase 1 (core auth management)**: `GET /api/auth/status` and the `sova/llm/keyring_store.py` credential resolution described under [Backend API](#backend-api-what-actually-shipped) and [Credential Storage](#credential-storage-what-actually-shipped) above, not a new `AuthManager` service or database table.
+- **Phase 2 (UI components)**: the Connections page (`sova/dashboard/templates/connections.html`), a single always-visible settings page rather than a first-run modal wizard. No OAuth redirect handling in the dashboard: reconnect starts a local `claude auth login` subprocess and polls its status instead.
+- **Phase 3 (environment detection)**: superseded by automatic scrubbing at the subprocess spawn boundary (`sova/utils/env.py`), which runs on every spawn unless a variable is explicitly opted back in via `agent.env_passthrough`. What was not built is the proposed detection banner and the profile-rewriting "Auto-Clean" tool; read-only detection did ship, as `routing_warnings` in `GET /api/auth/status` (`setup_service.py`) and the `routing_backend` field on the `claude-code` row of `GET /api/connections` (`setup_service.py`).
+- **Phase 4 (polish and testing)**: covered by the existing dashboard test suite (`tests/test_dashboard.py`) and `sova doctor`'s provider/keyring checks, not a dedicated E2E suite.
 
-Response:
-```json
-{
-  "status": "success",
-  "message": "Switched to Anthropic API",
-  "provider": "anthropic",
-  "restart_required": true
-}
-```
-
-### Database Schema
-
-**New table: `credentials` (encrypted)**
-
-```sql
-CREATE TABLE credentials (
-  id INTEGER PRIMARY KEY,
-  provider TEXT NOT NULL, : "claude-code", "anthropic", "vertex"
-  encrypted_data TEXT NOT NULL, : JSON encrypted with salt
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
-  expires_at TIMESTAMP,
-  UNIQUE(provider)
-);
-```
-
-**New table: `auth_events` (audit log)**
-
-```sql
-CREATE TABLE auth_events (
-  id INTEGER PRIMARY KEY,
-  provider TEXT NOT NULL,
-  event_type TEXT NOT NULL, : "login", "logout", "reauth", "failure"
-  status TEXT, : "success", "failed"
-  error_message TEXT,
-  created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-### Implementation Phases
-
-#### Phase 1: Core Auth Management (Weeks 1-2)
-
-- [ ] Create `AuthManager` service with keyring integration
-- [ ] Implement FastAPI auth endpoints
-- [ ] Add credential storage to database
-- [ ] Create simple auth status component
-- [ ] Write unit tests for auth flows
-
-#### Phase 2: UI Components (Weeks 2-3)
-
-- [ ] Build Auth Wizard modal
-- [ ] Build Settings → Auth page
-- [ ] Add status sidebar widget
-- [ ] Implement form validation and error messages
-- [ ] Add browser integration for OAuth redirect
-
-#### Phase 3: Environment Detection (Week 4)
-
-- [ ] Add Vertex AI env var detection
-- [ ] Create "Auto-Clean" tool
-- [ ] Write cleanup guide
-- [ ] Test on macOS, Linux, Windows
-
-#### Phase 4: Polish & Testing (Week 4-5)
-
-- [ ] E2E testing (all 3 providers)
-- [ ] Error scenario testing (invalid keys, network failures)
-- [ ] Documentation
-- [ ] User acceptance testing
+Not built, and not currently planned: an audit log of auth events, multiple saved accounts per provider, or team credential sharing. These appear under [Future Enhancements](#future-enhancements) (items 1, 2, and 6) if ever revisited; whether team accounts share one credential or each have a separate one is also an open question (see [Questions & Open Items](#questions--open-items) below).
 
 ### Testing Strategy
 
@@ -498,9 +388,8 @@ def test_reauth_prompt_on_failure():
 
 ### Security Considerations
 
-1. **Credential Storage**
-   - Use OS keychain (not plaintext in DB)
-   - Encrypt database credentials field with per-user salt
+1. **Credential Storage** (see [Credential Storage: What Actually Shipped](#credential-storage-what-actually-shipped) above)
+   - OS keychain first, scoped per `(setting, provider, project_dir)`; plaintext database value only as a fallback, replaced with the `"keyring:stored"` sentinel once migrated. No per-user salt or database-level encryption: the database never holds the live secret once migration succeeds.
    - Never log credentials (even redacted)
 
 2. **OAuth Flow**
@@ -509,12 +398,12 @@ def test_reauth_prompt_on_failure():
    - Scope OAuth tokens to minimum required permissions
 
 3. **API Key Handling**
-   - Test with minimal request (list models) not full invocation
+   - Test with minimal request (list models) not full invocation. Resolved differently from the original plan: `POST /api/connections/llm/test` deliberately runs one full, billable `invoke()` call instead, since it is explicitly the one action on the Connections page labeled as spending money (see [Credential Storage](#credential-storage-what-actually-shipped) above); it is never triggered implicitly by validate or activate.
    - Never display full API key in UI (mask after first 8 chars)
    - Clear on logout/provider switch
 
 4. **Audit Trail**
-   - Log all auth events (login, logout, reauth, failures)
+   - Log all auth events (login, logout, reauth, failures). Not built: there is no audit log of auth events anywhere in the codebase today (see [Credential Storage](#credential-storage-what-actually-shipped) above).
    - Include timestamp, provider, and error (if failed)
    - Do NOT include credentials or secrets
 

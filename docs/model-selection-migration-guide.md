@@ -70,8 +70,9 @@ Anthropic-only backend used exclusively by the batch API path (`invoke_batch()` 
 batch-eligible task types like triage). Configuring `llm.provider = "vertex"` here has no effect
 on that batch backend, and vice versa.
 
-Requires the LiteLLM extra (`pip install sova[litellm]`) and Google Cloud auth for LiteLLM's Vertex
-integration: either
+Requires the LiteLLM and Vertex extras (`pip install "sova[litellm,vertex]"`; the `vertex` extra
+supplies `google-auth`, needed for `check_available()`'s readiness check and model enumeration, not
+the completion path itself) and Google Cloud auth for LiteLLM's Vertex integration: either
 `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account key, or Application Default
 Credentials (`gcloud auth application-default login`), plus the project/region environment
 variables LiteLLM's Vertex integration expects. `LiteLLMProvider.check_available()` confirms
