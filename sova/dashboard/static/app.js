@@ -84,6 +84,72 @@ function formatDuration(ms) {
   return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
 }
 
+// -- Model family grouping (shared by every grouped model dropdown) --
+
+// Vendor-facing labels for optgroup headers, and the order groups render in.
+// Lives here rather than in one page's inline script because three dropdowns
+// across two pages (settings' single and list model editors, the Agents launch
+// modal's per-run LLM override) build the same grouping from
+// GET /api/models/available, and a per-page copy would let the same family
+// show two different labels. Families not listed here (future ModelFamily
+// additions) are appended after the known ones, sorted alphabetically, so a
+// new family never goes missing, just unordered until this map catches up.
+var MODEL_FAMILY_LABELS = {
+  anthropic: 'Claude',
+  google: 'Gemini',
+  openai: 'OpenAI',
+  'openai-oss': 'gpt-oss',
+  local: 'Local',
+  unknown: 'Other',
+};
+var MODEL_FAMILY_ORDER = ['anthropic', 'google', 'openai', 'openai-oss', 'local', 'unknown'];
+
+function modelFamilyLabel(family) {
+  return MODEL_FAMILY_LABELS[family] || family;
+}
+
+function groupModelsByFamily(models) {
+  var byFamily = {};
+  (models || []).forEach(function(m) {
+    var family = m.family || 'unknown';
+    if (!byFamily[family]) byFamily[family] = [];
+    byFamily[family].push(m);
+  });
+  return byFamily;
+}
+
+function sortedModelFamilies(byFamily) {
+  var known = MODEL_FAMILY_ORDER.filter(function(f) { return byFamily[f]; });
+  var rest = Object.keys(byFamily)
+    .filter(function(f) { return MODEL_FAMILY_ORDER.indexOf(f) === -1; })
+    .sort();
+  return known.concat(rest);
+}
+
+// Append one <optgroup> of model options per family to *select*. Returns
+// whether *selectedId* matched a listed model, which the settings editor uses
+// to decide if a saved value is still in the catalog; callers that pre-select
+// nothing pass no id and ignore the result.
+function appendModelOptgroups(select, byFamily, selectedId) {
+  var matched = false;
+  sortedModelFamilies(byFamily).forEach(function(family) {
+    var group = document.createElement('optgroup');
+    group.label = modelFamilyLabel(family);
+    byFamily[family].forEach(function(m) {
+      var o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.display_name || m.id;
+      if (selectedId && m.id === selectedId) {
+        o.selected = true;
+        matched = true;
+      }
+      group.appendChild(o);
+    });
+    select.appendChild(group);
+  });
+  return matched;
+}
+
 var _WAITING_COLOR = { dot: 'bg-accent-peach', text: 'text-accent-peach', bg: 'bg-accent-peach/20' };
 
 var STATUS_COLORS = {

@@ -130,6 +130,18 @@ class StartAgentRequest(BaseModel):
     resume_run_id: int | None = None
     pr_number: int | None = None
     model: str | None = None
+    # Per-run "Internal LLM model (this run only)": an LLM-layer model ID from
+    # GET /api/models/available?layer=llm. Validated against that discovery at
+    # submit time in start_agent() below, never persisted.
+    llm_model_override: str | None = Field(default=None, max_length=200)
+
+    @field_validator("llm_model_override")
+    @classmethod
+    def validate_llm_model_override(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        value = v.strip()
+        return value if value else None
 
     @field_validator("issue")
     @classmethod
@@ -398,14 +410,71 @@ async def _check_run_terminal(run_id: int) -> bool:
         return False
 
 
+async def _validate_llm_model_override(role: str | None, model_id: str) -> None:
+    """Reject an override the run could not honor, before anything is spawned.
+
+    Checked against a fresh read of the same ``layer="llm"`` discovery the
+    launch modal populated from, so an ID that stopped being valid between
+    page load and submit (e.g. the provider config changed) is caught here
+    rather than at the first model call.
+
+    A ``source: "curated"`` payload is treated as no answer at all, not as a
+    catalog to validate against: it is ``models_service``'s Anthropic-only
+    static fallback, returned while the provider is unauthenticated,
+    misconfigured, or timed out. The launch modal already refuses to offer
+    any model in that state, so accepting one here would let only a stale
+    page or a scripted call through, with an ID the configured provider
+    cannot serve.
+    """
+    from sova.config.context import get_project_dir
+    from sova.dashboard.services import models_service
+    from sova.dashboard.services.agent_lifecycle import llm_model_override_role_error
+
+    role_error = llm_model_override_role_error(role)
+    if role_error:
+        raise HTTPException(status_code=400, detail=role_error)
+
+    try:
+        available = await models_service.get_available_models(get_project_dir() or Path.cwd(), layer="llm")
+    except Exception as exc:  # noqa: BLE001 (any discovery failure means the override cannot be verified)
+        log.warning("agents.llm_model_override_discovery_failed", model=model_id, exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify the internal LLM model override: model discovery is unavailable",
+        ) from exc
+
+    if available.get("source") == "curated":
+        log.warning("agents.llm_model_override_discovery_curated", model=model_id)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Could not verify the internal LLM model override: the current provider's model "
+                "discovery is unavailable (serving a curated fallback list)"
+            ),
+        )
+
+    known_ids = {entry.get("id") for entry in available.get("models", [])}
+    if model_id not in known_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown internal LLM model {model_id!r}: not offered by the current provider's model discovery",
+        )
+
+
 @router.post(
     "/agents/start",
-    responses={409: {"description": "Agent already running for this issue, or budget exceeded"}},
+    responses={
+        400: {"description": "Invalid request, or an internal LLM model override the run cannot honor"},
+        409: {"description": "Agent already running for this issue, or budget exceeded"},
+        503: {"description": "Model discovery unavailable to verify an internal LLM model override"},
+    },
 )
 async def start_agent(req: StartAgentRequest) -> dict:
     """Start a new agent process."""
     if not req.issue and not req.role:
         raise HTTPException(status_code=400, detail="Either issue or role is required for starting an agent")
+    if req.llm_model_override is not None:
+        await _validate_llm_model_override(req.role, req.llm_model_override)
     result = await control_service.start_agent(
         req.issue,
         role=req.role,
@@ -414,6 +483,7 @@ async def start_agent(req: StartAgentRequest) -> dict:
         resume_run_id=req.resume_run_id,
         pr_number=req.pr_number,
         model=req.model,
+        llm_model_override=req.llm_model_override,
     )
     if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
         detail: dict | str = result.get("detail") or result.get("error") or "Command failed"

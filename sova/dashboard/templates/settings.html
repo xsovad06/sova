@@ -445,11 +445,23 @@ function renderPlainTextEditor(key, span, currentVal, fieldType) {
     if (e.key === 'Enter') { saving = true; saveConfig(key, input.value, span, input); }
     if (e.key === 'Escape') { cancelEdit(span, input); }
   };
+  // A list editor normalizes its own text (_rawToInputString() renders a
+  // non-empty list as a JSON array literal, editEnumerableListConfig()
+  // rewrites it to comma-separated), so the no-change check compares parsed
+  // entries rather than raw strings. Comparing the strings alone made merely
+  // opening agent.fallback_models and clicking away look like an edit and
+  // fire a pointless save, which is exactly what _rawToInputString() is
+  // shared to prevent for an untouched empty list.
+  function _isUnchanged(newVal, origStr) {
+    if (newVal === origStr) return true;
+    if (fieldType !== 'list') return false;
+    return _parseListInput(newVal).join(', ') === _parseListInput(origStr).join(', ');
+  }
   input.onblur = function() {
     if (saving) return;
     var newVal = input.value;
     var origStr = span.dataset.raw ? _rawToInputString(JSON.parse(span.dataset.raw)) : '';
-    if (newVal !== origStr) {
+    if (!_isUnchanged(newVal, origStr)) {
       saving = true;
       saveConfig(key, newVal, span, input);
     } else {
@@ -474,12 +486,7 @@ function fetchEnumerableOptions(source) {
   if (!_enumerableOptionsCache[source]) {
     _enumerableOptionsCache[source] = fetchAPI(apiUrl('/models/available?layer=' + encodeURIComponent(source)))
       .then(function(data) {
-        var byFamily = {};
-        (data.models || []).forEach(function(m) {
-          var family = m.family || 'unknown';
-          if (!byFamily[family]) byFamily[family] = [];
-          byFamily[family].push(m);
-        });
+        var byFamily = groupModelsByFamily(data.models);
         if (Object.keys(byFamily).length === 0) throw new Error('no models enumerated');
         // models_service.get_available_models() answers 200 with source
         // "curated" (an Anthropic-only fallback list) while a provider is
@@ -501,31 +508,9 @@ function fetchEnumerableOptions(source) {
 
 var _ENUMERABLE_CUSTOM_VALUE = '__custom__';
 
-// Vendor-facing labels for optgroup headers, and the order groups render in.
-// Families not listed here (future ModelFamily additions) are appended
-// after the known ones, sorted alphabetically, so a new family never goes
-// missing, just unordered until this map catches up.
-var _FAMILY_LABELS = {
-  anthropic: 'Claude',
-  google: 'Gemini',
-  openai: 'OpenAI',
-  'openai-oss': 'gpt-oss',
-  local: 'Local',
-  unknown: 'Other',
-};
-var _FAMILY_ORDER = ['anthropic', 'google', 'openai', 'openai-oss', 'local', 'unknown'];
-
-function _familyLabel(family) {
-  return _FAMILY_LABELS[family] || family;
-}
-
-function _sortedFamilies(byFamily) {
-  var known = _FAMILY_ORDER.filter(function(f) { return byFamily[f]; });
-  var rest = Object.keys(byFamily)
-    .filter(function(f) { return _FAMILY_ORDER.indexOf(f) === -1; })
-    .sort();
-  return known.concat(rest);
-}
+// Optgroup labels, family ordering, and option building are shared with the
+// Agents launch modal's per-run override dropdown: see app.js's
+// MODEL_FAMILY_LABELS / appendModelOptgroups().
 
 // An enumerable field (e.g. agent.model) starts as the plain text editor so
 // it is always usable, then upgrades in place to a grouped <select> once
@@ -578,27 +563,111 @@ function editEnumerableListConfig(key, span, currentVal, source) {
   // same format the plain list editor's own save/cancel handling expects.
   input.value = _parseListInput(input.value).join(', ');
 
+  // Everything below the text input lives in one container, so a blur that
+  // hands focus anywhere inside it is an internal handoff, not an abandoned
+  // edit. Without this, clicking any control first blurs the text input, and
+  // that input's own onblur (shared with every plain-text field) would tear
+  // the whole editor down via cancelEdit() before the click lands.
+  var controls = document.createElement('div');
+  controls.className = 'mt-1 space-y-1';
+  var pickerRow = document.createElement('div');
+  var orderList = document.createElement('ol');
+  orderList.className = 'space-y-1';
+  orderList.setAttribute('aria-label', 'Fallback order (tried top to bottom)');
+  controls.appendChild(pickerRow);
+  controls.appendChild(orderList);
+  span.appendChild(controls);
+
+  var originalInputOnblur = input.onblur;
+  function isInternalFocusHandoff(e) {
+    return !!(e && e.relatedTarget && (e.relatedTarget === input || controls.contains(e.relatedTarget)));
+  }
+  function guardBlur(el) {
+    el.onblur = function(e) {
+      if (isInternalFocusHandoff(e)) return;
+      originalInputOnblur.call(input, e);
+    };
+  }
+  guardBlur(input);
+
+  // The order shown here is exactly the order saved: each control rewrites
+  // the comma-separated text, which the server's _cast_list() splits in
+  // order into the agent.fallback_models list _invoke_with_fallback walks.
+  function renderOrder() {
+    var parts = _parseListInput(input.value);
+    orderList.innerHTML = '';
+    parts.forEach(function(model, i) {
+      var li = document.createElement('li');
+      li.className = 'flex items-center justify-end gap-1 text-xs';
+      var label = document.createElement('span');
+      label.className = 'font-mono text-gray-300 truncate min-w-0';
+      label.textContent = (i + 1) + '. ' + model;
+      li.appendChild(label);
+      [
+        { action: 'up', text: 'Up', title: 'Move up', enabled: i > 0 },
+        { action: 'down', text: 'Down', title: 'Move down', enabled: i < parts.length - 1 },
+        { action: 'remove', text: 'Remove', title: 'Remove', enabled: true },
+      ].forEach(function(spec) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sova-btn text-xs px-1.5 py-0.5';
+        btn.textContent = spec.text;
+        btn.title = spec.title + ': ' + model;
+        btn.setAttribute('aria-label', spec.title + ' ' + model);
+        btn.dataset.idx = String(i);
+        btn.dataset.action = spec.action;
+        btn.disabled = !spec.enabled;
+        // Keep a mouse click from moving focus at all, so the text input
+        // stays focused; keyboard activation still focuses the button.
+        btn.onmousedown = function(e) { e.preventDefault(); };
+        btn.onclick = function(e) {
+          e.stopPropagation();
+          applyOrderAction(i, spec.action, document.activeElement === btn);
+        };
+        guardBlur(btn);
+        li.appendChild(btn);
+      });
+      orderList.appendChild(li);
+    });
+  }
+
+  function applyOrderAction(index, action, refocus) {
+    var parts = _parseListInput(input.value);
+    var target = index;
+    if (action === 'up' && index > 0) {
+      parts.splice(index - 1, 0, parts.splice(index, 1)[0]);
+      target = index - 1;
+    } else if (action === 'down' && index < parts.length - 1) {
+      parts.splice(index + 1, 0, parts.splice(index, 1)[0]);
+      target = index + 1;
+    } else if (action === 'remove') {
+      parts.splice(index, 1);
+    }
+    // Park focus on the input before the rows are rebuilt: removing a
+    // focused button fires a blur with no relatedTarget in some browsers,
+    // which would read as the user leaving the editor.
+    if (refocus) input.focus();
+    input.value = parts.join(', ');
+    renderOrder();
+    if (!refocus) return;
+    var next = orderList.querySelector('button[data-idx="' + target + '"][data-action="' + action + '"]');
+    if (next && !next.disabled) next.focus();
+  }
+
+  input.addEventListener('input', renderOrder);
+  renderOrder();
+
   fetchEnumerableOptions(source).then(function(byFamily) {
     if (!byFamily || span.querySelector('input') !== input) return;
 
     var select = document.createElement('select');
-    select.className = 'sova-input text-xs py-1 mt-1';
+    select.className = 'sova-input text-xs py-1';
     var picker = document.createElement('option');
     picker.value = '';
     picker.textContent = 'Add model...';
     picker.selected = true;
     select.appendChild(picker);
-    _sortedFamilies(byFamily).forEach(function(family) {
-      var group = document.createElement('optgroup');
-      group.label = _familyLabel(family);
-      byFamily[family].forEach(function(m) {
-        var o = document.createElement('option');
-        o.value = m.id;
-        o.textContent = m.display_name || m.id;
-        group.appendChild(o);
-      });
-      select.appendChild(group);
-    });
+    appendModelOptgroups(select, byFamily);
 
     var addBtn = document.createElement('button');
     addBtn.type = 'button';
@@ -617,30 +686,14 @@ function editEnumerableListConfig(key, span, currentVal, source) {
       if (parts.indexOf(select.value) === -1) parts.push(select.value);
       input.value = parts.join(', ');
       select.value = '';
+      renderOrder();
     }
     addBtn.onclick = commitPick;
+    guardBlur(select);
+    guardBlur(addBtn);
 
-    // Clicking the picker or Add button blurs the text input first, and that
-    // input's own onblur (shared with every plain-text field) would otherwise
-    // tear the whole editor down via cancelEdit() before the click reaches
-    // them. Treat a blur that hands focus to either as internal, same as the
-    // full enumerable editor does for its select/custom-input pair.
-    var originalInputOnblur = input.onblur;
-    input.onblur = function(e) {
-      if (e && (e.relatedTarget === select || e.relatedTarget === addBtn)) return;
-      originalInputOnblur.call(input, e);
-    };
-    select.onblur = function(e) {
-      if (e && (e.relatedTarget === input || e.relatedTarget === addBtn)) return;
-      originalInputOnblur.call(input, e);
-    };
-    addBtn.onblur = function(e) {
-      if (e && (e.relatedTarget === input || e.relatedTarget === select)) return;
-      originalInputOnblur.call(input, e);
-    };
-
-    span.appendChild(select);
-    span.appendChild(addBtn);
+    pickerRow.appendChild(select);
+    pickerRow.appendChild(addBtn);
   });
 }
 
@@ -648,22 +701,7 @@ function renderEnumerableSelect(key, span, currentVal, byFamily) {
   var select = document.createElement('select');
   select.className = 'sova-input text-xs py-1';
 
-  var matched = false;
-  _sortedFamilies(byFamily).forEach(function(family) {
-    var group = document.createElement('optgroup');
-    group.label = _familyLabel(family);
-    byFamily[family].forEach(function(m) {
-      var o = document.createElement('option');
-      o.value = m.id;
-      o.textContent = m.display_name || m.id;
-      if (m.id === currentVal) {
-        o.selected = true;
-        matched = true;
-      }
-      group.appendChild(o);
-    });
-    select.appendChild(group);
-  });
+  var matched = appendModelOptgroups(select, byFamily, currentVal);
 
   var customOpt = document.createElement('option');
   customOpt.value = _ENUMERABLE_CUSTOM_VALUE;

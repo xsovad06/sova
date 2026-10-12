@@ -176,6 +176,7 @@ from sova.dashboard.services.agent_validation import (
 from sova.dashboard.services.feed_service import emit_safe
 from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.runtime import _PIPELINE_ROLES, _codex_extra_env, get_runtime, spawn_direct
+from sova.llm.client import RUN_MODEL_OVERRIDE_ENV
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
 
@@ -198,6 +199,26 @@ log = get_logger(component="dashboard.control")
 # a model call over a diff plus GitHub/DB writes, so running it outside any
 # runtime sandbox is correct regardless of ``agent.runtime``.
 _DIRECT_SPAWN_ROLES = _PIPELINE_ROLES | {"reviewer"}
+
+# Roles whose spawned ``sova run`` child reads the per-run "Internal LLM model"
+# override (``RUN_MODEL_OVERRIDE_ENV``) in ``_invoke_with_fallback``. That env
+# var only reaches the child through ``spawn_direct(extra_env=...)`` below, so
+# the set is exactly the direct-spawn roles rather than its own literal: a
+# second copy of the same four names would silently stop matching the spawn
+# path the moment a pipeline role is added. Any other role is rejected up
+# front rather than launched with an override that never reaches a model call.
+LLM_MODEL_OVERRIDE_ROLES = _DIRECT_SPAWN_ROLES
+
+
+def llm_model_override_role_error(role: str | None) -> str | None:
+    """Return why *role* cannot take a per-run LLM model override, or None if it can."""
+    effective_role = role if role is not None else "developer"
+    if effective_role in LLM_MODEL_OVERRIDE_ROLES:
+        return None
+    return (
+        f"The {effective_role} role cannot honor a per-run internal LLM model override; "
+        f"supported roles: {', '.join(sorted(LLM_MODEL_OVERRIDE_ROLES))}"
+    )
 
 
 # Status queries
@@ -463,11 +484,24 @@ async def start_agent(
     resume_run_id: int | None = None,
     pr_number: int | None = None,
     model: str | None = None,
+    llm_model_override: str | None = None,
     _skip_handoff_clear: bool = False,
 ) -> dict:
-    """Start an agent process for the given issue."""
+    """Start an agent process for the given issue.
+
+    *llm_model_override* is a per-run "Internal LLM model" choice. It is
+    passed only into this run's spawned child environment and is never
+    written to config or the DB. Callers validate the model ID against
+    discovery first (see the ``/agents/start`` router); the role check is
+    repeated here so no caller can launch a run whose override is ignored.
+    """
     from sova.dashboard.services.agent_db import _capture_pr_head_sha
     from sova.dashboard.services.agent_output import _read_output, _read_stderr
+
+    if llm_model_override:
+        role_error = llm_model_override_role_error(role)
+        if role_error:
+            return {"error": role_error, "code": "llm_model_override_unsupported"}
 
     issue = issue.lstrip("#").strip() if issue else ""
     pa = _get_project_agents(slug)
@@ -588,16 +622,26 @@ async def start_agent(
                     cwd=str(cwd),
                     cmd=cmd_parts[:4],
                 )
-                direct_extra_env = None
+                # Built fresh per call: this run's override must never be
+                # visible to a concurrently started run's environment.
+                direct_extra_env: dict[str, str] = {}
                 if effective_role == "reviewer" and _resolve_repo_context_agent_enabled(project_dir):
-                    direct_extra_env = _codex_extra_env(gh_env)
+                    direct_extra_env.update(_codex_extra_env(gh_env) or {})
+                if llm_model_override:
+                    direct_extra_env[RUN_MODEL_OVERRIDE_ENV] = llm_model_override
+                    log.info(
+                        "agent.llm_model_override",
+                        run_id=run_id,
+                        role=effective_role,
+                        model=llm_model_override,
+                    )
                 process = await spawn_direct(
                     cmd_parts,
                     cwd,
                     env=gh_env,
                     output_dir=output_dir,
                     run_label=str(run_id),
-                    extra_env=direct_extra_env,
+                    extra_env=direct_extra_env or None,
                 )
             else:
                 log.info(
