@@ -13,6 +13,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.operations import CICheck, get_ci_checks, get_ci_failure_logs
@@ -37,6 +38,7 @@ def _redact_logs(text: str) -> str:
 class MonitorCIStep(BaseStep):
     name = "monitor_ci"
     max_retries = 0
+    requires_tools = True
 
     # ------------------------------------------------------------------
     # Public API
@@ -303,12 +305,13 @@ class MonitorCIStep(BaseStep):
         max_attempts: int,
     ) -> StepResult:
         """Attempt to fix CI failures by invoking Claude, re-pushing, and re-polling."""
+        import functools
         from decimal import Decimal
 
         from sova.git import operations as git_ops
-        from sova.llm.client import invoke
         from sova.utils.shell import run
 
+        invoke = functools.partial(dispatch_prompt, self)
         total_fix_cost = Decimal("0")
 
         for attempt in range(1, max_attempts + 1):
@@ -434,6 +437,7 @@ class MonitorCIStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=budget,
                 timeout=ctx.config.validation.fix_timeout,
+                ctx=ctx,
             )
             ctx.add_usage(llm_result)
             return llm_result.cost_usd, None

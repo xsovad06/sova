@@ -56,12 +56,14 @@ def _resolve_primary_root(cwd: Path) -> Path | None:
         return None
 
 
-def _assert_command_exists(command: str, cwd: Path) -> None:
+def _assert_command_exists(command: str, cwd: Path) -> Path:
     """Fail fast if a slash command file is missing from the target project.
 
     When running inside a worktree, attempts to restore ``.claude/`` artifacts
     from the primary checkout before raising, since rebase stash operations
-    can destroy them.
+    can destroy them. Returns the resolved command file path, so a caller that
+    needs the markdown body (``sova.core.agent_dispatch``) does not duplicate
+    the ``.claude/commands/`` layout or skip the validation above.
     """
     name = command.lstrip("/")
     if not name or "/" in name or "\\" in name or ".." in name:
@@ -76,12 +78,13 @@ def _assert_command_exists(command: str, cwd: Path) -> None:
                 ensure_claude_artifacts(project_root, cwd)
                 if cmd_path.is_file():
                     log.info("llm.command_restored", command=command, cwd=str(cwd))
-                    return
+                    return cmd_path
             except (RuntimeError, OSError):
                 log.debug("llm.command_restore_failed", command=command, cwd=str(cwd), exc_info=True)
         raise RuntimeError(
             f"Command {command} not found at {cmd_path}. Run 'sova commands update --project {cwd}' to install it."
         )
+    return cmd_path
 
 
 @dataclass(frozen=True)

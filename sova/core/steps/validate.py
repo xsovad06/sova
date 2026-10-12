@@ -12,11 +12,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.test_baseline import diff_results, load_baseline, run_test_suite
 from sova.git.branch import get_current_branch
-from sova.llm.client import invoke
 from sova.llm.errors import format_fix_llm_failure
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, run_checked
@@ -95,6 +95,7 @@ async def find_pre_push_hook(cwd: Path | str | None) -> str | None:
 class ValidateStep(BaseStep):
     name = "validate"
     max_retries = 0
+    requires_tools = True
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         cwd = ctx.working_dir
@@ -158,13 +159,15 @@ class ValidateStep(BaseStep):
             )
 
             try:
-                llm_result = await invoke(
+                llm_result = await dispatch_prompt(
+                    self,
                     prompt,
                     model=ctx.resolved_model or ctx.config.agent.model,
                     task_type="validate",
                     cwd=ctx.working_dir,
                     max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                     timeout=ctx.config.validation.fix_timeout,
+                    ctx=ctx,
                 )
                 ctx.add_usage(llm_result)
             except RuntimeError as exc:

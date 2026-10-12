@@ -104,7 +104,7 @@ class TestValidateStepTimeout:
             patch("sova.core.steps.validate.find_pre_push_hook", AsyncMock(return_value=".githooks/pre-push")),
             patch("sova.core.steps.validate.build_pre_push_stdin", AsyncMock(return_value="ref sha ref sha\n")),
             patch("sova.core.steps.validate.run", AsyncMock(return_value=timed_out)),
-            patch("sova.core.steps.validate.invoke", AsyncMock()) as mock_invoke,
+            patch("sova.core.steps.validate.dispatch_prompt", AsyncMock()) as mock_invoke,
         ):
             result = await ValidateStep().execute(ctx)
 
@@ -124,7 +124,7 @@ class TestValidateStepTimeout:
             patch("sova.core.steps.validate.find_pre_push_hook", AsyncMock(return_value=".githooks/pre-push")),
             patch("sova.core.steps.validate.build_pre_push_stdin", AsyncMock(return_value="ref sha ref sha\n")),
             patch("sova.core.steps.validate.run", AsyncMock(side_effect=[failed, timed_out])),
-            patch("sova.core.steps.validate.invoke", AsyncMock()) as mock_invoke,
+            patch("sova.core.steps.validate.dispatch_prompt", AsyncMock()) as mock_invoke,
         ):
             mock_invoke.return_value = LLMResult(text="fixed", model="sonnet", cost_usd=Decimal("0.02"))
             result = await ValidateStep().execute(ctx)
@@ -151,7 +151,7 @@ class TestValidateStepEndToEnd:
         hook.chmod(0o755)
 
         ctx = _make_ctx(worktree_dir=tmp_path)
-        with patch("sova.core.steps.validate.invoke", AsyncMock()) as mock_invoke:
+        with patch("sova.core.steps.validate.dispatch_prompt", AsyncMock()) as mock_invoke:
             result = await ValidateStep().execute(ctx)
 
         assert result.success, result.summary
@@ -186,7 +186,7 @@ class TestValidateStepEndToEnd:
             fixed_marker.write_text("1")
             return LLMResult(text="fixed", model="sonnet", cost_usd=Decimal("0.01"))
 
-        with patch("sova.core.steps.validate.invoke", AsyncMock(side_effect=_fake_fix)):
+        with patch("sova.core.steps.validate.dispatch_prompt", AsyncMock(side_effect=_fake_fix)):
             result = await ValidateStep().execute(ctx)
 
         assert result.success, result.summary

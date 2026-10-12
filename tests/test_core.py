@@ -2402,7 +2402,7 @@ class TestValidateStep:
 
         with (
             patch("sova.core.steps.validate.run") as mock_run,
-            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
@@ -2422,7 +2422,7 @@ class TestValidateStep:
         assert result.success
         assert "1 fix attempt" in result.summary
         mock_invoke.assert_awaited_once()
-        assert "missing type hints" in mock_invoke.call_args[1].get("prompt", mock_invoke.call_args[0][0])
+        assert "missing type hints" in mock_invoke.call_args[1].get("prompt", mock_invoke.call_args[0][1])
 
     async def test_fails_after_max_attempts(self) -> None:
         from sova.core.steps.validate import ValidateStep
@@ -2433,7 +2433,7 @@ class TestValidateStep:
 
         with (
             patch("sova.core.steps.validate.run") as mock_run,
-            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
@@ -2465,7 +2465,7 @@ class TestValidateStep:
         with (
             patch("sova.core.steps.validate.run") as mock_run,
             patch(
-                "sova.core.steps.validate.invoke",
+                "sova.core.steps.validate.dispatch_prompt",
                 new_callable=AsyncMock,
                 side_effect=LLMTimeoutError("Command timed out after 180s"),
             ),
@@ -2493,7 +2493,7 @@ class TestValidateStep:
 
         with (
             patch("sova.core.steps.validate.run") as mock_run,
-            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
@@ -2587,7 +2587,7 @@ class TestValidateStep:
 
         with (
             patch("sova.core.steps.validate.run") as mock_run,
-            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),
@@ -2602,7 +2602,7 @@ class TestValidateStep:
             )
             await step.execute(ctx)
 
-        prompt = mock_invoke.call_args[0][0] if mock_invoke.call_args[0] else mock_invoke.call_args[1]["prompt"]
+        prompt = mock_invoke.call_args[0][1]
         assert "ACTUAL ERROR" in prompt
         assert "truncated" in prompt
         code_block = prompt.split("```\n")[1].split("\n```")[0]
@@ -2618,7 +2618,7 @@ class TestValidateStep:
 
         with (
             patch("sova.core.steps.validate.run") as mock_run,
-            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=".githooks\n"),
@@ -2634,7 +2634,7 @@ class TestValidateStep:
             )
             await step.execute(ctx)
 
-        second_call_prompt = mock_invoke.call_args_list[1][0][0]
+        second_call_prompt = mock_invoke.call_args_list[1][0][1]
         assert "RETRY_ERROR" in second_call_prompt
         assert "truncated" in second_call_prompt
         code_block = second_call_prompt.split("```\n")[1].split("\n```")[0]
@@ -3451,13 +3451,14 @@ class TestRearrangeCommitsStep:
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
         step = RearrangeCommitsStep()
 
-        with patch("sova.core.steps.rearrange_commits.invoke_command", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = MagicMock(cost_usd=Decimal("0.02"), text="Commits reorganized")
             result = await step.execute(ctx)
 
         assert result.success
         assert "reorganized" in result.summary
         mock_invoke.assert_awaited_once_with(
+            step,
             "/rearrange-commits",
             model=ctx.config.agent.model,
             fallback_model=None,
@@ -3465,6 +3466,7 @@ class TestRearrangeCommitsStep:
             cwd=ctx.working_dir,
             max_budget_usd=ANY,
             timeout=ANY,
+            ctx=ctx,
         )
 
     async def test_execute_returns_failure_on_error(self) -> None:
@@ -3473,7 +3475,7 @@ class TestRearrangeCommitsStep:
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
         step = RearrangeCommitsStep()
 
-        with patch("sova.core.steps.rearrange_commits.invoke_command", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.side_effect = RuntimeError("command not found")
             result = await step.execute(ctx)
 
@@ -5865,7 +5867,7 @@ class TestMonitorCIFixLoop:
             with (
                 patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.operations.push", new_callable=AsyncMock),
-                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
                 patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
@@ -5904,7 +5906,7 @@ class TestMonitorCIFixLoop:
             with (
                 patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.operations.push", new_callable=AsyncMock),
-                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
                 patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
@@ -5941,7 +5943,7 @@ class TestMonitorCIFixLoop:
             with (
                 patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.operations.push", new_callable=AsyncMock),
-                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
                 patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
@@ -5979,7 +5981,7 @@ class TestMonitorCIFixLoop:
                 patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch(
-                    "sova.llm.client.invoke",
+                    "sova.core.steps.monitor_ci.dispatch_prompt",
                     new_callable=AsyncMock,
                     side_effect=LLMTimeoutError("Command timed out after 180s"),
                 ),
@@ -6020,7 +6022,7 @@ class TestMonitorCIFixLoop:
             with (
                 patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.operations.push", new_callable=AsyncMock),
-                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
                 patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
@@ -6092,7 +6094,7 @@ class TestMonitorCIFixLoop:
                     return_value="/hooks/pre-push",
                 ),
                 patch("sova.git.operations.push", new_callable=AsyncMock) as mock_push,
-                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
             ):
                 mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
@@ -6128,7 +6130,7 @@ class TestMonitorCIFixLoop:
             with (
                 patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.operations.push", new_callable=AsyncMock, side_effect=RuntimeError("push rejected")),
-                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
             ):
                 mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
@@ -6159,7 +6161,7 @@ class TestMonitorCIFixLoop:
             with (
                 patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
                 patch("sova.git.operations.push", new_callable=AsyncMock),
-                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
                 patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
@@ -7281,7 +7283,7 @@ class TestSimplifyStep:
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
         step = SimplifyStep()
 
-        with patch("sova.core.steps.simplify.invoke_command", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.simplify.dispatch_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(
                 text="Simplified",
                 model="sonnet",
@@ -7293,7 +7295,7 @@ class TestSimplifyStep:
         assert "Simplification pass completed" in result.summary
         assert ctx.cost_usd == Decimal("0.03")
         mock_invoke.assert_awaited_once()
-        assert mock_invoke.call_args[0][0] == "/simplify"
+        assert mock_invoke.call_args[0][1] == "/simplify"
         assert mock_invoke.call_args.kwargs["task_type"] == "simplify"
 
     async def test_execute_suppresses_task_type_during_fallback(self) -> None:
@@ -7303,7 +7305,7 @@ class TestSimplifyStep:
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"), fallback_model_index=1)
         step = SimplifyStep()
 
-        with patch("sova.core.steps.simplify.invoke_command", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.simplify.dispatch_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text="Simplified", model="sonnet", cost_usd=Decimal("0"))
             await step.execute(ctx)
 
@@ -7315,7 +7317,7 @@ class TestSimplifyStep:
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
         step = SimplifyStep()
 
-        with patch("sova.core.steps.simplify.invoke_command", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.simplify.dispatch_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.side_effect = RuntimeError("Claude CLI unavailable")
             result = await step.execute(ctx)
 
@@ -7466,7 +7468,7 @@ class TestSelfReviewStep:
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
         step = SelfReviewStep()
 
-        with patch("sova.core.steps.self_review.invoke_command", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.self_review.dispatch_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(
                 text="Reviewed",
                 model="sonnet",
@@ -7478,7 +7480,7 @@ class TestSelfReviewStep:
         assert "Self-review completed" in result.summary
         assert ctx.cost_usd == Decimal("0.02")
         mock_invoke.assert_awaited_once()
-        assert mock_invoke.call_args[0][0] == "/review"
+        assert mock_invoke.call_args[0][1] == "/review"
         assert mock_invoke.call_args.kwargs["task_type"] == "self_review"
 
     async def test_execute_handles_runtime_error(self) -> None:
@@ -7487,7 +7489,7 @@ class TestSelfReviewStep:
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
         step = SelfReviewStep()
 
-        with patch("sova.core.steps.self_review.invoke_command", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.self_review.dispatch_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.side_effect = RuntimeError("LLM failed")
             result = await step.execute(ctx)
 
@@ -7853,7 +7855,7 @@ class TestDevelopStepExecute:
         ctx.config.develop.step_timeout = 999
         step = DevelopStep()
 
-        with patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(
                 text="Developed",
                 model="opus",
@@ -7885,7 +7887,7 @@ class TestDevelopStepExecute:
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
         step = DevelopStep()
 
-        with patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.side_effect = RuntimeError("Timeout")
             result = await step.execute(ctx)
 
@@ -7901,7 +7903,7 @@ class TestDevelopStepExecute:
         step = DevelopStep()
 
         with (
-            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_invoke,
             patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
             patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
         ):
@@ -7928,7 +7930,7 @@ class TestDevelopStepExecute:
         step = DevelopStep()
 
         with (
-            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_invoke,
             patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
             patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
         ):
@@ -7955,7 +7957,7 @@ class TestDevelopStepExecute:
         step = DevelopStep()
 
         with (
-            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_invoke,
             patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
             patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
         ):
@@ -7982,7 +7984,7 @@ class TestDevelopStepExecute:
         step = DevelopStep()
 
         with (
-            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_invoke,
             patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
             patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
         ):
@@ -8009,7 +8011,7 @@ class TestDevelopStepExecute:
         step = DevelopStep()
 
         with (
-            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_invoke,
             patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
             patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
         ):
@@ -8035,7 +8037,7 @@ class TestDevelopStepExecute:
         step = DevelopStep()
 
         with (
-            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_invoke,
             patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
             patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
         ):
@@ -8494,7 +8496,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.return_value = LLMResult(
@@ -8507,7 +8509,7 @@ class TestAddressReviewStepExecute:
         assert result.success
         assert "1 review findings" in result.summary
         assert ctx.cost_usd == Decimal("0.05")
-        prompt = mock_invoke.call_args[0][0]
+        prompt = mock_invoke.call_args[0][1]
         assert "Null check" in prompt
         assert "foo.py:10" in prompt
         assert mock_invoke.call_args.kwargs["task_type"] == "address_review"
@@ -8544,7 +8546,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=(cr_findings, ["thread-1"]),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.05"))
@@ -8552,7 +8554,7 @@ class TestAddressReviewStepExecute:
 
         assert result.success
         assert "2 review findings" in result.summary
-        prompt = mock_invoke.call_args[0][0]
+        prompt = mock_invoke.call_args[0][1]
         assert "SOVA finding" in prompt
         assert "CodeRabbit finding" in prompt
         assert "coderabbit" in prompt
@@ -8576,7 +8578,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123\n")
             mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.01"))
@@ -8605,7 +8607,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_db_handoff = MagicMock()
@@ -8620,7 +8622,7 @@ class TestAddressReviewStepExecute:
 
         assert result.success
         assert "1 review findings" in result.summary
-        prompt = mock_invoke.call_args[0][0]
+        prompt = mock_invoke.call_args[0][1]
         assert "Formatting" in prompt
 
     async def test_execute_handles_llm_failure(self) -> None:
@@ -8641,7 +8643,7 @@ class TestAddressReviewStepExecute:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.side_effect = RuntimeError("LLM crashed")
@@ -8853,7 +8855,7 @@ class TestAddressReviewHelpers:
                 new_callable=AsyncMock,
                 return_value=([], []),
             ),
-            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.03"))
@@ -8861,7 +8863,7 @@ class TestAddressReviewHelpers:
 
         assert result.success
         assert "1 review findings" in result.summary
-        prompt = mock_invoke.call_args[0][0]
+        prompt = mock_invoke.call_args[0][1]
         assert "Needs fix" in prompt
 
 
@@ -9815,7 +9817,7 @@ class TestDevelopStepInnerCheckLoop:
 
         with (
             patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # command -v probe
@@ -9856,7 +9858,7 @@ class TestDevelopStepInnerCheckLoop:
 
         with (
             patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # command -v probe
@@ -9943,7 +9945,7 @@ class TestDevelopStepInnerCheckLoop:
 
         with (
             patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # command -v probe
@@ -9971,7 +9973,7 @@ class TestDevelopStepInnerCheckLoop:
 
         with (
             patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
             patch("sova.core.steps.develop._get_dirty_test_files", new_callable=AsyncMock) as mock_dirty,
         ):
             mock_run.side_effect = [
@@ -10016,7 +10018,7 @@ class TestDevelopStepInnerCheckLoop:
 
         with (
             patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
             patch("sova.core.steps.develop._get_dirty_test_files", new_callable=AsyncMock) as mock_dirty,
         ):
             mock_run.side_effect = [
@@ -10059,7 +10061,7 @@ class TestDevelopStepInnerCheckLoop:
         step = DevelopStep()
 
         with (
-            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_cmd,
+            patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_cmd,
             patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
         ):
             mock_cmd.return_value = LLMResult(
@@ -10110,7 +10112,7 @@ class TestDevelopStepInnerCheckLoop:
 
         with (
             patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # command -v probe
@@ -10158,7 +10160,7 @@ class TestDevelopStepInnerCheckLoop:
 
         with (
             patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
             patch("sova.core.steps.develop._get_dirty_test_files", new_callable=AsyncMock) as mock_dirty,
         ):
             mock_run.side_effect = [
@@ -10212,7 +10214,7 @@ class TestDevelopStepInnerCheckLoop:
 
         with (
             patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
             patch("sova.core.steps.develop._get_dirty_test_files", new_callable=AsyncMock) as mock_dirty,
         ):
             mock_run.side_effect = [
@@ -10448,7 +10450,7 @@ class TestDevelopStepInnerCheckLoop:
 
         with (
             patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # command -v probe

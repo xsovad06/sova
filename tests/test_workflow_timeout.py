@@ -467,14 +467,14 @@ class TestStepDeadlineRunawayInteraction:
 
         with (
             patch(
-                "sova.core.steps.develop.invoke_command",
+                "sova.core.steps.develop.dispatch_command",
                 new=AsyncMock(
                     return_value=LLMResult(
                         text="done", model="opus", cost_usd=Decimal("0.60"), session_id="test-session"
                     )
                 ),
             ),
-            patch("sova.core.steps.develop.invoke", side_effect=_hanging_fix_invoke),
+            patch("sova.core.steps.develop.dispatch_prompt", side_effect=_hanging_fix_invoke),
         ):
             result = await engine.run()
 
@@ -567,7 +567,7 @@ hook_timeout = 150
 
         step = ValidateStep()
 
-        with patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke:
+        with patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke:
             from sova.llm.models import LLMResult
 
             mock_invoke.return_value = LLMResult(

@@ -383,14 +383,17 @@ class TestAddressExternalFindingsStep:
                 return_value=cr,
             ),
             patch(
-                "sova.llm.client.invoke",
+                "sova.core.agent_dispatch.dispatch_prompt",
                 new_callable=AsyncMock,
                 return_value=mock_llm,
             ),
             patch(
                 "sova.core.steps.address_external_findings.run",
                 new_callable=AsyncMock,
-                return_value=_shell_result(),
+                # Non-empty stdout on every git call: thread resolution is now
+                # gated on evidence of actual edits (has_changes/new_commits),
+                # not on cost_usd, so _detect_changes() must see a change.
+                return_value=_shell_result(stdout="1 file changed"),
             ),
             patch("sova.git.operations.commit", new_callable=AsyncMock),
             patch("sova.git.operations.push", new_callable=AsyncMock),
@@ -425,7 +428,7 @@ class TestAddressExternalFindingsStep:
                 return_value=coverage_report,
             ),
             patch("sova.adapters.external_reviews._fetch_coderabbit_threads", new_callable=AsyncMock, return_value=cr),
-            patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=mock_llm),
+            patch("sova.core.agent_dispatch.dispatch_prompt", new_callable=AsyncMock, return_value=mock_llm),
             patch(
                 "sova.core.steps.address_external_findings.run",
                 new_callable=AsyncMock,
@@ -470,7 +473,7 @@ class TestAddressExternalFindingsStep:
                 new_callable=AsyncMock,
                 return_value=_ThreadsResult(),
             ),
-            patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=mock_llm),
+            patch("sova.core.agent_dispatch.dispatch_prompt", new_callable=AsyncMock, return_value=mock_llm),
             patch(
                 "sova.core.steps.address_external_findings.run",
                 new_callable=AsyncMock,
@@ -720,7 +723,9 @@ class TestAddressExternalFindingsWithCoverage:
                 new_callable=AsyncMock,
                 return_value=_ThreadsResult(),
             ),
-            patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=mock_llm) as mock_invoke,
+            patch(
+                "sova.core.agent_dispatch.dispatch_prompt", new_callable=AsyncMock, return_value=mock_llm
+            ) as mock_invoke,
             patch(
                 "sova.core.steps.address_external_findings.run",
                 new_callable=AsyncMock,
@@ -734,7 +739,9 @@ class TestAddressExternalFindingsWithCoverage:
         assert result.success
         assert "coverage gap remediation" in result.summary
         assert mock_invoke.called
-        prompt_arg = mock_invoke.call_args[0][0]
+        # dispatch_prompt(step, prompt, ...): the prompt is the second
+        # positional argument, after the step instance.
+        prompt_arg = mock_invoke.call_args[0][1]
         assert "65.0%" in prompt_arg
         assert "pytest --cov" in prompt_arg
 

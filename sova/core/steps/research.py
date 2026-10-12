@@ -17,6 +17,13 @@ log = get_logger(component="step.research")
 class ResearchStep(BaseStep):
     name = "research"
     TASK_TYPE = "research"
+    # Stays on invoke_command()/LLMProvider, not dispatch_command(): /research
+    # never edits the git worktree, only appends a "## Research" section to
+    # the issue/ticket body via gh/jira CLI calls. requires_tools (per
+    # BaseStep's docstring) exists to catch a text-only provider silently
+    # producing zero *worktree* changes; that failure mode doesn't apply here,
+    # and validate_output() below already gates on the tracker body/comments
+    # actually containing the section, independent of which provider ran.
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.research", issue=ctx.issue_number, cwd=str(ctx.project_dir))

@@ -16,9 +16,10 @@ import re
 from pathlib import Path
 
 from sova.agents.registry import artifact_exclusion_prefixes
+from sova.core.agent_dispatch import dispatch_command, dispatch_prompt
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.llm.client import invoke, invoke_command
+from sova.llm.client import invoke
 from sova.llm.errors import format_fix_llm_failure
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
@@ -162,6 +163,7 @@ class DevelopStep(BaseStep):
     name = "develop"
     TASK_TYPE = "develop"
     max_retries = 1
+    requires_tools = True
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.develop", issue=ctx.issue_number, cwd=str(ctx.working_dir))
@@ -179,7 +181,8 @@ class DevelopStep(BaseStep):
 
         try:
             cost_before_develop = ctx.cost_usd
-            result = await invoke_command(
+            result = await dispatch_command(
+                self,
                 "/develop",
                 args=args,
                 model=ctx.resolved_model or ctx.config.agent.model,
@@ -188,6 +191,7 @@ class DevelopStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.develop.step_timeout,
+                ctx=ctx,
             )
             ctx.add_usage(result)
             ctx.session_id = result.session_id
@@ -461,7 +465,11 @@ class DevelopStep(BaseStep):
             f"do NOT weaken, delete, or skip tests. Do NOT commit -- just fix and stage the changes."
         )
         try:
-            llm_result = await invoke(
+            # dispatch_prompt, not invoke: this prompt asks for source edits, so
+            # it needs the same AgentRuntime the /develop dispatch above used. A
+            # text-only provider would answer it with prose and no file changes.
+            llm_result = await dispatch_prompt(
+                self,
                 prompt,
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
@@ -469,6 +477,7 @@ class DevelopStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.develop.fix_timeout,
+                ctx=ctx,
             )
             ctx.add_usage(llm_result)
         except RuntimeError as exc:

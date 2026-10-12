@@ -747,7 +747,7 @@ async def test_develop_step_execute_success(tmp_path: Path) -> None:
     mock_append = AsyncMock()
 
     with (
-        patch("sova.core.steps.develop.invoke_command", mock_invoke_cmd),
+        patch("sova.core.steps.develop.dispatch_command", mock_invoke_cmd),
         patch("sova.core.steps.develop._append_implementation_notes", mock_append),
     ):
         result = await step.execute(ctx)
@@ -766,7 +766,7 @@ async def test_develop_step_execute_runtime_error(tmp_path: Path) -> None:
 
     mock_invoke_cmd = AsyncMock(side_effect=RuntimeError("Claude CLI failed"))
 
-    with patch("sova.core.steps.develop.invoke_command", mock_invoke_cmd):
+    with patch("sova.core.steps.develop.dispatch_command", mock_invoke_cmd):
         result = await step.execute(ctx)
 
     assert result.success is False
@@ -1111,7 +1111,7 @@ async def test_develop_step_passes_spec_in_args(tmp_path: Path) -> None:
     mock_append = AsyncMock()
 
     with (
-        patch("sova.core.steps.develop.invoke_command", mock_invoke_cmd),
+        patch("sova.core.steps.develop.dispatch_command", mock_invoke_cmd),
         patch("sova.core.steps.develop._append_implementation_notes", mock_append),
     ):
         result = await step.execute(ctx)
@@ -1143,7 +1143,7 @@ async def test_develop_step_no_spec_passes_issue_number_only(tmp_path: Path) -> 
     mock_append = AsyncMock()
 
     with (
-        patch("sova.core.steps.develop.invoke_command", mock_invoke_cmd),
+        patch("sova.core.steps.develop.dispatch_command", mock_invoke_cmd),
         patch("sova.core.steps.develop._append_implementation_notes", mock_append),
     ):
         result = await step.execute(ctx)
@@ -1174,7 +1174,7 @@ async def test_address_review_logs_spec_compression(tmp_path: Path) -> None:
 
     with (
         patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
-        patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock, return_value=mock_result),
+        patch("sova.core.steps.address_review.dispatch_prompt", new_callable=AsyncMock, return_value=mock_result),
         patch(
             "sova.core.steps.address_review._load_coderabbit_findings",
             new_callable=AsyncMock,
@@ -1223,6 +1223,7 @@ def _make_ctx(
     ctx.config.check_cmd = ""
     ctx.config.develop.max_fix_cycles = 0
     ctx.config.llm.routing = {}
+    ctx.config.security.prompt_guard_threshold = 0.7
 
     # Make add_cost actually update cost_usd
     def add_cost(amount):

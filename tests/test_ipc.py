@@ -2964,6 +2964,68 @@ class TestClaudeCodeParseEdgeCases:
         assert event.result.output_tokens == 50
         assert event.result.session_id == "abc123"
 
+    def test_parse_output_result_uses_modelUsage_and_cache_input_tokens(self) -> None:
+        """Result events should read the CLI's actual field names, not stale ones."""
+        import json
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        line = json.dumps(
+            {
+                "type": "result",
+                "result": "done",
+                "total_cost_usd": 0.05,
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_read_input_tokens": 90000,
+                    "cache_creation_input_tokens": 12000,
+                },
+                "modelUsage": {"claude-sonnet-4-5": {"costUSD": 0.05}},
+                "session_id": "abc123",
+            }
+        )
+        event = rt.parse_output(line)
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == "claude-sonnet-4-5"
+        assert event.result.cache_read_tokens == 90000
+        assert event.result.cache_creation_tokens == 12000
+        from sova.llm.models import CostSource
+
+        assert event.result.cost_source == CostSource.PRICED
+
+    @pytest.mark.parametrize(
+        ("data", "expected_is_error"),
+        [
+            ({"is_error": True}, True),
+            ({"subtype": "error_during_execution"}, True),
+            ({"subtype": "error_max_turns"}, True),
+            ({"subtype": "success"}, False),
+            ({}, False),
+        ],
+    )
+    def test_parse_output_result_stop_reason_from_is_error_and_subtype(
+        self, data: dict, expected_is_error: bool
+    ) -> None:
+        """A failed turn (is_error or a non-success subtype) must map to stop_reason="error".
+
+        The "missing subtype" case (``{}``) is the easiest branch to regress:
+        reverting it silently restores the pre-fix behavior where a failed
+        turn is indistinguishable from a successful one.
+        """
+        import json
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        payload = {"type": "result", "result": "done", **data}
+        event = rt.parse_output(json.dumps(payload))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.is_error is expected_is_error
+
     def test_get_runtime_default(self) -> None:
         import sova.ipc.runtime as rt_mod
         from sova.ipc.runtime import ClaudeCodeRuntime, get_runtime

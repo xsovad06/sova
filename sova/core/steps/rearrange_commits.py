@@ -13,9 +13,9 @@ from __future__ import annotations
 import re
 
 from sova.agents.registry import artifact_exclusion_prefixes
+from sova.core.agent_dispatch import dispatch_command
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -63,12 +63,14 @@ log = get_logger(component="step.rearrange_commits")
 class RearrangeCommitsStep(BaseStep):
     name = "rearrange_commits"
     TASK_TYPE = "rearrange_commits"
+    requires_tools = True
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.rearrange_commits", branch=ctx.branch_name, base=ctx.base_branch)
 
         try:
-            result = await invoke_command(
+            result = await dispatch_command(
+                self,
                 "/rearrange-commits",
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
@@ -76,6 +78,7 @@ class RearrangeCommitsStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,
+                ctx=ctx,
             )
             ctx.add_usage(result)
             return StepResult(
