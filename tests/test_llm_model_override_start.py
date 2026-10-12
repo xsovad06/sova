@@ -72,6 +72,10 @@ def _spawn_harness(pa: ProjectAgents, spawn_direct: AsyncMock, *, run_ids: list[
         patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
         patch.object(agent_lifecycle, "_resolve_repo_context_agent_enabled", return_value=False),
         patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+        # Spawned as a background task for a developer run with no PR, and it
+        # reaches the real tracker adapter (a `gh` subprocess) if left unpatched,
+        # which hangs the test past the suite timeout in CI.
+        patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
         patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
         patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
     ):
