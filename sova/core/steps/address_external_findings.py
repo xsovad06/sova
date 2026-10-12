@@ -198,6 +198,7 @@ class AddressExternalFindingsStep(BaseStep):
                 task_type=ctx.routing_task_type("address_review"),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
+                ctx=ctx,
                 timeout=ctx.config.agent.step_timeout,
             )
             ctx.add_usage(result)

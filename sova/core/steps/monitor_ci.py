@@ -437,6 +437,7 @@ class MonitorCIStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=budget,
                 timeout=ctx.config.validation.fix_timeout,
+                ctx=ctx,
             )
             ctx.add_usage(llm_result)
             return llm_result.cost_usd, None

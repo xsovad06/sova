@@ -1223,6 +1223,7 @@ def _make_ctx(
     ctx.config.check_cmd = ""
     ctx.config.develop.max_fix_cycles = 0
     ctx.config.llm.routing = {}
+    ctx.config.security.prompt_guard_threshold = 0.7
 
     # Make add_cost actually update cost_usd
     def add_cost(amount):

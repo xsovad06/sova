@@ -37,6 +37,7 @@ class SimplifyStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,
+                ctx=ctx,
             )
             ctx.add_usage(result)
             return StepResult(success=True, summary="Simplification pass completed", cost_usd=result.cost_usd)

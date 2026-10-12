@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 from sova.commands.catalog import parse_frontmatter
 from sova.ipc.runtime import AgentRuntime, get_runtime
 from sova.llm import client
+from sova.llm.cli_output_parsing import extract_claude_cli_failure_detail
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import BillingError, LLMInvocationError, LLMTimeoutError, classify_error
 from sova.llm.models import LLMResult
@@ -53,6 +54,7 @@ from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
+    from sova.core.context import ExecutionContext
     from sova.core.steps.base import BaseStep
     from sova.ipc.control import AgentProcess, FileAgentProcess
 
@@ -66,6 +68,18 @@ log = get_logger(component="core.agent_dispatch")
 # bare, unquoted occurrence is the substitution point.
 _ARGUMENTS_PLACEHOLDER = "$ARGUMENTS"
 _ARGUMENTS_PLACEHOLDER_RE = re.compile(r"(?<!`)" + re.escape(_ARGUMENTS_PLACEHOLDER) + r"(?!`)")
+
+# litellm vendor-prefix dialect. "vertex_ai/" is the one case where the bare
+# id under the prefix is still a real Claude model id (Claude Code's own
+# Vertex routing is env-based, not prefix-based), so it is stripped rather
+# than rejected. Every other recognized prefix here names a model the Claude
+# CLI cannot serve under any spelling: llm.provider and agent.runtime are
+# independently configurable, so client.prepare_invocation()'s
+# provider-scoped resolution can hand this path a litellm-dialect id (e.g.
+# llm.provider="vertex" with the default agent.runtime="claude-code", or an
+# llm.routing entry naming a local model).
+_LITELLM_VERTEX_PREFIX = "vertex_ai/"
+_LITELLM_FOREIGN_VENDOR_PREFIXES = ("openai/", "ollama/", "gemini/", "mistral/", "cohere/", "bedrock/", "azure/")
 
 
 class AgentRuntimeUnavailableError(RuntimeError):
@@ -123,6 +137,65 @@ def _assemble_prompt(body: str, args: str) -> str:
     if _ARGUMENTS_PLACEHOLDER_RE.search(body):
         return _ARGUMENTS_PLACEHOLDER_RE.sub(lambda _m: args, body).strip()
     return f"{body}\n\n{args}".strip() if args else body
+
+
+def _sanitize_model_for_claude_cli(model: str | None) -> str | None:
+    """Make *model* servable by a bare ``claude --model`` invocation, or raise.
+
+    ``client.prepare_invocation()`` resolves a model through ``llm.provider``
+    (e.g. a Vertex-routed ``agent.fallback_models`` entry, or an
+    ``llm.routing`` route naming a litellm-prefixed local model), which is
+    independently configurable from ``agent.runtime``. Handing a
+    litellm-dialect id straight to the Claude CLI fails inside the spawned
+    process with an opaque model error instead of a clear configuration one.
+    """
+    if model is None or "/" not in model:
+        return model
+    prefix, _, rest = model.partition("/")
+    vendor = f"{prefix}/"
+    if vendor == _LITELLM_VERTEX_PREFIX:
+        return rest
+    if vendor in _LITELLM_FOREIGN_VENDOR_PREFIXES:
+        raise AgentRuntimeUnavailableError(
+            f"Resolved model {model!r} is routed to {prefix!r} via llm.provider/llm.routing, but "
+            'agent.runtime="claude-code" cannot serve it. Configure a Claude-compatible model for '
+            "this step (llm.model_aliases / agent.fallback_models / llm.routing), or set "
+            "agent.runtime to a runtime that can reach that vendor."
+        )
+    return model
+
+
+def _sanitize_model_for_runtime(runtime: AgentRuntime, model: str | None) -> str | None:
+    """Scope ``_sanitize_model_for_claude_cli()`` to the runtime it actually applies to.
+
+    Only ``ClaudeCodeRuntime`` spawns a bare ``claude --model`` CLI that
+    cannot parse a litellm vendor prefix; a different runtime either ignores
+    this argument entirely (see ``AgentRuntime.honours_model_override``) or
+    accepts a different model dialect.
+    """
+    if runtime.name != "claude-code":
+        return model
+    return _sanitize_model_for_claude_cli(model)
+
+
+async def _worktree_fingerprint(cwd: Path) -> str | None:
+    """Return a cheap fingerprint of *cwd*'s git state, or ``None`` if unavailable.
+
+    Used by ``_dispatch_to_runtime()`` to detect whether a side-effecting
+    agent process edited the worktree before failing. Unlike the LLMProvider
+    path, where a failed attempt has no effect on the working tree, a failed
+    attempt here is a real coding agent that may have already edited,
+    staged, or committed files, so retrying the identical prompt on the next
+    fallback model would run against a half-modified tree with no snapshot
+    or reset.
+    """
+    from sova.utils.shell import run
+
+    head = await run("git", "rev-parse", "HEAD", cwd=cwd)
+    status = await run("git", "status", "--porcelain", cwd=cwd)
+    if not head.success or not status.success:
+        return None
+    return f"{head.stdout.strip()}\n{status.stdout}"
 
 
 # Seconds an AgentRuntime.check_available() answer is trusted before being
@@ -232,6 +305,7 @@ async def _dispatch_to_runtime(
     fallback_model: str | None,
     max_budget_usd: Decimal | None,
     timeout: float,
+    ctx: ExecutionContext | None = None,
 ) -> LLMResult:
     """Spawn *prompt* on *runtime*, walking the configured model fallback chain.
 
@@ -243,8 +317,24 @@ async def _dispatch_to_runtime(
     candidate. Each hop is handed the following candidate as its
     runtime-level ``fallback_model``, exactly as the provider path hands it to
     the CLI, so a runtime with its own inner fallback agrees with this one.
+
+    Two divergences from the LLMProvider path's walk, both because the
+    executor here is a side-effecting coding agent rather than a stateless
+    completion call:
+
+    - ``runtime.honours_model_override`` gates whether the walk runs at all.
+      Codex ignores ``spawn(model=...)`` entirely, so walking
+      ``agent.fallback_models`` for it would re-run a byte-identical agent
+      invocation once per candidate for a model that never changes.
+    - ``_is_eligible()`` blocks a fallback hop once a failed attempt is found
+      to have already changed the worktree (see ``_worktree_fingerprint()``):
+      unlike the provider path, a failed attempt here may have already
+      edited, staged, or committed files, and retrying the identical prompt
+      on the next model would run against that half-modified tree with no
+      snapshot or reset.
     """
     _raise_if_budget_cap_unsupported(runtime, max_budget_usd)
+    tree_changed = False
 
     async def _attempt(
         candidate: str | None,
@@ -252,15 +342,36 @@ async def _dispatch_to_runtime(
         attempt_timeout: float,
         attempt_budget: Decimal | None,
     ) -> LLMResult:
-        return await _run_agent_process(
-            runtime,
-            prompt,
-            cwd=cwd,
-            model=candidate,
-            fallback_model=next_hop,
-            max_budget_usd=attempt_budget,
-            timeout=attempt_timeout,
-        )
+        nonlocal tree_changed
+        baseline = await _worktree_fingerprint(cwd)
+        try:
+            return await _run_agent_process(
+                runtime,
+                prompt,
+                cwd=cwd,
+                model=_sanitize_model_for_runtime(runtime, candidate),
+                fallback_model=_sanitize_model_for_runtime(runtime, next_hop),
+                max_budget_usd=attempt_budget,
+                timeout=attempt_timeout,
+                ctx=ctx,
+            )
+        except Exception:
+            if baseline is not None:
+                after = await _worktree_fingerprint(cwd)
+                tree_changed = after is not None and after != baseline
+            raise
+
+    if not runtime.honours_model_override:
+        return await _attempt(model, fallback_model, timeout, max_budget_usd)
+
+    def _is_eligible(exc: Exception) -> bool:
+        if tree_changed:
+            log.warning(
+                "agent_dispatch.fallback_blocked_worktree_changed",
+                runtime=runtime.name,
+                error_type=type(exc).__name__,
+            )
+        return not tree_changed
 
     return await client.walk_model_chain(
         _attempt,
@@ -275,7 +386,24 @@ async def _dispatch_to_runtime(
         # is a valid combination), so a model marked unavailable on one must
         # never suppress it on the other.
         identity=f"runtime:{runtime.name}:{client.provider_identity(cfg)}",
+        is_eligible=_is_eligible,
+        # The identity function, not client's default (get_provider()'s own
+        # normalize_model_name): the executor here is runtime.spawn(), not
+        # the configured LLMProvider, so de-duplicating/availability-filtering
+        # the chain must never construct a provider the runtime path has no
+        # other use for (and which can fail to construct on its own, e.g. a
+        # litellm provider with a missing optional dependency, failing a
+        # tool-using step whose runtime is perfectly healthy).
+        normalize=lambda m: m,
     )
+
+
+# Cap on how many non-result stdout lines _run_agent_process() retains for a
+# failure-detail fallback. A develop/address-review agent can run for tens of
+# minutes and emit far more content than any failure message needs; bounding
+# this keeps the buffer itself from becoming a memory concern on a runaway
+# turn that never reaches a terminal result event.
+_STDOUT_FAILURE_BUFFER_MAX_LINES = 200
 
 
 async def _run_agent_process(
@@ -287,6 +415,7 @@ async def _run_agent_process(
     fallback_model: str | None,
     max_budget_usd: Decimal | None,
     timeout: float | None,
+    ctx: ExecutionContext | None = None,
 ) -> LLMResult:
     """Spawn *prompt* on *runtime* and wait for its terminal result.
 
@@ -307,6 +436,12 @@ async def _run_agent_process(
     i.e. ``stop_reason == "error"``) is raised as a classified error rather
     than returned: the agent told us it failed, and returning it as a success
     would hand the step an empty-but-"successful" turn to act on.
+
+    *ctx*, when given, feeds every "content" stream event to
+    ``ctx.output_writer`` as it arrives: without it, a long tool-using step
+    produces no incremental output anywhere (content events were parsed and
+    discarded), leaving the dashboard run log silent until the whole step
+    finishes.
     """
     proc = await runtime.spawn(
         prompt,
@@ -318,14 +453,25 @@ async def _run_agent_process(
     parser = runtime.create_stream_parser()
     parse_line = parser.parse_line if parser is not None else runtime.parse_output
     result: LLMResult | None = None
-    stderr_lines: list[str] = []
+    stdout_lines: list[str] = []
 
     async def _drain_stdout() -> None:
         nonlocal result
         async for line in proc.stdout_lines():
             event = parse_line(line)
-            if event is not None and event.type == "result" and event.result is not None:
+            if event is None:
+                continue
+            if event.type == "result" and event.result is not None:
                 result = event.result
+                continue
+            if event.text and len(stdout_lines) < _STDOUT_FAILURE_BUFFER_MAX_LINES:
+                stdout_lines.append(event.text)
+            if event.type == "content" and event.text and ctx is not None and ctx.output_writer is not None:
+                ctx.output_writer.write_line(event.text)
+                if ctx.output_writer.should_flush():
+                    await ctx.output_writer.flush()
+
+    stderr_lines: list[str] = []
 
     async def _drain_stderr() -> None:
         async for line in proc.stderr_lines():
@@ -372,10 +518,28 @@ async def _run_agent_process(
     if result is not None:
         detail = result.text.strip() or "agent reported a terminal failure with no detail"
     else:
-        detail = "\n".join(stderr_lines).strip() or "agent process exited without a terminal result event"
+        # Stdout-first, matching the documented "Failure capture must prefer
+        # stdout's structured error over stderr" decision
+        # (sova/llm/providers/claude_code.py:_extract_failure_detail()): the
+        # CLI writes its real error to stdout, while stderr often carries
+        # only an incidental warning. "\n".join(stdout_lines) covers content
+        # events parse_line() already decoded as text; extract_claude_cli_failure_detail()
+        # additionally tries to parse that joined text as a structured JSON
+        # payload the way the provider's own stdout fallback does.
+        stdout_text = "\n".join(stdout_lines).strip()
+        stderr_text = "\n".join(stderr_lines).strip()
+        detail = extract_claude_cli_failure_detail(stdout=stdout_text, stderr=stderr_text)
+        if detail in ("(no error detail captured)", "(no error detail captured beyond warnings)"):
+            detail = "agent process exited without a terminal result event"
     detail = scan_and_redact(detail).redacted_text[:500]
     message = f"Agent runtime {runtime.name!r} failed (exit {proc.returncode}): {detail}"
     raise classify_error(detail)(message)
+
+
+# Bound for the shielded cleanup kill in _stop_quietly(). Generous relative to
+# a SIGTERM/SIGKILL round-trip, but still much shorter than any step timeout,
+# so a wedged stop() cannot block cleanup indefinitely.
+_STOP_QUIETLY_TIMEOUT_SECONDS = 15.0
 
 
 async def _stop_quietly(proc: AgentProcess | FileAgentProcess, runtime: AgentRuntime, *, cause: str) -> None:
@@ -384,11 +548,27 @@ async def _stop_quietly(proc: AgentProcess | FileAgentProcess, runtime: AgentRun
     ``_run_agent_process()`` calls this from exception handlers, where a raise
     out of ``proc.stop()`` would discard the timeout, cancellation, or parser
     error that is the actual cause and report a kill failure instead.
-    ``CancelledError`` is deliberately not swallowed: it must keep propagating
-    so an outer cancellation is never silently absorbed.
+
+    Shielded and bounded: called from an ``except asyncio.CancelledError``
+    branch, ``proc.stop()`` is itself a cancellable await inside an
+    already-cancelling task. A second cancellation (the ``sova run`` SIGTERM
+    handler's grace timer, or an outer cancel scope that does not wait for
+    cleanup) would otherwise interrupt the kill before SIGTERM/SIGKILL is
+    sent, leaving the spawned agent (started with ``start_new_session=True``,
+    so it does not die with the parent) running and still editing the
+    worktree, the exact outcome this handler exists to prevent. A failure or
+    timeout inside the shielded stop is logged and suppressed; a
+    ``CancelledError`` from this function's own await (once the shield/timeout
+    itself is cancelled) is deliberately not swallowed, so an outer
+    cancellation is never silently absorbed.
     """
     try:
-        await proc.stop(cause=cause, requester="agent_dispatch")
+        await asyncio.shield(
+            asyncio.wait_for(
+                proc.stop(cause=cause, requester="agent_dispatch"),
+                timeout=_STOP_QUIETLY_TIMEOUT_SECONDS,
+            )
+        )
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 (cleanup must never mask the failure that triggered it)
@@ -406,6 +586,7 @@ async def dispatch_command(
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
     timeout: float | None = None,
+    ctx: ExecutionContext | None = None,
 ) -> LLMResult:
     """Run a slash command, routing through AgentRuntime when *step* needs tools.
 
@@ -416,6 +597,13 @@ async def dispatch_command(
     ``sova.ipc.runtime.get_runtime()`` instead, regardless of which
     ``LLMProvider`` the project configured, and fails immediately (no silent
     fallback) when that runtime is not actually usable.
+
+    *ctx*, when passed, feeds the spawned agent's incremental stdout into
+    ``ctx.output_writer`` (see ``_run_agent_process()``), so a long tool-using
+    step is observable in the dashboard run log before it finishes rather than
+    silent until it does. Optional because not every caller holds a full
+    ``ExecutionContext`` (e.g. a direct test call); omitting it only disables
+    the live feed, not dispatch itself.
     """
     if not step.requires_tools:
         return await client.invoke_command(
@@ -455,6 +643,7 @@ async def dispatch_command(
         fallback_model=fallback_model,
         max_budget_usd=max_budget_usd,
         timeout=resolved_timeout,
+        ctx=ctx,
     )
     # original_args vs args (not the assembled prompt): compression ran only
     # on args, and record_compression_savings()'s identity check needs the
@@ -473,6 +662,7 @@ async def dispatch_prompt(
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
     timeout: float | None = None,
+    ctx: ExecutionContext | None = None,
 ) -> LLMResult:
     """Run a raw *prompt*, routing through AgentRuntime when *step* needs tools.
 
@@ -483,6 +673,8 @@ async def dispatch_prompt(
     tool-dependent as the ``/develop`` invocation it follows, so leaving it on
     ``sova.llm.client.invoke()`` would reintroduce the exact silent
     degradation ``requires_tools`` exists to prevent, one call later.
+
+    See ``dispatch_command()`` for *ctx*.
     """
     if not step.requires_tools:
         return await client.invoke(
@@ -514,6 +706,7 @@ async def dispatch_prompt(
         fallback_model=fallback_model,
         max_budget_usd=max_budget_usd,
         timeout=resolved_timeout,
+        ctx=ctx,
     )
     client.record_compression_savings(result, original_prompt, prompt)
     return result

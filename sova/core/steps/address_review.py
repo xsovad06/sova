@@ -11,7 +11,7 @@ from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.handoff import read_handoff, read_handoff_file
-from sova.llm.guard import sanitize_external_input
+from sova.llm.guard import sanitize_external_input, scan_prompt
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import (
     INLINE_COMMENT_STUB,
@@ -512,11 +512,42 @@ def _load_spec_for_context(ctx: ExecutionContext) -> str:
         return ""
 
 
+def _fence_if_high_risk(text: str, *, source: str, loc: str, threshold: float) -> str:
+    """Replace *text* with a placeholder when it alone trips the prompt guard.
+
+    ``dispatch_prompt()`` runs the fail-closed ``guard_prompt()`` over the
+    whole assembled findings prompt, and a finding's description/suggestion
+    is the most untrusted text in it (a CodeRabbit or human review comment
+    body). Scanning per finding here, before assembly, means one comment
+    whose wording trips the guard degrades to a single withheld finding
+    instead of failing the whole step on every retry with no way to clear
+    the block (nothing in the pipeline can edit the offending GitHub
+    comment). ``sanitize_external_input()`` alone does not mitigate this: it
+    only logs, it never rewrites or drops the text.
+    """
+    result = scan_prompt(text)
+    if result.risk_score < threshold:
+        return text
+    log.warning(
+        "step.address_review.finding_withheld",
+        loc=loc,
+        source=source,
+        risk=result.risk_score,
+        flags=result.flags,
+    )
+    return (
+        f"[withheld: this finding's text matched a prompt-injection pattern "
+        f"(risk={result.risk_score:.2f}) and was not included; see the original "
+        f"review comment on GitHub for {loc}]"
+    )
+
+
 def _format_findings_prompt(
     findings: list[dict],
     *,
     spec_context: str = "",
     pending_docs_path: Path | None = None,
+    prompt_guard_threshold: float = 0.5,
 ) -> str:
     """Format findings into a prompt for the LLM to address.
 
@@ -525,6 +556,11 @@ def _format_findings_prompt(
     drained here, on a branch that is about to be pushed anyway, because a
     documentation push onto an otherwise-ready PR costs a full CI cycle and
     delays the merge by the length of the suite.
+
+    ``prompt_guard_threshold`` mirrors ``security.prompt_guard_threshold``
+    (the caller reads the real config value; this default only applies to a
+    direct call with no config, e.g. in a test) and gates the per-finding
+    fencing in ``_fence_if_high_risk()``.
     """
     lines = []
     if spec_context:
@@ -557,15 +593,20 @@ def _format_findings_prompt(
             # match (never raises, never rewrites the body), giving visibility
             # into which finding tripped a pattern without corrupting a
             # legitimate finding that merely quotes injection-looking text.
-            # dispatch_prompt() still runs guard_prompt() over the whole
-            # assembled prompt afterward as the one fail-closed check; a
-            # rejection there now surfaces as a classified LLMError the
-            # caller's `except RuntimeError` already handles.
+            # _fence_if_high_risk() is the actual mitigation: a finding whose
+            # own text would trip guard_prompt() is replaced with a
+            # placeholder here, before assembly, so one poisoned comment
+            # degrades to a withheld finding instead of deadlocking the step
+            # (dispatch_prompt() still runs guard_prompt() over the whole
+            # assembled prompt afterward as a second, fail-closed check on
+            # SOVA-authored scaffolding text).
             source = f.get("source") or "review_finding"
             description = sanitize_external_input(f.get("description", ""), source=source)
+            description = _fence_if_high_risk(description, source=source, loc=loc, threshold=prompt_guard_threshold)
             lines.append(f"   {description}")
             if f.get("suggestion"):
                 suggestion = sanitize_external_input(f["suggestion"], source=source)
+                suggestion = _fence_if_high_risk(suggestion, source=source, loc=loc, threshold=prompt_guard_threshold)
                 lines.append(f"   Fix: {suggestion}")
             lines.append("")
         lines.append("After fixing all issues, make sure all tests still pass.")
@@ -676,6 +717,7 @@ class AddressReviewStep(BaseStep):
             findings,
             spec_context=spec_context,
             pending_docs_path=pending_docs if has_pending_docs else None,
+            prompt_guard_threshold=ctx.config.security.prompt_guard_threshold,
         )
         try:
             result = await dispatch_prompt(
@@ -687,6 +729,7 @@ class AddressReviewStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,
+                ctx=ctx,
             )
             ctx.add_usage(result)
             self._had_findings = bool(findings)

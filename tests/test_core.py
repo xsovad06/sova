@@ -3466,6 +3466,7 @@ class TestRearrangeCommitsStep:
             cwd=ctx.working_dir,
             max_budget_usd=ANY,
             timeout=ANY,
+            ctx=ctx,
         )
 
     async def test_execute_returns_failure_on_error(self) -> None:

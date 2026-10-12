@@ -191,6 +191,7 @@ class DevelopStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.develop.step_timeout,
+                ctx=ctx,
             )
             ctx.add_usage(result)
             ctx.session_id = result.session_id
@@ -476,6 +477,7 @@ class DevelopStep(BaseStep):
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.develop.fix_timeout,
+                ctx=ctx,
             )
             ctx.add_usage(llm_result)
         except RuntimeError as exc:

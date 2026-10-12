@@ -110,6 +110,45 @@ class LLMResult:
         return self.stop_reason == "error"
 
 
+def build_claude_cli_result(data: dict, *, stop_reason: str = "") -> LLMResult:
+    """Build an ``LLMResult`` from a Claude CLI ``"result"`` event payload.
+
+    Shared by ``ClaudeCodeRuntime.parse_output()`` (streaming,
+    ``sova/ipc/runtime.py``) and ``_parse_result()`` (batch,
+    ``sova/llm/providers/claude_code.py``), which both parse the same
+    stream-json "result" event shape. Before this was shared, the two had
+    drifted apart: the runtime parser read ``cache_read_tokens``/
+    ``cache_creation_tokens`` and a bare ``data["model"]``, while the CLI
+    actually emits ``cache_read_input_tokens``/``cache_creation_input_tokens``
+    and the model under ``modelUsage``, so every tool-using pipeline step
+    recorded zero cache tokens and an empty model (#1125 round 4 review).
+    """
+    raw_usage = data.get("usage")
+    usage = raw_usage if isinstance(raw_usage, dict) else {}
+    raw_model_usage = data.get("modelUsage")
+    model_usage = raw_model_usage if isinstance(raw_model_usage, dict) else {}
+    model = next(iter(model_usage), "") if model_usage else str(data.get("model", ""))
+
+    try:
+        cost_usd = Decimal(str(data.get("total_cost_usd", 0)))
+    except (ArithmeticError, ValueError, TypeError):
+        cost_usd = Decimal(0)
+
+    return LLMResult(
+        text=str(data.get("result", "")),
+        model=model,
+        cost_usd=cost_usd,
+        cost_source=CostSource.PRICED,
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
+        cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+        cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
+        duration_ms=data.get("duration_ms", 0),
+        session_id=str(data.get("session_id", "")),
+        stop_reason=stop_reason,
+    )
+
+
 @dataclass
 class StreamEvent:
     """A streaming event from Claude Code CLI.

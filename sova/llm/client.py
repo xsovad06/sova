@@ -493,7 +493,12 @@ def provider_identity(cfg: ProjectConfig | None) -> str:
     return f"{cfg.llm.provider}:{cfg.llm.api_base}"
 
 
-def _build_candidate_chain(primary: str | None, cfg: ProjectConfig | None) -> list[str | None]:
+def _build_candidate_chain(
+    primary: str | None,
+    cfg: ProjectConfig | None,
+    *,
+    normalize: Callable[[str | None], str | None] = _normalize_model,
+) -> list[str | None]:
     """Return the ordered chain: *primary* followed by ``agent.fallback_models``.
 
     Fallback candidates go through ``select_model`` for the same reason the
@@ -508,17 +513,24 @@ def _build_candidate_chain(primary: str | None, cfg: ProjectConfig | None) -> li
     never normalized and never compared against a named model. Candidates are
     appended unnormalized so what reaches the provider is exactly what config
     asked for.
+
+    *normalize* defaults to ``_normalize_model`` (``get_provider().normalize_model_name``)
+    on the LLMProvider path, but ``walk_model_chain()``'s AgentRuntime caller
+    passes the identity function instead: that path's executor is not the
+    configured provider, and reaching for one just to de-duplicate a chain
+    the runtime will walk itself is a provider construction (and its
+    normalization rules) the runtime path has no business paying for.
     """
     chain: list[str | None] = [primary]
     if cfg is None:
         return chain
 
-    seen = {_normalize_model(primary)} if primary else set()
+    seen = {normalize(primary)} if primary else set()
     for entry in cfg.agent.fallback_models:
         if not entry:
             continue
         candidate = select_model(entry, cfg)
-        normalized = _normalize_model(candidate)
+        normalized = normalize(candidate)
         if normalized in seen:
             continue
         seen.add(normalized)
@@ -526,10 +538,12 @@ def _build_candidate_chain(primary: str | None, cfg: ProjectConfig | None) -> li
     return chain
 
 
-def _drop_unavailable(chain: list[str | None], identity: str) -> list[str | None]:
+def _drop_unavailable(
+    chain: list[str | None], identity: str, *, normalize: Callable[[str | None], str | None] = _normalize_model
+) -> list[str | None]:
     """Filter cached-unavailable candidates, keeping the last one as a fail-open."""
     cache = get_availability_cache()
-    kept = [model for model in chain if not cache.is_unavailable(identity, _normalize_model(model))]
+    kept = [model for model in chain if not cache.is_unavailable(identity, normalize(model))]
     return kept or chain[-1:]
 
 
@@ -606,8 +620,28 @@ async def walk_model_chain(
     timeout: float,
     max_budget_usd: Decimal | None = None,
     identity: str | None = _IDENTITY_UNSET,  # type: ignore[assignment]
+    is_eligible: Callable[[Exception], bool] = is_fallback_eligible,
+    normalize: Callable[[str | None], str | None] = _normalize_model,
 ) -> LLMResult:
     """Walk the model chain until an attempt succeeds, sharing one deadline and budget.
+
+    *is_eligible* defaults to ``is_fallback_eligible`` (the LLMProvider path's
+    behavior, unchanged). The AgentRuntime path in ``sova.core.agent_dispatch``
+    passes a stricter predicate: a failed attempt there is a real coding agent
+    that may have already edited the worktree, so advancing to the next model
+    is only safe when the tree is provably unchanged since the walk started.
+    Both the type-based classification ``is_fallback_eligible`` performs and
+    *is_eligible* must agree an error is retryable before the chain advances.
+
+    *normalize* defaults to ``_normalize_model`` (``get_provider().normalize_model_name``),
+    correct for the LLMProvider path where the executor *is* the configured
+    provider. The AgentRuntime path passes the identity function instead: its
+    executor is not the configured provider (independently configurable via
+    ``agent.runtime``), so reaching for one here just to de-duplicate or
+    availability-filter the chain would construct a provider the runtime
+    path never otherwise needs, and a provider that fails to construct (e.g.
+    a misconfigured optional dependency) would then fail a tool-using step
+    whose runtime is perfectly healthy.
 
     *identity* scopes the negative-availability cache (``mark_unavailable()``/
     ``is_unavailable()``). It defaults to ``provider_identity(cfg)``, correct
@@ -654,9 +688,9 @@ async def walk_model_chain(
     """
     if identity is _IDENTITY_UNSET:
         identity = provider_identity(cfg)
-    chain = _build_candidate_chain(primary, cfg)
+    chain = _build_candidate_chain(primary, cfg, normalize=normalize)
     if identity is not None:
-        chain = _drop_unavailable(chain, identity)
+        chain = _drop_unavailable(chain, identity, normalize=normalize)
     if len(chain) == 1:
         return await attempt(chain[0], caller_fallback, timeout, max_budget_usd)
 
@@ -685,14 +719,14 @@ async def walk_model_chain(
         try:
             return await attempt(model, next_hop, attempt_timeout, attempt_budget)
         except Exception as exc:
-            if not is_fallback_eligible(exc):
+            if not is_fallback_eligible(exc) or not is_eligible(exc):
                 raise
             # Providers still raise bare RuntimeError, so eligibility and the
             # unavailable-model signal both come from the resolved category,
             # never from the raised type alone.
             category = resolve_error_category(exc)
             if category is ModelUnavailableError and identity is not None:
-                get_availability_cache().mark_unavailable(identity, _normalize_model(model))
+                get_availability_cache().mark_unavailable(identity, normalize(model))
             # A failed attempt reports no cost, so there is nothing to deduct.
             # The chain cannot spend the cap repeatedly: budget exhaustion
             # raises BillingError, which is not fallback-eligible and re-raises

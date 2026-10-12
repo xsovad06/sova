@@ -14,10 +14,11 @@ from pathlib import Path
 # tests/test_llm.py and tests/test_model_fallback_cli.py.
 from sova.llm.cli_args import build_claude_cli_args as _build_args
 from sova.llm.cli_args import write_system_prompt_file
+from sova.llm.cli_output_parsing import extract_claude_cli_failure_detail
 from sova.llm.client import cached_enumeration, get_availability_cache
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import LLMInvocationError, classify_error
-from sova.llm.models import CURATED_MODELS, CostSource, LLMResult, ModelInfo, StreamEvent
+from sova.llm.models import CURATED_MODELS, LLMResult, ModelInfo, StreamEvent, build_claude_cli_result
 from sova.llm.provider import LLMProvider, ProviderCapabilities
 from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
@@ -448,73 +449,14 @@ def _interpret_auth_probe(data: dict | None) -> tuple[bool, str]:
     return True, email or subscription or "authenticated"
 
 
-def _strip_leading_warnings(stderr: str) -> str:
-    """Strip a contiguous prefix of ``Warning:`` lines from stderr.
-
-    Claude CLI writes incidental warnings (e.g. model-availability notices)
-    to stderr regardless of the configured model. Only the leading run of
-    warning lines is removed, so a real error following a warning is kept.
-    """
-    lines = stderr.splitlines()
-    idx = 0
-    while idx < len(lines) and lines[idx].strip().lower().startswith("warning:"):
-        idx += 1
-    return "\n".join(lines[idx:]).strip()
-
-
-def _parse_stdout_error(stdout: str) -> tuple[list[str], str | None]:
-    """Parse stdout for a structured Claude CLI error payload.
-
-    Returns (parts, raw_fallback): ``parts`` is non-empty only when stdout
-    carries a structured is_error/terminal_reason/result payload; otherwise
-    ``raw_fallback`` holds the truncated raw stdout text (or None if stdout
-    is empty) to fall back on once stderr has been exhausted.
-    """
-    if not stdout.strip():
-        return [], None
-
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        data = None
-
-    if not isinstance(data, dict):
-        return [], stdout[:500]
-
-    parts: list[str] = []
-    if data.get("terminal_reason"):
-        parts.append(f"terminal_reason={data['terminal_reason']}")
-    if data.get("is_error"):
-        parts.append("is_error=true")
-    if data.get("result"):
-        parts.append(str(data["result"])[:300])
-    return parts, stdout[:500]
-
-
 def _extract_failure_detail(result: ShellResult) -> str:
     """Extract the best available error detail from a failed Claude CLI run.
 
-    Claude CLI with --output-format json writes the real error to stdout as
-    JSON (is_error, result, terminal_reason), while stderr often carries only
-    an incidental warning. Stdout's structured error always wins when present;
-    stderr is used only as a fallback, with leading warning lines stripped so
-    a warning never masquerades as the cause.
+    Delegates to ``sova.llm.cli_output_parsing``, shared with the
+    AgentRuntime dispatch path (``sova.core.agent_dispatch``), which spawns
+    the same CLI and must apply the same stdout-first precedence.
     """
-    stdout_parts, stdout_raw_fallback = _parse_stdout_error(result.stdout)
-    if stdout_parts:
-        return "; ".join(stdout_parts)[:500]
-
-    stripped_stderr = _strip_leading_warnings(result.stderr)
-    if stripped_stderr:
-        return stripped_stderr[:500]
-
-    if stdout_raw_fallback is not None:
-        return stdout_raw_fallback
-
-    if result.stderr.strip():
-        return "(no error detail captured beyond warnings)"
-
-    return "(no error detail captured)"
+    return extract_claude_cli_failure_detail(stdout=result.stdout, stderr=result.stderr)
 
 
 def _parse_json_output(stdout: str) -> LLMResult:
@@ -526,25 +468,11 @@ def _parse_json_output(stdout: str) -> LLMResult:
 
 
 def _parse_result(data: dict) -> LLMResult:
-    raw_usage = data.get("usage")
-    usage = raw_usage if isinstance(raw_usage, dict) else {}
-    raw_model_usage = data.get("modelUsage")
-    model_usage = raw_model_usage if isinstance(raw_model_usage, dict) else {}
-    model = next(iter(model_usage), "") if model_usage else ""
-
-    return LLMResult(
-        text=data.get("result", ""),
-        model=model,
-        cost_usd=Decimal(str(data.get("total_cost_usd", 0))),
-        cost_source=CostSource.PRICED,
-        input_tokens=usage.get("input_tokens", 0),
-        output_tokens=usage.get("output_tokens", 0),
-        cache_read_tokens=usage.get("cache_read_input_tokens", 0),
-        cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
-        duration_ms=data.get("duration_ms", 0),
-        session_id=data.get("session_id", ""),
-        stop_reason=data.get("stop_reason", ""),
-    )
+    # build_claude_cli_result() is the shared parser with
+    # ClaudeCodeRuntime.parse_output() in sova/ipc/runtime.py, so the two
+    # cannot drift apart on field names again (cache_read_input_tokens vs
+    # cache_read_tokens, model from modelUsage vs a bare "model" key).
+    return build_claude_cli_result(data, stop_reason=data.get("stop_reason", ""))
 
 
 async def _start_streaming_process(

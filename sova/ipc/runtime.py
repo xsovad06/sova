@@ -22,7 +22,7 @@ from sova.config.models import CodexConfig, ProjectConfig
 from sova.ipc.codex import CodexStreamParser
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
-from sova.llm.models import LLMResult, StreamEvent
+from sova.llm.models import StreamEvent, build_claude_cli_result
 from sova.utils.env import ANTHROPIC_CREDENTIAL_VARS, configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, write_stdin_and_close
@@ -248,6 +248,20 @@ class AgentRuntime(ABC):
         """
         return False
 
+    @property
+    def honours_model_override(self) -> bool:
+        """Whether ``spawn(model=...)`` actually selects the model used.
+
+        Defaults to True. ``CodexRuntime`` overrides this to False: its model
+        comes from ``CodexConfig`` alone and the caller-supplied ``model``
+        argument is never forwarded to ``codex exec`` (see its class
+        docstring). ``sova.core.agent_dispatch`` uses this to skip walking
+        ``agent.fallback_models`` for such a runtime: every hop would spawn a
+        byte-identical agent invocation for a model that never changes,
+        paying a full agent run per candidate for no benefit.
+        """
+        return True
+
     @abstractmethod
     async def spawn(
         self,
@@ -450,33 +464,18 @@ class ClaudeCodeRuntime(AgentRuntime):
 
         if event_type == "result":
             result_text = str(data.get("result", ""))
-            try:
-                cost_usd = Decimal(str(data.get("total_cost_usd", 0)))
-            except (ArithmeticError, ValueError, TypeError):
-                log.debug("runtime.cost_parse_failed", raw=data.get("total_cost_usd"), exc_info=True)
-                cost_usd = Decimal(0)
-            usage = data.get("usage", {})
-            if not isinstance(usage, dict):
-                usage = {}
-            llm_result = LLMResult(
-                text=result_text,
-                model=str(data.get("model", "")),
-                cost_usd=cost_usd,
-                input_tokens=usage.get("input_tokens", 0),
-                output_tokens=usage.get("output_tokens", 0),
-                cache_read_tokens=usage.get("cache_read_tokens", 0),
-                cache_creation_tokens=usage.get("cache_creation_tokens", 0),
-                duration_ms=data.get("duration_ms", 0),
-                session_id=str(data.get("session_id", "")),
-                # A terminal result event carries the turn's own verdict:
-                # ``is_error``, or a ``subtype`` other than "success"
-                # ("error_during_execution", "error_max_turns"). Mapping it onto
-                # stop_reason="error" is what makes the failure visible to a
-                # caller holding only the LLMResult (``LLMResult.is_error``,
-                # which the Codex parser already sets the same way); dropping it
-                # made a failed turn indistinguishable from a successful one.
-                stop_reason=_claude_result_stop_reason(data),
-            )
+            # build_claude_cli_result() is the shared parser with
+            # _parse_result() in sova/llm/providers/claude_code.py, so the
+            # two field-name sets (cache_read_input_tokens, modelUsage) and
+            # cost_source cannot drift apart again. stop_reason is computed
+            # here, not by the shared helper: a terminal result event carries
+            # the turn's own verdict (``is_error``, or a ``subtype`` other
+            # than "success"), and mapping it onto stop_reason="error" is
+            # what makes the failure visible to a caller holding only the
+            # LLMResult (``LLMResult.is_error``, which the Codex parser
+            # already sets the same way); dropping it made a failed turn
+            # indistinguishable from a successful one.
+            llm_result = build_claude_cli_result(data, stop_reason=_claude_result_stop_reason(data))
             return StreamEvent(type="result", text=result_text, result=llm_result)
 
         return None
@@ -1012,6 +1011,10 @@ class CodexRuntime(AgentRuntime):
     @property
     def name(self) -> str:
         return "codex"
+
+    @property
+    def honours_model_override(self) -> bool:
+        return False
 
     def transform_prompt(self, prompt: str) -> str:
         """Prepend the provider-neutral headless guardrail preamble.
