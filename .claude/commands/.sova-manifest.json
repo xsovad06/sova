@@ -10,7 +10,7 @@
       "managed": true
     },
     "agent-readiness.md": {
-      "hash": "672e8477a151f44c",
+      "hash": "f8459204c033d420",
       "managed": true
     },
     "audit-instructions.md": {
@@ -22,19 +22,19 @@
       "managed": true
     },
     "develop-explain.md": {
-      "hash": "0425a3937df6dee2",
+      "hash": "22f73e385094b293",
       "managed": true
     },
     "develop-full.md": {
-      "hash": "30843251442debf5",
+      "hash": "949992b537ed74a8",
       "managed": true
     },
     "develop.md": {
-      "hash": "19b8ade5bdf4ebc3",
+      "hash": "0e4f3bf9463813ca",
       "managed": true
     },
     "extract-knowledge.md": {
-      "hash": "55c7ff39ce7f93ee",
+      "hash": "f19cee476833daf0",
       "managed": true
     },
     "find-task.md": {
@@ -46,7 +46,7 @@
       "managed": true
     },
     "ingest-review.md": {
-      "hash": "1452f053a5ac890e",
+      "hash": "59861df3de2cc4fc",
       "managed": true
     },
     "integrate-pr.md": {
@@ -74,7 +74,7 @@
       "managed": true
     },
     "research.md": {
-      "hash": "d4be1b9edd49d0ee",
+      "hash": "9270d15643ca768a",
       "managed": true
     },
     "review-full.md": {
@@ -82,11 +82,11 @@
       "managed": true
     },
     "review-pr.md": {
-      "hash": "5bf19a3c46508360",
+      "hash": "f37057cdee875082",
       "managed": true
     },
     "review.md": {
-      "hash": "82738d178b9e15e2",
+      "hash": "ddffbd0ffb7ec991",
       "managed": true
     },
     "simplify.md": {
@@ -94,7 +94,7 @@
       "managed": true
     },
     "spec.md": {
-      "hash": "af9976f63fa70458",
+      "hash": "e89464945c75f194",
       "managed": true
     },
     "standup.md": {
@@ -110,7 +110,7 @@
       "managed": true
     },
     "update-docs.md": {
-      "hash": "d36d8e26e79f87d4",
+      "hash": "5552adaffdec7061",
       "managed": true
     }
   }

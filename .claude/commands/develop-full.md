@@ -1,6 +1,6 @@
 ---
 name: develop-full
-description: Full development workflow -- TDD, lint, test, self-review, commit organization. Provide a ticket ID or task description.
+description: Full development workflow: TDD, lint, test, self-review, commit organization. Provide a ticket ID or task description.
 user-invocable: true
 category: core
 inputs:
@@ -21,25 +21,28 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
 
 ### Phase 0: Understand the Task
 
-1. Get the task from `$ARGUMENTS` -- either a GitHub Issue number or a task description.
-2. If it's an issue number, fetch details:
+1. Get the task from `$ARGUMENTS`: either a GitHub Issue number or a task description.
+2. **Check for spec** (issue numbers only): look for `.claude/specs/{issue-number}-*.md`.
+   - If found with `Status: approved`: read it. Report: "Using approved spec: {filename}". The `/develop` step will follow this spec as its primary guide.
+   - If found with `Status: draft`: warn the user: "Draft spec exists at {filename} but is not approved. Run `/spec {issue}` to review and approve it, or proceed without spec guidance." Wait for user confirmation before continuing.
+   - If not found: continue silently. Specs are optional; not every task needs one.
+3. If it's an issue number, fetch details. When an approved spec was found in step 2, it already encodes the task intent in distilled form, so omit `body` and fetch only the fields this phase still needs (claiming, branch naming, labels):
    ```bash
+   # No approved spec:
    gh issue view <ISSUE_NUMBER> --json number,title,body,labels,milestone
+   # Approved spec found in step 2:
+   gh issue view <ISSUE_NUMBER> --json number,title,labels,milestone
    ```
-3. **Claim the issue** (GitHub Issues only):
+4. **Claim the issue** (GitHub Issues only):
    ```bash
    # Assign to self
    gh issue edit <ISSUE_NUMBER> --add-assignee @me
    ```
    If the project uses a GitHub Projects board, move the issue to "In Progress".
-4. Read the project's CLAUDE.md and AGENTS.md for conventions and patterns.
-5. Read agent memory files if they exist:
+5. Read the project's CLAUDE.md and AGENTS.md for conventions and patterns.
+6. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
    - `.claude/agent-memory/cookbook.md`
-6. **Check for spec** (issue numbers only): look for `.claude/specs/{issue-number}-*.md`.
-   - If found with `Status: approved`: read it. Report: "Using approved spec: {filename}". The `/develop` step will follow this spec as its primary guide.
-   - If found with `Status: draft`: warn the user: "Draft spec exists at {filename} but is not approved. Run `/spec {issue}` to review and approve it, or proceed without spec guidance." Wait for user confirmation before continuing.
-   - If not found: continue silently. Specs are optional -- not every task needs one.
 7. Identify which module(s) this work touches and read relevant source code.
 8. **Check current branch**: if on main/master, create a feature branch before developing:
    ```bash
@@ -53,11 +56,12 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
 
 Follow the `/develop` command workflow:
 
-1. **Write tests first** -- define expected behavior before implementation.
-2. **Implement the solution** -- follow existing codebase conventions.
-3. **Scout check** -- for every file touched, fix pre-existing issues you notice (failing tests, lint warnings, dead code, obvious bugs). Keep fixes small and low-risk.
-4. **Run the full CI-equivalent checks**: `make check`. This covers linting, tests, formatting, invariants, and any other CI checks.
-5. If any check fails, fix and re-run (up to 3 attempts).
+1. **Write tests first**: define expected behavior before implementation.
+2. **Implement the solution**: follow existing codebase conventions.
+3. **Scout check**: for every file touched, fix pre-existing issues you notice (failing tests, lint warnings, dead code, obvious bugs). Keep fixes small and low-risk.
+4. **Run the project-specific build steps** from the `/develop` workflow's Step 5 (CSS rebuilds, static cache version bumps, translation catalogs) when your change calls for them.
+5. **Run the full CI-equivalent checks**: `make check`. It is only as complete as the project configured it: if `make check` is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them).
+6. If any check fails, fix and re-run (up to 3 attempts).
 
 ### Phase 2: Self-Review
 
@@ -77,7 +81,7 @@ Follow the `/review` command workflow:
 
 Follow the `/rearrange-commits` command approach:
 
-1. **Separate concerns** -- schema/model changes, core logic, tests, config in distinct commits.
+1. **Separate concerns**: schema/model changes, core logic, tests, config in distinct commits.
 2. **Each commit should be self-contained** and reviewable on its own.
 3. **Commit message format**: `type(scope): description`
    - Types: feat, fix, refactor, test, docs, chore, perf
@@ -98,10 +102,10 @@ Write a file at `.agent-summary.md` in the working directory with:
 ## Workflow Chain
 
 This command orchestrates:
-1. `/develop` -- implement with TDD
-2. `/test` -- verify linter + tests pass
-3. `/review` -- self-review and auto-fix
-4. `/rearrange-commits` -- organize into logical commits
+1. `/develop`: implement with TDD
+2. `/test`: verify linter + tests pass
+3. `/review`: self-review and auto-fix
+4. `/rearrange-commits`: organize into logical commits
 
 After this command completes, run `/pr` to create the pull request.
 

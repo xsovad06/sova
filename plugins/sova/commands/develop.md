@@ -51,7 +51,7 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 
 ### Step 1: Understand the Context
 
-1. Check for an approved spec: look for `.claude/specs/{issue-number}-*.md` (where issue-number matches `$ARGUMENTS` if it's a number). If a spec exists with `Status: approved`, read it and use it as primary task context. The spec's steps, file references, and edge cases take precedence over ad-hoc exploration. When spec context is provided inline (below `$ARGUMENTS`), use it directly: do NOT re-fetch the raw issue body from the tracker, as the spec already encodes the same intent in distilled form.
+1. Check for an approved spec: look for `.claude/specs/{issue-number}-*.md` (where issue-number matches `$ARGUMENTS` if it's a number). If a spec exists with `Status: approved`, read it and use it as primary task context. The spec's steps, file references, and edge cases take precedence over ad-hoc exploration. When spec context is provided inline (below `$ARGUMENTS`), use it directly. Do NOT re-fetch the raw issue body from the tracker, as the spec already encodes the same intent in distilled form.
 2. Read the project's CLAUDE.md and AGENTS.md for conventions
 3. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
@@ -80,24 +80,29 @@ For every file you touched, scan for pre-existing issues and fix them:
 - Obvious bugs adjacent to your changes (off-by-one, missing None checks)
 - Stale imports, dead code, or leftover debug prints in the same file
 
-Keep scout fixes small and low-risk. Do not refactor entire files: just clean
+Keep scout fixes small and low-risk. Do not refactor entire files; just clean
 up what you see while you are already there. If a scout fix is non-trivial,
 note it for a separate task instead of doing it inline.
 
-### Step 5: Verify
+### Step 5: Project-Specific Build Steps
+
+Check CLAUDE.md, AGENTS.md or the Makefile for build steps like these, and run every one that applies:
+- If the project compiles CSS utility classes, rebuild after adding new classes.
+- If it has a service-worker or static cache version, bump it when static assets change.
+- If it has translation catalogs, extract and compile them after adding user-facing strings, and clear any fuzzy entries (they are skipped at compile time).
+
+### Step 6: Verify
 
 Run the full CI-equivalent checks:
 ```bash
 the project's CI-equivalent check command (see its Makefile, package.json scripts, or CI config)
 ```
 
+That command is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them).
+
 If any check fails, fix and re-run (up to 3 attempts).
 
-If you added or changed i18n strings (`{% trans %}`, `{% blocktrans %}`, `gettext`, etc.),
-run the project's `makemessages` and `compilemessages` commands (see CLAUDE.md).
-Check for `#, fuzzy` entries in `.po` files: they are silently skipped by `compilemessages`.
-
-### Step 5: Self-Check
+### Step 7: Self-Check
 
 Before declaring done:
 - [ ] All tests pass

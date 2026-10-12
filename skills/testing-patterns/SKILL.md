@@ -24,7 +24,7 @@ When writing or modifying test files, follow these conventions.
 
 ## Fixture Patterns
 
-- Define fixtures per-file, not shared across test files
+- Put fixtures used by several test files in the nearest shared fixture module (for example `conftest.py`); keep single-file fixtures local
 - Use `autouse=True` fixtures sparingly: only for setup/teardown that every test needs
 - Name fixtures descriptively: `mock_api_client` not `client`
 

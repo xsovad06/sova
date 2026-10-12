@@ -37,14 +37,14 @@ If the issue body already contains a `## Research` section, report "Issue alread
 
 ### Step 2: Read Project Context
 
-Read whatever exists -- skip files that are missing:
+Read whatever exists; skip files that are missing:
 - `CLAUDE.md` and `AGENTS.md` for project conventions
 - `.claude/rules/architecture.md` for component overview and design decisions
 - `.claude/agent-memory/cookbook.md` for known patterns and past mistakes
 
 ### Step 3: Explore the Codebase
 
-Based on the issue, investigate the affected areas. Use file reads, grep, and search -- do not guess from file names alone.
+Based on the issue, investigate the affected areas. Use file reads, grep, and search; do not guess from file names alone.
 
 1. **Identify affected files**: find every file that needs to be modified, created, or deleted. Read the actual source to confirm.
 2. **Find the pattern**: locate the closest existing implementation to follow. Note specific file paths, class names, and method signatures.
@@ -98,8 +98,8 @@ Similar work was done in {ticket/PR reference if found}.
 
 ### Dependencies
 
-- `path/to/utility.py` -- FunctionName: how to reuse it
-- `path/to/base_class.py` -- ClassName: extend for this implementation
+- `path/to/utility.py`: FunctionName, how to reuse it
+- `path/to/base_class.py`: ClassName, extend for this implementation
 
 ### Edge Cases
 
@@ -108,9 +108,9 @@ Similar work was done in {ticket/PR reference if found}.
 
 ### Suggested Approach
 
-1. Step one -- what and where
-2. Step two -- what and where
-3. Step three -- what and where
+1. Step one: what and where
+2. Step two: what and where
+3. Step three: what and where
 
 ### UI Notes
 
@@ -130,14 +130,20 @@ Write the updated body back to the tracker. You MUST append the research to the 
 
 **GitHub**:
 ```bash
-echo "<original body + research section>" > /tmp/issue_body.md
-gh issue edit $ARGUMENTS --body-file /tmp/issue_body.md
+BODY=$(mktemp)
+cat > "$BODY" <<'ISSUE_BODY'
+<original body + research section>
+ISSUE_BODY
+gh issue edit $ARGUMENTS --body-file "$BODY"
 ```
 
 **JIRA** (requires `jira-cli` by ankitpokhrel):
 ```bash
-echo "<original body + research section>" > /tmp/issue_body.md
-cat /tmp/issue_body.md | jira issue edit $ARGUMENTS --no-input
+BODY=$(mktemp)
+cat > "$BODY" <<'ISSUE_BODY'
+<original body + research section>
+ISSUE_BODY
+jira issue edit $ARGUMENTS --no-input < "$BODY"
 ```
 
 After writing, verify the research was saved to the description (not as a comment). If verification fails, retry the body edit.
@@ -160,9 +166,9 @@ Ready for development.
 
 ## Rules
 
-- This command investigates only -- do NOT write any implementation code
+- This command investigates only. Do NOT write any implementation code
 - Do NOT create branches or modify project files
-- Always write research back to the tracker -- this is autonomous, not interactive
+- Always write research back to the tracker: this is autonomous, not interactive
 - Ground every recommendation in actual code found during Step 3
 - If the issue lacks enough detail, report "needs specification" and stop rather than guessing
 - NEVER use emojis in any output
