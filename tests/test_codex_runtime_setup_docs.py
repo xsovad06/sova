@@ -56,9 +56,14 @@ def test_default_sandbox_matches_doc() -> None:
 
 
 def test_codex_config_fields_match_doc() -> None:
+    # Match the fully-qualified config key, not the bare field name: a bare
+    # "model" is a substring of unrelated prose ("agent.model",
+    # "model-selection"), so the assertion would pass even with the Codex
+    # field undocumented.
     text = _doc_text()
     for field_name in CodexConfig.model_fields:
-        assert field_name in text, f"CodexConfig field {field_name!r} is not documented"
+        key = f"codex.{field_name}"
+        assert key in text, f"CodexConfig field {field_name!r} is not documented as {key!r}"
 
 
 def test_env_prefix_matches_doc() -> None:
