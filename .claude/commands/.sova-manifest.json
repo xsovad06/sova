@@ -2,7 +2,7 @@
   "version": 1,
   "commands": {
     "address-pr.md": {
-      "hash": "8b81964c970c9e5e",
+      "hash": "28dd03e83d9f53ca",
       "managed": true
     },
     "after-merge.md": {
@@ -66,11 +66,11 @@
       "managed": true
     },
     "pr.md": {
-      "hash": "6a35ad47d3e920ea",
+      "hash": "49c4a74c5ad00cca",
       "managed": true
     },
     "rearrange-commits.md": {
-      "hash": "649f7adbe1a585c2",
+      "hash": "92e6ec31d7f0b732",
       "managed": true
     },
     "research.md": {
