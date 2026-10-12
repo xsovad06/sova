@@ -8,6 +8,7 @@ to work unchanged.  The actual implementation lives in the configured
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextvars import ContextVar
@@ -259,6 +260,19 @@ _MIN_ATTEMPT_SECONDS = 60.0
 # ("disable the negative-availability cache for this walk").
 _IDENTITY_UNSET = object()
 
+# Per-run "Internal LLM model" override chosen in the dashboard's launch modal.
+# The dashboard sets it only in the spawned ``sova run`` child's own env (via
+# ``spawn_direct(extra_env=...)``), never in its own process or in config, so
+# concurrent runs cannot see each other's choice and nothing is persisted.
+RUN_MODEL_OVERRIDE_ENV = "SOVA_LLM_MODEL_OVERRIDE"
+
+
+def run_model_override() -> str | None:
+    """Return this process's per-run LLM model override, or None when unset."""
+    value = os.environ.get(RUN_MODEL_OVERRIDE_ENV, "").strip()
+    return value if value else None
+
+
 # Multi-candidate chains stop just short of the caller's timeout so the loop
 # raises its own terminal error before the engine's outer asyncio.timeout fires
 # and mislabels the failure as step_hard_timeout (which also commits WIP work).
@@ -498,8 +512,13 @@ def _build_candidate_chain(
     cfg: ProjectConfig | None,
     *,
     normalize: Callable[[str | None], str | None] = _normalize_model,
+    prepend: str | None = None,
 ) -> list[str | None]:
     """Return the ordered chain: *primary* followed by ``agent.fallback_models``.
+
+    *prepend*, when set (the per-run override, see ``run_model_override()``),
+    goes ahead of *primary* so the override is tried first and the configured
+    chain still follows it if the override hits a fallback-eligible error.
 
     Fallback candidates go through ``select_model`` for the same reason the
     primary does at the call sites: an alias map that resolved only the primary
@@ -521,11 +540,18 @@ def _build_candidate_chain(
     the runtime will walk itself is a provider construction (and its
     normalization rules) the runtime path has no business paying for.
     """
-    chain: list[str | None] = [primary]
+    chain: list[str | None] = []
+    seen: set[str | None] = set()
+    for head in [prepend, primary] if prepend else [primary]:
+        normalized = normalize(head) if head else None
+        if normalized is not None and normalized in seen:
+            continue
+        chain.append(head)
+        if normalized is not None:
+            seen.add(normalized)
     if cfg is None:
         return chain
 
-    seen = {normalize(primary)} if primary else set()
     for entry in cfg.agent.fallback_models:
         if not entry:
             continue
@@ -589,9 +615,19 @@ async def _invoke_with_fallback(
 
     See ``walk_model_chain()`` for the walk itself, which this shares with the
     AgentRuntime path in ``sova.core.agent_dispatch``.
+
+    A per-run override (``run_model_override()``) is tried ahead of *primary*
+    here and only here: it names an LLM-layer model, while the AgentRuntime
+    path walks the coding agent's own model namespace. ``LLMResult.model``
+    still comes from whichever attempt succeeded, so a run that falls back off
+    the override reports the model that actually executed.
     """
     provider = get_provider()
     _raise_if_budget_cap_unsupported(provider, max_budget_usd)
+    override = run_model_override()
+    if override:
+        override = select_model(override, cfg)
+        log.debug("llm.run_model_override", model=override, primary=primary)
 
     async def _bound(
         candidate: str | None,
@@ -608,6 +644,7 @@ async def _invoke_with_fallback(
         caller_fallback=caller_fallback,
         timeout=timeout,
         max_budget_usd=max_budget_usd,
+        prepend=override,
     )
 
 
@@ -622,8 +659,12 @@ async def walk_model_chain(
     identity: str | None = _IDENTITY_UNSET,  # type: ignore[assignment]
     is_eligible: Callable[[Exception], bool] = is_fallback_eligible,
     normalize: Callable[[str | None], str | None] = _normalize_model,
+    prepend: str | None = None,
 ) -> LLMResult:
     """Walk the model chain until an attempt succeeds, sharing one deadline and budget.
+
+    *prepend* is forwarded to ``_build_candidate_chain()``; only
+    ``_invoke_with_fallback()`` sets it (the per-run override).
 
     *is_eligible* defaults to ``is_fallback_eligible`` (the LLMProvider path's
     behavior, unchanged). The AgentRuntime path in ``sova.core.agent_dispatch``
@@ -688,7 +729,7 @@ async def walk_model_chain(
     """
     if identity is _IDENTITY_UNSET:
         identity = provider_identity(cfg)
-    chain = _build_candidate_chain(primary, cfg, normalize=normalize)
+    chain = _build_candidate_chain(primary, cfg, normalize=normalize, prepend=prepend)
     if identity is not None:
         chain = _drop_unavailable(chain, identity, normalize=normalize)
     if len(chain) == 1:

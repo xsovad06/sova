@@ -275,6 +275,27 @@ verified against a live deployment at the time of writing (PR9): per the pinning
 rule in `.claude/rules/architecture.md`, confirm availability (404 vs 429) before relying on them
 in production, and update the table if they have drifted.
 
+### 2.8 Per-run internal LLM model override (#1036)
+
+The dashboard's launch modal offers an "Internal LLM model (this run only)" select, populated from
+`GET /api/models/available?layer=llm` and defaulting to "no override" (a suggested model is never
+pre-selected). It is the R13 mitigation: the choice crosses the `spawn_direct()` boundary as the
+`SOVA_LLM_MODEL_OVERRIDE` env var, set only in that run's `extra_env` (layered after the spawn
+scrub), never in the dashboard process, `sova.toml`, or the settings DB. Inside the `sova run`
+child, `_invoke_with_fallback()` reads it via `run_model_override()`, alias-resolves it, and
+prepends it to the candidate chain, so a fallback-eligible failure still walks the configured
+primary and `agent.fallback_models`, and `LLMResult.model` reports whichever model actually ran.
+The AgentRuntime walk in `sova.core.agent_dispatch` does not see it: that path uses the coding
+agent's own model namespace (the runtime model picker is #1039).
+
+Only `researcher`, `developer`, `planner` and `reviewer` (the direct-spawn roles,
+`agent_lifecycle.LLM_MODEL_OVERRIDE_ROLES`) can honor it. The modal disables the control for any
+other role, `POST /api/agents/start` rejects such a request with 400, and also rejects with 400 an
+ID the current `layer="llm"` discovery no longer offers (503 when discovery itself fails, or when it
+answers with `source: "curated"`, which is `models_service`'s Anthropic-only static fallback rather
+than the provider's real catalog and so validates nothing), so a stale page or a scripted call can
+never launch with an ignored or invalid override.
+
 ---
 
 ## 3. Answers to the eight investigation questions

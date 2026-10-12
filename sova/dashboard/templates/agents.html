@@ -234,6 +234,13 @@
           <select id="launch-model" class="sova-input text-sm"></select>
           <p id="launch-reason" class="text-xs text-gray-500 mt-1.5"></p>
         </div>
+        <div>
+          <label for="launch-llm-model" class="text-xs text-gray-500 uppercase tracking-wider block mb-1.5">Internal LLM model (this run only)</label>
+          <select id="launch-llm-model" class="sova-input text-sm">
+            <option value="">Use configured model (no override)</option>
+          </select>
+          <p id="launch-llm-model-help" class="text-xs text-gray-500 mt-1.5">Tried first for SOVA's own model calls in this run, ahead of the configured fallback chain. Separate from the coding agent's runtime model, and never saved to settings.</p>
+        </div>
       </div>
     </div>
 
@@ -1119,12 +1126,13 @@ async function quickStartRole(issue, role, prNumber) {
   showLaunchModal(issue, role, false, prNumber);
 }
 
-async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride) {
+async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride, llmModelOverride) {
   if (!force && blockedByConnectivity('starting an agent')) return;
   try {
     var payload = { issue: String(issue), role: role, force: force, budget_override: budgetOverride || false };
     if (prNumber) payload.pr_number = prNumber;
     if (model) payload.model = model;
+    if (llmModelOverride) payload.llm_model_override = llmModelOverride;
     var res = await fetch(apiUrl('/agents/start'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1142,7 +1150,7 @@ async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride
           { title: 'Budget Exceeded', confirmText: 'Override', confirmClass: 'danger' }
         );
         if (confirmed) {
-          await _doStartAgent(issue, role, force, prNumber, model, true);
+          await _doStartAgent(issue, role, force, prNumber, model, true, llmModelOverride);
         }
         return;
       }
@@ -3421,9 +3429,67 @@ function _populateModelDropdown(sel, modelOptions) {
   }
 }
 
+// Mirrors agent_lifecycle.LLM_MODEL_OVERRIDE_ROLES. The server rejects an
+// override for any other role with a 400 regardless; disabling up front just
+// avoids offering a choice that cannot be honored.
+var _LLM_OVERRIDE_ROLES = { researcher: true, developer: true, planner: true, reviewer: true };
+var _llmOverrideRequestId = 0;
+var _llmOverrideDefaultHelp = null;
+
+// Some browsers never show a title tooltip on a disabled <select>, so the
+// reason is also written into the visible help line under it.
+function _setLlmOverrideDisabled(sel, reason) {
+  sel.disabled = true;
+  sel.title = reason;
+  sel.classList.add('opacity-50', 'cursor-not-allowed');
+  document.getElementById('launch-llm-model-help').textContent = reason + '.';
+}
+
+// Always resets to "no override" so a previous launch's choice, or any
+// suggested model, can never be submitted without a deliberate pick.
+function _prepareLlmOverrideSelect(role) {
+  var sel = document.getElementById('launch-llm-model');
+  var requestId = ++_llmOverrideRequestId;
+  sel.innerHTML = '';
+  var none = document.createElement('option');
+  none.value = '';
+  none.textContent = 'Use configured model (no override)';
+  sel.appendChild(none);
+  sel.value = '';
+  sel.disabled = false;
+  sel.title = '';
+  sel.classList.remove('opacity-50', 'cursor-not-allowed');
+  var help = document.getElementById('launch-llm-model-help');
+  if (_llmOverrideDefaultHelp === null) _llmOverrideDefaultHelp = help.textContent;
+  help.textContent = _llmOverrideDefaultHelp;
+
+  var effectiveRole = role || 'developer';
+  if (!_LLM_OVERRIDE_ROLES[effectiveRole]) {
+    _setLlmOverrideDisabled(sel, 'The ' + effectiveRole + ' role cannot honor a per-run internal LLM model override');
+    return;
+  }
+
+  fetchAPI(apiUrl('/models/available?layer=llm'))
+    .then(function(data) {
+      if (requestId !== _llmOverrideRequestId) return;
+      // A "curated" answer is models_service's fallback while the provider is
+      // unauthenticated or misconfigured, not the provider's real catalog.
+      if (data.source === 'curated' || !(data.models || []).length) {
+        _setLlmOverrideDisabled(sel, 'Model discovery is unavailable for the current provider');
+        return;
+      }
+      appendModelOptgroups(sel, groupModelsByFamily(data.models));
+    })
+    .catch(function() {
+      if (requestId !== _llmOverrideRequestId) return;
+      _setLlmOverrideDisabled(sel, 'Model discovery is unavailable for the current provider');
+    });
+}
+
 function showLaunchModal(issue, role, force, prNumber) {
   _launchModalState = { issue: issue, role: role, force: force || false, prNumber: prNumber || null };
   _launchModalTrigger = document.activeElement;
+  _prepareLlmOverrideSelect(role);
 
   if (!issue) {
     _showModalChrome();
@@ -3503,8 +3569,10 @@ function confirmLaunch() {
   if (!_launchModalState) return;
   var s = _launchModalState;
   var model = document.getElementById('launch-model').value || null;
+  var llmSel = document.getElementById('launch-llm-model');
+  var llmModelOverride = llmSel.disabled ? null : (llmSel.value || null);
   hideLaunchModal();
-  _doStartAgent(s.issue, s.role, s.force, s.prNumber, model);
+  _doStartAgent(s.issue, s.role, s.force, s.prNumber, model, false, llmModelOverride);
 }
 
 document.getElementById('launch-modal').addEventListener('click', function(e) {

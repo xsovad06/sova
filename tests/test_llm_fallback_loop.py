@@ -676,3 +676,111 @@ class TestEngineOwnedFallbackFlag:
         from sova.dashboard.settings_meta import get_meta
 
         assert get_meta("llm.engine_owned_fallback") is not None
+
+
+# ---------------------------------------------------------------------------
+# Per-run "Internal LLM model" override (SOVA_LLM_MODEL_OVERRIDE, issue #1036)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCandidateChainPrepend:
+    def test_prepend_goes_ahead_of_primary_and_fallbacks(self) -> None:
+        chain = client._build_candidate_chain("opus", _cfg("sonnet"), prepend="haiku")
+        assert chain == ["haiku", "opus", "sonnet"]
+
+    def test_prepend_matching_primary_is_not_repeated(self) -> None:
+        assert client._build_candidate_chain("opus", _cfg("sonnet"), prepend="opus") == ["opus", "sonnet"]
+
+    def test_prepend_matching_a_fallback_is_not_repeated(self) -> None:
+        chain = client._build_candidate_chain("opus", _cfg("sonnet", "haiku"), prepend="sonnet")
+        assert chain == ["sonnet", "opus", "haiku"]
+
+    def test_prepend_keeps_none_primary_as_provider_default(self) -> None:
+        assert client._build_candidate_chain(None, _cfg("sonnet"), prepend="haiku") == ["haiku", None, "sonnet"]
+
+    def test_prepend_without_config_still_keeps_primary(self) -> None:
+        assert client._build_candidate_chain("opus", None, prepend="haiku") == ["haiku", "opus"]
+
+    def test_no_prepend_is_unchanged(self) -> None:
+        assert client._build_candidate_chain("opus", _cfg("sonnet"), prepend=None) == ["opus", "sonnet"]
+
+
+class TestRunModelOverride:
+    def test_unset_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(client.RUN_MODEL_OVERRIDE_ENV, raising=False)
+        assert client.run_model_override() is None
+
+    def test_blank_value_is_treated_as_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(client.RUN_MODEL_OVERRIDE_ENV, "   ")
+        assert client.run_model_override() is None
+
+    def test_value_is_stripped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(client.RUN_MODEL_OVERRIDE_ENV, " haiku ")
+        assert client.run_model_override() == "haiku"
+
+    async def test_override_is_tried_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(client.RUN_MODEL_OVERRIDE_ENV, "haiku")
+        attempt = _Recorder(_ok("haiku"))
+        result = await client._invoke_with_fallback(
+            attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=900.0
+        )
+        assert result.model == "haiku"
+        assert [c[0] for c in attempt.calls] == ["haiku"]
+        assert attempt.calls[0][1] == "opus"
+
+    async def test_failed_override_falls_through_configured_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The effective model reported is whichever attempt actually ran, not the override."""
+        monkeypatch.setenv(client.RUN_MODEL_OVERRIDE_ENV, "haiku")
+        attempt = _Recorder(RateLimitError("rate_limit"), RateLimitError("rate_limit"), _ok("sonnet"))
+        result = await client._invoke_with_fallback(
+            attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=900.0
+        )
+        assert result.model == "sonnet"
+        assert [c[0] for c in attempt.calls] == ["haiku", "opus", "sonnet"]
+
+    async def test_non_eligible_error_on_override_still_reraises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(client.RUN_MODEL_OVERRIDE_ENV, "haiku")
+        attempt = _Recorder(BillingError("budget_exhausted"))
+        with pytest.raises(BillingError):
+            await client._invoke_with_fallback(attempt, primary="opus", cfg=_cfg(), caller_fallback=None, timeout=900.0)
+        assert len(attempt.calls) == 1
+
+    async def test_override_equal_to_primary_keeps_single_candidate_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(client.RUN_MODEL_OVERRIDE_ENV, "opus")
+        attempt = _Recorder(_ok())
+        await client._invoke_with_fallback(attempt, primary="opus", cfg=_cfg(), caller_fallback="sonnet", timeout=900.0)
+        assert attempt.calls == [("opus", "sonnet", 900.0, None)]
+
+    async def test_override_is_alias_resolved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(client.RUN_MODEL_OVERRIDE_ENV, "fast-one")
+        cfg = _cfg()
+        cfg.llm.model_aliases = {"fast-one": "haiku"}
+        attempt = _Recorder(_ok("haiku"))
+        await client._invoke_with_fallback(attempt, primary="opus", cfg=cfg, caller_fallback=None, timeout=900.0)
+        assert attempt.calls[0][0] == "haiku"
+
+    async def test_agent_runtime_walk_ignores_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """walk_model_chain() is shared with the AgentRuntime path, which must not see it."""
+        monkeypatch.setenv(client.RUN_MODEL_OVERRIDE_ENV, "haiku")
+        calls: list[str | None] = []
+
+        async def _attempt(model, next_hop, timeout, budget):  # type: ignore[no-untyped-def]
+            calls.append(model)
+            return _ok(model or "default")
+
+        await client.walk_model_chain(_attempt, primary="opus", cfg=_cfg(), caller_fallback=None, timeout=900.0)
+        assert calls == ["opus"]
+
+    async def test_invoke_honors_override_end_to_end(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(client.RUN_MODEL_OVERRIDE_ENV, "haiku")
+        provider = MagicMock()
+        provider.normalize_model_name = lambda m: m
+        provider.capabilities.supports_budget_cap = True
+        provider.invoke = AsyncMock(side_effect=[ModelUnavailableError("haiku not found"), _ok("opus")])
+        with (
+            patch.object(client, "get_provider", return_value=provider),
+            patch.object(client, "_try_load_config", return_value=_cfg()),
+        ):
+            result = await client.invoke("prompt", model="opus", timeout=900.0)
+        assert result.model == "opus"
+        assert [c.kwargs["model"] for c in provider.invoke.call_args_list] == ["haiku", "opus"]

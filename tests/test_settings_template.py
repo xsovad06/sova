@@ -120,3 +120,86 @@ class TestRegistryCoverage:
         """sova.toml no longer exists; a description naming it sends users nowhere."""
         offenders = [m.key for m in _REGISTRY if "sova.toml" in m.description]
         assert offenders == [], f"settings descriptions still reference sova.toml: {offenders}"
+
+
+class TestFallbackOrderControls:
+    """agent.fallback_models is an ordered chain; the editor must let it be reordered (#1036)."""
+
+    @staticmethod
+    def _body(source: str) -> str:
+        start = source.index("function editEnumerableListConfig(")
+        return source[start : source.index("\n}\n", start)]
+
+    def test_rows_offer_up_down_and_remove(self, template_source: str) -> None:
+        body = self._body(template_source)
+        for action in ("action: 'up'", "action: 'down'", "action: 'remove'"):
+            assert action in body
+
+    def test_reorder_rewrites_the_text_input_that_gets_saved(self, template_source: str) -> None:
+        """The text input stays the single source of truth for what saveConfig() sends."""
+        start = template_source.index("function applyOrderAction(")
+        body = template_source[start : template_source.index("\n  }\n", start)]
+        assert "_parseListInput(input.value)" in body
+        assert "input.value = parts.join(', ')" in body
+
+    def test_order_list_rerenders_on_manual_typing(self, template_source: str) -> None:
+        assert "input.addEventListener('input', renderOrder)" in self._body(template_source)
+
+    def test_blur_no_change_check_compares_parsed_entries_for_lists(self, template_source: str) -> None:
+        """The list editor rewrites its own text, so a raw string compare saves on every blur.
+
+        _rawToInputString() renders a non-empty list as a JSON array literal while
+        editEnumerableListConfig() normalizes the input to comma-separated text, so
+        comparing the two strings never matched and merely opening the editor and
+        clicking away POSTed the unchanged list back.
+        """
+        start = template_source.index("function _isUnchanged(")
+        body = template_source[start : template_source.index("\n  }\n", start)]
+        assert "_parseListInput(newVal).join(', ') === _parseListInput(origStr).join(', ')" in body
+        assert "if (!_isUnchanged(newVal, origStr))" in template_source
+
+    def test_saved_list_preserves_order(self) -> None:
+        from sova.dashboard.services.settings_service import _cast_list
+
+        assert _cast_list("claude-sonnet-5, claude-haiku-4-5, gpt-oss-120b") == [
+            "claude-sonnet-5",
+            "claude-haiku-4-5",
+            "gpt-oss-120b",
+        ]
+        assert _cast_list('["b", "a"]') == ["b", "a"]
+
+
+_AGENTS_TEMPLATE = _TEMPLATE.parent / "agents.html"
+
+
+class TestLaunchModalLlmOverride:
+    """The launch modal's per-run "Internal LLM model" control (#1036)."""
+
+    @pytest.fixture(scope="class")
+    def agents_source(self) -> str:
+        return _AGENTS_TEMPLATE.read_text(encoding="utf-8")
+
+    def test_labelled_as_this_run_only(self, agents_source: str) -> None:
+        assert "Internal LLM model (this run only)" in agents_source
+
+    def test_sourced_from_llm_layer_discovery(self, agents_source: str) -> None:
+        assert "/models/available?layer=llm" in agents_source
+
+    def test_defaults_to_no_override_never_a_suggestion(self, agents_source: str) -> None:
+        start = agents_source.index("function _prepareLlmOverrideSelect(")
+        body = agents_source[start : agents_source.index("\n}\n", start)]
+        assert "sel.value = ''" in body
+        assert "suggested_model" not in body
+
+    def test_roles_mirror_the_server_side_set(self, agents_source: str) -> None:
+        from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES
+
+        match = re.search(r"var _LLM_OVERRIDE_ROLES = \{([^}]*)\};", agents_source)
+        assert match, "_LLM_OVERRIDE_ROLES not found in agents.html"
+        client_roles = set(re.findall(r"(\w+): true", match.group(1)))
+        assert client_roles == set(LLM_MODEL_OVERRIDE_ROLES)
+
+    def test_disabled_control_is_never_submitted(self, agents_source: str) -> None:
+        start = agents_source.index("function confirmLaunch(")
+        body = agents_source[start : agents_source.index("\n}\n", start)]
+        assert "llmSel.disabled ? null" in body
