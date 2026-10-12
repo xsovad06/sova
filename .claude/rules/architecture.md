@@ -260,3 +260,4 @@ The following topics have detailed implementation guidance in dedicated guidelin
 - **GitHub CLI integration** (GH_TOKEN override, gh auth switch, gh pr create URL, PR reviews vs comments): see `docs/integration-guidelines.md` and `docs/api-contracts-guidelines.md`
 - **Subprocess safety** (suspicious file guard, shlex.quote): see `docs/security-guidelines.md`
 - **Test isolation patterns** (file-backed services, patch.object facades, mock patterns): see `docs/testing-guidelines.md`
+- **Codex runtime setup** (browser login with keyring storage, device-auth and stdin API-key fallbacks, trusted-automation-only `CODEX_API_KEY`, sandbox config, rollback): see `docs/codex-runtime-setup.md`

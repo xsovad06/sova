@@ -126,6 +126,8 @@ All paths wrapped in `try/except` -- notifications never crash the pipeline.
 
 `ClaudeCodeRuntime.spawn()` runs `claude -p` with `--permission-mode bypassPermissions`. A headless preamble instructs the model to act without confirmation. CLI commands must be framed as bash code blocks to prevent natural language interpretation. `AgentProcess` is a generic async subprocess handle; runtime-specific spawning logic lives in the corresponding `AgentRuntime` implementation.
 
+`CodexRuntime.spawn()` runs `codex exec --json --sandbox {read-only|workspace-write}` instead, selected via `agent.runtime = "codex"`. Setup (browser login with keyring storage, the device-auth and stdin API-key fallbacks for browser-less environments, and the trusted-automation-only `CODEX_API_KEY` pattern) is covered end to end in [Codex Runtime Setup Guide](codex-runtime-setup.md); credential scrub/re-injection mechanics are in [security-guidelines.md](security-guidelines.md).
+
 Lifecycle: SIGTERM with configurable wait, then SIGKILL. `ProcessTracker` maps `task_run_id -> AgentProcess` for crash detection.
 
 ## Handoff File I/O (`sova/ipc/handoff.py`)

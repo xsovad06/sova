@@ -26,6 +26,8 @@ Every `gh` CLI call in `sova/adapters/github.py` and `sova/git/pr.py` passes `en
 
 ### Codex/OpenAI Authentication
 
+For end-to-end setup instructions (browser login with keyring storage, the device-auth and stdin API-key fallbacks for browser-less environments, rollback to Claude Code, and remediation for a stray global `CODEX_API_KEY`/`OPENAI_API_KEY`), see [Codex Runtime Setup Guide](codex-runtime-setup.md). The rest of this section covers the credential-handling mechanics inside SOVA's own code.
+
 Codex CLI owns its own credential storage; SOVA never reads, copies, masks, or persists it. Two distinct auth paths:
 
 - **Saved keyring auth** (preferred for a local, long-running server): one-time `codex login`, or `cli_auth_credentials_store = "keyring"` in Codex's own config. The credential lives entirely inside Codex's credential store; SOVA's only interaction is a read-only readiness probe (`codex login status`, never a model request).
