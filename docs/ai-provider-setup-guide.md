@@ -5,11 +5,12 @@ This guide explains how to configure SOVA to use different AI providers (Claude 
 ## Table of Contents
 
 1. [Supported Providers](#supported-providers)
-2. [Personal Subscription (Claude Code CLI)](#personal-subscription-claude-code-cli)
-3. [Anthropic API Direct](#anthropic-api-direct)
-4. [Google Vertex AI](#google-vertex-ai)
-5. [Troubleshooting](#troubleshooting)
-6. [Connections Page (Dashboard)](#connections-page-dashboard)
+2. [Switching Backends Without Editing Model Fields](#switching-backends-without-editing-model-fields)
+3. [Personal Subscription (Claude Code CLI)](#personal-subscription-claude-code-cli)
+4. [Anthropic API Direct](#anthropic-api-direct)
+5. [Google Vertex AI](#google-vertex-ai)
+6. [Troubleshooting](#troubleshooting)
+7. [Connections Page (Dashboard)](#connections-page-dashboard)
 
 ---
 
@@ -28,6 +29,131 @@ This guide explains how to configure SOVA to use different AI providers (Claude 
 1. **`llm.provider = "vertex"`** (row above): a real provider choice, routed through `LiteLLMProvider`, for SOVA's own LLM calls against Vertex-hosted models. See [Google Vertex AI](#google-vertex-ai) below.
 2. **`CLAUDE_CODE_USE_VERTEX` / `CLAUDE_CODE_USE_BEDROCK`**: environment variables that redirect the Claude Code CLI subprocess itself to a Vertex or Bedrock deployment, independent of `llm.provider`. This is not a provider choice SOVA makes; it's inherited process environment that silently overrides `llm.provider = "claude-code"` when present. See [4. Environment Variable Scrubbing](#4-environment-variable-scrubbing) below.
 3. **`ANTHROPIC_VERTEX_PROJECT_ID` for the batch backend** (`sova/llm/providers/anthropic_batch.py`): a third, independent mechanism used only by the Anthropic Batch API path (`invoke_batch()`, e.g. triage), requiring that same env var plus `llm.batch_gcs_bucket`. It is selected independently of `llm.provider`: switching to or away from `llm.provider = "vertex"` neither enables nor disables it. Note that this is independence of configuration keys, not of environment: it reads the same `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` that mechanism 1 does, so setting those for one arms the other too once a GCS bucket is configured (see [4. Set Environment Variables](#4-set-environment-variables) under Vertex AI).
+
+---
+
+## Switching Backends Without Editing Model Fields
+
+Switching the backend under a Claude tier name does not require rewriting that tier name by hand,
+for the one value this mechanism actually touches. Routing the Claude Code CLI to Vertex or Bedrock
+via `CLAUDE_CODE_USE_VERTEX`/`CLAUDE_CODE_USE_BEDROCK` (mechanism 2 above) redirects the CLI to a
+deployment that rejects a bare `opus`/`sonnet`/`haiku`, and `sova/llm/client.py:resolve_alias()`
+absorbs that for the per-call model each pipeline step resolves through
+`prepare_invocation()`/`select_model()` (`sova/llm/client.py:1146,1193`), plus any tier a
+`llm.routing[task_type]` entry names: a bare tier there is detected against the active backend
+(`sova/llm/backends.py:detect_backend()`) and substituted with the dialect-specific ID that backend
+can actually serve, from `tier_candidates_for()`'s per-backend candidate list.
+
+`llm.model` and `llm.fallback_model` are **not** part of this absorption when `llm.provider =
+"claude-code"`, because they are not read at all on that provider: `create_provider()`
+(`sova/llm/provider.py`) returns a bare `ClaudeCodeProvider()` with no model arguments for
+`provider == "claude-code"`, and `roles/reviewer.py`'s tier fallback explicitly skips
+`resolve_alias()`/`llm.model` for `provider in ("claude-code", "anthropic")` too. The two fields
+matter for different `llm.provider` sets: `llm.model` is resolved on `anthropic` and every
+litellm-backed vendor (`vertex`, `openai`, `ollama`, `litellm`, `hybrid`); `llm.fallback_model` is
+read only by the litellm/vendor branch (`create_provider()`, `sova/llm/provider.py`), not by the
+`anthropic` branch, which constructs `AnthropicAPIProvider(model=..., api_key=...)` with no
+fallback argument at all, so it is as inert on `llm.provider = "anthropic"` as it is on
+`claude-code`. This is the separate topic the next section covers.
+
+`agent.model` is a third, mostly unrelated path: `start_agent()` and
+`start_command()` (`sova/dashboard/services/agent_lifecycle.py`) read `cfg.agent.model` raw via
+`_resolve_config_model()` and hand it straight to `runtime.spawn(model=...)` → the Claude CLI's
+`--model` flag, with no call to `resolve_alias()` anywhere in between; a pipeline step is different,
+since `ctx.config.agent.model` passed through `dispatch_command()` (e.g. `develop.py`) does reach
+`select_model()`/`resolve_alias()` like `llm.model` does. So a bare `agent.model = "opus"` (the
+shipped default, `AgentConfig.model`, `sova/config/models.py:156`) survives a backend switch inside
+the pipeline, but reproduces the #619 failure on the dashboard/CLI top-level spawn path, and only
+once the routing variable actually reaches the spawned CLI: `runtime.spawn()` scrubs
+`CLAUDE_CODE_USE_VERTEX`/`CLAUDE_CODE_USE_BEDROCK` at the spawn boundary (`sova/ipc/runtime.py`)
+unless it is also listed in `agent.env_passthrough` or set in `~/.claude/settings.json`'s `env`
+block, which scrubbing cannot reach (see
+[4. Environment Variable Scrubbing](#4-environment-variable-scrubbing) below). Pin `agent.model` to
+an explicit ID in `sova.toml` regardless, since the spawn-path gap is real whenever passthrough is
+configured. `resolve_alias()` detects the backend from that same scrubbed-then-passed-through child
+environment, not the parent shell's, which is why setting the routing variable only in your own
+shell does not exercise this path either. Set `llm.resolve_tier_aliases = false` to restore
+byte-identical passthrough for every
+`resolve_alias()` caller (`select_model()`, `create_provider()`, `llm_suggestion_service`, and the
+reviewer's tier fallback), not just `llm.model`/`llm.fallback_model`. Two limits are worth knowing:
+the per-backend candidate lists (`tier_candidates_for()`) exist for the `vertex` and `bedrock`
+backends only; on the `firstparty` backend a bare tier name is instead resolved by SOVA itself via
+`sova.llm.models.resolve_model_alias()` so it never reaches the CLI unresolved, and `backend_can_serve()`
+is fail-open on every backend, rejecting only three known-wrong cases (`sova/llm/backends.py`): a
+bare tier name on `vertex`/`bedrock`, an `@`-pinned Vertex snapshot ID on `firstparty`, and a
+Bedrock-dialect ID anywhere but `bedrock`. This covers both tier names and a pinned ID the candidate
+table already recognizes through `tier_for_known_candidate()` (the #1029 backend-drift fix below
+corrects both), but not an unrecognized pinned ID for a model the target backend does not host,
+which passes through unchanged.
+
+This absorption is a backstop for an already-deployed bare alias surviving a backend switch, not a
+license to write a bare alias in any of these fields (`llm.model`, `llm.fallback_model`, or
+`agent.model`, which has no such backstop at all) going forward: `.claude/rules/architecture.md`'s
+"Always pin explicit model IDs in `sova.toml`, never generic aliases" rule (#619, #828) still applies
+to all of them, since a generic alias is resolved differently depending on which backend happens to
+be active, not pinned to a specific deployment.
+
+**Changing `llm.provider`, by contrast, can require a model field.** `llm.provider` values `vertex`,
+`openai`, and `ollama` have no shared default model, so `llm.model` is mandatory for them
+(`LLMConfig._default_model_for_litellm`, `sova/config/models.py`): leaving it empty is a config
+validation error, not a fallback. Set `llm.model` before `llm.provider`, as described under
+[Google Vertex AI](#google-vertex-ai) below.
+
+Model discovery (`GET /api/models/available?layer=llm`, see
+`docs/model-selection-architecture.md` section 2.9) is what keeps those model fields typo-proof: the
+`layer` parameter here names the endpoint's own axis (LLM-layer enumeration vs. `layer="runtime"`,
+which returns 501 today), not the axis of every setting it feeds. It enumerates what the configured
+`llm.provider` can actually reach and feeds the grouped dropdowns on the settings page and the
+launch modal's per-run override, for the fields that are themselves LLM-layer values (`llm.model`,
+`llm.fallback_model`, and similar; `llm.routing` is object-valued and has no enumerable editor
+today, per `.claude/rules/architecture.md`). The split is per-consumer, not per-field: a model
+routed through `prepare_invocation()` reaches the AgentRuntime for any pipeline step with
+`requires_tools = True` (`sova/core/agent_dispatch.py`), so `roles.*_model` (`developer_model`,
+`reviewer_model`, etc., all `options_source="llm"`) and any `llm.routing[task_type]` value are
+dual-axis: a non-Claude ID (`openai/...`, `ollama/...`) chosen there breaks tool-using steps under
+`agent.runtime = "claude-code"` with `AgentRuntimeUnavailableError` from
+`_sanitize_model_for_claude_cli()`. `agent.model` and `agent.fallback_models` are the purely
+runtime-axis pair: they go to the coding agent runtime's `--model` flag (see above), not to
+`llm.provider`, so on a non-Anthropic `llm.provider` (`ollama`, `openai`) their dropdowns can offer
+IDs the runtime will reject outright; use the "Custom..." escape hatch for `agent.model` (a
+single-string field), or for `agent.fallback_models` (list-valued) just type the Claude ID into its
+plain comma-separated text input, which stays the source of truth alongside its picker. It is
+advisory for a persisted setting, never a gate there: the settings-page editor mounts a plain text
+input first and only upgrades to a dropdown once discovery resolves, and the single-string editor
+keeps a "Custom..." free-text escape hatch, so a valid-but-unlisted ID (a new release, a fine-tune,
+an unpulled Ollama tag) is never blocked. The launch modal's per-run override is different: it is a
+dropdown-only `<select>` with no free-text option, so it is only selectable from discovered IDs, and
+it is simply disabled (falling back to the configured model for that run) when discovery yields no
+real answer. See `.claude/rules/architecture.md`'s "Model Selection System" section and
+`docs/model-selection-architecture.md` section 2.7 for the full design.
+
+**Not every model family is reachable through every `llm.provider`:**
+
+- **Claude (Anthropic)**: `claude-code` (including its Vertex/Bedrock-routed forms), `anthropic`,
+  `vertex`, and `litellm`/`hybrid` (whose default model is a Claude ID).
+- **Gemini**: *discovery* only ever lists these from the Vertex `google` publisher catalog, so a
+  typo-proof dropdown for them appears only on a `vertex`-configured deployment (or `litellm`/
+  `hybrid` with `ANTHROPIC_VERTEX_PROJECT_ID` set). Reaching Gemini itself does not require Vertex:
+  `llm.provider = "litellm"`/`"hybrid"` with a hand-pinned, vendor-prefixed `llm.model` (e.g.
+  `gemini/gemini-2.5-pro`) reaches it directly, provided that vendor's own credential (a Google AI
+  Studio key, not GCP ADC) is present in the environment; see
+  [docs/model-selection-migration-guide.md](model-selection-migration-guide.md). Not reachable
+  through `claude-code` or `anthropic`.
+- **Proprietary GPT / o-series (OpenAI)**: reachable via `llm.provider = "openai"`, but **not**
+  through Vertex. Vertex does list an `openai` publisher catalog, and it serves the open-weight
+  `gpt-oss` family only, so discovery filters the proprietary entries out instead of offering IDs
+  no Vertex credential grants access to.
+
+When discovery cannot reach the provider it fails open to a static curated list rather than
+raising, and both consumers treat that answer as "no answer" rather than showing it. The
+observable symptom is therefore a missing dropdown, not a wrong or empty one: on the settings page
+the model field stays a plain text input, and in the launch modal the override select is disabled
+reading "Model discovery is unavailable for the current provider". That means an auth or config
+problem, not a provider with no models. Fix the underlying issue (see
+[Troubleshooting](#troubleshooting) below) and the dropdown appears the next time you open that
+field for editing (or reopen the launch modal), with no restart required: a curated answer is
+deliberately never cached, server-side or client-side, so neither consumer polls in the background,
+they only re-fetch on that next open.
 
 ---
 

@@ -16,7 +16,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `docs/architecture-deep-dive.md` | On-demand: full narrative entries indexed (not duplicated) in architecture.md's "Supporting Modules" and "Key Design Decisions" sections |
 | `.claude/rules/bash-patterns.md` | Shell scripting conventions and gotchas |
 | `.claude/rules/workflow.md` | Development workflow and task finding |
-| `docs/model-selection-architecture.md` | LLM model routing, provider abstraction, design details |
+| `docs/model-selection-architecture.md` | LLM model routing, provider abstraction, model discovery/enumeration, design details |
 | `docs/model-selection-risk-assessment.md` | Model selection risks, migration path, rollback strategy |
 | `docs/model-selection-migration-guide.md` | Config shape for openai/ollama/vertex provider types |
 | `docs/security-guidelines.md` | Credential handling, input sanitization, subprocess safety |
