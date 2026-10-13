@@ -166,7 +166,16 @@ class CostRecord(Base):
     cache_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # Codex-only breakdown of output_tokens (never a separate addend; see
+    # LLMResult.reasoning_output_tokens). NULL means no source in this record
+    # reported the figure (every non-Codex row, and any legacy row).
+    reasoning_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
+    # Provenance of cost_usd (sova.llm.models.CostSource's value, e.g.
+    # "priced"/"subscription"/"unknown"). NULL means legacy (pre-#1128) data
+    # or a writer that never set it; distinct from "unknown", which is an
+    # explicit, current statement that no trustworthy dollar figure exists.
+    cost_source: Mapped[str | None] = mapped_column(String(20), nullable=True, default=None)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     model_selection_reason: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
     # Compression accounting. NULL when compression did not run (disabled, below

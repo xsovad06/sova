@@ -6,9 +6,21 @@ models ``ClaudeCodeRuntime.parse_output()`` targets. User-visible agent
 messages and concise command/file-change progress become ``content`` events;
 ``turn.completed`` becomes exactly one terminal ``result`` event carrying the
 thread ID and token usage; ``turn.failed`` / ``error`` become one terminal
-``result`` with ``stop_reason="error"``. Reasoning items produce no output at
-all, and unknown event or item types are ignored (logged at debug) so a
-future Codex schema addition cannot terminate stream processing.
+``result`` with ``stop_reason="error"``, carrying whatever usage that event
+itself happened to report (a turn that failed or was cancelled part-way still
+spent whatever tokens it had already consumed before failing). Reasoning
+items produce no output at all, and unknown event or item types are ignored
+(logged at debug) so a future Codex schema addition cannot terminate stream
+processing.
+
+A stream that ends (process exit, kill, cancellation) before any terminal
+event (``turn.completed``, ``turn.failed``, ``error``) ever arrives produces
+no terminal ``result`` at all: there is simply no further line to call
+``parse_line()`` on. This is a deliberate contract, not an oversight: the
+parser has no "stream closed" signal to react to, so the caller (today
+``sova.core.agent_dispatch._run_agent_process()``) is the one that must treat
+a drained stream with no result as a failure, never synthesize a free or
+zero-cost success for it.
 
 ``CodexStreamParser`` is stateful: it remembers the thread ID reported by
 ``thread.started`` for a later ``turn.completed``, and latches after the
@@ -27,8 +39,9 @@ exposes ``create_stream_parser()``, which ``CodexRuntime`` overrides to
 return a brand-new ``CodexStreamParser`` on every call. The dashboard's
 stream tailer (``sova/dashboard/services/agent_output.py``) calls it once
 per spawned process and keeps the result on that process's own
-``AgentState``, so each agent's thread id, last message, and terminal
-latch stay isolated from every other concurrent agent.
+``AgentState``, so each agent's thread id, model, cost-source provenance,
+last message, and terminal latch all stay isolated from every other
+concurrent agent.
 """
 
 from __future__ import annotations
@@ -177,21 +190,35 @@ def _coerce_usage_int(usage: Any, key: str) -> int:
     return value
 
 
-def _coerce_reasoning_tokens(usage: Any) -> int:
+def _coerce_reasoning_tokens(usage: Any) -> int | None:
     """Read the reasoning-token count from either shape Codex may report.
 
     ``codex exec --json`` reports usage flat, but the OpenAI Responses API
     that backs it nests the same breakdown under
     ``output_tokens_details.reasoning_tokens``. Accepting both mirrors the
     ``item_type`` / ``type`` tolerance elsewhere in this parser: whichever
-    shape arrives, the count is captured, and a payload carrying neither
-    still reports 0.
+    shape arrives, the count is captured.
+
+    Returns ``None``, not 0, when neither shape's field is present at all:
+    matches the ``cache_creation_tokens`` convention this codebase uses
+    elsewhere, where ``None`` means "unreported" and 0 means "confirmed
+    zero". A turn that reported no reasoning breakdown at all must stay
+    unreported so ``ExecutionContext.add_usage()`` does not count it as a
+    confirmed-zero reading (issue #1128 review, round 4). 0 is still
+    returned when the field is present but carries an unusable value, per
+    ``_coerce_usage_int``'s own fail-safe.
     """
     if not isinstance(usage, dict):
-        return 0
+        return None
     if "reasoning_output_tokens" in usage:
         return _coerce_usage_int(usage, "reasoning_output_tokens")
-    return _coerce_usage_int(usage.get("output_tokens_details"), "reasoning_tokens")
+    if "output_tokens_details" in usage:
+        # Key present, even if its value is not a usable dict: _coerce_usage_int
+        # already coerces that case to 0, matching its own fail-safe for a bad
+        # value on a present field, rather than this function's "field absent"
+        # None.
+        return _coerce_usage_int(usage.get("output_tokens_details"), "reasoning_tokens")
+    return None
 
 
 def _str_field(obj: Any, key: str) -> str:
@@ -211,8 +238,23 @@ def _str_field(obj: Any, key: str) -> str:
 class CodexStreamParser:
     """Stateful parser mapping Codex JSONL events to StreamEvent/LLMResult."""
 
-    def __init__(self, max_content_chars: int = _MAX_CONTENT_CHARS) -> None:
+    def __init__(
+        self,
+        max_content_chars: int = _MAX_CONTENT_CHARS,
+        cost_source: CostSource = CostSource.UNKNOWN,
+        model: str = "",
+    ) -> None:
         self._thread_id = ""
+        self._model = ""
+        # Lowest-precedence model fallback, supplied by the caller from the
+        # spawn's own configuration (CodexConfig.model, i.e. the value SOVA
+        # passed to `codex exec --model`), used only when the stream reports
+        # no model of its own. Today's Codex JSONL may carry no model field
+        # at all, and without this a run whose model SOVA itself selected
+        # would still be recorded as the empty string. Empty means
+        # CodexConfig.model was unset too, so the CLI picked its own default
+        # and SOVA genuinely does not know which model ran.
+        self._configured_model = model
         self._last_message_text = ""
         self._last_message_truncated = False
         self._terminal_emitted = False
@@ -220,6 +262,13 @@ class CodexStreamParser:
         # terminal stream, but a non-display consumer (e.g. the reviewer's
         # repo-context sub-call) can budget for a larger last-message copy.
         self._max_content_chars = max_content_chars
+        # Resolved once by the caller from the spawn's own auth mode (see
+        # CodexRuntime.create_stream_parser()), never inferred here from the
+        # stream itself: the terminal event carries no cost figure to read
+        # one way or the other, only token counts. Defaults to UNKNOWN so a
+        # caller that does not know or care about auth mode (tests, the
+        # reviewer's repo-context sub-call) keeps today's behavior.
+        self._cost_source = cost_source
 
     def parse_line(self, line: str) -> StreamEvent | None:
         """Parse a single line of Codex ``exec --json`` output.
@@ -270,6 +319,12 @@ class CodexStreamParser:
         # terminal event; adopt the new thread id and start its first turn.
         raw_thread_id = data.get("thread_id")
         self._thread_id = "" if raw_thread_id is None else str(raw_thread_id)
+        # Thread-level model, carried across every turn of this thread unless
+        # a later turn.completed reports its own (see _on_turn_completed).
+        # Unconditional, like thread_id above: a second thread.started with no
+        # model field must clear a stale value from the prior thread, not
+        # leave it attributed to a thread that may use a different model.
+        self._model = _str_field(data, "model")
         self._reset_for_turn()
 
     def _reset_for_turn(self) -> None:
@@ -373,9 +428,14 @@ class CodexStreamParser:
         usage = data.get("usage")
         result = LLMResult(
             text=self._last_message_text,
-            model="",
+            # Most specific wins: the turn's own model (covering a currently
+            # undocumented per-turn override), then the thread-level model
+            # captured at thread.started, then the configured model this spawn
+            # asked for. Observed beats configured, since a CLI that silently
+            # substituted a different model should be reported as what it ran.
+            model=_str_field(data, "model") or self._model or self._configured_model,
             cost_usd=Decimal("0"),
-            cost_source=CostSource.UNKNOWN,
+            cost_source=self._cost_source,
             input_tokens=_coerce_usage_int(usage, "input_tokens"),
             output_tokens=_coerce_usage_int(usage, "output_tokens"),
             cache_read_tokens=_coerce_usage_int(usage, "cached_input_tokens"),
@@ -389,7 +449,8 @@ class CodexStreamParser:
     def _on_terminal_failure(self, data: dict[str, Any], event_type: str) -> StreamEvent | None:
         # ``error`` is treated as terminal for the turn. If Codex ever emits a
         # non-fatal ``error``, the latch set here swallows the real
-        # ``turn.completed``, so the turn reports failure with no usage.
+        # ``turn.completed``, so the turn reports failure carrying only
+        # whatever usage the error event itself happened to include.
         # Deliberate: reporting a failure that succeeded is recoverable, while
         # reporting success on a failed turn is not, and lifting the latch for
         # a later ``turn.completed`` would emit two terminal results for one
@@ -399,6 +460,7 @@ class CodexStreamParser:
             return None
         self._terminal_emitted = True
 
+        usage = data.get("usage")
         error = data.get("error")
         if isinstance(error, dict):
             raw_message = _str_field(error, "message")
@@ -412,9 +474,20 @@ class CodexStreamParser:
 
         result = LLMResult(
             text=message,
-            model="",
+            model=_str_field(data, "model") or self._model or self._configured_model,
             cost_usd=Decimal("0"),
-            cost_source=CostSource.UNKNOWN,
+            cost_source=self._cost_source,
+            # Read on this path too, not only on turn.completed: a turn that
+            # failed or was cancelled part-way still consumed whatever tokens
+            # it had already spent, and reporting zero for all of them is the
+            # same "unpriced run looks free" blind spot the cost_source split
+            # above exists to close. Every coercion helper tolerates a missing
+            # or malformed payload, so an error event carrying no usage at all
+            # still reports 0 exactly as before.
+            input_tokens=_coerce_usage_int(usage, "input_tokens"),
+            output_tokens=_coerce_usage_int(usage, "output_tokens"),
+            cache_read_tokens=_coerce_usage_int(usage, "cached_input_tokens"),
+            reasoning_output_tokens=_coerce_reasoning_tokens(usage),
             session_id=self._thread_id,
             stop_reason="error",
         )

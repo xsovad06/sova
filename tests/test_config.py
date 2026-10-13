@@ -570,6 +570,39 @@ def test_codex_config_defaults() -> None:
     cfg = CodexConfig()
     assert cfg.model == ""
     assert cfg.sandbox == "workspace-write"
+    assert cfg.allow_unenforced_budget is False
+    assert cfg.billing_mode == "unknown"
+
+
+def test_codex_config_every_field_has_settings_metadata() -> None:
+    from sova.config.models import CodexConfig
+    from sova.dashboard.settings_meta import get_meta
+
+    for field_name in CodexConfig.model_fields:
+        assert get_meta(f"codex.{field_name}") is not None, field_name
+
+
+def test_codex_config_select_field_options_match_their_literal() -> None:
+    """A select-typed codex.* SettingMeta's options must agree with its field's Literal.
+
+    Without this, adding or renaming a mode in CodexConfig (sandbox, billing_mode)
+    leaves the dashboard offering a value the config rejects, or hiding a valid
+    one, with nothing to catch the drift (the sibling agent.runtime field already
+    has this guard: test_runtime_literal_matches_registry_and_settings_meta).
+    """
+    from typing import get_args
+
+    from sova.config.models import CodexConfig
+    from sova.dashboard.settings_meta import get_meta
+
+    for field_name, field in CodexConfig.model_fields.items():
+        meta = get_meta(f"codex.{field_name}")
+        assert meta is not None, field_name
+        if meta.value_type != "select":
+            continue
+        literal_values = set(get_args(field.annotation))
+        assert literal_values, field_name
+        assert set(meta.options) == literal_values, field_name
 
 
 def test_codex_config_rejects_danger_full_access() -> None:

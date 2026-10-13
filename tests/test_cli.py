@@ -1711,7 +1711,7 @@ class TestDoctorHelpers:
         from sova.cli.commands.doctor import _check_agent_runtime
         from sova.config.models import CodexConfig
 
-        codex_cfg = CodexConfig(model="gpt-5-codex")
+        codex_cfg = CodexConfig(model="gpt-5-codex", allow_unenforced_budget=True)
         with (
             patch("sova.config.loader.load_config") as mock_cfg,
             patch("sova.ipc.runtime.create_runtime") as mock_create,
@@ -1727,6 +1727,48 @@ class TestDoctorHelpers:
         mock_create.assert_called_once_with("codex", codex=codex_cfg)
         assert len(checks) == 1
         assert checks[0][1] is True
+
+    async def test_check_agent_runtime_codex_unenforced_budget_not_set_fails(self, tmp_path: Path) -> None:
+        """agent.max_budget is always positive, so a Codex project without this flag set
+        will fail every pipeline run on its first tool-using step; doctor must flag it
+        before the operator ever starts one."""
+        from sova.cli.commands.doctor import _check_agent_runtime
+        from sova.config.models import CodexConfig
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.ipc.runtime.create_runtime") as mock_create,
+        ):
+            mock_cfg.return_value.agent.runtime = "codex"
+            mock_cfg.return_value.codex = CodexConfig()
+            mock_rt = MagicMock()
+            mock_rt.check_available = AsyncMock(return_value=(True, "authenticated"))
+            mock_create.return_value = mock_rt
+
+            checks = await _check_agent_runtime(tmp_path)
+
+        assert len(checks) == 2
+        budget_check = next(c for c in checks if c[0] == "codex budget enforcement")
+        assert budget_check[1] is False
+        assert budget_check[3] is True
+        assert "allow_unenforced_budget" in budget_check[2]
+
+    async def test_check_agent_runtime_non_codex_skips_budget_check(self, tmp_path: Path) -> None:
+        """The budget-enforcement check is Codex-specific and must not fire for other runtimes."""
+        from sova.cli.commands.doctor import _check_agent_runtime
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.ipc.runtime.create_runtime") as mock_create,
+        ):
+            mock_cfg.return_value.agent.runtime = "claude-code"
+            mock_rt = MagicMock()
+            mock_rt.check_available = AsyncMock(return_value=(True, "1.0.0"))
+            mock_create.return_value = mock_rt
+
+            checks = await _check_agent_runtime(tmp_path)
+
+        assert len(checks) == 1
 
     async def test_check_awareness_providers_disabled(self, tmp_path: Path) -> None:
         from sova.cli.commands.doctor import _check_awareness_providers

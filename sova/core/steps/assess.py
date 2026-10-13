@@ -32,6 +32,10 @@ class AssessStep(BaseStep):
     name = "assess"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
+        unenforceable_budget = self._check_unenforceable_codex_budget(ctx)
+        if unenforceable_budget is not None:
+            return unenforceable_budget
+
         if ctx.branch_name:
             if ctx.worktree_dir:
                 diverged = await self._check_divergence(ctx)
@@ -123,6 +127,31 @@ class AssessStep(BaseStep):
                 )
 
         return StepResult(success=True, summary=f"Issue #{ctx.issue_number} is in {state} state")
+
+    @staticmethod
+    def _check_unenforceable_codex_budget(ctx: ExecutionContext) -> StepResult | None:
+        """Fail fast when ``agent.runtime = "codex"`` cannot enforce a budget cap.
+
+        Mirrors ``CodexRuntime.spawn()``'s own refusal (sova/ipc/runtime.py),
+        which otherwise only fires inside the first tool-using step, after
+        ``create_worktree``/``capture_baseline`` have already done their
+        setup work. ``agent.max_budget`` is Pydantic-validated ``gt=0``, so
+        every pipeline step passes a positive ``max_budget_usd`` and the
+        downstream refusal is unconditional whenever
+        ``codex.allow_unenforced_budget`` is unset; checking it here instead
+        lets the run fail before any worktree or TaskRun side effects.
+        """
+        if ctx.config.agent.runtime != "codex" or ctx.config.codex.allow_unenforced_budget:
+            return None
+        return StepResult(
+            success=False,
+            summary="Codex runtime cannot enforce a budget cap",
+            error=(
+                "sova_configuration_error: Codex CLI cannot enforce a budget cap "
+                f"(configured agent.max_budget=${ctx.config.agent.max_budget}); set "
+                "codex.allow_unenforced_budget = true to run Codex with cost unbounded"
+            ),
+        )
 
     async def _check_divergence(self, ctx: ExecutionContext) -> StepResult | None:
         """Fail fast when local HEAD has diverged from origin/{branch}.

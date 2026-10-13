@@ -18,6 +18,18 @@ class BillingError(LLMError):
     """Raised when a budget, billing, or quota limit blocks the invocation."""
 
 
+class ConfigurationError(LLMError):
+    """Raised when a static, operator-fixable configuration fact blocks the invocation.
+
+    Distinct from ``BillingError``: nothing about a configuration fault (e.g.
+    a runtime with no budget-enforcement capability and no explicit opt-in)
+    changes between retries or across a model fallback hop, so classifying it
+    as billing or rate-limit would misdirect both the retry loop (which would
+    burn attempts re-raising the identical error) and reliability reporting
+    (which would log an operator misconfiguration as a billing incident).
+    """
+
+
 class ModelUnavailableError(LLMError):
     """Raised when the requested model is not enabled on the deployment."""
 
@@ -43,6 +55,17 @@ _BILLING_PATTERNS: tuple[str, ...] = (
     "billing",
     "insufficient_quota",
 )
+
+# Scanned before every other category (see _CATEGORIES below): a configuration
+# fault message must never be re-classified as billing just because it also
+# explains a budget cap by name. Namespaced ("sova_", not a bare
+# "configuration_error") because classify_error() is also pointed at arbitrary
+# StepResult.error text that can carry a target project's own captured
+# test/lint output, and "configuration_error" alone is a generic enough token
+# (OAuth/OIDC and various service error codes use it) to appear there and
+# falsely cancel every remaining retry for an otherwise-transient failure.
+# Only SOVA itself raises this exact token (see CodexRuntime.spawn()).
+_CONFIGURATION_PATTERNS: tuple[str, ...] = ("sova_configuration_error",)
 
 # "is not available" covers Vertex AI rejections where the requested model
 # version is not enabled on the deployment (e.g. "claude-opus-5 is not
@@ -83,7 +106,9 @@ _TIMEOUT_PATTERNS: tuple[str, ...] = (
 
 # Scanned terminal-first: a detail mentioning both an exhausted budget and a
 # 429 classifies as terminal rather than triggering a pointless fallback.
+# ConfigurationError is scanned before BillingError for the same reason.
 _CATEGORIES: tuple[tuple[type[LLMError], tuple[str, ...]], ...] = (
+    (ConfigurationError, _CONFIGURATION_PATTERNS),
     (BillingError, _BILLING_PATTERNS),
     (ModelUnavailableError, _MODEL_UNAVAILABLE_PATTERNS),
     (RateLimitError, _RATE_LIMIT_PATTERNS),
@@ -139,10 +164,10 @@ def classify_error(detail: str | None) -> type[LLMError]:
     """Return the error class matching a failure detail string.
 
     Matching is case-insensitive substring containment, scanned terminal-first
-    (billing, then model availability, rate limit, provider availability,
-    timeout). Falls back to LLMInvocationError for missing, empty, or unmatched
-    input: the contract is "name this failure's category", never "was there a
-    failure".
+    (configuration, then billing, model availability, rate limit, provider
+    availability, timeout). Falls back to LLMInvocationError for missing,
+    empty, or unmatched input: the contract is "name this failure's category",
+    never "was there a failure".
     """
     if not detail:
         return LLMInvocationError
@@ -225,3 +250,16 @@ def is_billing_failure(detail: str | BaseException | None) -> bool:
     if isinstance(detail, BaseException):
         return classify_exception(detail) in _BILLING_FAILURE_CATEGORIES
     return classify_error(detail) in _BILLING_FAILURE_CATEGORIES
+
+
+def is_configuration_failure(detail: str | BaseException | None) -> bool:
+    """Return True if the failure is a static configuration fault no retry can fix.
+
+    Accepts either a detail string or a raised exception, mirroring
+    ``is_billing_failure()``. The workflow retry loop uses this to stop
+    immediately rather than re-raising the identical error once per retry
+    attempt or fallback-model hop.
+    """
+    if isinstance(detail, BaseException):
+        return classify_exception(detail) is ConfigurationError
+    return classify_error(detail) is ConfigurationError

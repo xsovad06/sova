@@ -209,6 +209,34 @@ class CodexConfig(BaseSettings):
     # exit, before falling back to the exit code alone. See
     # sova/dashboard/services/agent_finalize.py:_drain_stream_reader.
     reader_drain_timeout: float = Field(10.0, gt=0)
+    # Codex CLI has no mechanism to enforce a dollar cap (CodexRuntime.spawn()
+    # cannot pass max_budget_usd to `codex exec` the way ClaudeCodeRuntime
+    # passes --max-budget-usd). Defaulting to False means spawn() rejects any
+    # caller-supplied max_budget_usd outright rather than silently proceeding
+    # with an unenforced cap that looks protective but is not: every pipeline
+    # step passes agent.max_budget - ctx.cost_usd, so a project that sets
+    # agent.runtime = "codex" must set this to True to run the pipeline at
+    # all, a deliberate choice rather than a default that could be missed.
+    # Set True to proceed anyway, accepting unbounded cost (logged at warning
+    # level on every such spawn). Issue #1128.
+    allow_unenforced_budget: bool = False
+    # Whether an authenticated Codex CLI session is billed against a flat-rate
+    # ChatGPT subscription (no incremental per-call cost) or metered per token.
+    # Defaults to "unknown" deliberately: neither the presence/absence of
+    # CODEX_API_KEY nor `codex login status`'s logged-in/logged-out signal is
+    # positive evidence of billing mode (an API key can also live in Codex's
+    # own keyring via `codex login --api-key`, invisible to both checks), and
+    # inferring SUBSCRIPTION from an unset env var risks the "treat unknown
+    # cost as free" failure CostSource.SUBSCRIPTION exists to be distinct
+    # from. Only an explicit operator declaration here promotes a spawn's
+    # cost_source to SUBSCRIPTION; a CODEX_API_KEY env var, if set, still
+    # always wins (confirmed metered), overriding this setting. No separate
+    # "api" value: declaring metered billing explicitly has no distinguishing
+    # effect from "unknown" today (_resolve_codex_cost_source() has no
+    # metered-specific CostSource to promote to), so offering it would let an
+    # operator believe they recorded a fact that is actually discarded.
+    # Issue #1128.
+    billing_mode: Literal["unknown", "subscription"] = "unknown"
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CODEX_")
 

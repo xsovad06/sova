@@ -126,6 +126,14 @@ class TestClassifyFailureCause:
         msg = "anthropic API error: provider returned 429"
         assert reliability_service.classify_failure_cause(msg) == "llm_rate_limit"
 
+    def test_llm_configuration_needs_no_context_marker(self) -> None:
+        # Unlike billing/rate-limit/model-unavailable, "llm_configuration" is
+        # not ambiguous: the token is SOVA-generated and namespaced
+        # (CodexRuntime.spawn()), so it classifies without an LLM context
+        # marker, distinct from a billing incident in the reliability view.
+        msg = "sova_configuration_error: Codex CLI cannot enforce a budget cap (requested $5.00)"
+        assert reliability_service.classify_failure_cause(msg) == "llm_configuration"
+
     def test_unmatched_message_is_other(self) -> None:
         assert reliability_service.classify_failure_cause("something totally unexpected happened") == "other"
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import StrEnum
 
@@ -59,12 +59,36 @@ class CostSource(StrEnum):
     silently claiming a trusted cost. ``FREE_LOCAL`` is distinct from
     ``UNKNOWN``: local inference has no USD line item, so treating it as
     unpriced would fire spurious budget-blind-spot warnings on exactly the
-    low-cost configurations it targets.
+    low-cost configurations it targets. ``SUBSCRIPTION`` is likewise distinct
+    from ``UNKNOWN``: a run billed against a flat-rate subscription (e.g.
+    Codex CLI authenticated via ``codex login``'s ChatGPT account rather than
+    an API key) has no incremental per-call dollar cost, which is a known
+    fact, not a gap in SOVA's pricing data. Conflating the two would make a
+    verified-free subscription run indistinguishable from a run whose cost
+    simply could not be determined.
     """
 
     PRICED = "priced"
     FREE_LOCAL = "free_local"
+    SUBSCRIPTION = "subscription"
     UNKNOWN = "unknown"
+
+
+def combine_cost_sources(current: CostSource | None, new: CostSource) -> CostSource:
+    """Provenance of a cost summed from several results, independent of call order.
+
+    The label answers whether the summed ``cost_usd`` is a complete figure.
+    One ``UNKNOWN`` contribution makes the sum a lower bound, so it wins over
+    everything. Contributions that are all known but differ (priced dollars
+    plus a subscription or local call's known zero) still sum to a complete
+    figure, which is what ``PRICED`` asserts. ``current`` is ``None`` before
+    the first contribution.
+    """
+    if current is None or current == new:
+        return new
+    if CostSource.UNKNOWN in (current, new):
+        return CostSource.UNKNOWN
+    return CostSource.PRICED
 
 
 @dataclass
@@ -78,7 +102,15 @@ class LLMResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
+    # None means the provider never reported a cache-write figure at all
+    # (today: Codex, whose JSONL carries no cache-creation field), distinct
+    # from an explicit 0 (a provider that reports cache writes and confirms
+    # none happened). Conflating the two stored a fabricated 0 in the nullable
+    # CostRecord.cache_write_tokens column, the exact NULL-vs-zero confusion
+    # that column's own convention exists to avoid. Every producer that does
+    # report the figure (Claude CLI, Anthropic API, litellm where available)
+    # still passes an explicit int.
+    cache_creation_tokens: int | None = None
     duration_ms: int = 0
     session_id: str = ""
     stop_reason: str = ""
@@ -100,6 +132,14 @@ class LLMResult:
     # a length-based check on `text` miss exactly the inputs it exists to
     # catch. Always False on every non-Codex result.
     truncated: bool = False
+    # Name of the model-ignoring AgentRuntime that produced this result (today
+    # only Codex), set by agent_dispatch._dispatch_to_runtime. None for every
+    # LLMProvider call and for a runtime that runs the model SOVA chose (Claude
+    # Code), whose results stay on the step's provider CostRecord.
+    # ExecutionContext.add_usage() routes a tagged result to the runtime's own
+    # record instead, so a step that dispatches to Codex and also makes a priced
+    # provider call never merges the two (issue #1128).
+    runtime_name: str | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -146,6 +186,47 @@ def build_claude_cli_result(data: dict, *, stop_reason: str = "") -> LLMResult:
         duration_ms=data.get("duration_ms", 0),
         session_id=str(data.get("session_id", "")),
         stop_reason=stop_reason,
+    )
+
+
+def _sum_optional(a: int | None, b: int | None) -> int | None:
+    """Sum two optional counters, keeping ``None`` only when both are unreported."""
+    if a is None and b is None:
+        return None
+    return (a or 0) + (b or 0)
+
+
+def accumulate_llm_result(previous: LLMResult | None, latest: LLMResult) -> LLMResult:
+    """Merge a new terminal result onto whatever was already accumulated for this spawn.
+
+    Codex is the only source that can emit more than one terminal ``result``
+    per spawn (one thread can run several turns), and each turn reports its
+    own token usage, not a thread-cumulative total (see
+    ``CodexStreamParser._reset_for_turn``). Keeping only the first or last
+    terminal event therefore drops every other turn's spend. Descriptive
+    fields (``text``, ``model``, ``session_id``, ``stop_reason``,
+    ``truncated``) come from *latest*, since those describe what just
+    happened rather than a running total; cost, token counts, elapsed
+    duration and compression counters are all summed, including
+    ``tokens_saved``/``pre_compression_input_tokens``: no multi-turn source
+    populates either today, but leaving them un-summed would silently
+    under-report the moment one does (issue #1128 review, round 4).
+    """
+    if previous is None:
+        return latest
+    return replace(
+        latest,
+        cost_usd=previous.cost_usd + latest.cost_usd,
+        input_tokens=previous.input_tokens + latest.input_tokens,
+        output_tokens=previous.output_tokens + latest.output_tokens,
+        cache_read_tokens=previous.cache_read_tokens + latest.cache_read_tokens,
+        cache_creation_tokens=_sum_optional(previous.cache_creation_tokens, latest.cache_creation_tokens),
+        reasoning_output_tokens=_sum_optional(previous.reasoning_output_tokens, latest.reasoning_output_tokens),
+        duration_ms=previous.duration_ms + latest.duration_ms,
+        tokens_saved=_sum_optional(previous.tokens_saved, latest.tokens_saved),
+        pre_compression_input_tokens=_sum_optional(
+            previous.pre_compression_input_tokens, latest.pre_compression_input_tokens
+        ),
     )
 
 
