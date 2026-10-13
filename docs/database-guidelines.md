@@ -94,7 +94,7 @@ task_run.status = status
 | **Tests** | `init_db(run_migrations=False)` using `create_all` | In-memory DBs; dispose destroys data |
 | **Production** | `init_db(run_migrations=True)` using Alembic | Adds columns to existing tables |
 
-`create_all` only creates missing tables -- it never adds columns to existing ones. Adding a column without a migration causes `OperationalError: no such column`.
+`create_all` only creates missing tables. It never adds columns to existing ones. Adding a column without a migration causes `OperationalError: no such column`.
 
 ### Adding a model column always requires a migration
 
@@ -134,7 +134,7 @@ without it.
 ### SQLite WAL mode, synchronous, and busy timeout
 
 Before running migrations, `init_db()` calls `_enable_sqlite_wal(engine)` which runs
-`PRAGMA journal_mode=WAL`. WAL mode persists in the DB file after the first set -- all
+`PRAGMA journal_mode=WAL`. WAL mode persists in the DB file after the first set. All
 subsequent connections automatically use WAL without re-running the PRAGMA.
 
 `_enable_sqlite_wal()` also calls `_register_sqlite_pragmas(engine)`, which registers a
@@ -150,7 +150,7 @@ All SQLite engines are also created with `connect_args={"check_same_thread": Fal
 The `timeout` maps to `sqlite3.connect(timeout=30)` (Python's busy-wait duration in seconds).
 This prevents instant `SQLITE_BUSY` failures when the old and new uvicorn workers briefly
 overlap during a `--reload` restart. `PRAGMA busy_timeout` is redundant with `connect_args`
-timeout -- only the latter is needed since it applies to all pooled connections.
+timeout: only the latter is needed since it applies to all pooled connections.
 
 ### Cancellation and the write lock
 
@@ -185,7 +185,7 @@ head), neither disposal nor backup runs, saving one connection round-trip (~300 
 1. **Use `batch_alter_table`** for all SQLite DDL (env.py has `render_as_batch=True`)
 2. **Idempotent checks**: use `_column_exists()`, `_table_exists()`, `_index_exists()` helpers (defined in migrations 006, 008)
 3. **Sequential numbering**: `001` onward (not Alembic UUIDs)
-4. **Pre-migration backup**: `_backup_db()` copies `.db` to `.db.bak` -- only when DDL ran
+4. **Pre-migration backup**: `_backup_db()` copies `.db` to `.db.bak`, only when DDL ran
 5. **Self-healing fallback**: if Alembic fails, drops corrupted `alembic_version`, runs `create_all` + stamps at head
 
 ### The five alembic_version cases
