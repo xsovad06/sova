@@ -6,9 +6,10 @@ The default provider (ClaudeCodeProvider) wraps the Claude Code CLI.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -260,6 +261,88 @@ class LLMProvider(ABC):
         unaudited provider is treated as unable to cap budget or report cost.
         """
         return ProviderCapabilities()
+
+
+async def get_model_capabilities() -> dict[str, list[str] | str]:
+    """Compose layer-1 (coding-agent runtime) and layer-2 (LLM provider) model
+    enumeration into one capability view for the currently configured
+    deployment.
+
+    Reads whatever ``sova.ipc.runtime.get_runtime()`` and
+    ``sova.llm.client.get_provider()`` currently point at (both process-wide
+    singletons kept in sync with config via ``reload_runtime()``/
+    ``reload_provider()``), rather than taking a credential or config
+    argument: neither layer's own probe needs one to answer "what can the
+    currently active deployment reach", and threading one through here would
+    just duplicate the config resolution those singletons already did.
+
+    Returns ``{"layer1": [...] | "unavailable", "layer2": [...] | "unavailable"}``.
+    ``"unavailable"`` means the runtime's CLI is not installed/authenticated
+    (layer1) or the LLM provider itself is not configured/authenticated
+    (layer2); a real answer, even an empty list, means the layer is reachable
+    but (for now) has no further model IDs to report.
+
+    Never raises, and never lets one layer's failure answer for the other:
+    each layer is probed under its own ``try``/``except`` and its own
+    timeout, so a provider that raises ``ValueError`` on a misconfigured
+    deployment, or a CLI probe that hangs, degrades that one layer to
+    ``"unavailable"`` while the other still reports its real catalog. Both
+    layers' own enumeration already fails open, but neither guarantees it
+    for every third-party subclass, and ``list_available_models()`` has no
+    internal timeout: ``models_service.get_available_models()`` wraps the
+    layer-2 call for the same two reasons.
+
+    The two layers are probed concurrently, so the worst case is one
+    timeout rather than two in series. They are fully independent today:
+    no runtime's layer-1 probe delegates into layer-2 provider enumeration
+    (``AiderRuntime`` included), so the two caches never overlap.
+    """
+    layer1, layer2 = await asyncio.gather(
+        _layer_or_unavailable("layer1", _enumerate_runtime_models),
+        _layer_or_unavailable("layer2", _enumerate_provider_models),
+    )
+    return {"layer1": layer1, "layer2": layer2}
+
+
+# Mirrors _ENUMERATION_TIMEOUT_SECONDS in
+# sova/dashboard/services/models_service.py (duplicated rather than imported:
+# sova.llm must not depend on sova.dashboard). Both layers' probes are the
+# same subprocess/HTTP candidate passes that constant was sized for.
+_CAPABILITY_PROBE_TIMEOUT = 45.0
+
+
+async def _layer_or_unavailable(
+    layer: str,
+    enumerate_models: Callable[[], Awaitable[list[str] | None]],
+) -> list[str] | str:
+    """Run one layer's enumeration, degrading any failure to ``"unavailable"``."""
+    try:
+        models = await asyncio.wait_for(enumerate_models(), timeout=_CAPABILITY_PROBE_TIMEOUT)
+    # TimeoutError is itself an Exception subclass, so one clause covers the
+    # wait_for timeout and any provider/runtime error alike (and avoids the
+    # parent/child catch tuple SonarCloud S5713 flags).
+    except Exception as exc:  # noqa: BLE001 (a capability view must report, never raise)
+        log.warning("llm.capability_probe_failed", layer=layer, error=str(exc), exc_info=True)
+        return "unavailable"
+    return models if models is not None else "unavailable"
+
+
+async def _enumerate_runtime_models() -> list[str] | None:
+    """Layer-1: the coding-agent runtime's own catalog, or ``None`` if unreachable."""
+    from sova.ipc.runtime import get_runtime
+
+    return await get_runtime().list_available_models()
+
+
+async def _enumerate_provider_models() -> list[str] | None:
+    """Layer-2: the configured LLM provider's catalog, or ``None`` if unreachable."""
+    from sova.llm.client import get_provider
+
+    provider = get_provider()
+    available, _ = await provider.check_available()
+    if not available:
+        return None
+    return [m.id for m in await provider.list_available_models(allow_probe=True)]
 
 
 def _resolve_scoped_api_key(cfg: LLMConfig, project_dir: Path | None) -> str:
