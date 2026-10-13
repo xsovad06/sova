@@ -145,7 +145,7 @@ jobs:
           if [ -n "$SONAR_TOKEN" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::SONAR_TOKEN not set -- skipping SonarCloud scan"
+            echo "::warning::SONAR_TOKEN not set, skipping SonarCloud scan"
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
         env:
