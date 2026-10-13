@@ -18,7 +18,7 @@ SOVA is a standalone application that turns GitHub Issues into merged pull reque
 - **Quality by design** -- gate checks between every pipeline step catch problems early. Agents refuse to work on issues that haven't been properly triaged and researched.
 - **Learns from mistakes** -- a 4-tier knowledge system captures review feedback, common patterns, and gotchas. Each run is better than the last.
 - **You stay in control** -- agents are ephemeral (spawn, work, handoff, exit). The dashboard shows what they did, what they need, and lets you decide when to merge. Nothing ships without your approval.
-- **Works on any project** -- install once, configure with a TOML file, and SOVA adapts to your stack via persona auto-detection (Django, FastAPI, Odoo, and more).
+- **Works on any project**: install once, configure with `sova config set` or the dashboard, and SOVA adapts to your stack via persona auto-detection (Django, FastAPI, Odoo, and more).
 
 ## Key Features
 
@@ -251,6 +251,17 @@ If configured correctly, you should see a response from Claude via Vertex AI.
 - The `global` region provides access to the latest Claude models and uses the base Vertex AI endpoint (`aiplatform.googleapis.com`).
 - Regional endpoints (e.g., `us-east5`) use region-prefixed domains (`{region}-aiplatform.googleapis.com`).
 - SOVA's LLM suggestion feature and batch processing both use these same credentials when `ANTHROPIC_VERTEX_PROJECT_ID` is set.
+
+## Alternative Agent Runtimes
+
+`agent.runtime` selects which coding-agent CLI SOVA spawns to execute a
+pipeline step. The accepted values are `"claude-code"` (the default),
+`"codex"`, and `"aider"`. Setting it to `"codex"` runs
+[OpenAI's Codex CLI](https://developers.openai.com/codex/); see
+[Codex Runtime Setup Guide](docs/codex-runtime-setup.md) for authentication
+(browser login with keyring storage, the device-auth and stdin API-key
+fallbacks, and the trusted-automation-only `CODEX_API_KEY` pattern), sandbox
+configuration, and rollback.
 
 ## Notifications
 

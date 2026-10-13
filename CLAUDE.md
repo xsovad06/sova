@@ -91,6 +91,10 @@ python3 -m pip install --user --break-system-packages -e .
 For an unknown `llm.provider` value (e.g. after a typo or downgrade), see
 "Setting an Unknown LLM Provider" in `docs/troubleshooting-config.md`.
 
+## Alternative Agent Runtime (Codex, Optional)
+
+SOVA defaults to spawning Claude Code (`agent.runtime = "claude-code"`) to execute pipeline steps. Setting `agent.runtime = "codex"` spawns OpenAI's Codex CLI instead. See `docs/codex-runtime-setup.md` for authentication (browser login with keyring storage, device-auth and stdin API-key fallbacks, trusted-automation-only `CODEX_API_KEY`), sandbox configuration, and rollback.
+
 ## RTK Token Compression (Optional)
 
 SOVA supports RTK (Rust Token Killer) for reducing token consumption by 60-90% on bash command outputs. When RTK is installed, `sova install` automatically configures it.
