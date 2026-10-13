@@ -1,6 +1,6 @@
 ---
 name: after-merge
-description: Post-merge cleanup -- sync main, delete branch, clean worktrees, update issue status, capture learnings.
+description: "Post-merge cleanup: sync the base branch, delete the branch, clean worktrees, update issue status, capture learnings."
 user-invocable: true
 category: pr
 inputs:
@@ -12,35 +12,44 @@ outputs:
 
 # After Merge Cleanup
 
+The `/integrate-pr` workflow is the preferred path (it merges, audits and cleans up in one run); this command is kept for PRs merged outside it.
+
 Run this after a PR has been merged to clean up local state and capture learnings.
 
 ## Instructions
+
+Each shell block below runs as its own shell invocation, so each one assigns every variable it reads.
 
 1. **Get the PR** from `$ARGUMENTS` (PR number or branch name). If empty, check for recently merged PRs:
    ```bash
    gh pr list --author @me --state merged --limit 5
    ```
 
-2. **Switch to main and pull**:
+2. **Switch to the base branch and pull** (from the primary checkout, not a worktree):
    ```bash
-   git checkout main
-   git pull origin main
+   BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName)
+   git checkout "$BASE"
+   git pull origin "$BASE"
    ```
 
-3. **Delete the merged branch locally**:
-   ```bash
-   git branch -d <branch-name>
-   ```
-   If the branch name isn't obvious: `git branch --merged main`
-
-4. **Clean up worktrees** (if any exist for this ticket):
+3. **Clean up worktrees** (if any exist for this ticket). Do this before deleting the branch: git refuses to delete a branch that a worktree still has checked out.
    ```bash
    git worktree list
    ```
-   Remove worktrees for the merged ticket:
+   Remove worktrees for the merged ticket. Do not pass `--force`: if a worktree has uncommitted changes, leave it in place and report it rather than discarding the work.
    ```bash
-   git worktree remove .claude/worktrees/<ID> --force 2>/dev/null || true
+   git worktree remove .claude/worktrees/<ID>
    ```
+   Prune dangling worktree references (directories removed but entries remain):
+   ```bash
+   git worktree prune
+   ```
+
+4. **Delete the merged branch locally**:
+   ```bash
+   git branch -d <branch-name>
+   ```
+   If `-d` refuses ("not fully merged", expected after a rebase merge), confirm `BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName); git diff "origin/$BASE" <branch-name>` prints nothing, then `git branch -D <branch-name>`. If the diff is non-empty only because the base branch moved on after the merge, compare against the PR's merge commit instead (`gh pr view <PR_NUMBER> --json mergeCommit --jq .mergeCommit.oid`); if that is not empty either, keep the branch and report it.
 
 5. **Close linked issue and clean up labels**:
    ```bash
@@ -51,19 +60,21 @@ Run this after a PR has been merged to clean up local state and capture learning
    gh issue edit <ISSUE_NUMBER> --remove-label "agent:in-review" --remove-label "agent:in-progress" --remove-label "sova:revise" --remove-label "sova:block" 2>/dev/null || true
    ```
 
-6. **Capture learnings** from the PR review (run `/ingest-review` workflow):
+6. **Capture learnings** from the PR review (run the `/ingest-review` workflow):
    - Fetch PR review data
    - Extract lessons: patterns to follow, mistakes to avoid, style preferences, test coverage gaps
    - Update `.claude/agent-memory/cookbook.md` (under matching domain section)
 
-7. **Report** what was cleaned up and what was learned.
+7. **Report** what was cleaned up, any worktree or branch kept and why, and what was learned.
 
 ## Cross-References
 
-- **Learning from the review**: Calls `/ingest-review` internally
-- **Extract broader knowledge**: Run `/extract-knowledge` if significant patterns emerged
-- **Ready for next task?** Run `/find-task` or `/standup`
+- **Preferred path**: the `/integrate-pr` workflow merges, runs the post-merge audit, and does this cleanup in one run
+- **Learning from the review**: calls the `/ingest-review` workflow internally
+- **Extract broader knowledge**: run the `/extract-knowledge` workflow if significant patterns emerged
+- **Ready for next task?** Run the `/find-task` workflow or the `/standup` workflow
 
 ## Rules
 
+- Never swallow a failed branch or worktree deletion with `|| true`: report what was kept and why
 - NEVER use emojis in any output

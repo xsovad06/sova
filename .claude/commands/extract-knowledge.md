@@ -20,14 +20,14 @@ This project uses a four-tier knowledge system:
 ### Tier 0: `~/.claude/shared-knowledge/` (cross-project patterns)
 Reusable patterns that apply across multiple repositories. Loaded by agent startup scripts.
 
-### Tier 1: `.claude/rules/*.md` (canonical, always loaded via CLAUDE.md)
-Stable patterns loaded into every session via CLAUDE.md. Primary destination for confirmed conventions.
+### Tier 1: `.claude/rules/*.md` (project rules, always loaded)
+Stable patterns loaded into every session via CLAUDE.md. Primary destination for confirmed conventions that apply to all contributors (human and agent).
 
-### Tier 2: `.claude/agent-memory/` (agent learnings, loaded by morning agent)
-Lessons learned from development and review cycles. Destination for agent-specific patterns that improve autonomous development quality.
+### Tier 2: `.claude/agent-memory/` (agent learnings)
+Lessons learned from development and review cycles. Destination for agent-specific patterns not yet promoted to Tier 1.
 
-- **`MEMORY.md`** -- Index file
-- **`cookbook.md`** -- Topical knowledge by domain, common mistakes with occurrence counts
+- **`MEMORY.md`**: index file
+- **`cookbook.md`**: topical knowledge by domain, common mistakes with occurrence counts
 
 ### Tier 3: User auto-memory (`~/.claude/projects/.../memory/`)
 User preferences, workflow conventions, and project state.
@@ -60,11 +60,13 @@ Before writing anything:
 ### 4. Write Knowledge
 
 **For `.claude/rules/*.md` (Tier 1):**
-- Follow the existing structure and formatting of the target file. Write concise entries with bold labels, then the lesson. These are always loaded, so keep entries actionable and specific to this project.
+- Follow the existing structure and formatting of the target file
+- Write concise entries with bold labels, then the lesson
+- These are always loaded, so keep entries actionable and specific to this project
 
 **For `.claude/agent-memory/` (Tier 2):**
-- One line per pattern -- bold label, then the lesson
-- Include the "why" -- not just what to do, but why it matters
+- One line per pattern: bold label, then the lesson
+- Include the "why": not just what to do, but why it matters
 - Include file paths when relevant
 
 **For user auto-memory (Tier 3):**
@@ -74,8 +76,8 @@ Before writing anything:
 ### 5. Verify Sizes
 
 Agent memory files should stay concise:
-- `MEMORY.md` -- under 20 lines (index only)
-- `cookbook.md` -- under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
+- `MEMORY.md`: under 20 lines (index only)
+- `cookbook.md`: under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
 
 If a pattern has matured from agent-memory into a stable convention, promote it to the appropriate `.claude/rules/*.md` file and remove the agent-memory entry.
 
@@ -85,25 +87,25 @@ List what was extracted and where it was saved. Flag any patterns promoted from 
 
 ## What to Look For
 
-- **Bugs fixed** -- root cause, how to avoid next time
-- **Performance issues** -- the pattern used to fix them
-- **Permission/auth issues** -- framework quirks, permission patterns
-- **Migration gotchas** -- schema vs data, deployment considerations
-- **ORM/framework patterns** -- query tricks, validation edge cases
-- **Test patterns** -- new fixtures, assertion techniques, edge case coverage
-- **Review feedback** -- what reviewers flagged and why
-- **Recurring mistakes** -- same issue appearing in multiple sessions
+- **Bugs fixed**: root cause, how to avoid next time
+- **Performance issues**: the pattern used to fix them
+- **Permission/auth issues**: framework quirks, permission patterns
+- **Migration gotchas**: schema vs data, deployment considerations
+- **ORM/framework patterns**: query tricks, validation edge cases
+- **Test patterns**: new fixtures, assertion techniques, edge case coverage
+- **Review feedback**: what reviewers flagged and why
+- **Recurring mistakes**: same issue appearing in multiple sessions
 
 ## Cross-References
 
-- **Called by**: `/review` (Step 9) and `/after-merge` (post-merge learning)
+- **Called by**: the `/review` workflow (Step 9). The `/integrate-pr` workflow then verifies, before merging, that review learnings were captured (its Documentation and Knowledge phase)
 - **Broader assessment**: Run `/agent-readiness` to evaluate the full knowledge system
 
 ## Rules
 
-- Only save **confirmed, stable patterns** -- not one-off debugging notes
+- Only save **confirmed, stable patterns**, not one-off debugging notes
 - Update existing entries when the pattern evolved
-- Keep entries actionable -- someone reading them should know exactly what to do
+- Keep entries actionable: someone reading them should know exactly what to do
 - No session-specific context (task details, in-progress work)
 - **Promote mature patterns** from agent-memory to `.claude/rules/*.md`
 - NEVER use emojis in any output

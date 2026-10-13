@@ -151,10 +151,6 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"Run the `rearrange-commits` workflow"),
         "Reorganize the branch's commits into clean, logical units",
     ),
-    (
-        re.compile(r"NEVER merge the PR: that happens via the `integrate-pr` workflow or `/approve-merge`"),
-        "NEVER merge the PR yourself unless the user explicitly asks",
-    ),
     # A standalone plugin user has neither the `sova` CLI nor the importable
     # sova package, so the SOVA-specific config lookups must become generic
     # instructions. Dropped the four `sova.toml` patterns these replace: #1096

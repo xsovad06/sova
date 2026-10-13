@@ -97,7 +97,7 @@ End with questions the user should be able to answer:
 ## Cross-References
 
 - **Ready to implement?** Run the `sova-develop` skill or the `sova-develop-full` skill with the chosen approach
-- **Need to understand the codebase first?** Check the project's AGENTS.md and `docs/*-guidelines.md`
+- **Need to understand the codebase first?** Check the project's AGENTS.md and `.claude/rules/*.md`
 
 ## Rules
 

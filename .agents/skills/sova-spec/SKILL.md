@@ -30,7 +30,7 @@ Extract: title, description, status, linked/blocked tickets, components.
 
 Save the original description verbatim: it will be preserved in the spec.
 
-**Early exit: already implemented**: if the issue body contains a Research section that concludes the issue is already fully implemented (look for phrases like "already implemented", "already complete", "no remaining work"), write a minimal spec file to `.claude/specs/{issue-number}-already-implemented.md` with the following content, then stop: do not explore the codebase or write a full spec:
+**Early exit (already implemented)**: if the issue body contains a Research section that concludes the issue is already fully implemented (look for phrases like "already implemented", "already complete", "no remaining work"), write a minimal spec file to `.claude/specs/{issue-number}-already-implemented.md` with the following content, then stop. Do not explore the codebase or write a full spec:
 
 ```markdown
 # Spec: {Issue title}
@@ -51,7 +51,7 @@ No changes needed. The research step confirmed this issue is already fully imple
 
 ### Step 2: Read Project Context
 
-Read whatever exists: skip files that are missing:
+Read whatever exists; skip files that are missing:
 - `CLAUDE.md` and `AGENTS.md` for project conventions
 - `.claude/rules/architecture.md` for component overview and design decisions
 - `.claude/agent-memory/cookbook.md` for known patterns and past mistakes
@@ -140,8 +140,8 @@ For UI features, include:
 Ordered steps. Each step should be one commit-sized unit of work.
 Reference specific files to create/modify.
 
-1. Step one -- what and where
-2. Step two -- what and where
+1. Step one: what and where
+2. Step two: what and where
 3. ...
 
 ## Design Decisions
@@ -149,8 +149,8 @@ Reference specific files to create/modify.
 Pre-answered questions for every ambiguity found during exploration.
 The implementing agent should not need to make architectural choices.
 
-1. **Question?** -- Answer with rationale.
-2. **Question?** -- Answer with rationale.
+1. **Question?** Answer with rationale.
+2. **Question?** Answer with rationale.
 
 (Omit if no ambiguities exist.)
 
@@ -217,8 +217,11 @@ If the user agrees, update the tracker with the spec appended to the original de
 
 **GitHub**:
 ```bash
-echo "<updated body>" > /tmp/issue_body.md
-gh issue edit <arguments> --body-file /tmp/issue_body.md
+BODY=$(mktemp)
+cat > "$BODY" <<'ISSUE_BODY'
+<updated body>
+ISSUE_BODY
+gh issue edit <arguments> --body-file "$BODY"
 ```
 
 **JIRA** (requires `jira-cli` by ankitpokhrel):
@@ -239,7 +242,7 @@ Format the updated body as:
 {spec content from Step 4, without the frontmatter header}
 ```
 
-If the user declines, skip this step: the spec file in `.claude/specs/` is the primary artifact.
+If the user declines, skip this step; the spec file in `.claude/specs/` is the primary artifact.
 
 ## Cross-References
 
@@ -248,7 +251,7 @@ If the user declines, skip this step: the spec file in `.claude/specs/` is the p
 
 ## Rules
 
-- This command plans only: do NOT write any implementation code
+- This command plans only. Do NOT write any implementation code
 - Spec files are committed to git as provenance records (they accumulate design decisions across the pipeline)
 - NEVER use emojis in any output
 - Omit spec sections that don't apply (e.g., no "Data Model" for a pure UI change)

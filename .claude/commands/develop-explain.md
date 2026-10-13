@@ -103,12 +103,12 @@ End with questions the user should be able to answer:
 ## Cross-References
 
 - **Ready to implement?** Run `/develop` or `/develop-full` with the chosen approach
-- **Need to understand the codebase first?** Check the project's AGENTS.md and `docs/*-guidelines.md`
+- **Need to understand the codebase first?** Check the project's AGENTS.md and `.claude/rules/*.md`
 
 ## Rules
 
-- **Focus on WHY, not just HOW** -- Understanding beats memorization
-- **Cover trade-offs** -- Every approach has pros and cons
-- **Be practical** -- Theory should connect to real code
-- **Encourage questions** -- Learning is interactive
+- **Focus on WHY, not just HOW**: Understanding beats memorization
+- **Cover trade-offs**: Every approach has pros and cons
+- **Be practical**: Theory should connect to real code
+- **Encourage questions**: Learning is interactive
 - NEVER use emojis in any output

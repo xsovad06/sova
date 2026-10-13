@@ -1,10 +1,10 @@
 {
   "version": "0.1.0",
   "source_hashes": {
-    "commands/develop.md": "ec1068bd2ae529cb092060ab0b2dea238d28aaa91c7b3cdb02a35d6897e0e84e",
-    "commands/spec.md": "28e0db049a320e91509063128028e7ca19baca9a85e77de2ec3b78d272c2f5b0",
-    "commands/review.md": "1370d88f0776d1065ec4ea180c4bbbfd5b85bdefab30ed7e51857ce6401e9395",
-    "commands/pr.md": "249468e67bc94ced0b0e4310add7dfe164669f6ead8126ae6e06afeb816b708a",
+    "commands/develop.md": "dea4dcac6496af2df5319af694b7f6bb463f81072b53d8790eb03972c7a54a71",
+    "commands/spec.md": "4be41e21e841c03561c73b99118f94bc6537a79a146bb03e6f331f58bad78be7",
+    "commands/review.md": "d54e5fa2d90a4c0451e02b0edce66cf9acb2ff7117bd3b8b03e024cfcbb89d7d",
+    "commands/pr.md": "db75c735e6ed41cfe8dcabc6a6e938feda2328b57d52f46511f3e42709767abf",
     "commands/debug.md": "81b35a811a196444c0ba6618961a6b3052621d73ec70d22036437021a6b52b2c",
     "commands/test.md": "c2bf1d035f053d05e1f0abf340f1aa28162df02799d8da8fc3ed002fd63e6b08"
   }

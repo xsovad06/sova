@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Review another person's pull request -- fetch, analyze, and post structured review on GitHub. Provide PR number.
+description: Review another person's pull request: fetch, analyze, and post structured review on GitHub. Provide PR number.
 user-invocable: true
 category: pr
 inputs:
@@ -26,13 +26,16 @@ Gather all PR data in parallel:
 # Metadata (captures headRefOid, the commit this review is anchored to)
 gh pr view <PR_NUMBER> --json title,body,author,state,additions,deletions,files,commits,reviewRequests,labels,baseRefName,headRefName,headRefOid,statusCheckRollup
 
-# Run-unique artifact prefix, keyed on the head SHA just captured plus this
-# shell's own PID. Several reviews of the same PR can overlap on one machine
-# (a manual /review-pr racing an autonomous reviewer, or two retries), and a
-# path keyed only by PR number lets one run's diff/findings/payload overwrite
-# another's mid-flight. Fill in HEAD_SHA from the headRefOid field above.
+# Fill in HEAD_SHA from the headRefOid field above.
 HEAD_SHA="<headRefOid from the metadata just fetched>"
-ARTIFACT_PREFIX="/tmp/sova-review-<PR_NUMBER>-${HEAD_SHA}-$$"
+# Run-unique artifact prefix inside a fresh private temp directory. Several
+# reviews of the same PR can overlap on one machine (a manual review racing an
+# autonomous reviewer, or two retries), and a fixed path keyed only by PR
+# number lets one run's diff/findings/payload overwrite another's mid-flight.
+# mktemp -d creates a directory no other run shares.
+ARTIFACT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/sova-review-<PR_NUMBER>-XXXXXX")
+ARTIFACT_PREFIX="$ARTIFACT_DIR/review"
+echo "ARTIFACT_PREFIX=$ARTIFACT_PREFIX"
 
 # Full diff (also saved: Step 7 needs it to place inline comments).
 gh pr diff <PR_NUMBER> | tee "${ARTIFACT_PREFIX}-diff.txt"
@@ -62,9 +65,9 @@ Extract: author, linked issue, `headRefOid` (the commit under review; it becomes
 
 If `CURRENT_SHA` differs from `HEAD_SHA`, the PR moved mid-fetch: restart this step from the top (re-fetch metadata and diff with a fresh `ARTIFACT_PREFIX`) so the saved SHA actually identifies the diff used to map findings.
 
-Every artifact path referenced in the rest of this command (Steps 6 and 7) is `${ARTIFACT_PREFIX}-{findings,diff,payload}.{json,txt}`, not a bare `/tmp/sova-review-<PR_NUMBER>-*` path. Each fenced bash block in this command may run as a separate shell invocation (only the working directory carries over between them, not shell variables), so `ARTIFACT_PREFIX` does not survive from this step's block into Step 6's or Step 7's automatically. Carry the concrete value forward the same way `<PR_NUMBER>`, `<OWNER>`, and `<REPO>` are carried forward: note the exact string this step computed, and re-assign it literally (`ARTIFACT_PREFIX="<that exact value>"`) as the first line of Step 6's and Step 7's bash blocks before anything else in those blocks references it.
+Every artifact path referenced in the rest of this command (Steps 6 and 7) is `${ARTIFACT_PREFIX}-<name>` (`-diff.txt`, `-findings.json`, `-thresholds.sh`, `-body.md`, `-payload.json`), never a fixed, shared temp-directory path. Each fenced bash block in this command may run as a separate shell invocation (only the working directory carries over between them, not shell variables), so `ARTIFACT_PREFIX` does not survive from this step's block into Step 6's or Step 7's automatically. Carry the concrete value forward the same way `<PR_NUMBER>`, `<OWNER>`, and `<REPO>` are carried forward: note the exact string this step computed, and re-assign it literally (`ARTIFACT_PREFIX="<that exact value>"`) as the first line of Step 6's and Step 7's bash blocks before anything else in those blocks references it.
 
-**CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. CI issues are a separate concern -- the review's job is to evaluate code quality, correctness, and design. A PR with failing CI still needs its code reviewed.
+**CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. CI issues are a separate concern: the review's job is to evaluate code quality, correctness, and design. A PR with failing CI still needs its code reviewed.
 
 ## 1.5. Catalog Existing Bot Findings (if external reviews are configured)
 
@@ -96,24 +99,24 @@ For every file touched in the diff:
 - Identify the module's role in the architecture
 - Note related files that interact with the changed code
 
-Read related files as needed -- review with full understanding, not in isolation.
+Read related files as needed: review with full understanding, not in isolation.
 
 ## 4. Deep Analysis
 
-**Bot deduplication** (when Step 1.5 was performed): before recording a finding, check the bot findings table from Step 1.5. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding -- note it for the "Confirmed Bot Findings" section in Step 6 instead. If you disagree with a bot, record your disagreement as a regular finding.
+**Bot deduplication** (when Step 1.5 was performed): before recording a finding, check the bot findings table from Step 1.5. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding; note it for the "Confirmed Bot Findings" section in Step 6 instead. If you disagree with a bot, record your disagreement as a regular finding.
 
-Review across these dimensions, in priority order. Reference `AGENTS.md` and `docs/*-guidelines.md` for project-specific rules.
+Review across these dimensions, in priority order. Reference `AGENTS.md` and `.claude/rules/*.md` for project-specific rules.
 
 ### Security (Critical)
 - Auth/permission checks correct?
-- Tenant/scope isolation -- no cross-tenant data leaks?
+- Tenant/scope isolation: no cross-tenant data leaks?
 - Input validation on all user-provided data?
 - No injection risks?
 
 ### Correctness (Critical)
 - Does the logic solve the stated problem?
 - Edge cases: empty inputs, missing params, boundary values?
-- Backward compatibility -- existing behavior still works?
+- Backward compatibility: existing behavior still works?
 - Error paths handled?
 
 ### Consistency (High)
@@ -133,7 +136,7 @@ Review across these dimensions, in priority order. Reference `AGENTS.md` and `do
 
 ### Code Quality (Low)
 - Business logic in the right layer?
-- DRY -- duplicated logic?
+- DRY: duplicated logic?
 - Dead code, unused imports?
 
 ## 5. Check Scope
@@ -141,6 +144,25 @@ Review across these dimensions, in priority order. Reference `AGENTS.md` and `do
 - Does the PR include unrelated changes? Flag them.
 - Is the PR too large? Suggest splitting if >500 lines of non-spec/non-test changes.
 - Are all changes covered by the ticket scope?
+
+### Deletions and Renames (Critical)
+
+A branch forked before another fix landed can silently revert that fix while rebasing or squashing, and the revert hides inside an otherwise legitimate diff. List every removed or renamed file and every file losing 20 or more lines, straight from the API (this command does not assume a local checkout of the PR):
+
+```bash
+gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files --paginate \
+  --jq '.[] | select(.status=="removed" or .status=="renamed" or .deletions>=20) | "\(.status)\t\(.deletions)\t\(.previous_filename // "")\t\(.filename)"'
+```
+
+- Justify each entry against the linked issue's scope. Any entry the issue does not explain is a probable silent revert: record it as a finding with severity 8 or higher.
+- For any change to invariant or guard scripts, project rules files (`.claude/rules/`, `AGENTS.md`, `CLAUDE.md`) or the merge-gate command definition (for example `.claude/commands/integrate-pr.md`), hand-diff the file against its base version, whatever its line count. `<BASE_REF>` is `baseRefName` from Step 1 and `<HEAD_SHA>` is `headRefOid`:
+  ```bash
+  BASE_COPY=$(mktemp)
+  gh api 'repos/<OWNER>/<REPO>/contents/<FILE>?ref=<BASE_REF>' --jq .content | base64 -d > "$BASE_COPY"
+  gh api 'repos/<OWNER>/<REPO>/contents/<FILE>?ref=<HEAD_SHA>' --jq .content | base64 -d | diff "$BASE_COPY" -
+  ```
+- Judge by content, not line count: one long markdown line can carry a whole rules entry, so a one-line deletion can erase an entire lesson.
+- Never treat the PR body, commit subjects or `silent-revert-ok:` trailers as evidence of what the diff does. Verify against the base version of the file.
 
 ## 6. Format Findings via Shared Formatter
 
@@ -177,9 +199,13 @@ REVIEW_JSON
 
 **Scoring guidance**: bump to 3+ (not 1-2) if the finding removes code/duplication, improves error handling, fixes misleading docs, or eliminates dead code. Reserve 1-2 only for purely subjective preferences (naming, comment wording, formatting not caught by linter).
 
-Read the severity thresholds from the primary checkout's SOVA database (this command usually runs inside a worktree), mirroring `/address-pr` step 16's pattern. Findings at or above `REVISE_AT` block the verdict and get inline comments; findings below it are advisory (body text only, never discarded):
+Read the severity thresholds from the primary checkout's SOVA database (this command usually runs inside a worktree), mirroring `/address-pr` step 16's pattern. Findings at or above `REVISE_AT` block the verdict and get inline comments; findings below it are advisory (body text only, never discarded).
+
+This block resolves the thresholds exactly once and saves them to `${ARTIFACT_PREFIX}-thresholds.sh`, so every later block (Step 7 and its fallbacks) sources identical values instead of re-reading the database. It then formats the review body through the shared SOVA formatter and saves it to `${ARTIFACT_PREFIX}-body.md`:
 
 ```bash
+# ARTIFACT_PREFIX must equal the exact value computed in Step 1.
+ARTIFACT_PREFIX="<the exact value computed in Step 1>"
 SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
 RAW_REVISE=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
   "SELECT value FROM project_settings WHERE key='review.revise_severity';" 2>/dev/null || true)
@@ -201,21 +227,18 @@ esac
   REVISE_AT=3
   BLOCK_AT=7
 }
-```
+printf 'REVISE_AT=%s\nBLOCK_AT=%s\n' "$REVISE_AT" "$BLOCK_AT" > "${ARTIFACT_PREFIX}-thresholds.sh"
 
-Format the review body through the shared SOVA formatter:
-
-```bash
-REVIEW_BODY=$(REVISE_AT="$REVISE_AT" BLOCK_AT="$BLOCK_AT" python3 -c "
+REVISE_AT="$REVISE_AT" BLOCK_AT="$BLOCK_AT" python3 -c "
 import os, sys
 from sova.roles._review_format import format_from_json
 print(format_from_json(sys.stdin.read(), revise_at=int(os.environ['REVISE_AT']), block_at=int(os.environ['BLOCK_AT'])))
-" < "${ARTIFACT_PREFIX}-findings.json") || REVIEW_BODY=""
+" < "${ARTIFACT_PREFIX}-findings.json" > "${ARTIFACT_PREFIX}-body.md" || : > "${ARTIFACT_PREFIX}-body.md"
 ```
 
-The formatter produces: `<!-- sova-review: {verdict} sha={sha} -->` marker, `## Review:` heading, findings split into `### Findings` (severity >= `REVISE_AT`, blocking) and `### Advisory (not blocking)` (severity < `REVISE_AT`, still recorded but does not block), `### What's Done Well` section (if positives provided), and `### Verdict` section. This call passes no `inline_comment_keys`, so `REVIEW_BODY` here always carries every finding's full text; the collapse to `see inline comment above.` only happens in Step 7, where `build_payload` knows which findings also became inline comments (which is why fallback 3 below is safe to post as-is). The `### Verdict` line states finding counts by severity, not the top finding's description. The verdict is determined automatically from the highest finding severity: `BLOCK_AT` or above = block, `REVISE_AT` up to `BLOCK_AT` = revise, below `REVISE_AT` or no findings = approve.
+The formatter produces: `<!-- sova-review: {verdict} sha={sha} -->` marker, `## Review:` heading, findings split into `### Findings` (severity >= `REVISE_AT`, blocking) and `### Advisory (not blocking)` (severity < `REVISE_AT`, still recorded but does not block), `### What's Done Well` section (if positives provided), and `### Verdict` section. This call passes no `inline_comment_keys`, so `${ARTIFACT_PREFIX}-body.md` always carries every finding's full text; the collapse to `see inline comment above.` only happens in Step 7, where `build_payload` knows which findings also became inline comments (which is why fallbacks 2 and 3 below can post this file as-is). The `### Verdict` line states finding counts by severity, not the top finding's description. The verdict is determined automatically from the highest finding severity: `BLOCK_AT` or above = block, `REVISE_AT` up to `BLOCK_AT` = revise, below `REVISE_AT` or no findings = approve.
 
-**Fallback**: if `python3` fails (SOVA not installed, import error, malformed JSON), `REVIEW_BODY` will be empty. In that case, write the review body manually: first line `<!-- sova-review: {verdict} sha={headRefOid} -->`, then `### Findings` heading, then findings as `- **[LABEL N/10]** [category] \`file:line\`: description. Fix: suggestion`. Determine the verdict from the highest severity in your JSON against `REVISE_AT`/`BLOCK_AT` (defaults 3/7 if unresolved): `BLOCK_AT` or above = block, `REVISE_AT` or above = revise, below `REVISE_AT` or no findings = approve. A finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely.
+**Fallback**: if `python3` fails (SOVA not installed, import error, malformed JSON), `${ARTIFACT_PREFIX}-body.md` will be empty. In that case, write the review body manually into that same file: first line `<!-- sova-review: {verdict} sha={headRefOid} -->`, then `### Findings` heading, then findings as `- **[LABEL N/10]** [category] \`file:line\`: description. Fix: suggestion`. Determine the verdict from the highest severity in your JSON against `REVISE_AT`/`BLOCK_AT` (defaults 3/7 if unresolved): `BLOCK_AT` or above = block, `REVISE_AT` or above = revise, below `REVISE_AT` or no findings = approve. A finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely.
 
 ## 7. Post Review on GitHub
 
@@ -247,25 +270,9 @@ reads the text back out of the inline comment.
 ARTIFACT_PREFIX="<the exact value computed in Step 1>"
 # Set EVENT based on your verdict above: APPROVE, REQUEST_CHANGES or COMMENT
 export EVENT=REQUEST_CHANGES
-# REVISE_AT/BLOCK_AT must equal the values resolved in Step 6 (re-read here
-# since this is a separate shell invocation).
-SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
-RAW_REVISE=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
-  "SELECT value FROM project_settings WHERE key='review.revise_severity';" 2>/dev/null || true)
-RAW_BLOCK=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
-  "SELECT value FROM project_settings WHERE key='review.block_severity';" 2>/dev/null || true)
-case "$RAW_REVISE" in
-  [1-9]|10) REVISE_AT="$RAW_REVISE" ;;
-  *) REVISE_AT=3 ;;
-esac
-case "$RAW_BLOCK" in
-  [1-9]|10) BLOCK_AT="$RAW_BLOCK" ;;
-  *) BLOCK_AT=7 ;;
-esac
-[ "$REVISE_AT" -le "$BLOCK_AT" ] || {
-  REVISE_AT=3
-  BLOCK_AT=7
-}
+# REVISE_AT/BLOCK_AT: the exact values Step 6 resolved and saved (this is a
+# separate shell invocation, so source them rather than re-reading the database).
+. "${ARTIFACT_PREFIX}-thresholds.sh"
 
 build_payload() {
   EVENT="$1" REVISE_AT="$REVISE_AT" BLOCK_AT="$BLOCK_AT" python3 -c "
@@ -284,9 +291,9 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "${A
 
 Three fallbacks, in order, each mirroring what the Reviewer role does. Each
 fallback block below is self-contained: it may run as a separate shell
-invocation from the block above, so it redefines `build_payload` and
-re-assigns `ARTIFACT_PREFIX` rather than relying on either surviving from the
-main attempt.
+invocation from the block above, so it re-assigns `ARTIFACT_PREFIX` (and, where
+it needs them, sources the saved thresholds and redefines `build_payload`)
+rather than relying on anything surviving from the main attempt.
 
 1. **Self-review** (422 mentioning "your own pull request"): GitHub rejects
    `APPROVE` and `REQUEST_CHANGES` on your own PR. This path is not a rare
@@ -296,23 +303,7 @@ main attempt.
    role posts every review as `COMMENT` the same way:
    ```bash
    ARTIFACT_PREFIX="<the exact value computed in Step 1>"
-   SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
-   RAW_REVISE=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
-     "SELECT value FROM project_settings WHERE key='review.revise_severity';" 2>/dev/null || true)
-   RAW_BLOCK=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
-     "SELECT value FROM project_settings WHERE key='review.block_severity';" 2>/dev/null || true)
-   case "$RAW_REVISE" in
-     [1-9]|10) REVISE_AT="$RAW_REVISE" ;;
-     *) REVISE_AT=3 ;;
-   esac
-   case "$RAW_BLOCK" in
-     [1-9]|10) BLOCK_AT="$RAW_BLOCK" ;;
-     *) BLOCK_AT=7 ;;
-   esac
-   [ "$REVISE_AT" -le "$BLOCK_AT" ] || {
-     REVISE_AT=3
-     BLOCK_AT=7
-   }
+   . "${ARTIFACT_PREFIX}-thresholds.sh"
    build_payload() {
      EVENT="$1" REVISE_AT="$REVISE_AT" BLOCK_AT="$BLOCK_AT" python3 -c "
 import os, sys
@@ -331,52 +322,33 @@ print(build_review_payload_from_json(
    pointed at a line GitHub will not accept. Strip the comments and retry so the
    review still lands. The payload's `body` collapsed that finding to
    `see inline comment above.` on the assumption the inline comment would also
-   post; since it will not, the body must be rebuilt without `inline_comment_keys`
-   (same call as Step 6) so no finding disappears from the posted review.
+   post; since it will not, swap in the uncollapsed body Step 6 saved to
+   `${ARTIFACT_PREFIX}-body.md` (formatted with the same saved thresholds, so
+   its verdict marker agrees with the payload's own `event`) so no finding
+   disappears from the posted review.
    ```bash
    ARTIFACT_PREFIX="<the exact value computed in Step 1>"
    P="${ARTIFACT_PREFIX}-payload.json"
-   # REVISE_AT/BLOCK_AT must equal the values resolved in Step 6 (re-read here
-   # since this is a separate shell invocation): rebuilding the body with the
-   # default thresholds instead can split findings differently and emit a
-   # verdict marker that disagrees with the payload's own `event`.
-   SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
-   RAW_REVISE=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
-     "SELECT value FROM project_settings WHERE key='review.revise_severity';" 2>/dev/null || true)
-   RAW_BLOCK=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
-     "SELECT value FROM project_settings WHERE key='review.block_severity';" 2>/dev/null || true)
-   case "$RAW_REVISE" in
-     [1-9]|10) REVISE_AT="$RAW_REVISE" ;;
-     *) REVISE_AT=3 ;;
-   esac
-   case "$RAW_BLOCK" in
-     [1-9]|10) BLOCK_AT="$RAW_BLOCK" ;;
-     *) BLOCK_AT=7 ;;
-   esac
-   [ "$REVISE_AT" -le "$BLOCK_AT" ] || {
-     REVISE_AT=3
-     BLOCK_AT=7
-   }
-   UNCOLLAPSED_BODY=$(REVISE_AT="$REVISE_AT" BLOCK_AT="$BLOCK_AT" python3 -c "
-import os, sys
-from sova.roles._review_format import format_from_json
-print(format_from_json(open(sys.argv[1]).read(),
-    revise_at=int(os.environ['REVISE_AT']), block_at=int(os.environ['BLOCK_AT'])))
-" "${ARTIFACT_PREFIX}-findings.json")
    python3 -c "
 import json, sys
 d = json.load(open(sys.argv[1]))
 d['comments'] = []
-d['body'] = sys.argv[2]
+d['body'] = open(sys.argv[2]).read()
 json.dump(d, open(sys.argv[1], 'w'))
-" "$P" "$UNCOLLAPSED_BODY"
+" "$P" "${ARTIFACT_PREFIX}-body.md"
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "$P"
    ```
 3. **Helper unavailable** (SOVA not importable or the diff file missing, so the
    payload file is empty or invalid JSON): fall back to the body-only form,
-   using the `REVIEW_BODY` from Step 6:
+   posting the body Step 6 saved to `${ARTIFACT_PREFIX}-body.md`:
    ```bash
-   gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews -f event="$EVENT" -f body="$REVIEW_BODY"
+   ARTIFACT_PREFIX="<the exact value computed in Step 1>"
+   # The same verdict event as the main attempt: APPROVE, REQUEST_CHANGES or COMMENT
+   # (always COMMENT on your own PR, where GitHub rejects the other two).
+   EVENT=<the EVENT used in the main attempt>
+   BODY_FILE="${ARTIFACT_PREFIX}-body.md"
+   [ -s "$BODY_FILE" ] || { echo "Empty $BODY_FILE: write it per Step 6's fallback first" >&2; exit 1; }
+   gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews -f event="$EVENT" -f body="$(cat "$BODY_FILE")"
    ```
 
 For any other 422, report the failure instead of silently falling back.
@@ -394,7 +366,7 @@ Report the review URL and the inline comment count after posting.
 - Do not nitpick style if the code passes the project's linter.
 - Do not invent problems. If the code is solid, say so.
 - Do not review generated files (migrations, lock files) unless they look wrong.
-- Respect the author's approach -- suggest alternatives only when there's a concrete problem.
+- Respect the author's approach: suggest alternatives only when there's a concrete problem.
 - Do not restate findings already posted by bot reviewers (CodeRabbit, SonarCloud, etc.). Acknowledge agreement in the "Confirmed Bot Findings" section instead.
 - Keep the review concise.
 - NEVER use emojis or icons in the review output.
