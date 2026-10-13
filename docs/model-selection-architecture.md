@@ -296,6 +296,67 @@ answers with `source: "curated"`, which is `models_service`'s Anthropic-only sta
 than the provider's real catalog and so validates nothing), so a stale page or a scripted call can
 never launch with an ignored or invalid override.
 
+### 2.9 Model discovery and enumeration (#1031, A1-A5)
+
+Section 3 Q1 originally specified `list_models() -> list[ModelInfo]`, default `[]` meaning
+"cannot enumerate". That design was superseded once A1-A5 landed: discovery is **proactive
+enumeration**, not an unimplemented stub, and three of the four real providers genuinely list
+their catalog rather than returning empty.
+
+- `LLMProvider.list_available_models(*, allow_probe=True) -> list[ModelInfo]`
+  (`sova/llm/provider.py`) is the shipped primitive (renamed and widened from the Q1 sketch).
+  The base concrete default returns the curated static list; three of the four concrete providers
+  override it (`BatchProvider`, `sova/llm/providers/anthropic_batch.py`, used by `invoke_batch()`
+  for triage, keeps the curated default):
+  - `AnthropicAPIProvider` (`sova/llm/providers/anthropic_api.py`) calls the SDK's
+    `client.models.list()` (Anthropic `/v1/models`), falling back to curated on a missing SDK,
+    missing key, or any exception.
+  - `ClaudeCodeProvider` (`sova/llm/providers/claude_code.py`) has no listing endpoint to
+    call: there is no `/v1/models`-equivalent for the CLI, so it probes auth once and then probes
+    each curated candidate with a minimal `claude -p` turn, caching each outcome individually.
+  - `LiteLLMProvider` (`sova/llm/litellm_provider.py`) fans out via `_enumerate_all_backends`
+    to `_enumerate_vertex()` (the Vertex `publishers.models.list` catalog, gated on
+    `ANTHROPIC_VERTEX_PROJECT_ID`), `_enumerate_ollama()` (`GET /api/tags`), and
+    `_enumerate_openai_compatible()`, run concurrently and merged; a source that isn't configured
+    returns `None` (not `[]`) so "not configured" and "configured but produced nothing" (an
+    outage) are distinguishable and only the latter skips caching (`cached_enumeration()`, Q2).
+  - `_enumerate_vertex()` additionally filters the `openai` publisher to the `OPENAI_OSS` model
+    family only (`litellm_provider.py:_fetch_vertex_publisher()`, called per publisher from
+    `_enumerate_vertex()`): Vertex's `openai` publisher catalog
+    lists proprietary GPT/o-series entries that no Vertex credential actually grants access to, so
+    reporting them as reachable would be a false positive discovery.
+- `GET /api/models/available?layer=llm[&refresh=1]` (`sova/dashboard/routers/models.py`,
+  `available_models` handler, `sova/dashboard/services/models_service.py:get_available_models()`)
+  is the one HTTP surface that feeds every LLM-layer dropdown (the launch modal's per-run override
+  in 2.8, and the settings UI's grouped `<select>` pattern documented in
+  `.claude/rules/architecture.md`). The launch modal's separate agent/runtime "Model" select is
+  populated from the complexity suggestion endpoint's `model_options`, not from this endpoint.
+  `layer="runtime"` (e.g. `codex.model`) is not implemented and returns 501: discovery today
+  covers the LLM layer only.
+- Just-in-time, fail-open, and cached at two independent layers, matching the Q2 guarantee this
+  primitive is built on: each provider's own `cached_enumeration()` (`sova/llm/client.py`, 1800s
+  TTL) dedupes repeated probes/API calls across every caller, and `models_service.py` adds a
+  10-minute per-project cache on top (`_MODELS_CACHE_TTL`) so a polling dropdown never re-runs
+  `load_config()` and `create_provider()` per poll, plus a 60s rate limit on `?refresh=1`
+  (`_REFRESH_MIN_INTERVAL`), a 45s enumeration timeout (`_ENUMERATION_TIMEOUT_SECONDS`), and a
+  single-flight lock per project. A result is cached at this layer only when it has at least one
+  model and a `source` other than `"curated"`: `"curated"` is the fail-open fallback for an
+  unauthenticated, misconfigured, or timed-out provider, not a real catalog, so it is never pinned
+  for the full TTL (the next poll always retries).
+- Discovery and backend-aware resolution (2.7) are related but not unified at the servability
+  layer: discovery never consults `backend_can_serve()` or `tier_candidates_for()` (the `openai`
+  publisher's `OPENAI_OSS`-only filter lives entirely in `litellm_provider.py`, independent of
+  those two functions). Discovery's only use of `sova/llm/backends.py` is `detect_backend()`,
+  which `models_service.py` calls to build the reported `provider_identity`
+  (`f"{cfg.llm.provider}:{detect_backend(cfg.llm)}"`), used only in the response payload and in
+  this module's log fields; the enumeration caches are keyed independently (project dir alone in
+  `models_service.py`, and one layer down in `cached_enumeration()` by each provider's own
+  enumeration identity: `LiteLLMProvider._enumeration_identity()`,
+  `_anthropic_api_enumeration_identity(key)`, or `_claude_code_enumeration_identity(auth)`, which
+  `litellm_provider.py` notes "may differ from `client.provider_identity()`", the separate
+  per-model availability/probe cache key), so a `detect_backend()` change alters what discovery
+  reports, not what it caches under.
+
 ---
 
 ## 3. Answers to the eight investigation questions
@@ -309,9 +370,17 @@ breaks):
 - `capabilities -> ProviderCapabilities` (supports_cli_fallback, supports_budget_cap,
   reports_cost, dynamic_models). This is what lets the fallback and budget layers stop
   assuming Claude-CLI features.
-- `list_models() -> list[ModelInfo]`, default `[]` meaning "cannot enumerate".
+- `list_models() -> list[ModelInfo]`, default `[]` meaning "cannot enumerate". **Superseded
+  (#1031, A1-A5): see section 2.9.** The shipped primitive is `list_available_models()`, and
+  the default-to-empty design never shipped; three of the four real providers genuinely
+  enumerate (SDK call, CLI auth-probe, or publisher-catalog fetch) rather than returning `[]`.
 - `supports_model(model) -> tuple[bool | None, str]`, default derived from `list_models()`;
-  `None` means "cannot verify, treat as available" (fail-open).
+  `None` means "cannot verify, treat as available" (fail-open). **Also never shipped (#1031,
+  A1-A5):** there is no `supports_model()` on `LLMProvider`. Its fail-open intent survives in two
+  other places instead: `sova/llm/backends.py:backend_can_serve()` (which answers servability from
+  static backend dialect rules, not from an enumerated catalog) and
+  `setup_service.py:_unknown_model_hint()` (which compares a submitted ID against the enumerated
+  catalog and returns an advisory hint, never a rejection).
 
 LiteLLM is the universal adapter for OpenAI / Ollama / Vertex (prefixed IDs like
 `openai/gpt-5`, `ollama/llama3.1`, `vertex_ai/claude-...`), so adding those backends is
@@ -366,7 +435,11 @@ Correction to design 3: load-time model-name validation is **architecturally inf
 `load_config()` runs per-invoke (`client.py:96`, `_resolve_timeout`, `maybe_compress`), often
 offline and keyless (CI, tests). Enumerating provider catalogs synchronously in a Pydantic
 `model_validator` would be slow, flaky, key-dependent, and would break the default claude-code
-path (which cannot enumerate anyway). Validation belongs in an opt-in `sova doctor` check.
+path. Validation belongs in an opt-in `sova doctor` check. (The parenthetical this bullet
+originally carried, that the claude-code path "cannot enumerate anyway", no longer holds: per
+section 2.9 it enumerates by auth-probing and then probing each curated candidate. That makes the
+conclusion stronger, not weaker, since each probe is a `claude -p` subprocess turn and so is
+exactly the per-invoke cost a `load_config()` validator must not pay.)
 
 ### Q4. Where should model selection happen?
 
@@ -516,8 +589,8 @@ tests assert per-tier models (haiku/sonnet/opus), not "opus everywhere".
   succeeds; assert advance, exhaustion-terminal, and empty-chain-no-op.
 - The keystone test: a SIMPLE-tier task with a 2-model chain must complete attempt #2 inside
   the WorkflowEngine step timeout (proves the shared-deadline fix).
-- Availability: inject fake `list_models` / `/api/tags` / `models.list()`; assert fail-open on
-  probe error; reset the cache in the fixture.
+- Availability: inject fake `list_available_models` / `/api/tags` / `models.list()`; assert
+  fail-open on probe error; reset the cache in the fixture.
 - `reload_provider` honors a changed alias map (config hot-reload regression).
 - Anti-hardcoding grep guard: a test that fails if any `invoke`/`invoke_command` call passes a
   string literal `model=`.
@@ -583,6 +656,11 @@ qualifies "one authoritative place".
 
 - **Startup / provider-init availability probing** (designs 2 and 3 PR5): runs on every CLI
   command and every pipeline subprocess spawn; breaks offline/CI; adds a hot-path hang surface.
+  **Partly superseded (#1031, A1-A5): see section 2.9.** What still stands: no probing at CLI
+  startup or pipeline subprocess spawn, for exactly the reasons above. What shipped instead:
+  probe-based enumeration behind the opt-in `GET /api/models/available` HTTP surface, fetched only
+  when a dropdown is opened, cached per-project for 10 minutes, and fail-open to the curated list
+  on any auth/config/timeout failure, so it never becomes a hot-path hang.
 - **Load-time Pydantic model-name validation** (design 3): `load_config` is a per-invoke,
   often-offline hot path; a raised `ValueError` at load blocks all commands until the config is
   edited, and a valid-but-unlisted model (new release, fine-tune, not-yet-pulled Ollama tag)
