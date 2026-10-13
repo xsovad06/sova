@@ -1,4 +1,4 @@
-"""Resources API -- resource monitoring data for agent runs."""
+"""Resources API: resource monitoring data for agent runs."""
 
 from __future__ import annotations
 

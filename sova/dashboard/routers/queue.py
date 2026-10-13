@@ -1,4 +1,4 @@
-"""Queue router -- priority-sorted issue queue."""
+"""Queue router: priority-sorted issue queue."""
 
 from __future__ import annotations
 

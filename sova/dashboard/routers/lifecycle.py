@@ -1,4 +1,4 @@
-"""Lifecycle API router -- issue lifecycle tracking and phase control."""
+"""Lifecycle API router: issue lifecycle tracking and phase control."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class AdvanceRequest(BaseModel):
     to_phase: str
 
 
-# -- Read endpoints -----------------------------------------------------------
+# Read endpoints -----------------------------------------------------------
 
 
 @router.get("/active")
@@ -65,7 +65,7 @@ async def get_lifecycle(lifecycle_id: int) -> dict:
         return lifecycle_service.lifecycle_to_dict(lc)
 
 
-# -- Phase action endpoints ---------------------------------------------------
+# Phase action endpoints ---------------------------------------------------
 
 
 @router.post("/{lifecycle_id}/phase/{phase}/start")

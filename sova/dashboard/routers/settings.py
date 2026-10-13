@@ -1,4 +1,4 @@
-"""Settings router -- config, invariants, personas, installation status."""
+"""Settings router: config, invariants, personas, installation status."""
 
 from __future__ import annotations
 

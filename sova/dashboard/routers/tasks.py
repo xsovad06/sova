@@ -1,4 +1,4 @@
-"""Tasks router -- active tasks and task history."""
+"""Tasks router: active tasks and task history."""
 
 from __future__ import annotations
 

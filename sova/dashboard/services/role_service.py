@@ -1,4 +1,4 @@
-"""Role service -- CRUD for workflow definitions and built-in role introspection."""
+"""Role service: CRUD for workflow definitions and built-in role introspection."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from sova.utils.logging import get_logger
 log = get_logger(component="dashboard.roles")
 
 
-# -- CRUD ---------------------------------------------------------------------
+# CRUD ---------------------------------------------------------------------
 
 
 async def list_definitions(session: AsyncSession) -> list[WorkflowDefinition]:
@@ -108,7 +108,7 @@ async def delete_definition(session: AsyncSession, name: str) -> bool:
     return True
 
 
-# -- Built-in role introspection -----------------------------------------------
+# Built-in role introspection -----------------------------------------------
 
 
 @lru_cache(maxsize=1)
@@ -274,7 +274,7 @@ def _builtin_researcher() -> dict:
     }
 
 
-# -- Command contracts ---------------------------------------------------------
+# Command contracts ---------------------------------------------------------
 
 
 _CMD_CACHE_TTL = 30  # seconds
@@ -359,7 +359,7 @@ def _command_entry_to_dict(entry: CommandEntry, installed_content: dict[str, str
     }
 
 
-# -- Serialization helpers -----------------------------------------------------
+# Serialization helpers -----------------------------------------------------
 
 
 def definition_to_dict(d: WorkflowDefinition) -> dict:

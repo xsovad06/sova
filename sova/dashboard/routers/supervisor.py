@@ -385,7 +385,7 @@ async def skip_plan_item(issue_number: int) -> dict:
     return {"skipped": issue_number}
 
 
-# -- Task Queue CRUD --
+# Task Queue CRUD
 
 
 def _deduplicate(items: list[int]) -> list[int]:
@@ -543,7 +543,7 @@ async def clear_queue() -> dict:
         return {"queue": []}
 
 
-# -- Supervisor Persona --
+# Supervisor Persona
 
 
 @router.get("/persona", responses={500: {"description": "Failed to fetch supervisor persona"}})

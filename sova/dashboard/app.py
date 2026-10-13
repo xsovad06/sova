@@ -1,9 +1,9 @@
-"""SOVA Dashboard -- FastAPI app factory.
+"""SOVA Dashboard: FastAPI app factory.
 
 Supports two modes:
-- Single-project: `create_app(project_dir=Path(...))` -- current behavior
-- Multi-project: `create_app(multi_project=True)` -- uses project registry
-- Auto-detect: `create_app()` -- multi if registry has projects, else single (CWD)
+- Single-project: `create_app(project_dir=Path(...))` (current behavior)
+- Multi-project: `create_app(multi_project=True)` (uses project registry)
+- Auto-detect: `create_app()`, multi if registry has projects, else single (CWD)
 """
 
 from __future__ import annotations
@@ -982,7 +982,7 @@ def _setup_single_project(
     control_service.set_project_dir(resolved)
     handoff_service.set_project_dir(resolved)
 
-    # -- Page routes --
+    # Page routes
     @app.get("/")
     async def home(request: Request) -> RedirectResponse:
         return RedirectResponse(url="/dashboard")
@@ -1001,16 +1001,16 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     app.add_middleware(ProjectContextMiddleware)
 
-    # -- Fleet Manager API (global, not project-scoped) --
+    # Fleet Manager API (global, not project-scoped)
     app.include_router(fleet_manager.router, prefix="/api")
 
-    # -- Home page (Fleet Manager command center) --
+    # Home page (Fleet Manager command center)
     @app.get("/")
     async def home(request: Request) -> Response:
         projects = list_projects()
         return templates.TemplateResponse(request, "home.html", {"projects": projects})
 
-    # -- Project API --
+    # Project API
     @app.get("/api/projects")
     async def api_list_projects() -> dict:
         return {"projects": list_projects()}
@@ -1059,12 +1059,12 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         removed = unregister_project(slug)
         return {"removed": removed, "files_cleaned": False}
 
-    # -- Setup page (global, not project-scoped) --
+    # Setup page (global, not project-scoped)
     @app.get("/setup")
     async def setup_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "setup.html", {"page": "setup"})
 
-    # -- Project-scoped page routes (new) --
+    # Project-scoped page routes (new)
     @app.get("/p/{slug}")
     async def project_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/dashboard")
@@ -1089,7 +1089,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_work_detail(request: Request, slug: str, run_id: int) -> Response:
         return _project_page(request, templates, slug, "run_detail.html", "agents", run_id=run_id)
 
-    # -- Old routes as redirects --
+    # Old routes as redirects
     @app.get("/p/{slug}/overview")
     async def project_overview_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/dashboard", status_code=301)
@@ -1110,7 +1110,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_run_detail_redirect(slug: str, run_id: int) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/work/{run_id}", status_code=301)
 
-    # -- Unchanged project pages --
+    # Unchanged project pages
     @app.get("/p/{slug}/costs")
     async def project_costs(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "costs.html", "costs")
@@ -1197,7 +1197,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_reliability(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "reliability.html", "reliability")
 
-    # -- Project-scoped API --
+    # Project-scoped API
     _register_api_routers(app, prefix="/p/{slug}/api")
 
     # Also keep non-prefixed API for backward compat / fallback
@@ -1241,7 +1241,7 @@ def _with_csrf_cookie(request: Request, response: Response) -> Response:
 def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     """Register non-prefixed page routes (single-project mode)."""
 
-    # -- New pages --
+    # New pages
     @app.get("/briefing")
     async def briefing_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "briefing.html", {"page": "briefing"})
@@ -1262,7 +1262,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def work_detail_page(request: Request, run_id: int) -> Response:
         return templates.TemplateResponse(request, "run_detail.html", {"page": "agents", "run_id": run_id})
 
-    # -- Old pages kept as redirects --
+    # Old pages kept as redirects
     @app.get("/overview")
     async def overview_redirect() -> RedirectResponse:
         return RedirectResponse(url="/dashboard", status_code=301)
@@ -1283,7 +1283,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def run_detail_redirect(run_id: int) -> RedirectResponse:
         return RedirectResponse(url=f"/work/{run_id}", status_code=301)
 
-    # -- Unchanged pages --
+    # Unchanged pages
     @app.get("/costs")
     async def costs_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "costs.html", {"page": "costs"})

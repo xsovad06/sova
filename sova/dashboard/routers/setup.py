@@ -1,4 +1,4 @@
-"""Setup router -- project onboarding, scanning, and installation."""
+"""Setup router: project onboarding, scanning, and installation."""
 
 from __future__ import annotations
 

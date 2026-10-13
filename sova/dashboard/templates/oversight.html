@@ -130,7 +130,7 @@ function flash(msg, type) {
   setTimeout(() => el.classList.add('hidden'), 5000);
 }
 
-// -- Status --
+// Status
 async function loadStatus() {
   try {
     const res = await fetch(`${apiBase}/oversight/status`);
@@ -166,7 +166,7 @@ async function loadStatus() {
   }
 }
 
-// -- Findings --
+// Findings
 async function loadFindings() {
   const status = document.getElementById('findings-filter').value;
   const container = document.getElementById('findings-container');
@@ -270,7 +270,7 @@ async function dismissFinding(findingId) {
   }
 }
 
-// -- Runs --
+// Runs
 async function loadRuns() {
   const container = document.getElementById('runs-container');
   try {
@@ -316,7 +316,7 @@ function renderRuns(runs) {
   container.innerHTML = html;
 }
 
-// -- Run Now --
+// Run Now
 async function triggerRunNow() {
   const btn = document.getElementById('run-now-btn');
   btn.disabled = true;
@@ -338,7 +338,7 @@ async function triggerRunNow() {
   }
 }
 
-// -- Persona --
+// Persona
 async function loadPersona() {
   try {
     const res = await fetch(`${apiBase}/settings/persona`);
@@ -360,7 +360,7 @@ async function openPersona() {
   }
 }
 
-// -- Init --
+// Init
 loadStatus();
 loadFindings();
 loadRuns();

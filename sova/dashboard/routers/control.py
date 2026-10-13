@@ -1,4 +1,4 @@
-"""Control API -- start, stop, and monitor agent processes."""
+"""Control API: start, stop, and monitor agent processes."""
 
 from __future__ import annotations
 
