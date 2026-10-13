@@ -164,7 +164,24 @@ sova config set agent.runtime codex          # default: claude-code
 sova config set codex.sandbox workspace-write   # or: read-only
 sova config set codex.model ""               # empty: Codex CLI's own configured default
 sova config set codex.reader_drain_timeout 10.0
+sova config set codex.allow_unenforced_budget true  # required: Codex CLI cannot enforce a dollar cap
+sova config set codex.billing_mode subscription     # or: unknown (default)
 ```
+
+Codex has no mechanism to pass a dollar budget cap to `codex exec`, unlike
+Claude Code's `--max-budget-usd`. Because every pipeline step requests a
+budget (`agent.max_budget - ctx.cost_usd`, always positive), `agent.runtime
+= "codex"` fails at the earliest pipeline step (`AssessStep`, before any
+worktree is created) unless `codex.allow_unenforced_budget = true` is set,
+accepting that cost runs unbounded (logged at warning level on every
+spawn). `codex.billing_mode` records whether an authenticated session is
+billed against a flat-rate ChatGPT subscription (`"subscription"`, no
+incremental per-call dollar cost) or metered per token; it defaults to
+`"unknown"` because neither a set `CODEX_API_KEY` nor `codex login
+status`'s logged-in signal is positive evidence either way, and only an
+explicit operator declaration promotes the recorded `CostSource` to
+`SUBSCRIPTION`. A `CODEX_API_KEY` env var, when set, still always wins as
+confirmed metered billing, overriding this setting.
 
 `sova config`'s summary table does not list these keys; `sova doctor` (see
 "Verify" below) reports the resolved runtime, and the dashboard settings page
@@ -182,6 +199,8 @@ runtime = "codex"   # default: "claude-code"
 # model = ""             # empty: use Codex CLI's own configured default
 # sandbox = "workspace-write"   # "read-only" | "workspace-write" (never "danger-full-access")
 # reader_drain_timeout = 10.0
+# allow_unenforced_budget = true   # required: Codex CLI cannot enforce a dollar cap
+# billing_mode = "subscription"    # or: "unknown" (default)
 ```
 
 Either source is overridable per process by environment variable, which wins

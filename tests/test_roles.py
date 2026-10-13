@@ -1848,11 +1848,42 @@ class TestReviewerGatherRepoContext:
         assert result == ""
         mock_run.assert_not_awaited()
 
-    async def test_returns_empty_when_codex_unavailable(self) -> None:
+    async def test_proceeds_without_unenforced_budget_opt_in(self) -> None:
+        """This sub-call bypasses CodexRuntime.spawn() entirely and requests no budget
+        cap at all, so unlike a pipeline spawn with a requested cap, it must not require
+        codex.allow_unenforced_budget: by CodexRuntime's own rule, an unbudgeted spawn
+        needs no opt-in, and gating this sub-call on an unrelated pipeline-only flag
+        would silently disable an explicitly enabled feature (issue #1128 review)."""
         from sova.config.models import ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
 
         ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        role = ReviewerRole()
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout="", stderr=""),
+            ) as mock_run,
+        ):
+            await role._gather_repo_context(ctx, ["a.py"])
+
+        mock_run.assert_awaited_once()
+
+    async def test_returns_empty_when_codex_unavailable(self) -> None:
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
+        )
         role = ReviewerRole()
 
         with patch("shutil.which", return_value=None):
@@ -1861,11 +1892,17 @@ class TestReviewerGatherRepoContext:
         assert result == ""
 
     async def test_returns_context_text_on_success(self) -> None:
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
-        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
+        )
         role = ReviewerRole()
 
         stdout = (
@@ -1891,15 +1928,61 @@ class TestReviewerGatherRepoContext:
         assert ctx.input_tokens == 10
         assert ctx.output_tokens == 5
 
+    async def test_multi_turn_usage_accumulates_not_last_wins(self) -> None:
+        """CodexStreamParser lifts its terminal latch between turns, so a stream
+        with more than one turn.completed event must sum their usage rather than
+        keep only the last one's, matching the sibling consumers of the same
+        parser (agent_dispatch._run_agent_process, _parse_runtime_stream_line)
+        that were fixed for this exact hazard (issue #1128 review, round 4)."""
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
+        from sova.roles.reviewer import ReviewerRole
+        from sova.utils.shell import ShellResult
+
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
+        )
+        role = ReviewerRole()
+
+        stdout = (
+            '{"type": "item.completed", "item": {"item_type": "agent_message", "text": "First turn."}}\n'
+            '{"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}\n'
+            '{"type": "turn.started"}\n'
+            '{"type": "item.completed", "item": {"item_type": "agent_message", "text": "Second turn."}}\n'
+            '{"type": "turn.completed", "usage": {"input_tokens": 20, "output_tokens": 8}}\n'
+        )
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch(
+                "sova.roles.reviewer.run_shell",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout=stdout, stderr=""),
+            ),
+        ):
+            await role._gather_repo_context(ctx, ["a.py"])
+
+        assert ctx.input_tokens == 30
+        assert ctx.output_tokens == 13
+
     async def test_usage_logged_as_unbudgeted_since_cost_is_always_zero(self) -> None:
         """Codex's LLMResult always reports cost_usd=$0/CostSource.UNKNOWN, so this
         sub-call's spend is invisible to every dollar-based budget guard. A distinct
         warning must fire so the gap is at least traceable from the run log."""
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
-        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
+        )
         role = ReviewerRole()
 
         stdout = (
@@ -1931,7 +2014,10 @@ class TestReviewerGatherRepoContext:
 
         ctx = _make_ctx(
             role="reviewer",
-            config=ProjectConfig(review=ReviewConfig(repo_context_agent=True), codex=CodexConfig(model="gpt-5-codex")),
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(model="gpt-5-codex", allow_unenforced_budget=True),
+            ),
         )
         role = ReviewerRole()
 
@@ -1951,11 +2037,17 @@ class TestReviewerGatherRepoContext:
     async def test_returns_empty_on_failed_turn(self) -> None:
         """A turn.failed/error terminal event must never be folded into the review
         prompt as if it were repository context."""
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
-        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
+        )
         role = ReviewerRole()
 
         stdout = '{"type": "turn.failed", "error": {"message": "stream error: 401 Unauthorized"}}\n'
@@ -1977,14 +2069,17 @@ class TestReviewerGatherRepoContext:
         result that hits the cap must say so rather than silently ending mid-sentence."""
         import json as _json
 
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
         max_chars = 2000
         ctx = _make_ctx(
             role="reviewer",
-            config=ProjectConfig(review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=max_chars)),
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=max_chars),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
         )
         role = ReviewerRole()
 
@@ -2015,7 +2110,7 @@ class TestReviewerGatherRepoContext:
         display cap but within the configured repo-context budget must survive whole."""
         import json as _json
 
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.ipc.codex import _MAX_CONTENT_CHARS
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
@@ -2024,7 +2119,8 @@ class TestReviewerGatherRepoContext:
         ctx = _make_ctx(
             role="reviewer",
             config=ProjectConfig(
-                review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=_MAX_CONTENT_CHARS + 1000)
+                review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=_MAX_CONTENT_CHARS + 1000),
+                codex=CodexConfig(allow_unenforced_budget=True),
             ),
         )
         role = ReviewerRole()
@@ -2056,13 +2152,16 @@ class TestReviewerGatherRepoContext:
         secret-dense, whitespace-free message well under the configured cap."""
         import json as _json
 
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
         ctx = _make_ctx(
             role="reviewer",
-            config=ProjectConfig(review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=2000)),
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=2000),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
         )
         role = ReviewerRole()
 
@@ -2089,11 +2188,17 @@ class TestReviewerGatherRepoContext:
         assert result.endswith("[context truncated]")
 
     async def test_returns_empty_on_timeout(self) -> None:
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
-        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
+        )
         role = ReviewerRole()
 
         with (
@@ -2109,10 +2214,16 @@ class TestReviewerGatherRepoContext:
         assert result == ""
 
     async def test_returns_empty_on_spawn_failure(self) -> None:
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
 
-        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
+        )
         role = ReviewerRole()
 
         with (
@@ -2132,7 +2243,7 @@ class TestReviewerGatherRepoContext:
     ) -> None:
         """The sub-call must never inherit a GitHub token or DB URL, even if present in
         the process environment, but must get the allowlisted vars and CODEX_API_KEY."""
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
@@ -2143,7 +2254,13 @@ class TestReviewerGatherRepoContext:
         monkeypatch.setenv("CODEX_HOME", "/custom/codex-home")
         monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg-config")
 
-        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
+        )
         role = ReviewerRole()
 
         with (
@@ -2168,14 +2285,20 @@ class TestReviewerGatherRepoContext:
         """A corporate-proxy or custom-CA setup must not silently break the sub-call:
         none of these carry a GitHub token or DB URL, so allowlisting them does not
         weaken the allowlist's safety property."""
-        from sova.config.models import ProjectConfig, ReviewConfig
+        from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:8080")
         monkeypatch.setenv("SSL_CERT_FILE", "/custom/ca-bundle.pem")
 
-        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        ctx = _make_ctx(
+            role="reviewer",
+            config=ProjectConfig(
+                review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
+            ),
+        )
         role = ReviewerRole()
 
         with (
@@ -2201,7 +2324,7 @@ class TestReviewerGatherRepoContext:
         hand a write-capable GitHub token or DB connection string to this
         sub-call's untrusted, potentially attacker-authored (fork-PR) sandbox.
         """
-        from sova.config.models import AgentConfig, ProjectConfig, ReviewConfig
+        from sova.config.models import AgentConfig, CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
@@ -2212,6 +2335,7 @@ class TestReviewerGatherRepoContext:
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
+                codex=CodexConfig(allow_unenforced_budget=True),
                 agent=AgentConfig(env_passthrough=["CUSTOM_NETWORK_VAR", "GH_TOKEN"]),
             ),
         )

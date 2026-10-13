@@ -392,6 +392,24 @@ async def _check_agent_runtime(project_dir: Path) -> list[_Check]:
 
         available, detail = await runtime.check_available()
         checks.append((_LABEL, available, f"{runtime_type}: {detail}", True))
+
+        # agent.max_budget is gt=0-validated (always positive), so every
+        # pipeline step's dispatch_command()/dispatch_prompt() call passes a
+        # non-None max_budget_usd. CodexRuntime.spawn() refuses that outright
+        # unless this flag is set, which otherwise only surfaces mid-pipeline
+        # on the first tool-using step, after create_worktree/capture_baseline
+        # have already done their setup work. Surfacing it here lets the
+        # operator fix it before ever starting a run.
+        if runtime_type == "codex" and not cfg.codex.allow_unenforced_budget:
+            checks.append(
+                (
+                    "codex budget enforcement",
+                    False,
+                    "Codex CLI cannot enforce agent.max_budget; every pipeline run will fail on "
+                    "its first tool-using step unless codex.allow_unenforced_budget = true is set",
+                    True,
+                )
+            )
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
         checks.append((_LABEL, False, str(exc)[:80], False))
     return checks
