@@ -1,4 +1,4 @@
-"""Tests for sova.scheduler -- watch loop, parallel executor, server daemon."""
+"""Tests for sova.scheduler: watch loop, parallel executor, server daemon."""
 
 from __future__ import annotations
 

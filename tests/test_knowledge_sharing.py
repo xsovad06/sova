@@ -1,4 +1,4 @@
-"""Tests for SOVA knowledge sharing -- export/import across installations."""
+"""Tests for SOVA knowledge sharing: export/import across installations."""
 
 from __future__ import annotations
 
@@ -239,7 +239,7 @@ async def _seed_exportable_memories() -> None:
         tier="project",
         repo="test-repo",
     )
-    # Not confirmed -- should be skipped
+    # Not confirmed: should be skipped
     await store(
         category="review_pattern",
         title="Unconfirmed pattern",
@@ -247,7 +247,7 @@ async def _seed_exportable_memories() -> None:
         tags=["test"],
         tier="project",
     )
-    # Wrong category -- should be skipped
+    # Wrong category: should be skipped
     await store(
         category="learning",
         title="General learning",

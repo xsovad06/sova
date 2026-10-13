@@ -1,4 +1,4 @@
-"""Tests for CodeRabbit quota tracking -- config, DB model, service, and API."""
+"""Tests for CodeRabbit quota tracking: config, DB model, service, and API."""
 
 from __future__ import annotations
 
@@ -47,11 +47,11 @@ class TestCodeRabbitQuotaConfig:
 
     def test_pro_plan_default(self) -> None:
         cfg = CodeRabbitQuotaConfig(plan="pro")
-        assert cfg.reviews_per_hour == 0  # unlimited -- adaptive rate limiting
+        assert cfg.reviews_per_hour == 0  # unlimited: adaptive rate limiting
 
     def test_pro_plus_plan_default(self) -> None:
         cfg = CodeRabbitQuotaConfig(plan="pro_plus")
-        assert cfg.reviews_per_hour == 0  # unlimited -- adaptive rate limiting
+        assert cfg.reviews_per_hour == 0  # unlimited: adaptive rate limiting
 
     def test_explicit_override(self) -> None:
         cfg = CodeRabbitQuotaConfig(plan="free", reviews_per_hour=8)

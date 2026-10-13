@@ -1,4 +1,4 @@
-"""Tests for sova.dashboard.routers.fleet_insights -- fleet analytics page and API."""
+"""Tests for sova.dashboard.routers.fleet_insights: fleet analytics page and API."""
 
 from __future__ import annotations
 

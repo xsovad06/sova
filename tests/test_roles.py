@@ -1,4 +1,4 @@
-"""Tests for sova.roles -- role base class, built-in roles, and dispatcher."""
+"""Tests for sova.roles: role base class, built-in roles, and dispatcher."""
 
 from __future__ import annotations
 
@@ -1010,7 +1010,7 @@ class TestDeveloperRole:
 
 
 # ---------------------------------------------------------------------------
-# Developer -- address review worktree discovery
+# Developer: address review worktree discovery
 # ---------------------------------------------------------------------------
 
 
@@ -3479,12 +3479,12 @@ class TestTriageSkipPatterns:
 
 
 # ---------------------------------------------------------------------------
-# TriageRole -- _heuristic_assess edge cases (label priority, helpers)
+# TriageRole: _heuristic_assess edge cases (label priority, helpers)
 # ---------------------------------------------------------------------------
 
 
 class TestTriageHeuristicEdgeCases:
-    """Tests for _heuristic_assess edge cases -- label priority and extracted helpers."""
+    """Tests for _heuristic_assess edge cases: label priority and extracted helpers."""
 
     def _make_task(self, title: str = "Test", body: str = "", labels: list[str] | None = None):
         return Task(id="42", title=title, body=body, state=TaskState.BACKLOG, labels=labels or [])
@@ -3575,7 +3575,7 @@ class TestTriageHeuristicEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# TriageRole -- assess_task_with_llm
+# TriageRole: assess_task_with_llm
 # ---------------------------------------------------------------------------
 
 
@@ -4912,7 +4912,7 @@ class TestRegexPerformance:
 
 
 # ---------------------------------------------------------------------------
-# ReviewerRole -- LLM-based review
+# ReviewerRole: LLM-based review
 # ---------------------------------------------------------------------------
 
 
@@ -5423,7 +5423,7 @@ class TestReviewerLLMReview:
                 await session.flush()
                 run_id = task_run.id
 
-        # Task is in BACKLOG, not IN_REVIEW -- precondition will fail
+        # Task is in BACKLOG, not IN_REVIEW: precondition will fail
         adapter = _mock_adapter(TaskState.BACKLOG)
         ctx = _make_ctx(
             role="reviewer",
@@ -6251,7 +6251,7 @@ class TestCustomRole:
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher -- async fallback
+# Dispatcher: async fallback
 # ---------------------------------------------------------------------------
 
 
@@ -6815,7 +6815,7 @@ class TestPlannerRole:
         from sova.roles.planner import PlannerRole
 
         role = PlannerRole()
-        # Valid JSON but invalid schema -- item is skipped, returns empty list
+        # Valid JSON but invalid schema: item is skipped, returns empty list
         result = role._parse_response(json.dumps([{"title": "test", "priority": "invalid"}]))
         assert result is not None
         assert result == []

@@ -1,4 +1,4 @@
-"""Tests for RTK integration -- hook injection, removal, install/uninstall, doctor."""
+"""Tests for RTK integration: hook injection, removal, install/uninstall, doctor."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from sova.utils.rtk import inject_rtk_hook, is_rtk_available, remove_rtk_hook
 
-# -- is_rtk_available --
+# is_rtk_available
 
 
 def test_rtk_available_when_binary_exists() -> None:
@@ -21,7 +21,7 @@ def test_rtk_unavailable_when_binary_missing() -> None:
         assert is_rtk_available() is False
 
 
-# -- inject_rtk_hook --
+# inject_rtk_hook
 
 
 def test_inject_creates_settings_file(tmp_path: Path) -> None:
@@ -111,7 +111,7 @@ def test_inject_adds_hooks_key_to_existing_file(tmp_path: Path) -> None:
     assert settings["permissions"] == {"allow": ["Read"]}
 
 
-# -- remove_rtk_hook --
+# remove_rtk_hook
 
 
 def test_remove_when_present(tmp_path: Path) -> None:
@@ -191,7 +191,7 @@ def test_remove_skips_malformed_json(tmp_path: Path) -> None:
     assert result is False
 
 
-# -- Config model --
+# Config model
 
 
 def test_rtk_config_defaults() -> None:
@@ -209,7 +209,7 @@ def test_rtk_config_disabled_via_toml(tmp_path: Path) -> None:
     assert cfg.rtk.enabled is False
 
 
-# -- Install integration --
+# Install integration
 
 
 def test_configure_rtk_injects_when_available(tmp_path: Path) -> None:
@@ -258,7 +258,7 @@ def test_configure_rtk_skips_when_binary_missing(tmp_path: Path) -> None:
     assert not (claude_dir / "settings.json").exists()
 
 
-# -- Doctor check --
+# Doctor check
 
 
 def test_doctor_check_rtk_available() -> None:
@@ -285,7 +285,7 @@ def test_doctor_check_rtk_missing() -> None:
     assert required is False
 
 
-# -- Non-dict JSON guards --
+# Non-dict JSON guards
 
 
 def test_inject_skips_non_dict_json(tmp_path: Path) -> None:
@@ -334,7 +334,7 @@ def test_remove_skips_when_pretooluse_is_not_list(tmp_path: Path) -> None:
     assert result is False
 
 
-# -- OSError handling --
+# OSError handling
 
 
 def test_inject_handles_oserror(tmp_path: Path) -> None:
@@ -358,7 +358,7 @@ def test_remove_handles_oserror(tmp_path: Path) -> None:
     assert result is False
 
 
-# -- _is_rtk_entry edge cases --
+# _is_rtk_entry edge cases
 
 
 def test_is_rtk_entry_non_dict() -> None:
@@ -445,7 +445,7 @@ def test_inject_idempotent_after_upgrade(tmp_path: Path) -> None:
     assert inject_rtk_hook(tmp_path) is False
 
 
-# -- MCP auto-configuration in install --
+# MCP auto-configuration in install
 
 
 def test_configure_mcp_injects_patternfly(tmp_path: Path) -> None:
@@ -691,7 +691,7 @@ def test_uninstall_removes_atlassian_mcp(tmp_path: Path) -> None:
     assert not (project_dir / ".mcp.json").exists()
 
 
-# -- _detect_tech_stack PatternFly detection --
+# _detect_tech_stack PatternFly detection
 
 
 def test_detect_tech_stack_patternfly_in_deps(tmp_path: Path) -> None:

@@ -50,7 +50,7 @@ def _task(title: str = "Fix bug", body: str = "Details here") -> Task:
     return Task(id="42", title=title, body=body)
 
 
-# -- Dataclasses --
+# Dataclasses
 
 
 class TestReviewFinding:
@@ -123,7 +123,7 @@ class TestReviewResult:
         assert r.blocking(1) == [zero_severity]
 
 
-# -- _safe_severity --
+# _safe_severity
 
 
 class TestSafeSeverity:
@@ -149,7 +149,7 @@ class TestSafeSeverity:
         assert _safe_severity(0) == 0
 
 
-# -- _extract_json --
+# _extract_json
 
 
 class TestExtractJson:
@@ -186,7 +186,7 @@ class TestExtractJson:
         assert "findings" in result
 
 
-# -- _parse_findings --
+# _parse_findings
 
 
 class TestParseFindings:
@@ -231,7 +231,7 @@ class TestParseFindings:
         assert findings[0].severity == 5
 
 
-# -- _chunk_diff --
+# _chunk_diff
 
 
 class TestChunkDiff:
@@ -290,7 +290,7 @@ class TestChunkDiff:
         assert chunks[0] == diff
 
 
-# -- _severity_label --
+# _severity_label
 
 
 class TestSeverityLabel:
@@ -311,7 +311,7 @@ class TestSeverityLabel:
         assert _severity_label(2) == "LOW"
 
 
-# -- _verdict_label --
+# _verdict_label
 
 
 class TestVerdictLabel:
@@ -338,7 +338,7 @@ class TestVerdictLabel:
         assert _verdict_label([_finding(severity=9)], revise_at=6, block_at=9) == "BLOCK"
 
 
-# -- _sova_verdict_label_name --
+# _sova_verdict_label_name
 
 
 class TestSovaVerdictLabelName:
@@ -352,7 +352,7 @@ class TestSovaVerdictLabelName:
         assert _sova_verdict_label_name([_finding(severity=7)]) == "sova:block"
 
 
-# -- _format_findings_body --
+# _format_findings_body
 
 
 class TestFormatFindingsBody:
@@ -390,7 +390,7 @@ class TestFormatFindingsBody:
         assert "`ln.py:42`" in body
 
 
-# -- _format_findings_comment --
+# _format_findings_comment
 
 
 class TestFormatFindingsComment:
@@ -399,7 +399,7 @@ class TestFormatFindingsComment:
         assert _format_findings_comment(findings, "s") == _format_findings_body(findings, "s")
 
 
-# -- _format_review_body --
+# _format_review_body
 
 
 class TestFormatReviewBody:
@@ -408,7 +408,7 @@ class TestFormatReviewBody:
         assert _format_review_body(findings, "s") == _format_findings_body(findings, "s")
 
 
-# -- _format_inline_comment --
+# _format_inline_comment
 
 
 class TestFormatInlineComment:
@@ -430,7 +430,7 @@ class TestFormatInlineComment:
         assert "Suggestion" not in comment
 
 
-# -- _build_review_comments --
+# _build_review_comments
 
 
 class TestBuildReviewComments:
@@ -471,7 +471,7 @@ class TestBuildReviewComments:
         assert body_only == []
 
 
-# -- _format_addressed_findings --
+# _format_addressed_findings
 
 
 class TestFormatAddressedFindings:
@@ -504,7 +504,7 @@ class TestFormatAddressedFindings:
         assert "[F401]" in result
 
 
-# -- _build_review_prompt --
+# _build_review_prompt
 
 
 class TestBuildReviewPrompt:
@@ -622,7 +622,7 @@ class TestBuildReviewPrompt:
         assert prompt.index(real_close) > prompt.index("Critical Rules")
 
 
-# -- _compact_spec_ref --
+# _compact_spec_ref
 
 
 class TestCompactSpecRef:
@@ -653,7 +653,7 @@ class TestCompactSpecRef:
         assert len(result["Solution"]) == 300 + len(suffix)
 
 
-# -- _extract_spec_sections --
+# _extract_spec_sections
 
 
 class TestExtractSpecSections:

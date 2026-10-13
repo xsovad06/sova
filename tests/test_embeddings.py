@@ -27,7 +27,7 @@ _VEC_C = [0.9, 0.1, 0.0]  # similar to A
 
 
 # ---------------------------------------------------------------------------
-# embeddings.py -- cosine_similarity
+# embeddings.py: cosine_similarity
 # ---------------------------------------------------------------------------
 
 
@@ -63,7 +63,7 @@ def test_cosine_similar_vectors() -> None:
 
 
 # ---------------------------------------------------------------------------
-# embeddings.py -- embed_text fallback when no model
+# embeddings.py: embed_text fallback when no model
 # ---------------------------------------------------------------------------
 
 
@@ -75,7 +75,7 @@ def test_embed_text_returns_none_without_model() -> None:
 
 
 # ---------------------------------------------------------------------------
-# embeddings.py -- is_available
+# embeddings.py: is_available
 # ---------------------------------------------------------------------------
 
 
@@ -87,7 +87,7 @@ def test_is_available_false_without_model() -> None:
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- store() saves embedding
+# memory.py: store() saves embedding
 # ---------------------------------------------------------------------------
 
 
@@ -111,7 +111,7 @@ async def test_store_works_without_embedding() -> None:
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- semantic_search
+# memory.py: semantic_search
 # ---------------------------------------------------------------------------
 
 
@@ -188,7 +188,7 @@ async def test_semantic_search_filters_by_category() -> None:
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- find_similar (dedup helper)
+# memory.py: find_similar (dedup helper)
 # ---------------------------------------------------------------------------
 
 
@@ -218,7 +218,7 @@ async def test_find_similar_no_match_below_threshold() -> None:
 
 
 # ---------------------------------------------------------------------------
-# extraction.py -- embedding-based dedup
+# extraction.py: embedding-based dedup
 # ---------------------------------------------------------------------------
 
 
@@ -279,12 +279,12 @@ async def test_dedup_falls_back_to_title_match() -> None:
 
 
 # ---------------------------------------------------------------------------
-# dashboard -- semantic_list_memories
+# dashboard: semantic_list_memories
 # ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
-# embeddings.py -- _load_model cache and error paths
+# embeddings.py: _load_model cache and error paths
 # ---------------------------------------------------------------------------
 
 
@@ -331,7 +331,7 @@ def test_load_model_generic_exception_returns_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# embeddings.py -- embed_text success and error paths
+# embeddings.py: embed_text success and error paths
 # ---------------------------------------------------------------------------
 
 
@@ -363,12 +363,12 @@ def test_embed_text_encode_exception_returns_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# dashboard -- semantic_list_memories
+# dashboard: semantic_list_memories
 # ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
-# CLI -- _backfill_embeddings async core
+# CLI: _backfill_embeddings async core
 # ---------------------------------------------------------------------------
 
 
@@ -479,7 +479,7 @@ async def test_backfill_embeddings_exits_when_unavailable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI -- _search semantic path (async core)
+# CLI: _search semantic path (async core)
 # ---------------------------------------------------------------------------
 
 
