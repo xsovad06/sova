@@ -47,7 +47,7 @@ from sova.llm import client
 from sova.llm.cli_output_parsing import extract_claude_cli_failure_detail
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import BillingError, LLMInvocationError, LLMTimeoutError, classify_error
-from sova.llm.models import LLMResult
+from sova.llm.models import LLMResult, accumulate_llm_result
 from sova.llm.provider import _assert_command_exists
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
@@ -284,6 +284,16 @@ def _raise_if_budget_cap_unsupported(runtime: AgentRuntime, max_budget_usd: Deci
 
     Every step passes ``max_budget - ctx.cost_usd``, so a non-positive value
     means the run is already over budget and there is nothing left to spend.
+
+    This only covers the already-exhausted case. ``CodexRuntime.spawn()``
+    layers its own, stricter check for a non-exhausted budget on top: it
+    refuses *any* ``max_budget_usd`` at all (not just <= 0) unless
+    ``codex.allow_unenforced_budget`` is set. That check lives inside
+    ``CodexRuntime`` rather than here because today it is Codex-specific
+    (``AiderRuntime``, the other non-enforcing runtime, still proceeds on a
+    positive budget with only a logged warning, matching this function's own
+    behavior); keep the two in sync if a second runtime needs the same
+    opt-in gate, rather than letting a third one-off check appear.
     """
     if max_budget_usd is None or max_budget_usd > 0:
         return
@@ -362,7 +372,42 @@ async def _dispatch_to_runtime(
             raise
 
     if not runtime.honours_model_override:
-        return await _attempt(model, fallback_model, timeout, max_budget_usd)
+        result = await _attempt(model, fallback_model, timeout, max_budget_usd)
+        # ``ctx.resolved_model`` was set from ``agent.model`` (a Claude model
+        # id) back in AssessStep, long before this runtime was chosen; for a
+        # runtime that ignores the model override entirely, that id is simply
+        # wrong, not just stale, as a description of what THIS runtime ran.
+        # But resolved_model is shared across the whole pipeline run and read
+        # by every later text-only LLMProvider step (create_pr, spec,
+        # research) to pick the model THEY ask for, which has no
+        # relationship to what this step's runtime happened to run.
+        # Overwriting it here would leak e.g. "gpt-5-codex" into a later
+        # Claude-CLI invocation. The runtime's own report instead goes on the
+        # step-scoped ``runtime_model``/``runtime_model_reason`` fields,
+        # which WorkflowEngine resets before every step attempt and prefers
+        # over resolved_model only when writing that step's CostRecord.
+        # Issue #1128.
+        #
+        # Always set (never left None), even when the stream named no model:
+        # on today's default Codex config, ``result.model`` is "" (no model
+        # field in the JSONL and ``codex.model`` unset), and leaving
+        # runtime_model at None here would fall the CostRecord writer through
+        # to resolved_model/"claude", mislabeling Codex spend as Claude spend.
+        # Falling back to the runtime's own name is honest instead of borrowed.
+        #
+        # The tag routes this result's usage and cost provenance to the step's
+        # runtime CostRecord when the step passes it to ctx.add_usage(), which
+        # also combines runtime_cost_source across every dispatch in the step
+        # rather than letting the last one overwrite it.
+        result.runtime_name = runtime.name
+        if ctx is not None:
+            if result.model:
+                ctx.runtime_model = result.model
+                ctx.runtime_model_reason = f"runtime:{runtime.name} reported model"
+            else:
+                ctx.runtime_model = runtime.name
+                ctx.runtime_model_reason = f"runtime:{runtime.name} reported no model"
+        return result
 
     def _is_eligible(exc: Exception) -> bool:
         if tree_changed:
@@ -462,7 +507,11 @@ async def _run_agent_process(
             if event is None:
                 continue
             if event.type == "result" and event.result is not None:
-                result = event.result
+                # accumulate, not overwrite: a thread that runs several turns
+                # (today only Codex) reports each turn's own token usage, not
+                # a thread-cumulative total, so a later turn.completed would
+                # otherwise silently drop every earlier turn's spend.
+                result = accumulate_llm_result(result, event.result)
                 continue
             if event.text and len(stdout_lines) < _STDOUT_FAILURE_BUFFER_MAX_LINES:
                 stdout_lines.append(event.text)

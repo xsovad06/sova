@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from sova.dashboard.services.output_service import OutputWriter
     from sova.ipc.control import AgentProcess, FileAgentProcess
     from sova.ipc.runtime import StreamParser
+    from sova.llm.models import CostSource
     from sova.monitoring.collector import ResourceCollector
     from sova.monitoring.writer import ResourceWriter
 
@@ -70,6 +71,38 @@ class AgentState:
     # Runtime-reported session/thread id (e.g. Codex's thread id), recorded
     # for diagnostics only. Never implies a turn was resumed.
     runtime_session_id: str | None = None
+    # Model the runtime's own terminal result reported running (e.g. Codex's
+    # LLMResult.model), set from the "result" StreamEvent in
+    # _parse_runtime_stream_line(). None until a terminal event arrives, so a
+    # cost record written before one does falls back to its own default
+    # rather than claiming a model this agent never confirmed running.
+    runtime_model: str | None = None
+    # Token usage from the runtime's own terminal result (e.g. Codex's
+    # LLMResult.input_tokens/output_tokens/cache_*), set alongside
+    # runtime_model in _parse_runtime_stream_line(). None until a terminal
+    # event arrives, distinct from 0: a run that genuinely used zero tokens
+    # of a kind is a different fact than one that never reported a terminal
+    # event at all.
+    last_result_input_tokens: int | None = None
+    last_result_output_tokens: int | None = None
+    last_result_cache_read_tokens: int | None = None
+    last_result_cache_write_tokens: int | None = None
+    # Codex-only breakdown of last_result_output_tokens (never a separate
+    # addend; see LLMResult.reasoning_output_tokens). None on every
+    # non-Codex runtime, which never populates the field at all.
+    last_result_reasoning_tokens: int | None = None
+    # Provenance of last_result_cost (e.g. CostSource.SUBSCRIPTION/UNKNOWN for
+    # Codex), set alongside the token fields above. None until a terminal
+    # event arrives, mirroring their own "never arrived" convention.
+    last_result_cost_source: CostSource | None = None
+    # The AgentRuntime this process was spawned through (e.g. "codex"), set at
+    # spawn time from AgentRuntime.name. None for a direct-spawn role
+    # (spawn_direct(), e.g. reviewer), which never goes through an
+    # AgentRuntime at all. Used only as a cost-attribution fallback
+    # (agent_db._record_cost()) when the runtime's own stream reported no
+    # model of its own: honest attribution to the runtime that ran, rather
+    # than the hardcoded Claude Code default.
+    runtime_name: str | None = None
 
 
 @dataclass

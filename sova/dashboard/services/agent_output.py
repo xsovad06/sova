@@ -103,6 +103,22 @@ def _parse_runtime_stream_line(line: str, agent: AgentState, parser: StreamParse
     ``CodexStreamParser.parse_line()``'s own internal latch; this function
     has no ``terminal_result`` attribute to consult and only ever reads the
     ``stop_reason`` of the single ``StreamEvent`` returned for this line.
+
+    Also records ``result.model`` onto ``agent.runtime_model`` when the
+    runtime reported one, so a later cost record (``agent_db._record_cost()``)
+    can attribute spend to the model the runtime actually ran instead of
+    hardcoding the Claude Code default. ``result.cost_usd``/token counts are
+    likewise recorded unconditionally (even when cost is exactly zero): a
+    runtime like Codex, with no SOVA pricing table, always reports
+    ``cost_usd=Decimal("0")``, and ``_record_cost()`` needs ``last_result_cost``
+    actually set (not left at its ``None`` default) to tell "confirmed zero"
+    apart from "no terminal event ever arrived".
+
+    Accumulated across calls, not overwritten: a thread that runs several
+    turns (``CodexStreamParser._reset_for_turn`` lifts its terminal latch for
+    exactly this reason) reports each turn's own usage, not a thread-cumulative
+    total, so a later ``turn.completed`` must add to the running total rather
+    than replace it.
     """
     event = parser.parse_line(line)
     if event is None:
@@ -113,6 +129,19 @@ def _parse_runtime_stream_line(line: str, agent: AgentState, parser: StreamParse
     result = event.result
     if result.session_id:
         agent.runtime_session_id = result.session_id
+    if result.model:
+        agent.runtime_model = result.model
+    agent.last_result_cost_source = result.cost_source
+    agent.last_result_cost = float(result.cost_usd) + (agent.last_result_cost or 0.0)
+    agent.last_result_input_tokens = result.input_tokens + (agent.last_result_input_tokens or 0)
+    agent.last_result_output_tokens = result.output_tokens + (agent.last_result_output_tokens or 0)
+    agent.last_result_cache_read_tokens = result.cache_read_tokens + (agent.last_result_cache_read_tokens or 0)
+    if result.cache_creation_tokens is not None:
+        agent.last_result_cache_write_tokens = result.cache_creation_tokens + (
+            agent.last_result_cache_write_tokens or 0
+        )
+    if result.reasoning_output_tokens is not None:
+        agent.last_result_reasoning_tokens = result.reasoning_output_tokens + (agent.last_result_reasoning_tokens or 0)
     if result.stop_reason == "error":
         agent.stream_failure = result.text or "runtime reported a terminal failure"
         return f"\n--- Result [error]: {agent.stream_failure} ---"
@@ -159,10 +188,27 @@ def _parse_stream_line(line: str, agent: AgentState) -> str:
             return delta.get("text", "")
 
     if msg_type == "result":
-        cost = data.get("total_cost_usd")
-        if cost:
-            agent.last_result_cost = float(cost)
-            return f"\n--- Result [cost: ${cost}] ---"
+        from sova.llm.models import build_claude_cli_result
+
+        # Shared with the runtime stream path (build_claude_cli_result) so
+        # the real model id (under "modelUsage") and cache token fields are
+        # parsed consistently, instead of a bare ``total_cost_usd`` lookup
+        # that drops the model and provenance entirely. ``is not None``, not
+        # truthy: a genuinely confirmed ``total_cost_usd: 0`` must still mark
+        # last_result_cost as "a terminal result arrived" rather than being
+        # indistinguishable from "no result event yet", the same falsy-zero
+        # bug the runtime path was fixed for.
+        result = build_claude_cli_result(data)
+        if result.model:
+            agent.runtime_model = result.model
+        agent.last_result_cost_source = result.cost_source
+        agent.last_result_cost = float(result.cost_usd)
+        agent.last_result_input_tokens = result.input_tokens
+        agent.last_result_output_tokens = result.output_tokens
+        agent.last_result_cache_read_tokens = result.cache_read_tokens
+        if result.cache_creation_tokens is not None:
+            agent.last_result_cache_write_tokens = result.cache_creation_tokens
+        return f"\n--- Result [cost: ${result.cost_usd}] ---"
 
     return ""
 

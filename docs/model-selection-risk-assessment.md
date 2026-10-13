@@ -83,13 +83,71 @@ removes the primary runaway-loop stop for exactly the providers the migration ad
   genuine pricing gaps in both failure modes. `ProviderCapabilities` (`supports_cli_fallback`,
   `supports_budget_cap`, `reports_cost`, `dynamic_models`) was introduced in this PR rather than
   waiting on PR10 (#919, still unmerged) per the migration's "introduce it now, converge later"
-  contract; `LLMResult.cost_source` (`PRICED` / `FREE_LOCAL` / `UNKNOWN`) makes cost provenance a
+  contract; `LLMResult.cost_source` (`PRICED` / `FREE_LOCAL` / `SUBSCRIPTION` / `UNKNOWN`) makes cost provenance a
   queryable property instead of a log-level heuristic. `client.py`'s `_raise_if_budget_cap_unsupported()`
   gates every `invoke()`/`invoke_command()`/`invoke_streaming()` call: when the caller's remaining
   budget (`max_budget - ctx.cost_usd`) is non-positive and the active provider's
   `capabilities.supports_budget_cap` is False, it raises `BillingError` before the provider is
   ever called. `ClaudeCodeProvider.capabilities.supports_budget_cap = True` short-circuits this to
   today's pass-through behavior, so defaults are unchanged for the default provider.
+- Status (#1128, done): the same gap on the `AgentRuntime` side is closed for Codex.
+  `CodexRuntime` cannot pass a dollar cap to `codex exec` at all, so `spawn()` now raises
+  `ConfigurationError` (a static, operator-fixable configuration fact, deliberately not
+  `BillingError`: no retry or fallback-model hop changes whether Codex can enforce a cap, so
+  classifying it as billing would walk `agent.fallback_models` re-raising the identical error once
+  per candidate) on any requested `max_budget_usd` unless the operator explicitly opts in with
+  `codex.allow_unenforced_budget = true` (which logs `codex.budget_not_enforced` on every spawn
+  and runs with cost genuinely unbounded). Because every pipeline step passes
+  `agent.max_budget - ctx.cost_usd`, a project on `agent.runtime = "codex"` must set that flag to
+  run the pipeline at all: an unenforceable cap is a decision the operator makes, not a default
+  SOVA makes for them. The reviewer's own repo-context sub-call bypasses `CodexRuntime.spawn()`
+  entirely and requests no budget cap at all, so by this same rule (which only rejects a
+  *requested* cap) it needs no opt-in; it is deliberately not gated on
+  `codex.allow_unenforced_budget` (an earlier revision gated it on that flag, which silently
+  disabled an explicitly-enabled `review.repo_context_agent` feature for any project with no other
+  reason to touch a pipeline-only budget setting). Cost provenance
+  is reported rather than fabricated, but never inferred from auth state alone: a set
+  `CODEX_API_KEY` is positive evidence of metered per-token billing, so it always records
+  `CostSource.UNKNOWN` (SOVA has no Codex rate card). Absence of that env var is *not* positive
+  evidence of a flat-rate subscription (`codex login --api-key` can store a metered key in Codex's
+  own keyring, invisible to this check), so it stays `CostSource.UNKNOWN` too unless the operator
+  explicitly declares `codex.billing_mode = "subscription"`, the only way to reach
+  `CostSource.SUBSCRIPTION`. Neither case records a numeric price. `LLMResult.model` (the model the
+  runtime actually reported running) is threaded onto a step-scoped `ctx.runtime_model` for a
+  runtime whose `honours_model_override` is False (`sova/core/agent_dispatch.py:_dispatch_to_runtime()`),
+  deliberately not the run-wide `ctx.resolved_model` every later text-only `LLMProvider` step reads
+  to pick its own model, and `WorkflowEngine._update_step_execution` writes that step's
+  `CostRecord` whenever there is cost, token usage, or a reported model (not only `cost_usd > 0`,
+  which a Codex step's always-`$0` cost would never satisfy). The dashboard spawn path mirrors both
+  halves via `AgentState.runtime_model`/token fields (`sova/dashboard/services/agent_output.py`) and
+  `agent_db.py:_record_cost()`, gated on `last_result_cost is not None or runtime_model is not None`.
+  Net effect: a Codex-executed step's `CostRecord.model` names the model Codex ran, and the record
+  exists at all despite the $0 cost, rather than the Claude id `agent.model` resolved to before the
+  runtime was even chosen, and rather than silently writing nothing.
+  `CostRecord.cost_source` (nullable `String(20)`, migration 037) now persists this provenance from
+  all three writers (`WorkflowEngine._update_step_execution`, `agent_db._record_cost`, and
+  `sova/llm/cost.py:record_cost()`, the latter used by `TriageRole`), so a Codex run's `$0.00` in
+  the dashboard cost views is distinguishable from a genuine priced zero; NULL still means legacy
+  (pre-#1128) data. By-source/by-model aggregation that consumes the column in the dashboard UI
+  remains #922. A step that both dispatches to Codex and separately makes a priced provider call
+  in the same attempt (`DevelopStep`: its `/develop` dispatch, the post-hoc implementation-notes
+  extraction, then any fix-loop dispatch) writes two `CostRecord`s, not one. `_dispatch_to_runtime`
+  tags every Codex result with `LLMResult.runtime_name`, and `ExecutionContext.add_usage()` routes
+  tagged results into `runtime_usage`/`runtime_cost_usd`/`runtime_cost_source` and every other
+  result into `cost_source`, combining each label with `combine_cost_sources()` instead of letting
+  the last call overwrite it. `_update_step_execution` writes the runtime share as its own record
+  and the remainder as the provider record, so Codex's tokens are never folded into a record
+  labelled with the extraction call's Claude model, and the provider record reads `priced` however
+  the calls were ordered. The dashboard's Claude Code spawn path
+  (`agent_output.py:_parse_stream_line`'s inline `"result"` branch) now also builds its
+  `LLMResult` via the shared `build_claude_cli_result()` helper and sets `agent.runtime_model` from
+  the real model id it carries, instead of leaving that field unset for the only runtime whose
+  stream parser is `None`; `_record_cost()`'s fallback chain additionally excludes the literal
+  `"claude-code"` runtime name from the model label, so a run with no terminal result yet still
+  reads `"claude"` rather than splitting the by-model aggregation bucket on a runtime name. Finally,
+  `agent.runtime = "codex"` without `codex.allow_unenforced_budget` now fails at `AssessStep`
+  (before `create_worktree`/`capture_baseline` do any side-effecting work) rather than only inside
+  the first tool-using step's `CodexRuntime.spawn()` call.
 - Still open: the mid-run wall-clock/step-count runaway guard (a provider can still overspend
   *within* one already-authorized call) arrives with PR10.
 

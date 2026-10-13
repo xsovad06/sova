@@ -30,7 +30,8 @@ from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import get_session
 from sova.ipc.notifications import notify
 from sova.llm.client import start_call_counter
-from sova.llm.errors import is_billing_failure
+from sova.llm.errors import is_billing_failure, is_configuration_failure
+from sova.llm.models import CostSource
 from sova.utils.logging import get_logger
 
 log = get_logger(component="workflow")
@@ -41,6 +42,7 @@ log = get_logger(component="workflow")
 # exceptions into StepResult.error before this ever runs, so the pattern table
 # stays the classifier that actually fires today.
 _is_billing_failure = is_billing_failure
+_is_configuration_failure = is_configuration_failure
 
 # Prefix sova.llm.client raises a plain RuntimeError with when
 # runaway.max_llm_calls is already exhausted at the invocation boundary (see
@@ -469,6 +471,10 @@ class WorkflowEngine:
             "billing_exhausted" if all retries failed with billing errors,
             "runaway" if a runaway guard tripped (attempt limit or a
             wall-clock/call-count deadline caught mid-attempt); never retried.
+            A static configuration failure (_handle_step_failure_result's
+            "non_retryable") is also never retried and is reported as
+            "failed" here, the same terminal outcome a non-billing failure
+            reaches after exhausting its retries, just without spending them.
         """
         attempts = 0
         max_attempts = step.max_retries + 1
@@ -513,6 +519,13 @@ class WorkflowEngine:
                 record.status = "done"
                 log.info("workflow.step.done", step=step.name, duration_ms=record.duration_ms)
                 return "done"
+            if attempt_result == "non_retryable":
+                # Never retried and never counted toward last_was_billing: a
+                # static configuration fault stays identical on every
+                # attempt, so retrying (or walking agent.fallback_models via
+                # "billing_exhausted") would only re-raise it for no benefit.
+                record.status = "failed"
+                return "failed"
             if attempt_result in ("failed", "billing_exhausted"):
                 last_was_billing = attempt_result == "billing_exhausted"
                 if attempts < max_attempts and attempt_result != "billing_exhausted":
@@ -530,6 +543,8 @@ class WorkflowEngine:
         Returns:
             "done" if succeeded, "failed" for non-billing failure,
             "billing_exhausted" for billing failure with fallbacks available,
+            "non_retryable" for a static configuration failure (never
+            retried, never a fallback-model hop),
             "runaway" if the runaway guard tripped mid-attempt (wall-clock
             deadline expiry, or an LLM call rejected at the invocation
             boundary once runaway.max_llm_calls was already reached),
@@ -583,6 +598,16 @@ class WorkflowEngine:
         self._ctx.step_deadline_seconds = timeout_seconds
         self._ctx.step_deadline_is_runaway = runaway_deadline
         self._ctx.step_started_at = time.monotonic()
+        # Reset before every attempt (not just every step): a prior attempt's
+        # AgentRuntime report must never leak into this attempt's CostRecord,
+        # and a step that never dispatches to a runtime at all must not keep
+        # reading a value a completely different, earlier step's runtime set.
+        self._ctx.runtime_model = None
+        self._ctx.runtime_model_reason = None
+        self._ctx.runtime_cost_source = None
+        self._ctx.runtime_usage = None
+        self._ctx.runtime_cost_usd = Decimal("0")
+        self._ctx.cost_source = None
         try:
             async with asyncio.timeout(timeout_seconds):
                 result = await step.execute(self._ctx)
@@ -624,8 +649,9 @@ class WorkflowEngine:
             )
         # Spend before a timeout or exception is still billed. The synthetic
         # results above carry it explicitly because _update_step_execution only
-        # writes a CostRecord when cost_usd > 0, so leaving it at the default
-        # would discard both the cost and the usage attached below.
+        # writes a CostRecord when there is cost, token usage, or a
+        # runtime-reported model, so leaving it at the default would discard
+        # both the cost and the usage attached below.
         result.usage = self._ctx.usage_snapshot() - usage_before
         return result
 
@@ -659,6 +685,14 @@ class WorkflowEngine:
         """Classify step failure and determine retry strategy."""
         if _is_runaway_failure(step_result.error):
             return "runaway"
+        if _is_configuration_failure(step_result.error):
+            # A static, operator-fixable configuration fact (e.g. a runtime
+            # that cannot enforce a budget cap and has no explicit opt-in).
+            # No retry or fallback-model hop changes it, so this must not
+            # retry (step.max_retries) or walk agent.fallback_models the way
+            # a billing failure does: both would just re-raise the identical
+            # error once more for no benefit.
+            return "non_retryable"
         is_billing = _is_billing_failure(step_result.error)
         if is_billing and self._has_fallback_models():
             return "billing_exhausted"
@@ -1056,6 +1090,60 @@ class WorkflowEngine:
             await session.flush()
             return step_exec.id
 
+    @staticmethod
+    def _usage_has_tokens(usage: TokenUsage) -> bool:
+        # Usage-aware, not dollar-aware: a runtime that reports real token
+        # usage at zero dollar cost (e.g. Codex, which has no SOVA pricing
+        # table) would otherwise never get a CostRecord at all, leaving its
+        # spend and model entirely unattributed. Includes the cache
+        # dimensions: a step served entirely from cache (input_tokens/
+        # output_tokens both 0) still used real tokens and must not be
+        # silently dropped.
+        return (
+            usage.input_tokens > 0
+            or usage.output_tokens > 0
+            or usage.cache_read_tokens > 0
+            or usage.cache_write_tokens > 0
+        )
+
+    def _build_cost_record(
+        self,
+        step_name: str,
+        elapsed_ms: int,
+        model: str,
+        cost_usd: Decimal,
+        cost_source: CostSource | None,
+        model_selection_reason: str | None,
+        usage: TokenUsage,
+    ) -> CostRecord:
+        # cache_write_tokens/reasoning_tokens stay int internally (always
+        # summable), but a step whose only usage came from a source that
+        # never reports the figure at all (a Codex-only step for cache
+        # writes; any non-Codex step for reasoning tokens) must persist NULL,
+        # not a fabricated 0 confirmed-zero reading.
+        cache_write_tokens = usage.cache_write_tokens if usage.cache_write_reported_calls > 0 else None
+        reasoning_tokens = usage.reasoning_tokens if usage.reasoning_reported_calls > 0 else None
+        return CostRecord(
+            task_run_id=self._task_run_id,
+            phase=step_name,
+            issue=self._ctx.issue_number or self._ctx.run_label or "",
+            model=model,
+            cost_usd=cost_usd,
+            cost_source=cost_source.value if cost_source is not None else None,
+            duration_ms=elapsed_ms,
+            model_selection_reason=model_selection_reason,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_tokens=usage.cache_read_tokens + usage.cache_write_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=reasoning_tokens,
+            tokens_saved=usage.tokens_saved,
+            pre_compression_input_tokens=(
+                usage.input_tokens + usage.tokens_saved if usage.tokens_saved is not None else None
+            ),
+        )
+
     async def _update_step_execution(self, step_exec_id: int, result: StepResult, elapsed_ms: int) -> None:
         """Update a StepExecution after step completion."""
         async with await get_session(self._ctx.project_dir) as session, session.begin():
@@ -1068,27 +1156,47 @@ class WorkflowEngine:
                 record.error_message = result.error if not result.success else None
                 record.ended_at = datetime.now(timezone.utc)
 
-                if result.cost_usd > 0:
-                    usage = result.usage or TokenUsage()
-                    cost_record = CostRecord(
-                        task_run_id=self._task_run_id,
-                        phase=record.step_name,
-                        issue=self._ctx.issue_number or self._ctx.run_label or "",
-                        model=self._ctx.resolved_model or "claude",
-                        cost_usd=result.cost_usd,
-                        duration_ms=elapsed_ms,
-                        model_selection_reason=self._ctx.model_selection_reason,
-                        input_tokens=usage.input_tokens,
-                        output_tokens=usage.output_tokens,
-                        cache_tokens=usage.cache_read_tokens + usage.cache_write_tokens,
-                        cache_read_tokens=usage.cache_read_tokens,
-                        cache_write_tokens=usage.cache_write_tokens,
-                        tokens_saved=usage.tokens_saved,
-                        pre_compression_input_tokens=(
-                            usage.input_tokens + usage.tokens_saved if usage.tokens_saved is not None else None
-                        ),
+                total_usage = result.usage or TokenUsage()
+                provider_usage = total_usage
+                provider_cost = result.cost_usd
+                # runtime_usage is every model-ignoring runtime dispatch in
+                # this attempt (Codex), accumulated by add_usage() from results
+                # _dispatch_to_runtime tagged. It gets its own CostRecord, even
+                # with no tokens (a dispatch killed before its terminal event),
+                # so an unknown cost is recorded rather than dropped as free,
+                # and is subtracted from the step delta, so Codex's tokens
+                # never land in a record labelled with a provider call's Claude
+                # model, whatever order the step made its calls in (Issue #1128).
+                runtime_usage = self._ctx.runtime_usage
+                if runtime_usage is not None:
+                    session.add(
+                        self._build_cost_record(
+                            record.step_name,
+                            elapsed_ms,
+                            model=self._ctx.runtime_model or "unknown",
+                            cost_usd=self._ctx.runtime_cost_usd,
+                            cost_source=self._ctx.runtime_cost_source,
+                            model_selection_reason=self._ctx.runtime_model_reason,
+                            usage=runtime_usage,
+                        )
                     )
-                    session.add(cost_record)
+                    # A StepResult with no usage at all must not turn the
+                    # runtime's share into negative provider token counts.
+                    provider_usage = total_usage - runtime_usage if result.usage is not None else TokenUsage()
+                    provider_cost = max(result.cost_usd - self._ctx.runtime_cost_usd, Decimal("0"))
+
+                if provider_cost > 0 or self._usage_has_tokens(provider_usage):
+                    session.add(
+                        self._build_cost_record(
+                            record.step_name,
+                            elapsed_ms,
+                            model=self._ctx.resolved_model or "claude",
+                            cost_usd=provider_cost,
+                            cost_source=self._ctx.cost_source,
+                            model_selection_reason=self._ctx.model_selection_reason,
+                            usage=provider_usage,
+                        )
+                    )
 
     async def _update_step_execution_gate(self, step_exec_id: int, gate: GateCheckResult) -> None:
         """Record gate check result on the StepExecution."""

@@ -274,6 +274,14 @@ class TestFinalizeTaskRunEnrichedMessage:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = "975"
         mock_agent.output_lines = deque(["doing work", "hit an error"])
@@ -310,6 +318,14 @@ class TestFinalizeTaskRunEnrichedMessage:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = "975"
         mock_agent.output_lines = deque()
@@ -347,6 +363,14 @@ def _make_mock_agent(process: object = None):
 
     mock_agent = MagicMock(spec=AgentState)
     mock_agent.last_result_cost = 0
+    mock_agent.runtime_model = None
+    mock_agent.runtime_name = None
+    mock_agent.last_result_cost_source = None
+    mock_agent.last_result_input_tokens = None
+    mock_agent.last_result_output_tokens = None
+    mock_agent.last_result_cache_read_tokens = None
+    mock_agent.last_result_cache_write_tokens = None
+    mock_agent.last_result_reasoning_tokens = None
     mock_agent.project_dir = None
     mock_agent.issue = "978"
     mock_agent.output_lines = deque()

@@ -249,6 +249,42 @@ class TestDispatchToolStep:
         assert spawn_call["fallback_model"] == "sonnet"
         assert spawn_call["max_budget_usd"] == Decimal("5")
 
+    async def test_multiple_terminal_results_accumulate_usage(self, tmp_path: Path) -> None:
+        """A thread that runs several turns (today only Codex) reports each turn's own
+        token usage, not a thread-cumulative total, so two terminal 'result' events in
+        one spawn's stdout must sum rather than let the later one drop the earlier
+        turn's spend (issue #1128 review)."""
+        _write_command(tmp_path, "develop", "Do the thing for issue")
+        step = _ToolStep()
+
+        class _MultiTurnRuntime(_StubRuntime):
+            def parse_output(self, line: str) -> StreamEvent | None:
+                if line == "__TURN_ONE__":
+                    return StreamEvent(
+                        type="result",
+                        text="turn one",
+                        result=LLMResult(text="turn one", model="stub-model", input_tokens=10, output_tokens=5),
+                    )
+                if line == "__TURN_TWO__":
+                    return StreamEvent(
+                        type="result",
+                        text="turn two",
+                        result=LLMResult(text="turn two", model="stub-model", input_tokens=7, output_tokens=3),
+                    )
+                return None
+
+        process = _StubProcess(stdout=["__TURN_ONE__", "__TURN_TWO__"])
+        runtime = _MultiTurnRuntime(process)
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight("routed-model", 30.0),
+        ):
+            result = await dispatch_command(step, "/develop", args="42", cwd=tmp_path)
+
+        assert result.text == "turn two"
+        assert result.input_tokens == 17
+        assert result.output_tokens == 8
+
     async def test_preflight_applies_to_tool_path(self, tmp_path: Path) -> None:
         """The AgentRuntime path bypasses the invoke* entry points, so it has to
         run their shared pre-flight itself: the runaway call guard, llm.routing
@@ -803,6 +839,17 @@ class _ModelIgnoringRuntime(_StubRuntime):
         return False
 
 
+class _ModelIgnoringRuntimeNoModel(_ModelIgnoringRuntime):
+    """Matches a default Codex config: the stream names no model at all."""
+
+    def parse_output(self, line: str) -> StreamEvent | None:
+        if line == "__RESULT__":
+            return StreamEvent(type="result", text="done", result=LLMResult(text="done", model=""))
+        if not line.strip():
+            return None
+        return StreamEvent(type="content", text=line)
+
+
 class TestHonoursModelOverrideSkipsChainWalk:
     """A runtime that ignores spawn(model=...) must not re-run the agent once
     per fallback candidate for a model that never actually changes."""
@@ -830,6 +877,92 @@ class TestHonoursModelOverrideSkipsChainWalk:
         """Sanity check: _StubRuntime (matching ClaudeCodeRuntime) is unaffected."""
         runtime = _StubRuntime(_StubProcess())
         assert runtime.honours_model_override is True
+
+    async def test_ctx_runtime_model_is_set_without_touching_resolved_model(self, tmp_path: Path) -> None:
+        """ctx.resolved_model is set from agent.model (a Claude alias) long before a
+        runtime is chosen, and every later text-only LLMProvider step (create_pr, spec,
+        research) reads it to pick the model THEY ask for, with no relationship to what
+        this step's runtime happened to run. So for a runtime that ignores
+        spawn(model=...) entirely, the runtime's own report goes on the step-scoped
+        ctx.runtime_model instead, leaving ctx.resolved_model untouched. Without this,
+        a Codex-executed step's CostRecord attributes spend to the Claude id instead,
+        and the Claude id leaks into a later step's Claude-CLI invocation (issue #1128
+        review)."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        step = _ToolStep()
+        runtime = _ModelIgnoringRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=ProjectConfig(),
+            adapter=AsyncMock(),
+            issue_number="1",
+            role="developer",
+            run_label="test",
+        )
+        ctx.resolved_model = "claude-opus-4-6"
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="claude-opus-4-6"),
+        ):
+            await dispatch_command(step, "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert ctx.resolved_model == "claude-opus-4-6"
+        assert ctx.runtime_model == "stub-model"
+        assert ctx.runtime_model_reason == "runtime:codex reported model"
+
+    async def test_ctx_runtime_model_falls_back_to_runtime_name_when_stream_reports_none(self, tmp_path: Path) -> None:
+        """Default Codex config (codex.model unset, stream carries no model field): the
+        CostRecord writer must not fall through to resolved_model/"claude" and mislabel
+        Codex spend as Claude spend (issue #1128 review)."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        step = _ToolStep()
+        runtime = _ModelIgnoringRuntimeNoModel(_StubProcess(stdout=["__RESULT__"]))
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=ProjectConfig(),
+            adapter=AsyncMock(),
+            issue_number="1",
+            role="developer",
+            run_label="test",
+        )
+        ctx.resolved_model = "claude-opus-4-6"
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="claude-opus-4-6"),
+        ):
+            await dispatch_command(step, "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert ctx.resolved_model == "claude-opus-4-6"
+        assert ctx.runtime_model == "codex"
+        assert ctx.runtime_model_reason == "runtime:codex reported no model"
+
+    async def test_model_ignoring_runtime_tags_its_result(self, tmp_path: Path) -> None:
+        """ExecutionContext.add_usage() routes a result to the step's runtime CostRecord
+        by this tag, so every result from a model-ignoring runtime must carry it,
+        including a fix-loop dispatch made after a priced provider call (PR #1169
+        review, thread on context.py add_usage)."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _ModelIgnoringRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="claude-opus-4-6"),
+        ):
+            result = await dispatch_command(_ToolStep(), "/develop", args="42", cwd=tmp_path)
+
+        assert result.runtime_name == "codex"
+
+    async def test_model_honouring_runtime_leaves_its_result_untagged(self, tmp_path: Path) -> None:
+        """Claude Code runs the model SOVA chose and reports a priced cost, so its
+        result belongs on the provider record under resolved_model."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(),
+        ):
+            result = await dispatch_command(_ToolStep(), "/develop", args="42", cwd=tmp_path)
+
+        assert result.runtime_name is None
 
 
 class _WorktreeMutatingFailingRuntime(_StubRuntime):

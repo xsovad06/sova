@@ -285,6 +285,84 @@ class TestTurnCompleted:
         assert result.cost_usd == 0
         assert result.cost_source == CostSource.UNKNOWN
 
+    def test_cost_source_defaults_to_unknown(self, parser: CodexStreamParser) -> None:
+        """A parser built with no cost_source override (the common test/reviewer-sub-call
+        shape) keeps reporting UNKNOWN, never guessing SUBSCRIPTION on its own."""
+        event = parser.parse_line(_line(type="turn.completed", usage={}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.cost_source == CostSource.UNKNOWN
+
+    def test_cost_source_is_carried_from_constructor(self) -> None:
+        """The runtime resolves subscription-vs-metered at spawn time and passes it in;
+        the parser itself never infers it from the stream (issue #1128)."""
+        subscription_parser = CodexStreamParser(cost_source=CostSource.SUBSCRIPTION)
+        event = subscription_parser.parse_line(_line(type="turn.completed", usage={}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.cost_source == CostSource.SUBSCRIPTION
+
+    def test_model_is_captured_from_thread_started(self, parser: CodexStreamParser) -> None:
+        parser.parse_line(_line(type="thread.started", thread_id="thread-1", model="gpt-5-codex"))
+        event = parser.parse_line(_line(type="turn.completed", usage={}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == "gpt-5-codex"
+
+    def test_turn_level_model_overrides_thread_level(self, parser: CodexStreamParser) -> None:
+        parser.parse_line(_line(type="thread.started", thread_id="thread-1", model="gpt-5-codex"))
+        event = parser.parse_line(_line(type="turn.completed", usage={}, model="gpt-5-codex-mini"))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == "gpt-5-codex-mini"
+
+    def test_model_defaults_to_empty_when_never_reported(self, parser: CodexStreamParser) -> None:
+        event = parser.parse_line(_line(type="turn.completed", usage={}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == ""
+
+    def test_model_falls_back_to_configured_model_when_stream_reports_none(self) -> None:
+        """Today's Codex JSONL may carry no model field; the model SOVA passed to
+        `codex exec --model` is then the only thing that knows what ran (issue #1128)."""
+        configured = CodexStreamParser(model="gpt-5-codex")
+        event = configured.parse_line(_line(type="turn.completed", usage={}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == "gpt-5-codex"
+
+    def test_stream_reported_model_beats_configured_model(self) -> None:
+        """Observed beats configured: a CLI that substituted a different model must be
+        reported as the model it actually ran."""
+        configured = CodexStreamParser(model="gpt-5-codex")
+        configured.parse_line(_line(type="thread.started", thread_id="thread-1", model="gpt-5-codex-mini"))
+        event = configured.parse_line(_line(type="turn.completed", usage={}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == "gpt-5-codex-mini"
+
+    def test_second_thread_without_model_falls_back_to_configured_not_prior_thread(self) -> None:
+        """Clearing the prior thread's model must land on the configured model, never on
+        the model a different thread happened to report."""
+        configured = CodexStreamParser(model="gpt-5-codex")
+        configured.parse_line(_line(type="thread.started", thread_id="thread-1", model="gpt-5-codex-mini"))
+        configured.parse_line(_line(type="turn.completed", usage={}))
+        configured.parse_line(_line(type="thread.started", thread_id="thread-2"))
+        event = configured.parse_line(_line(type="turn.completed", usage={}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == "gpt-5-codex"
+
+    def test_second_thread_without_model_clears_prior_threads_model(self, parser: CodexStreamParser) -> None:
+        """A new thread must not inherit a stale model from a prior thread on a reused parser."""
+        parser.parse_line(_line(type="thread.started", thread_id="thread-1", model="gpt-5-codex"))
+        parser.parse_line(_line(type="turn.completed", usage={}))
+        parser.parse_line(_line(type="thread.started", thread_id="thread-2"))
+        event = parser.parse_line(_line(type="turn.completed", usage={}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == ""
+
     def test_text_is_most_recent_agent_message(self, parser: CodexStreamParser) -> None:
         parser.parse_line(_line(type="item.completed", item={"item_type": "agent_message", "text": "First"}))
         parser.parse_line(_line(type="item.completed", item={"item_type": "agent_message", "text": "Second"}))
@@ -307,7 +385,10 @@ class TestTurnCompleted:
         assert result.input_tokens == 0
         assert result.output_tokens == 0
         assert result.cache_read_tokens == 0
-        assert result.reasoning_output_tokens == 0
+        # None, not 0: no usage at all means the reasoning breakdown was never
+        # reported, which must stay distinguishable from a turn that reported
+        # a genuine zero (issue #1128 review, round 4).
+        assert result.reasoning_output_tokens is None
 
     def test_null_usage_defaults_all_fields_to_zero(self, parser: CodexStreamParser) -> None:
         event = parser.parse_line(_line(type="turn.completed", usage=None))
@@ -476,6 +557,94 @@ class TestTerminalFailure:
         assert event is not None
         assert event.result is not None
         assert event.result.text == ""
+
+    def test_failure_cost_source_is_carried_from_constructor(self) -> None:
+        subscription_parser = CodexStreamParser(cost_source=CostSource.SUBSCRIPTION)
+        event = subscription_parser.parse_line(_line(type="turn.failed", error={"message": "boom"}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.cost_source == CostSource.SUBSCRIPTION
+
+    def test_failure_model_falls_back_to_thread_level(self, parser: CodexStreamParser) -> None:
+        parser.parse_line(_line(type="thread.started", thread_id="thread-1", model="gpt-5-codex"))
+        event = parser.parse_line(_line(type="turn.failed", error={"message": "boom"}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == "gpt-5-codex"
+
+    def test_failure_model_falls_back_to_configured_model(self) -> None:
+        configured = CodexStreamParser(model="gpt-5-codex")
+        event = configured.parse_line(_line(type="turn.failed", error={"message": "boom"}))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.model == "gpt-5-codex"
+
+    def test_failure_reports_usage_the_error_event_carried(self, parser: CodexStreamParser) -> None:
+        """A turn that failed part-way still spent the tokens it had already consumed;
+        reporting zero for all of them is the blind spot issue #1128 closes. Also
+        pins that a regression dropping the thread id or error stop_reason while
+        keeping the token counts would still be caught here."""
+        parser.parse_line(_line(type="thread.started", thread_id="thread-failed-1"))
+        event = parser.parse_line(
+            _line(
+                type="turn.failed",
+                error={"message": "boom"},
+                usage={
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                    "cached_input_tokens": 90,
+                    "reasoning_output_tokens": 12,
+                },
+            )
+        )
+        assert event is not None
+        assert event.result is not None
+        assert event.result.input_tokens == 120
+        assert event.result.output_tokens == 30
+        assert event.result.cache_read_tokens == 90
+        assert event.result.reasoning_output_tokens == 12
+        assert event.result.stop_reason == "error"
+        assert event.result.session_id == "thread-failed-1"
+
+    def test_failure_without_usage_still_reports_zero_tokens(self, parser: CodexStreamParser) -> None:
+        """An error event carrying no usage at all must stay at 0, not raise."""
+        event = parser.parse_line(_line(type="error", message="boom"))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.input_tokens == 0
+        assert event.result.output_tokens == 0
+        assert event.result.cache_read_tokens == 0
+        # None, not 0: no usage at all means the reasoning breakdown was never
+        # reported (issue #1128 review, round 4).
+        assert event.result.reasoning_output_tokens is None
+
+    def test_failure_with_malformed_usage_still_reports_zero_tokens(self, parser: CodexStreamParser) -> None:
+        """A non-dict usage payload must coerce to 0 rather than suppress the result."""
+        event = parser.parse_line(_line(type="turn.failed", error={"message": "boom"}, usage="not-a-dict"))
+        assert event is not None
+        assert event.result is not None
+        assert event.result.input_tokens == 0
+        assert event.result.output_tokens == 0
+
+
+class TestMissingTerminalEvent:
+    def test_stream_ending_without_a_terminal_event_emits_no_result(self, parser: CodexStreamParser) -> None:
+        """A process killed or cancelled before any turn.completed/turn.failed/
+        error event never reaches the parser's terminal path at all; there is
+        no further line to call parse_line() on. Pins the documented contract
+        (see CodexStreamParser's module docstring): the parser itself emits no
+        "result" event in this case, so the caller
+        (sova.core.agent_dispatch._run_agent_process) is responsible for
+        treating a drained stream with no result as a failure (CostSource.UNKNOWN
+        rather than a free/zero-cost success), not this parser."""
+        lines = [
+            _line(type="thread.started", thread_id="thread-cancelled"),
+            _line(type="turn.started"),
+            _line(type="item.started", item={"item_type": "command_execution", "command": "pytest"}),
+            _line(type="item.completed", item={"item_type": "agent_message", "text": "working on it"}),
+        ]
+        events = [parser.parse_line(line) for line in lines]
+        assert all(event is None or event.type != "result" for event in events)
 
 
 class TestRedactionAndTruncation:

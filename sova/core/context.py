@@ -15,6 +15,7 @@ from sova.adapters.base import Task, TaskAdapter, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.planning import PlanResult
 from sova.llm.complexity import ComplexityTier
+from sova.llm.models import CostSource, combine_cost_sources
 
 if TYPE_CHECKING:
     from sova.core.output import OutputWriter
@@ -57,6 +58,19 @@ class TokenUsage:
     cache_write_tokens: int = 0
     tokens_saved: int | None = None
     compressed_calls: int = 0
+    # Count of accumulated LLMResults that reported an explicit cache-write
+    # figure (cache_creation_tokens is not None). Zero means every call in
+    # this window left the field unset (e.g. a Codex-only step), so
+    # cache_write_tokens's running total of 0 is not a confirmed zero and
+    # must not be written to CostRecord as one. Mirrors compressed_calls'
+    # role in disambiguating tokens_saved.
+    cache_write_reported_calls: int = 0
+    # Codex-only reasoning-token total and how many calls reported it. Kept
+    # separate from output_tokens (which already includes it, per the
+    # OpenAI Responses API convention LLMResult.reasoning_output_tokens
+    # documents) to avoid double counting.
+    reasoning_tokens: int = 0
+    reasoning_reported_calls: int = 0
 
     def __sub__(self, other: TokenUsage) -> TokenUsage:
         compressed_calls = self.compressed_calls - other.compressed_calls
@@ -67,6 +81,29 @@ class TokenUsage:
             cache_write_tokens=self.cache_write_tokens - other.cache_write_tokens,
             tokens_saved=_delta_saved(self.tokens_saved, other.tokens_saved, compressed_calls),
             compressed_calls=compressed_calls,
+            cache_write_reported_calls=self.cache_write_reported_calls - other.cache_write_reported_calls,
+            reasoning_tokens=self.reasoning_tokens - other.reasoning_tokens,
+            reasoning_reported_calls=self.reasoning_reported_calls - other.reasoning_reported_calls,
+        )
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        # tokens_saved stays None only when neither side ran compression.
+        tokens_saved = (
+            None
+            if self.tokens_saved is None and other.tokens_saved is None
+            else (0 if self.tokens_saved is None else self.tokens_saved)
+            + (0 if other.tokens_saved is None else other.tokens_saved)
+        )
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            tokens_saved=tokens_saved,
+            compressed_calls=self.compressed_calls + other.compressed_calls,
+            cache_write_reported_calls=self.cache_write_reported_calls + other.cache_write_reported_calls,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            reasoning_reported_calls=self.reasoning_reported_calls + other.reasoning_reported_calls,
         )
 
 
@@ -97,6 +134,9 @@ class ExecutionContext:
     cache_write_tokens: int = 0
     tokens_saved: int | None = None
     compressed_calls: int = 0
+    cache_write_reported_calls: int = 0
+    reasoning_tokens: int = 0
+    reasoning_reported_calls: int = 0
     force: bool = False
     budget_override: bool = False
     task_run_id: int | None = None
@@ -152,6 +192,48 @@ class ExecutionContext:
     resolved_model: str | None = None
     model_selection_reason: str | None = None
 
+    # Step-scoped: what the AgentRuntime itself reported running, for a
+    # runtime whose honours_model_override is False (today only Codex),
+    # whose spawn() ignores the model override entirely so resolved_model
+    # (a Claude alias from agent.model, set once in AssessStep) would simply
+    # be wrong for it. Kept separate from resolved_model rather than
+    # overwriting it: resolved_model is read by every later text-only
+    # LLMProvider step (create_pr, spec, research) to pick the model THEY
+    # ask for, and those steps have no relationship to what a prior step's
+    # AgentRuntime happened to run. WorkflowEngine resets both fields to None
+    # before every step attempt (_run_step_with_timeout), so a stale value
+    # from one step's runtime dispatch can never leak into a later step's
+    # CostRecord attribution. Only the CostRecord writer in
+    # WorkflowEngine._update_step_execution reads this, preferring it over
+    # resolved_model. Issue #1128.
+    runtime_model: str | None = None
+    runtime_model_reason: str | None = None
+
+    # Provenance of the dollars behind this step's spend, mirroring
+    # runtime_model/resolved_model's split. add_usage() writes both: a result
+    # tagged with LLMResult.runtime_name (a model-ignoring runtime's dispatch,
+    # today Codex) feeds runtime_cost_source, every other result feeds
+    # cost_source. Each is combined with combine_cost_sources(), never
+    # overwritten, so the label cannot depend on call order: DevelopStep on
+    # Codex adds a dispatch, then a priced implementation-notes call, then a
+    # fix-loop dispatch, and the provider record must still read "priced".
+    # Both reset to None before every step attempt, same as runtime_model.
+    # Issue #1128.
+    runtime_cost_source: CostSource | None = None
+    cost_source: CostSource | None = None
+
+    # Usage and cost of every runtime-tagged result add_usage() saw in this
+    # step attempt, kept apart from the provider path's share. None means no
+    # model-ignoring runtime dispatch happened. The step totals (cost_usd and
+    # the token counters) still include it; WorkflowEngine._update_step_execution
+    # writes it as the runtime's own CostRecord and subtracts it from the step
+    # delta, so a step that dispatches to an unpriced runtime and also makes a
+    # priced provider call never merges the runtime's tokens into a record
+    # labelled with the provider's model. Reset before every step attempt.
+    # Issue #1128.
+    runtime_usage: TokenUsage | None = None
+    runtime_cost_usd: Decimal = Decimal("0")
+
     # Model fallback chain (index into config.agent.fallback_models)
     fallback_model_index: int = 0
 
@@ -191,16 +273,33 @@ class ExecutionContext:
 
         Prefer this over add_cost() wherever an LLMResult is in hand. Recording
         cost alone leaves every CostRecord token column empty, which is what
-        made pipeline spend unattributable to tokens.
+        made pipeline spend unattributable to tokens. A result tagged with
+        ``runtime_name`` also accumulates into the step's runtime share
+        (``runtime_usage``, ``runtime_cost_usd``, ``runtime_cost_source``);
+        any other result's provenance goes to ``cost_source``.
         """
+        runtime_before = self.usage_snapshot() if result.runtime_name is not None else None
         self.cost_usd += result.cost_usd
         self.input_tokens += result.input_tokens
         self.output_tokens += result.output_tokens
         self.cache_read_tokens += result.cache_read_tokens
-        self.cache_write_tokens += result.cache_creation_tokens
+        if result.cache_creation_tokens is not None:
+            self.cache_write_tokens += result.cache_creation_tokens
+            self.cache_write_reported_calls += 1
+        if result.reasoning_output_tokens is not None:
+            self.reasoning_tokens += result.reasoning_output_tokens
+            self.reasoning_reported_calls += 1
         if result.tokens_saved is not None:
             self.tokens_saved = (0 if self.tokens_saved is None else self.tokens_saved) + result.tokens_saved
             self.compressed_calls += 1
+
+        if runtime_before is None:
+            self.cost_source = combine_cost_sources(self.cost_source, result.cost_source)
+            return
+        delta = self.usage_snapshot() - runtime_before
+        self.runtime_usage = delta if self.runtime_usage is None else self.runtime_usage + delta
+        self.runtime_cost_usd += result.cost_usd
+        self.runtime_cost_source = combine_cost_sources(self.runtime_cost_source, result.cost_source)
 
     def usage_snapshot(self) -> TokenUsage:
         """Accumulated token counters as an immutable snapshot."""
@@ -211,6 +310,9 @@ class ExecutionContext:
             cache_write_tokens=self.cache_write_tokens,
             tokens_saved=self.tokens_saved,
             compressed_calls=self.compressed_calls,
+            cache_write_reported_calls=self.cache_write_reported_calls,
+            reasoning_tokens=self.reasoning_tokens,
+            reasoning_reported_calls=self.reasoning_reported_calls,
         )
 
     @property

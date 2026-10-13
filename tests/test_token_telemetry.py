@@ -12,7 +12,7 @@ import pytest
 from sova.core.context import ExecutionContext, TokenUsage
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.workflow import WorkflowEngine
-from sova.llm.models import LLMResult
+from sova.llm.models import CostSource, LLMResult, combine_cost_sources
 
 
 @pytest.fixture
@@ -105,6 +105,61 @@ class TestTokenUsage:
         after = TokenUsage(input_tokens=2000, tokens_saved=120, compressed_calls=1)
         assert (after - before).tokens_saved is None
 
+    def test_addition_sums_every_counter(self) -> None:
+        first = TokenUsage(
+            input_tokens=100,
+            output_tokens=30,
+            cache_read_tokens=10,
+            cache_write_tokens=4,
+            tokens_saved=6,
+            compressed_calls=2,
+            cache_write_reported_calls=1,
+            reasoning_tokens=5,
+            reasoning_reported_calls=1,
+        )
+        second = TokenUsage(
+            input_tokens=40,
+            output_tokens=10,
+            cache_read_tokens=3,
+            cache_write_tokens=1,
+            reasoning_tokens=2,
+            reasoning_reported_calls=1,
+        )
+        assert first + second == TokenUsage(
+            input_tokens=140,
+            output_tokens=40,
+            cache_read_tokens=13,
+            cache_write_tokens=5,
+            tokens_saved=6,
+            compressed_calls=2,
+            cache_write_reported_calls=1,
+            reasoning_tokens=7,
+            reasoning_reported_calls=2,
+        )
+
+    def test_addition_keeps_none_when_neither_side_compressed(self) -> None:
+        assert (TokenUsage(input_tokens=1) + TokenUsage(input_tokens=2)).tokens_saved is None
+
+
+class TestCombineCostSources:
+    @pytest.mark.parametrize(
+        ("current", "new", "expected"),
+        [
+            (None, CostSource.SUBSCRIPTION, CostSource.SUBSCRIPTION),
+            (CostSource.PRICED, CostSource.PRICED, CostSource.PRICED),
+            # An unpriced contribution makes the combined cost_usd a lower bound.
+            (CostSource.PRICED, CostSource.UNKNOWN, CostSource.UNKNOWN),
+            (CostSource.UNKNOWN, CostSource.PRICED, CostSource.UNKNOWN),
+            (CostSource.SUBSCRIPTION, CostSource.UNKNOWN, CostSource.UNKNOWN),
+            # Every contribution known: the summed cost_usd is complete.
+            (CostSource.PRICED, CostSource.SUBSCRIPTION, CostSource.PRICED),
+            (CostSource.SUBSCRIPTION, CostSource.PRICED, CostSource.PRICED),
+            (CostSource.FREE_LOCAL, CostSource.SUBSCRIPTION, CostSource.PRICED),
+        ],
+    )
+    def test_combination(self, current: CostSource | None, new: CostSource, expected: CostSource) -> None:
+        assert combine_cost_sources(current, new) == expected
+
 
 class TestAddUsage:
     def test_accumulates_cost_and_tokens(self, ctx: ExecutionContext) -> None:
@@ -154,7 +209,86 @@ class TestAddUsage:
             cache_read_tokens=50,
             cache_write_tokens=25,
             tokens_saved=None,
+            cache_write_reported_calls=1,
         )
+
+    def test_cache_write_reported_calls_stays_zero_when_never_reported(self, ctx: ExecutionContext) -> None:
+        """A Codex-only call (no cache-creation figure at all) must not look like a confirmed zero."""
+        ctx.add_usage(_llm_result(cache_creation_tokens=None))
+        assert ctx.cache_write_tokens == 0
+        assert ctx.usage_snapshot().cache_write_reported_calls == 0
+
+    def test_reasoning_tokens_accumulate_when_reported(self, ctx: ExecutionContext) -> None:
+        ctx.add_usage(_llm_result(reasoning_output_tokens=15))
+        ctx.add_usage(_llm_result(reasoning_output_tokens=5))
+        assert ctx.reasoning_tokens == 20
+        assert ctx.usage_snapshot().reasoning_reported_calls == 2
+
+    def test_reasoning_tokens_stay_unreported_when_absent(self, ctx: ExecutionContext) -> None:
+        """Every non-Codex LLMResult leaves reasoning_output_tokens at its None default."""
+        ctx.add_usage(_llm_result())
+        assert ctx.reasoning_tokens == 0
+        assert ctx.usage_snapshot().reasoning_reported_calls == 0
+
+
+def _codex_result(**overrides: Any) -> LLMResult:
+    """A result as _dispatch_to_runtime returns it from a model-ignoring runtime."""
+    fields: dict[str, Any] = {
+        "cost_usd": Decimal("0"),
+        "cost_source": CostSource.UNKNOWN,
+        "cache_creation_tokens": None,
+        "runtime_name": "codex",
+    }
+    fields.update(overrides)
+    return _llm_result(**fields)
+
+
+class TestAddUsageRuntimeSplit:
+    """DevelopStep on Codex feeds three results through add_usage() in one step:
+    the /develop dispatch, the priced implementation-notes call, then a fix-loop
+    dispatch. The provider CostRecord must describe only the priced call, and the
+    runtime record every dispatch (PR #1169 review, thread on context.py add_usage)."""
+
+    def test_runtime_result_does_not_overwrite_provider_cost_source(self, ctx: ExecutionContext) -> None:
+        ctx.add_usage(_codex_result())
+        ctx.add_usage(_llm_result(cost_source=CostSource.PRICED))
+        ctx.add_usage(_codex_result())
+
+        assert ctx.cost_source == CostSource.PRICED
+        assert ctx.runtime_cost_source == CostSource.UNKNOWN
+
+    def test_every_runtime_dispatch_accumulates_into_runtime_usage(self, ctx: ExecutionContext) -> None:
+        ctx.add_usage(_codex_result(input_tokens=1000, output_tokens=500))
+        ctx.add_usage(_llm_result(input_tokens=200, output_tokens=100, cost_source=CostSource.PRICED))
+        ctx.add_usage(_codex_result(input_tokens=300, output_tokens=50))
+
+        assert ctx.runtime_usage is not None
+        assert (ctx.runtime_usage.input_tokens, ctx.runtime_usage.output_tokens) == (1300, 550)
+        assert ctx.runtime_cost_usd == Decimal("0")
+        # The step totals still count every call: StepResult.usage and the
+        # budget checks read them.
+        assert (ctx.input_tokens, ctx.output_tokens) == (1500, 650)
+        assert ctx.cost_usd == Decimal("0.10")
+
+    def test_runtime_usage_stays_none_without_a_runtime_result(self, ctx: ExecutionContext) -> None:
+        ctx.add_usage(_llm_result(cost_source=CostSource.PRICED))
+
+        assert ctx.runtime_usage is None
+        assert ctx.runtime_cost_source is None
+
+    def test_provider_cost_source_does_not_depend_on_call_order(self, ctx: ExecutionContext) -> None:
+        ctx.add_usage(_llm_result(cost_source=CostSource.UNKNOWN))
+        ctx.add_usage(_llm_result(cost_source=CostSource.PRICED))
+
+        assert ctx.cost_source == CostSource.UNKNOWN
+
+    def test_runtime_cost_source_does_not_depend_on_call_order(self, ctx: ExecutionContext) -> None:
+        """A dispatch with no terminal event (UNKNOWN) taints the whole runtime record,
+        even when a later dispatch in the same step reports SUBSCRIPTION."""
+        ctx.add_usage(_codex_result(cost_source=CostSource.UNKNOWN))
+        ctx.add_usage(_codex_result(cost_source=CostSource.SUBSCRIPTION))
+
+        assert ctx.runtime_cost_source == CostSource.UNKNOWN
 
 
 class _SpendingStep(BaseStep):
@@ -269,7 +403,13 @@ class TestCostRecordWrite:
             success=True,
             summary="done",
             cost_usd=Decimal("0.10"),
-            usage=TokenUsage(input_tokens=1000, output_tokens=200, cache_read_tokens=50, cache_write_tokens=25),
+            usage=TokenUsage(
+                input_tokens=1000,
+                output_tokens=200,
+                cache_read_tokens=50,
+                cache_write_tokens=25,
+                cache_write_reported_calls=1,
+            ),
         )
 
         await engine._update_step_execution(step_exec_id, result, elapsed_ms=1234)
@@ -336,6 +476,53 @@ class TestCostRecordWrite:
         assert len(rows) == 1
         assert rows[0].input_tokens == 1000
         assert rows[0].cost_usd == Decimal("0.10")
+
+    async def test_cache_write_tokens_null_when_never_reported(self, ctx: ExecutionContext) -> None:
+        """A Codex-only step (no cache-creation figure at all) must persist NULL, not a fabricated 0."""
+        from sqlalchemy import select
+
+        from sova.db.models import CostRecord
+        from sova.db.session import get_session
+
+        engine = await self._engine_with_run(ctx)
+        step_exec_id = await engine._create_step_execution("develop")
+        result = StepResult(
+            success=True,
+            summary="done",
+            cost_usd=Decimal("0"),
+            usage=TokenUsage(input_tokens=1000, output_tokens=200, cache_read_tokens=50),
+        )
+
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=1234)
+
+        async with await get_session() as session:
+            rows = (await session.execute(select(CostRecord))).scalars().all()
+
+        assert len(rows) == 1
+        assert rows[0].cache_write_tokens is None
+        assert rows[0].reasoning_tokens is None
+
+    async def test_reasoning_tokens_persist_when_reported(self, ctx: ExecutionContext) -> None:
+        from sqlalchemy import select
+
+        from sova.db.models import CostRecord
+        from sova.db.session import get_session
+
+        engine = await self._engine_with_run(ctx)
+        step_exec_id = await engine._create_step_execution("develop")
+        result = StepResult(
+            success=True,
+            summary="done",
+            cost_usd=Decimal("0"),
+            usage=TokenUsage(input_tokens=1000, output_tokens=200, reasoning_tokens=40, reasoning_reported_calls=1),
+        )
+
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=1234)
+
+        async with await get_session() as session:
+            rows = (await session.execute(select(CostRecord))).scalars().all()
+
+        assert rows[0].reasoning_tokens == 40
 
     async def test_missing_usage_writes_zeros_not_a_crash(self, ctx: ExecutionContext) -> None:
         """A step that made no LLM call still records cost, with zeroed token columns."""

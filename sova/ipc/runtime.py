@@ -22,7 +22,8 @@ from sova.config.models import CodexConfig, ProjectConfig
 from sova.ipc.codex import CodexStreamParser
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
-from sova.llm.models import StreamEvent, build_claude_cli_result
+from sova.llm.errors import ConfigurationError
+from sova.llm.models import CostSource, StreamEvent, build_claude_cli_result
 from sova.utils.env import ANTHROPIC_CREDENTIAL_VARS, configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, write_stdin_and_close
@@ -245,6 +246,16 @@ class AgentRuntime(ABC):
         otherwise; ``sova.core.agent_dispatch`` refuses to spawn such a
         runtime once the remaining budget is non-positive, which is the only
         enforcement point left for it.
+
+        ``CodexRuntime`` layers a second, stricter gate on top of this one
+        rather than through it: it rejects *any* non-``None``
+        ``max_budget_usd`` (not just an already-exhausted one) unless
+        ``codex.allow_unenforced_budget`` is explicitly set, inside its own
+        ``spawn()``. That extra gate and this property's False default must
+        not drift apart: if a future runtime needs the same "opt in or
+        refuse" behavior, prefer adding it here (and to
+        ``_raise_if_budget_cap_unsupported()``) rather than duplicating
+        another one-off check inside that runtime's own ``spawn()``.
         """
         return False
 
@@ -599,6 +610,57 @@ def _resolve_codex_api_key(env: Mapping[str, str] | None = None) -> str | None:
     source = os.environ if env is None else env
     value = source.get("CODEX_API_KEY", "").strip()
     return value or None
+
+
+def _resolve_codex_cost_source(billing_mode: str = "unknown") -> CostSource:
+    """Whether a Codex spawn is subscription-backed, API-metered, or unpriced.
+
+    A set ``CODEX_API_KEY`` is positive evidence the CLI bills per-token
+    against that key, and SOVA has no Codex pricing source to turn that into
+    a dollar figure, so that case always stays ``CostSource.UNKNOWN``
+    regardless of *billing_mode*.
+
+    Absence of that env var is NOT positive evidence of a subscription:
+    ``codex login --api-key`` stores a metered API key in Codex's own
+    keyring, invisible to this check, and ``codex login status`` (see
+    ``_interpret_codex_auth_probe()``) reports only logged-in/logged-out,
+    never billing mode. Treating "no env var" as "subscription" would invert
+    the issue's own constraint against inferring API billing from a ChatGPT
+    subscription login, and silently misclassify a keyring-stored API key as
+    free. So the only way to reach ``CostSource.SUBSCRIPTION`` is an explicit
+    operator declaration via ``codex.billing_mode = "subscription"``
+    (``CodexConfig.billing_mode``); the only other value, the default
+    ``"unknown"``, stays ``CostSource.UNKNOWN``. Issue #1128.
+
+    Deliberately stateless (takes *billing_mode* as a parameter and reads
+    ``os.environ`` fresh on every call, rather than caching on ``self``):
+    ``CodexRuntime`` is a module-level singleton shared by every concurrent
+    Codex spawn, so a cached answer would leak one spawn's auth mode into
+    another's. This only benefits callers that re-resolve per use:
+    ``create_stream_parser()`` calls this fresh for every spawn, so an
+    operator who switches auth mode between runs is not stuck on a stale
+    answer there. ``CodexRuntime.__init__``'s own convenience parser
+    (``self._parser``, used only by the diagnostics-only ``parse_output()``)
+    calls this once at construction time and keeps that answer for the
+    runtime's lifetime; a ``CODEX_API_KEY`` exported after construction, or a
+    ``codex.billing_mode`` edit applied via ``reload_runtime()``, is invisible
+    to that one shared parser even though this function itself stayed
+    stateless.
+
+    Known limitation: the ``CODEX_API_KEY`` check reads the server's own
+    environment, not the curated child environment a caller may have passed
+    to ``spawn(env=...)``, which is what ``_codex_extra_env()`` actually
+    forwards to the Codex child. ``AgentRuntime.create_stream_parser()``
+    takes no arguments and is called independently of ``spawn()``, so the
+    per-spawn env is not reachable here. The two agree for every caller today
+    (both dashboard spawn sites build their env from ``os.environ``), but a
+    caller that supplied a per-project ``CODEX_API_KEY`` absent from
+    ``os.environ`` would miss this check. Fixing it properly means threading
+    a per-spawn context into the ABC, deferred rather than guessed at here.
+    """
+    if _resolve_codex_api_key() is not None:
+        return CostSource.UNKNOWN
+    return CostSource.SUBSCRIPTION if billing_mode == "subscription" else CostSource.UNKNOWN
 
 
 def _codex_exec_args(prompt: str | None, *, model: str | None, sandbox: str) -> list[str]:
@@ -990,7 +1052,21 @@ class CodexRuntime(AgentRuntime):
 
     def __init__(self, config: CodexConfig | None = None) -> None:
         self._config = config if config is not None else CodexConfig()
-        self._parser = CodexStreamParser()
+        # Threaded through here too, not just create_stream_parser(), so this
+        # convenience parser's provenance (used by parse_output(), a
+        # diagnostics-only single-stream path) agrees with the construction-time
+        # codex.billing_mode rather than always reporting UNKNOWN. Resolved once
+        # here and kept for this runtime instance's lifetime: unlike
+        # create_stream_parser(), which every real spawn calls fresh, this one
+        # shared parser does NOT see a CODEX_API_KEY exported or a
+        # codex.billing_mode edit (applied via reload_runtime()) after
+        # construction. parse_output() is unused on both live Codex paths today
+        # (create_stream_parser() is always preferred), so this staleness has no
+        # production consequence yet.
+        self._parser = CodexStreamParser(
+            model=self._config.model,
+            cost_source=_resolve_codex_cost_source(self._config.billing_mode),
+        )
         # Cached on first spawn: None means "not probed yet", so the real
         # probe only ever runs once per runtime instance rather than once per
         # spawn. An ambiguous outcome is cached too (as the raised
@@ -1076,10 +1152,28 @@ class CodexRuntime(AgentRuntime):
             )
 
         if max_budget_usd is not None:
+            if not self._config.allow_unenforced_budget:
+                # This is a static configuration fault, not a billing or
+                # rate-limit condition: no retry or fallback-model hop changes
+                # whether Codex can enforce a budget cap, so it must not be
+                # classified as billing (workflow.py's is_billing_failure
+                # would otherwise walk the entire fallback chain re-raising
+                # this identical error once per candidate, and
+                # reliability_service would log an operator misconfiguration
+                # as a billing incident). "sova_configuration_error" is one of
+                # sova.llm.errors._CONFIGURATION_PATTERNS, scanned before the
+                # billing patterns; keep that token in this message if it is
+                # ever reworded.
+                raise ConfigurationError(
+                    f"sova_configuration_error: Codex CLI cannot enforce a budget cap "
+                    f"(requested ${max_budget_usd}); set codex.allow_unenforced_budget = true "
+                    "to spawn anyway with cost unbounded"
+                )
             log.warning(
                 "codex.budget_not_enforced",
                 budget=str(max_budget_usd),
-                hint="Codex CLI does not support budget caps; cost is not limited",
+                hint="Codex CLI does not support budget caps; cost is not limited despite "
+                "codex.allow_unenforced_budget being set",
             )
 
         sandbox = "read-only" if read_only else self._config.sandbox
@@ -1121,7 +1215,10 @@ class CodexRuntime(AgentRuntime):
         return self._parser.parse_line(line)
 
     def create_stream_parser(self) -> StreamParser:
-        return CodexStreamParser()
+        return CodexStreamParser(
+            cost_source=_resolve_codex_cost_source(self._config.billing_mode),
+            model=self._config.model,
+        )
 
     def stream_reader_drain_timeout(self) -> float:
         return self._config.reader_drain_timeout

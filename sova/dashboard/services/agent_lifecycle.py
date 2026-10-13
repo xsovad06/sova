@@ -711,6 +711,7 @@ async def start_agent(
             project_dir=project_dir,
             stream_parser=stream_parser,
             stream_reader_drain_timeout=stream_reader_drain_timeout,
+            runtime_name=runtime.name if effective_role not in _DIRECT_SPAWN_ROLES else None,
         )
         pa.agents[run_id] = agent
 
@@ -918,6 +919,7 @@ async def start_command(
             project_dir=project_dir,
             stream_parser=stream_parser,
             stream_reader_drain_timeout=stream_reader_drain_timeout,
+            runtime_name=runtime.name,
         )
         pa.agents[run_id] = agent
 

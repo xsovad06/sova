@@ -43,10 +43,10 @@ from sova.ipc.handoff import (
     write_handoff,
     write_handoff_file,
 )
-from sova.ipc.runtime import _codex_exec_args, _resolve_codex_api_key
+from sova.ipc.runtime import _codex_exec_args, _resolve_codex_api_key, _resolve_codex_cost_source
 from sova.llm.backends import TIER_NAMES
 from sova.llm.client import invoke, resolve_alias, resolve_model
-from sova.llm.models import CostSource
+from sova.llm.models import CostSource, accumulate_llm_result
 
 if TYPE_CHECKING:
     from sova.llm.models import LLMResult
@@ -755,8 +755,20 @@ class ReviewerRole(AgentRole):
         length check on the rendered text would miss.
 
         Returns "" (review proceeds diff-only) when the feature is
-        disabled, the ``codex`` binary is unavailable, or the sub-call
-        fails, times out, errors, or produces no text.
+        disabled, the ``codex`` binary is unavailable, or the sub-call fails,
+        times out, errors, or produces no text.
+
+        Deliberately not gated on ``codex.allow_unenforced_budget``: that flag
+        governs whether ``CodexRuntime.spawn()`` accepts a *requested but
+        unenforceable* budget cap (``max_budget_usd is not None``). This
+        sub-call bypasses ``CodexRuntime.spawn()`` entirely (a direct
+        ``run_shell()`` call below) and requests no cap at all, so by
+        ``CodexRuntime``'s own rule it needs no opt-in, matching an ordinary
+        unbudgeted spawn. Gating it on that flag anyway previously disabled an
+        explicitly-enabled feature (``review.repo_context_agent = true``) for
+        any project that had no reason to ever touch a pipeline-only setting.
+        The ``cost_source == UNKNOWN`` warning below remains the traceability
+        mechanism for this sub-call's otherwise-invisible spend.
         """
         if not ctx.config.review.repo_context_agent:
             return ""
@@ -804,7 +816,11 @@ class ReviewerRole(AgentRole):
             log.info("reviewer.repo_context_timed_out")
             return ""
 
-        parser = CodexStreamParser(max_content_chars=ctx.config.review.repo_context_max_chars)
+        parser = CodexStreamParser(
+            max_content_chars=ctx.config.review.repo_context_max_chars,
+            cost_source=_resolve_codex_cost_source(ctx.config.codex.billing_mode),
+            model=ctx.config.codex.model,
+        )
         text = ""
         llm_result: LLMResult | None = None
         for line in result.stdout.splitlines():
@@ -815,7 +831,14 @@ class ReviewerRole(AgentRole):
                     llm_result = None
                 else:
                     text = event.text
-                    llm_result = event.result
+                    # Accumulate rather than replace: CodexStreamParser lifts
+                    # its terminal latch between turns (_reset_for_turn), so
+                    # a multi-turn stream reports each turn's own usage, and
+                    # a later turn's result must add to the running total
+                    # instead of discarding an earlier turn's tokens. Mirrors
+                    # the same hazard's fix in agent_dispatch._run_agent_process
+                    # and _parse_runtime_stream_line's running totals.
+                    llm_result = accumulate_llm_result(llm_result, event.result)
 
         # Attributed before the empty-text check below: a turn can complete
         # successfully (and be billed) while producing an empty or
@@ -829,12 +852,17 @@ class ReviewerRole(AgentRole):
                 input_tokens=llm_result.input_tokens,
                 output_tokens=llm_result.output_tokens,
             )
-            # Codex's LLMResult always reports cost_usd=Decimal("0")/UNKNOWN
-            # (no pricing table for Codex models in this codebase), so
-            # add_usage() above adds exactly $0 to ctx.cost_usd. Both budget
-            # guards (agent.max_budget, the per-issue spend gate) compare
-            # dollars, so this sub-call's spend is structurally invisible to
-            # every budget control SOVA has. Logged distinctly so it is at
+            # Codex's LLMResult always reports cost_usd=Decimal("0") (no
+            # pricing table for Codex models in this codebase), so
+            # add_usage() above adds exactly $0 to ctx.cost_usd regardless of
+            # cost_source. Both budget guards (agent.max_budget, the
+            # per-issue spend gate) compare dollars, so this sub-call's spend
+            # is structurally invisible to every budget control SOVA has.
+            # The warning below fires only when cost_source is UNKNOWN
+            # (metered or undeclared billing, see _resolve_codex_cost_source):
+            # a declared codex.billing_mode = "subscription" run has no
+            # incremental dollar cost to hide, so the warning no longer
+            # applies there. Logged distinctly so an unbudgeted run is at
             # least traceable from the run log rather than silently unbounded.
             if llm_result.cost_source == CostSource.UNKNOWN:
                 log.warning(

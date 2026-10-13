@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +14,10 @@ from sova.config.models import NotificationConfig
 from sova.db.models import TaskRun
 from sova.db.session import close_db, get_session, init_db
 from sova.utils.shell import ShellResult
+
+if TYPE_CHECKING:
+    from sova.ipc.runtime import AgentRuntime, StreamParser
+    from sova.llm.models import CostSource
 
 
 @pytest.fixture(autouse=True)
@@ -1802,6 +1807,27 @@ class TestAiderRuntime:
         assert "fix bug" in args
 
 
+def _codex_parser_for_api_key(rt: AgentRuntime, api_key: str | None) -> StreamParser:
+    """Create a stream parser on *rt* with ``CODEX_API_KEY`` set to *api_key* (None = unset).
+
+    Patched rather than mutated: the unset case has to survive on a machine
+    that really does export ``CODEX_API_KEY``, without leaking the removal
+    into every test that runs after it.
+    """
+    env = {} if api_key is None else {"CODEX_API_KEY": api_key}
+    with patch.dict(os.environ, env, clear=False):
+        if api_key is None:
+            os.environ.pop("CODEX_API_KEY", None)
+        return rt.create_stream_parser()
+
+
+def _parsed_cost_source(parser: StreamParser) -> CostSource:
+    """Cost source carried by the terminal result *parser* emits for one empty turn."""
+    event = parser.parse_line('{"type": "turn.completed", "usage": {}}')
+    assert event is not None and event.result is not None
+    return event.result.cost_source
+
+
 class TestCodexRuntime:
     @pytest.fixture(autouse=True)
     def _default_no_stdin_probe(self):
@@ -2168,6 +2194,77 @@ class TestCodexRuntime:
         parser = rt.create_stream_parser()
         assert isinstance(parser, CodexStreamParser)
 
+    def test_create_stream_parser_defaults_to_unknown_without_declared_billing_mode(self) -> None:
+        """Absence of CODEX_API_KEY is not positive evidence of a ChatGPT subscription:
+        `codex login --api-key` can store a metered key in Codex's own keyring,
+        invisible to this check, so the default (codex.billing_mode unset) must stay
+        UNKNOWN rather than assume SUBSCRIPTION (issue #1128 review)."""
+        from sova.ipc.runtime import CodexRuntime
+        from sova.llm.models import CostSource
+
+        parser = _codex_parser_for_api_key(CodexRuntime(), None)
+        assert _parsed_cost_source(parser) == CostSource.UNKNOWN
+
+    def test_create_stream_parser_reports_subscription_when_declared(self) -> None:
+        """Only an explicit codex.billing_mode = "subscription" promotes cost_source to
+        SUBSCRIPTION; SOVA cannot infer it from auth state alone."""
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+        from sova.llm.models import CostSource
+
+        rt = CodexRuntime(config=CodexConfig(billing_mode="subscription"))
+        parser = _codex_parser_for_api_key(rt, None)
+        assert _parsed_cost_source(parser) == CostSource.SUBSCRIPTION
+
+    def test_create_stream_parser_reports_unknown_with_api_key(self) -> None:
+        """A configured CODEX_API_KEY means metered billing, not a flat subscription;
+        SOVA has no Codex pricing source, so the cost stays UNKNOWN rather than
+        SUBSCRIPTION, even when codex.billing_mode = "subscription" is also declared:
+        the env var always wins over the declared billing mode."""
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+        from sova.llm.models import CostSource
+
+        rt = CodexRuntime(config=CodexConfig(billing_mode="subscription"))
+        parser = _codex_parser_for_api_key(rt, "sk-codex-sentinel")
+        assert _parsed_cost_source(parser) == CostSource.UNKNOWN
+
+    def test_create_stream_parser_threads_configured_model(self) -> None:
+        """codex.model is the model SOVA passes to `codex exec --model`, so it is the
+        fallback when the JSONL stream reports none of its own (issue #1128)."""
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
+        parser = rt.create_stream_parser()
+        event = parser.parse_line('{"type": "turn.completed", "usage": {}}')
+        assert event is not None and event.result is not None
+        assert event.result.model == "gpt-5-codex"
+
+    def test_create_stream_parser_leaves_model_empty_when_unconfigured(self) -> None:
+        """An unset codex.model means the CLI picked its own default, which SOVA cannot
+        name: the result must stay empty rather than invent one."""
+        from sova.ipc.runtime import CodexRuntime
+
+        parser = CodexRuntime().create_stream_parser()
+        event = parser.parse_line('{"type": "turn.completed", "usage": {}}')
+        assert event is not None and event.result is not None
+        assert event.result.model == ""
+
+    def test_create_stream_parser_reflects_auth_mode_switch_between_calls(self) -> None:
+        """Each create_stream_parser() call must reflect that moment's own auth mode,
+        never a value cached from an earlier call on the same runtime instance."""
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+        from sova.llm.models import CostSource
+
+        rt = CodexRuntime(config=CodexConfig(billing_mode="subscription"))
+        metered_parser = _codex_parser_for_api_key(rt, "sk-codex-sentinel")
+        subscription_parser = _codex_parser_for_api_key(rt, None)
+
+        assert _parsed_cost_source(metered_parser) == CostSource.UNKNOWN
+        assert _parsed_cost_source(subscription_parser) == CostSource.SUBSCRIPTION
+
     def test_stream_reader_drain_timeout_reads_codex_config(self) -> None:
         """The dashboard's drain bound comes from CodexConfig, resolved via the runtime, not a
         config lookup at finalize time.
@@ -2524,9 +2621,42 @@ class TestCodexRuntime:
         assert mock_log.warning.call_args[0][0] == "codex.fallback_model_not_supported"
         assert "secret prompt text" not in str(mock_log.warning.call_args)
 
-    async def test_spawn_with_budget_logs_warning_without_prompt(self) -> None:
+    async def test_spawn_with_budget_rejects_by_default(self) -> None:
+        """Codex cannot enforce a budget cap, so by default spawn() refuses it outright
+        rather than silently proceeding unbounded (issue #1128)."""
         from decimal import Decimal
 
+        from sova.ipc.runtime import CodexRuntime
+        from sova.llm.errors import ConfigurationError
+
+        rt = CodexRuntime()
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec") as mock_exec,
+            pytest.raises(ConfigurationError) as exc_info,
+        ):
+            await rt.spawn("secret prompt text", Path("/tmp"), max_budget_usd=Decimal("5.00"))
+
+        mock_exec.assert_not_called()
+        # Pin the workflow-boundary classification: a step catches this as a
+        # bare RuntimeError and stringifies it into StepResult.error, so
+        # whatever string classify_error()/is_configuration_failure() scans
+        # is this message, not the ConfigurationError type. Without a
+        # configuration-pattern token in it, it would silently reclassify as
+        # the generic LLMInvocationError. Must also NOT be a billing failure:
+        # no retry or fallback-model hop changes whether Codex can enforce a
+        # budget cap, so it must never walk agent.fallback_models the way an
+        # actual billing error does (issue #1128 review).
+        from sova.llm.errors import LLMInvocationError, classify_error, is_billing_failure, is_configuration_failure
+
+        detail = str(exc_info.value)
+        assert classify_error(detail) is not LLMInvocationError
+        assert is_configuration_failure(detail)
+        assert not is_billing_failure(detail)
+
+    async def test_spawn_with_budget_opt_in_logs_warning_without_prompt(self) -> None:
+        from decimal import Decimal
+
+        from sova.config.models import CodexConfig
         from sova.ipc.runtime import CodexRuntime
 
         mock_proc = AsyncMock()
@@ -2535,7 +2665,7 @@ class TestCodexRuntime:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        rt = CodexRuntime()
+        rt = CodexRuntime(config=CodexConfig(allow_unenforced_budget=True))
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sova.ipc.runtime.log") as mock_log,
@@ -2547,9 +2677,30 @@ class TestCodexRuntime:
         assert mock_log.warning.call_args[0][0] == "codex.budget_not_enforced"
         assert "secret prompt text" not in str(mock_log.warning.call_args)
 
-    async def test_spawn_with_both_unsupported_inputs_warns_twice(self) -> None:
+    async def test_spawn_with_budget_unset_needs_no_opt_in(self) -> None:
+        """No budget requested at all: the opt-in flag is irrelevant and nothing warns."""
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 62
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime()
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.ipc.runtime.log") as mock_log,
+        ):
+            ap = await rt.spawn("test", Path("/tmp"))
+
+        assert ap.pid == 62
+        mock_log.warning.assert_not_called()
+
+    async def test_spawn_with_both_unsupported_inputs_warns_twice_when_opted_in(self) -> None:
         from decimal import Decimal
 
+        from sova.config.models import CodexConfig
         from sova.ipc.runtime import CodexRuntime
 
         mock_proc = AsyncMock()
@@ -2558,7 +2709,7 @@ class TestCodexRuntime:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        rt = CodexRuntime()
+        rt = CodexRuntime(config=CodexConfig(allow_unenforced_budget=True))
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sova.ipc.runtime.log") as mock_log,

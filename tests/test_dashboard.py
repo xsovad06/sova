@@ -7121,6 +7121,14 @@ class TestFinalizeTaskRunGuard:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0.5
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
 
         await _finalize_task_run(run_id, exit_code=1, agent=mock_agent)
@@ -7151,6 +7159,14 @@ class TestFinalizeTaskRunGuard:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
 
         await _finalize_task_run(run_id, exit_code=1, agent=mock_agent)
@@ -7182,6 +7198,14 @@ class TestFinalizeTaskRunGuard:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 10.5
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
 
         await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
@@ -7213,6 +7237,14 @@ class TestFinalizeTaskRunGuard:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 7.50
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = "90"
 
@@ -7258,6 +7290,14 @@ class TestFinalizeTaskRunGuard:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0.0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = "93"
         mock_agent.role = "reviewer"
@@ -7658,6 +7698,14 @@ class TestFinalizeTaskRunReturnValue:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0.1
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = ""
         mock_agent.role = "developer"
@@ -7681,6 +7729,14 @@ class TestFinalizeTaskRunReturnValue:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0.0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = ""
 
@@ -7696,6 +7752,14 @@ class TestFinalizeTaskRunReturnValue:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0.0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = ""
 
@@ -7724,6 +7788,14 @@ class TestFinalizeTaskRunRuntimeSessionId:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0.0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = "600"
         mock_agent.role = "reviewer"
@@ -7792,6 +7864,183 @@ class TestFinalizeTaskRunRuntimeSessionId:
         async with await get_session() as session:
             task_run = await session.get(TaskRun, run_id)
             assert task_run.assessment_json is None
+
+
+class TestRecordCostRuntimeModel:
+    """_record_cost must attribute spend to the runtime's own reported model, and
+    must write a record even when that runtime's cost is a confirmed $0 (issue
+    #1128 review). Drives real Codex JSONL through _parse_stream_line() into a
+    real AgentState (not a MagicMock with hand-set attributes) so the actual
+    zero-cost path is what gets exercised, not an impossible last_result_cost."""
+
+    async def _make_run(self) -> int:
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="700", role="developer", status="running")
+                session.add(run)
+                await session.flush()
+                return run.id
+
+    async def _cost_records(self, run_id: int) -> list[CostRecord]:
+        from sqlalchemy import select
+
+        async with await get_session() as session:
+            rows = await session.execute(select(CostRecord).where(CostRecord.task_run_id == run_id))
+            return list(rows.scalars().all())
+
+    async def test_codex_zero_cost_turn_is_recorded_under_its_own_model(self) -> None:
+        from decimal import Decimal
+
+        from sova.dashboard.services.agent_db import _record_cost
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.ipc.codex import CodexStreamParser
+
+        run_id = await self._make_run()
+        agent = AgentState(run_id=run_id, issue="700", role="developer", process=None)
+        agent.stream_parser = CodexStreamParser(model="")
+
+        _parse_stream_line(
+            '{"type": "turn.completed", "model": "gpt-5-codex", "usage": {"input_tokens": 10, "output_tokens": 5}}',
+            agent,
+        )
+
+        assert agent.runtime_model == "gpt-5-codex"
+        assert agent.last_result_cost == 0.0
+
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                await _record_cost(task_run, run_id, Decimal(str(agent.last_result_cost)), agent, session)
+
+        records = await self._cost_records(run_id)
+        assert len(records) == 1
+        assert records[0].model == "gpt-5-codex"
+        assert records[0].cost_usd == Decimal("0")
+        assert records[0].input_tokens == 10
+        assert records[0].output_tokens == 5
+
+    async def test_falls_back_to_claude_when_runtime_model_unset(self) -> None:
+        """A runtime with no per-process stream parser (Claude Code itself) never
+        sets runtime_model, so the hardcoded default must still apply."""
+        from decimal import Decimal
+
+        from sova.dashboard.services.agent_db import _record_cost
+        from sova.dashboard.services.agent_pool import AgentState
+
+        run_id = await self._make_run()
+        agent = AgentState(run_id=run_id, issue="700", role="developer", process=None)
+        agent.last_result_cost = 1.5
+
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                await _record_cost(task_run, run_id, Decimal("1.5"), agent, session)
+
+        records = await self._cost_records(run_id)
+        assert len(records) == 1
+        assert records[0].model == "claude"
+
+    async def test_falls_back_to_runtime_name_when_stream_reports_no_model(self) -> None:
+        """Default Codex config (codex.model unset, stream carries no model field):
+        runtime_model never gets set, but the run was still spawned through the Codex
+        AgentRuntime, so attribution must fall back to that runtime's own name rather
+        than the hardcoded Claude Code default (issue #1128 review)."""
+        from decimal import Decimal
+
+        from sova.dashboard.services.agent_db import _record_cost
+        from sova.dashboard.services.agent_pool import AgentState
+
+        run_id = await self._make_run()
+        agent = AgentState(run_id=run_id, issue="700", role="developer", process=None, runtime_name="codex")
+        agent.last_result_cost = 0.0
+
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                await _record_cost(task_run, run_id, Decimal("0"), agent, session)
+
+        records = await self._cost_records(run_id)
+        assert len(records) == 1
+        assert records[0].model == "codex"
+
+    async def test_claude_code_runtime_name_does_not_relabel_model(self) -> None:
+        """runtime_name="claude-code" is the real production value for the
+        default spawn path (agent_lifecycle.py sets it unconditionally), not
+        the unreachable runtime_name=None the earlier tests above pinned.
+        Drives a real Claude "result" JSONL event (carrying the model under
+        modelUsage) through _parse_stream_line so runtime_model is set from
+        it, and the real model id must win over the runtime_name fallback."""
+        from decimal import Decimal
+
+        from sova.dashboard.services.agent_db import _record_cost
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.dashboard.services.agent_pool import AgentState
+
+        run_id = await self._make_run()
+        agent = AgentState(run_id=run_id, issue="700", role="developer", process=None, runtime_name="claude-code")
+
+        _parse_stream_line(
+            '{"type": "result", "total_cost_usd": 0.02, "modelUsage": {"claude-sonnet-5": {}}, '
+            '"usage": {"input_tokens": 100, "output_tokens": 20}}',
+            agent,
+        )
+
+        assert agent.runtime_model == "claude-sonnet-5"
+
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                await _record_cost(task_run, run_id, Decimal(str(agent.last_result_cost)), agent, session)
+
+        records = await self._cost_records(run_id)
+        assert len(records) == 1
+        assert records[0].model == "claude-sonnet-5"
+        assert records[0].cost_source == "priced"
+        assert records[0].input_tokens == 100
+        assert records[0].output_tokens == 20
+
+    async def test_claude_code_runtime_name_falls_back_to_claude_without_result_event(self) -> None:
+        """runtime_name="claude-code" with no terminal "result" event parsed (so
+        runtime_model stays None) must still fall back to the "claude" literal,
+        not the runtime name itself, so the historical cost-by-model bucket is
+        not split across a "claude"/"claude-code" boundary (issue #1128 review)."""
+        from decimal import Decimal
+
+        from sova.dashboard.services.agent_db import _record_cost
+        from sova.dashboard.services.agent_pool import AgentState
+
+        run_id = await self._make_run()
+        agent = AgentState(run_id=run_id, issue="700", role="developer", process=None, runtime_name="claude-code")
+        agent.last_result_cost = 1.5
+
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                await _record_cost(task_run, run_id, Decimal("1.5"), agent, session)
+
+        records = await self._cost_records(run_id)
+        assert len(records) == 1
+        assert records[0].model == "claude"
+
+    async def test_no_terminal_event_writes_no_record(self) -> None:
+        """Neither last_result_cost nor runtime_model ever got set (no terminal
+        stream event arrived): nothing to attribute, so no record is written."""
+        from decimal import Decimal
+
+        from sova.dashboard.services.agent_db import _record_cost
+        from sova.dashboard.services.agent_pool import AgentState
+
+        run_id = await self._make_run()
+        agent = AgentState(run_id=run_id, issue="700", role="developer", process=None)
+
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                await _record_cost(task_run, run_id, Decimal("0"), agent, session)
+
+        records = await self._cost_records(run_id)
+        assert len(records) == 0
 
 
 class TestWaitAndFinalizeGraphBroadcast:
@@ -10588,6 +10837,14 @@ class TestOrphanedStepFinalization:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = None
 
@@ -10621,6 +10878,14 @@ class TestOrphanedStepFinalization:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = None
 
@@ -10654,6 +10919,14 @@ class TestOrphanedStepFinalization:
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0
+        mock_agent.runtime_model = None
+        mock_agent.runtime_name = None
+        mock_agent.last_result_cost_source = None
+        mock_agent.last_result_input_tokens = None
+        mock_agent.last_result_output_tokens = None
+        mock_agent.last_result_cache_read_tokens = None
+        mock_agent.last_result_cache_write_tokens = None
+        mock_agent.last_result_reasoning_tokens = None
         mock_agent.project_dir = None
         mock_agent.issue = None
 
@@ -12418,6 +12691,7 @@ class TestParseStreamLineRuntimeParser:
         a.last_result_cost = None
         a.stream_parser = stream_parser
         a.runtime_session_id = None
+        a.runtime_model = None
         a.stream_failure = None
         return a
 
@@ -12552,6 +12826,74 @@ class TestParseStreamLineRuntimeParser:
         _parse_stream_line("turn.completed line", agent)
 
         assert agent.runtime_session_id is None
+
+    def test_successful_result_event_records_model(self) -> None:
+        """The runtime-reported model must reach agent.runtime_model, so a later
+        cost record can attribute spend to the model that actually ran instead of
+        hardcoding the Claude Code default (issue #1128 review)."""
+        from decimal import Decimal
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.llm.models import CostSource, LLMResult, StreamEvent
+
+        parser = MagicMock()
+        result = LLMResult(
+            text="done",
+            model="gpt-5-codex",
+            cost_usd=Decimal("0"),
+            cost_source=CostSource.UNKNOWN,
+            stop_reason="end_turn",
+        )
+        parser.parse_line.return_value = StreamEvent(type="result", text=result.text, result=result)
+        agent = self._agent(parser)
+
+        _parse_stream_line("turn.completed line", agent)
+
+        assert agent.runtime_model == "gpt-5-codex"
+
+    def test_model_never_reported_leaves_runtime_model_unset(self) -> None:
+        """No model field in the stream at all: runtime_model stays unset rather
+        than being overwritten with an empty string."""
+        from decimal import Decimal
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.llm.models import CostSource, LLMResult, StreamEvent
+
+        parser = MagicMock()
+        result = LLMResult(
+            text="done",
+            model="",
+            cost_usd=Decimal("0"),
+            cost_source=CostSource.UNKNOWN,
+            stop_reason="end_turn",
+        )
+        parser.parse_line.return_value = StreamEvent(type="result", text=result.text, result=result)
+        agent = self._agent(parser)
+
+        _parse_stream_line("turn.completed line", agent)
+
+        assert agent.runtime_model is None
+
+    def test_multiple_turns_accumulate_token_usage(self) -> None:
+        """A thread that runs several turns reports each turn's own usage, not a
+        thread-cumulative total (CodexStreamParser._reset_for_turn lifts the terminal
+        latch for exactly this reason), so a second turn.completed must add to the
+        running total rather than overwrite the first turn's usage (issue #1128 review)."""
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.ipc.codex import CodexStreamParser
+
+        parser = CodexStreamParser(model="")
+        agent = AgentState(run_id=1, issue="700", role="developer", process=None, stream_parser=parser)
+
+        _parse_stream_line('{"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}', agent)
+        _parse_stream_line('{"type": "turn.started"}', agent)
+        _parse_stream_line('{"type": "turn.completed", "usage": {"input_tokens": 7, "output_tokens": 3}}', agent)
+
+        assert agent.last_result_input_tokens == 17
+        assert agent.last_result_output_tokens == 8
 
 
 # ---------------------------------------------------------------------------

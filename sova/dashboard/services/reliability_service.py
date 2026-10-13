@@ -21,6 +21,7 @@ from sova.core.state import TASK_RUN_TERMINAL
 from sova.db.models import CostRecord, StepExecution, TaskRun
 from sova.llm.errors import (
     BillingError,
+    ConfigurationError,
     LLMTimeoutError,
     ModelUnavailableError,
     ProviderUnavailableError,
@@ -77,6 +78,7 @@ _GATE_CHECK_MARKERS: tuple[str, ...] = (
 # Delegates to classify_error()'s own ordered, terminal-first substring table
 # rather than re-implementing it (see sova/llm/errors.py).
 _LLM_ERROR_LABELS: dict[type, str] = {
+    ConfigurationError: "llm_configuration",
     BillingError: "llm_billing",
     ModelUnavailableError: "llm_model_unavailable",
     RateLimitError: "llm_rate_limit",
@@ -95,8 +97,11 @@ _LLM_ERROR_LABELS: dict[type, str] = {
 # on its own, so every label here is only accepted when the message independently
 # names the LLM layer. Derived from _LLM_ERROR_LABELS.values() rather than
 # re-listed: every current and future label added there is automatically
-# guarded, so the two collections cannot drift apart.
-_AMBIGUOUS_LLM_LABELS = frozenset(_LLM_ERROR_LABELS.values())
+# guarded, so the two collections cannot drift apart. "llm_configuration" is
+# excluded: unlike the others, that token ("sova_configuration_error") is
+# namespaced and raised only by SOVA's own code (CodexRuntime.spawn()), never
+# scraped from third-party text, so it needs no independent corroboration.
+_AMBIGUOUS_LLM_LABELS = frozenset(_LLM_ERROR_LABELS.values()) - {"llm_configuration"}
 
 # Deliberately excludes a bare "claude": SOVA's own .claude/ directory sits in the
 # path of nearly every git, worktree, and config error message, so it corroborates

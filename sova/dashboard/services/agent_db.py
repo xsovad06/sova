@@ -253,18 +253,47 @@ async def _handle_terminal_status(task_run: object, file_handoff: dict | None, s
 
 
 async def _record_cost(task_run: object, run_id: int, cost: Decimal, agent: AgentState, session: object) -> None:
-    """Record cost for a completed task run."""
+    """Record cost for a completed task run.
+
+    Gated on ``last_result_cost is not None`` (a terminal result actually
+    arrived), not on it being truthy: a Codex run's terminal result reports a
+    confirmed, verified ``$0`` (no SOVA pricing table for it), and the earlier
+    ``agent.last_result_cost and agent.last_result_cost > 0`` check treated
+    that falsy-but-legitimate zero the same as "no terminal event arrived",
+    silently dropping the record (and the model/token data with it) for
+    every zero-cost runtime.
+    """
     from sova.db.models import CostRecord
 
-    if agent.last_result_cost and agent.last_result_cost > 0:
-        cost_record = CostRecord(
-            task_run_id=run_id,
-            phase="agent",
-            issue=task_run.issue_number or "",
-            model="claude",
-            cost_usd=cost,
-        )
-        session.add(cost_record)
+    if agent.last_result_cost is None and agent.runtime_model is None:
+        return
+    cost_record = CostRecord(
+        task_run_id=run_id,
+        phase="agent",
+        issue=task_run.issue_number or "",
+        # runtime_name (the spawning AgentRuntime's own name, e.g. "codex")
+        # before the hardcoded Claude Code default: a runtime whose stream
+        # reported no model of its own must never be mislabeled as Claude.
+        # Excludes "claude-code" from that fallback: _parse_stream_line's
+        # inline branch now sets runtime_model to the real model id from
+        # every Claude Code "result" event (build_claude_cli_result), so
+        # runtime_name="claude-code" reaching here means no result event
+        # arrived at all, not that the runtime ignored the model override.
+        # Falling through to the runtime name there would relabel every such
+        # run from the historical "claude" literal to "claude-code" (a
+        # runtime name, not a model id), splitting cost_service's
+        # by-model aggregation across two labels for the same thing.
+        model=agent.runtime_model or (agent.runtime_name if agent.runtime_name != "claude-code" else None) or "claude",
+        cost_usd=cost,
+        cost_source=agent.last_result_cost_source.value if agent.last_result_cost_source else None,
+        input_tokens=agent.last_result_input_tokens or 0,
+        output_tokens=agent.last_result_output_tokens or 0,
+        cache_tokens=(agent.last_result_cache_read_tokens or 0) + (agent.last_result_cache_write_tokens or 0),
+        cache_read_tokens=agent.last_result_cache_read_tokens,
+        cache_write_tokens=agent.last_result_cache_write_tokens,
+        reasoning_tokens=agent.last_result_reasoning_tokens,
+    )
+    session.add(cost_record)
 
 
 async def _dequeue_pr_entry(session: object, run_id: int) -> None:
