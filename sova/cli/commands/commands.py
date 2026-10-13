@@ -1,4 +1,4 @@
-"""CLI commands: sova commands list/diff/update/drift/backport -- command distribution management."""
+"""CLI commands: sova commands list/diff/update/drift/backport (command distribution management)."""
 
 from __future__ import annotations
 
@@ -128,7 +128,7 @@ def update_cmd(
     if result.conflicts:
         console.print(f"\n[yellow]Conflicts ({len(result.conflicts)}):[/yellow]")
         for name in result.conflicts:
-            console.print(f"  ! {name} -- locally modified, source also changed")
+            console.print(f"  ! {name}: locally modified, source also changed")
         console.print("[dim]Use --force to overwrite, or manually merge.[/dim]")
 
 
@@ -310,7 +310,7 @@ def skills_update_cmd(
     if result.conflicts:
         console.print(f"\n[yellow]Conflicts ({len(result.conflicts)}):[/yellow]")
         for name in result.conflicts:
-            console.print(f"  ! {name} -- locally modified, source also changed")
+            console.print(f"  ! {name}: locally modified, source also changed")
         console.print("[dim]Use --force to overwrite, or manually merge.[/dim]")
 
     for skill_name, extras in find_skill_debris(target_dir).items():

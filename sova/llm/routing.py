@@ -1,4 +1,4 @@
-"""Model routing rules -- complexity-based and task-type-based.
+"""Model routing rules: complexity-based and task-type-based.
 
 Maps ComplexityTier values and task-type strings to model aliases.
 Supports per-tier and per-task-type config overrides via LLMConfig.routing.

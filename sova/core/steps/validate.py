@@ -1,4 +1,4 @@
-"""Step 7b: Validate -- run project pre-push hooks before pushing.
+"""Step 7b: Validate. Run project pre-push hooks before pushing.
 
 Discovers the project's pre-push hook (via core.hooksPath, .githooks/
 auto-detect, or .git/hooks fallback) and runs it. If it fails, invokes

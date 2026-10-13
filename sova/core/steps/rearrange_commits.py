@@ -1,4 +1,4 @@
-"""Step: Rearrange commits -- reorganize branch history into clean, logical commits.
+"""Step: Rearrange commits. Reorganize branch history into clean, logical commits.
 
 Invokes /rearrange-commits in the working directory so that review fixes are
 folded back into the original commits rather than appended as separate

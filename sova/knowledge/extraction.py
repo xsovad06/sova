@@ -46,7 +46,7 @@ class ExtractionResult:
     error: str | None = None
 
 
-async def extract_memories(  # noqa: RUF029 -- async retained for caller compatibility
+async def extract_memories(  # noqa: RUF029 (async retained for caller compatibility)
     *,
     role: str,
     issue_number: str,
@@ -119,10 +119,10 @@ Analyze the following completed agent run and extract 0-5 reusable learnings.
 ## Rules
 - Return ONLY learnings that are reusable across future tasks in this project
 - Skip routine operations (commit, push, CI pass) unless something novel happened
-- Each learning must be actionable -- a future agent reading it should know exactly what to do
+- Each learning must be actionable: a future agent reading it should know exactly what to do
 - Include the WHY, not just the WHAT
 - Do NOT include task-specific details (issue numbers, branch names, PR numbers)
-- Return an empty array if nothing novel was discovered -- most routine runs produce zero learnings
+- Return an empty array if nothing novel was discovered: most routine runs produce zero learnings
 
 ## Output Format
 Return ONLY a JSON array (no markdown fences, no extra text):

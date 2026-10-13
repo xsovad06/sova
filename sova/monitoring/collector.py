@@ -49,7 +49,7 @@ class ResourceCollector:
         # samples don't produce negative totals.
         self._prev_io: dict[int, tuple[int, int]] = {}
 
-        # Rolling aggregates -- updated on every sample so that summaries
+        # Rolling aggregates: updated on every sample so that summaries
         # remain accurate even after early samples are evicted from the deque.
         self._total_samples: int = 0
         self._peak_cpu: float = 0.0

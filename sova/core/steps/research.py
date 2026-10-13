@@ -1,4 +1,4 @@
-"""Step: Research -- invoke Claude CLI for codebase investigation.
+"""Step: Research. Invoke Claude CLI for codebase investigation.
 
 Runs the /research command which explores the codebase interactively
 and writes a structured research assessment back to the issue tracker.

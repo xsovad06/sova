@@ -1,4 +1,4 @@
-"""Step: Validate Tasks -- filter proposed tasks for quality.
+"""Step: Validate Tasks. Filter proposed tasks for quality.
 
 Runs rule-based checks: specificity, testability, duplicate detection
 against open issues and self-deduplication. No LLM calls.

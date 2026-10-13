@@ -1,4 +1,4 @@
-"""Claude Code CLI provider -- the default SOVA LLM backend."""
+"""Claude Code CLI provider: the default SOVA LLM backend."""
 
 from __future__ import annotations
 
@@ -252,7 +252,7 @@ class ClaudeCodeProvider(LLMProvider):
 
         claude_path = shutil.which("claude")
         if not claude_path:
-            return False, "claude CLI not found -- install: https://docs.anthropic.com/en/docs/claude-code"
+            return False, "claude CLI not found, install: https://docs.anthropic.com/en/docs/claude-code"
         result = await run(
             "claude",
             "--version",

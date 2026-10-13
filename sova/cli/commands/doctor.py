@@ -1,4 +1,4 @@
-"""CLI command: sova doctor -- validate prerequisites and environment."""
+"""CLI command: sova doctor (validate prerequisites and environment)."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ async def _check_git() -> list[_Check]:
     if git_path:
         result = await run("git", "--version")
         return [("git", result.success, result.stdout.strip() if result.success else "error", True)]
-    return [("git", False, "not found -- install git", True)]
+    return [("git", False, "not found, install git", True)]
 
 
 async def _check_git_identity(project_dir: Path) -> list[_Check]:
@@ -120,7 +120,7 @@ async def _check_gh_cli() -> list[_Check]:
 def _extract_auth_detail(auth_result: ShellResult, auth_ok: bool) -> str:
     """Extract authentication detail from gh auth status output."""
     if not auth_ok:
-        return "not authenticated -- run: gh auth login"
+        return "not authenticated, run: gh auth login"
     for line in (auth_result.stdout + auth_result.stderr).splitlines():
         if "Logged in" in line or "account" in line.lower():
             return line.strip()
@@ -138,7 +138,7 @@ async def _check_claude_cli() -> list[_Check]:
         (
             "claude CLI",
             False,
-            "not found -- install: https://docs.anthropic.com/en/docs/claude-code",
+            "not found, install: https://docs.anthropic.com/en/docs/claude-code",
             True,
         )
     ]
@@ -149,21 +149,21 @@ def _check_terminal_notifier() -> list[_Check]:
     if platform.system() != "Darwin":
         return []
     tn_path = shutil.which("terminal-notifier")
-    detail = tn_path or "not found -- install: brew install terminal-notifier"
+    detail = tn_path or "not found, install: brew install terminal-notifier"
     return [("terminal-notifier", bool(tn_path), f"(optional) {detail}", False)]
 
 
 def _check_rtk() -> list[_Check]:
     """Check RTK availability (optional context compression)."""
     rtk_path = shutil.which("rtk")
-    detail = rtk_path or "not found -- optional context compression tool"
+    detail = rtk_path or "not found, optional context compression tool"
     return [("rtk", bool(rtk_path), f"(optional) {detail}", False)]
 
 
 async def _check_git_hooks(project_dir: Path) -> _Check:
     """Check git hooks configuration.
 
-    Required when .githooks/ exists -- invariants are silently bypassed otherwise.
+    Required when .githooks/ exists: invariants are silently bypassed otherwise.
     """
     githooks_dir = project_dir / ".githooks"
     if not githooks_dir.is_dir():
@@ -175,9 +175,9 @@ async def _check_git_hooks(project_dir: Path) -> _Check:
     if hooks_ok:
         hooks_detail = hooks_path
     elif hooks_path:
-        hooks_detail = f"set to '{hooks_path}' (expected '.githooks') -- run: git config core.hooksPath .githooks"
+        hooks_detail = f"set to '{hooks_path}' (expected '.githooks'), run: git config core.hooksPath .githooks"
     else:
-        hooks_detail = "not set -- run: git config core.hooksPath .githooks"
+        hooks_detail = "not set, run: git config core.hooksPath .githooks"
     return ("git hooks", hooks_ok, hooks_detail, True)
 
 
@@ -345,12 +345,12 @@ async def _check_ollama(project_dir: Path) -> list[_Check]:
 
         ollama_path = shutil.which("ollama")
         if not ollama_path:
-            checks.append(("ollama CLI", False, "not found -- install: https://ollama.com/", False))
+            checks.append(("ollama CLI", False, "not found, install: https://ollama.com/", False))
             return checks
 
         result = await run("ollama", "list")
         if not result.success:
-            checks.append(("ollama running", False, "not running -- start with: ollama serve", False))
+            checks.append(("ollama running", False, "not running, start with: ollama serve", False))
             return checks
 
         checks.append(("ollama running", True, "connected", False))
@@ -366,7 +366,7 @@ async def _check_ollama(project_dir: Path) -> list[_Check]:
             # Ollama's own default: a name with no explicit tag means ":latest".
             lookup_name = model_name if ":" in model_name else f"{model_name}:latest"
             found = lookup_name in installed_models
-            detail = "installed" if found else f"not pulled -- run: ollama pull {model_name}"
+            detail = "installed" if found else f"not pulled, run: ollama pull {model_name}"
             checks.append((f"ollama model: {model_name}", found, detail, False))
 
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
@@ -480,14 +480,14 @@ def _check_install_completeness(project_dir: Path) -> list[_Check]:
         cmd_count = len(list(commands_dir.glob("*.md")))
         checks.append(("commands installed", cmd_count > 0, f"{cmd_count} commands", cmd_count == 0))
     else:
-        checks.append(("commands installed", False, ".claude/commands/ missing -- run: sova install", True))
+        checks.append(("commands installed", False, ".claude/commands/ missing, run: sova install", True))
 
     memory_dir = project_dir / ".claude" / "agent-memory"
     checks.append(
         (
             "agent memory",
             memory_dir.is_dir(),
-            str(memory_dir) if memory_dir.is_dir() else "missing -- run: sova install",
+            str(memory_dir) if memory_dir.is_dir() else "missing, run: sova install",
             False,
         )
     )
@@ -501,7 +501,7 @@ def _check_install_completeness(project_dir: Path) -> list[_Check]:
     if has_all:
         checks.append(("agent permissions", True, "configured", False))
     else:
-        detail = f"missing {', '.join(missing)} -- run: sova install --update"
+        detail = f"missing {', '.join(missing)}, run: sova install --update"
         checks.append(("agent permissions", False, detail, False))
 
     return checks

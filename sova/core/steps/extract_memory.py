@@ -1,4 +1,4 @@
-"""Step: Extract Memory -- extract reusable learnings before handoff."""
+"""Step: Extract Memory. Extract reusable learnings before handoff."""
 
 from __future__ import annotations
 

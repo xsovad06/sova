@@ -1,4 +1,4 @@
-"""Project registry -- maps slugs to project paths.
+"""Project registry: maps slugs to project paths.
 
 Stores registered projects in ~/.config/sova/projects.json.
 """
@@ -91,8 +91,8 @@ def _slugify(name: str) -> str:
 
 def _validate_project_path(path: Path) -> Path:
     """Resolve and validate a project path is a real directory (no traversal)."""
-    resolved = path.resolve()  # NOSONAR -- resolve() IS the validation; is_dir() check follows
-    if not resolved.is_dir():
+    resolved = path.resolve()  # NOSONAR: resolve() IS the validation; is_dir() check follows
+    if not resolved.is_dir():  # NOSONAR: loopback-only dashboard (architecture.md); disclosed only to the submitter
         raise ValueError(f"Not a directory: {resolved}")
     return resolved
 
@@ -110,7 +110,7 @@ def register_project(path: Path, slug: str | None = None) -> str:
     slug = _validate_slug(slug)
 
     if slug in entries:
-        existing = Path(entries[slug].path).resolve()  # NOSONAR -- path was validated at registration time
+        existing = Path(entries[slug].path).resolve()  # NOSONAR: path was validated at registration time
         if existing == path:
             return slug  # preserve existing entry (fleet_priority, etc.)
         base = slug
@@ -148,7 +148,7 @@ def get_project_path(slug: str) -> Path | None:
     path_str = projects.get(slug)
     if path_str is None:
         return None
-    resolved = Path(path_str).resolve()  # NOSONAR -- path was validated at registration time; is_dir() check follows
+    resolved = Path(path_str).resolve()  # NOSONAR: path was validated at registration time; is_dir() check follows
     if not resolved.is_dir():
         return None
     return resolved

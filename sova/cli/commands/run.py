@@ -268,7 +268,7 @@ def watch(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip pipeline gate checks.")] = False,
 ) -> None:
-    """Continuous autonomous mode -- poll for issues and process them."""
+    """Continuous autonomous mode: poll for issues and process them."""
     asyncio.run(_watch(project_dir=project, force=force))
 
 
@@ -377,4 +377,4 @@ async def _parallel(*, issues: list[str], project_dir: Path | None, force: bool)
     console.print("\n[bold]Results:[/bold]")
     for issue, success, summary in results:
         status = "[green]OK[/green]" if success else "[red]FAIL[/red]"
-        console.print(f"  #{issue}: {status} -- {summary}")
+        console.print(f"  #{issue}: {status}: {summary}")

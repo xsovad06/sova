@@ -22,7 +22,7 @@ async def _dismiss_bot_reviews(
 ) -> int:
     """Dismiss CHANGES_REQUESTED reviews from bot accounts.
 
-    Returns count of dismissed reviews. Never raises -- logs warnings on failure.
+    Returns count of dismissed reviews. Never raises: logs warnings on failure.
     """
     from sova.utils.gh import resolve_gh_env
 

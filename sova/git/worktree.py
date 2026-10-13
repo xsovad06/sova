@@ -151,7 +151,7 @@ async def create_worktree(
             log.info("worktree.reuse", path=str(worktree_path), branch=branch)
             ensure_claude_artifacts(project_dir, worktree_path)
             return WorktreeInfo(path=worktree_path, branch=branch, issue_id=issue_id)
-        # Stale or wrong-branch worktree -- remove and recreate
+        # Stale or wrong-branch worktree: remove and recreate
         log.info("worktree.stale_remove", path=str(worktree_path))
         await cleanup_worktree(worktree_path, cwd=project_dir)
 
@@ -170,7 +170,7 @@ async def create_worktree(
     if not result.success:
         stderr = result.stderr
         if "a branch named" in stderr and "already exists" in stderr:
-            # Branch exists from a previous run -- check it out into the worktree
+            # Branch exists from a previous run: check it out into the worktree
             log.info("worktree.existing_branch", branch=branch)
             await run_checked(
                 "git",
@@ -262,7 +262,7 @@ async def resolve_worktree_conflict(
         log.warning("worktree.conflict_is_main", branch=branch, path=str(wt_path))
         raise RuntimeError(
             f"Branch {branch!r} is checked out in the main worktree ({wt_path}). "
-            "Cannot auto-resolve -- switch branches manually."
+            "Cannot auto-resolve: switch branches manually."
         )
 
     log.info("worktree.conflict_detected", branch=branch, path=str(wt_path))
@@ -299,7 +299,7 @@ async def check_worktree_active_agent(worktree_path: Path, *, project_dir: Path 
         from sova.db.models import TaskRun
         from sova.db.session import get_session
     except ImportError:
-        # DB module genuinely not installed (CLI-only context with no DB) --
+        # DB module genuinely not installed (CLI-only context with no DB):
         # no TaskRun tracking means no agent could own this worktree.
         return None
 
@@ -324,7 +324,7 @@ async def check_worktree_active_agent(worktree_path: Path, *, project_dir: Path 
                         os.kill(run_record.pid, 0)
                         return run_record.pid
                     except ProcessLookupError:
-                        # PID is dead -- not an active agent
+                        # PID is dead: not an active agent
                         continue
                     except PermissionError:
                         # Process exists but we lack permission to signal it

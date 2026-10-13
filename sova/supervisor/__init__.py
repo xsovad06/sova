@@ -1,1 +1,1 @@
-"""Supervisor subsystem -- cross-cutting orchestration and resource management."""
+"""Supervisor subsystem: cross-cutting orchestration and resource management."""

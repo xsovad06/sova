@@ -730,7 +730,7 @@ class GitHubAdapter(TaskAdapter):
 
         raise RuntimeError(f"Failed to set labels on issue #{task_id}: {result.stderr[:200]}")
 
-    # -- Project board integration -----------------------------------------------
+    # Project board integration -----------------------------------------------
 
     async def _move_on_board(self, task_id: str, new_state: TaskState) -> None:
         """Move an issue to the matching column on the GitHub Projects V2 board."""

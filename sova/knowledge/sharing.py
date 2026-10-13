@@ -1,4 +1,4 @@
-"""Team knowledge sharing -- export/import memories across SOVA installations.
+"""Team knowledge sharing: export/import memories across SOVA installations.
 
 Provides pure functions for markdown parsing/rendering of shared knowledge files,
 plus async functions for exporting project memories and importing shared entries.
@@ -278,7 +278,7 @@ async def export_memories(
                     result.entries.append(e.title)
                     result.exported += 1
                     changed = True
-                # Same hash -- already up to date, skip
+                # Same hash: already up to date, skip
             elif e.content_hash not in existing_hashes:
                 merged.append(e)
                 existing_hashes.add(e.content_hash)

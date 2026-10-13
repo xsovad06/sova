@@ -1,4 +1,4 @@
-"""Knowledge memory store -- CRUD, search, promote, supersede operations on the Memory model."""
+"""Knowledge memory store: CRUD, search, promote, supersede operations on the Memory model."""
 
 from __future__ import annotations
 

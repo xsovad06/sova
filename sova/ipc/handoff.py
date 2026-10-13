@@ -1,6 +1,6 @@
 """Handoff protocol for inter-agent context passing.
 
-Agents are ephemeral -- they spawn, work, write a handoff, and die.
+Agents are ephemeral: they spawn, work, write a handoff, and die.
 The handoff carries enough context for a fresh agent to pick up
 without re-reading the entire codebase.
 
