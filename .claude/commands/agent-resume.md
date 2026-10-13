@@ -5,7 +5,7 @@ user-invocable: true
 
 # Agent Resume
 
-Read the current handoff state and determine what to do next. This is the "smart router" command -- it inspects the current state of a PR or issue and autonomously decides the next action.
+Read the current handoff state and determine what to do next. This is the "smart router" command. It inspects the current state of a PR or issue and autonomously decides the next action.
 
 ARGS: $ARGUMENTS
 
@@ -25,18 +25,18 @@ cat .claude/agent-control/handoff.json 2>/dev/null
 cat .claude/agent-control/status.json 2>/dev/null
 ```
 
-Parse the arguments -- they may include:
-- `pr=<NUMBER>` -- a specific PR to work on
-- `issue=<NUMBER>` -- a GitHub Issue to work on
-- `wait_for=ci` -- wait for CI checks to pass
-- `investigate_ci=true` -- investigate CI failures
+Parse the arguments, which may include:
+- `pr=<NUMBER>`: a specific PR to work on
+- `issue=<NUMBER>`: a GitHub Issue to work on
+- `wait_for=ci`: wait for CI checks to pass
+- `investigate_ci=true`: investigate CI failures
 
 ### 2. Determine Situation
 
 If a handoff exists, check its `status`:
-- `awaiting_action` -- previous agent finished but needs human decision. Assess if any action can be taken automatically based on the args.
-- `completed` -- previous workflow is done. Check if there is follow-up work.
-- `failed` -- previous agent failed. Diagnose and suggest recovery.
+- `awaiting_action`: previous agent finished but needs human decision. Assess if any action can be taken automatically based on the args.
+- `completed`: previous workflow is done. Check if there is follow-up work.
+- `failed`: previous agent failed. Diagnose and suggest recovery.
 
 If no handoff exists, use the PR number or issue to assess the current state:
 
@@ -57,9 +57,9 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | "\(.user.login
 
 ### 3. Act Based on Situation
 
-**PR is behind base branch** -- rebase and push:
+**PR is behind base branch**: rebase and push:
 - Fetch latest base, rebase the PR branch, push with --force-with-lease
-- If there are merge conflicts, attempt to resolve them (read each conflicted file, understand both sides of each conflict marker, resolve, `git add`, `git rebase --continue` -- up to 3 rebase steps)
+- If there are merge conflicts, attempt to resolve them (read each conflicted file, understand both sides of each conflict marker, resolve, `git add`, `git rebase --continue`, up to 3 rebase steps)
 - If resolution fails, run `git rebase --abort` and write a failed handoff listing conflicting files
 - Write handoff with merge options
 
@@ -111,7 +111,7 @@ done
 Act on the result:
 - **CI PASSED**: write handoff with "Merge" action
 - **CI FAILED**: write handoff with "Retry" and "Investigate" actions
-- **NO_CHECKS** (no CI checks configured): proceed to next action (treat as passed) -- write handoff with "Merge" action
+- **NO_CHECKS** (no CI checks configured): proceed to next action (treat as passed). Write handoff with "Merge" action
 - **CI TIMEOUT**: write handoff with "Wait for CI" action so the dashboard can re-trigger later
 
 **CI has failed** (and `investigate_ci=true`):

@@ -28,7 +28,7 @@ log = get_logger(component="module.name")
 
 - **Event names**: dot-delimited keys (`step.create_pr.failed`, `workflow.gate.failed`)
 - **Always pass `exc_info=True`** in warning/error calls inside except blocks
-- **Never use bare `print()`** for diagnostics -- use the logger
+- **Never use bare `print()`** for diagnostics: use the logger
 
 ## Non-Fatal Side Effects
 
@@ -53,7 +53,7 @@ Two modes for subprocess execution:
 | `run_checked()` | Raises on non-zero exit | Failure is fatal |
 
 - On timeout, kill the process, return a result with `returncode=-1`
-- Always catch `ProcessLookupError` when calling `proc.kill()` -- the process may already be dead
+- Always catch `ProcessLookupError` when calling `proc.kill()`: the process may already be dead
 
 ## LLM Fallbacks
 

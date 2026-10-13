@@ -7,7 +7,7 @@ Audit this project's AI instruction system for completeness, contradictions, imp
 
 ## Phase 1: Collect All Instruction Sources
 
-Read every instruction file: do not skip any.
+Read every instruction file. Do not skip any.
 
 ```bash
 cat CLAUDE.md 2>/dev/null || echo "MISSING: CLAUDE.md"
@@ -105,7 +105,7 @@ Present the improvements and ask the user if they want them applied.
 
 ## Rules
 
-- Do NOT invent preferences the project has not demonstrated: only document what exists
+- Do NOT invent preferences the project has not demonstrated. Only document what exists
 - Preserve the existing voice and style of instructions
 - Where unsure about a convention, ask the user rather than guessing
 - Focus on what an autonomous agent needs to succeed without human guidance

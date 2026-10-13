@@ -1,10 +1,10 @@
 # Security Guidelines
 
-Security conventions for {{ project_name }} -- subprocess safety, credential handling, input sanitization, and commit guards.
+Security conventions for {{ project_name }}: subprocess safety, credential handling, input sanitization, and commit guards.
 
 ## Subprocess Execution
 
-All subprocess calls should use `asyncio.create_subprocess_exec(*args)` or equivalent -- no shell expansion, no `shell=True`.
+All subprocess calls should use `asyncio.create_subprocess_exec(*args)` or equivalent, no shell expansion, no `shell=True`.
 
 - Pass arguments as separate strings, never concatenated into a shell string
 - Set a default timeout to prevent hung processes

@@ -1,6 +1,6 @@
 ---
 name: standup
-description: Daily standup summary -- git state, open PRs, GitHub Issues, and suggested focus.
+description: Daily standup summary (git state, open PRs, GitHub Issues, and suggested focus).
 user-invocable: true
 category: management
 inputs:

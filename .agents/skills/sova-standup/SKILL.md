@@ -1,6 +1,6 @@
 ---
 name: sova-standup
-description: "Daily standup summary: git state, open PRs, GitHub Issues, and suggested focus."
+description: "Daily standup summary (git state, open PRs, GitHub Issues, and suggested focus)."
 ---
 
 # Daily Standup

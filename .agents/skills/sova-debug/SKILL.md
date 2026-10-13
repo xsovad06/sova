@@ -1,6 +1,6 @@
 ---
 name: sova-debug
-description: "Systematic debugging workflow: reproduce, locate, diagnose, fix, verify, prevent."
+description: "Systematic debugging workflow (reproduce, locate, diagnose, fix, verify, prevent)."
 ---
 
 # Systematic Debugging
@@ -25,7 +25,7 @@ Debug an issue in the project.
 
 ### 3. Diagnose
 - Trace the execution flow from entry point to the error
-- Identify the root cause: not just the symptom
+- Identify the root cause, not just the symptom
 - Check common issues:
   - Missing migrations or schema changes
   - Import errors / circular imports
