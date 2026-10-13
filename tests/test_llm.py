@@ -48,7 +48,7 @@ class TestLLMResult:
         assert result.input_tokens == 0
         assert result.output_tokens == 0
         assert result.cache_read_tokens == 0
-        assert result.cache_creation_tokens == 0
+        assert result.cache_creation_tokens is None
         assert result.duration_ms == 0
         assert result.session_id == ""
         assert result.stop_reason == ""
@@ -59,6 +59,86 @@ class TestLLMResult:
 
         err = LLMResult(text="", model="opus", stop_reason="error")
         assert err.is_error
+
+
+class TestAccumulateLLMResult:
+    def test_first_result_passes_through(self) -> None:
+        from sova.llm.models import accumulate_llm_result
+
+        first = LLMResult(text="done", model="gpt-5-codex", input_tokens=10, output_tokens=5)
+        assert accumulate_llm_result(None, first) is first
+
+    def test_second_turn_sums_tokens_and_cost(self) -> None:
+        """A thread that runs several turns (Codex) reports each turn's own usage,
+        not a thread-cumulative total, so a later turn.completed must add to the
+        running total rather than drop the earlier turn's spend (issue #1128 review)."""
+        from decimal import Decimal
+
+        from sova.llm.models import accumulate_llm_result
+
+        first = LLMResult(
+            text="turn one",
+            model="gpt-5-codex",
+            cost_usd=Decimal("0"),
+            input_tokens=10,
+            output_tokens=5,
+            cache_read_tokens=2,
+        )
+        second = LLMResult(
+            text="turn two",
+            model="gpt-5-codex",
+            cost_usd=Decimal("0"),
+            input_tokens=7,
+            output_tokens=3,
+            cache_read_tokens=1,
+        )
+
+        merged = accumulate_llm_result(first, second)
+
+        assert merged.input_tokens == 17
+        assert merged.output_tokens == 8
+        assert merged.cache_read_tokens == 3
+        # Descriptive fields describe what just happened, not a running total.
+        assert merged.text == "turn two"
+
+    def test_duration_and_compression_counters_are_summed_not_last_wins(self) -> None:
+        """duration_ms and the compression counters (tokens_saved,
+        pre_compression_input_tokens) must sum across turns like every other
+        counter: no multi-turn source populates them today, but taking them
+        from latest alone would silently under-report the moment one does
+        (issue #1128 review, round 4)."""
+        from sova.llm.models import accumulate_llm_result
+
+        first = LLMResult(
+            text="turn one",
+            model="gpt-5-codex",
+            duration_ms=100,
+            tokens_saved=20,
+            pre_compression_input_tokens=120,
+        )
+        second = LLMResult(
+            text="turn two",
+            model="gpt-5-codex",
+            duration_ms=50,
+            tokens_saved=5,
+            pre_compression_input_tokens=30,
+        )
+
+        merged = accumulate_llm_result(first, second)
+
+        assert merged.duration_ms == 150
+        assert merged.tokens_saved == 25
+        assert merged.pre_compression_input_tokens == 150
+
+    def test_unreported_cache_write_stays_none_across_turns(self) -> None:
+        from sova.llm.models import accumulate_llm_result
+
+        first = LLMResult(text="turn one", model="gpt-5-codex", cache_creation_tokens=None)
+        second = LLMResult(text="turn two", model="gpt-5-codex", cache_creation_tokens=None)
+
+        merged = accumulate_llm_result(first, second)
+
+        assert merged.cache_creation_tokens is None
 
 
 class TestStreamEvent:
@@ -1534,6 +1614,37 @@ class TestRecordCost:
             assert len(rows) == 1
             assert rows[0].cost_usd == Decimal("1.50")
 
+    async def test_record_cost_persists_cost_source_and_reasoning_tokens(self) -> None:
+        """record_cost() is the third CostRecord writer (TriageRole's sole caller);
+        it must set cost_source/reasoning_tokens like the other two writers
+        (WorkflowEngine._update_step_execution, agent_db._record_cost) or an
+        unpriced triage run on litellm/ollama persists cost_usd=0 with NULL
+        provenance, indistinguishable from legacy pre-#1128 data (issue #1128
+        review, round 4)."""
+        from sova.db.session import get_session
+        from sova.llm.cost import record_cost
+        from sova.llm.models import CostSource, LLMResult
+
+        result = LLMResult(
+            text="output",
+            model="ollama/qwen3",
+            cost_usd=Decimal("0"),
+            cost_source=CostSource.FREE_LOCAL,
+            input_tokens=100,
+            output_tokens=50,
+            reasoning_output_tokens=12,
+        )
+
+        record = await record_cost(result=result, phase="triage", issue="99")
+
+        assert record.cost_source == "free_local"
+        assert record.reasoning_tokens == 12
+
+        async with await get_session() as session:
+            refreshed = await session.get(type(record), record.id)
+            assert refreshed.cost_source == "free_local"
+            assert refreshed.reasoning_tokens == 12
+
     async def test_record_cost_without_task_run(self) -> None:
         from sova.llm.cost import record_cost
         from sova.llm.models import LLMResult
@@ -1574,7 +1685,7 @@ class TestRecordCost:
         from sova.llm.cost import record_cost
         from sova.llm.models import LLMResult
 
-        result = LLMResult(text="output", model="haiku", cost_usd=Decimal("0.01"))
+        result = LLMResult(text="output", model="haiku", cost_usd=Decimal("0.01"), cache_creation_tokens=0)
 
         record = await record_cost(result=result, phase="triage", issue="57")
 
