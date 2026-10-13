@@ -74,6 +74,23 @@ class CostSource(StrEnum):
     UNKNOWN = "unknown"
 
 
+def combine_cost_sources(current: CostSource | None, new: CostSource) -> CostSource:
+    """Provenance of a cost summed from several results, independent of call order.
+
+    The label answers whether the summed ``cost_usd`` is a complete figure.
+    One ``UNKNOWN`` contribution makes the sum a lower bound, so it wins over
+    everything. Contributions that are all known but differ (priced dollars
+    plus a subscription or local call's known zero) still sum to a complete
+    figure, which is what ``PRICED`` asserts. ``current`` is ``None`` before
+    the first contribution.
+    """
+    if current is None or current == new:
+        return new
+    if CostSource.UNKNOWN in (current, new):
+        return CostSource.UNKNOWN
+    return CostSource.PRICED
+
+
 @dataclass
 class LLMResult:
     """Result from a Claude Code CLI invocation."""
@@ -115,6 +132,14 @@ class LLMResult:
     # a length-based check on `text` miss exactly the inputs it exists to
     # catch. Always False on every non-Codex result.
     truncated: bool = False
+    # Name of the model-ignoring AgentRuntime that produced this result (today
+    # only Codex), set by agent_dispatch._dispatch_to_runtime. None for every
+    # LLMProvider call and for a runtime that runs the model SOVA chose (Claude
+    # Code), whose results stay on the step's provider CostRecord.
+    # ExecutionContext.add_usage() routes a tagged result to the runtime's own
+    # record instead, so a step that dispatches to Codex and also makes a priced
+    # provider call never merges the two (issue #1128).
+    runtime_name: str | None = None
 
     @property
     def total_tokens(self) -> int:

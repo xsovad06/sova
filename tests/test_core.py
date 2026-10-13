@@ -875,6 +875,146 @@ class TestWorkflowEngine:
         assert result.success
         assert result.steps_completed == 1
 
+    async def test_update_step_execution_splits_mixed_runtime_and_provider_cost(self) -> None:
+        """A step that both dispatches to an unpriced runtime (Codex) and makes a
+        separate priced provider call (e.g. DevelopStep's implementation-notes
+        extraction) must split into two CostRecords by source, not merge the
+        runtime's tokens into a record labelled with the provider's model
+        (issue #1128 review, round 4)."""
+        from sova.core.context import TokenUsage
+        from sova.llm.models import CostSource
+
+        ctx = _make_ctx()
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        engine._task_run_id = await engine._create_task_run()
+        step_exec_id = await engine._create_step_execution("develop")
+
+        ctx.runtime_model = "gpt-5-codex"
+        ctx.runtime_model_reason = "runtime:codex reported model"
+        ctx.runtime_cost_source = CostSource.UNKNOWN
+        ctx.runtime_usage = TokenUsage(input_tokens=1000, output_tokens=500)
+        ctx.resolved_model = "claude-sonnet-5"
+        ctx.model_selection_reason = "complexity:high"
+        ctx.cost_source = CostSource.PRICED
+
+        result = StepResult(
+            success=True,
+            summary="Development completed",
+            cost_usd=Decimal("0.05"),
+            usage=TokenUsage(input_tokens=1200, output_tokens=600),
+        )
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=100)
+
+        async with await get_session(ctx.project_dir) as session:
+            rows = await session.execute(select(CostRecord).where(CostRecord.task_run_id == engine._task_run_id))
+            records = sorted(rows.scalars().all(), key=lambda r: r.model)
+
+        assert len(records) == 2
+        codex_record = next(r for r in records if r.model == "gpt-5-codex")
+        assert codex_record.cost_usd == Decimal("0")
+        assert codex_record.cost_source == "unknown"
+        assert codex_record.input_tokens == 1000
+        assert codex_record.output_tokens == 500
+
+        claude_record = next(r for r in records if r.model == "claude-sonnet-5")
+        assert claude_record.cost_usd == Decimal("0.05")
+        assert claude_record.cost_source == "priced"
+        assert claude_record.input_tokens == 200
+        assert claude_record.output_tokens == 100
+
+    async def test_update_step_execution_attributes_fix_loop_dispatch_to_the_runtime(self) -> None:
+        """DevelopStep's real sequence on Codex, driven through add_usage(): the /develop
+        dispatch, the priced implementation-notes call, then a fix-loop dispatch. The
+        fix-loop's tokens belong on the runtime record and the provider record keeps
+        the priced call's provenance, whichever call came last (PR #1169 review,
+        thread on context.py add_usage)."""
+        from sova.llm.models import CostSource, LLMResult
+
+        ctx = _make_ctx()
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        engine._task_run_id = await engine._create_task_run()
+        step_exec_id = await engine._create_step_execution("develop")
+        ctx.runtime_model = "gpt-5-codex"
+        ctx.runtime_model_reason = "runtime:codex reported model"
+        ctx.resolved_model = "claude-sonnet-5"
+        cost_before, usage_before = ctx.cost_usd, ctx.usage_snapshot()
+
+        def codex(input_tokens: int, output_tokens: int) -> LLMResult:
+            return LLMResult(
+                text="",
+                model="gpt-5-codex",
+                cost_source=CostSource.UNKNOWN,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                runtime_name="codex",
+            )
+
+        ctx.add_usage(codex(1000, 500))
+        ctx.add_usage(
+            LLMResult(
+                text="",
+                model="claude-sonnet-5",
+                cost_usd=Decimal("0.05"),
+                cost_source=CostSource.PRICED,
+                input_tokens=200,
+                output_tokens=100,
+                cache_creation_tokens=0,
+            )
+        )
+        ctx.add_usage(codex(300, 50))
+
+        result = StepResult(
+            success=True,
+            summary="Development completed",
+            cost_usd=ctx.cost_usd - cost_before,
+            usage=ctx.usage_snapshot() - usage_before,
+        )
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=100)
+
+        async with await get_session(ctx.project_dir) as session:
+            rows = await session.execute(select(CostRecord).where(CostRecord.task_run_id == engine._task_run_id))
+            records = {r.model: r for r in rows.scalars().all()}
+
+        assert set(records) == {"gpt-5-codex", "claude-sonnet-5"}
+        codex_record = records["gpt-5-codex"]
+        assert (codex_record.input_tokens, codex_record.output_tokens) == (1300, 550)
+        assert codex_record.cost_usd == Decimal("0")
+        assert codex_record.cost_source == "unknown"
+        claude_record = records["claude-sonnet-5"]
+        assert (claude_record.input_tokens, claude_record.output_tokens) == (200, 100)
+        assert claude_record.cost_usd == Decimal("0.05")
+        assert claude_record.cost_source == "priced"
+
+    async def test_update_step_execution_runtime_only_step_writes_one_runtime_record(self) -> None:
+        """A step whose only call was a Codex dispatch writes exactly one record,
+        attributed to the runtime, even with no tokens reported (a dispatch killed
+        before its terminal event): an unknown cost must still be recorded, not
+        dropped as free."""
+        from sova.core.context import TokenUsage
+        from sova.llm.models import CostSource
+
+        ctx = _make_ctx()
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        engine._task_run_id = await engine._create_task_run()
+        step_exec_id = await engine._create_step_execution("self_review")
+        ctx.runtime_model = "codex"
+        ctx.runtime_model_reason = "runtime:codex reported no model"
+        ctx.runtime_cost_source = CostSource.UNKNOWN
+        ctx.runtime_usage = TokenUsage()
+        ctx.resolved_model = "claude-sonnet-5"
+
+        result = StepResult(success=True, summary="Reviewed", cost_usd=Decimal("0"), usage=TokenUsage())
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=100)
+
+        async with await get_session(ctx.project_dir) as session:
+            rows = await session.execute(select(CostRecord).where(CostRecord.task_run_id == engine._task_run_id))
+            records = rows.scalars().all()
+
+        assert len(records) == 1
+        assert records[0].model == "codex"
+        assert records[0].cost_source == "unknown"
+        assert records[0].model_selection_reason == "runtime:codex reported no model"
+
     async def test_awaiting_approval_pauses_pipeline(self) -> None:
         """A step returning awaiting_approval=True pauses the pipeline."""
         ctx = _make_ctx()
@@ -1023,6 +1163,37 @@ class TestWorkflowEngine:
 
         assert not result.success
         assert step.execute.await_count == 3  # opus + sonnet + haiku
+
+    async def test_configuration_failure_is_never_retried_or_fallback(self) -> None:
+        """A static configuration fault (e.g. CodexRuntime's budget-cap refusal) must
+        cost exactly one attempt and never walk agent.fallback_models, unlike a billing
+        failure (test_billing_failure_triggers_model_fallback/test_all_fallback_models_exhausted
+        above): no retry or fallback-model hop changes whether the fault still applies."""
+        config = ProjectConfig(
+            agent={"model": "opus", "fallback_models": ["sonnet"]},
+            llm={"engine_owned_fallback": True},
+        )
+        ctx = _make_ctx(config=config)
+
+        step = DummyStep(should_pass=False, gate_pass=True)
+        step.max_retries = 5
+        step.execute = AsyncMock(
+            return_value=StepResult(
+                success=False,
+                summary="Configuration fail",
+                error="sova_configuration_error: Codex CLI cannot enforce a budget cap",
+            )
+        )
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert step.execute.await_count == 1
+        assert result.step_records[0].status == "failed"
+        # Never advanced by _advance_fallback (which only runs for
+        # "billing_exhausted"): the fixture never runs AssessStep either, so
+        # staying at its unset default is itself proof no fallback hop ran.
+        assert ctx.resolved_model is None
 
     async def test_non_billing_failure_does_not_trigger_fallback(self) -> None:
         """A regular code error should not trigger model fallback."""
