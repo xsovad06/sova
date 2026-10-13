@@ -362,6 +362,25 @@ _REGISTRY: list[SettingMeta] = [
         "agent",
         "number",
     ),
+    SettingMeta(
+        "codex.allow_unenforced_budget",
+        "Allow unenforced Codex budget cap",
+        "Codex CLI cannot enforce a dollar budget cap. When off (default), spawning a Codex "
+        "agent with a budget cap set fails instead of silently running unbounded. Turn on to "
+        "proceed anyway; cost is not actually limited",
+        "agent",
+        "boolean",
+    ),
+    SettingMeta(
+        "codex.billing_mode",
+        "Codex billing mode",
+        "Declares whether the authenticated Codex CLI session is a flat-rate ChatGPT "
+        "subscription (no incremental cost). SOVA cannot detect this automatically, so it "
+        "defaults to unknown (cost treated as unpriced) until set here",
+        "agent",
+        "select",
+        options=("unknown", "subscription"),
+    ),
     # Runaway Guards (cost-independent backstops for R6)
     SettingMeta(
         "runaway.max_run_wall_clock_seconds",
