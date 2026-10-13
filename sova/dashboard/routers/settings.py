@@ -111,7 +111,9 @@ _REQUIRED_LABELS = [
     {"name": "agent:in-progress", "color": "ededed", "description": "Agent working"},
     {"name": "agent:in-review", "color": "ededed", "description": "Under review"},
     {"name": "agent:needs-spec", "color": "ededed", "description": "Needs specification"},
+    {"name": "agent:needs-research", "color": "ededed", "description": "Needs research"},
     {"name": "agent:human-only", "color": "ededed", "description": "Human intervention required"},
+    {"name": "agent:interactive-recommended", "color": "ededed", "description": "Manual start only"},
     # SOVA review verdict labels
     {"name": "sova:approved", "color": "0e8a16", "description": "SOVA review approved"},
     {"name": "sova:revise", "color": "fbca04", "description": "SOVA review requests changes"},

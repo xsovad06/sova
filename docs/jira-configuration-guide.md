@@ -64,7 +64,7 @@ Organize your statuses into a table like this:
 
 ### Minimal configuration
 
-Set the `[task_source]` keys via `sova config set` or the dashboard settings page (shown here in TOML form):
+Set the `[task_source]` keys via `sova config set` or the dashboard settings page (shown here in TOML form). Read any one of them back with `sova config get <key>`, e.g. `sova config get task_source.jira_jql_filter`:
 
 ```toml
 [task_source]

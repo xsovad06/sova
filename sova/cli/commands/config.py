@@ -1,9 +1,10 @@
 """Show and edit DB-backed project configuration.
 
-`sova config` prints a summary; `sova config set KEY VALUE` writes one
-registered setting. Both are config-tolerant (registered in
-`_CONFIG_TOLERANT_COMMANDS`): `set` is the documented way to repair a config
-that no longer loads, so an unloadable config must not abort it.
+`sova config` prints a summary; `sova config get KEY` prints one value;
+`sova config set KEY VALUE` writes one registered setting. All three are
+config-tolerant (`config` is registered in `_CONFIG_TOLERANT_COMMANDS`, which
+covers its subcommands): `set` is the documented way to repair a config that no
+longer loads, so an unloadable config must not abort it.
 
 Writes go through `settings_service.update_config()`, the same validated path
 the dashboard uses, so the CLI cannot persist a value the UI would reject.
@@ -11,6 +12,7 @@ the dashboard uses, so the CLI cannot persist a value the UI would reject.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Optional
 
@@ -30,18 +32,25 @@ config_app = typer.Typer(no_args_is_help=False, help="Show or edit project confi
 _PROJECT_OPTION = typer.Option("--project", "-p", help="Project directory.")
 
 
+def _echo_config_error(exc: Exception) -> None:
+    """Report an unloadable config, and the two ways to repair it, on stderr.
+
+    Reaching here means the config is unloadable, which `sova config set`
+    exists to fix for a database-backed value. `load_config()` applies
+    environment overrides after the database, so an invalid `SOVA_*`-prefixed
+    env var needs correcting or removing instead.
+    """
+    typer.echo(f"Configuration error: {exc}", err=True)
+    typer.echo("Repair a database-backed key with: sova config set <key> <value>", err=True)
+    typer.echo("If a SOVA_* environment variable is set, correct or unset it instead.", err=True)
+
+
 def _show_config(project: Path | None) -> None:
     """Print a summary of the most commonly inspected settings."""
     try:
         cfg = load_config(project)
     except Exception as exc:  # noqa: BLE001 (a rejected config, unreadable TOML and a bad DB row all land here)
-        # Reaching here means the config is unloadable, which `sova config set`
-        # exists to fix for a database-backed value. `load_config()` applies
-        # environment overrides after the database, so an invalid
-        # `SOVA_*`-prefixed env var needs correcting or removing instead.
-        typer.echo(f"Configuration error: {exc}", err=True)
-        typer.echo("Repair a database-backed key with: sova config set <key> <value>", err=True)
-        typer.echo("If a SOVA_* environment variable is set, correct or unset it instead.", err=True)
+        _echo_config_error(exc)
         raise typer.Exit(code=1) from exc
 
     table = Table(title="SOVA Configuration", show_header=True)
@@ -73,6 +82,56 @@ def config(
     if ctx.invoked_subcommand is not None:
         return
     _show_config(project)
+
+
+@config_app.command("get")
+def get_setting(
+    key: Annotated[str, typer.Argument(help="Dotted setting key, e.g. task_source.jira_jql_filter")],
+    project: Annotated[Optional[Path], _PROJECT_OPTION] = None,
+) -> None:
+    """Print one configuration value, resolved through `load_config()`.
+
+    Reuses the dashboard's `_META_BY_KEY` key universe, its `_flatten_dict()`
+    and its `get_config()` masking, so `get` and `set` cannot drift apart on
+    which keys exist or which of them are credentials.
+    """
+    from sova.dashboard.services.settings_service import _flatten_dict, get_config
+    from sova.dashboard.settings_meta import _META_BY_KEY
+
+    # Both checks that depend only on the key run before the config is loaded,
+    # so an unknown key reports itself as such even when the config is
+    # unloadable (this command is config-tolerant), and a secret never needs a
+    # load at all.
+    meta = _META_BY_KEY.get(key)
+    if meta is None:
+        typer.echo(f"Unknown setting: '{key}'", err=True)
+        raise typer.Exit(code=1)
+
+    if meta.value_type == "secret":
+        typer.echo("(secret)")
+        return
+
+    # Loaded here rather than through `_get_raw_config()`, which collapses every
+    # failure into "No configuration found": the actual validation error is what
+    # tells the operator which key to repair.
+    try:
+        cfg = load_config((project or Path.cwd()).resolve())
+    except Exception as exc:  # noqa: BLE001 (a rejected config, unreadable TOML and a bad DB row all land here)
+        _echo_config_error(exc)
+        raise typer.Exit(code=1) from exc
+
+    flat: dict = {}
+    _flatten_dict("", cfg.model_dump(), flat)
+    # Read the value back through the dashboard's own masking helper, so the
+    # `secret` return above is an optimization rather than the only thing
+    # standing between a credential and stdout.
+    value = get_config(raw=flat).get(key)
+    if value is None:
+        typer.echo("")
+    elif isinstance(value, (list, dict)):
+        typer.echo(json.dumps(value))
+    else:
+        typer.echo(str(value))
 
 
 @config_app.command("set")

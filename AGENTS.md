@@ -99,7 +99,7 @@ This project uses **GitHub Issues** with a project board.
 
 - **GitHub account**: use the `github_user` configured in `sova.toml` (verify with `gh auth status`)
 - **Issue templates**: `.github/ISSUE_TEMPLATE/` (bug.md, feature.md, task.md)
-- **Labels**: `type:` (feature/task/infra/bug/epic), `priority:` (critical/high/medium/low), `area:` (agent/dashboard/commands/personas/invariants/knowledge/docs), `agent:` (triaged/researched/ready/in-progress/in-review/needs-spec/needs-research/human-only)
+- **Labels**: `type:` (feature/task/infra/bug/epic), `priority:` (critical/high/medium/low), `area:` (agent/dashboard/commands/personas/invariants/knowledge/docs), `agent:` (triaged/researched/ready/in-progress/in-review/needs-spec/needs-research/human-only/interactive-recommended)
 
 ### Ticket workflow
 1. Pick an open issue

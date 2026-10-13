@@ -141,7 +141,7 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 
 ## Configuration
 
-**Note**: SOVA uses database-backed configuration (`.claude/sova.db`). Edit it with `sova config set <key> <value>`, the dashboard Settings page, or `SOVA_*` environment variables. A legacy `sova.toml` is still read once and auto-migrated into the database if one is present. See [Configuration Troubleshooting](CLAUDE.md#configuration) for details.
+**Note**: SOVA uses database-backed configuration (`.claude/sova.db`). Edit it with `sova config set <key> <value>`, the dashboard Settings page, or `SOVA_*` environment variables. Read a single value (for scripts or commands) with `sova config get <key>`; lists and dicts print as JSON, and a secret key always prints `(secret)`. A legacy `sova.toml` is still read once and auto-migrated into the database if one is present. See [Configuration Troubleshooting](CLAUDE.md#configuration) for details.
 
 The settings are shown below in TOML form for reference (this is a rendering of the stored keys, not a file SOVA writes). Minimal example (required fields only):
 
