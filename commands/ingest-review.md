@@ -67,7 +67,7 @@ Parse structured review findings from TaskRun records and update agent memory.
    `gh pr view` only returns top-level review bodies, and inline comments must
    be fetched separately via the PR review-comments API:
    ```bash
-   gh pr view <PR_NUMBER> --json reviews,comments --jq '.reviews[] | {author: .author.login, state: .state, body: .body}, .comments[] | {author: .author.login, body: .body}'
+   gh pr view <PR_NUMBER> --json reviews,comments --jq '(.reviews[] | {author: .author.login, state: .state, body: .body}), (.comments[] | {author: .author.login, body: .body})'
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/comments --jq '.[] | {author: .user.login, path: .path, line: .line, body: .body}'
    ```
 
@@ -89,11 +89,11 @@ Parse structured review findings from TaskRun records and update agent memory.
 
 ## Cross-References
 
-- **Run automatically after merge**: `/after-merge` includes this step
+- **Review learnings during the PR**: the `address-pr` workflow's knowledge-capture step records each review round's lessons in `.claude/agent-memory/cookbook.md`; run this command afterwards only for anything that step missed
 - **Extract broader knowledge**: Run `/extract-knowledge` for session-wide lessons
 
 ## Rules
 
-- Only record actionable, specific lessons -- not generic advice
+- Only record actionable, specific lessons, not generic advice
 - Parse structured data from DB records; do NOT use LLM summarization
 - NEVER use emojis in any output

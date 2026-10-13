@@ -14,14 +14,14 @@ This project uses a four-tier knowledge system:
 ### Tier 0: `~/.claude/shared-knowledge/` (cross-project patterns)
 Reusable patterns that apply across multiple repositories. Loaded by agent startup scripts.
 
-### Tier 1: `.claude/rules/*.md` (canonical, always loaded via CLAUDE.md)
-Stable patterns loaded into every session via CLAUDE.md. Primary destination for confirmed conventions.
+### Tier 1: `.claude/rules/*.md` (project rules, always loaded)
+Stable patterns loaded into every session via CLAUDE.md. Primary destination for confirmed conventions that apply to all contributors (human and agent).
 
-### Tier 2: `.claude/agent-memory/` (agent learnings, loaded by morning agent)
-Lessons learned from development and review cycles. Destination for agent-specific patterns that improve autonomous development quality.
+### Tier 2: `.claude/agent-memory/` (agent learnings)
+Lessons learned from development and review cycles. Destination for agent-specific patterns not yet promoted to Tier 1.
 
-- **`MEMORY.md`**: Index file
-- **`cookbook.md`**: Topical knowledge by domain, common mistakes with occurrence counts
+- **`MEMORY.md`**: index file
+- **`cookbook.md`**: topical knowledge by domain, common mistakes with occurrence counts
 
 ### Tier 3: User auto-memory (`~/.claude/projects/.../memory/`)
 User preferences, workflow conventions, and project state.
@@ -54,7 +54,9 @@ Before writing anything:
 ### 4. Write Knowledge
 
 **For `.claude/rules/*.md` (Tier 1):**
-- Follow the existing structure and formatting of the target file. Write concise entries with bold labels, then the lesson. These are always loaded, so keep entries actionable and specific to this project.
+- Follow the existing structure and formatting of the target file
+- Write concise entries with bold labels, then the lesson
+- These are always loaded, so keep entries actionable and specific to this project
 
 **For `.claude/agent-memory/` (Tier 2):**
 - One line per pattern: bold label, then the lesson
@@ -90,12 +92,12 @@ List what was extracted and where it was saved. Flag any patterns promoted from 
 
 ## Cross-References
 
-- **Called by**: the `sova-review` skill (Step 9) and the `sova-after-merge` skill (post-merge learning)
+- **Called by**: the `sova-review` skill (Step 9). The `sova-integrate-pr` skill then verifies, before merging, that review learnings were captured (its Documentation and Knowledge phase)
 - **Broader assessment**: Run the `sova-agent-readiness` skill to evaluate the full knowledge system
 
 ## Rules
 
-- Only save **confirmed, stable patterns**: not one-off debugging notes
+- Only save **confirmed, stable patterns**, not one-off debugging notes
 - Update existing entries when the pattern evolved
 - Keep entries actionable: someone reading them should know exactly what to do
 - No session-specific context (task details, in-progress work)

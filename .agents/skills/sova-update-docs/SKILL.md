@@ -13,7 +13,8 @@ Context: the arguments provided when this skill is invoked
 
 ```bash
 # Find the base branch
-BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+BASE=${BASE:-main}
 
 # Changed files on this branch (determines which docs to check)
 CHANGED=$(git diff --name-only $(git merge-base HEAD origin/$BASE)..HEAD)
@@ -27,8 +28,9 @@ Read the project's CLAUDE.md or AGENTS.md to understand documentation convention
 Run the project's actual count verification commands and compare against documented values. Adapt the commands below to the project's structure.
 
 ```bash
-# Tests (Python)
-TEST_COUNT=$(find tests -name 'test_*.py' -exec grep -c 'def test_\|async def test_' {} + 2>/dev/null | awk -F: '{s+=$2}END{print s}')
+# Tests (Python): every tracked test file, wherever the layout keeps it (top-level
+# tests/, per-app tests/ packages, or test files next to the code they cover)
+TEST_COUNT=$(git ls-files -z '*test_*.py' '*_test.py' | xargs -0 grep -HcE '^[[:space:]]*(async )?def test_' | awk -F: '{s+=$NF}END{print s+0}')
 
 # Tests (JS/TS)
 # TEST_COUNT=$(find src \( -name '*.test.ts' -o -name '*.spec.ts' \) -exec grep -c 'it(\|test(' {} + 2>/dev/null | awk -F: '{s+=$2}END{print s+0}')
@@ -37,10 +39,12 @@ TEST_COUNT=$(find tests -name 'test_*.py' -exec grep -c 'def test_\|async def te
 Search documentation files for count references and compare:
 
 ```bash
-for f in README.md CLAUDE.md AGENTS.md docs/VISION.md .claude/rules/architecture.md docs/*.md .claude/rules/*.md; do
+for f in README.md CLAUDE.md AGENTS.md docs/*.md .claude/rules/*.md; do
   [ -f "$f" ] && grep -niE '(tests|services|routers|templates|steps|commands|pages|modules|models|subcommands)[[:space:]]*:?[[:space:]]*[0-9][0-9,]*\+?|[0-9][0-9,]*\+?[[:space:]]*(tests|services|routers|templates|steps|commands|pages|modules|models|subcommands)' "$f"
 done
 ```
+
+Also check the project's vision or roadmap doc, if AGENTS.md or README.md links one and it lives outside the paths above.
 
 Flag any documented count that doesn't match the actual count.
 
@@ -61,7 +65,7 @@ Only check docs related to the changed code paths. Skip unchanged areas.
 For each stale doc:
 1. Read the full current file
 2. Identify the specific section(s) that need updating
-3. Update only the factual content: never rewrite prose
+3. Update only the factual content; never rewrite prose
 4. Preserve the existing format and structure
 
 ## Phase 5: Stage and Report

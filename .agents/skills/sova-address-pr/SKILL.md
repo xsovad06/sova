@@ -17,12 +17,16 @@ This command runs as a headless agent. You MUST execute every step below through
 
 1. Get the PR number from `the arguments provided when this skill is invoked`.
 
-2. Fetch review data:
+2. Fetch review data and the PR's branch names:
    ```bash
-   gh pr view <PR_NUMBER> --json comments,reviews,body,title,headRefName
+   gh pr view <PR_NUMBER> --json comments,reviews,body,title,headRefName,baseRefName
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/comments
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews
+   BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName)
+   HEAD_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName --jq .headRefName)
+   echo "Base branch: $BASE, head branch: $HEAD_BRANCH"
    ```
+   Every shell block runs in a fresh shell, so variables do not carry over between blocks: each later block that uses `BASE` or `HEAD_BRANCH` re-assigns them first with the same two `gh pr view` lines (or the literal values printed here).
 
 3. **Verify you are in the correct working directory**: this is the most critical safety check. Working in the wrong directory means modifying the wrong branch and leaving garbage uncommitted changes on main.
 
@@ -35,17 +39,21 @@ This command runs as a headless agent. You MUST execute every step below through
 
    c. If they differ, find the worktree for the PR branch:
       ```bash
+      HEAD_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName --jq .headRefName)
       git worktree prune
       HEAD_BRANCH_REF="branch refs/heads/${HEAD_BRANCH}"
-      WORKTREE_PATH=$(git worktree list --porcelain | grep -F -B2 "$HEAD_BRANCH_REF" | grep "^worktree " | head -1 | sed 's/^worktree //')
+      WORKTREE_PATH=$(git worktree list --porcelain | grep -Fx -B2 "$HEAD_BRANCH_REF" | grep "^worktree " | head -1 | sed 's/^worktree //')
+      echo "Worktree: $WORKTREE_PATH"
       ```
       If `WORKTREE_PATH` is non-empty, navigate into it and verify:
       ```bash
-      cd "$WORKTREE_PATH"
+      HEAD_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName --jq .headRefName)
+      cd "<WORKTREE_PATH printed above>"
       VERIFIED=$(git branch --show-current)
       echo "Verified branch: $VERIFIED"
+      [ "$VERIFIED" = "$HEAD_BRANCH" ] || { echo "MISMATCH: worktree is on $VERIFIED, expected $HEAD_BRANCH" >&2; exit 1; }
       ```
-      If `VERIFIED` does not equal `HEAD_BRANCH`, STOP and report: the worktree exists but is on the wrong branch.
+      If `VERIFIED` does not equal `HEAD_BRANCH`, STOP and report: the worktree exists but is on the wrong branch. If your shell does not keep its working directory between calls, start every later shell block with the same `cd`.
 
    d. **STOP if the worktree cannot be found**: if `WORKTREE_PATH` is empty and the current branch is not `headRefName`, report the mismatch and exit. Do NOT use `git checkout <HEAD_BRANCH>` to fix this: doing so switches the main repo's working tree to the PR branch, causing any uncommitted changes to bleed onto main after cleanup.
 
@@ -61,13 +69,13 @@ This command runs as a headless agent. You MUST execute every step below through
 
    Scoring determines priority order, not whether to fix. All findings are addressed.
 
-   For bot suggestions: evaluate critically: don't blindly accept. Bots lack project context and may suggest changes that conflict with project conventions.
+   For bot suggestions: evaluate critically and don't blindly accept. Bots lack project context and may suggest changes that conflict with project conventions.
 
 6. **Address all findings** (regardless of score): Fix the issue in the code.
    - If you CANNOT fix it (needs architectural decision, unclear requirements): add to NEEDS_HUMAN_INPUT list.
    - If a finding is a false positive, not applicable in context, or requires a human decision: acknowledge it with a one-line justification instead of fixing. Do not skip findings based on score alone.
 
-7. **Scout check**: while fixing findings, scan each touched file for pre-existing issues: failing tests, lint warnings, dead imports, obvious bugs adjacent to your changes. Fix them alongside the review findings. Keep scout fixes small and low-risk.
+7. **Scout check**: while fixing findings, scan each touched file for pre-existing issues (failing tests, lint warnings, dead imports, obvious bugs adjacent to your changes). Fix them alongside the review findings. Keep scout fixes small and low-risk.
 
 8. **Capture knowledge and documentation updates NOW, before the squash** (MANDATORY):
 
@@ -82,8 +90,7 @@ This command runs as a headless agent. You MUST execute every step below through
       the PRIMARY checkout, if it exists, holds documentation and knowledge
       that a previous run of the `sova-integrate-pr` skill found missing and
       deferred rather than pushing. This step usually runs inside a per-issue
-      worktree (per
-      step 3 above), not the main checkout, and `.claude/agent-control/` is
+      worktree (per step 3 above), not the main checkout, and `.claude/agent-control/` is
       not mirrored into worktrees, so resolve the primary checkout explicitly
       rather than checking a bare relative path:
       ```bash
@@ -109,8 +116,9 @@ This command runs as a headless agent. You MUST execute every step below through
 
    c. **Fix documentation drift**: run the project's verification commands
       (test count, service count, router count) and correct any drifted values
-      in `AGENTS.md`, `README.md`, and `docs/VISION.md`. Update any docs the
-      code changes in this PR made stale.
+      in `AGENTS.md`, `README.md`, and the project's vision or roadmap doc, if
+      `AGENTS.md` or `README.md` links one. Update any docs the code changes in
+      this PR made stale.
 
    These edits are part of the change, not a separate concern: fold them into
    the relevant commit in the next step. Never create a standalone docs commit.
@@ -119,44 +127,68 @@ This command runs as a headless agent. You MUST execute every step below through
 
    The PR must read as clean feature development. Do NOT create a separate "address review findings" commit: fold each fix into the commit that introduced the code being fixed. The final history should look as if the code was written correctly from the start.
 
-   **Before starting**: verify `git branch --show-current` equals `headRefName`. If not, STOP: never reset commits while on the wrong branch.
+   **Before starting**: run `git fetch origin || { echo "Fetch failed: STOP" >&2; exit 1; }`, then verify `git branch --show-current` equals `headRefName`. If not, STOP: never reset commits while on the wrong branch.
 
    a. Run the project's linter and tests (see CLAUDE.md for commands). All must pass before proceeding.
 
-   b. Record the original commit messages for replay:
+   b. Record the fork point and the original commits for replay, before anything else touches history. The reset below targets the fork point (`git merge-base`), never `origin/$BASE` itself: if the base branch moved since this branch was last rebased, re-committing the branch's tree on top of the newer base would silently revert everything the base gained in between. Step 10 rebases afterwards.
       ```bash
-      git log origin/$BASE..HEAD --reverse --format="%H %s" > /tmp/pr-commits.txt
+      BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName)
+      FORK_POINT=$(git merge-base HEAD "origin/$BASE")
+      COMMITS_FILE=$(mktemp)
+      git log "$FORK_POINT"..HEAD --reverse --format="%H %s" > "$COMMITS_FILE"
+      echo "Fork point: $FORK_POINT"
+      echo "Original commits saved to $COMMITS_FILE"
+      cat "$COMMITS_FILE"
       ```
 
-   c. Create a backup branch, then soft-reset:
+   c. Snapshot everything, review fixes included, into a uniquely named backup branch. Note the printed values: later blocks re-assign `FORK_POINT` and `BACKUP` to them.
       ```bash
-      git branch backup-pre-squash
-      git reset --soft origin/$BASE
+      if [ -n "$(git status --porcelain)" ]; then
+        git add -A && git commit -m "chore: WIP review fixes before squash" \
+          || { echo "WIP commit failed (hook, signing or staging error): STOP, nothing was reset" >&2; exit 1; }
+      fi
+      # Fail closed: the backup must hold the review fixes, so the tree must be fully committed first.
+      [ -z "$(git status --porcelain)" ] || { echo "Uncommitted changes remain: STOP before creating the backup" >&2; exit 1; }
+      BACKUP="backup/pr-<PR_NUMBER>-$(date +%s)-$$-$RANDOM"
+      git branch "$BACKUP" || { echo "Failed to create backup branch $BACKUP: STOP before resetting" >&2; exit 1; }
+      echo "Backup branch: $BACKUP"
+      ```
+
+   d. Soft-reset to the fork point. All changes, original work and review fixes alike, are now unstaged in the working tree:
+      ```bash
+      FORK_POINT=<fork point printed in step b>
+      git reset --soft "$FORK_POINT"
       git reset HEAD .
       ```
-      All changes are now unstaged in the working tree.
 
-   d. Re-commit in the original logical groups. For each original commit (from the list in step b):
+   e. Re-commit in the original logical groups. For each original commit (from the list in step b):
       - Stage the files that belong to that logical unit
       - When a file (e.g., a test file) has changes belonging to multiple commits, save the final version aside, apply the intermediate version for earlier commits, then restore the final version for the last commit that touches it
-      - Use the original commit message (preserving type, scope, and description)
+      - Reuse the original commit message (preserving type, scope, and description): `git commit -C <original SHA>` copies it verbatim
       - Fold review fixes into whichever commit introduced the code being fixed
 
-   e. **Single-commit shortcut**: if the branch had only one commit before fixes, skip the reset-and-recommit flow. Instead, stage all fixes and `git commit --amend --no-edit`.
+      **Single-commit shortcut**: if the branch had only one commit, stage everything and run `git commit -C <its SHA>`.
 
-   f. Verify the tree is identical to the backup:
+   f. Verify nothing was lost or left behind:
       ```bash
-      git diff backup-pre-squash
+      BACKUP=<backup branch printed in step c>
+      git status --porcelain
+      git diff "$BACKUP"
       ```
-      This MUST produce no output. If it does, something was lost. Investigate before continuing.
+      Both commands MUST print nothing. If either does, something was lost or left uncommitted: restore the pre-squash state (this keeps the review fixes, which are in the backup's WIP commit), then start again from step d:
+      ```bash
+      BACKUP=<backup branch printed in step c>
+      git reset --hard "$BACKUP"
+      ```
 
-   g. Clean up: `git branch -D backup-pre-squash`
+   g. Keep the backup branch until the push in step 11 succeeds; it is deleted there, not here.
 
 10. **Rebase onto base branch** to ensure the PR is mergeable after fixes:
     ```bash
-    BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq '.baseRefName')
-    git fetch origin
-    git rebase origin/$BASE
+    BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName)
+    git fetch origin || { echo "Fetch failed: STOP, origin/$BASE may be stale" >&2; exit 1; }
+    git rebase "origin/$BASE"
     ```
 
     If there are merge conflicts:
@@ -174,13 +206,20 @@ This command runs as a headless agent. You MUST execute every step below through
 
 11. **Push and wait for CI** (MANDATORY, do not skip):
    ```bash
-   git push --force-with-lease
+   BACKUP=<backup branch printed in step 9c>
+   git push --force-with-lease && git branch -D "$BACKUP"
    ```
-   After pushing, poll CI checks on the PR until ALL required checks complete (max 15 minutes, poll every 30s):
+   The backup branch is deleted only once the push has succeeded. If the push fails, keep it and report its name.
+
+   After pushing, poll CI checks on the PR until ALL required checks complete (max 30 minutes, poll every 30s; a full test suite routinely runs longer than 15 minutes):
    ```bash
    gh pr checks <PR_NUMBER> --json name,bucket --jq '.[] | "\(.bucket)\t\(.name)"'
    ```
-   Wait until every check shows `pass`, `fail`, or `skipping`: no `pending` remaining.
+   Wait until every check shows `pass`, `fail`, or `skipping`, with no `pending` remaining.
+
+   **Run each poll loop as a synchronous foreground command**, never as a background task: in headless mode nothing resumes you when a background task finishes, and ending a turn without a tool call ends the run. The Bash tool caps a single call at 10 minutes (600000 ms) and defaults to 2, so pass an explicit `timeout` of at least 540000 ms on every poll call, and keep each call to at most 16 polls of 30 seconds (8 minutes). When a call ends with checks still pending, start another call the same way, until every check completes or the 30 minute total is used up.
+
+   **If checks are still pending when the 30 minutes are used up**, that is not a failure: continue to step 12. The fixes are pushed, so the review threads and the address summary must still be written; stopping here would leave every fixed thread open on the PR. Record the head SHA and the names of the checks still pending, state in the step 14 summary that CI was still running on that commit, and report it in step 17. The `sova-integrate-pr` skill re-checks CI before merging, so an unfinished run is never merged unverified.
 
    **If any check fails**: fetch the failure logs, analyze, fix the code, re-push, and re-poll (max 2 retries):
    ```bash
@@ -188,26 +227,31 @@ This command runs as a headless agent. You MUST execute every step below through
    ```
    Common CI failures: commit-format invariant (wrong scope/type), test timeouts, lint errors, SonarCloud coverage.
 
-   **Only continue to step 12 when all required checks pass.** If checks are still failing after 2 retries, report the specific failures and stop. Do not proceed to reply/resolve steps with a red CI.
+   **Only a failing check blocks step 12.** Continue when all required checks pass, or when the 30 minute wait ran out with checks still pending (see above). If checks are still failing after 2 retries, report the specific failures and stop. Do not proceed to reply/resolve steps with a red CI.
 
-12. **Fetch all unresolved review threads** using GraphQL:
+12. **Fetch all unresolved review threads** using GraphQL (`--paginate` follows `endCursor`, so a PR with more than 100 threads is not silently truncated):
     ```bash
-    gh api graphql -f query='{
-      repository(owner: "<OWNER>", name: "<REPO>") {
-        pullRequest(number: <PR_NUMBER>) {
-          reviewThreads(first: 50) {
-            nodes {
-              id
-              isResolved
-              isOutdated
-              comments(first: 1) { nodes { body path line author { login __typename } } }
+    gh api graphql --paginate -f owner='<OWNER>' -f repo='<REPO>' -F pr=<PR_NUMBER> -f query='
+      query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            reviewThreads(first: 100, after: $endCursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                id
+                isResolved
+                isOutdated
+                path
+                line
+                originalLine
+                comments(first: 1) { nodes { body author { login __typename } } }
+              }
             }
           }
         }
-      }
-    }'
+      }'
     ```
-    Filter to unresolved, non-outdated threads. Match each thread to a finding using the thread's `path` and `line` fields. Use `author.__typename` to classify thread authors: `Bot` for automated reviewers, `User` for humans. If `__typename` is absent, fall back to checking whether `login` ends with `[bot]`.
+    Keep every thread with `isResolved: false`, **including outdated ones**. GitHub marks a thread outdated as soon as a push changes the lines it is anchored to, which is exactly what fixing it does, so after step 11's push most of the threads you just fixed are outdated; dropping them leaves them open on the PR. Match each thread to a finding by `path` plus `line`, falling back to `originalLine` when `line` is null (it always is on an outdated thread), and by the comment body when two threads share a location. A reviewer can post the same finding as more than one thread: every duplicate still needs its own reply and resolve in step 13, and the same reply text is fine. Use `author.__typename` to classify thread authors: `Bot` for automated reviewers, `User` for humans. If `__typename` is absent, fall back to checking whether `login` ends with `[bot]`.
 
 13. **Reply to each thread, then resolve all of them** (MANDATORY: this is what unblocks the PR):
 
@@ -285,14 +329,20 @@ This command runs as a headless agent. You MUST execute every step below through
     already posted this round's summary, so the marker count now equals the
     round just completed. Both values are forced to digits before any numeric
     comparison, since the setting is stored as JSON (a string value would
-    arrive quoted) and `sqlite3` may not be installed at all.
+    arrive quoted) and `sqlite3` may not be installed at all. Only the JSON
+    quotes and whitespace are stripped: deleting every non-digit would turn a
+    malformed value such as `3.5` into `35` instead of falling back to the
+    default, so anything that is not a plain number falls back to 3.
 
     ```bash
     SOVA_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
     RAW=$(sqlite3 "$SOVA_ROOT/.claude/sova.db" \
       "SELECT value FROM project_settings WHERE key='pipeline.max_address_review_cycles';" 2>/dev/null || true)
-    MAX_CYCLES=$(printf '%s' "$RAW" | tr -cd '0-9')
-    MAX_CYCLES=${MAX_CYCLES:-3}
+    RAW=$(printf '%s' "$RAW" | tr -d '"[:space:]')
+    case "$RAW" in
+      [0-9]|[1-9][0-9]) MAX_CYCLES="$RAW" ;;
+      *) MAX_CYCLES=3 ;;
+    esac
     # The marker list is captured first so a failed `gh api` call is caught
     # explicitly rather than silently counting as zero matches, which would
     # under-report ROUND and let the cap be bypassed. `grep -c .` counts
@@ -331,6 +381,7 @@ This command runs as a headless agent. You MUST execute every step below through
     - Table: | Comment | Source | Score | Action |
     - Source column distinguishes human vs bot reviewers
     - Status: `ALL_RESOLVED` or `NEEDS_HUMAN_INPUT` (with bullet list of items needing input)
+    - When step 11's wait ran out with checks still pending, say so: the head SHA and the pending check names
 
 ## Cross-References
 
