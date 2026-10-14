@@ -259,19 +259,6 @@ class TestRenderCodexSkill:
         assert "that procedure" in rendered
         assert "no such procedure exists" in rendered
 
-    def test_approve_merge_reference_is_rewritten_to_neutral_prose(self, tmp_path: Path) -> None:
-        """/approve-merge is Claude-only (lives only in .claude/commands/), so it has no Codex skill."""
-        _write_command(tmp_path, "foo.md", name="foo", body="That happens via `/integrate-pr` or `/approve-merge`.")
-        entry = CommandEntry(
-            name="foo", description="d", category="core", user_invocable=True, path=tmp_path / "foo.md"
-        )
-
-        rendered = render_codex_skill(entry, skill_names=["integrate-pr"])
-
-        assert "/approve-merge" not in rendered
-        assert f"the `{SKILL_NAME_PREFIX}integrate-pr` skill" in rendered
-        assert "or by merging it directly once the user asks" in rendered
-
     def test_unknown_placeholder_in_description_raises(self, tmp_path: Path) -> None:
         """A description idiom no substitution covers must fail loudly, not ship into the frontmatter."""
         description = "Does {{ some_new_var }} things."
@@ -419,7 +406,7 @@ class TestAssertFullyRendered:
         from sova.commands.skill_render import _assert_fully_rendered
 
         with pytest.raises(SkillRenderError, match="command reference"):
-            _assert_fully_rendered("foo", "Run before /approve-merge")
+            _assert_fully_rendered("foo", "Run before /bar")
 
     def test_bare_reference_inside_inline_code_span_does_not_raise(self) -> None:
         """A longer inline-code example (a URL path, not a command) must not false-positive."""

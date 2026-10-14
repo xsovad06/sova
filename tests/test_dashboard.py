@@ -5274,7 +5274,7 @@ class TestGetKanbanColumnsDirect:
                 ),
                 TaskRun(
                     issue_number="87",
-                    role="command:approve-merge",
+                    role="command:integrate-pr",
                     status="running",
                     current_step="agent",
                     started_at=now,
@@ -10080,7 +10080,7 @@ class TestReviewPrVerdictPersistence:
 
 
 class TestValidateMergeCommand:
-    """_validate_merge_command catches integrate-pr/approve-merge runs that exit
+    """_validate_merge_command catches integrate-pr runs that exit
 
     cleanly without actually merging the PR. For example, a headless agent
     that backgrounds the CI-poll loop and then ends its turn believing
@@ -10266,26 +10266,6 @@ class TestValidateMergeCommand:
         mock_cfg = MagicMock(github_repo="")
         with patch("sova.config.loader.load_config", return_value=mock_cfg):
             assert (await _validate_merge_command(1, agent)).failure_reason is None
-
-    async def test_approve_merge_role_is_also_validated(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_db import _validate_command_outcome
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "command:approve-merge"
-        agent.pr_number = 958
-        agent.project_dir = None
-
-        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
-        mock_status = MagicMock(state="OPEN")
-        with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
-        ):
-            result = await _validate_command_outcome(1, agent)
-        assert result.failure_reason == "approve-merge exited without merging PR #958 (state=OPEN)"
 
 
 class TestDowngradeToFailed:
@@ -12300,12 +12280,6 @@ class TestStepProgress:
         result = await get_step_progress("agent", role="command:review-pr")
         assert result["pipeline_variant"] == "command"
         assert result["step_index"] == 0
-
-    async def test_command_role_approve_merge(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress(None, role="command:approve-merge")
-        assert result["pipeline_variant"] == "command"
 
     async def test_researcher_role_unaffected_by_command_check(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
@@ -15895,11 +15869,6 @@ class TestDetectVariantCommandRoles:
         from sova.dashboard.services.work_service import _detect_variant
 
         assert _detect_variant(None, role="command:integrate-pr") == "command"
-
-    def test_detect_variant_command_approve_merge(self) -> None:
-        from sova.dashboard.services.work_service import _detect_variant
-
-        assert _detect_variant("running", role="command:approve-merge") == "command"
 
     def test_detect_variant_command_review_pr(self) -> None:
         from sova.dashboard.services.work_service import _detect_variant

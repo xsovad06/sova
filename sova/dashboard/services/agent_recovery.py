@@ -575,7 +575,6 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
             "researcher": TaskState.TRIAGED,
             "reviewer": TaskState.IN_REVIEW,
             "integrate-pr": TaskState.IN_REVIEW,
-            "approve-merge": TaskState.IN_REVIEW,
             "address-pr": TaskState.IN_REVIEW,
         }
 

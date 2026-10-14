@@ -95,10 +95,6 @@ _CODEX_SUBSTITUTIONS: list[tuple[re.Pattern[str], _Replacement]] = [
         re.compile(r"no `/verify-local` command exists"),
         "no such procedure exists",
     ),
-    (
-        re.compile(r"or `/approve-merge`"),
-        "or by merging it directly once the user asks",
-    ),
     # Claude-only tool/product idioms with no Codex equivalent. Scoped to the
     # exact phrases known to occur in canonical commands today, rather than a
     # blanket word substitution, since e.g. "Claude Code" also appears in
@@ -154,12 +150,12 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 # A backticked slash-command reference that survived every substitution pass
 # above (including the per-command cross-reference rewriting below): either a
 # new canonical command the cross-reference list doesn't know about yet, or a
-# Claude-only command (like `/approve-merge`) with no reviewed rewrite. Either
+# Claude-only command with no reviewed rewrite. Either
 # way it must fail loudly rather than ship a reference Codex has no concept of.
 #
 # The leading negative lookbehind requires the opening backtick to sit at a
 # word boundary (preceded by whitespace, punctuation, or start of text), which
-# every genuine reference does ("Run `/develop`", "or `/approve-merge`").
+# every genuine reference does ("Run `/develop`", "or `/integrate-pr`").
 # Without it, prose like "the `MERGEABLE`/not-`BEHIND` case" (commands/
 # integrate-pr.md) false-positives: the `/not-` substring there is two
 # adjacent code spans joined by a literal "/", not a command reference, and

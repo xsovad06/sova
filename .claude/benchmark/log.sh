@@ -8,7 +8,6 @@ set -euo pipefail
 #         pr_start, pr_complete, pr_created,
 #         address_pr_start, address_pr_complete,
 #         integrate_pr_start, integrate_pr_complete,
-#         approve_merge_start, approve_merge_complete,
 #         ci_check_start, ci_passed, ci_failed,
 #         human_idle_start, human_idle_end, error
 
@@ -37,7 +36,6 @@ valid_events=(
     'pr_start' 'pr_complete' 'pr_created'
     'address_pr_start' 'address_pr_complete'
     'integrate_pr_start' 'integrate_pr_complete'
-    'approve_merge_start' 'approve_merge_complete'
     'ci_check_start' 'ci_passed' 'ci_failed'
     'human_idle_start' 'human_idle_end' 'error'
     'test'  # For testing only
