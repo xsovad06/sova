@@ -1,4 +1,4 @@
-"""Tests for sova.supervisor.dependency_graph -- DAG engine and API endpoints."""
+"""Tests for sova.supervisor.dependency_graph: DAG engine and API endpoints."""
 
 from __future__ import annotations
 
@@ -534,7 +534,7 @@ class TestDependencyGraph:
         assert order == [1, 2]
 
     def test_get_ready_tasks_partial_deps_done(self) -> None:
-        # Task 3 depends on 1 (done) and 2 (not done) -- not ready
+        # Task 3 depends on 1 (done) and 2 (not done): not ready
         tasks = [
             _task(1, state=TaskState.DONE),
             _task(2, state=TaskState.BACKLOG),
@@ -688,7 +688,7 @@ class TestGetSpecMeta:
 
 
 # ---------------------------------------------------------------------------
-# DependencyGraph.to_dict -- RESEARCHED node spec enrichment
+# DependencyGraph.to_dict: RESEARCHED node spec enrichment
 # ---------------------------------------------------------------------------
 
 
@@ -1689,7 +1689,7 @@ class TestIsInteractiveRecommended:
 
 
 # ---------------------------------------------------------------------------
-# to_dict -- is_human_only / is_interactive_recommended fields
+# to_dict: is_human_only / is_interactive_recommended fields
 # ---------------------------------------------------------------------------
 
 

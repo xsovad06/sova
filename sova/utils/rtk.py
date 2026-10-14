@@ -1,4 +1,4 @@
-"""RTK (context compression) integration -- settings.json hook management."""
+"""RTK (context compression) integration: settings.json hook management."""
 
 from __future__ import annotations
 
@@ -36,21 +36,21 @@ def inject_rtk_hook(claude_dir: Path) -> bool:
         except FileNotFoundError:
             data = {}
         except json.JSONDecodeError:
-            logger.warning("Malformed .claude/settings.json -- skipping RTK hook injection")
+            logger.warning("Malformed .claude/settings.json: skipping RTK hook injection")
             return False
 
         if not isinstance(data, dict):
-            logger.warning("Malformed .claude/settings.json -- skipping RTK hook injection")
+            logger.warning("Malformed .claude/settings.json: skipping RTK hook injection")
             return False
 
         hooks = data.setdefault("hooks", {})
         if not isinstance(hooks, dict):
-            logger.warning("Unexpected type for hooks in settings.json -- skipping RTK hook injection")
+            logger.warning("Unexpected type for hooks in settings.json: skipping RTK hook injection")
             return False
 
         pre_tool_use = hooks.setdefault("PreToolUse", [])
         if not isinstance(pre_tool_use, list):
-            logger.warning("Unexpected type for PreToolUse in settings.json -- skipping RTK hook injection")
+            logger.warning("Unexpected type for PreToolUse in settings.json: skipping RTK hook injection")
             return False
 
         upgraded = _upgrade_legacy_entries(pre_tool_use)

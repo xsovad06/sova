@@ -1,4 +1,4 @@
-"""Step 2: Assess -- verify the issue is ready for development.
+"""Step 2: Assess. Verify the issue is ready for development.
 
 Gate 3: The Developer agent refuses to pick up any issue not in
 "Researched" state. This prevents the old failure mode where the agent
@@ -160,7 +160,7 @@ class AssessStep(BaseStep):
         before the pipeline spends up to the full step timeout developing on
         top of it. Only a confirmed divergence fails the run; an absent
         remote ref, a clean ancestor relationship, or a failed check
-        (shallow clone, git unreachable) are all no-ops -- recovery is left
+        (shallow clone, git unreachable) are all no-ops: recovery is left
         to a human or the supervisor, not guessed at here.
         """
         divergence = await check_branch_divergence(ctx.branch_name, cwd=ctx.working_dir)

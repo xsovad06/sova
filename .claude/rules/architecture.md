@@ -10,20 +10,20 @@ SOVA has four main components:
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
-- `core/workflow.py` -- WorkflowEngine: executes step pipelines with DB persistence (TaskRun, StepExecution, FailureRecord)
-- `core/state.py` -- 19-state TaskStatus StrEnum with transition validation
-- `core/context.py` -- ExecutionContext dataclass threading state through steps
-- `core/output.py` -- OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
+- `core/workflow.py` (WorkflowEngine): executes step pipelines with DB persistence (TaskRun, StepExecution, FailureRecord)
+- `core/state.py`: 19-state TaskStatus StrEnum with transition validation
+- `core/context.py`: ExecutionContext dataclass threading state through steps
+- `core/output.py`: OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
 - `core/steps/`: 28 BaseStep implementations with execute/validate_output/verify_output/can_skip. Four pipeline variants:
   - **Developer pipeline** (17 steps): sync -> assess -> create_worktree -> capture_baseline -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> wait_for_external_reviews -> address_external_findings -> monitor_ci -> confidence_score -> extract_memory -> handoff_to_reviewer
   - **Address-review pipeline** (10 steps): ensure_worktree -> rebase -> address_review -> rearrange_commits -> validate -> push -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_reviewer (re-review of the new head; `handoff_to_user` remains in `STEP_REGISTRY` for projects that configure a manual stop via `[pipelines] address_review`)
   - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory
   - **Planner pipeline** (4 steps): scan_project -> generate_tasks -> validate_tasks -> extract_memory
-- `core/dag.py` -- DAGExecutor: runs command-based workflow graphs with topological sort, condition evaluation, and cycle detection
+- `core/dag.py` (DAGExecutor): runs command-based workflow graphs with topological sort, condition evaluation, and cycle detection
 - `core/agent_dispatch.py`: dispatch boundary between the text-only LLMProvider path and AgentRuntime. `dispatch_command()`/`dispatch_prompt()` route a step declaring `requires_tools = True` through `sova.ipc.runtime.get_runtime()` and fail fast when that runtime is unusable, instead of silently degrading to a provider that cannot edit files. Every step whose own `/command` or assembled prompt edits the git worktree sets the flag and calls through this boundary: `DevelopStep`, `ValidateStep` and `MonitorCIStep` (their LLM fix loops, via `dispatch_prompt()`), `SelfReviewStep`, `SimplifyStep`, `AddressReviewStep` and `AddressExternalFindingsStep` (both route their findings prompt through `dispatch_prompt()` since neither is a named slash command), and `RearrangeCommitsStep`. `ResearchStep` deliberately stays on `invoke_command()`/LLMProvider: `/research` never edits the worktree, only appends a `## Research` section to the issue/ticket body via `gh`/`jira` CLI calls, and its own `validate_output()` already gates on that section actually existing, independent of which provider ran.
-- `roles/` -- AgentRole ABC with 6 implementations: triage, researcher, developer, reviewer, custom, planner
-- `roles/custom.py` -- CustomRole: executes user-defined DAG workflows via DAGExecutor
-- `roles/dispatcher.py` -- routes tasks to appropriate roles based on state; `get_role_async()` falls back to DB lookup for custom roles
+- `roles/`: AgentRole ABC with 6 implementations: triage, researcher, developer, reviewer, custom, planner
+- `roles/custom.py` (CustomRole): executes user-defined DAG workflows via DAGExecutor
+- `roles/dispatcher.py`: routes tasks to appropriate roles based on state; `get_role_async()` falls back to DB lookup for custom roles
 - **Role chaining**: Developer -> Reviewer -> Developer handoff chain runs autonomously by default. `HandoffAction.auto_execute` triggers auto-spawn of the next agent when the current one exits. Developer writes handoff to Reviewer, Reviewer writes handoff back to Developer if findings exist, or to user if clean (manual "Integrate PR" button). The address-review pipeline closes the loop by handing back to the Reviewer (`HandoffToReviewerStep`, re-review of the new head) rather than to the user, since the `sova_reviewed` integration gate requires an approving verdict on the current head and an "addressed" verdict alone can never unlock integration; the Reviewer -> Developer direction stays bounded by `pipeline.max_address_review_cycles`. Both auto-spawn directions are configurable in `sova.toml`: `pipeline.auto_handoff` (Developer->Reviewer, default true) and `pipeline.auto_address_review` (Reviewer->Developer, default true). When disabled, handoff files are still written with `auto_execute=False` so the dashboard shows manual action buttons instead. Issue stays `IN_REVIEW` until human merges via `/integrate-pr` or `/approve-merge`.
 - **Address-review budget is a resolver state, not a separate gate**: the cap on address-review cycles lives in `resolve_next_action()` (`sova/dashboard/services/work_state.py`), not in a dedicated circuit breaker. Its `review_budget_exhausted` rule compares `PRFacts.address_cycles` (from `resolve_sova_verdict()`, which derives it from `parse_review_history()`'s count of `sova-addressed` GitHub review markers) against `PRFacts.max_address_cycles` (`pipeline.max_address_review_cycles`, default 3, 0=unlimited) ahead of every verdict- and thread-based rule, and resolves an over-budget PR to `WorkItemState.PR_REVIEW_EXHAUSTED` with `action_id="integrate"` so the human decides. The supervisor and the dashboard both have to thread the cap into `_build_pr_facts()`; the old `sova/supervisor/gates/circuit_breaker.py` gate and the `_ADDRESS_CYCLE_ACTIONS` block in `progression.py` were deleted. `_check_address_review_circuit_breaker()` (`agent_handoff.py`) survives only to stop the auto-handoff chain at agent-exit time, before the resolver's next poll. `PRFacts.review_history_unresolved` (set from `work_verdict.py`'s `UNRESOLVED_KEY`) makes the `review_budget_exhausted` rule itself fail closed during a GitHub outage, mirroring the circuit breaker's own fail-closed check, rather than reading an unresolvable history as "0 cycles completed" and risking an uncapped loop; both are gated on `max_address_cycles > 0`, since an unlimited budget has nothing to fail closed on. See `docs/architecture-deep-dive.md` for the full entry.
 - **Step gate checks (two-phase)**: gate checking is split into a fast structural `validate_output()` (capped by `validation.gate_timeout`, default 60s) and an optional heavyweight `verify_output()` (uses `validation.verify_timeout` if nonzero, otherwise the full step timeout). `validate_output()` checks all forms of change: unstaged diff (`git diff --stat HEAD`), staged diff (`git diff --cached --stat`), commits ahead of base (`git log {base}..HEAD --oneline`), and untracked new files (`git status --porcelain`, lines starting with `??`). Never return `GateCheckResult(passed=True)` unconditionally. `verify_output()` defaults to a no-op (returns `passed=True`) so existing steps are unaffected; only `ValidateStep` overrides it to run regression checks (`_check_regressions`/test suite execution) which need longer timeouts. `WorkflowEngine._validate_step_gate()` runs `validate_output()` first and on success chains to `_verify_step_output()`. Both timeouts are configurable in `sova.toml` (`validation.gate_timeout`, `validation.verify_timeout`). `DevelopStep.validate_output()` additionally collects filenames from all change sources (unstaged, staged, committed, untracked) and verifies that at least one is a substantive source file (not just lockfiles or metadata like `.sova/`, `.claude/`) via `_NON_SUBSTANTIVE_RE`. `DevelopStep.execute()` returns `success=False` when the inner check loop fails: `_run_inner_check_loop()` returns a `(passed: bool, summary: str)` tuple, and any non-passing outcome (exhausted cycles, budget exceeded, no changes produced, test weakening, LLM fix failure) sets `passed=False`.
@@ -40,7 +40,7 @@ SOVA has four main components:
 - **Multi-agent control**: manages concurrent agent processes per project with slot limits and per-issue dedup. Both `start_agent()` and `start_command()` call `_check_issue_conflict()` which rejects duplicates via two checks: in-memory (`pa.agents`) and DB (`TaskRun` with alive PID). The DB check catches CLI-spawned agents not tracked in-memory. The `max_concurrent` slot check alone doesn't prevent same-issue duplicates. `_check_issue_conflict()` auto-recovers dead-PID DB runs by marking them "interrupted" on detection. When `force=True` (passed through from `start_agent`), both in-memory and live external conflicts are skipped so `--force` retries are not blocked by stale state.
 - **Batch operations**: triage/harden multiple issues with parallel concurrency (`asyncio.Semaphore`, default 3 for triage, 2 for harden via `DEFAULT_CONCURRENCY`). `BatchJob.max_concurrency` configurable per-batch. Global progress bar in `base.html` (visible on all pages), batch ID persistence via `sessionStorage`, `GET /api/queue/batch/active` endpoint for discovering running batches after page navigation or browser refresh
 - **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
-  - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
+  - `handoff_service.py`: read/write/archive handoff files (mtime-cached)
   - Dashboard renders handoff action buttons on the agents page (awaiting_action/completed/failed). Failed runs also show a "Re-run" button that pre-fills issue, role, and PR number.
   - `_process_auto_handoff()` in `agent_handoff.py` auto-triggers `HandoffAction` entries with `auto_execute=True` after agent exit, enabling autonomous role chaining. The `auto_execute` flag is set per `pipeline.auto_handoff` / `pipeline.auto_address_review` config
   - Enables chaining: `integrate-pr` (full pipeline: rebase, CI, merge, cleanup)
@@ -48,9 +48,9 @@ SOVA has four main components:
 - Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport, in-memory SQLite via `sqlite+aiosqlite://`), run via `make test-py`
 
 ### 4. Scheduler (`sova/scheduler/`)
-- `watch.py` -- WatchLoop: async poll with priority scan (RESEARCHED > TRIAGED > BACKLOG), veto window, asyncio.Event for shutdown
-- `parallel.py` -- ParallelExecutor: asyncio.Semaphore for max_parallel_agents
-- `server.py` -- SOVAServer: combined FastAPI dashboard + scheduler in one process, PID file lifecycle. Scheduler-specific API endpoints (`/api/scheduler/status`, `/api/scheduler/health`, `/api/scheduler/digest`) defined here, not in dashboard routers
+- `watch.py` (WatchLoop): async poll with priority scan (RESEARCHED > TRIAGED > BACKLOG), veto window, asyncio.Event for shutdown
+- `parallel.py` (ParallelExecutor): asyncio.Semaphore for max_parallel_agents
+- `server.py` (SOVAServer): combined FastAPI dashboard + scheduler in one process, PID file lifecycle. Scheduler-specific API endpoints (`/api/scheduler/status`, `/api/scheduler/health`, `/api/scheduler/digest`) defined here, not in dashboard routers
 - Deploy: `deploy/sova-server.service` (systemd) + `deploy/com.sova.server.plist` (launchd)
 - CLI: `sova server start/stop/status/restart/digest/install-service`
 
@@ -103,11 +103,11 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 
 ## Development Workflow
 - `Makefile` at repo root provides all development targets
-- `make serve` -- start dashboard
-- `make check` -- lint + test (CI-equivalent)
-- `make test` -- bash (shellcheck + invariant --help) + python (pytest)
-- `make lint` -- shellcheck + ruff
-- `make format` -- ruff auto-format
+- `make serve`: start dashboard
+- `make check`: lint + test (CI-equivalent)
+- `make test`: bash (shellcheck + invariant --help) + python (pytest)
+- `make lint`: shellcheck + ruff
+- `make format`: ruff auto-format
 
 ## Key Design Decisions
 

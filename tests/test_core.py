@@ -1,4 +1,4 @@
-"""Tests for sova.core -- state machine, context, steps, and workflow engine."""
+"""Tests for sova.core: state machine, context, steps, and workflow engine."""
 
 from __future__ import annotations
 
@@ -3140,7 +3140,7 @@ class TestCreatePRStep:
 
 
 class TestCreatePRStepJira:
-    """PR creation with JIRA task source -- title prefix and body link."""
+    """PR creation with JIRA task source: title prefix and body link."""
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
@@ -4602,7 +4602,7 @@ class TestContextPersistence:
 
 
 # ---------------------------------------------------------------------------
-# MonitorCIStep -- no-checks grace period
+# MonitorCIStep: no-checks grace period
 # ---------------------------------------------------------------------------
 
 
@@ -5987,7 +5987,7 @@ class TestLoadFindingsFromGithubReviews:
         assert "XSS" in findings[0]["description"]
 
 
-# MonitorCIStep -- CI fix loop
+# MonitorCIStep: CI fix loop
 # ---------------------------------------------------------------------------
 
 
@@ -6345,7 +6345,7 @@ class TestMonitorCIFixLoop:
 
 
 # ---------------------------------------------------------------------------
-# MonitorCIStep -- SonarCloud coverage handling
+# MonitorCIStep: SonarCloud coverage handling
 # ---------------------------------------------------------------------------
 
 
@@ -6543,7 +6543,7 @@ class TestMonitorCISonarCloud:
 
 
 # ---------------------------------------------------------------------------
-# SyncStep -- task fetch
+# SyncStep: task fetch
 # ---------------------------------------------------------------------------
 
 
@@ -6607,7 +6607,7 @@ class TestSyncStepTaskFetch:
 
 
 # ---------------------------------------------------------------------------
-# CommitStep -- agent artifact filtering
+# CommitStep: agent artifact filtering
 # ---------------------------------------------------------------------------
 
 
@@ -6654,7 +6654,7 @@ class TestCommitStepAgentArtifacts:
 
 
 # ---------------------------------------------------------------------------
-# CommitStep -- issueless runs
+# CommitStep: issueless runs
 # ---------------------------------------------------------------------------
 
 
@@ -6761,7 +6761,7 @@ class TestCommitStepIssueless:
 
 
 # ---------------------------------------------------------------------------
-# CommitStep -- JIRA-aware linking
+# CommitStep: JIRA-aware linking
 # ---------------------------------------------------------------------------
 
 
@@ -6827,7 +6827,7 @@ class TestCommitStepJira:
 
 
 # ---------------------------------------------------------------------------
-# WorktreeStep -- JIRA-aware branch naming
+# WorktreeStep: JIRA-aware branch naming
 # ---------------------------------------------------------------------------
 
 
@@ -6890,7 +6890,7 @@ class TestWorktreeStepJira:
 
 
 # ---------------------------------------------------------------------------
-# CreatePRStep -- branch name to title fallback
+# CreatePRStep: branch name to title fallback
 # ---------------------------------------------------------------------------
 
 
@@ -6928,7 +6928,7 @@ class TestCreatePRTitleFromBranch:
 
 
 # ---------------------------------------------------------------------------
-# CreatePRStep -- task title fallback via adapter (#438)
+# CreatePRStep: task title fallback via adapter (#438)
 # ---------------------------------------------------------------------------
 
 
@@ -7040,7 +7040,7 @@ class TestCreatePRStepTitleFallback:
 
 
 # ---------------------------------------------------------------------------
-# CreatePRStep -- issueless runs
+# CreatePRStep: issueless runs
 # ---------------------------------------------------------------------------
 
 
@@ -7442,7 +7442,7 @@ class TestRebaseWithConflictResolution:
 
 
 # ---------------------------------------------------------------------------
-# SimplifyStep -- execute and validate_output
+# SimplifyStep: execute and validate_output
 # ---------------------------------------------------------------------------
 
 
@@ -7627,7 +7627,7 @@ class TestSimplifyStep:
 
 
 # ---------------------------------------------------------------------------
-# SelfReviewStep -- execute and validate_output
+# SelfReviewStep: execute and validate_output
 # ---------------------------------------------------------------------------
 
 
@@ -8010,7 +8010,7 @@ class TestConfidenceScoreStep:
 
 
 # ---------------------------------------------------------------------------
-# DevelopStep -- execute path
+# DevelopStep: execute path
 # ---------------------------------------------------------------------------
 
 
@@ -8235,7 +8235,7 @@ class TestDevelopStepExecute:
 
 
 # ---------------------------------------------------------------------------
-# PushStep -- execute path
+# PushStep: execute path
 # ---------------------------------------------------------------------------
 
 
@@ -8641,7 +8641,7 @@ class TestPushStepExecute:
 
 
 # ---------------------------------------------------------------------------
-# AddressReviewStep -- findings loading and execute
+# AddressReviewStep: findings loading and execute
 # ---------------------------------------------------------------------------
 
 
@@ -9475,7 +9475,7 @@ class TestDismissBotReviewsEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# AddressReviewStep -- _load_coderabbit_findings
+# AddressReviewStep: _load_coderabbit_findings
 # ---------------------------------------------------------------------------
 
 
@@ -9568,7 +9568,7 @@ class TestIssuelessWorkflow:
 
 
 # ---------------------------------------------------------------------------
-# Resume validation -- _load_checkpoint issue/issueless mismatch
+# Resume validation: _load_checkpoint issue/issueless mismatch
 # ---------------------------------------------------------------------------
 
 
@@ -9914,7 +9914,7 @@ class TestRunWorkflowCancellation:
 
 
 # ---------------------------------------------------------------------------
-# DevelopStep -- inner check loop
+# DevelopStep: inner check loop
 # ---------------------------------------------------------------------------
 
 

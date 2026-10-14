@@ -217,7 +217,7 @@ async function approveSpec() {
     if (data.error || data.detail) {
       showToast('Failed: ' + (data.error || data.detail), 'error');
     } else {
-      showToast('Spec approved -- developer agent starting', 'success');
+      showToast('Spec approved: developer agent starting', 'success');
       loadSpec();
     }
   } catch (e) {
@@ -243,7 +243,7 @@ async function skipSpec() {
   try {
     var resp = await fetch(apiUrl('/spec/' + _issueNumber + '/skip'), { method: 'POST' });
     var data = await resp.json();
-    showToast('Spec skipped -- developer agent starting', 'info');
+    showToast('Spec skipped: developer agent starting', 'info');
     setTimeout(function() { window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents'; }, 1500);
   } catch (e) {
     showToast('Failed to skip spec: ' + e.message, 'error');

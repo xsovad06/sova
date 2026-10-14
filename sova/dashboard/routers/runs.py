@@ -1,4 +1,4 @@
-"""Runs API -- task run history from the database."""
+"""Runs API: task run history from the database."""
 
 from __future__ import annotations
 

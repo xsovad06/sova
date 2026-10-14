@@ -1,4 +1,4 @@
-"""Agent DB persistence -- TaskRun/CostRecord CRUD for dashboard-spawned agents.
+"""Agent DB persistence: TaskRun/CostRecord CRUD for dashboard-spawned agents.
 
 Separated from agent_lifecycle to keep DB logic focused and testable.
 """
@@ -42,7 +42,7 @@ def _classify_exit_status(exit_code: int, agent: AgentState) -> tuple[str, str |
     (dashboard stop button, watchdog) sent the signal itself: the cause wins
     regardless of the exact exit code, even if ``stop()`` escalated from
     SIGTERM to SIGKILL along the way (the record still names the original
-    deliberate cause). With no record, a signal-shaped exit (either form --
+    deliberate cause). With no record, a signal-shaped exit (either form,
     see ``normalize_signal_exit()``) means something external killed the
     process (OOM, `pkill`, a supervisor sending SIGTERM); an ordinary nonzero
     exit with no signal shape is a plain application failure.
@@ -495,8 +495,8 @@ async def _check_pr_pushed_via_sha(agent: AgentState) -> tuple[bool | None, bool
     """Compare the PR's current headRefOid against the pre-run snapshot.
 
     Returns ``(answer, network_blocked)`` where answer is:
-        True  -- SHA changed (agent pushed) or PR is merged
-        None  -- inconclusive (no pre_run_sha, API error, or SHAs match)
+        True: SHA changed (agent pushed) or PR is merged
+        None: inconclusive (no pre_run_sha, API error, or SHAs match)
         Never returns False; matching SHAs fall through as inconclusive.
     """
     if agent.pre_run_sha is None or not agent.pr_number:

@@ -17,7 +17,7 @@ Testing conventions and patterns for {{ project_name }}.
 asyncio_mode = "auto"
 ```
 
-With `asyncio_mode = "auto"`, all `async def test_*` functions run as async tests automatically -- no `@pytest.mark.asyncio` decorator needed.
+With `asyncio_mode = "auto"`, all `async def test_*` functions run as async tests automatically, no `@pytest.mark.asyncio` decorator needed.
 
 ## Mock Patterns
 

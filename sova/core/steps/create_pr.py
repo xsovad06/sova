@@ -1,4 +1,4 @@
-"""Step 9: Create PR -- generate a structured description and open a pull request."""
+"""Step 9: Create PR. Generate a structured description and open a pull request."""
 
 from __future__ import annotations
 

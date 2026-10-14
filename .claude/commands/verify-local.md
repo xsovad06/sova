@@ -167,6 +167,6 @@ If any phase fails, list the failure details below the table.
 
 - NEVER use emojis in any output
 - Clean up all temp files and background processes, even on failure
-- Do NOT modify the SOVA project or its config -- this is read-only verification
+- Do NOT modify the SOVA project or its config. This is read-only verification
 - If a phase fails, continue to the next phase (report all results, not just first failure)
 - Phase 4 (sync) is SKIP, not FAIL, when no projects are registered

@@ -1,4 +1,4 @@
-"""PR tracker service -- lists open PRs with computed lifecycle state."""
+"""PR tracker service: lists open PRs with computed lifecycle state."""
 
 from __future__ import annotations
 

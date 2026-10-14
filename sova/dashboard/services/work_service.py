@@ -1,4 +1,4 @@
-"""Work service -- unified view of active tasks and run history.
+"""Work service: unified view of active tasks and run history.
 
 Merges task_service + run_service into a single coherent service
 for the Work page (Active / History / Failed tabs).
@@ -269,7 +269,7 @@ async def get_work_summary(session: AsyncSession, project_dir: Path | None = Non
 async def get_active_work_grouped(session: AsyncSession, project_dir: Path | None = None) -> list[dict]:
     """Get non-terminal runs grouped by issue, with latest run first.
 
-    Excludes issues whose most recent run (by ID) is already terminal --
+    Excludes issues whose most recent run (by ID) is already terminal:
     older "paused" runs are superseded once a later run completes the work.
 
     Returns a list of issue groups:
@@ -590,7 +590,7 @@ async def get_kanban_columns(
 
     Args:
         per_column: Max runs per column in the response.
-        mode: Grouping mode -- "step_based" (by pipeline step) or
+        mode: Grouping mode: "step_based" (by pipeline step) or
               "role_based" (by role/status category).
 
     Each column represents a pipeline step or role category with runs

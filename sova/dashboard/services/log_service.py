@@ -1,4 +1,4 @@
-"""Log service -- read and filter structured log files."""
+"""Log service: read and filter structured log files."""
 
 from __future__ import annotations
 

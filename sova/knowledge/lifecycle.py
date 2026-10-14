@@ -1,4 +1,4 @@
-"""Memory lifecycle management -- health scoring, consolidation, decay, and archival.
+"""Memory lifecycle management: health scoring, consolidation, decay, and archival.
 
 Provides automated maintenance of the memory store:
 - Health scoring: rank memories by value (confirmation, recency, retrieval).
@@ -341,7 +341,7 @@ into a single, comprehensive entry.
 
 ## Rules
 - Combine all unique information from all entries
-- Remove redundancy -- say it once clearly
+- Remove redundancy: say it once clearly
 - Preserve actionable details and the WHY behind patterns
 - Keep the same tone: concise, technical, imperative
 

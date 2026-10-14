@@ -122,7 +122,7 @@ This project uses **GitHub Issues** with a project board.
 - **Type hints**: required on all function signatures
 - **f-strings**: preferred for string formatting
 - **No emojis**: not in code or documentation
-- **No double dashes**: never use `--` as a separator in prose, comments, descriptions, PR bodies, review comments, or any text output. Use a colon, period, comma, or parentheses instead. Example: `Fixed: updated type hint` not `Fixed -- updated type hint`. This applies everywhere: code comments, commit messages, PR descriptions, review findings, issue bodies, command descriptions, and documentation.
+- **No double dashes**: never use `--` as a separator in prose, comments, descriptions, PR bodies, review comments, or any text output. Use a colon, period, comma, or parentheses instead. Example: `Fixed: updated type hint` not `Fixed -- updated type hint`. This applies everywhere: code comments, commit messages, PR descriptions, review findings, issue bodies, command descriptions, and documentation. Enforced on the whole tree, not only on changed lines: `tests/test_no_double_dash.py` runs `invariants/no-double-dash.sh --all` over every tracked file, and the same script checks added lines in pre-push and CI.
 - **Line length**: 120 max
 - **Formatter**: Ruff (lint + format) when available
 - **Falsy-default trap**: never use `x or default` when `x` can be a legitimate falsy non-`None` value (`0`, `""`, `[]`, `False`). It silently discards the real value. Use `x if x is not None else default` or an explicit membership/identity check instead.
@@ -142,14 +142,14 @@ This project uses **GitHub Issues** with a project board.
 - **Commands**: validate markdown structure (frontmatter, sections)
 
 ### Documentation
-- **Every code change must leave docs accurate** -- verify before committing
-- `README.md` -- update when project structure, features, usage, or commands change
-- `CLAUDE.md` -- update when run commands, knowledge tiers, or workflow change
-- `AGENTS.md` -- update when conventions, testing, or tooling change
-- `.claude/rules/architecture.md` -- update when components, config, or design decisions change
-- `docs/VISION.md` -- update when roadmap phases change
+- **Every code change must leave docs accurate**: verify before committing
+- `README.md`: update when project structure, features, usage, or commands change
+- `CLAUDE.md`: update when run commands, knowledge tiers, or workflow change
+- `AGENTS.md`: update when conventions, testing, or tooling change
+- `.claude/rules/architecture.md`: update when components, config, or design decisions change
+- `docs/VISION.md`: update when roadmap phases change
 - Keep docs concise: document what exists, not plans
-- The `/review` command checks doc freshness automatically -- stale docs score 4/10+
+- The `/review` command checks doc freshness automatically: stale docs score 4/10+
 
 ### Commit Messages
 Conventional commits format: `type(scope): short description`.
@@ -198,7 +198,7 @@ Examples:
 - Force-push to main/master
 - Commit secrets (`.env`, credentials, API keys)
 - Commit generated files (`.DS_Store`, `__pycache__/`, `*.pyc`, `dashboard/.venv/`)
-- Use fix-on-fix commits -- squash fixes into the commit they fix
+- Use fix-on-fix commits: squash fixes into the commit they fix
 - Create separate doc commits for changes in the same PR
 - Use emojis in code, documentation, or commit messages
 - Skip pre-commit hooks (`--no-verify`)
@@ -219,31 +219,31 @@ Agents chain autonomously: Developer -> Reviewer -> Developer (address review) -
 This repo has Claude Code commands in `.claude/commands/`:
 
 ### Planning
-- `/spec` -- produce a structured spec document for an issue; approving it guides `/develop`
+- `/spec`: produce a structured spec document for an issue; approving it guides `/develop`
 
 ### Core Development
-- `/develop` -- implement a feature or fix (TDD approach)
-- `/develop-full` -- full workflow: TDD, lint, test, self-review, commit organization
-- `/test` -- run linter and tests iteratively
-- `/review` -- pre-push code review with scoring and auto-fix (>=3/10)
-- `/review-full` -- full pre-push pipeline: simplify -> review -> rearrange-commits
-- `/debug` -- systematic debugging workflow
+- `/develop`: implement a feature or fix (TDD approach)
+- `/develop-full`: full workflow: TDD, lint, test, self-review, commit organization
+- `/test`: run linter and tests iteratively
+- `/review`: pre-push code review with scoring and auto-fix (>=3/10)
+- `/review-full`: full pre-push pipeline: simplify -> review -> rearrange-commits
+- `/debug`: systematic debugging workflow
 
 ### Pull Requests
-- `/pr` -- create PR with standard template (supports AI feedback + incremental workflows)
-- `/rearrange-commits` -- reorganize branch commits into clean steps
+- `/pr`: create PR with standard template (supports AI feedback + incremental workflows)
+- `/rearrange-commits`: reorganize branch commits into clean steps
 
 ### Shipping Pipeline
-- `/integrate-pr` -- full pipeline: rebase, CI, merge, cleanup, learn (one click)
-- `/approve-merge` -- merge PR (squash), delete branch, post-merge cleanup
-- `/agent-resume` -- smart router: assess PR state and decide next action
+- `/integrate-pr`: full pipeline: rebase, CI, merge, cleanup, learn (one click)
+- `/approve-merge`: merge PR (squash), delete branch, post-merge cleanup
+- `/agent-resume`: smart router: assess PR state and decide next action
 
 ### Post-Work
-- `/after-merge` -- post-merge cleanup
-- `/ingest-review` -- extract review feedback into agent memory
-- `/extract-knowledge` -- promote learnings across knowledge tiers
+- `/after-merge`: post-merge cleanup
+- `/ingest-review`: extract review feedback into agent memory
+- `/extract-knowledge`: promote learnings across knowledge tiers
 
 ### Project Management
-- `/new-feature` -- set up a new feature branch
-- `/standup` -- daily context summary
-- `/find-task` -- browse GitHub Issues backlog
+- `/new-feature`: set up a new feature branch
+- `/standup`: daily context summary
+- `/find-task`: browse GitHub Issues backlog

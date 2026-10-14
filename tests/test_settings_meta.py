@@ -1,4 +1,4 @@
-"""Tests for sova.dashboard.settings_meta -- settings metadata registry."""
+"""Tests for sova.dashboard.settings_meta: settings metadata registry."""
 
 from __future__ import annotations
 

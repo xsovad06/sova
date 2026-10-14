@@ -1,4 +1,4 @@
-"""Dependency graph engine -- parse issue dependencies, build DAG, check readiness."""
+"""Dependency graph engine: parse issue dependencies, build DAG, check readiness."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def is_interactive_recommended(labels: list[str]) -> bool:
     return any(label.lower().strip() == "agent:interactive-recommended" for label in labels)
 
 
-# States that should be excluded from "ready to work on" -- either already
+# States that should be excluded from "ready to work on": either already
 # being worked on, already completed, or explicitly rejected/blocked.
 _EXCLUDED_FROM_READY: frozenset[TaskState] = frozenset(
     {TaskState.DONE, TaskState.IN_PROGRESS, TaskState.IN_REVIEW, TaskState.HUMAN_ONLY}
@@ -95,7 +95,7 @@ def _get_spec_meta(issue_id: int, project_dir: Path | None = None) -> dict | Non
     if project_dir is None:
         return None
 
-    from sova.dashboard.services import spec_service  # lazy import -- dashboard layer
+    from sova.dashboard.services import spec_service  # lazy import: dashboard layer
 
     spec = spec_service.read_spec(str(issue_id), project_dir)
     if spec is None:
@@ -147,7 +147,7 @@ class DependencyGraph:
             for dep in deps:
                 self._rdeps[dep].add(tid)
 
-    # -- Public API -----------------------------------------------------------
+    # Public API -----------------------------------------------------------
 
     @property
     def nodes(self) -> list[int]:
@@ -182,7 +182,7 @@ class DependencyGraph:
     def validate(self) -> ValidationResult:
         """Validate the DAG: detect cycles and missing references.
 
-        Always performs both checks for completeness -- callers get the full
+        Always performs both checks for completeness: callers get the full
         picture in one call.  Not short-circuited on missing_refs because
         cycle information is independently valuable.
         """
@@ -278,7 +278,7 @@ class DependencyGraph:
 
         return groups
 
-    # -- Internal helpers ------------------------------------------------------
+    # Internal helpers ------------------------------------------------------
 
     def _build_in_degree(self, node_ids: set[int]) -> dict[int, int]:
         """Build in-degree map for a subset of nodes."""
@@ -454,7 +454,7 @@ class DependencyGraph:
         }
 
 
-# -- Module-level helpers -----------------------------------------------------
+# Module-level helpers -----------------------------------------------------
 
 
 def parse_dependencies(body: str, *, exclude_self: int | None = None) -> set[int]:

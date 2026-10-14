@@ -14,7 +14,7 @@ from sova.dashboard.services.output_stream_service import (
 )
 from sova.db.session import close_db, init_db
 
-# -- Unit tests for OutputStreamService --
+# Unit tests for OutputStreamService
 
 
 class TestOutputStreamService:
@@ -101,7 +101,7 @@ class TestGetOutputStreamService:
         mod._output_stream_service = None
 
 
-# -- Integration tests for SSE output endpoint --
+# Integration tests for SSE output endpoint
 
 
 @pytest.fixture

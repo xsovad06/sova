@@ -1,4 +1,4 @@
-"""Step: Fetch Task -- populate execution context with task data.
+"""Step: Fetch Task. Populate execution context with task data.
 
 Simple step that fetches the task from the adapter and stores it
 in the execution context for downstream steps. When the context

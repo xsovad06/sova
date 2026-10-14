@@ -1929,7 +1929,7 @@ class TestCompleteAwaitingApprovalByIssue:
 
 
 # ---------------------------------------------------------------------------
-# Spec router -- TaskRun transition on approve/reject/skip
+# Spec router: TaskRun transition on approve/reject/skip
 # ---------------------------------------------------------------------------
 
 

@@ -62,7 +62,7 @@ class TestSecretsScan:
         # The secrets-scan job must run on every change, so it must not declare
         # `needs: changes` (which would let a docs-only PR skip it). Extract the
         # job body by YAML structure (up to the next top-level, 2-space-indented
-        # job key) rather than the name of whichever job happens to follow it --
+        # job key) rather than the name of whichever job happens to follow it:
         # otherwise renaming or removing that job would break this test before
         # it ever checks the condition it's meant to guard.
         match = re.search(r"^  secrets-scan:\n(.*?)(?=^  \S|\Z)", ci_text, re.DOTALL | re.MULTILINE)

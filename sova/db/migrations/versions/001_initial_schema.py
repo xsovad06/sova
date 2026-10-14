@@ -1,4 +1,4 @@
-"""Initial schema -- all SOVA tables.
+"""Initial schema: all SOVA tables.
 
 Revision ID: 001
 Revises: None

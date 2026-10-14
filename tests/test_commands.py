@@ -75,7 +75,7 @@ def target_dir(tmp_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# catalog.py -- command discovery and classification
+# catalog.py: command discovery and classification
 # ---------------------------------------------------------------------------
 
 
@@ -189,7 +189,7 @@ class TestCatalog:
 
 
 # ---------------------------------------------------------------------------
-# templates.py -- template rendering
+# templates.py: template rendering
 # ---------------------------------------------------------------------------
 
 
@@ -347,7 +347,7 @@ class TestFenceAwareProse:
 
 
 # ---------------------------------------------------------------------------
-# manifest.py -- manifest tracking
+# manifest.py: manifest tracking
 # ---------------------------------------------------------------------------
 
 
@@ -416,7 +416,7 @@ class TestManifest:
 
 
 # ---------------------------------------------------------------------------
-# distribution.py -- install/update/diff
+# distribution.py: install/update/diff
 # ---------------------------------------------------------------------------
 
 
@@ -1461,7 +1461,7 @@ class TestGuidelines:
 
 
 # ---------------------------------------------------------------------------
-# diff_guidelines -- guideline diff detection
+# diff_guidelines: guideline diff detection
 # ---------------------------------------------------------------------------
 
 

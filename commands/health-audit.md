@@ -1,6 +1,6 @@
 ---
 name: health-audit
-description: Deep technical health audit -- architecture, modules, files, functions. Scored, prioritized, actionable.
+description: Deep technical health audit (architecture, modules, files, functions). Scored, prioritized, actionable.
 user-invocable: true
 category: core
 inputs:
@@ -16,7 +16,7 @@ outputs:
 
 ## Role
 
-You are the original architect and sole developer of this application -- a senior
+You are the original architect and sole developer of this application, a senior
 software engineer with 20 years of experience who wrote every line from scratch.
 You know every design decision, every shortcut, every deferred TODO. You have been
 asked to produce an honest, thorough technical health report as if preparing the
@@ -24,7 +24,7 @@ project for: (a) onboarding a new senior engineer, (b) a due-diligence review,
 and (c) your own prioritized improvement backlog.
 
 Be brutally honest. Flag what is genuinely good (so it is preserved), and be
-specific about what is weak (so it can be fixed). Avoid generic advice -- every
+specific about what is weak (so it can be fixed). Avoid generic advice. Every
 finding must reference concrete code, files, or patterns in THIS codebase.
 
 ## Procedure
@@ -58,16 +58,16 @@ Compare against the tracked issue numbers:
 Build a mental model of the project before analyzing it. Read these in order,
 skipping any that do not exist:
 
-1. `AGENTS.md`, `CLAUDE.md`, and all `.claude/rules/*.md` -- conventions,
+1. `AGENTS.md`, `CLAUDE.md`, and all `.claude/rules/*.md`: conventions,
    architecture, run commands.
-2. `README.md` -- project overview, installation, usage.
-3. Architecture docs -- look for `docs/architecture.md`, `docs/ARCHITECTURE.md`,
+2. `README.md`: project overview, installation, usage.
+3. Architecture docs: look for `docs/architecture.md`, `docs/ARCHITECTURE.md`,
    `ARCHITECTURE.md`, or equivalent.
-4. Coding standards -- look for `docs/python-standards.md`, `CONTRIBUTING.md`,
+4. Coding standards: look for `docs/python-standards.md`, `CONTRIBUTING.md`,
    `.editorconfig`, linter configs.
-5. `pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`, or equivalent --
+5. `pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`, or equivalent:
    dependencies, scripts, entry points.
-6. Top-level directory listing -- understand the project shape.
+6. Top-level directory listing: understand the project shape.
 
 From this, note:
 - **Project name and purpose**
@@ -244,14 +244,14 @@ the levels above might miss.
 
 ### Level 2: Module / App Health
 For each module or app, evaluate:
-- Single responsibility -- does it do one thing well, or is it a grab bag?
-- Interface boundaries -- are inter-module imports clean, or do modules reach
+- Single responsibility: does it do one thing well, or is it a grab bag?
+- Interface boundaries: are inter-module imports clean, or do modules reach
   into each other's internals?
-- Service layer coverage -- is business logic in services, or leaking into views,
+- Service layer coverage: is business logic in services, or leaking into views,
   handlers, templates, or model methods?
-- Test coverage and quality -- are edge cases covered? Are tests testing behavior
+- Test coverage and quality: are edge cases covered? Are tests testing behavior
   or implementation details?
-- Documentation accuracy -- do docs match reality?
+- Documentation accuracy: do docs match reality?
 
 ### Level 3: File-Level Quality
 - Files that are too large / do too much (God files)
@@ -290,15 +290,15 @@ Score each dimension 1-10 with a one-line justification:
 
 Classify every finding:
 
-- **P0 -- Critical**: Blocks production deploy, data loss risk, security
+- **P0 (Critical)**: Blocks production deploy, data loss risk, security
   vulnerability. Must fix before launch.
-- **P1 -- High**: Significant maintainability or reliability risk. Fix within the
+- **P1 (High)**: Significant maintainability or reliability risk. Fix within the
   current milestone.
-- **P2 -- Medium**: Code quality issue that compounds over time. Plan within the
+- **P2 (Medium)**: Code quality issue that compounds over time. Plan within the
   next 2 milestones.
-- **P3 -- Low**: Nice-to-have improvement, style preference, minor inconsistency.
+- **P3 (Low)**: Nice-to-have improvement, style preference, minor inconsistency.
   Address opportunistically.
-- **P4 -- Note**: Observation or suggestion. No action required but worth awareness.
+- **P4 (Note)**: Observation or suggestion. No action required but worth awareness.
 
 ## Output Format
 
@@ -362,7 +362,7 @@ Format the file as standard Markdown. No frontmatter. No emojis.
 
 ## Phase B: Group Findings into Task Batches
 
-Group all findings into **session-sized task batches** -- sets of findings that:
+Group all findings into **session-sized task batches**: sets of findings that:
 1. Touch the same files or module area
 2. Can be completed together in a single development session (2-6 hours)
 3. Have clear dependency ordering between groups
@@ -375,7 +375,7 @@ For each group, define:
 - **Dependencies**: which groups must be completed first
 - **Labels**: GitHub labels from the project's validated label taxonomy (Step 7)
 
-Target 5-10 groups. Do not over-fragment -- a group with 1 finding is too small
+Target 5-10 groups. Do not over-fragment: a group with 1 finding is too small
 unless it truly stands alone.
 
 Write the grouping into the "Task Groups" section of `docs/HEALTH-AUDIT.md`
@@ -443,7 +443,7 @@ correct labels, milestones, and dependencies.
 - Do NOT pad the report with generic best-practice advice. Every finding must be
   grounded in code you can see.
 - Do NOT soften critical findings. If something is broken, say it is broken.
-- DO acknowledge genuinely good patterns -- this is as important as finding problems.
+- DO acknowledge genuinely good patterns. This is as important as finding problems.
 - Provide file paths and line references where possible.
 - Keep the total report actionable. A 200-finding dump is less useful than 30
   well-prioritized ones.

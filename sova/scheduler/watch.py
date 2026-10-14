@@ -113,7 +113,7 @@ class WatchLoop:
             # Stop event was set during veto window
             return False
         except asyncio.TimeoutError:
-            # Veto window expired without interruption -- proceed
+            # Veto window expired without interruption: proceed
             return True
 
     async def process_task(self, task: Task) -> bool:

@@ -2,7 +2,7 @@
 
 Defines all valid states a task can be in and the allowed transitions
 between them. The orchestrator drives transitions; agents never change
-state directly -- they return results that the workflow engine interprets.
+state directly: they return results that the workflow engine interprets.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class TaskStatus(StrEnum):
     REJECTED = "rejected"
 
 
-# Terminal states -- no outgoing transitions
+# Terminal states: no outgoing transitions
 _TERMINAL = frozenset({TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.REJECTED})
 
 # Non-terminal states that PAUSED/AWAITING_APPROVAL can resume to
@@ -93,7 +93,7 @@ class InvalidTransitionError(Exception):
         super().__init__(f"Invalid transition: {current} -> {target}")
 
 
-# -- Issue Lifecycle Phases ---------------------------------------------------
+# Issue Lifecycle Phases ---------------------------------------------------
 
 
 class LifecyclePhase(StrEnum):

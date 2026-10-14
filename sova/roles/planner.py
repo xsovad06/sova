@@ -1,4 +1,4 @@
-"""Planner role -- analyze project state and propose new tasks.
+"""Planner role: analyze project state and propose new tasks.
 
 Works without an existing issue number, enabling issueless planning
 agent runs. Gathers project context (open issues, vision, config),

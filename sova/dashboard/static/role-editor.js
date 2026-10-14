@@ -1,4 +1,4 @@
-/* Role editor -- cytoscape.js DAG visualization and manipulation. */
+/* Role editor: cytoscape.js DAG visualization and manipulation. */
 
 (function() {
   'use strict';
@@ -25,7 +25,7 @@
 
   const TASK_STATES = ['backlog', 'triaged', 'researched', 'in_progress', 'in_review', 'done', 'needs_spec', 'human_only'];
 
-  // -- Init -------------------------------------------------------------------
+  // Init -------------------------------------------------------------------
 
   async function init() {
     await Promise.all([loadRole(), loadCommands()]);
@@ -84,7 +84,7 @@
     }
   }
 
-  // -- Cytoscape setup --------------------------------------------------------
+  // Cytoscape setup --------------------------------------------------------
 
   function initCytoscape() {
     const graph = roleData.graph_json || { nodes: [], edges: [] };
@@ -194,7 +194,7 @@
     }
   }
 
-  // -- Command palette --------------------------------------------------------
+  // Command palette --------------------------------------------------------
 
   function renderCommandPalette() {
     const list = document.getElementById('command-list');
@@ -227,7 +227,7 @@
     });
   }
 
-  // -- Node/edge manipulation -------------------------------------------------
+  // Node/edge manipulation -------------------------------------------------
 
   window._addNode = function(commandName) {
     if (isBuiltin) return;
@@ -391,7 +391,7 @@
     cy.getElementById(edgeId).remove();
   };
 
-  // -- Save / Validate --------------------------------------------------------
+  // Save / Validate --------------------------------------------------------
 
   function buildGraphJSON() {
     const nodes = cy.nodes().map(n => ({
@@ -469,7 +469,7 @@
     }
   }
 
-  // -- Bootstrap --------------------------------------------------------------
+  // Bootstrap --------------------------------------------------------------
 
   init();
 })();

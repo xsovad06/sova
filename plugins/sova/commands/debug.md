@@ -1,5 +1,5 @@
 ---
-description: Systematic debugging workflow: reproduce, locate, diagnose, fix, verify, prevent.
+description: Systematic debugging workflow (reproduce, locate, diagnose, fix, verify, prevent).
 argument-hint: "<issue_description>"
 example: "/sova:debug Login returns 500 when the email has a plus sign"
 category: meta
@@ -20,7 +20,7 @@ sova:debug
 
 ## Description
 
-Systematic debugging workflow: reproduce, locate, diagnose, fix, verify, prevent.
+Systematic debugging workflow (reproduce, locate, diagnose, fix, verify, prevent).
 
 ## Implementation
 
@@ -46,7 +46,7 @@ Debug an issue in the project.
 
 ### 3. Diagnose
 - Trace the execution flow from entry point to the error
-- Identify the root cause: not just the symptom
+- Identify the root cause, not just the symptom
 - Check common issues:
   - Missing migrations or schema changes
   - Import errors / circular imports

@@ -1,4 +1,4 @@
-"""CLI command: sova triage -- assess issues for agent suitability."""
+"""CLI command: sova triage (assess issues for agent suitability)."""
 
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ def _apply_config_overrides(
 
 
 async def _fetch_triage_tasks(adapter: TaskAdapter, issue: str | None) -> list[Task]:
-    """Fetch tasks to triage -- either a single issue or all backlog items."""
+    """Fetch tasks to triage: either a single issue or all backlog items."""
     if issue:
         return [await adapter.get_task(issue)]
     filters = TaskFilters(state="open")

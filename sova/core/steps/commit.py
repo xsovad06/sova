@@ -1,4 +1,4 @@
-"""Step 7: Commit -- stage and commit all changes before pushing."""
+"""Step 7: Commit. Stage and commit all changes before pushing."""
 
 from __future__ import annotations
 

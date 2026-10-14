@@ -20,7 +20,7 @@ from sova.dashboard.services.feed_service import (
 )
 from sova.db.session import close_db, init_db
 
-# -- Unit tests for FeedService --
+# Unit tests for FeedService
 
 
 class TestFeedService:
@@ -144,7 +144,7 @@ class TestGetFeedService:
         mod._feed_service = None  # cleanup
 
 
-# -- Integration tests for feed router --
+# Integration tests for feed router
 
 
 @pytest.fixture(autouse=True)

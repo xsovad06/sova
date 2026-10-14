@@ -270,7 +270,7 @@ setInterval(function() {
   });
 }, 1000);
 
-// -- Task browser --
+// Task browser
 
 var _agentHistory = [];
 var _suggested = [];
@@ -1213,7 +1213,7 @@ async function createPlannerIssues(tasks, issue) {
   }
 }
 
-// -- PR status panel --
+// PR status panel
 
 var _prStatusAbort = null;
 
@@ -1255,23 +1255,23 @@ function renderPrActionsPanel(pr, issueNumber) {
   if (readyToIntegrate) {
     dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-green';
     label.className = 'text-sm font-medium text-accent-green';
-    label.textContent = 'PR #' + pr.pr_number + ' -- Ready to Integrate';
+    label.textContent = 'PR #' + pr.pr_number + ': Ready to Integrate';
     card.className = 'rounded-lg border border-accent-green/30 bg-accent-green/5 p-4';
   } else if (pr.state === 'OPEN' && sovaBlocking) {
     dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-red';
     label.className = 'text-sm font-medium text-accent-red';
-    label.textContent = 'PR #' + pr.pr_number + ' -- Review: ' + pr.sova_review.verdict;
+    label.textContent = 'PR #' + pr.pr_number + ' (Review: ' + pr.sova_review.verdict + ')';
     card.className = 'rounded-lg border border-accent-red/30 bg-accent-red/5 p-4';
   } else if (pr.state === 'OPEN' && pr.review_decision !== 'CHANGES_REQUESTED') {
     dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-yellow';
     label.className = 'text-sm font-medium text-accent-yellow';
     var reason = !ciGreen ? 'CI ' + pr.ci_status : 'not mergeable';
-    label.textContent = 'PR #' + pr.pr_number + ' -- ' + reason;
+    label.textContent = 'PR #' + pr.pr_number + ': ' + reason;
     card.className = 'rounded-lg border border-accent-yellow/30 bg-accent-yellow/5 p-4';
   } else if (pr.state === 'MERGED') {
     dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-purple';
     label.className = 'text-sm font-medium text-accent-purple';
-    label.textContent = 'PR #' + pr.pr_number + ' -- Merged';
+    label.textContent = 'PR #' + pr.pr_number + ': Merged';
     card.className = 'rounded-lg border border-accent-purple/30 bg-accent-purple/5 p-4';
   } else {
     dot.className = 'w-2.5 h-2.5 rounded-full bg-gray-500';
@@ -1558,7 +1558,7 @@ function renderCompletedCard(agent) {
   '</div>';
 }
 
-// -- Planner card enhancement --
+// Planner card enhancement
 
 var _plannerHandoffCache = null;
 
@@ -1632,9 +1632,9 @@ function _submitPlannerIssues(runId, handoffIssue) {
   var container = document.getElementById('planner-task-list-' + runId);
   if (!container) return;
 
-  // Use cached tasks from enhancePlannerCards -- no re-fetch needed
+  // Use cached tasks from enhancePlannerCards: no re-fetch needed
   if (!_plannerHandoffCache || !_plannerHandoffCache.details || !_plannerHandoffCache.details.planned_tasks) {
-    showToast('Task data not available -- try refreshing', 'error');
+    showToast('Task data not available: try refreshing', 'error');
     return;
   }
   var allTasks = _plannerHandoffCache.details.planned_tasks;
@@ -1662,7 +1662,7 @@ function _submitPlannerIssues(runId, handoffIssue) {
   createPlannerIssues(selected, handoffIssue);
 }
 
-// -- Log Viewer --
+// Log Viewer
 
 var _LOG_PREFIX_RE = /^\[(stderr|stdout)\]\s?(.*)$/;
 var _LOG_STRUCT_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s+\[\s*(\w+)\s*\]\s*(.*)$/;
@@ -1835,7 +1835,7 @@ async function pollLogs() {
   }
 }
 
-// -- Agent actions --
+// Agent actions
 
 function togglePrInput() { /* no-op: PR input removed in card redesign */ }
 
@@ -1855,7 +1855,7 @@ async function stopAgent(runId) {
   }
 }
 
-// -- Handoff inline --
+// Handoff inline
 
 async function checkHandoffForAgents(agents) {
   try {
@@ -1993,7 +1993,7 @@ document.addEventListener('click', function(e) {
   rerunAgent(issue, role, pr ? parseInt(pr, 10) : null);
 });
 
-// -- History / Failed tabs --
+// History / Failed tabs
 
 function switchTab(tab) {
   ['history', 'failed'].forEach(function(t) {
@@ -2113,7 +2113,7 @@ function renderHistoryTable(tasks, targetId, showError) {
     '</tbody></table></div>';
 }
 
-// -- PR Tracker --
+// PR Tracker
 
 window._prTrackerData = [];
 var _prTrackerCollapsed = localStorage.getItem('sova-pr-tracker-collapsed') === 'true';
@@ -2529,7 +2529,7 @@ function _renderPrTracker() {
   renderPrSummary(visible);
 }
 
-// -- Init --
+// Init
 _initTaskFilters();
 _updateFilterToggleUI();
 if (_prTrackerCollapsed) {
@@ -2543,7 +2543,7 @@ loadPrTracker();
 checkMemoryPressure();
 loadHistory();
 
-// -- WebSocket for real-time agent status with polling fallback --
+// WebSocket for real-time agent status with polling fallback
 var _agentWs = null;
 var _wsReconnectDelay = 1000;
 var _wsMaxReconnectDelay = 16000;
@@ -2759,7 +2759,7 @@ window.addEventListener('beforeunload', function() {
 
 var _prPollInterval = setInterval(loadPrTracker, 30000);
 
-// -- View Toggle (List / Pipeline Kanban) --
+// View Toggle (List / Pipeline Kanban)
 
 var _kanbanPollInterval = null;
 var _toggleBase = 'px-3 py-1.5 text-xs font-medium border border-gray-700 transition-colors';
@@ -2800,7 +2800,7 @@ function _pipelineLabel(pipeline) {
   return labels[pipeline] || pipeline;
 }
 
-// -- Kanban drag-and-drop state --
+// Kanban drag-and-drop state
 var _kanbanDragging = false;
 var _kanbanDragRunId = null;
 var _kanbanOrderKey = 'sova-kanban-card-order';
@@ -2980,7 +2980,7 @@ async function loadKanban() {
   }
 }
 
-// -- Kanban drag-and-drop handlers (event delegation) --
+// Kanban drag-and-drop handlers (event delegation)
 // Minimum px movement before a touch gesture becomes a drag (prevents accidental drags while scrolling)
 var _TOUCH_DRAG_THRESHOLD = 10;
 
@@ -3090,7 +3090,7 @@ function _resumeKanbanPolling() {
     _resumeKanbanPolling();
   });
 
-  // -- Touch drag-and-drop --
+  // Touch drag-and-drop
   var _touchDragCard = null;
   var _touchClone = null;
   var _touchStartX = 0;
@@ -3220,7 +3220,7 @@ document.addEventListener('visibilitychange', function() {
     }
   }
 });
-// -- CodeRabbit Quota Widget --
+// CodeRabbit Quota Widget
 
 async function _loadCrQuota() {
   try {
@@ -3277,7 +3277,7 @@ async function _syncCrQuota() {
 _syncCrQuota();
 var _crQuotaPollInterval = setInterval(_syncCrQuota, 300000);
 
-// -- Memory Pressure Banner --
+// Memory Pressure Banner
 
 var _memPressureSeeded = false;
 async function _seedMemoryPressure() {
@@ -3346,7 +3346,7 @@ function dismissMemoryPressure() {
 
 var _memPressureInterval = setInterval(checkMemoryPressure, 5000);
 
-// -- API Health Banner (rate limit) --
+// API Health Banner (rate limit)
 
 function _updateApiHealthBanner(health) {
   var banner = document.getElementById('api-health-banner');
@@ -3385,7 +3385,7 @@ function _updateApiHealthBanner(health) {
   '</div>';
 }
 
-// -- Pre-launch modal --
+// Pre-launch modal
 
 var _launchModalState = null; // {issue, role, force, prNumber}
 var _launchModalTrigger = null;

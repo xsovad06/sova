@@ -1,4 +1,4 @@
-"""Tests for MCP endpoint -- SSE transport, authentication, cross-run access denial."""
+"""Tests for MCP endpoint: SSE transport, authentication, cross-run access denial."""
 
 from __future__ import annotations
 

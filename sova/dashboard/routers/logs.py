@@ -1,4 +1,4 @@
-"""Logs router -- filterable log viewer."""
+"""Logs router: filterable log viewer."""
 
 from __future__ import annotations
 

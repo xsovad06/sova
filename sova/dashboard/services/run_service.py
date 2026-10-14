@@ -1,4 +1,4 @@
-"""Run service -- thin re-export from work_service for backward compatibility."""
+"""Run service: thin re-export from work_service for backward compatibility."""
 
 from __future__ import annotations
 

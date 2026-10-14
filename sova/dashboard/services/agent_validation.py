@@ -1,4 +1,4 @@
-"""Agent validation -- conflict checks, budget limits, PR merge status, state transitions.
+"""Agent validation: conflict checks, budget limits, PR merge status, state transitions.
 
 Separated from agent_lifecycle to isolate validation and guard logic.
 """

@@ -1,4 +1,4 @@
-"""Agent pipeline progress -- step tracking and variant detection.
+"""Agent pipeline progress: step tracking and variant detection.
 
 Separated from agent_lifecycle to isolate pipeline progress computation.
 """

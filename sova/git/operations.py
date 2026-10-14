@@ -1,9 +1,9 @@
-"""Git and GitHub CLI operations -- backward-compatible re-exports.
+"""Git and GitHub CLI operations: backward-compatible re-exports.
 
 Split into focused modules:
-- branch.py -- branch management, commit, push
-- pr.py -- pull request operations via gh CLI
-- rebase.py -- rebase with LLM-assisted conflict resolution
+- branch.py: branch management, commit, push
+- pr.py: pull request operations via gh CLI
+- rebase.py: rebase with LLM-assisted conflict resolution
 """
 
 from sova.git.branch import (

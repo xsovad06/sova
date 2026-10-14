@@ -62,4 +62,4 @@ GitHub returns 422 for `APPROVE`/`REQUEST_CHANGES` on own PRs; fall back to `eve
 
 ## Desktop Notifications
 
-Fire-and-forget via `asyncio.create_task()`. All paths wrapped in try/except -- notifications never crash the pipeline.
+Fire-and-forget via `asyncio.create_task()`. All paths wrapped in try/except: notifications never crash the pipeline.

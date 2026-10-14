@@ -1,4 +1,4 @@
-"""Cost tracking queries -- CostRecord + TaskRun from the database."""
+"""Cost tracking queries: CostRecord + TaskRun from the database."""
 
 from __future__ import annotations
 

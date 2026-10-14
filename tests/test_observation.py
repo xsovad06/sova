@@ -1,4 +1,4 @@
-"""Tests for sova.oversight.observation -- cross-project health snapshot."""
+"""Tests for sova.oversight.observation: cross-project health snapshot."""
 
 from __future__ import annotations
 

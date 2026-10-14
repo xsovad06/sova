@@ -1,4 +1,4 @@
-"""Tests for MCP service -- token generation/validation and tool handlers."""
+"""Tests for MCP service: token generation/validation and tool handlers."""
 
 from __future__ import annotations
 

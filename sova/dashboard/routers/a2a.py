@@ -1,4 +1,4 @@
-"""A2A protocol API router -- Agent Card discovery and task management."""
+"""A2A protocol API router: Agent Card discovery and task management."""
 
 from __future__ import annotations
 

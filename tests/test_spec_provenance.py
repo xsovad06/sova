@@ -559,7 +559,7 @@ def test_develop_reads_spec_from_project_dir(tmp_path: Path) -> None:
     assert "The plan." in result
     assert "Decision X." in result
 
-    # worktree_dir has no specs -- should return empty
+    # worktree_dir has no specs: should return empty
     result = read_spec_sections("42", worktree_dir, ("Solution",))
     assert result == ""
 
@@ -960,7 +960,7 @@ def test_extraction_prompt_includes_review_findings() -> None:
 # ---------------------------------------------------------------------------
 
 
-# -- ReviewerRole: omit issue body when spec sections exist --
+# ReviewerRole: omit issue body when spec sections exist
 
 
 def test_review_prompt_omits_body_when_spec_exists() -> None:
@@ -1026,7 +1026,7 @@ def test_review_prompt_includes_body_when_spec_empty() -> None:
     assert "Body text here." in prompt
 
 
-# -- DevelopStep: _load_spec_for_develop --
+# DevelopStep: _load_spec_for_develop
 
 
 def test_load_spec_for_develop_approved(tmp_path: Path) -> None:
@@ -1082,7 +1082,7 @@ def test_load_spec_for_develop_exception_returns_empty() -> None:
     assert result == ""
 
 
-# -- DevelopStep: execute passes spec context as args --
+# DevelopStep: execute passes spec context as args
 
 
 async def test_develop_step_passes_spec_in_args(tmp_path: Path) -> None:
@@ -1155,7 +1155,7 @@ async def test_develop_step_no_spec_passes_issue_number_only(tmp_path: Path) -> 
     assert args_value == "42"
 
 
-# -- AddressReviewStep: spec compression logging --
+# AddressReviewStep: spec compression logging
 
 
 async def test_address_review_logs_spec_compression(tmp_path: Path) -> None:

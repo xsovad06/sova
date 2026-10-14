@@ -1,4 +1,4 @@
-"""Work API -- unified active tasks and run history."""
+"""Work API: unified active tasks and run history."""
 
 from __future__ import annotations
 

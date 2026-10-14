@@ -1,11 +1,11 @@
-"""Output persistence -- write and read agent output via the database.
+"""Output persistence: write and read agent output via the database.
 
 Each agent run's output lines are stored in the ``output_lines`` table,
 keyed by ``task_run_id``.  The ``OutputWriter`` buffers lines in memory
 and bulk-inserts them on flush (threshold-based or explicit close).
 
 For live-streaming of active agents the dashboard uses the in-memory
-``AgentState.output_lines`` deque -- this module handles only the
+``AgentState.output_lines`` deque. This module handles only the
 durable persistence layer that survives process restarts.
 """
 

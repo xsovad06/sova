@@ -1,4 +1,4 @@
-"""Researcher role -- investigate issues and prepare them for development.
+"""Researcher role: investigate issues and prepare them for development.
 
 Reads TRIAGED issues, runs the /research command for interactive codebase
 exploration, and transitions them to RESEARCHED. Uses the step pipeline

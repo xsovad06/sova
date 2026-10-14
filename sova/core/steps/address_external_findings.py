@@ -1,4 +1,4 @@
-"""Step 12: Address external findings -- fetch and fix issues from external review tools."""
+"""Step 12: Address external findings. Fetch and fix issues from external review tools."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Tests for sova.ipc -- handoff protocol, process management, notifications."""
+"""Tests for sova.ipc: handoff protocol, process management, notifications."""
 
 from __future__ import annotations
 
@@ -941,7 +941,7 @@ class TestNotify:
 
         config = NotificationConfig(desktop=True)
         with patch("sova.ipc.notifications.send_desktop_notification", side_effect=Exception("boom")):
-            # Should not raise -- fire-and-forget
+            # Should not raise: fire-and-forget
             notify(config, "Title", "Body")
             await asyncio.sleep(0)
 

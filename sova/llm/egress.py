@@ -1,4 +1,4 @@
-"""Egress filter -- scans outgoing text for sensitive data before external posts.
+"""Egress filter: scans outgoing text for sensitive data before external posts.
 
 Validates all text destined for external systems (GitHub, Jira) to prevent
 accidental credential leakage in LLM-generated content. Pure regex scanning,
@@ -86,7 +86,7 @@ _SENSITIVE_PATTERNS: list[_PatternEntry] = [
         "bearer_token",
         "[REDACTED:bearer_token]",
     ),
-    # Generic "token" / "secret" with separator -- requires = or : followed by a value
+    # Generic "token" / "secret" with separator: requires = or : followed by a value
     # Avoids matching "tokenizer", "token count", "secret sauce", etc.
     (
         re.compile(r"(?i)\btoken\s*[=:]\s*['\"]?([a-z0-9_\-/.+=]{8,})['\"]?"),
@@ -105,7 +105,7 @@ _SENSITIVE_PATTERNS: list[_PatternEntry] = [
         "[REDACTED:password]",
     ),
     # Connection string credentials (postgresql://user:pass@host)
-    # Replacement string unused -- _redact_connection_string callback handles this category
+    # Replacement string unused: _redact_connection_string callback handles this category
     (
         re.compile(r"((?:postgresql|mysql|mongodb|redis|amqp|mssql)://)[^\s:]+:([^\s@]+)@"),
         "connection_string",

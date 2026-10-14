@@ -1,4 +1,4 @@
-"""Tests for PR creation throttle service -- queue, process, dequeue, recovery."""
+"""Tests for PR creation throttle service: queue, process, dequeue, recovery."""
 
 from __future__ import annotations
 

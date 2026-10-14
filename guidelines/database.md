@@ -48,7 +48,7 @@ Model.json_col.isnot(None)
 | **Tests** | `create_all` (skip migrations) | In-memory DBs; fast setup |
 | **Production** | Alembic migrations | Adds columns to existing tables |
 
-`create_all` only creates missing tables -- it never adds columns to existing ones. Adding a column without a migration causes `OperationalError: no such column`.
+`create_all` only creates missing tables. It never adds columns to existing ones. Adding a column without a migration causes `OperationalError: no such column`.
 
 ## Migration Conventions
 

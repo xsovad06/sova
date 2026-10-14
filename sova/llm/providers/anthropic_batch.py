@@ -118,7 +118,7 @@ class BatchProvider(LLMProvider):
             return await self._submit_vertex(requests, poll_interval=poll_interval, timeout=timeout)
         return await self._submit_anthropic(requests, poll_interval=poll_interval, timeout=timeout)
 
-    # -- Vertex AI backend --
+    # Vertex AI backend
 
     async def _submit_vertex(
         self,
@@ -416,7 +416,7 @@ class BatchProvider(LLMProvider):
             log.warning("batch.vertex.availability_check_failed", error=str(exc), exc_info=True)
             return False, f"Vertex AI unavailable: {exc}"
 
-    # -- Anthropic direct backend --
+    # Anthropic direct backend
 
     async def _submit_anthropic(
         self,
@@ -603,7 +603,7 @@ class BatchProvider(LLMProvider):
             log.warning("batch.anthropic.availability_check_failed", error=str(exc), exc_info=True)
             return False, f"Anthropic API unavailable: {exc}"
 
-    # -- Shared helpers --
+    # Shared helpers
 
     def normalize_model_name(self, model: str) -> str:
         """Expand a bare family alias to a full model ID.

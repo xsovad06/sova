@@ -27,14 +27,14 @@ Tier 3: Session Memory (~/.claude/projects/.../memory/)
 - Knowledge starts at **Tier 2** (agent learns a pattern from a review or debugging session)
 - Once confirmed across multiple sessions, it gets **promoted to Tier 1** (added to `.claude/rules/` or `AGENTS.md`)
 - If a pattern applies to multiple projects, it gets **promoted to Tier 0** (shared knowledge)
-- **Tier 3** is auto-managed by Claude Code -- agents don't write here directly
+- **Tier 3** is auto-managed by Claude Code: agents don't write here directly
 
 ---
 
 ## Tier 0: Shared Knowledge
 
 **Location**: `~/.claude/shared-knowledge/`
-**Scope**: Cross-project -- patterns that apply regardless of tech stack or project
+**Scope**: Cross-project (patterns that apply regardless of tech stack or project)
 **Tracked in git**: No (lives outside any repo)
 **Loaded by**: SOVA agent startup
 
@@ -67,7 +67,7 @@ Tier 3: Session Memory (~/.claude/projects/.../memory/)
 ## Tier 1: Project Rules (Always-Loaded Context)
 
 **Location**: Repo root + `.claude/rules/`
-**Scope**: Project-specific -- conventions for this repository
+**Scope**: Project-specific (conventions for this repository)
 **Tracked in git**: Yes
 **Loaded by**: Claude Code automatically (no truncation)
 
@@ -95,17 +95,17 @@ project-root/
 |------|------|---------------|
 | `AGENTS.md` | Agent-agnostic conventions, project overview, tracker config | < 200 lines |
 | `CLAUDE.md` | Claude-specific: run commands, knowledge system, agent config | < 150 lines |
-| `.claude/rules/*.md` | Modular knowledge -- one file per domain | < 150 lines each |
+| `.claude/rules/*.md` | Modular knowledge: one file per domain | < 150 lines each |
 | `.claude/commands/*.md` | Workflow commands and deep domain skills | No limit (on-demand) |
 
 ### Rules Files Guidelines
 
 Each `.claude/rules/` file should:
 - Focus on a single domain (architecture, patterns, testing, UI, models, etc.)
-- Contain **confirmed, stable patterns** -- not experiments
+- Contain **confirmed, stable patterns**, not experiments
 - Use a consistent format: bold label + concise description
-- Include the "why" -- not just the rule, but the reason behind it
-- Stay under 150 lines -- if it grows beyond that, split into sub-domains
+- Include the "why", not just the rule, but the reason behind it
+- Stay under 150 lines: if it grows beyond that, split into sub-domains
 
 ### When to Add to Tier 1
 
@@ -118,8 +118,8 @@ A pattern belongs in Tier 1 when:
 ### Commands as Knowledge
 
 `.claude/commands/*.md` files serve two purposes:
-1. **Workflow commands** (e.g., `/develop`, `/pr`) -- procedural knowledge for development tasks
-2. **Domain deep-dives** (e.g., `/architecture-overview`, `/import-patterns`) -- detailed reference material loaded on demand
+1. **Workflow commands** (e.g., `/develop`, `/pr`): procedural knowledge for development tasks
+2. **Domain deep-dives** (e.g., `/architecture-overview`, `/import-patterns`): detailed reference material loaded on demand
 
 The distinction: rules files are always loaded; commands are loaded only when invoked. Put frequently-needed patterns in rules files. Put detailed reference material in commands.
 
@@ -302,7 +302,7 @@ touch ~/.claude/shared-knowledge/{patterns,git-workflows,proactive-experimentati
 ### Regular Pruning
 
 Agent memory files have size limits. When they grow too large:
-1. Identify patterns that have been promoted to Tier 1 -- remove from Tier 2
+1. Identify patterns that have been promoted to Tier 1: remove from Tier 2
 2. Remove entries that turned out to be wrong or no longer relevant
 3. Merge similar entries
 4. Remove stale `[confirmed: 0]` entries (oldest first) when `cookbook.md` exceeds 200 lines

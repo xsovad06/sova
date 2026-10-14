@@ -63,9 +63,9 @@ jobs:
           echo -e "$sensitive_files" > /tmp/sensitive_files.txt
 
           if [ "$safe" = "true" ]; then
-            echo "All changed files are safe -- will auto-approve CI"
+            echo "All changed files are safe, will auto-approve CI"
           else
-            echo "Sensitive files detected -- manual approval required:"
+            echo "Sensitive files detected, manual approval required:"
             echo -e "$sensitive_files"
           fi
 
@@ -112,13 +112,13 @@ jobs:
             --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Fork PR Safety Gate")))] | length')
 
           if [ "$existing" -gt "0" ]; then
-            echo "Safety gate comment already posted -- skipping"
+            echo "Safety gate comment already posted, skipping"
             exit 0
           fi
 
           sensitive_list=$(cat /tmp/sensitive_files.txt)
 
-          body="## Fork PR Safety Gate -- Manual Approval Required"
+          body="## Fork PR Safety Gate: Manual Approval Required"
           body="${body}"$'\n\n'"This PR modifies files that affect the CI pipeline or build infrastructure."
           body="${body}"$'\n'"A maintainer must review these changes and manually click **Approve workflows to run**."
           body="${body}"$'\n\n'"**Sensitive files detected:**"

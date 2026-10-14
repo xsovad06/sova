@@ -1,4 +1,4 @@
-"""Resource persistence -- batch-insert samples and write summaries to the database.
+"""Resource persistence: batch-insert samples and write summaries to the database.
 
 Modeled after ``sova.core.output.OutputWriter``.  Buffers ``ResourceSample``
 objects in memory and bulk-inserts them on flush (threshold-based or explicit
