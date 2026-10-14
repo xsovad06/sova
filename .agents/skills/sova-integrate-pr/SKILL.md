@@ -204,10 +204,18 @@ conflicts to resolve.
    head that Phase 5 merges.
 
    If the check finds something stale, stage it now (do not commit or push it
-   separately; drop any path the project does not have, since `git add`
-   rejects a missing pathspec):
+   separately). The loop skips paths absent from both the worktree and the
+   index, and paths the project gitignores: `git add` exits non-zero on either,
+   and some projects keep `.claude/` local-only, so their memory and rules never
+   belong in a commit. Tracked entries are staged unconditionally first
+   (`git check-ignore` on a directory can report it ignored even though it has
+   tracked descendants, which would otherwise skip their deletions too), and
+   the ignore check applies only to staging new, untracked files:
    ```bash
-   git add -A .claude/agent-memory/ AGENTS.md README.md docs/ .claude/rules/
+   for p in .claude/agent-memory/ AGENTS.md README.md docs/ .claude/rules/; do
+     [ -n "$(git ls-files -- "$p")" ] && git add -u -- "$p"
+     { [ -e "$p" ] && ! git check-ignore -q "$p"; } && git add -A -- "$p"
+   done
    ```
 
    Then amend anything staged into this commit and push once:
@@ -406,7 +414,10 @@ project AND `PUSHED` is `0`.
      ```bash
      COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
      case "$COMMON_DIR" in /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;; *) PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;; esac
-     git add -A .claude/agent-memory/ AGENTS.md README.md docs/ .claude/rules/
+     for p in .claude/agent-memory/ AGENTS.md README.md docs/ .claude/rules/; do
+       [ -n "$(git ls-files -- "$p")" ] && git add -u -- "$p"
+       { [ -e "$p" ] && ! git check-ignore -q "$p"; } && git add -A -- "$p"
+     done
      if ! git diff --cached --quiet; then
        git commit --amend --no-edit
        git push --force-with-lease && echo 1 > "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed"
@@ -533,7 +544,10 @@ gh pr merge <PR_NUMBER> [--squash|--rebase|--merge] [--delete-branch] [--match-h
 
 If `merge_method` is "auto", omit strategy flags to use the GitHub repo default. Otherwise use the configured method. Only include `--delete-branch` when `delete_branch = true`. When Phase 2b printed `GATE_PASS <sha>`, pass `--match-head-commit <sha>` so GitHub refuses the merge if the head moved after the gate ran; on that refusal, re-run the `sova-integrate-pr` skill <PR_NUMBER> from Phase 2.
 
-**Stop if merge fails**: report the error (usually merge conflicts, branch protection, or required reviews).
+**Stop if merge fails**: report the error (usually merge conflicts, branch protection, or required reviews). Recover by cause:
+- **"the base branch policy prohibits the merge"**: a repository ruleset blocks CLI merges outright, and every merge method fails the same way even when the PR is approved and green. Do not retry with a different method. Ask the user to merge with the GitHub UI button, then re-run the `sova-integrate-pr` skill <PR_NUMBER>; Phase 1 sees the PR as `MERGED` and continues with cleanup.
+- **Head changed (`--match-head-commit` refusal)**: re-run the `sova-integrate-pr` skill <PR_NUMBER> from Phase 2, as above. Do not send the user to the UI: the new head has not passed the gate.
+- **Conflicts, pending required reviews or checks**: report what blocks the merge; it must be resolved before any merge path, CLI or UI, can succeed.
 
 ### Phase 6: Post-Merge Cleanup (incorporates the `sova-after-merge` skill)
 

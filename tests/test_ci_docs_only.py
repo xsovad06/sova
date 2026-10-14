@@ -562,7 +562,8 @@ class TestIntegratePRDoesNotPush:
         step7 = text[text.index("7. **Before pushing") : text.index("### Phase 3:")]
         assert "fold in any stale documentation for free" in step7
         assert "run the Phase 3 check" in step7 or "Phase 3 documentation" in step7 or "Phase 3 check" in step7
-        assert "git add -A .claude/agent-memory/" in step7
+        assert "for p in .claude/agent-memory/" in step7
+        assert 'git check-ignore -q "$p"' in step7
         assert "git commit --amend --no-edit" in step7
         assert 'git push --force-with-lease && echo 1 > "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed"' in step7
 
