@@ -46,7 +46,8 @@ class ExtractionResult:
     error: str | None = None
 
 
-async def extract_memories(  # noqa: RUF029 (async retained for caller compatibility)
+# async retained for caller compatibility
+async def extract_memories(  # noqa: RUF029
     *,
     role: str,
     issue_number: str,
