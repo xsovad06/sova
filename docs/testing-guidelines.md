@@ -27,7 +27,7 @@ asyncio_mode = "auto"
 
 ## Test File Layout
 
-All tests live in `tests/` as flat modules (no subdirectories). The single exception is `tests/conftest.py`, which holds only the autouse `SOVA_*` env-isolation fixture (see below): it does not host per-file fixtures or helpers, those stay in their own test modules.
+All tests live in `tests/` as flat modules (no subdirectories). The single exception is `tests/conftest.py`, which holds only autouse isolation fixtures and a small set of fixtures/helpers shared across many test modules (`seed_config`, `csrf_request_headers`, `InvariantRepo`/`invariant_repo`): it does not host per-file-only fixtures or helpers, those stay in their own test modules.
 
 | Test file | Source package | Approx tests |
 |-----------|---------------|--------------|
@@ -176,5 +176,6 @@ def test_rejects_invalid_values(model_cls, field, invalid_value):
 1. **Missing cache clears**: file-backed services cache by mtime. Clear `_handoff_caches` in tests.
 2. **Async context managers**: always `async with await get_session() as session:`.
 3. **autouse DB fixture scope**: per-test (default). Never use `scope="module"` for DB fixtures.
-4. **No per-file helpers in conftest.py**: helpers (`_make_ctx`, `_shell_result`) are defined per-file. Copy the pattern. `tests/conftest.py` is reserved for the autouse `SOVA_*` env-stripping fixture only.
-5. **Ambient `SOVA_*` env vars**: a dev shell running SOVA agents may export `SOVA_MCP_TOKEN`, `SOVA_AGENT_RUN`, etc. `tests/conftest.py`'s autouse fixture strips all `SOVA_*` vars except `SOVA_DATABASE_URL` before each test so Pydantic Settings config construction is deterministic. If a test needs a specific `SOVA_*` var, set it explicitly via `monkeypatch.setenv` inside the test.
+4. **No per-file-only helpers in conftest.py**: helpers used by a single file (`_make_ctx`, `_shell_result`) are defined per-file. Copy the pattern. `tests/conftest.py` is reserved for autouse isolation fixtures and helpers genuinely shared across multiple test modules.
+5. **Ambient `SOVA_*` env vars**: a dev shell running SOVA agents may export `SOVA_MCP_TOKEN`, `SOVA_AGENT_RUN`, etc. `tests/conftest.py`'s autouse `_isolate_sova_env` fixture strips all `SOVA_*` vars except `SOVA_DATABASE_URL` before each test so Pydantic Settings config construction is deterministic. If a test needs a specific `SOVA_*` var, set it explicitly via `monkeypatch.setenv` inside the test.
+6. **Never write to a hard-coded `/tmp/...` path**: use the `tmp_path`/`tmp_path_factory` fixtures. A fixed path is a real, shared location on disk that collides across `pytest-xdist` workers and survives between runs. `tests/conftest.py`'s autouse `_isolate_cwd` fixture already chdirs each test into a fresh temp directory (so `load_config(None)`'s `Path.cwd()` fallback can't read the developer's real `.claude/sova.db`), and the sibling autouse `_isolate_home_config` fixture monkeypatches `Path.home()` (plus `sova.config.registry._REGISTRY_DIR`/`_REGISTRY_FILE` directly, since those module constants are bound to the real `Path.home()` at import time) to a fresh temp directory, so `sova/db/session.py:_get_database_url()`'s no-project-dir fallback and the project registry can never resolve under the developer's real `~/.config/sova/`. These two fixtures cover the ambient fallback paths; they do not protect an explicit `Path("/tmp/...")` literal passed as `project_dir` or similar, which must be replaced with `tmp_path` at each call site.

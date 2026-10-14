@@ -364,9 +364,11 @@ class TestMultiProjectSlugResolution:
     candidate actually came from.
     """
 
-    async def test_resume_targets_the_candidates_own_project_slug(self, healthy_network, guard_config, spawner) -> None:
-        project_a = Path("/tmp/project-a")
-        project_b = Path("/tmp/project-b")
+    async def test_resume_targets_the_candidates_own_project_slug(
+        self, healthy_network, guard_config, spawner, tmp_path: Path
+    ) -> None:
+        project_a = tmp_path / "project-a"
+        project_b = tmp_path / "project-b"
         await _add(_run(issue="910", status="failed", cost="1"))
         await _add(_run(issue="920", status="failed", cost="1"))
 

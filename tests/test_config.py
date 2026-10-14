@@ -904,6 +904,42 @@ class TestProjectRegistry:
         assert result == real.resolve()
 
 
+class TestHomeConfigIsolation:
+    """Regression test for the ``_isolate_home_config`` autouse fixture (issue #1184).
+
+    Every other test in the suite already runs under that fixture, so the
+    no-project DB fallback and the project registry can never be observed
+    resolving under the real ``~/.config/sova`` from inside a normal test. This
+    class asserts the redirection directly: both call sites must resolve under
+    the fixture's fake home, not under the real one, so a future refactor of
+    the fixture can't silently stop covering one of them.
+    """
+
+    def test_database_url_fallback_resolves_under_fake_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+
+        from sova.db.session import _get_database_url
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        real_home = os.path.expanduser("~")
+
+        url = _get_database_url(None)
+
+        assert str(Path.home()) in url
+        assert real_home not in url
+
+    def test_registry_resolves_under_fake_home(self) -> None:
+        import os
+
+        from sova.config import registry
+
+        real_home = os.path.expanduser("~")
+
+        assert registry._REGISTRY_DIR.is_relative_to(Path.home())
+        assert registry._REGISTRY_FILE.is_relative_to(Path.home())
+        assert not str(registry._REGISTRY_DIR).startswith(real_home)
+
+
 class TestFieldConstraints:
     """Pydantic Field constraints reject invalid numeric values."""
 
