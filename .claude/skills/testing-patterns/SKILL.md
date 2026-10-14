@@ -89,6 +89,6 @@ async def client(tmp_path):
 
 ## Running
 
-- `make check` before push (CI-equivalent)
+- `make check` before push (close to CI, not identical: see docs/testing-guidelines.md)
 - `make test-py` for pytest only
 - `make lint` for ShellCheck + Ruff
