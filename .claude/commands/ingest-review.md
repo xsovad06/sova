@@ -80,12 +80,23 @@ Parse structured review findings from TaskRun records and update agent memory.
 7. Read existing memory file:
    - `.claude/agent-memory/cookbook.md`
 
-8. Update `.claude/agent-memory/cookbook.md`:
-   - Append new findings under the matching domain section (no duplicates)
+8. Before writing anything, check whether each lesson is already recorded in
+   a higher tier: `.claude/rules/*.md`, `AGENTS.md`, and `docs/*-guidelines.md`.
+   - **Already a rule, and the PR followed it**: skip it; nothing to learn.
+   - **Already a rule, but the PR still broke it**: the rule is not being
+     enforced. Record it in the mistakes section as an enforcement gap naming
+     the rule and the command that should have caught it (for example "review
+     did not check X"), instead of restating the rule.
+   - **Not recorded anywhere**: continue to step 9.
+
+9. Update `.claude/agent-memory/cookbook.md`:
+   - Append new findings under the matching domain section (no duplicates).
+     File by topic, never under a per-PR heading: per-PR sections cannot be
+     deduplicated or promoted. Cite the PR inline, e.g. `(PR #123, reviewer)`.
    - If a mistake already exists, increment its `[Nx]` count
    - If a finding is high-impact (severity >= 8), also add it to `.claude/agent-memory/MEMORY.md`
 
-9. Report what was learned and which files were updated.
+10. Report what was learned and which files were updated.
 
 ## Cross-References
 
