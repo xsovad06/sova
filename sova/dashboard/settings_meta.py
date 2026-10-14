@@ -920,12 +920,14 @@ _REGISTRY: list[SettingMeta] = [
         "Skip title prefixes",
         "Tickets with these title prefixes are auto-classified as human_only (e.g. [QE], [Spike])",
         "triage",
+        "list",
     ),
     SettingMeta(
         "triage.skip_labels",
         "Skip labels",
         "Tickets with any of these labels are auto-classified as human_only (e.g. post-mvp, QE)",
         "triage",
+        "list",
     ),
     SettingMeta(
         "triage.min_quality_score",

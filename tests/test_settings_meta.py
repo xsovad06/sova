@@ -79,6 +79,39 @@ class TestSettingMeta:
         registered = {m.key for m in _REGISTRY if m.key.startswith("mcp.atlassian.")}
         assert registered == set(flat)
 
+    def test_container_valued_settings_declare_their_container_type(self) -> None:
+        """A ``list[str]`` field registered as ``"string"`` cannot be saved at all.
+
+        ``_cast_value()`` only builds a list for ``value_type="list"``, so such a
+        field is cast to a bare string, ``_validate_config_consistency()`` then
+        rejects it with "Input should be a valid list", and the key becomes
+        unsettable from both `sova config set` and the settings page. Guarding the
+        whole registry at once, because the mismatch is invisible until someone
+        tries to write that one key (``triage.skip_labels``, issue #1178).
+        """
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.services.settings_service import _flatten_dict
+
+        flat: dict = {}
+        _flatten_dict("", ProjectConfig().model_dump(), flat)
+
+        expected_for_type = {list: "list", dict: "object", bool: "boolean"}
+        container_types = {"list": list, "object": dict}
+
+        mismatched = []
+        for meta in _REGISTRY:
+            if meta.key not in flat:
+                continue
+            actual = type(flat[meta.key])
+            expected = expected_for_type.get(actual)
+            if expected is not None and meta.value_type != expected:
+                mismatched.append(f"{meta.key}: registered '{meta.value_type}', config declares '{expected}'")
+            declared = container_types.get(meta.value_type)
+            if declared is not None and actual is not declared:
+                mismatched.append(f"{meta.key}: registered '{meta.value_type}', config declares {actual.__name__}")
+
+        assert mismatched == []
+
     def test_commit_pr_auto_link_issues_meta_registered(self) -> None:
         meta = get_meta("commit.pr_auto_link_issues")
         assert meta is not None

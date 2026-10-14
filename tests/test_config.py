@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from click.testing import Result
 from pydantic import ValidationError
 
 from sova.config.loader import load_config
@@ -1683,3 +1685,107 @@ def test_develop_step_timeout_tier_env_overrides_beat_toml(tmp_path: Path, monke
     cfg = load_config(tmp_path)
     assert cfg.develop.step_timeout_normal == 1500
     assert cfg.develop.step_timeout_complex == 4200
+
+
+# ---------------------------------------------------------------------------
+# sova config get
+# ---------------------------------------------------------------------------
+
+
+def _run_config_get(key: str, project: Path) -> Result:
+    """Invoke `sova config get <key> --project <project>` against the real app."""
+    from typer.testing import CliRunner
+
+    from sova.cli.app import app
+
+    return CliRunner().invoke(app, ["config", "get", key, "--project", str(project)])
+
+
+class TestConfigGet:
+    """`sova config get <key>` reads one value via `load_config()`.
+
+    Mirrors `TestConfigCommand` in tests/test_cli.py, but stays here with the
+    other `load_config()` tests: that module's autouse in-memory
+    `SOVA_DATABASE_URL` fixture would hide the sova.toml these read.
+    """
+
+    def test_get_prints_a_string_value(self, tmp_path: Path) -> None:
+        (tmp_path / "sova.toml").write_text('[task_source]\njira_jql_filter = "project = RHCLOUD"\n')
+
+        result = _run_config_get("task_source.jira_jql_filter", tmp_path)
+
+        assert result.exit_code == 0
+        assert result.output.strip() == "project = RHCLOUD"
+
+    def test_get_prints_a_list_value_as_json(self, tmp_path: Path) -> None:
+        (tmp_path / "sova.toml").write_text('[triage]\nskip_labels = ["wontfix", "duplicate"]\n')
+
+        result = _run_config_get("triage.skip_labels", tmp_path)
+
+        assert result.exit_code == 0
+        assert json.loads(result.output.strip()) == ["wontfix", "duplicate"]
+
+    def test_get_masks_a_secret_value(self, tmp_path: Path) -> None:
+        (tmp_path / "sova.toml").write_text('[llm]\napi_key = "sk-super-secret-token"\n')
+
+        result = _run_config_get("llm.api_key", tmp_path)
+
+        assert result.exit_code == 0
+        assert result.output.strip() == "(secret)"
+        assert "sk-super-secret-token" not in result.output
+
+    def test_get_unknown_key_exits_nonzero(self, tmp_path: Path) -> None:
+        result = _run_config_get("no.such.key", tmp_path)
+
+        assert result.exit_code == 1
+        assert "Unknown setting" in result.output
+
+    def test_get_partial_key_is_unknown(self, tmp_path: Path) -> None:
+        """A prefix that resolves to a container, not a registered leaf, is unknown."""
+        result = _run_config_get("task_source.nonexistent", tmp_path)
+
+        assert result.exit_code == 1
+
+    def test_get_unset_value_prints_empty_string(self, tmp_path: Path) -> None:
+        result = _run_config_get("github_repo", tmp_path)
+
+        assert result.exit_code == 0
+        assert result.output.strip() == ""
+
+    def test_get_reports_the_real_error_for_an_unloadable_config(self, tmp_path: Path) -> None:
+        """The validation message names the bad key; "No configuration found" does not."""
+        (tmp_path / "sova.toml").write_text('[agent]\nmax_budget = "not-a-number"\n')
+
+        result = _run_config_get("agent.model", tmp_path)
+
+        assert result.exit_code == 1
+        assert "max_budget" in result.output
+        assert "sova config set" in result.output
+
+    def test_get_unknown_key_still_reports_with_an_unloadable_config(self, tmp_path: Path) -> None:
+        """`sova config` is config-tolerant, so a key-only answer must not need a load."""
+        (tmp_path / "sova.toml").write_text('[agent]\nmax_budget = "not-a-number"\n')
+
+        result = _run_config_get("no.such.key", tmp_path)
+
+        assert result.exit_code == 1
+        assert "Unknown setting" in result.output
+
+    def test_get_secret_needs_no_load_at_all(self, tmp_path: Path) -> None:
+        """A credential query answers `(secret)` even when the config is unloadable."""
+        (tmp_path / "sova.toml").write_text('[agent]\nmax_budget = "not-a-number"\n')
+
+        result = _run_config_get("llm.api_key", tmp_path)
+
+        assert result.exit_code == 0
+        assert result.output.strip() == "(secret)"
+
+    def test_get_masks_a_secret_even_without_the_value_type_shortcut(self, tmp_path: Path) -> None:
+        """Defense in depth: the read path masks secrets independently of the early return."""
+        from sova.dashboard.services.settings_service import _flatten_dict, get_config
+
+        flat: dict = {}
+        _flatten_dict("", load_config(tmp_path).model_dump(), flat)
+        flat["llm.api_key"] = "sk-super-secret-token"
+
+        assert get_config(raw=flat)["llm.api_key"] != "sk-super-secret-token"
