@@ -127,6 +127,8 @@ Create a pull request for the current branch using the project's standard PR tem
 8. **Run preflight CI checks locally** before pushing:
    Run `make check`. It is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them). This must pass before any push. Fix any failures before proceeding.
 
+   If the project has an executable `.claude/scripts/prepush-check.sh`, run it too. It holds project-specific mechanical checks (deploy config drift, dependency downgrades after a rebase, spec regeneration) that generic commands cannot know about. Treat every `FAIL` line as blocking and every `WARN` line as something to confirm before pushing.
+
 9. **Verify authorship and text** before pushing. Each check must print nothing; fix any hit (reword the commit, correct the author, or edit the body file) and re-run all of them:
    ```bash
    BASE=$(gh pr view --json baseRefName --jq .baseRefName 2>&1) || { case "$BASE" in *"no pull requests found"*) BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name) ;; *) echo "Unable to resolve the base branch: $BASE" >&2; exit 1 ;; esac; }

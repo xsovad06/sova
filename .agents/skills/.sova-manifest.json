@@ -58,11 +58,11 @@
       "managed": true
     },
     "sova-ingest-review/SKILL.md": {
-      "hash": "e170172737d1576c",
+      "hash": "b001b70bc5e9a7e0",
       "managed": true
     },
     "sova-integrate-pr/SKILL.md": {
-      "hash": "adde795b7d06dda4",
+      "hash": "f8cbbbb6856f7db0",
       "managed": true
     },
     "sova-issue/SKILL.md": {
@@ -78,7 +78,7 @@
       "managed": true
     },
     "sova-pr/SKILL.md": {
-      "hash": "a6314f322181f73d",
+      "hash": "9b4522dd11f2f160",
       "managed": true
     },
     "sova-rearrange-commits/SKILL.md": {
@@ -90,7 +90,7 @@
       "managed": true
     },
     "sova-review/SKILL.md": {
-      "hash": "762bc92106be3cc1",
+      "hash": "e151fdf54ae5160d",
       "managed": true
     },
     "sova-review-full/SKILL.md": {
@@ -98,7 +98,7 @@
       "managed": true
     },
     "sova-review-pr/SKILL.md": {
-      "hash": "3c6eab29265bd0b2",
+      "hash": "8045b955a981685e",
       "managed": true
     },
     "sova-simplify/SKILL.md": {
