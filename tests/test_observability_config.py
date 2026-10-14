@@ -56,7 +56,7 @@ class TestCoverageReporting:
             r"env:\n\s+COVERAGE_CORE: sysmon\n\s+run: (pytest [^\n]*--cov=sova[^\n]*)",
             job_block,
         )
-        assert step is not None, "coverage pytest invocation with COVERAGE_CORE: sysmon not found in the python-test job"
+        assert step is not None, "coverage pytest invocation with COVERAGE_CORE sysmon not found in python-test job"
         pytest_cmd = step.group(1)
         assert "-n auto" in pytest_cmd
         assert "--durations=25" in pytest_cmd
