@@ -1,4 +1,4 @@
-"""Tests for sova.monitoring -- resource collector, models, writer, and cleanup."""
+"""Tests for sova.monitoring: resource collector, models, writer, and cleanup."""
 
 from __future__ import annotations
 
@@ -536,7 +536,7 @@ class TestResourceCollector:
 
         collector.samples = deque(maxlen=2)
 
-        # Take 3 samples -- first will be evicted
+        # Take 3 samples: first will be evicted
         s1 = collector._take_sample(mock_proc)
         collector.samples.append(s1)
         collector._update_aggregates(s1)

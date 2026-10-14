@@ -1,4 +1,4 @@
-"""Workflow engine -- drives the state machine for a single task.
+"""Workflow engine: drives the state machine for a single task.
 
 The WorkflowEngine coordinates step execution, gate checks, retries,
 and DB persistence. It is the heart of the orchestrator.
@@ -379,7 +379,7 @@ class WorkflowEngine:
         Two notification patterns exist for steps that pause for approval:
         (A) Step calls write_step_handoff(..., awaiting_approval=True) and handles its own
             handoff file + notification. Return StepResult with awaiting_approval=True but
-            no handoff_actions -- the engine only sets DB status and sends its own notification.
+            no handoff_actions: the engine only sets DB status and sends its own notification.
         (B) Step returns StepResult(awaiting_approval=True, handoff_actions=[...]) and lets
             the engine write the handoff file via _write_approval_handoff below.
         SpecStep uses pattern (A); generic approval steps use pattern (B).
@@ -864,7 +864,7 @@ class WorkflowEngine:
             return remaining, True
         return step_timeout, False
 
-    # -- Output helpers --
+    # Output helpers
 
     async def _write_output(self, text: str) -> None:
         if self._output_writer:
@@ -877,7 +877,7 @@ class WorkflowEngine:
             await self._output_writer.close()
             self._output_writer = None
 
-    # -- DB persistence --
+    # DB persistence
 
     async def _check_per_issue_budget(self, result: WorkflowResult) -> None:
         """Check if the per-issue budget has been exceeded by prior runs.

@@ -1,4 +1,4 @@
-"""Step: Scan Project -- gather project state for the planner.
+"""Step: Scan Project. Gather project state for the planner.
 
 Collects open issues, recent commits, project structure, and tech stack
 without any LLM calls. Populates ctx.plan_result.scan.

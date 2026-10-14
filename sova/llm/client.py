@@ -1,4 +1,4 @@
-"""LLM client -- thin delegation layer to the active provider.
+"""LLM client: thin delegation layer to the active provider.
 
 All existing callers (``from sova.llm.client import invoke``) continue
 to work unchanged.  The actual implementation lives in the configured

@@ -1,4 +1,4 @@
-"""Spec file utilities -- find, read, and parse spec files.
+"""Spec file utilities: find, read, and parse spec files.
 
 Core-layer functions for spec file operations. Dashboard-level mutations
 (approve, reject, write_answers) remain in ``sova.dashboard.services.spec_service``.
@@ -80,7 +80,7 @@ def _parse_spec(text: str, path: Path, issue_number: str) -> dict:
     created_match = re.search(r"\*\*Created\*\*:\s*([\d-]+)", text)
     result["created"] = created_match.group(1) if created_match else ""
 
-    # Extract title from first heading -- avoid regex backtracking (S5852)
+    # Extract title from first heading: avoid regex backtracking (S5852)
     title = f"Spec for #{issue_number}"
     title_match = re.search(r"^# (.+)", text)
     if title_match:

@@ -1,4 +1,4 @@
-/* SOVA Dashboard -- Resource monitoring floating widget */
+/* SOVA Dashboard: Resource monitoring floating widget */
 
 (function () {
   'use strict';

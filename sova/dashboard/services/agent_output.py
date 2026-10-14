@@ -80,7 +80,7 @@ async def _read_output(agent: AgentState) -> None:
         raise
     except Exception:  # noqa: BLE001 (reader task must report and exit cleanly, never crash the event loop)
         log.exception("output_reader.failed", run_id=agent.run_id)
-        msg = "[ERROR] Output reader crashed -- agent may still be running"
+        msg = "[ERROR] Output reader crashed: agent may still be running"
         try:
             await _buffer_line(agent, msg)
         except (OSError, RuntimeError, SQLAlchemyError):

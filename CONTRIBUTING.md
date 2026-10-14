@@ -21,12 +21,12 @@ Maintainer, collaborator, and bot pull requests are never evaluated. If a genuin
 ### Prerequisites
 
 - Python 3.12+
-- [GitHub CLI](https://cli.github.com/) (`gh`) -- authenticated
+- [GitHub CLI](https://cli.github.com/) (`gh`): authenticated
 - `git`
 - `shellcheck` (for bash linting: `brew install shellcheck` on macOS)
 
 **Optional** (for AI-assisted workflows):
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`) -- powers SOVA's slash commands and agent orchestration
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`): powers SOVA's slash commands and agent orchestration
 
 ### Quick Setup (collaborators)
 

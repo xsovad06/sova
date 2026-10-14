@@ -1,4 +1,4 @@
-"""Developer role -- implement features and fixes via TDD workflow.
+"""Developer role: implement features and fixes via TDD workflow.
 
 Enforces Gate 3: only picks up RESEARCHED or IN_PROGRESS issues.
 Uses the full developer step pipeline via the WorkflowEngine.
@@ -73,7 +73,7 @@ class DeveloperRole(AgentRole):
                 )
 
         # Address-review mode: respawned to fix reviewer findings.
-        # Use pr_number (set by handoff) as primary signal -- task.state is
+        # Use pr_number (set by handoff) as primary signal: task.state is
         # unreliable because the dashboard may transition it before we read it.
         if ctx.pr_number:
             return await self._execute_address_review(ctx)

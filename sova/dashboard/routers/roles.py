@@ -1,4 +1,4 @@
-"""Roles API router -- CRUD for workflow definitions and role introspection."""
+"""Roles API router: CRUD for workflow definitions and role introspection."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class ValidateRequest(BaseModel):
     graph_json: dict
 
 
-# -- List / Read ---------------------------------------------------------------
+# List / Read ---------------------------------------------------------------
 
 
 @router.get("")
@@ -88,12 +88,12 @@ async def get_role(name: str) -> dict[str, Any]:
             return role_service.definition_to_dict(definition)
 
 
-# -- Create / Update / Delete --------------------------------------------------
+# Create / Update / Delete --------------------------------------------------
 
 
 @router.post("")
 async def create_role(req: CreateRoleRequest) -> dict[str, Any]:
-    """Create a custom role (draft -- DAG validated on save, not create)."""
+    """Create a custom role (draft: DAG validated on save, not create)."""
     async with await get_session() as session:
         async with session.begin():
             definition = await role_service.create_definition(
@@ -144,7 +144,7 @@ async def delete_role(name: str) -> dict[str, str]:
             return {"status": "deleted", "name": name}
 
 
-# -- Validation ----------------------------------------------------------------
+# Validation ----------------------------------------------------------------
 
 
 @router.post("/{name}/validate")

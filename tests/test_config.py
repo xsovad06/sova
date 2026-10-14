@@ -471,7 +471,7 @@ def test_legacy_conf_ignored_without_toml(tmp_path: Path) -> None:
     conf_file.write_text('GITHUB_REPO="owner/myproject"\n')
 
     cfg = load_config(tmp_path)
-    # Should NOT load legacy config -- returns defaults
+    # Should NOT load legacy config: returns defaults
     assert cfg.github_repo == ""
     assert cfg.base_branch == "main"
 
@@ -664,7 +664,7 @@ def test_shared_knowledge_path_expansion() -> None:
     assert path.is_absolute()
 
 
-# -- Project Registry Tests --------------------------------------------------
+# Project Registry Tests --------------------------------------------------
 
 
 class TestProjectRegistry:

@@ -1,4 +1,4 @@
-"""Step 1: Sync -- pull latest changes on the base branch.
+"""Step 1: Sync. Pull latest changes on the base branch.
 
 Also fetches the task from the tracker so ctx.task is populated for
 downstream steps (commit message, PR title) even when --force skips

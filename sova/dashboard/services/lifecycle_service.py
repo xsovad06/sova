@@ -1,4 +1,4 @@
-"""Issue lifecycle service -- tracks the full journey of an issue through phases.
+"""Issue lifecycle service: tracks the full journey of an issue through phases.
 
 Manages IssueLifecycle and LifecyclePhaseRecord models, providing CRUD,
 phase transitions, and backward-compatible reconstruction from existing TaskRuns.
@@ -40,7 +40,7 @@ _ROLE_TO_PHASE: dict[str, str] = {
 }
 
 
-# -- CRUD ---------------------------------------------------------------------
+# CRUD ---------------------------------------------------------------------
 
 
 async def get_or_create_lifecycle(
@@ -126,7 +126,7 @@ async def list_active_lifecycles(
     return list(result.scalars().all())
 
 
-# -- Phase queries (direct DB, avoids identity map staleness) -----------------
+# Phase queries (direct DB, avoids identity map staleness) -----------------
 
 
 async def _find_phase_records(
@@ -173,7 +173,7 @@ def _advance_lifecycle(lifecycle: IssueLifecycle, from_phase: str, now: datetime
                 break
 
 
-# -- Phase transitions --------------------------------------------------------
+# Phase transitions --------------------------------------------------------
 
 
 async def start_phase(
@@ -468,7 +468,7 @@ async def abandon_lifecycle(
     return True
 
 
-# -- PR merge state cache -----------------------------------------------------
+# PR merge state cache -----------------------------------------------------
 
 
 async def _get_pr_merge_state(pr_number: int, github_repo: str, github_user: str) -> str | None:
@@ -510,7 +510,7 @@ def _synthesize_merge_phases(phases: list[dict], seen_phases: set[str]) -> None:
             seen_phases.add(phase_name)
 
 
-# -- Backward-compatible reconstruction --------------------------------------
+# Backward-compatible reconstruction --------------------------------------
 
 
 async def build_lifecycle_view(
@@ -644,7 +644,7 @@ async def build_lifecycle_view(
     }
 
 
-# -- Integration hooks --------------------------------------------------------
+# Integration hooks --------------------------------------------------------
 
 
 def infer_phase_from_role(role: str) -> str | None:
@@ -724,7 +724,7 @@ async def finalize_phase_from_run(
         log.warning("lifecycle.finalize_failed", run_id=run_id, exc_info=True)
 
 
-# -- Serialization ------------------------------------------------------------
+# Serialization ------------------------------------------------------------
 
 
 def lifecycle_to_dict(lifecycle: IssueLifecycle) -> dict:

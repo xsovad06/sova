@@ -6,7 +6,7 @@
 
 - Use `pyproject.toml` for project metadata and tool config (PEP 621)
 - Prefer flat layout (`mypackage/`) over src layout unless publishing to PyPI
-- Keep `__init__.py` files minimal -- avoid circular imports from re-exports
+- Keep `__init__.py` files minimal: avoid circular imports from re-exports
 - Entry points: use `[project.scripts]` in pyproject.toml, not manual `setup(entry_points=...)`
 
 ## Type Hints
@@ -20,8 +20,8 @@
 ## Functions and Classes
 
 - Prefer functions over classes for stateless operations
-- Use `@staticmethod` sparingly -- a module-level function is usually clearer
-- Avoid deep inheritance hierarchies -- composition over inheritance
+- Use `@staticmethod` sparingly: a module-level function is usually clearer
+- Avoid deep inheritance hierarchies: composition over inheritance
 - Use `__slots__` on data-heavy classes for memory efficiency
 - Use `enum.StrEnum` for string constants that need validation
 
@@ -58,10 +58,10 @@
 
 ## Common Pitfalls
 
-- Don't use mutable default arguments (`def f(items=[])`) -- use `None` with internal init
+- Don't use mutable default arguments (`def f(items=[])`): use `None` with internal init
 - Don't catch `Exception` when you mean `ValueError` or `KeyError`
-- Don't use `os.path` -- use `pathlib.Path`
-- Don't use `%` or `.format()` for strings -- use f-strings
-- Don't use bare `assert` for validation -- it's stripped with `-O`
+- Don't use `os.path`: use `pathlib.Path`
+- Don't use `%` or `.format()` for strings: use f-strings
+- Don't use bare `assert` for validation: it's stripped with `-O`
 - Don't import at function level unless needed to break circular imports
-- Don't use `type()` for type checking -- use `isinstance()`
+- Don't use `type()` for type checking: use `isinstance()`

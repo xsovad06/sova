@@ -1,4 +1,4 @@
-"""Queue service -- priority-sorted open issues from the task adapter."""
+"""Queue service: priority-sorted open issues from the task adapter."""
 
 from __future__ import annotations
 

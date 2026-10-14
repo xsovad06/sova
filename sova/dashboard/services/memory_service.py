@@ -1,4 +1,4 @@
-"""Memory queries -- Memory table from the database."""
+"""Memory queries: Memory table from the database."""
 
 from __future__ import annotations
 

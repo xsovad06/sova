@@ -5,7 +5,7 @@ description: Audit dashboard templates for visual hierarchy violations, spacing 
 
 # Visual Audit Protocol
 
-Audit existing templates for design quality issues. Reports findings in a structured format for human review -- does not auto-fix.
+Audit existing templates for design quality issues. Reports findings in a structured format for human review. Does not auto-fix.
 
 ## When to Use
 
@@ -27,9 +27,9 @@ Determine which templates to audit:
 ### Step 2: Read References
 
 Before auditing, read these files to understand the baseline:
-1. `docs/design-system.md` -- palette, typography, components
-2. `sova/dashboard/static/style.css` -- CSS variables, component classes
-3. `.claude/skills/dashboard-design/SKILL.md` -- quality rules and anti-slop bans
+1. `docs/design-system.md`: palette, typography, components
+2. `sova/dashboard/static/style.css`: CSS variables, component classes
+3. `.claude/skills/dashboard-design/SKILL.md`: quality rules and anti-slop bans
 
 ### Step 3: Run Automated Checks
 

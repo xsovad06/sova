@@ -221,7 +221,7 @@ def assess_complexity(
         if label_tier is not None:
             votes.append((_tier_index(label_tier), 4.0))
 
-    # Length is a weak signal -- skip when description is empty or when a
+    # Length is a weak signal: skip when description is empty or when a
     # keyword match already provides a strong directional signal (keywords
     # must dominate length-only conflicts per the scoring contract).
     if description.strip() and keyword_tier is None:

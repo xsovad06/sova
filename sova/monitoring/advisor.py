@@ -1,4 +1,4 @@
-"""Capacity advisor -- recommends max_parallel_agents based on historical resource data.
+"""Capacity advisor: recommends max_parallel_agents based on historical resource data.
 
 Pure logic module. All DB queries and psutil calls happen in the caller
 (resource_service.get_capacity_recommendation); this module receives

@@ -1,4 +1,4 @@
-/* SOVA Dashboard -- shared JS utilities */
+/* SOVA Dashboard: shared JS utilities */
 
 /* ============================================================
    1. CSS VARIABLE COLOR SYSTEM
@@ -54,7 +54,7 @@ async function getErrorDetail(res, fallback) {
    sova_csrf cookie (set by issue_csrf_cookie() on a page's own GET route)
    and echoes it back as X-CSRF-Token, matching require_same_origin_csrf()'s
    comparison. Empty on a page that never issued the cookie, which the guard
-   rejects the same as a mismatch -- there is no silent bypass either way. */
+   rejects the same as a mismatch: there is no silent bypass either way. */
 function csrfHeaders() {
   var match = document.cookie.match(/(?:^|; )sova_csrf=([^;]*)/);
   return match ? {'X-CSRF-Token': decodeURIComponent(match[1])} : {};
@@ -84,7 +84,7 @@ function formatDuration(ms) {
   return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
 }
 
-// -- Model family grouping (shared by every grouped model dropdown) --
+// Model family grouping (shared by every grouped model dropdown)
 
 // Vendor-facing labels for optgroup headers, and the order groups render in.
 // Lives here rather than in one page's inline script because three dropdowns
@@ -563,7 +563,7 @@ function startSidebarPolling() {
   _initFeedSSE();
 }
 
-// -- Connectivity banner --
+// Connectivity banner
 //
 // window._connectivityDown is the flag spawn handlers check via
 // blockedByConnectivity(). The backend gate is the real enforcement; this only
@@ -719,7 +719,7 @@ function _feedGapFill() {
   var url = apiUrl('/feed/history?since_id=' + _feedLastId);
   fetch(url).then(function(r) { return r.json(); }).then(function(data) {
     if (data.gap_detected) {
-      showToast('Activity feed gap detected -- some events were missed', 'warning');
+      showToast('Activity feed gap detected: some events were missed', 'warning');
     }
     var events = data.events || [];
     events.forEach(function(event) {
@@ -754,8 +754,8 @@ function _feedAddEvent(event) {
   // Toast + browser notification for non-info events
   if (event.severity !== 'info') {
     showToast(event.title, event.severity);
-    var browserTitle = event.severity === 'error' ? 'SOVA -- Error' :
-                       event.severity === 'warning' ? 'SOVA -- Warning' : 'SOVA';
+    var browserTitle = event.severity === 'error' ? 'SOVA: Error' :
+                       event.severity === 'warning' ? 'SOVA: Warning' : 'SOVA';
     sendBrowserNotification(browserTitle, event.title);
   }
 
@@ -783,7 +783,7 @@ function _updateFeedBadge() {
   }
 }
 
-// -- chat rendering helpers --
+// chat rendering helpers
 
 function _feedDayKey(ts) {
   var d = new Date(ts * 1000);
@@ -880,7 +880,7 @@ function feedScrollToBottom() {
   if (pill) pill.classList.add('hidden');
 }
 
-// -- history pagination (infinite scroll upward) --
+// history pagination (infinite scroll upward)
 
 function loadOlderFeed() {
   if (_feedHistoryLoading || !_feedHasMoreHistory) return;

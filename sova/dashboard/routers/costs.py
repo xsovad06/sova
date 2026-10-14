@@ -1,4 +1,4 @@
-"""Costs API -- cost tracking from the database."""
+"""Costs API: cost tracking from the database."""
 
 from __future__ import annotations
 

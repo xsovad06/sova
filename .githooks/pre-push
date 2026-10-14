@@ -164,7 +164,7 @@ if command -v gitleaks &>/dev/null; then
   if gitleaks git "$REPO_ROOT" --log-opts="HEAD" --no-banner --redact --config "$REPO_ROOT/.gitleaks.toml"; then
     echo "  PASS"
   else
-    echo "  FAIL (secrets detected -- review the findings above)"
+    echo "  FAIL (secrets detected, review the findings above)"
     errors=$((errors + 1))
   fi
 else

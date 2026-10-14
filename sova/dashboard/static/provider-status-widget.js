@@ -1,4 +1,4 @@
-/* SOVA Dashboard -- LLM provider auth status floating widget */
+/* SOVA Dashboard: LLM provider auth status floating widget */
 
 (function () {
   'use strict';

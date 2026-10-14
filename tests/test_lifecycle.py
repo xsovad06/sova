@@ -34,7 +34,7 @@ async def session():
         yield session
 
 
-# -- Model tests --------------------------------------------------------------
+# Model tests --------------------------------------------------------------
 
 
 class TestIssueLifecycleModel:
@@ -77,7 +77,7 @@ class TestIssueLifecycleModel:
             assert phase.lifecycle_id == lc.id
 
 
-# -- Service tests ------------------------------------------------------------
+# Service tests ------------------------------------------------------------
 
 
 class TestLifecycleServiceCRUD:
@@ -1046,7 +1046,7 @@ class TestLinkTaskRun:
             assert lc_id is None
 
 
-# -- Router tests --------------------------------------------------------------
+# Router tests --------------------------------------------------------------
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-"""Role dispatcher -- routes tasks to the appropriate agent role.
+"""Role dispatcher: routes tasks to the appropriate agent role.
 
 The dispatcher determines which role should handle a task based on its
 current tracker state or an explicit role name. It enforces the mandatory

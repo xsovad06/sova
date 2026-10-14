@@ -1,4 +1,4 @@
-"""Settings service -- config viewing/editing, invariants, personas."""
+"""Settings service: config viewing/editing, invariants, personas."""
 
 from __future__ import annotations
 

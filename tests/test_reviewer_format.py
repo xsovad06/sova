@@ -84,7 +84,7 @@ class TestFormatReviewBody:
 
 
 class TestFormatFindingsComment:
-    """_format_findings_comment is the fallback path -- also includes the marker."""
+    """_format_findings_comment is the fallback path: also includes the marker."""
 
     def test_includes_marker(self) -> None:
         comment = _format_findings_comment([], "")

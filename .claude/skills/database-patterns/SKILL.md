@@ -1,6 +1,6 @@
 ---
 name: database-patterns
-description: SOVA database conventions -- async SQLAlchemy 2.0, ORM models, session management, migrations, JSON column gotchas. Auto-activates when working on sova/db/ models, session code, or Alembic migrations.
+description: SOVA database conventions (async SQLAlchemy 2.0, ORM models, session management, migrations, JSON column gotchas). Auto-activates when working on sova/db/ models, session code, or Alembic migrations.
 allowed_tools: Read, Grep, Glob, Bash, Edit, Write
 ---
 
@@ -15,7 +15,7 @@ Always use the async context manager:
 async with await get_session() as session:
     result = await session.execute(select(TaskRun))
 ```
-Never acquire sessions without `async with` -- it leaks on exception. All factories use `expire_on_commit=False`.
+Never acquire sessions without `async with`: it leaks on exception. All factories use `expire_on_commit=False`.
 
 ## ORM Model Conventions (sova/db/models.py)
 

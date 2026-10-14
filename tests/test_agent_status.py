@@ -1,4 +1,4 @@
-"""Tests for sova.dashboard.services.agent_status -- agent status aggregator."""
+"""Tests for sova.dashboard.services.agent_status: agent status aggregator."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ async def session() -> AsyncSession:
 NOW = datetime.now(timezone.utc)
 
 
-# -- Single run status tests -------------------------------------------------
+# Single run status tests -------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -482,7 +482,7 @@ async def test_estimation_partial_step_history(session: AsyncSession):
                 )
             )
 
-    # Only 1 run reached step 4 (develop) -- fewer than _MIN_HISTORY_RUNS per step
+    # Only 1 run reached step 4 (develop): fewer than _MIN_HISTORY_RUNS per step
     # but enough total runs exist
     hist_run_extra = TaskRun(
         issue_number="205",
@@ -534,14 +534,14 @@ async def test_estimation_partial_step_history(session: AsyncSession):
 
     status = await get_agent_status(run.id)
     assert status is not None
-    # Should NOT return None -- enough historical runs exist (6 >= _MIN_HISTORY_RUNS)
+    # Should NOT return None: enough historical runs exist (6 >= _MIN_HISTORY_RUNS)
     # But remaining steps include some without full history, so estimation may be None
     # (per finding #8 fix: missing steps -> None). The key fix from finding #1 is that
     # we no longer reject ALL data just because one step has < 2 runs.
     # With 6 runs total >= _MIN_HISTORY_RUNS, the averages dict is populated.
     # However, remaining steps without history cause None (per _compute_estimation
     # line 331: "if any remaining step has no historical data, return None").
-    # This is correct behavior -- partial estimation is unreliable.
+    # This is correct behavior: partial estimation is unreliable.
     assert status.estimated_remaining_ms is None
 
 
@@ -595,7 +595,7 @@ async def test_nonexistent_run_id():
     assert status is None
 
 
-# -- Bulk fetch tests --------------------------------------------------------
+# Bulk fetch tests --------------------------------------------------------
 
 
 @pytest.mark.asyncio

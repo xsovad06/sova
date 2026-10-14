@@ -1,4 +1,4 @@
-"""Tests for sova.supervisor.watchdog -- agent watchdog."""
+"""Tests for sova.supervisor.watchdog: agent watchdog."""
 
 from __future__ import annotations
 

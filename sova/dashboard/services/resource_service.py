@@ -1,4 +1,4 @@
-"""Resource monitoring queries -- summary, samples, and live metrics."""
+"""Resource monitoring queries: summary, samples, and live metrics."""
 
 from __future__ import annotations
 
@@ -120,7 +120,7 @@ def get_system_info() -> dict:
 def get_system_metrics(slug: str | None = None) -> dict:
     """Get real-time system metrics and per-agent resource data.
 
-    No DB queries -- reads from psutil and the in-memory agent pool.
+    No DB queries: reads from psutil and the in-memory agent pool.
     Results are cached for 3 seconds to avoid redundant psutil calls
     when multiple pollers hit this endpoint concurrently.
     """

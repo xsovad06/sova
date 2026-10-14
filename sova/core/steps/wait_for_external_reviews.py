@@ -1,4 +1,4 @@
-"""Step 11: Wait for external reviews -- poll until configured tools complete."""
+"""Step 11: Wait for external reviews. Poll until configured tools complete."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ class WaitForExternalReviewsStep(BaseStep):
         )
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        # Wait step does not modify code -- gate passes if PR exists
+        # Wait step does not modify code: gate passes if PR exists
         if ctx.pr_number is not None:
             return GateCheckResult(passed=True)
         return GateCheckResult(passed=False, reason="No PR number after wait step")

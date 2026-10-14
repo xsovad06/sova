@@ -1,4 +1,4 @@
-"""Overview API -- aggregated dashboard data."""
+"""Overview API: aggregated dashboard data."""
 
 from __future__ import annotations
 

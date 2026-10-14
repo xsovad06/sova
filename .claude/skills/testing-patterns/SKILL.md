@@ -1,6 +1,6 @@
 ---
 name: testing-patterns
-description: SOVA test conventions -- pytest async patterns, mock strategies, fixture patterns, dashboard ASGI testing. Auto-activates when writing or modifying test files in the tests/ directory.
+description: SOVA test conventions (pytest async patterns, mock strategies, fixture patterns, dashboard ASGI testing). Auto-activates when writing or modifying test files in the tests/ directory.
 allowed_tools: Read, Grep, Glob, Bash, Edit, Write
 ---
 
@@ -10,7 +10,7 @@ When writing or modifying files in `tests/`, follow these conventions. Reference
 
 ## Framework
 
-- `asyncio_mode = "auto"` -- no `@pytest.mark.asyncio` needed on async tests
+- `asyncio_mode = "auto"`: no `@pytest.mark.asyncio` needed on async tests
 - Most tests are flat in `tests/`; a few isolated areas (e.g. `tests/runtime/`) get their own subdirectory with a local `conftest.py` when their fixtures don't apply elsewhere
 - `tests/conftest.py` holds only truly cross-suite fixtures: `_isolate_sova_env` (autouse, strips ambient `SOVA_*` env vars) and `seed_config` (seeds DB-backed `project_settings` instead of writing `sova.toml`, matching production config storage). Use `seed_config(project_dir, **values)` for any test that needs configured values, don't write a `sova.toml` file.
 - Tests grouped with classes. Beyond the shared fixtures above, fixtures are defined per-file, not shared.
@@ -48,18 +48,18 @@ async def client(tmp_path):
    patch("sova.utils.shell.run", new_callable=AsyncMock)
    ```
 
-2. **Use `patch.object` for split modules** -- patch the actual submodule, not the re-export facade:
+2. **Use `patch.object` for split modules**: patch the actual submodule, not the re-export facade:
    ```python
    patch.object(agent_lifecycle, "_get_project_agents", return_value=pa)
    ```
 
-3. **ShellResult factory** -- define per-file:
+3. **ShellResult factory**: define per-file:
    ```python
    def _shell_result(stdout="", stderr="", returncode=0):
        return ShellResult(returncode=returncode, stdout=stdout, stderr=stderr)
    ```
 
-4. **Context factory** -- define per-file:
+4. **Context factory**: define per-file:
    ```python
    def _make_ctx(**kwargs) -> ExecutionContext:
        defaults = {"project_dir": Path("/tmp/test"), "config": ProjectConfig(),

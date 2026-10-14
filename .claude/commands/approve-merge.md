@@ -5,7 +5,7 @@ user-invocable: true
 
 # Approve Merge
 
-Merge a PR and perform post-merge cleanup. This command is the final step in the shipping pipeline -- it runs after the PR has been rebased, CI has passed, and the user has approved the merge from the dashboard.
+Merge a PR and perform post-merge cleanup. This command is the final step in the shipping pipeline. It runs after the PR has been rebased, CI has passed, and the user has approved the merge from the dashboard.
 
 PR: $ARGUMENTS
 
@@ -96,7 +96,7 @@ done
 Act on the result:
 - **CI PASSED**: proceed to merge (step 3)
 - **NO_CHECKS** (no CI checks configured): proceed to merge (step 3). No checks means nothing to wait for.
-- **CI FAILED**: write a failed handoff with the failing check names and stop -- do not merge with failing CI
+- **CI FAILED**: write a failed handoff with the failing check names and stop. Do not merge with failing CI
 - **CI TIMEOUT**: write a handoff with status `awaiting_action` and a "Wait for CI" next action (mode: `claude-command`, command: `agent-resume`, args: `{pr: <PR_NUMBER>, wait_for: "ci"}`), then stop
 
 ### 3. Merge
@@ -204,7 +204,7 @@ Write the completion handoff to `.claude/agent-control/handoff.json`:
 - `summary`: what happened (merged, branches cleaned)
 - `details.actions_taken`: full list of cleanup steps
 - `next_actions`: empty for completed, or:
-  - **Ingest review feedback** (style: `neutral`) -- if there were review comments worth learning from
+  - **Ingest review feedback** (style: `neutral`): if there were review comments worth learning from
 
 ### 8. Report
 
@@ -215,7 +215,7 @@ Output a summary including:
 
 ## Rules
 
-- Never merge if CI is failing -- write a handoff instead
+- Never merge if CI is failing: write a handoff instead
 - Use the merge method from `[integration]` config (default: auto)
 - Handle merge queue when detected or configured
 - Always write a handoff file, even on completion (with `status: completed`)

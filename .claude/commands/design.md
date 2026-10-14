@@ -11,13 +11,13 @@ Apply the SOVA design system to the specified UI work. Context: $ARGUMENTS
 ## 1. Load the Design System
 
 Read these files before making any UI decisions:
-- `sova/dashboard/static/style.css` -- CSS variables (Catppuccin Mocha), component classes
-- `sova/dashboard/templates/base.html` -- layout, Tailwind config, icon macro, notification panel
-- `sova/dashboard/templates/_head.html` -- shared Tailwind config (centralized)
-- `sova/dashboard/templates/_icons.html` -- icon macro (Heroicons v2 outline)
-- `sova/dashboard/templates/_components.html` -- Jinja2 component macros (stat_card, card_header)
-- `sova/dashboard/static/app.js` -- SOVA_COLORS, toast system, browser notifications, shared utilities
-- `docs/design-system.md` -- full design system reference
+- `sova/dashboard/static/style.css`: CSS variables (Catppuccin Mocha), component classes
+- `sova/dashboard/templates/base.html`: layout, Tailwind config, icon macro, notification panel
+- `sova/dashboard/templates/_head.html`: shared Tailwind config (centralized)
+- `sova/dashboard/templates/_icons.html`: icon macro (Heroicons v2 outline)
+- `sova/dashboard/templates/_components.html`: Jinja2 component macros (stat_card, card_header)
+- `sova/dashboard/static/app.js`: SOVA_COLORS, toast system, browser notifications, shared utilities
+- `docs/design-system.md`: full design system reference
 
 Optionally view the living style guide at `/style-guide` in the running dashboard.
 
@@ -62,14 +62,14 @@ Optionally view the living style guide at `/style-guide` in the running dashboar
 - Never use ASCII characters for icons
 
 ### Notifications
-- Ephemeral feedback: `showToast(message, type)` -- types: info, warning, error, success
-- Persistent notifications: `_addNotification(message, type)` -- auto-fires toast + browser notification
+- Ephemeral feedback: `showToast(message, type)`, types: info, warning, error, success
+- Persistent notifications: `_addNotification(message, type)`, auto-fires toast + browser notification
 - Browser notifications fire only when tab is unfocused
 
 ### Sizing
 - Sidebar: `w-64` (256px), nav items `px-5 py-3`
 - Main content: `ml-64 p-8`
-- Minimum text: `text-xs` (12px) -- never use `text-[10px]`, `text-[9px]`, `text-[8px]`
+- Minimum text: `text-xs` (12px). Never use `text-[10px]`, `text-[9px]`, `text-[8px]`
 
 ## 3. Checklist
 

@@ -1,4 +1,4 @@
-"""Spec service -- read, approve, reject, and manage spec files.
+"""Spec service: read, approve, reject, and manage spec files.
 
 Read-only spec operations (find, read, parse) live in ``sova.core.spec_utils``
 and are re-exported here for backward compatibility.  Dashboard-level mutations

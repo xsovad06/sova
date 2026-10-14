@@ -1,4 +1,4 @@
-"""Agent status aggregator -- single authoritative source for agent status.
+"""Agent status aggregator: single authoritative source for agent status.
 
 Combines TaskRun and StepExecution data to compute real-time agent status
 including progress percentage, time-in-step, stuck detection, and estimated
@@ -211,7 +211,7 @@ async def get_all_agent_statuses(
     return statuses
 
 
-# -- Private helpers ---------------------------------------------------------
+# Private helpers ---------------------------------------------------------
 
 
 def _compute_progress_pct(status: str, step_index: int, total_steps: int, completed_count: int) -> float:

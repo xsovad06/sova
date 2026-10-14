@@ -53,7 +53,7 @@ def _make_ctx(**kwargs) -> ExecutionContext:
     return ExecutionContext(**defaults)
 
 
-# -- BaselineSnapshot serialization --
+# BaselineSnapshot serialization
 
 
 class TestBaselineSnapshot:
@@ -81,7 +81,7 @@ class TestBaselineSnapshot:
         assert restored.mode == "exit_code"
 
 
-# -- save / load --
+# save / load
 
 
 class TestSaveLoad:
@@ -113,7 +113,7 @@ class TestSaveLoad:
         assert p == tmp_path / ".sova" / "test-baseline.json"
 
 
-# -- diff_results --
+# diff_results
 
 
 class TestDiffResults:
@@ -212,7 +212,7 @@ class TestRegressionReport:
         assert "1 new failure(s)" in s
 
 
-# -- run_test_suite --
+# run_test_suite
 
 
 class TestRunTestSuite:
@@ -298,7 +298,7 @@ class TestRunTestSuite:
         assert call_count == 2
 
 
-# -- CaptureBaselineStep --
+# CaptureBaselineStep
 
 
 class TestCaptureBaselineStep:
@@ -385,7 +385,7 @@ class TestCaptureBaselineStep:
         assert await CaptureBaselineStep().can_skip(ctx)
 
 
-# -- ValidateStep regression checking --
+# ValidateStep regression checking
 
 
 class TestValidateStepRegressions:
@@ -464,7 +464,7 @@ class TestValidateStepRegressions:
         )
         save_baseline(baseline, worktree)
 
-        # project_dir != worktree_dir -- baseline should still be found
+        # project_dir != worktree_dir: baseline should still be found
         ctx = _make_ctx(
             project_dir=project,
             worktree_dir=worktree,

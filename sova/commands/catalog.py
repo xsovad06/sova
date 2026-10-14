@@ -171,7 +171,7 @@ def _parse_yaml_simple(text: str) -> dict[str, str | list[str]]:
                 result[key] = value
                 current_list_key = None
             else:
-                # Empty value -- next lines may be list items
+                # Empty value: next lines may be list items
                 result[key] = []
                 current_list_key = key
         else:

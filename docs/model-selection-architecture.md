@@ -253,7 +253,7 @@ name and require a fully-qualified, dialect-specific ID. `sova/llm/backends.py` 
   edited. When `cfg.provider == "vertex"` the resolved candidate instead reaches
   `LiteLLMProvider`, which forwards the model ID to litellm unchanged; litellm's Vertex AI dialect
   requires the `vertex_ai/` prefix (`_VENDOR_MODEL_EXAMPLES` in `sova/config/models.py`), so
-  `resolve_alias()` prefixes the resolved candidate in that case only (CodeRabbit, PR #1106) --
+  `resolve_alias()` prefixes the resolved candidate in that case only (CodeRabbit, PR #1106):
   never for `Backend.VERTEX` generally, since that also covers the CLI's own bare-ID routing.
 - `tier_for_known_candidate(model_id)` reverse-looks-up a known pinned candidate ID to its tier,
   so a pinned ID reached *directly* (not via a tier alias, e.g. `agent.model` set to a Vertex

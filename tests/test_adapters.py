@@ -128,7 +128,7 @@ class TestMilestone:
 
 
 # ---------------------------------------------------------------------------
-# TaskAdapter (abstract -- verify interface)
+# TaskAdapter (abstract: verify interface)
 # ---------------------------------------------------------------------------
 
 
@@ -172,7 +172,7 @@ class TestTaskAdapterInterface:
 
 
 # ---------------------------------------------------------------------------
-# GitHubAdapter -- unit tests with mocked shell calls
+# GitHubAdapter: unit tests with mocked shell calls
 # ---------------------------------------------------------------------------
 
 
@@ -240,7 +240,7 @@ class TestGitHubAdapter:
         ):
             yield mock
 
-    # -- list_tasks --
+    # list_tasks
 
     async def test_list_tasks_basic(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(stdout=_gh_issues_json())
@@ -324,7 +324,7 @@ class TestGitHubAdapter:
         limit_idx = call_args.index("--limit")
         assert call_args[limit_idx + 1] == "100"
 
-        # -- get_task --
+        # get_task
 
     async def test_get_task(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(stdout=_gh_issue_view_json())
@@ -341,7 +341,7 @@ class TestGitHubAdapter:
         with pytest.raises(RuntimeError, match="Failed to fetch"):
             await self.adapter.get_task("999")
 
-    # -- transition_state --
+    # transition_state
 
     async def test_transition_state_done_closes_issue(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
@@ -592,7 +592,7 @@ class TestGitHubAdapter:
         assert len(final_state_labels) == 1
         assert "priority:high" not in store["labels"]
 
-    # -- assign --
+    # assign
 
     async def test_assign(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
@@ -640,7 +640,7 @@ class TestGitHubAdapter:
 
         await self.adapter.add_reviewer("42", 7, "jdoe")  # should not raise
 
-    # -- add_label / remove_label --
+    # add_label / remove_label
 
     async def test_add_label(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
@@ -722,7 +722,7 @@ class TestGitHubAdapter:
         assert "--remove-label" in call_args
         assert "agent:ready" in call_args
 
-    # -- edit_body --
+    # edit_body
 
     async def test_edit_body(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
@@ -742,7 +742,7 @@ class TestGitHubAdapter:
         with pytest.raises(RuntimeError, match="Failed to edit body"):
             await self.adapter.edit_body("42", "content")
 
-    # -- transition_state error handling --
+    # transition_state error handling
 
     async def test_transition_state_done_failure_raises(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(returncode=1, stderr="Not found")
@@ -750,7 +750,7 @@ class TestGitHubAdapter:
         with pytest.raises(RuntimeError, match="Failed to close issue"):
             await self.adapter.transition_state("42", TaskState.DONE)
 
-    # -- post_comment --
+    # post_comment
 
     async def test_post_comment(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
@@ -762,7 +762,7 @@ class TestGitHubAdapter:
         assert "comment" in call_args
         assert "42" in call_args
 
-    # -- post_pr_comment --
+    # post_pr_comment
 
     async def test_post_pr_comment(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
@@ -774,7 +774,7 @@ class TestGitHubAdapter:
         assert "comment" in call_args
         assert "82" in call_args
 
-    # -- post_pr_review --
+    # post_pr_review
 
     async def test_post_pr_review(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(stdout='{"id": 123}')
@@ -795,7 +795,7 @@ class TestGitHubAdapter:
         assert "foo.py" in stdin_data
 
     async def test_post_pr_review_fails_immediately_without_comments(self, mock_run: AsyncMock) -> None:
-        """When no inline comments, don't retry -- fail immediately."""
+        """When no inline comments, don't retry: fail immediately."""
         mock_run.return_value = _shell_result(returncode=1, stderr="Validation Failed")
 
         with pytest.raises(RuntimeError, match="Failed to post PR review"):
@@ -871,7 +871,7 @@ class TestGitHubAdapter:
 
         assert mock_run.call_count == 2
 
-    # -- get_state --
+    # get_state
 
     async def test_get_state_from_labels(self, mock_run: AsyncMock) -> None:
         issue_json = json.dumps(
@@ -924,7 +924,7 @@ class TestGitHubAdapter:
 
         assert task.state == TaskState.DONE
 
-    # -- link_pr --
+    # link_pr
 
     async def test_link_pr(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
@@ -934,7 +934,7 @@ class TestGitHubAdapter:
         call_args = mock_run.call_args[0]
         assert "comment" in call_args
 
-    # -- create_issue --
+    # create_issue
 
     async def test_create_issue(self, mock_run: AsyncMock) -> None:
         view_json = json.dumps(
@@ -974,14 +974,14 @@ class TestGitHubAdapter:
         with pytest.raises(RuntimeError, match="Failed to create issue"):
             await self.adapter.create_issue("Test", "body")
 
-    # -- get_available_transitions --
+    # get_available_transitions
 
     async def test_get_available_transitions_returns_empty(self, mock_run: AsyncMock) -> None:
         result = await self.adapter.get_available_transitions("42")
         assert result == []
         mock_run.assert_not_called()
 
-    # -- list_milestones --
+    # list_milestones
 
     async def test_list_milestones(self, mock_run: AsyncMock) -> None:
         milestones_json = json.dumps(
@@ -1033,7 +1033,7 @@ class TestGitHubAdapter:
         assert "state=open" in " ".join(str(a) for a in first_args)
         assert "state=closed" in " ".join(str(a) for a in second_args)
 
-    # -- create_milestone --
+    # create_milestone
 
     async def test_create_milestone(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(
@@ -1056,7 +1056,7 @@ class TestGitHubAdapter:
         with pytest.raises(RuntimeError, match="Failed to create milestone"):
             await self.adapter.create_milestone("Bad")
 
-    # -- set_milestone --
+    # set_milestone
 
     async def test_set_milestone(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
@@ -1075,7 +1075,7 @@ class TestGitHubAdapter:
         with pytest.raises(RuntimeError, match="Failed to set milestone"):
             await self.adapter.set_milestone("42", "Nonexistent")
 
-    # -- get_pr_reviews --
+    # get_pr_reviews
 
     async def test_get_pr_reviews_parses_reviews(self, mock_run: AsyncMock) -> None:
         reviews_json = json.dumps(
@@ -1175,7 +1175,7 @@ class TestGitHubAdapter:
         reviews = await self.adapter.get_pr_reviews(99)
         assert reviews == []
 
-    # -- get_comments --
+    # get_comments
 
     async def test_get_comments_success(self, mock_run: AsyncMock) -> None:
         comments_json = json.dumps(

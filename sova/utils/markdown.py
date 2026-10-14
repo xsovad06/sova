@@ -1,4 +1,4 @@
-"""Markdown utilities -- section extraction and structural helpers."""
+"""Markdown utilities: section extraction and structural helpers."""
 
 from __future__ import annotations
 

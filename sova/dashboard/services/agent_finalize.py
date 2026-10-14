@@ -333,7 +333,7 @@ def _resolve_reader_drain_timeout(agent: AgentState) -> float:
     """Return the drain timeout resolved at spawn time, or the module default.
 
     ``agent.stream_reader_drain_timeout`` is set once, at spawn time, from
-    ``AgentRuntime.stream_reader_drain_timeout()`` (see sova/ipc/runtime.py) --
+    ``AgentRuntime.stream_reader_drain_timeout()`` (see sova/ipc/runtime.py):
     never read here from config, so finalization never blocks the event loop
     on a TOML+DB load. ``None`` means the spawning runtime declared no tuning
     of its own (every runtime except Codex today), so the module default

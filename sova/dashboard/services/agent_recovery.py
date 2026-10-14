@@ -253,7 +253,7 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
 
     Three-phase approach to keep startup fast regardless of stale-run count:
       1. Read-only query + handoff checks (synchronous, fast).
-      2. Merge checks for crashed merge-role runs -- run concurrently, total
+      2. Merge checks for crashed merge-role runs: run concurrently, total
          budget capped at ``_RECOVERY_TOTAL_TIMEOUT`` seconds. Previously these
          ran sequentially inside a write transaction, causing N×15s freezes.
       3. Single write transaction to persist all status updates.
@@ -667,7 +667,7 @@ def _load_repo_config() -> tuple[str, str] | None:
 
 
 async def get_pr_status_for_issue(issue_number: str) -> dict:
-    """Get PR status for an issue -- approval state, CI, mergeability."""
+    """Get PR status for an issue: approval state, CI, mergeability."""
     from sova.git.operations import find_pr_for_issue, get_ci_checks, get_pr_status
 
     repo_cfg = _load_repo_config()
@@ -784,7 +784,7 @@ def _build_integrate_actions(issue_number: str, pr_number: int) -> list[dict]:
         {
             "id": "integrate",
             "label": "Integrate PR",
-            "description": "All reviews approved -- rebase, merge, cleanup, and learn",
+            "description": "All reviews approved: rebase, merge, cleanup, and learn",
             "style": "approve",
             "mode": "claude-command",
             "command": f"/integrate-pr {pr_number}",

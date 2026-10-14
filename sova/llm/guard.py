@@ -1,7 +1,7 @@
 """Mid-pipeline prompt injection guard for LLM calls.
 
 Scans assembled prompts for injection patterns before sending them to the
-LLM provider. Defense-in-depth -- not a guarantee. Residual risks include
+LLM provider. Defense-in-depth, not a guarantee. Residual risks include
 novel attack patterns, heavily obfuscated payloads that bypass normalization,
 and semantic-level injections that require LLM-level understanding.
 """
@@ -347,7 +347,7 @@ def sanitize_external_input(text: str, *, source: str = "unknown") -> str:
 
     Unlike guard_prompt() which raises on assembled prompts, this scans
     raw inputs (issue bodies, review comments) and logs warnings without
-    modifying the text -- avoids corrupting legitimate security discussions.
+    modifying the text: avoids corrupting legitimate security discussions.
     """
     if not text:
         return text

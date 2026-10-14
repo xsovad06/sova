@@ -4,9 +4,9 @@
   ============================================================================
 
   Maps every action in the SOVA development lifecycle to its execution mode:
-    - DETERMINISTIC (code)  -- fully controlled, predictable output
-    - LLM CALL (targeted)   -- single model invocation with structured I/O
-    - AGENT (autonomous)    -- full Claude CLI session with tool access
+    - DETERMINISTIC (code): fully controlled, predictable output
+    - LLM CALL (targeted): single model invocation with structured I/O
+    - AGENT (autonomous): full Claude CLI session with tool access
 
   Goal: minimize non-deterministic surface area. Agents handle creative work
   (development, review). Everything else should be deterministic code.
@@ -313,7 +313,7 @@
 <body>
 
 <h1>Pipeline Determinism Analysis</h1>
-<p class="subtitle">SOVA development lifecycle -- action-by-action execution mode map -- 2026-06-30</p>
+<p class="subtitle">SOVA development lifecycle: action-by-action execution mode map (2026-06-30)</p>
 
 <div class="legend">
   <div class="legend-item"><span class="dot dot-code"></span> Deterministic (code)</div>
@@ -364,7 +364,7 @@
   <div class="step-row">
     <span class="step-indicator ind-code"></span>
     <span class="step-name">dispatcher</span>
-    <span class="step-desc">Route task to role via <code>_STATE_TO_ROLE</code> dict lookup -- no LLM decisions</span>
+    <span class="step-desc">Route task to role via <code>_STATE_TO_ROLE</code> dict lookup, no LLM decisions</span>
     <span class="step-tag tag-code">deterministic</span>
   </div>
   <div class="step-row">
@@ -471,7 +471,7 @@
 <!-- SECTION 5: Developer pipeline                                -->
 <!-- ============================================================ -->
 
-<h2>Phase 3: Development (Developer Pipeline -- 15 steps)</h2>
+<h2>Phase 3: Development (Developer Pipeline: 15 steps)</h2>
 
 <div class="phase">
   <div class="phase-header"><span class="phase-number">3</span> Developer Role</div>
@@ -722,14 +722,14 @@
 <!-- SECTION 9: Planner pipeline                                  -->
 <!-- ============================================================ -->
 
-<h2>Phase 0: Planning (Planner Pipeline -- 4 steps)</h2>
+<h2>Phase 0: Planning (Planner Pipeline: 4 steps)</h2>
 
 <div class="phase">
   <div class="phase-header"><span class="phase-number">P</span> Planner Role (issueless)</div>
   <div class="step-row">
     <span class="step-indicator ind-code"></span>
     <span class="step-name">1. scan_project</span>
-    <span class="step-desc">Gather git log, issue list, tech stack, directory structure -- pure data collection</span>
+    <span class="step-desc">Gather git log, issue list, tech stack, directory structure: pure data collection</span>
     <span class="step-tag tag-code">deterministic</span>
   </div>
   <div class="step-row">
@@ -741,7 +741,7 @@
   <div class="step-row">
     <span class="step-indicator ind-code"></span>
     <span class="step-name">3. validate_tasks</span>
-    <span class="step-desc">Specificity checks, testability heuristics, duplicate detection -- no LLM</span>
+    <span class="step-desc">Specificity checks, testability heuristics, duplicate detection, no LLM</span>
     <span class="step-tag tag-code">deterministic</span>
   </div>
   <div class="step-row">
@@ -799,7 +799,7 @@
         <td><span class="step-tag tag-llm" style="display:inline">llm</span></td>
         <td class="arrow">--></td>
         <td><span class="step-tag tag-code" style="display:inline">code</span></td>
-        <td>Rule-based: extract file paths, error patterns, test failures. Low value vs cost -- consider removing entirely or running only on failure.</td>
+        <td>Rule-based: extract file paths, error patterns, test failures. Low value vs cost. Consider removing entirely or running only on failure.</td>
       </tr>
       <tr>
         <td>Review feedback ingestion</td>
@@ -826,30 +826,30 @@
 <h2>Must Remain Non-Deterministic</h2>
 
 <div class="notes-box">
-  <strong>Core value -- agents exist for these:</strong>
+  <strong>Core value, agents exist for these:</strong>
   <ul>
-    <li><strong>develop</strong> (step 4) -- TDD implementation is the product's core value proposition</li>
-    <li><strong>simplify</strong> (step 5) -- requires understanding code semantics to identify improvements</li>
-    <li><strong>self_review</strong> (step 6) -- needs to reason about correctness, security, design</li>
-    <li><strong>address_review</strong> (AR step 2) -- must understand reviewer intent and fix accordingly</li>
-    <li><strong>research</strong> (phase 2) -- exploratory codebase navigation, can't be templated</li>
-    <li><strong>spec</strong> (phase 2) -- synthesis of research into structured specification</li>
-    <li><strong>reviewer</strong> (phase 4) -- structured LLM call already (Sonnet + JSON schema), not a full agent</li>
+    <li><strong>develop</strong> (step 4): TDD implementation is the product's core value proposition</li>
+    <li><strong>simplify</strong> (step 5): requires understanding code semantics to identify improvements</li>
+    <li><strong>self_review</strong> (step 6): needs to reason about correctness, security, design</li>
+    <li><strong>address_review</strong> (AR step 2): must understand reviewer intent and fix accordingly</li>
+    <li><strong>research</strong> (phase 2): exploratory codebase navigation, can't be templated</li>
+    <li><strong>spec</strong> (phase 2): synthesis of research into structured specification</li>
+    <li><strong>reviewer</strong> (phase 4): structured LLM call already (Sonnet + JSON schema), not a full agent</li>
   </ul>
 
   <br>
-  <strong>Acceptable LLM usage -- conditional, bounded:</strong>
+  <strong>Acceptable LLM usage (conditional, bounded):</strong>
   <ul>
-    <li><strong>validate fix</strong> (step 8) -- only fires on hook failure, bounded to 2 retries</li>
-    <li><strong>CI fix loop</strong> (step 13) -- only fires on CI failure, bounded to 3 retries + budget check</li>
-    <li><strong>rebase conflicts</strong> (AR step 1) -- only fires on conflict, bounded to 3 attempts</li>
-    <li><strong>address_findings</strong> (step 12) -- only fires when external tools report issues</li>
+    <li><strong>validate fix</strong> (step 8): only fires on hook failure, bounded to 2 retries</li>
+    <li><strong>CI fix loop</strong> (step 13): only fires on CI failure, bounded to 3 retries + budget check</li>
+    <li><strong>rebase conflicts</strong> (AR step 1): only fires on conflict, bounded to 3 attempts</li>
+    <li><strong>address_findings</strong> (step 12): only fires when external tools report issues</li>
   </ul>
 
   <br>
   <strong>Design principle:</strong> agents do the creative work (develop, review, fix).
-  Everything else -- routing, state management, git operations, PR metadata, handoffs,
-  CI polling, external review thread lifecycle -- is deterministic code. When adding new
+  Everything else (routing, state management, git operations, PR metadata, handoffs,
+  CI polling, external review thread lifecycle) is deterministic code. When adding new
   pipeline features, default to code. Only reach for an LLM when the task requires
   understanding natural language or generating novel code.
 </div>
@@ -933,9 +933,9 @@
 </div>
 
 <div class="notes-box" style="margin-top:1.5rem;">
-  <strong>Key takeaway:</strong> The orchestration layer is 100% deterministic -- no model dependency
+  <strong>Key takeaway:</strong> The orchestration layer is 100% deterministic: no model dependency
   in routing, scheduling, state management, or handoff processing. Non-determinism is concentrated
-  in 6 agent sessions (the creative work) and 9 targeted LLM calls (5 of which are conditional --
+  in 6 agent sessions (the creative work) and 9 targeted LLM calls (5 of which are conditional:
   only fire on failure). With the proposed opportunities above, the strict determinism ratio could
   reach ~65% and the effective ratio ~82%.
 </div>

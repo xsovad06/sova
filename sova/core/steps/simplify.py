@@ -1,4 +1,4 @@
-"""Step 5: Simplify -- code quality pass via Claude CLI."""
+"""Step 5: Simplify. Code quality pass via Claude CLI."""
 
 from __future__ import annotations
 

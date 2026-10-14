@@ -1,4 +1,4 @@
-"""Step 6: Push -- push branch to remote after validating."""
+"""Step 6: Push. Push branch to remote after validating."""
 
 from __future__ import annotations
 

@@ -926,7 +926,7 @@ class TestEnsureWorktreeUsableRealWorktree:
         assert (worktree / ".git").exists()
         head = await run_shell("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=worktree)
         assert head.stdout.strip() == "feat/issue-55"
-        # The original worktree (and its branch checkout) must be left alone --
+        # The original worktree (and its branch checkout) must be left alone:
         # no second worktree should have been created anywhere.
         list_result = await run_shell("git", "worktree", "list", "--porcelain", cwd=project)
         assert list_result.stdout.count("worktree ") == 2  # project_dir itself + the one real worktree

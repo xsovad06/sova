@@ -1,4 +1,4 @@
-"""Setup service -- project scanning, detection, and configuration.
+"""Setup service: project scanning, detection, and configuration.
 
 Provides the business logic for the setup wizard: directory browsing,
 tech stack detection, and sova.toml generation.
@@ -238,7 +238,7 @@ def generate_config_dict(config: TomlConfig) -> dict:
     return result
 
 
-# -- Detection helpers --------------------------------------------------------
+# Detection helpers --------------------------------------------------------
 
 
 def _detect_tech_stack(project: Path) -> list[str]:
@@ -369,7 +369,7 @@ def _validate_jira_base_url(base_url: str) -> str:
     try:
         addr = ipaddress.ip_address(hostname)
     except ValueError:
-        # Not a literal IP -- resolve DNS
+        # Not a literal IP: resolve DNS
         try:
             resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
             for _family, _type, _proto, _canonname, sockaddr in resolved:
@@ -377,7 +377,7 @@ def _validate_jira_base_url(base_url: str) -> str:
                 if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
                     raise ValueError(f"Jira URL hostname {hostname!r} resolves to a private/reserved address: {addr}")
         except socket.gaierror:
-            # Cannot resolve -- allow (the actual HTTP request will fail)
+            # Cannot resolve: allow (the actual HTTP request will fail)
             pass
     else:
         if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:

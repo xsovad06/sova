@@ -1,4 +1,4 @@
-"""CLI command: sova harden -- enrich issues with context, criteria, and re-triage."""
+"""CLI command: sova harden (enrich issues with context, criteria, and re-triage)."""
 
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ async def _harden(
 
 
 async def _resolve_harden_tasks(adapter: TaskAdapter, issue: str | None, all_open: list[Task]) -> list[Task]:
-    """Resolve which tasks to harden -- a single issue or all eligible open ones."""
+    """Resolve which tasks to harden: a single issue or all eligible open ones."""
     if issue:
         return [await adapter.get_task(issue)]
     return [t for t in all_open if t.state in (TaskState.BACKLOG, TaskState.TRIAGED, TaskState.NEEDS_SPEC)]
@@ -283,7 +283,7 @@ def _build_harden_prompt(
         template_instruction = f"""
 The issue is of type "{issue_type}". Structure your output to match the following issue template.
 Use the template's sections as your output skeleton, filling each section with enriched content.
-Strip the HTML comments from the template -- replace them with actual content.
+Strip the HTML comments from the template: replace them with actual content.
 
 --- Target Template ---
 {template_content}

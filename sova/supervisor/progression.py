@@ -826,7 +826,7 @@ class TaskProgressionEngine:
 
         return results
 
-    # -- Internal evaluation logic ------------------------------------------------
+    # Internal evaluation logic ------------------------------------------------
 
     async def _evaluate_single(
         self,

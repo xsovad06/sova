@@ -56,7 +56,7 @@ log = get_logger(component="module.name")
 
 - **Event names**: dot-delimited keys (`step.create_pr.assign_failed`, `workflow.gate.failed`)
 - **Always pass `exc_info=True`** in warning/error calls inside except blocks
-- **Never use bare `print()`** for diagnostics -- use the logger
+- **Never use bare `print()`** for diagnostics: use the logger
 
 ## Non-Fatal Side Effects
 
@@ -83,7 +83,7 @@ This pattern appears in 100+ locations including:
 
 ## Typer Exit and Dashboard Endpoints
 
-`typer.Exit` inherits from `SystemExit` (a `BaseException`), **not** `Exception`. Any dashboard endpoint that calls a CLI function raising `typer.Exit` must catch `SystemExit` explicitly -- `except Exception` will not intercept it, causing an unhandled 500 with a raw traceback.
+`typer.Exit` inherits from `SystemExit` (a `BaseException`), **not** `Exception`. Any dashboard endpoint that calls a CLI function raising `typer.Exit` must catch `SystemExit` explicitly: `except Exception` will not intercept it, causing an unhandled 500 with a raw traceback.
 
 ```python
 # Wrong -- typer.Exit escapes this
@@ -141,7 +141,7 @@ Two modes in `sova/utils/shell.py`:
 
 - Timeout uses `asyncio.timeout()`; on expiry, kills process, returns `returncode=-1`
 - `subprocess_error()` factory truncates stderr to 500 chars
-- Always catch `ProcessLookupError` when calling `proc.kill()` -- the process may already be dead
+- Always catch `ProcessLookupError` when calling `proc.kill()`: the process may already be dead
 
 ## Step-Level Retry
 
@@ -149,10 +149,10 @@ Two modes in `sova/utils/shell.py`:
 
 1. Attempts = `step.max_retries + 1` (default `max_retries=0`, one attempt)
 2. Catches broad `Exception` during `step.execute()`, converts to `StepResult(success=False)`
-3. On success, runs `step.validate_output()` (gate check) -- gate failure is NOT retried
+3. On success, runs `step.validate_output()` (gate check): gate failure is NOT retried
 4. Records attempt count and duration in `StepExecution` DB records
 
-**Do NOT implement retry logic inside step `execute()` methods** -- declare `max_retries` on the class.
+**Do NOT implement retry logic inside step `execute()` methods**: declare `max_retries` on the class.
 
 ## Gate Check Validation
 
@@ -204,7 +204,7 @@ Status updates are conditional (once terminal, never overwrite); cost updates ar
 
 When LLM calls fail for user-facing outputs, always provide a structured fallback from available data. **Never discard to a bare stub.**
 
-PR body generation uses a deterministic template (`_build_pr_body()`) -- no LLM call. For steps that still use conditional LLM calls (validate, monitor_ci, rebase), the pattern is:
+PR body generation uses a deterministic template (`_build_pr_body()`): no LLM call. For steps that still use conditional LLM calls (validate, monitor_ci, rebase), the pattern is:
 
 ```python
 try:

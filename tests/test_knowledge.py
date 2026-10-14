@@ -32,7 +32,7 @@ async def setup_db(tmp_path, worker_id):
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- CRUD operations
+# memory.py: CRUD operations
 # ---------------------------------------------------------------------------
 
 
@@ -144,7 +144,7 @@ async def test_delete_nonexistent_returns_false() -> None:
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- search
+# memory.py: search
 # ---------------------------------------------------------------------------
 
 
@@ -252,7 +252,7 @@ async def test_search_excludes_superseded() -> None:
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- promote and supersede
+# memory.py: promote and supersede
 # ---------------------------------------------------------------------------
 
 
@@ -300,7 +300,7 @@ async def test_supersede_nonexistent_returns_false() -> None:
 
 
 # ---------------------------------------------------------------------------
-# tiers.py -- tier loading
+# tiers.py: tier loading
 # ---------------------------------------------------------------------------
 
 
@@ -352,7 +352,7 @@ async def test_format_knowledge_for_prompt() -> None:
 
 
 # ---------------------------------------------------------------------------
-# personas.py -- detect_persona
+# personas.py: detect_persona
 # ---------------------------------------------------------------------------
 
 
@@ -473,7 +473,7 @@ def test_detect_persona_no_match(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# personas.py -- _package_json_mention
+# personas.py: _package_json_mention
 # ---------------------------------------------------------------------------
 
 
@@ -533,7 +533,7 @@ def test_package_json_mention_non_dict(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# personas.py -- PatternFly detection
+# personas.py: PatternFly detection
 # ---------------------------------------------------------------------------
 
 
@@ -568,7 +568,7 @@ def test_detect_persona_node_without_patternfly(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# personas.py -- load_persona
+# personas.py: load_persona
 # ---------------------------------------------------------------------------
 
 
@@ -634,7 +634,7 @@ async def test_get_common_patterns_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
-# tiers.py -- load_context with file-based tiers
+# tiers.py: load_context with file-based tiers
 # ---------------------------------------------------------------------------
 
 
@@ -709,7 +709,7 @@ async def test_load_context_empty_project(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# graph.py -- edge CRUD
+# graph.py: edge CRUD
 # ---------------------------------------------------------------------------
 
 
@@ -925,7 +925,7 @@ async def test_bulk_create_edges_retries_individually_on_flush_conflict() -> Non
 
 
 # ---------------------------------------------------------------------------
-# graph.py -- neighbor traversal
+# graph.py: neighbor traversal
 # ---------------------------------------------------------------------------
 
 
@@ -1025,7 +1025,7 @@ async def test_get_neighbors_filter_by_relation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# graph.py -- auto_link (requires embeddings mock)
+# graph.py: auto_link (requires embeddings mock)
 # ---------------------------------------------------------------------------
 
 
@@ -1090,7 +1090,7 @@ async def test_auto_link_caps_at_max() -> None:
 
 
 # ---------------------------------------------------------------------------
-# graph.py -- discover_edges
+# graph.py: discover_edges
 # ---------------------------------------------------------------------------
 
 
@@ -1169,7 +1169,7 @@ async def test_discover_edges_batch_boundaries() -> None:
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- search with expand
+# memory.py: search with expand
 # ---------------------------------------------------------------------------
 
 
@@ -1204,7 +1204,7 @@ async def test_search_expand_false_default() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Coverage: graph.py -- edge cases
+# Coverage: graph.py, edge cases
 # ---------------------------------------------------------------------------
 
 
@@ -1256,7 +1256,7 @@ async def test_discover_edges_below_threshold() -> None:
     from sova.knowledge.graph import discover_edges, get_edges
     from sova.knowledge.memory import store
 
-    # Very different embeddings -- should not link
+    # Very different embeddings: should not link
     m1 = await store(category="learning", title="A", content="A", tags=[], embedding=[1.0, 0.0, 0.0])
     await store(category="learning", title="B", content="B", tags=[], embedding=[0.0, 1.0, 0.0])
 
@@ -1268,7 +1268,7 @@ async def test_discover_edges_below_threshold() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Coverage: memory.py -- update invalid field
+# Coverage: memory.py, update invalid field
 # ---------------------------------------------------------------------------
 
 
@@ -1282,7 +1282,7 @@ async def test_update_invalid_field_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Coverage: memory.py -- semantic_search and find_similar
+# Coverage: memory.py, semantic_search and find_similar
 # ---------------------------------------------------------------------------
 
 

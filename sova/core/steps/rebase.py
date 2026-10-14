@@ -1,4 +1,4 @@
-"""Step: Rebase -- rebase feature branch onto latest base, resolving conflicts via LLM."""
+"""Step: Rebase. Rebase feature branch onto latest base, resolving conflicts via LLM."""
 
 from __future__ import annotations
 

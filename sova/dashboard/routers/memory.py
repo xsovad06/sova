@@ -1,4 +1,4 @@
-"""Memory API -- agent memory entries from the database."""
+"""Memory API: agent memory entries from the database."""
 
 from __future__ import annotations
 

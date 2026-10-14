@@ -32,7 +32,7 @@ log = get_logger(component="ipc.runtime")
 
 
 _VERSION_CHECK_TIMEOUT = 5.0
-_SUBPROCESS_LINE_LIMIT = 10 * 1024 * 1024  # 10 MB -- agent JSON lines can exceed 64 KB default
+_SUBPROCESS_LINE_LIMIT = 10 * 1024 * 1024  # 10 MB: agent JSON lines can exceed 64 KB default
 
 # Provider-neutral guardrails shared by every headless runtime: pipeline
 # boundary, literal command execution, worktree conflict recovery, and the
@@ -124,7 +124,7 @@ async def _check_cli_available(cli_name: str, install_hint: str) -> tuple[bool, 
     """
     path = shutil.which(cli_name)
     if not path:
-        return False, f"{cli_name} not found -- install: {install_hint}"
+        return False, f"{cli_name} not found, install: {install_hint}"
     proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.wait_for(

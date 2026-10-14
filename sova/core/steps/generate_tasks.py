@@ -1,4 +1,4 @@
-"""Step: Generate Tasks -- invoke LLM to propose tasks from scan context.
+"""Step: Generate Tasks. Invoke LLM to propose tasks from scan context.
 
 Builds a prompt from the scan summary, calls the LLM, and parses
 JSON output into a list of PlannedTask objects.

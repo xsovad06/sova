@@ -89,7 +89,7 @@ class Milestone:
 
 
 def _get_egress_mode() -> EgressMode:
-    """Load egress mode from config (no cache -- supports multi-project mode)."""
+    """Load egress mode from config (no cache: supports multi-project mode)."""
     try:
         from sova.config.loader import load_config
 
@@ -104,7 +104,7 @@ class TaskAdapter(ABC):
 
     Each adapter connects to a tracker (GitHub, Jira Cloud) and provides
     both read access and state management. Agents own the issue lifecycle
-    on the tracker -- every state transition is visible to humans.
+    on the tracker: every state transition is visible to humans.
 
     Outbound text methods use the Template Method pattern: the public method
     runs the egress filter, then delegates to the ``_do_*`` abstract method.
@@ -153,7 +153,7 @@ class TaskAdapter(ABC):
     async def remove_label(self, task_id: str, label: str) -> None:
         """Remove a label from the task."""
 
-    # -- Egress-filtered methods (Template Method pattern) -------------------
+    # Egress-filtered methods (Template Method pattern) -------------------
 
     async def post_comment(self, task_id: str, body: str) -> None:
         """Post a comment on the task (egress-filtered)."""

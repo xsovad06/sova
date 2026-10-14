@@ -1,4 +1,4 @@
-"""MCP router -- HTTP+SSE endpoint for agent self-inspection tools."""
+"""MCP router: HTTP+SSE endpoint for agent self-inspection tools."""
 
 from __future__ import annotations
 

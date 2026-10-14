@@ -1,4 +1,4 @@
-"""CLI commands: sova install, sova setup, sova uninstall -- project lifecycle."""
+"""CLI commands: sova install, sova setup, sova uninstall (project lifecycle)."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         console.print(f"[red]Database initialization failed: {exc}[/red]")
         failed_stages.append("database")
 
-    # Load config once -- used by Stage 4 (commands) and Stage 5 (RTK)
+    # Load config once: used by Stage 4 (commands) and Stage 5 (RTK)
     cfg = load_config(project_dir)
 
     # Stage 3.5: Agent permissions (non-fatal)
@@ -138,19 +138,19 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
             console.print(f"[green]Commands updated: {cmd_result.updated}, unchanged: {cmd_result.skipped}[/green]")
             if cmd_result.conflicts:
                 for name in cmd_result.conflicts:
-                    console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
+                    console.print(f"  [yellow]! {name}: locally modified, skipped[/yellow]")
             guide_result = update_guides(guidelines_dir, rules_dir, cfg)
             console.print(
                 f"[green]Guidelines updated: {guide_result.updated}, unchanged: {guide_result.skipped}[/green]"
             )
             if guide_result.conflicts:
                 for name in guide_result.conflicts:
-                    console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
+                    console.print(f"  [yellow]! {name}: locally modified, skipped[/yellow]")
             sk_result = update_sk(skills_src_dir, skills_target, cfg)
             console.print(f"[green]Skills updated: {sk_result.updated}, unchanged: {sk_result.skipped}[/green]")
             if sk_result.conflicts:
                 for name in sk_result.conflicts:
-                    console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
+                    console.print(f"  [yellow]! {name}: locally modified, skipped[/yellow]")
         else:
             cmd_result = install_cmds(canonical_dir, commands_dir, cfg, adapter=claude_adapter)
             console.print(f"[green]Commands installed: {cmd_result.installed}[/green]")
@@ -217,7 +217,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         for warning in install_warnings:
             console.print(f"  [yellow]Warning: {warning}[/yellow]")
     if problems:
-        console.print("\n[red]Installation incomplete -- the following are missing:[/red]")
+        console.print("\n[red]Installation incomplete: the following are missing:[/red]")
         for problem in problems:
             console.print(f"  [red]- {problem}[/red]")
         console.print("[dim]Re-run 'sova install' to retry.[/dim]")
@@ -512,7 +512,7 @@ async def _uninstall(
         except OSError as exc:
             failed.append(f".claude/{dir_name}/: {exc}")
 
-    # 5. RTK hook (always removed -- SOVA-managed)
+    # 5. RTK hook (always removed, SOVA-managed)
     try:
         from sova.utils.rtk import remove_rtk_hook
 
@@ -522,7 +522,7 @@ async def _uninstall(
         log.debug("uninstall.rtk_hook_failed", project_dir=str(project_dir), exc_info=True)
         failed.append(f"RTK hook: {exc}")
 
-    # 6. MCP servers (always removed: SOVA-managed)
+    # 6. MCP servers (always removed, SOVA-managed)
     try:
         from sova.utils.mcp_config import (
             ATLASSIAN_MCP_NAME,
@@ -759,7 +759,7 @@ async def _offer_starter_milestones(project_dir: Path) -> None:
         console.print(f"[yellow]Skipped {len(skipped)} (already exist): {', '.join(skipped)}[/yellow]")
     if failed:
         for f in failed:
-            console.print(f"[red]Failed: {f['title']} -- {f['error']}[/red]")
+            console.print(f"[red]Failed: {f['title']}: {f['error']}[/red]")
 
 
 def _default_config(repo: str = "", test_cmd: str = "make test", github_user: str = "") -> dict:

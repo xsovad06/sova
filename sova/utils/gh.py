@@ -44,7 +44,7 @@ class PushPermissionCheck:
     ``checked_as`` is the github_user whose token was confirmed to be in use for
     the API call (i.e. ``resolve_gh_env`` succeeded for it). It is ``None`` when
     no user was configured, or when a user was configured but token resolution
-    failed and the call ran under whatever account is ambient-active instead --
+    failed and the call ran under whatever account is ambient-active instead:
     in that case the caller must not report the configured user as the one that
     was actually checked.
     """

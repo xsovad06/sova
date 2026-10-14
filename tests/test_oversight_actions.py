@@ -1,4 +1,4 @@
-"""Tests for sova.oversight.actions -- issue creation from oversight findings."""
+"""Tests for sova.oversight.actions: issue creation from oversight findings."""
 
 from __future__ import annotations
 

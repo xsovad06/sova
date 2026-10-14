@@ -1,4 +1,4 @@
-"""PR creation throttle service -- queues PR creation behind CodeRabbit quota.
+"""PR creation throttle service: queues PR creation behind CodeRabbit quota.
 
 When ``coderabbit_quota.enabled``, ``CreatePRStep`` enqueues PR data instead
 of creating immediately.  A background ``process_queue()`` loop drains entries
@@ -118,7 +118,7 @@ async def poll_until_created(
             return None
         if status["status"] in (PRQueueStatus.CREATED, PRQueueStatus.FAILED, PRQueueStatus.CANCELLED):
             return status
-    # Timed out -- mark as failed so the entry doesn't linger
+    # Timed out: mark as failed so the entry doesn't linger
     async with await session_factory() as session:
         async with session.begin():
             entry = await session.get(PRCreationQueue, entry_id)
@@ -195,7 +195,7 @@ async def process_queue(
         entry_github_user = entry.github_user
         entry_issue_number = entry.issue_number
 
-    # Create the PR (outside the transaction -- CREATING is already durable)
+    # Create the PR (outside the transaction: CREATING is already durable)
     from sova.git import operations as git_ops
 
     try:
@@ -217,7 +217,7 @@ async def process_queue(
         log.error("pr_throttle.create_failed", entry_id=entry_id, error=str(exc), exc_info=True)
         return 0
 
-    # PR created successfully -- persist results
+    # PR created successfully: persist results
     async with session.begin():
         entry = await session.get(PRCreationQueue, entry_id)
         if entry is not None:
@@ -246,7 +246,7 @@ async def process_queue(
         if task_run is not None:
             task_run.pr_number = pr_info.number
 
-    # Run side effects (edge case 8) -- outside transaction
+    # Run side effects (edge case 8): outside transaction
     await run_post_create_side_effects(
         pr_number=pr_info.number,
         issue_number=entry_issue_number,

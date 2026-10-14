@@ -1,6 +1,6 @@
 # Security Guidelines
 
-Security conventions and guardrails specific to the SOVA codebase -- credential handling, input sanitization, subprocess safety, and prompt injection mitigation.
+Security conventions and guardrails specific to the SOVA codebase: credential handling, input sanitization, subprocess safety, and prompt injection mitigation.
 
 For vulnerability reporting, see [SECURITY.md](/SECURITY.md).
 
@@ -51,7 +51,7 @@ Codex spawns also scrub `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` (via `extra_s
 
 ## Subprocess Execution Safety
 
-All subprocess calls go through `sova/utils/shell.py:run()`, which uses `asyncio.create_subprocess_exec(*args)` -- no shell expansion, no `shell=True`.
+All subprocess calls go through `sova/utils/shell.py:run()`, which uses `asyncio.create_subprocess_exec(*args)`, no shell expansion, no `shell=True`.
 
 - Arguments are never concatenated into a shell string
 - Default timeout of 300s prevents hung processes

@@ -1,6 +1,6 @@
 ---
 name: dashboard-design
-description: SOVA dashboard UI design system and quality guardrails -- Catppuccin Mocha dark theme, Tailwind CSS, Jinja2 templates, component macros. Anti-slop rules, visual hierarchy discipline, spacing/motion quality. Auto-activates when creating or modifying dashboard templates, CSS, or JavaScript.
+description: SOVA dashboard UI design system and quality guardrails (Catppuccin Mocha dark theme, Tailwind CSS, Jinja2 templates, component macros). Anti-slop rules, visual hierarchy discipline, spacing/motion quality. Auto-activates when creating or modifying dashboard templates, CSS, or JavaScript.
 allowed_tools: Read, Grep, Glob, Bash, Edit, Write
 ---
 
@@ -12,11 +12,11 @@ Read this skill BEFORE writing any template HTML, CSS, or frontend JavaScript un
 
 Before making changes, read these:
 
-1. `sova/dashboard/static/style.css` -- CSS variables (Catppuccin Mocha), component classes
-2. `sova/dashboard/templates/_head.html` -- shared Tailwind config (centralized)
-3. `sova/dashboard/templates/_icons.html` -- SVG icon macro (Heroicons v2 outline)
-4. `sova/dashboard/templates/_components.html` -- Jinja2 component macros (stat_card, card_header)
-5. `docs/design-system.md` -- full design system reference
+1. `sova/dashboard/static/style.css`: CSS variables (Catppuccin Mocha), component classes
+2. `sova/dashboard/templates/_head.html`: shared Tailwind config (centralized)
+3. `sova/dashboard/templates/_icons.html`: SVG icon macro (Heroicons v2 outline)
+4. `sova/dashboard/templates/_components.html`: Jinja2 component macros (stat_card, card_header)
+5. `docs/design-system.md`: full design system reference
 
 ## 1. Design Dials
 
@@ -36,15 +36,15 @@ If your generated code includes ANY of these, the output fails quality checks:
 
 ### Layout
 - Generic 3-equal-column grids with identical cards (the "SaaS landing page" look)
-- Cards with no visual hierarchy -- all same padding, same font size, same weight
+- Cards with no visual hierarchy: all same padding, same font size, same weight
 - Full-width sections with no constraint (content stays within the `ml-64 p-8` main area)
 - Centered text blocks wider than `max-w-2xl`
 
 ### Color
 - Any color outside Catppuccin Mocha palette (no hardcoded hex, rgb, hsl)
 - Gradient backgrounds on containers or sections (SOVA is flat, not glassmorphic)
-- Random opacity values -- use the established scale: `text-gray-500` for muted, `/30` for borders, `/20` for subtle fills, `/10` for faint backgrounds
-- `rgba(0,0,0,...)` or similar generic shadows -- use Catppuccin surface colors
+- Random opacity values: use the established scale: `text-gray-500` for muted, `/30` for borders, `/20` for subtle fills, `/10` for faint backgrounds
+- `rgba(0,0,0,...)` or similar generic shadows: use Catppuccin surface colors
 
 ### Typography
 - More than the 6 established type roles (page heading, section heading, label, body, caption, data)
@@ -55,10 +55,10 @@ If your generated code includes ANY of these, the output fails quality checks:
 
 ### Components
 - Inventing new button variants beyond `.sova-btn-primary|success|danger|warning`
-- Using Tailwind shadow classes (`shadow-md`, `shadow-lg`) -- use border-based depth
+- Using Tailwind shadow classes (`shadow-md`, `shadow-lg`): use border-based depth
 - Inline SVGs for icons that exist in `_icons.html` (use `{{ icon("name", "w-5 h-5") }}`)
 - Native browser elements without `.sova-input`, `.sova-table` classes
-- ASCII characters as icons (arrows, dots, checks) -- use Heroicon SVGs
+- ASCII characters as icons (arrows, dots, checks): use Heroicon SVGs
 
 ### Motion
 - `transition: all` (always specify properties: `transition-colors`, `transition-opacity`)
@@ -85,9 +85,9 @@ Every page element must have a clear place in the visual hierarchy.
 
 Every content section needs exactly 3 levels of visual weight:
 
-1. **Primary** -- the thing the user came to see (stat value, agent status, PR state). Largest, boldest, highest contrast.
-2. **Secondary** -- context and labels (stat titles, column headers, issue titles). Medium size, medium weight.
-3. **Tertiary** -- metadata and actions (timestamps, badges, action buttons). Smallest, lightest, most muted.
+1. **Primary**: the thing the user came to see (stat value, agent status, PR state). Largest, boldest, highest contrast.
+2. **Secondary**: context and labels (stat titles, column headers, issue titles). Medium size, medium weight.
+3. **Tertiary**: metadata and actions (timestamps, badges, action buttons). Smallest, lightest, most muted.
 
 If everything is the same size and weight, nothing stands out. If there are more than 3 levels, the hierarchy is noisy.
 
@@ -130,7 +130,7 @@ With MOTION_INTENSITY at 2 (Static), interactions should be:
 - Use `data-tooltip="text"` for hover context (not native `title`)
 
 ### Polling & Dynamic Content
-- Polling `innerHTML` refresh kills open dropdowns -- track interactive state flags, skip re-renders while menus are open
+- Polling `innerHTML` refresh kills open dropdowns: track interactive state flags, skip re-renders while menus are open
 - Clear stale UI on negative polling path (state gone = clear innerHTML or add `hidden`)
 - `parseFloat(value || 0).toFixed(N)` for all API cost fields (Decimal serializes as string)
 
@@ -161,7 +161,7 @@ With MOTION_INTENSITY at 2 (Static), interactions should be:
 ## 6. Component Quick Reference
 
 ### Buttons
-`.sova-btn .sova-btn-primary|success|danger|warning` -- never invent variants
+`.sova-btn .sova-btn-primary|success|danger|warning`: never invent variants
 
 ### Cards
 `.sova-card` container, `.sova-card-header` or `card_header()` macro
@@ -170,7 +170,7 @@ With MOTION_INTENSITY at 2 (Static), interactions should be:
 `.sova-stat` + `.sova-stat-label` + `.sova-stat-value` or `stat_card()` macro
 
 ### Icons
-`{{ icon("name", "w-5 h-5") }}` -- never use ASCII characters for icons
+`{{ icon("name", "w-5 h-5") }}`: never use ASCII characters for icons
 
 ### Badges
 `rounded-full` for read-only state indicators (pills), `rounded` for clickable buttons
@@ -179,11 +179,11 @@ With MOTION_INTENSITY at 2 (Static), interactions should be:
 `data-tooltip="text"` with optional `data-tooltip-pos="top|bottom|left|right"`
 
 ### Notifications
-- Ephemeral: `showToast(message, type)` -- info, warning, error, success
+- Ephemeral: `showToast(message, type)` (types: info, warning, error, success)
 - Persistent: `_addNotification(message, type)`
 
 ### Confirmation Dialogs
-`sovaConfirm(message, opts)` -- returns Promise. Use `confirmClass: 'danger'` for destructive actions.
+`sovaConfirm(message, opts)`: returns Promise. Use `confirmClass: 'danger'` for destructive actions.
 
 ## 7. AI-Tell Detection
 

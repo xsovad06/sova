@@ -1,4 +1,4 @@
-"""Agent context resolution -- worktree lookup, command prompts, GH env, PR-to-issue.
+"""Agent context resolution: worktree lookup, command prompts, GH env, PR-to-issue.
 
 Separated from agent_lifecycle to isolate context/environment resolution logic.
 """
@@ -118,7 +118,7 @@ async def _resolve_issue_worktree(
             log.error("command.worktree_unusable_fallback_to_project_dir", branch=branch_name)
             return project_dir
 
-        # No existing worktree found -- create one for this branch so the agent
+        # No existing worktree found: create one for this branch so the agent
         # doesn't run in the main project directory and pollute its working tree.
         stashed = False
         try:

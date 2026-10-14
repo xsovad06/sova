@@ -26,11 +26,11 @@
       "managed": true
     },
     "sova-audit-instructions/SKILL.md": {
-      "hash": "79dc99e3f55ec66a",
+      "hash": "250a9cd7a9c05752",
       "managed": true
     },
     "sova-debug/SKILL.md": {
-      "hash": "93ac1cafce4cc51f",
+      "hash": "188434c4fa5b08d5",
       "managed": true
     },
     "sova-develop/SKILL.md": {
@@ -54,7 +54,7 @@
       "managed": true
     },
     "sova-health-audit/SKILL.md": {
-      "hash": "2862c2ccbfedd75e",
+      "hash": "82cac11e3862393e",
       "managed": true
     },
     "sova-ingest-review/SKILL.md": {
@@ -94,7 +94,7 @@
       "managed": true
     },
     "sova-review-full/SKILL.md": {
-      "hash": "e3da94c91bff43df",
+      "hash": "ead2766732949faa",
       "managed": true
     },
     "sova-review-pr/SKILL.md": {
@@ -102,7 +102,7 @@
       "managed": true
     },
     "sova-simplify/SKILL.md": {
-      "hash": "e7f47dd447a7194c",
+      "hash": "16e8734ff18fc40b",
       "managed": true
     },
     "sova-spec/SKILL.md": {
@@ -110,11 +110,11 @@
       "managed": true
     },
     "sova-standup/SKILL.md": {
-      "hash": "ccbf212d4f87c34c",
+      "hash": "56e26c6f1164df4b",
       "managed": true
     },
     "sova-status/SKILL.md": {
-      "hash": "c454084ed163a1ac",
+      "hash": "bec80a8f048591d0",
       "managed": true
     },
     "sova-test/SKILL.md": {

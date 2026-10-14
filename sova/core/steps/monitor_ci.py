@@ -1,4 +1,4 @@
-"""Step 8: Monitor CI -- poll CI checks until they complete.
+"""Step 8: Monitor CI. Poll CI checks until they complete.
 
 When CI fails, optionally invokes Claude to fix the issue and re-pushes,
 looping up to ``ci.max_fix_attempts`` times before giving up. Set
