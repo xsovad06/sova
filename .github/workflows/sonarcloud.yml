@@ -117,9 +117,16 @@ jobs:
         if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
         run: pip install -e ".[dev]" pytest-cov pytest-timeout
 
+      # Stopgap until SonarCloud consumes the CI coverage artifact (#1187):
+      # run on all runner cores, and use the sys.monitoring coverage core
+      # (Python 3.12+, no branch coverage configured), which measured 11%
+      # overhead against 47% for the default tracer. Serial with the default
+      # tracer this step reached 29 of the job's 30 minutes (#1183).
       - name: Run tests with coverage
         if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
-        run: pytest tests/ --cov=sova --cov-report=xml -q --timeout=60
+        env:
+          COVERAGE_CORE: sysmon
+        run: pytest tests/ -n auto --cov=sova --cov-report=xml -q --timeout=60
 
       - name: Find associated PR
         id: find-pr
