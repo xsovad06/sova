@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sova.adapters.github import GitHubAdapter
 from sova.config.models import IntegrationConfig, NotificationConfig
 from sova.dashboard.services.merge_queue_monitor import (
     MergeQueueMonitor,
@@ -438,6 +439,38 @@ class TestHandleMerged:
             await monitor._handle_merged(entry)
 
         mock_transition.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_adapter_construction_failure_still_marks_merged(self, project_dir: Path) -> None:
+        """A ValueError from create_adapter() must not abort cleanup or leave the entry queued."""
+        entry_id = await create_merge_queue_entry(
+            pr_number=42,
+            repo="owner/repo",
+            project_dir=project_dir,
+            issue_number="10",
+            branch_name="feat/test",
+            github_user="user1",
+        )
+        assert entry_id is not None
+
+        entries = await _load_queued_entries(project_dir)
+        entry = entries[0]
+
+        monitor = _make_monitor(project_dir)
+
+        with (
+            patch("sova.git.merge.delete_remote_branch", new_callable=AsyncMock),
+            patch.object(monitor, "_transition_issue_state", new_callable=AsyncMock, side_effect=ValueError("boom")),
+            patch.object(monitor, "_cleanup_local_worktree", new_callable=AsyncMock) as mock_cleanup,
+            patch("sova.dashboard.services.feed_service.emit_safe"),
+            patch.object(monitor, "_notify"),
+        ):
+            await monitor._handle_merged(entry)
+
+        mock_cleanup.assert_called_once()
+
+        resolved_entries = await _load_queued_entries(project_dir)
+        assert len(resolved_entries) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +988,34 @@ class TestTransitionIssueState:
             github_user="user1",
             adapter=mock_adapter,
         )
+
+    @pytest.mark.asyncio
+    async def test_calls_real_create_adapter_with_config(self, project_dir: Path) -> None:
+        """Exercises the real create_adapter(cfg) and handle_post_merge_state call paths.
+
+        Only GitHubAdapter._gh is stubbed, so this reaches the real
+        GitHubAdapter.transition_state() and verifies the default "done"
+        post-merge state issues the expected issue-close gh call, not just
+        that some adapter object was constructed and passed through.
+        """
+        monitor = _make_monitor(project_dir)
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch.object(GitHubAdapter, "_gh", new_callable=AsyncMock) as mock_gh,
+        ):
+            cfg = MagicMock()
+            cfg.task_source.type = "github"
+            cfg.task_source.github_project_number = None
+            cfg.github_repo = "owner/repo"
+            cfg.github_user = "user1"
+            cfg.model_copy.return_value = cfg
+            mock_cfg.return_value = cfg
+            mock_gh.return_value = MagicMock(success=True)
+
+            await monitor._transition_issue_state("10", "owner/repo", "user1")
+
+        mock_gh.assert_awaited_once_with("issue", "close", "10", "--repo", "owner/repo")
 
 
 # ---------------------------------------------------------------------------

@@ -181,11 +181,13 @@ class MergeQueueMonitor:
                 log.warning("merge_queue_monitor.branch_delete_failed", branch=branch_name, exc_info=True)
 
         if issue_number:
+            from sova.adapters.base import AdapterError
+
             try:
                 await self._transition_issue_state(issue_number, repo, github_user)
                 state = self.integration_config.post_merge_state
                 cleanup_actions.append(f"issue #{issue_number} moved to {state}")
-            except (RuntimeError, OSError):
+            except (RuntimeError, OSError, ValueError, AdapterError):
                 log.warning("merge_queue_monitor.state_transition_failed", issue=issue_number, exc_info=True)
 
         await self._cleanup_local_worktree(entry)
@@ -262,12 +264,7 @@ class MergeQueueMonitor:
         from sova.git.merge import handle_post_merge_state
 
         cfg = load_config(self.project_dir)
-        adapter = create_adapter(
-            cfg.task_source.type,
-            repo=repo,
-            github_user=github_user,
-            project_number=cfg.task_source.github_project_number,
-        )
+        adapter = create_adapter(cfg.model_copy(update={"github_repo": repo, "github_user": github_user}))
         await handle_post_merge_state(
             issue_number,
             post_merge_state=self.integration_config.post_merge_state,
