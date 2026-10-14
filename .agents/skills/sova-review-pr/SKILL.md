@@ -96,9 +96,11 @@ Read related files as needed: review with full understanding, not in isolation.
 
 ## 4. Deep Analysis
 
-**Bot deduplication** (when Step 1.5 was performed): before recording a finding, check the bot findings table from Step 1.5. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding; note it for the "Confirmed Bot Findings" section in Step 6 instead. If you disagree with a bot, record your disagreement as a regular finding.
+**Bot deduplication** (when Step 1.5 was performed): before recording a finding, check the bot findings table from Step 1.5. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding; note it for the "Confirmed Bot Findings" section in Step 6 instead. If you disagree with a bot, record your disagreement as a regular finding. Exception: if the bot finding also repeats an entry from the project's mistakes list (see Recorded mistakes first below), keep it in `findings` with severity at least 6/10, cite the entry, and also list it under "Confirmed Bot Findings".
 
 Review across these dimensions, in priority order. Reference `AGENTS.md` and `.claude/rules/*.md` for project-specific rules.
+
+**Recorded mistakes first.** If the project keeps a mistakes list (`.claude/agent-memory/common-mistakes.md`, or the mistakes section of `.claude/agent-memory/cookbook.md`), read it and check the diff against every entry before the dimensions below. A diff that repeats a recorded mistake is a finding scored at least 6/10, citing the entry.
 
 ### Security (Critical)
 - Auth/permission checks correct?

@@ -39,6 +39,8 @@ Read related files as needed: the goal is to review with full understanding, not
 
 Review across these dimensions, in priority order. Reference the project's guidelines (`AGENTS.md`, `.claude/rules/*.md`) for project-specific rules.
 
+**Recorded mistakes first.** If the project keeps a mistakes list (`.claude/agent-memory/common-mistakes.md`, or the mistakes section of `.claude/agent-memory/cookbook.md`), read it and check the diff against every entry before the dimensions below. A diff that repeats a recorded mistake is a finding scored at least 6/10, citing the entry. These lists exist because the same mistakes recur; rules loaded into context alone have not prevented them.
+
 ### Security (Critical)
 - Input validation on all user-provided data?
 - No injection risks (SQL, XSS, command injection)?
