@@ -1,4 +1,4 @@
-"""SOVA MCP server -- provider-agnostic agent tools.
+"""SOVA MCP server: provider-agnostic agent tools.
 
 Exposes SOVA capabilities as MCP (Model Context Protocol) tools that any
 compliant agent runtime can discover and invoke.

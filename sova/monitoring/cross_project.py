@@ -100,7 +100,7 @@ class MetricsSnapshotWriter:
                 # RuntimeError: dictionary changed size during iteration.
                 data = self._collect_metrics()
                 if data is not None:
-                    # Only the disk I/O is offloaded -- no shared state accessed.
+                    # Only the disk I/O is offloaded, no shared state accessed.
                     await loop.run_in_executor(None, self._flush_to_disk, data)
             except Exception:  # noqa: BLE001 (writer loop must survive any single-cycle error)
                 log.warning("cross_project.write_error", slug=self._slug, exc_info=True)

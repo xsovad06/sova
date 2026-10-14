@@ -1,4 +1,4 @@
-"""Handoff API -- read, execute, and clear agent handoff actions."""
+"""Handoff API: read, execute, and clear agent handoff actions."""
 
 from __future__ import annotations
 

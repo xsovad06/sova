@@ -1,4 +1,4 @@
-"""Tests for PR monitor -- state change detection, notifications, CodeRabbit retry."""
+"""Tests for PR monitor: state change detection, notifications, CodeRabbit retry."""
 
 from __future__ import annotations
 
@@ -118,8 +118,8 @@ class TestFirstCycleSuppression:
             ),
             patch("sova.ipc.notifications.notify") as mock_notify,
         ):
-            await monitor._poll_cycle()  # first -- populate
-            await monitor._poll_cycle()  # second -- detect change
+            await monitor._poll_cycle()  # first: populate
+            await monitor._poll_cycle()  # second: detect change
 
         mock_notify.assert_called_once()
         call_kwargs = mock_notify.call_args

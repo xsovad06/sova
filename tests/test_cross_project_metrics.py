@@ -428,7 +428,7 @@ class TestMetricsSnapshotWriter:
             get_metrics_fn=lambda: {"available": True, "system": {}, "agents": [], "agent_slots": {}},
             metrics_dir=metrics_dir,
         )
-        # Don't start the background task -- just test the unlink error path
+        # Don't start the background task: just test the unlink error path
         with patch("sova.monitoring.cross_project.Path.unlink", side_effect=OSError("perm denied")):
             await writer.stop()
         # Should not raise

@@ -1,4 +1,4 @@
-# SOVA -- Vision Document
+# SOVA: Vision Document
 
 > **Status**: Post-implementation, pre-release
 > **Author**: Damian Sova
@@ -6,7 +6,7 @@
 
 ## What This Becomes
 
-The original agent and Project-instructions repositories merged into a single **SOVA** (Software Orchestration Via Agents) -- a standalone application that any software project can install to gain autonomous AI-assisted development capabilities out of the box.
+The original agent and Project-instructions repositories merged into a single **SOVA** (Software Orchestration Via Agents), a standalone application that any software project can install to gain autonomous AI-assisted development capabilities out of the box.
 
 It is not just a script collection. It is a **product** with a CLI, web dashboard, scheduler daemon, and setup wizard.
 
@@ -14,11 +14,11 @@ It is not just a script collection. It is a **product** with a CLI, web dashboar
 
 A unified repository that ships:
 
-1. **Autonomous Agent** (the orchestrator) -- picks tasks, develops via TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, learns from mistakes. Role-based pipeline: Triage -> Researcher -> Developer -> Reviewer, with autonomous Developer-Reviewer chaining.
-2. **Standardized Skills/Commands** -- 27 general-purpose commands (develop, test, review, pr, ship, etc.) that work on any project without customization.
-3. **Project Integration Kit** -- generates project-specific instructions, guardrails, and configuration through a guided setup process.
-4. **Dashboard App** -- FastAPI web UI with 19 pages for monitoring, agent control, lifecycle tracking, and configuration.
-5. **Scheduler Daemon** -- watch loop with priority-based task scanning, parallel agent execution, and combined server mode.
+1. **Autonomous Agent** (the orchestrator): picks tasks, develops via TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, learns from mistakes. Role-based pipeline: Triage -> Researcher -> Developer -> Reviewer, with autonomous Developer-Reviewer chaining.
+2. **Standardized Skills/Commands**: 27 general-purpose commands (develop, test, review, pr, ship, etc.) that work on any project without customization.
+3. **Project Integration Kit**: generates project-specific instructions, guardrails, and configuration through a guided setup process.
+4. **Dashboard App**: FastAPI web UI with 19 pages for monitoring, agent control, lifecycle tracking, and configuration.
+5. **Scheduler Daemon**: watch loop with priority-based task scanning, parallel agent execution, and combined server mode.
 
 ## Architecture
 
@@ -87,7 +87,7 @@ The setup wizard:
 4. Generates project-specific config, invariants, and knowledge files
 5. Optionally commits the configuration to git
 
-## Setup Wizard -- User Preferences
+## Setup Wizard: User Preferences
 
 The wizard (CLI or UI) walks the user through these decisions:
 
@@ -173,18 +173,18 @@ type = "github"          # github | jira | linear | manual (planned)
 ```
 
 ### TaskAdapter ABC (14 async methods)
-- `list_tasks()` -- list available tasks (filtered by state/labels)
-- `get_task(id)` -- get task details (title, description, labels, assignee)
-- `get_state(id)` -- get current task state from labels
-- `transition_state(id, state)` -- update task state (labels + board move)
-- `assign(id, user)` -- assign task to user
-- `add_label(id, label)` / `remove_label(id, label)` -- label management
-- `post_comment(id, body)` -- post issue comment
-- `post_pr_comment(pr, body)` -- post PR comment
-- `post_pr_review(pr, body, event, comments)` -- post formal PR review
-- `edit_body(id, body)` -- edit issue body
-- `link_pr(id, pr_url)` -- associate PR with task
-- `get_pr_reviews(pr)` -- get reviews for a pull request
+- `list_tasks()`: list available tasks (filtered by state/labels)
+- `get_task(id)`: get task details (title, description, labels, assignee)
+- `get_state(id)`: get current task state from labels
+- `transition_state(id, state)`: update task state (labels + board move)
+- `assign(id, user)`: assign task to user
+- `add_label(id, label)` / `remove_label(id, label)`: label management
+- `post_comment(id, body)`: post issue comment
+- `post_pr_comment(pr, body)`: post PR comment
+- `post_pr_review(pr, body, event, comments)`: post formal PR review
+- `edit_body(id, body)`: edit issue body
+- `link_pr(id, pr_url)`: associate PR with task
+- `get_pr_reviews(pr)`: get reviews for a pull request
 
 **Implemented**: GitHub (full, including Projects V2 board integration), JIRA Cloud (httpx-based, async, with lifecycle enrichment).
 **Planned**: Linear, Odoo (via MCP).
@@ -211,7 +211,7 @@ Users can also create custom personas or override detection.
 The command library is unified and portable across projects:
 - 27 standardized commands in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
 - Agent-specific wrappers (develop-full) compose the general commands, not duplicate them
-- Commands reference CLAUDE.md/AGENTS.md for project conventions -- portable across projects
+- Commands reference CLAUDE.md/AGENTS.md for project conventions, portable across projects
 - Each project tracks all commands in git (not gitignored) so the agent always has them in worktrees and fresh clones
 - Command distribution system (`sova commands install/update/diff`) handles reconciliation with SHA-256 manifest tracking
 
@@ -243,21 +243,21 @@ sova dashboard                   # One instance, one port (8111)
 #   localhost:8111/setup          -> onboard new projects
 ```
 
-Each browser tab is a fully independent workspace -- its own agent status, costs, logs, control panel. Tabs don't interfere with each other because config resolution is per-request (Python contextvars), not global state.
+Each browser tab is a fully independent workspace: its own agent status, costs, logs, control panel. Tabs don't interfere with each other because config resolution is per-request (Python contextvars), not global state.
 
 ### Architecture
 
-- **Project registry**: `~/.config/sova/projects.json` -- maps slugs to project paths
+- **Project registry**: `~/.config/sova/projects.json`: maps slugs to project paths
 - **URL routing**: `/p/{slug}/` prefixes all project-scoped pages and APIs
 - **Per-request config**: middleware reads slug from URL, sets `contextvars.ContextVar` with the project's `.claude/` data directory; all service calls resolve paths dynamically
 - **Registration**: automatic on `sova install` or dashboard Setup; manual via `POST /api/projects/register`
 
 ### Evolving Areas
 
-1. **Home page as command center** -- cross-project summary: running agents, pending checkpoints, total daily cost, recent activity across all projects. Currently a project list; expanding to a full overview.
-2. **Process isolation** -- each project has independent process state via `_ProjectAgents` dict in `agent_lifecycle.py`. Further isolation (separate process groups, resource limits) is possible.
-3. **Cross-project cost dashboard** -- aggregate view: "How much have I spent today across all projects?" with breakdown by project.
-4. **Quick actions from home** -- start/stop agents, see checkpoint alerts, jump to control page from the project list.
+1. **Home page as command center**: cross-project summary: running agents, pending checkpoints, total daily cost, recent activity across all projects. Currently a project list; expanding to a full overview.
+2. **Process isolation**: each project has independent process state via `_ProjectAgents` dict in `agent_lifecycle.py`. Further isolation (separate process groups, resource limits) is possible.
+3. **Cross-project cost dashboard**: aggregate view: "How much have I spent today across all projects?" with breakdown by project.
+4. **Quick actions from home**: start/stop agents, see checkpoint alerts, jump to control page from the project list.
 
 ## Completed Milestones
 
@@ -300,8 +300,8 @@ Fix model selection crash (unavailable version warning), consolidate fallback lo
 | ~~#51~~ | ~~Visual role builder~~ | ~~dashboard page for composing custom agent roles as workflow DAGs~~ (done) |
 | #24 | Evaluate monetization | Q1 2027 decision: open-core vs hosted vs consulting |
 | ~~--~~ | ~~JIRA adapter~~ | ~~JIRA Cloud task source with lifecycle enrichment~~ (done: #220) |
-| -- | Additional adapters | Linear, Odoo task source adapters |
-| -- | Additional personas | Go, React, Rust framework guidance |
+| n/a | Additional adapters | Linear, Odoo task source adapters |
+| n/a | Additional personas | Go, React, Rust framework guidance |
 | ~~--~~ | ~~Intelligent model routing~~ | ~~dynamically select Opus/Sonnet/Haiku based on task complexity~~ (done: #155-157) |
 | ~~#277~~ | ~~Pipeline determinism~~ | ~~replace LLM calls with deterministic code in PR body, memory extraction, triage, review ingestion~~ (done) |
 | ~~#254-259~~ | ~~Resource monitoring~~ | ~~per-agent CPU/memory tracking, live dashboard widget, cross-project aggregation, capacity advisor~~ (done: #254-259) |
@@ -317,10 +317,10 @@ Fix model selection crash (unavailable version warning), consolidate fallback lo
 
 ## Design Principles
 
-1. **Works out of the box** -- general commands must be good enough without customization
-2. **Progressive enhancement** -- setup wizard adds project-specific quality, but is optional
-3. **Single source of truth** -- one repo, one install, updates propagate to all projects
-4. **Config over code** -- project differences live in config files, not in forked scripts
-5. **Learn and improve** -- agent memory, review ingestion, and knowledge extraction create a flywheel
-6. **User in control** -- every destructive or visible action respects user preferences (push, PR, commit format)
-7. **Ephemeral agents** -- spawn, work, write handoff, die. No persistent sessions. Dashboard provides the interactive bridge.
+1. **Works out of the box**: general commands must be good enough without customization
+2. **Progressive enhancement**: setup wizard adds project-specific quality, but is optional
+3. **Single source of truth**: one repo, one install, updates propagate to all projects
+4. **Config over code**: project differences live in config files, not in forked scripts
+5. **Learn and improve**: agent memory, review ingestion, and knowledge extraction create a flywheel
+6. **User in control**: every destructive or visible action respects user preferences (push, PR, commit format)
+7. **Ephemeral agents**: spawn, work, write handoff, die. No persistent sessions. Dashboard provides the interactive bridge.

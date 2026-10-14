@@ -1,4 +1,4 @@
-"""LiteLLM provider -- routes LLM calls through LiteLLM's unified API.
+"""LiteLLM provider: routes LLM calls through LiteLLM's unified API.
 
 Supports 100+ models from all major providers (OpenAI, Anthropic, Google,
 Mistral, DeepSeek, Cohere, Ollama, etc.) via a single integration.
@@ -210,7 +210,7 @@ class LiteLLMProvider(LLMProvider):
     SOVA's LLMResult format.
 
     Note: ``cwd`` and ``max_budget_usd`` parameters are accepted by the
-    interface but ignored -- they are Claude Code CLI-specific concepts.
+    interface but ignored. They are Claude Code CLI-specific concepts.
     LiteLLM uses API keys and model-level pricing instead.
     """
 
@@ -619,7 +619,7 @@ class LiteLLMProvider(LLMProvider):
         no single credential shape to probe.
         """
         if not _HAS_LITELLM:
-            return False, "litellm is not installed -- pip install sova[litellm]"
+            return False, "litellm is not installed (pip install sova[litellm])"
         version = getattr(litellm, "__version__", "unknown")
 
         if self.vendor == "openai":

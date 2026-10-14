@@ -236,7 +236,7 @@ async def test_migration_011_column_exists_helper() -> None:
 
 
 async def test_migration_011_upgrade_skip_when_exists() -> None:
-    """Migration 011 upgrade is idempotent -- skips if column already exists."""
+    """Migration 011 upgrade is idempotent: skips if column already exists."""
     from unittest.mock import patch
 
     mod = _import_migration("011")
@@ -273,7 +273,7 @@ async def test_migration_011_downgrade_drops_column() -> None:
 
 
 async def test_migration_011_downgrade_skip_when_missing() -> None:
-    """Migration 011 downgrade is idempotent -- skips if column doesn't exist."""
+    """Migration 011 downgrade is idempotent: skips if column doesn't exist."""
     from unittest.mock import patch
 
     mod = _import_migration("011")
@@ -1388,7 +1388,7 @@ async def test_init_db_skips_dispose_when_no_ddl(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_issue_worktree -- empty / all-hyphens wt_id guard
+# _resolve_issue_worktree: empty / all-hyphens wt_id guard
 # ---------------------------------------------------------------------------
 
 

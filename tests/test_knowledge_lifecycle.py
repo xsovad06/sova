@@ -92,7 +92,7 @@ def test_set_confirmation_counter_replace() -> None:
 
 
 # ---------------------------------------------------------------------------
-# lifecycle.py -- _compute_score
+# lifecycle.py: _compute_score
 # ---------------------------------------------------------------------------
 
 
@@ -117,7 +117,7 @@ def test_compute_score_old_memory() -> None:
     from sova.knowledge.lifecycle import _compute_score
 
     score = _compute_score(confirmation_count=0, days_since_update=365.0, retrieval_count=0)
-    # Very old, no confirmations, no retrievals -- low score
+    # Very old, no confirmations, no retrievals: low score
     assert score < 0.1
 
 
@@ -125,12 +125,12 @@ def test_compute_score_well_used() -> None:
     from sova.knowledge.lifecycle import _compute_score
 
     score = _compute_score(confirmation_count=5, days_since_update=10.0, retrieval_count=15)
-    # Well-confirmed, recent, frequently retrieved -- high score
+    # Well-confirmed, recent, frequently retrieved: high score
     assert score > 0.5
 
 
 # ---------------------------------------------------------------------------
-# lifecycle.py -- compute_health_scores
+# lifecycle.py: compute_health_scores
 # ---------------------------------------------------------------------------
 
 
@@ -167,7 +167,7 @@ async def test_compute_health_scores_updates_memories() -> None:
 
 
 # ---------------------------------------------------------------------------
-# lifecycle.py -- flag_stale_memories
+# lifecycle.py: flag_stale_memories
 # ---------------------------------------------------------------------------
 
 
@@ -217,7 +217,7 @@ async def test_flag_stale_high_confirmation_exempt() -> None:
 
 
 # ---------------------------------------------------------------------------
-# lifecycle.py -- archive_memories / auto_archive
+# lifecycle.py: archive_memories / auto_archive
 # ---------------------------------------------------------------------------
 
 
@@ -274,7 +274,7 @@ async def test_auto_archive_skips_confirmed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# lifecycle.py -- search excludes archived
+# lifecycle.py: search excludes archived
 # ---------------------------------------------------------------------------
 
 
@@ -297,7 +297,7 @@ async def test_search_excludes_archived_by_default() -> None:
 
 
 # ---------------------------------------------------------------------------
-# lifecycle.py -- find_consolidation_candidates
+# lifecycle.py: find_consolidation_candidates
 # ---------------------------------------------------------------------------
 
 
@@ -330,7 +330,7 @@ async def test_find_consolidation_two_members_not_clustered() -> None:
     from sova.knowledge.lifecycle import find_consolidation_candidates
     from sova.knowledge.memory import store
 
-    # Only 2 similar -- below MIN_CLUSTER_SIZE=3
+    # Only 2 similar: below MIN_CLUSTER_SIZE=3
     await store(category="learning", title="Always quote bash variables", content="A", tags=["bash"])
     await store(category="learning", title="Always quote bash variables (important)", content="B", tags=["bash"])
 
@@ -339,7 +339,7 @@ async def test_find_consolidation_two_members_not_clustered() -> None:
 
 
 # ---------------------------------------------------------------------------
-# lifecycle.py -- consolidate_cluster
+# lifecycle.py: consolidate_cluster
 # ---------------------------------------------------------------------------
 
 
@@ -478,7 +478,7 @@ async def test_consolidate_cluster_extraction_routing_override() -> None:
 
 
 # ---------------------------------------------------------------------------
-# lifecycle.py -- auto_cleanup
+# lifecycle.py: auto_cleanup
 # ---------------------------------------------------------------------------
 
 
@@ -492,7 +492,7 @@ async def test_auto_cleanup_empty_db() -> None:
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- increment_retrieval
+# memory.py: increment_retrieval
 # ---------------------------------------------------------------------------
 
 
@@ -533,7 +533,7 @@ async def test_increment_retrieval_empty_list() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI commands -- memory health, consolidate, archive
+# CLI commands: memory health, consolidate, archive
 # ---------------------------------------------------------------------------
 
 
@@ -610,7 +610,7 @@ async def test_cli_archive_runs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- semantic_search include_archived
+# memory.py: semantic_search include_archived
 # ---------------------------------------------------------------------------
 
 

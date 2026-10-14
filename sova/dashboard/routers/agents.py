@@ -526,7 +526,7 @@ async def resume_from_approval(run_id: int) -> dict:
 
 @router.get("/agents/issue/{issue_number}/pr-status")
 async def get_issue_pr_status(issue_number: str) -> dict:
-    """Get PR status for an issue -- approval state, CI, mergeability."""
+    """Get PR status for an issue: approval state, CI, mergeability."""
     from sova.dashboard.services.agent_recovery import get_pr_status_for_issue
 
     return await get_pr_status_for_issue(issue_number)
@@ -559,7 +559,7 @@ async def ws_agent_status(websocket: WebSocket) -> None:
     project_dir = get_project_dir()
     _ws_manager.connect(websocket, project_dir)
     try:
-        # Keep connection alive -- wait for client messages or disconnect.
+        # Keep connection alive: wait for client messages or disconnect.
         # The producer task in _ws_manager handles sending updates.
         while True:
             await websocket.receive_text()

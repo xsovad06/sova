@@ -193,7 +193,7 @@ async def submit_pr_action_feedback(body: PRFeedbackRequest) -> dict:
     return {"id": record.id}
 
 
-# -- PR Metrics endpoints --
+# PR Metrics endpoints
 
 
 @router.get("/metrics/summary")

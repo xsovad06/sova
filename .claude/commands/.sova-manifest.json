@@ -14,11 +14,11 @@
       "managed": true
     },
     "audit-instructions.md": {
-      "hash": "21269b1b559266a5",
+      "hash": "4eb0023dcd1de6e0",
       "managed": true
     },
     "debug.md": {
-      "hash": "81b35a811a196444",
+      "hash": "de73b844862aa9c7",
       "managed": true
     },
     "develop-explain.md": {
@@ -42,7 +42,7 @@
       "managed": true
     },
     "health-audit.md": {
-      "hash": "1fc9e2bacdccf840",
+      "hash": "a0495aa564256115",
       "managed": true
     },
     "ingest-review.md": {
@@ -78,7 +78,7 @@
       "managed": true
     },
     "review-full.md": {
-      "hash": "55cefed4f1cb024b",
+      "hash": "f8af055516280a05",
       "managed": true
     },
     "review-pr.md": {
@@ -90,7 +90,7 @@
       "managed": true
     },
     "simplify.md": {
-      "hash": "e2a36b55e86ca1ee",
+      "hash": "46df4559199eaae3",
       "managed": true
     },
     "spec.md": {
@@ -98,11 +98,11 @@
       "managed": true
     },
     "standup.md": {
-      "hash": "e70fae50fc97d7a9",
+      "hash": "5d5f5ea6784370d5",
       "managed": true
     },
     "status.md": {
-      "hash": "5e7209262d13e298",
+      "hash": "a311267c5e31c55f",
       "managed": true
     },
     "test.md": {

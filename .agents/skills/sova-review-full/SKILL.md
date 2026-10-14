@@ -1,6 +1,6 @@
 ---
 name: sova-review-full
-description: "Full pre-push pipeline: simplify changed code, review as senior engineer, organize commits. Run before the `sova-pr` skill."
+description: "Full pre-push pipeline (simplify changed code, review as senior engineer, organize commits). Run before the `sova-pr` skill."
 ---
 
 # Full Review Pipeline
@@ -11,7 +11,7 @@ Scope: the arguments provided when this skill is invoked
 
 ## Phase 1: Simplify
 
-Follow the `sova-simplify` skill workflow: review all changed code for opportunities to reduce complexity:
+Follow the `sova-simplify` skill workflow. Review all changed code for opportunities to reduce complexity:
 
 1. Get the diff scope:
    ```bash

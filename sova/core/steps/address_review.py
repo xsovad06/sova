@@ -1,4 +1,4 @@
-"""Step: Address review -- fix review findings from the Reviewer agent."""
+"""Step: Address review. Fix review findings from the Reviewer agent."""
 
 from __future__ import annotations
 
@@ -418,7 +418,7 @@ async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict
     """Fetch review findings from GitHub PR review bodies.
 
     Calls ``gh api`` directly (bypassing the adapter) so this works for
-    both GitHub-Issues and JIRA task sources -- PRs always live on GitHub.
+    both GitHub-Issues and JIRA task sources: PRs always live on GitHub.
     """
     if not ctx.pr_number:
         return []

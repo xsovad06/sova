@@ -11,7 +11,7 @@ from sova.utils.markdown import extract_section
 
 log = get_logger(component="step.spec_helpers")
 
-# Section heading constants -- single source of truth for spec provenance threading
+# Section heading constants: single source of truth for spec provenance threading
 SECTION_OPEN_QUESTIONS = "Open Questions"
 SECTION_SOLUTION = "Solution"
 SECTION_EDGE_CASES = "Edge Cases"

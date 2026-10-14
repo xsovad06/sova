@@ -1,4 +1,4 @@
-"""Agent pool -- data models, slot management, and project-scoped agent collections.
+"""Agent pool: data models, slot management, and project-scoped agent collections.
 
 Owns the in-memory registry of running agents per project.
 """

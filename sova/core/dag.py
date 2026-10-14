@@ -1,4 +1,4 @@
-"""DAG executor -- runs command-based workflow graphs.
+"""DAG executor: runs command-based workflow graphs.
 
 Topologically sorts DAG nodes and executes them in sequence.
 Each node runs a SOVA command via the agent lifecycle layer.
@@ -204,19 +204,19 @@ class DAGExecutor:
             source = edge["source"]
 
             # If the source was skipped (its own condition didn't match), this
-            # edge is automatically satisfied -- don't block the merge node.
+            # edge is automatically satisfied: don't block the merge node.
             if source in skipped:
                 continue
 
             source_done = f"{source}.done" in context_keys
             condition = edge.get("condition")
             if condition is None:
-                # Unconditional edge -- source must have completed
+                # Unconditional edge: source must have completed
                 if not source_done:
                     return False
                 has_completed_source = True
             else:
-                # Conditional edge -- source must have completed AND condition must pass
+                # Conditional edge: source must have completed AND condition must pass
                 if not source_done:
                     return False
                 if not _evaluate_condition(condition, context_keys):
@@ -231,7 +231,7 @@ class DAGExecutor:
 def validate_dag(graph_json: dict) -> tuple[list[str], list[str]]:
     """Check for cycles, missing inputs, unreachable nodes, empty graphs.
 
-    Returns (errors, sorted_ids) -- errors is empty when valid.
+    Returns (errors, sorted_ids): errors is empty when valid.
     The sorted_ids list can be reused by the caller to avoid a second sort.
     """
     errors: list[str] = []
@@ -263,7 +263,7 @@ def validate_dag(graph_json: dict) -> tuple[list[str], list[str]]:
     except ValueError as exc:
         errors.append(str(exc))
 
-    # Disconnected node detection -- reuse directed adjacency as undirected
+    # Disconnected node detection: reuse directed adjacency as undirected
     if len(nodes) > 1:
         adj_undirected: dict[str, set[str]] = {nid: set() for nid in node_ids}
         for edge in edges:
@@ -345,4 +345,4 @@ def _evaluate_condition(condition: str, context_keys: dict[str, str]) -> bool:
             return context_keys.get(key, "") == expected
 
     log.warning("dag.condition.unknown_format", condition=condition)
-    return False  # Unknown condition format -- fail-safe
+    return False  # Unknown condition format: fail-safe

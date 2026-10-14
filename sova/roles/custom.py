@@ -1,4 +1,4 @@
-"""Custom role -- user-defined workflow backed by a WorkflowDefinition DAG."""
+"""Custom role: user-defined workflow backed by a WorkflowDefinition DAG."""
 
 from __future__ import annotations
 

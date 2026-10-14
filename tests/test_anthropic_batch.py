@@ -69,7 +69,7 @@ def _anthropic_error_result(custom_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# BatchProvider -- shared behavior
+# BatchProvider: shared behavior
 # ---------------------------------------------------------------------------
 
 

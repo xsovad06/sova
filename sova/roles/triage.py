@@ -1,4 +1,4 @@
-"""Triage role -- assess issues and classify them for the pipeline.
+"""Triage role: assess issues and classify them for the pipeline.
 
 Reads BACKLOG issues, evaluates them for agent suitability, applies
 labels, appends assessment to the issue body, and moves them to TRIAGED.
@@ -550,7 +550,7 @@ class TriageRole(AgentRole):
         Uses structured signals (body length, section headings, code refs,
         labels) to produce high-confidence results, reducing LLM fallback.
         """
-        # Check labels first -- human-only takes priority regardless of body content
+        # Check labels first: human-only takes priority regardless of body content
         label_set = {lbl.lower() for lbl in (task.labels or [])}
         if "agent:human-only" in label_set:
             return TaskAssessment(

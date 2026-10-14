@@ -5,7 +5,7 @@ Timeout patterns, caching strategies, concurrency control, and async conventions
 ## Timeout Conventions
 
 - Use `asyncio.timeout()` (Python 3.11+) for new code, not `asyncio.wait_for()`
-- Always kill the subprocess on timeout -- call `proc.kill()` then `await proc.wait()`
+- Always kill the subprocess on timeout: call `proc.kill()` then `await proc.wait()`
 - Define a timeout hierarchy: shell commands < API calls < LLM invocations < full pipeline steps
 - Make timeouts configurable where possible (config file or env vars)
 
@@ -24,7 +24,7 @@ Tests must monkeypatch the project directory and clear caches between test cases
 
 ### TTL caches
 
-Use `time.monotonic()` (not `time.time()`) for TTL checks -- immune to clock skew:
+Use `time.monotonic()` (not `time.time()`) for TTL checks, immune to clock skew:
 
 ```python
 if time.monotonic() - cached_at > TTL_SECONDS:
@@ -44,7 +44,7 @@ async with semaphore:
     await spawn_work()
 ```
 
-Per-item dedup runs independently of slot checks -- semaphore alone does not prevent duplicate work on the same item.
+Per-item dedup runs independently of slot checks: semaphore alone does not prevent duplicate work on the same item.
 
 ### Background task lifecycle
 
@@ -83,10 +83,10 @@ Small JSON reads (config, handoff files) are fast enough to run inline.
 
 ## Subprocess Streaming
 
-For streaming LLM output, read stdout line-by-line without buffering. No active timeout on streaming reads -- process lifetime and budget checks govern total duration.
+For streaming LLM output, read stdout line-by-line without buffering. No active timeout on streaming reads: process lifetime and budget checks govern total duration.
 
 ## Database Session Management
 
-- `expire_on_commit=False` -- objects remain accessible after commit without re-query
+- `expire_on_commit=False`: objects remain accessible after commit without re-query
 - SQLite: `check_same_thread=False` for async multi-threaded access
 - Always use context manager: `async with await get_session() as session:`

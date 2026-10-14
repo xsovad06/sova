@@ -1,4 +1,4 @@
-"""Tests for sova.core.dag -- DAG executor and validation."""
+"""Tests for sova.core.dag: DAG executor and validation."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 from sova.core.dag import DAGExecutor, _evaluate_condition, _get_start_command, _topological_sort, validate_dag
 from sova.db.session import close_db, init_db
 
-# -- Validation tests ----------------------------------------------------------
+# Validation tests ----------------------------------------------------------
 
 
 class TestValidateDAG:
@@ -120,7 +120,7 @@ class TestValidateDAG:
         assert errors == []
 
 
-# -- Topological sort tests ----------------------------------------------------
+# Topological sort tests ----------------------------------------------------
 
 
 class TestTopologicalSort:
@@ -155,7 +155,7 @@ class TestTopologicalSort:
         assert set(result) == {"a", "b"}
 
 
-# -- Condition evaluation tests ------------------------------------------------
+# Condition evaluation tests ------------------------------------------------
 
 
 class TestEvaluateCondition:
@@ -178,7 +178,7 @@ class TestEvaluateCondition:
         assert _evaluate_condition("just a string", {}) is False
 
 
-# -- _should_execute tests (conditional branch rejoin) -------------------------
+# _should_execute tests (conditional branch rejoin) -------------------------
 
 
 class TestShouldExecute:
@@ -221,7 +221,7 @@ class TestShouldExecute:
             ],
         }
         exe = self._make_executor(graph)
-        # B completed, C was skipped -- D should execute
+        # B completed, C was skipped: D should execute
         assert exe._should_execute("d", {"b.done": "true"}, {"c"}) is True
 
     def test_all_sources_skipped_blocks_node(self):
@@ -269,7 +269,7 @@ class TestShouldExecute:
         assert exe._should_execute("b", {"a.done": "true", "result": "pass"}, set()) is True
 
 
-# -- Lazy import caching test -------------------------------------------------
+# Lazy import caching test -------------------------------------------------
 
 
 class TestGetStartCommand:
@@ -286,7 +286,7 @@ class TestGetStartCommand:
             dag_module._start_command_fn = original
 
 
-# -- DAG executor execution tests ---------------------------------------------
+# DAG executor execution tests ---------------------------------------------
 
 
 @pytest.fixture(autouse=True)

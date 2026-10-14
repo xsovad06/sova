@@ -59,7 +59,7 @@ async function loadOverview() {
     document.getElementById('card-7d-cost').textContent = '$' + parseFloat(c.rolling_7d_usd || 0).toFixed(2);
     document.getElementById('card-invocations').textContent = `${c.total_invocations} total invocations`;
 
-    // Completion rate: done / (done + failed) -- only count finished runs
+    // Completion rate: done / (done + failed), only count finished runs
     const finished = r.done + r.failed;
     const rate = finished > 0 ? Math.round((r.done / finished) * 100) : 0;
     document.getElementById('card-completion').textContent = finished > 0 ? rate + '%' : 'N/A';

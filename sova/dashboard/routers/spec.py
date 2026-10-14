@@ -1,4 +1,4 @@
-"""Spec API router -- read, approve, revise, skip, reject specs."""
+"""Spec API router: read, approve, revise, skip, reject specs."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ class ApproveRequest(BaseModel):
     answers: dict[str, str] = {}
 
 
-# -- Read endpoints -----------------------------------------------------------
+# Read endpoints -----------------------------------------------------------
 
 
 @router.get("/pending")
@@ -65,7 +65,7 @@ async def get_spec(issue_number: str) -> dict:
     return spec
 
 
-# -- Action endpoints ---------------------------------------------------------
+# Action endpoints ---------------------------------------------------------
 
 
 @router.post("/{issue_number}/approve", responses={404: {"description": "Spec not found or not in draft state"}})

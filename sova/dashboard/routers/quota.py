@@ -1,4 +1,4 @@
-"""CodeRabbit quota API -- rate-limit status, sync, and PR queue."""
+"""CodeRabbit quota API: rate-limit status, sync, and PR queue."""
 
 from __future__ import annotations
 

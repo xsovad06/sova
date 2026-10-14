@@ -282,7 +282,7 @@ def format_coverage_findings_for_prompt(
         "   - Name tests descriptively: `test_<function>_<scenario>`\n"
         "3. Place tests in the appropriate `tests/test_*.py` file\n"
         "4. Stage and commit with message like 'test: cover uncovered paths in <module>'\n"
-        "5. Only add tests -- do NOT modify production code unless other findings also require it\n"
+        "5. Only add tests. Do NOT modify production code unless other findings also require it\n"
     )
 
     if diff_files:

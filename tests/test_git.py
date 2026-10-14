@@ -71,7 +71,7 @@ def _shell_fail(stderr: str = "error", returncode: int = 1) -> ShellResult:
 
 
 # ---------------------------------------------------------------------------
-# Git Operations -- branch management
+# Git Operations: branch management
 # ---------------------------------------------------------------------------
 
 
@@ -408,7 +408,7 @@ class TestRebaseWithConflictResolution:
 
 
 # ---------------------------------------------------------------------------
-# Git Operations -- commit and push
+# Git Operations: commit and push
 # ---------------------------------------------------------------------------
 
 
@@ -769,7 +769,7 @@ class TestListDroppedCommits:
 
 
 # ---------------------------------------------------------------------------
-# Git Operations -- PR management
+# Git Operations: PR management
 # ---------------------------------------------------------------------------
 
 
@@ -1825,7 +1825,7 @@ class TestResolveWorktreeConflict:
             mock_check.assert_awaited_once()
 
     async def test_raises_on_main_worktree(self) -> None:
-        """Raise RuntimeError for main worktree conflicts -- cannot auto-resolve."""
+        """Raise RuntimeError for main worktree conflicts: cannot auto-resolve."""
         with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
             porcelain = "worktree /repo\nHEAD abc1234\nbranch refs/heads/main\n\n"
             mock_run.side_effect = [
@@ -2019,7 +2019,7 @@ class TestResolveWorktreeConflictPruneFailed:
 class TestSyncBranchWorktreeConflict:
     async def test_returns_early_when_branch_active_in_another_worktree(self) -> None:
         """When git checkout reports 'already used by worktree', sync_branch returns
-        early after the plain fetch -- no exception, no refspec attempt."""
+        early after the plain fetch: no exception, no refspec attempt."""
         with (
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,

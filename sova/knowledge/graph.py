@@ -1,4 +1,4 @@
-"""Memory graph -- edge CRUD, neighbor traversal, auto-linking, and batch discovery."""
+"""Memory graph: edge CRUD, neighbor traversal, auto-linking, and batch discovery."""
 
 from __future__ import annotations
 

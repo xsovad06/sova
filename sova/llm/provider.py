@@ -154,7 +154,7 @@ class LLMProvider(ABC):
     ) -> AsyncIterator[StreamEvent]:
         """Run a prompt with streaming output, yielding events."""
         ...
-        yield  # pragma: no cover -- required for async generator typing
+        yield  # pragma: no cover (required for async generator typing)
 
     async def invoke_command(
         self,

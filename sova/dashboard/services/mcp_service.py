@@ -1,4 +1,4 @@
-"""MCP service -- token generation/validation and self-inspection tool handlers."""
+"""MCP service: token generation/validation and self-inspection tool handlers."""
 
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ def get_or_generate_secret(project_dir: Path | None) -> str:
 
 
 async def get_run_status(run_id: int, project_dir: Path | None = None) -> dict:
-    """MCP tool: get_run_status -- current step, status, elapsed time, pipeline variant.
+    """MCP tool: get_run_status (current step, status, elapsed time, pipeline variant).
 
     Args:
         run_id: TaskRun ID
@@ -156,7 +156,7 @@ async def get_run_status(run_id: int, project_dir: Path | None = None) -> dict:
 
 
 async def get_budget(run_id: int, project_dir: Path | None = None) -> dict:
-    """MCP tool: get_budget -- spent, limit, and remaining budget for run and issue.
+    """MCP tool: get_budget (spent, limit, and remaining budget for run and issue).
 
     Args:
         run_id: TaskRun ID
@@ -200,7 +200,7 @@ async def get_budget(run_id: int, project_dir: Path | None = None) -> dict:
 
 
 async def get_gate_results(run_id: int, project_dir: Path | None = None) -> list[dict]:
-    """MCP tool: get_gate_results -- step execution history with gate check results.
+    """MCP tool: get_gate_results (step execution history with gate check results).
 
     Args:
         run_id: TaskRun ID
@@ -234,7 +234,7 @@ async def get_gate_results(run_id: int, project_dir: Path | None = None) -> list
 
 
 async def get_pr_status(run_id: int, project_dir: Path | None = None) -> dict:
-    """MCP tool: get_pr_status -- PR state, CI checks, review decision.
+    """MCP tool: get_pr_status (PR state, CI checks, review decision).
 
     Args:
         run_id: TaskRun ID
@@ -281,7 +281,7 @@ async def get_pr_status(run_id: int, project_dir: Path | None = None) -> dict:
 
 
 async def get_issue_context(run_id: int, project_dir: Path | None = None) -> dict:
-    """MCP tool: get_issue_context -- issue body, labels, comments.
+    """MCP tool: get_issue_context (issue body, labels, comments).
 
     Args:
         run_id: TaskRun ID
@@ -329,7 +329,7 @@ async def get_issue_context(run_id: int, project_dir: Path | None = None) -> dic
 
 
 async def list_run_history(run_id: int, project_dir: Path | None = None) -> list[dict]:
-    """MCP tool: list_run_history -- all runs for the same issue, ordered newest first.
+    """MCP tool: list_run_history (all runs for the same issue, ordered newest first).
 
     Args:
         run_id: TaskRun ID (to resolve the issue number)

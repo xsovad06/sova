@@ -653,7 +653,7 @@ async def start_agent(
                 cmd = " ".join(cmd_parts)
                 prompt = (
                     "Run the following command in your bash shell. This is a CLI "
-                    "command, not a task description -- do not implement the work "
+                    "command, not a task description. Do not implement the work "
                     "yourself. Execute it exactly as written and let it complete:\n\n"
                     f"```bash\n{cmd}\n```"
                 )

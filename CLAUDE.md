@@ -2,7 +2,7 @@
 
 # CLAUDE.md
 
-This file provides Claude Code-specific commands and behaviors. Architecture, conventions, and cross-cutting rules are in AGENTS.md and `.claude/rules/*.md` -- this file contains only run commands, knowledge system config, and Claude-specific preferences.
+This file provides Claude Code-specific commands and behaviors. Architecture, conventions, and cross-cutting rules are in AGENTS.md and `.claude/rules/*.md`. This file contains only run commands, knowledge system config, and Claude-specific preferences.
 
 ## Running the Project
 
@@ -189,19 +189,19 @@ Headroom is optional and licensed under Apache 2.0. `sova doctor` does not check
 ## Knowledge System (4-Tier)
 
 ### Tier 1: Project Rules (always loaded, no truncation)
-- `CLAUDE.md` -- This file (Claude Code-specific)
-- `AGENTS.md` -- Cross-cutting conventions for all AI tools
-- `.claude/rules/*.md` -- Modular knowledge files:
-  - `architecture.md` -- Project structure, key paths, design decisions
-  - `bash-patterns.md` -- Shell scripting conventions and gotchas
-- `.claude/commands/*.md` -- Workflow commands (on-demand, loaded via `/command`)
+- `CLAUDE.md`: This file (Claude Code-specific)
+- `AGENTS.md`: Cross-cutting conventions for all AI tools
+- `.claude/rules/*.md`: Modular knowledge files:
+  - `architecture.md`: Project structure, key paths, design decisions
+  - `bash-patterns.md`: Shell scripting conventions and gotchas
+- `.claude/commands/*.md`: Workflow commands (on-demand, loaded via `/command`)
 
 ### Tier 2: Agent Memory (persists across tasks, gitignored)
-- `.claude/agent-memory/MEMORY.md` -- Index file
-- `.claude/agent-memory/cookbook.md` -- Topical knowledge by domain, common mistakes with occurrence counts
+- `.claude/agent-memory/MEMORY.md`: Index file
+- `.claude/agent-memory/cookbook.md`: Topical knowledge by domain, common mistakes with occurrence counts
 
 ### Tier 3: Session Memory (auto-managed by Claude Code)
-- `~/.claude/projects/.../memory/MEMORY.md` -- User preferences, project state (200-line limit)
+- `~/.claude/projects/.../memory/MEMORY.md`: User preferences, project state (200-line limit)
 
 ### Adding new knowledge
 - **Confirmed patterns**: Add to `.claude/rules/*.md` (Tier 1)

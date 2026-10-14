@@ -1,6 +1,6 @@
 # Agent Handoff Protocol
 
-The handoff protocol enables agent chaining -- when one agent finishes and needs human input before the next step, it writes a structured state file. The dashboard reads this file and presents actionable widgets that trigger follow-up agents.
+The handoff protocol enables agent chaining: when one agent finishes and needs human input before the next step, it writes a structured state file. The dashboard reads this file and presents actionable widgets that trigger follow-up agents.
 
 This replaces the need for long-running agents that pause for approval. Instead, each agent is short-lived and self-contained, producing a handoff file on exit.
 

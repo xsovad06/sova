@@ -1,4 +1,4 @@
-"""Tests for sova.knowledge.retrieval -- query-aware, token-budgeted retrieval."""
+"""Tests for sova.knowledge.retrieval: query-aware, token-budgeted retrieval."""
 
 from __future__ import annotations
 

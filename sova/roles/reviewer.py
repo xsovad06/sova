@@ -1,4 +1,4 @@
-"""Reviewer role -- review PRs and provide feedback.
+"""Reviewer role: review PRs and provide feedback.
 
 Reads IN_REVIEW issues with linked PRs, reviews the code changes
 via LLM, and posts scored review findings on the PR. Writes a handoff
@@ -699,7 +699,7 @@ class ReviewerRole(AgentRole):
             except Exception:  # noqa: BLE001 (a failed chunk must not abort the review; remaining chunks still run)
                 log.warning("reviewer.llm_failed", chunk=i + 1, total=len(chunks), exc_info=True)
                 if not result.findings:
-                    result.summary = "LLM review unavailable -- manual review recommended"
+                    result.summary = "LLM review unavailable: manual review recommended"
 
         return result
 

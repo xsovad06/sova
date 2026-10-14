@@ -28,7 +28,7 @@ from sova.config.loader import load_config
 
 app = typer.Typer(
     name="sova",
-    help="SOVA -- an autonomous AI development crew.",
+    help="SOVA: an autonomous AI development crew.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
@@ -115,7 +115,7 @@ def main(
         typer.Option("--version", "-v", callback=version_callback, is_eager=True, help="Show version and exit."),
     ] = None,
 ) -> None:
-    """SOVA -- an autonomous AI development crew."""
+    """SOVA: an autonomous AI development crew."""
     try:
         _init_llm_provider()
     except (RuntimeError, ValueError, ImportError) as exc:

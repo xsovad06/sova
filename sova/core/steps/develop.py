@@ -1,4 +1,4 @@
-"""Step 4: Develop -- invoke Claude CLI for TDD implementation.
+"""Step 4: Develop. Invoke Claude CLI for TDD implementation.
 
 This is the critical step where actual code is written. The gate check
 ensures that development actually produced code changes (preventing the
@@ -175,7 +175,7 @@ class DevelopStep(BaseStep):
             # instead of re-fetching the verbose issue body from GitHub.
             args = (
                 f"{ctx.issue_number}\n\n"
-                "## Spec Context (use as primary task context -- do NOT re-fetch the issue body)\n\n"
+                "## Spec Context (use as primary task context: do NOT re-fetch the issue body)\n\n"
                 f"{spec_context}"
             )
 
@@ -461,8 +461,8 @@ class DevelopStep(BaseStep):
         prompt = (
             f"The project's check command (`{check_cmd}`) failed with the following output:\n\n"
             f"```\n{check_output[-3000:]}\n```\n\n"
-            f"Fix ALL issues causing the check failures. Modify only the source code -- "
-            f"do NOT weaken, delete, or skip tests. Do NOT commit -- just fix and stage the changes."
+            f"Fix ALL issues causing the check failures. Modify only the source code: "
+            f"do NOT weaken, delete, or skip tests. Do NOT commit: just fix and stage the changes."
         )
         try:
             # dispatch_prompt, not invoke: this prompt asks for source edits, so

@@ -1,4 +1,4 @@
-"""Step: Spec -- generate structured specification before development.
+"""Step: Spec. Generate structured specification before development.
 
 Produces a .claude/specs/{issue}-{slug}.md specification document
 that guides the developer with concrete implementation plans,
@@ -37,7 +37,7 @@ log = get_logger(component="step.spec")
 
 _COMPLEXITY_ORDER = ("always", "trivial", "simple", "moderate", "complex", "never")
 
-# Longer patterns first -- substring matches greedily, so "already fully
+# Longer patterns first: substring matches greedily, so "already fully
 # implemented" must precede "already implemented" to avoid a short match
 # shadowing intent (ordering is cosmetic for `any()` but documents intent).
 _ALREADY_IMPLEMENTED_PATTERNS = (
@@ -415,7 +415,7 @@ class SpecStep(BaseStep):
                 cost_usd=result.cost_usd,
             )
 
-        # Needs human review -- write handoff and pause pipeline
+        # Needs human review: write handoff and pause pipeline
         return await self._write_approval_handoff(ctx, spec_complexity, has_questions, cost_usd=result.cost_usd)
 
     async def _write_approval_handoff(

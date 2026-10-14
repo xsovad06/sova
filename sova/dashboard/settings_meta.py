@@ -1,4 +1,4 @@
-"""Settings metadata registry -- groups, labels, descriptions for config keys."""
+"""Settings metadata registry: groups, labels, descriptions for config keys."""
 
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ GROUP_ORDER: list[str] = [
 ]
 
 _REGISTRY: list[SettingMeta] = [
-    # -- Project --
+    # Project
     SettingMeta(
         "github_repo", "GitHub repository", "Owner/repo slug for GitHub API calls (e.g. user/my-project)", "project"
     ),
@@ -133,7 +133,7 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta("slack_channel", "Slack channel", "Default Slack channel for notifications", "project"),
-    # -- LLM Provider --
+    # LLM Provider
     SettingMeta(
         "llm.provider",
         "Provider",
@@ -256,7 +256,7 @@ _REGISTRY: list[SettingMeta] = [
         "llm",
         "boolean",
     ),
-    # -- Agent --
+    # Agent
     SettingMeta(
         "agent.runtime",
         "Agent runtime",
@@ -418,7 +418,7 @@ _REGISTRY: list[SettingMeta] = [
         "runaway",
         "number",
     ),
-    # -- Pipeline --
+    # Pipeline
     SettingMeta(
         "pipeline.auto_handoff",
         "Auto-handoff to reviewer",
@@ -463,7 +463,7 @@ _REGISTRY: list[SettingMeta] = [
         "pipelines",
         "list",
     ),
-    # -- Spec --
+    # Spec
     SettingMeta(
         "spec.threshold",
         "Complexity threshold",
@@ -477,7 +477,7 @@ _REGISTRY: list[SettingMeta] = [
         "spec",
         "boolean",
     ),
-    # -- Task Source --
+    # Task Source
     SettingMeta("task_source.type", "Source type", "Where tasks come from (github, jira, linear)", "task_source"),
     SettingMeta("task_source.config", "Config", "Source-specific configuration string", "task_source"),
     SettingMeta("task_source.milestone", "Milestone filter", "Only process issues in this milestone", "task_source"),
@@ -535,7 +535,7 @@ _REGISTRY: list[SettingMeta] = [
         "Your JIRA display name for Mine filter matching (e.g. Damian Sova)",
         "task_source",
     ),
-    # -- Review --
+    # Review
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta(
         "review.revise_severity",
@@ -622,7 +622,7 @@ _REGISTRY: list[SettingMeta] = [
         "review",
         "number",
     ),
-    # -- Develop Step --
+    # Develop Step
     SettingMeta(
         "develop.max_fix_cycles",
         "Max fix cycles",
@@ -720,7 +720,7 @@ _REGISTRY: list[SettingMeta] = [
         "validation",
         "number",
     ),
-    # -- CI --
+    # CI
     SettingMeta("ci.poll_interval", _LABEL_POLL_INTERVAL, "Seconds between CI status checks", "ci", "number"),
     SettingMeta("ci.max_wait", "Max wait (s)", "Maximum seconds to wait for CI to complete", "ci", "number"),
     SettingMeta(
@@ -802,7 +802,7 @@ _REGISTRY: list[SettingMeta] = [
         "confidence",
         "number",
     ),
-    # -- Watch --
+    # Watch
     SettingMeta(
         "watch.interval_active",
         "Active interval (s)",
@@ -833,7 +833,7 @@ _REGISTRY: list[SettingMeta] = [
         "watch",
         "number",
     ),
-    # -- Worktree --
+    # Worktree
     SettingMeta(
         "worktree.copy_files",
         "Copy files",
@@ -855,7 +855,7 @@ _REGISTRY: list[SettingMeta] = [
         "worktree",
         "number",
     ),
-    # -- Commit --
+    # Commit
     SettingMeta(
         "commit.format", "Commit format", "Commit message style: conventional (type(scope): msg) or freeform", "commit"
     ),
@@ -877,7 +877,7 @@ _REGISTRY: list[SettingMeta] = [
         "commit",
         "boolean",
     ),
-    # -- Triage --
+    # Triage
     SettingMeta(
         "triage.mode",
         "Triage mode",
@@ -943,7 +943,7 @@ _REGISTRY: list[SettingMeta] = [
         "triage",
         "boolean",
     ),
-    # -- Roles --
+    # Roles
     SettingMeta(
         "roles.default",
         "Default role",
@@ -988,7 +988,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "roles.nicknames", "Role nicknames", "Short aliases for role names (e.g. dev=developer)", "roles", "object"
     ),
-    # -- Notifications --
+    # Notifications
     SettingMeta(
         "notification.desktop",
         "Desktop notifications",
@@ -1069,7 +1069,7 @@ _REGISTRY: list[SettingMeta] = [
         "server",
         "secret",
     ),
-    # -- Server --
+    # Server
     SettingMeta(
         "server.host",
         "Host",
@@ -1108,7 +1108,7 @@ _REGISTRY: list[SettingMeta] = [
         "server",
         "number",
     ),
-    # -- External Reviews --
+    # External Reviews
     SettingMeta(
         "external_reviews.enabled",
         "Enabled",
@@ -1230,7 +1230,7 @@ _REGISTRY: list[SettingMeta] = [
         "ldap",
         "object",
     ),
-    # -- Security --
+    # Security
     SettingMeta(
         "egress.mode",
         "Egress filter mode",
@@ -1258,7 +1258,7 @@ _REGISTRY: list[SettingMeta] = [
         "security",
         "list",
     ),
-    # -- Dashboard --
+    # Dashboard
     SettingMeta(
         "dashboard.kanban_columns",
         "Kanban column grouping",
@@ -1309,7 +1309,7 @@ _REGISTRY: list[SettingMeta] = [
         "dashboard",
         "secret",
     ),
-    # -- MCP --
+    # MCP
     SettingMeta(
         "mcp.enabled",
         "Enabled",
@@ -1386,7 +1386,7 @@ _REGISTRY: list[SettingMeta] = [
         "mcp",
         "list",
     ),
-    # -- Testing (in Development group) --
+    # Testing (in Development group)
     SettingMeta(
         "testing.baseline_enabled",
         "Test baseline",
@@ -1401,7 +1401,7 @@ _REGISTRY: list[SettingMeta] = [
         "develop",
         "number",
     ),
-    # -- Output --
+    # Output
     SettingMeta(
         "output.retention_days",
         "Output retention (days)",
@@ -1446,7 +1446,7 @@ _REGISTRY: list[SettingMeta] = [
         "dependency_health",
         "number",
     ),
-    # -- Resource Monitoring (in Agent Health group) --
+    # Resource Monitoring (in Agent Health group)
     SettingMeta(
         "monitoring.enabled",
         "Resource monitoring",
@@ -1482,7 +1482,7 @@ _REGISTRY: list[SettingMeta] = [
         "agent_health",
         "number",
     ),
-    # -- Knowledge --
+    # Knowledge
     SettingMeta(
         "knowledge.max_context_tokens",
         "Knowledge context tokens",
@@ -1490,7 +1490,7 @@ _REGISTRY: list[SettingMeta] = [
         "agent",
         "number",
     ),
-    # -- Integration --
+    # Integration
     SettingMeta(
         "integration.merge_method",
         "Merge method",
@@ -1530,7 +1530,7 @@ _REGISTRY: list[SettingMeta] = [
         "Issue state after merge: done (close) or on_qa (add label, keep open). Jira accepts arbitrary state names.",
         "integration",
     ),
-    # -- RTK --
+    # RTK
     SettingMeta(
         "rtk.enabled",
         "RTK compression",
@@ -1553,7 +1553,7 @@ _REGISTRY: list[SettingMeta] = [
         "agent",
         "number",
     ),
-    # -- CodeRabbit Quota --
+    # CodeRabbit Quota
     SettingMeta(
         "coderabbit_quota.enabled",
         "CodeRabbit quota tracking",
@@ -1581,7 +1581,7 @@ _REGISTRY: list[SettingMeta] = [
         "external_reviews",
         "number",
     ),
-    # -- PR Monitor --
+    # PR Monitor
     SettingMeta(
         "pr_monitor.enabled",
         "PR monitor",
@@ -1633,7 +1633,7 @@ _REGISTRY: list[SettingMeta] = [
         "external_reviews",
         "boolean",
     ),
-    # -- Supervisor --
+    # Supervisor
     SettingMeta(
         "supervisor.enabled",
         "Enabled",
@@ -1864,7 +1864,7 @@ _REGISTRY: list[SettingMeta] = [
         "supervisor",
         "integer",
     ),
-    # -- Agent Health: Memory Guard --
+    # Agent Health: Memory Guard
     SettingMeta(
         "memory_guard.enabled",
         "Memory guard",
@@ -1941,7 +1941,7 @@ _REGISTRY: list[SettingMeta] = [
         "agent_health",
         "integer",
     ),
-    # -- Agent Health: Watchdog --
+    # Agent Health: Watchdog
     SettingMeta(
         "watchdog.enabled",
         "Agent watchdog",
@@ -1998,7 +1998,7 @@ _REGISTRY: list[SettingMeta] = [
         "agent_health",
         "number",
     ),
-    # -- Fleet & Telemetry --
+    # Fleet & Telemetry
     SettingMeta(
         "telemetry.hub_url",
         "Telemetry hub URL",
@@ -2046,7 +2046,7 @@ _REGISTRY: list[SettingMeta] = [
         "fleet",
         "string",
     ),
-    # -- Awareness --
+    # Awareness
     SettingMeta(
         "awareness.enabled",
         "Enabled",
@@ -2108,7 +2108,7 @@ _REGISTRY: list[SettingMeta] = [
         "GitHub username for review-requested detection across projects",
         "awareness",
     ),
-    # -- Oversight Agent --
+    # Oversight Agent
     SettingMeta(
         "oversight.enabled",
         "Enabled",
@@ -2171,7 +2171,7 @@ _REGISTRY: list[SettingMeta] = [
         "oversight",
         "number",
     ),
-    # -- A2A Protocol --
+    # A2A Protocol
     SettingMeta(
         "a2a.enabled",
         "Enable A2A protocol",
@@ -2185,7 +2185,7 @@ _REGISTRY: list[SettingMeta] = [
         "Base URL for A2A Agent Card (e.g. http://localhost:8111). Auto-detected if empty.",
         "a2a",
     ),
-    # -- Conflict Resolution --
+    # Conflict Resolution
     SettingMeta(
         "conflict_resolution.models",
         "Models",

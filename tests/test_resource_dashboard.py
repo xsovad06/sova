@@ -577,7 +577,7 @@ class TestSystemMetricsService:
         mock_mem = MagicMock()
         mock_mem.total = 16_000_000_000
         mock_mem.available = 4_000_000_000
-        mock_mem.used = 5_000_000_000  # macOS "active" only -- should NOT be used
+        mock_mem.used = 5_000_000_000  # macOS "active" only: should NOT be used
         mock_mem.percent = 75.0
 
         with patch("sova.dashboard.services.resource_service.psutil.virtual_memory", return_value=mock_mem):

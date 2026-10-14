@@ -179,7 +179,7 @@ def _build_review_prompt(
         categories += "|spec_alignment"
 
     # When spec sections exist, the spec already encodes the issue's intent in a
-    # structured form.  Omit the verbose issue body to save tokens -- the title
+    # structured form.  Omit the verbose issue body to save tokens: the title
     # is enough for identification.
     description_block = f"\n**Description**: {task.body}" if not has_spec and task.body else ""
 
@@ -192,7 +192,7 @@ def _build_review_prompt(
     )
 
     return f"""You are a senior software engineer performing a thorough code review. \
-Your job is to find real issues -- do NOT rubber-stamp the PR. \
+Your job is to find real issues. Do NOT rubber-stamp the PR. \
 Assume the code has bugs until proven otherwise.
 
 ## PR Context

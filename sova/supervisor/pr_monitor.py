@@ -1,4 +1,4 @@
-"""PR monitor -- background loop that polls open PRs for state changes.
+"""PR monitor: background loop that polls open PRs for state changes.
 
 Detects state transitions (CI pass/fail, approval, changes requested, ready
 to merge), sends desktop notifications, and auto-retries rate-limited

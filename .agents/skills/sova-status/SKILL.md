@@ -1,6 +1,6 @@
 ---
 name: sova-status
-description: "Project health check: git state, services, tests, and progress overview."
+description: "Project health check (git state, services, tests, and progress overview)."
 ---
 
 # Project Status Check

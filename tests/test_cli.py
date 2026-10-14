@@ -1,4 +1,4 @@
-"""Tests for sova.cli -- CLI commands and Typer app."""
+"""Tests for sova.cli: CLI commands and Typer app."""
 
 from __future__ import annotations
 
@@ -520,12 +520,12 @@ class TestMemoryCommands:
     @patch("sova.knowledge.embeddings.embed_text", return_value=[0.1, 0.2])
     @patch("sova.db.session.init_db")
     def test_backfill_embeddings_no_memories_to_update(self, mock_init, _mock_embed, _mock_avail) -> None:
-        """All memories already have embeddings -- nothing to do."""
+        """All memories already have embeddings: nothing to do."""
         from sova.cli.app import app
 
         mock_init.return_value = None
         # The autouse setup_db fixture has already created a real in-memory DB,
-        # which is empty -- so there are no memories without embeddings.
+        # which is empty: so there are no memories without embeddings.
         result = runner.invoke(app, ["memory", "backfill-embeddings"])
         assert result.exit_code == 0
         assert "All memories already have embeddings" in result.output

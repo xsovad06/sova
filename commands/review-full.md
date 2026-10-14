@@ -1,6 +1,6 @@
 ---
 name: review-full
-description: Full pre-push pipeline -- simplify changed code, review as senior engineer, organize commits. Run before /pr.
+description: Full pre-push pipeline (simplify changed code, review as senior engineer, organize commits). Run before /pr.
 user-invocable: true
 category: core
 inputs:
@@ -18,7 +18,7 @@ Scope: $ARGUMENTS
 
 ## Phase 1: Simplify
 
-Follow the `/simplify` workflow -- review all changed code for opportunities to reduce complexity:
+Follow the `/simplify` workflow. Review all changed code for opportunities to reduce complexity:
 
 1. Get the diff scope:
    ```bash
@@ -74,9 +74,9 @@ See `/rearrange-commits` for the full commit organization process.
 ## Workflow Chain
 
 This command orchestrates:
-1. Simplify -- reduce complexity and duplication
-2. `/review` -- senior-engineer code review with auto-fix
-3. `/rearrange-commits` -- organize into logical commits
+1. Simplify: reduce complexity and duplication
+2. `/review`: senior-engineer code review with auto-fix
+3. `/rearrange-commits`: organize into logical commits
 
 After this command completes, run `/pr` to create the pull request.
 
@@ -87,9 +87,9 @@ After this command completes, run `/pr` to create the pull request.
 
 ## Rules
 
-- All findings are addressed by default -- fix or acknowledge with justification (false positive, not applicable, requires human decision).
+- All findings are addressed by default: fix or acknowledge with justification (false positive, not applicable, requires human decision).
 - Be thorough but not pedantic. Don't flag things that are correct and clear.
 - Do NOT reformat code that wasn't changed in this branch.
 - If a simplification or fix is risky, flag it for human review instead of applying.
-- Each phase builds on the previous -- Phase 2 reviews the state after Phase 1's changes.
+- Each phase builds on the previous: Phase 2 reviews the state after Phase 1's changes.
 - NEVER use emojis in any output.

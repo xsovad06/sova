@@ -1,4 +1,4 @@
-"""Step: Handoff to User -- notify user that the PR is ready for human review."""
+"""Step: Handoff to User. Notify user that the PR is ready for human review."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class HandoffToUserStep(BaseStep):
             ctx,
             role="developer",
             phase="address_review",
-            summary=f"PR #{ctx.pr_number} reviewed and findings addressed -- ready for human review",
+            summary=f"PR #{ctx.pr_number} reviewed and findings addressed: ready for human review",
             agent_summary=f"Review findings addressed for PR #{ctx.pr_number}, ready for human review",
             next_action="integrate",
             needs_human=True,

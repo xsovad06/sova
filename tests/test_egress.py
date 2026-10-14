@@ -9,7 +9,7 @@ import pytest
 from sova.llm.egress import filter_egress, scan_and_redact
 
 # ---------------------------------------------------------------------------
-# scan_and_redact -- pattern detection
+# scan_and_redact: pattern detection
 # ---------------------------------------------------------------------------
 
 
@@ -173,7 +173,7 @@ class TestScanAndRedactPatterns:
 
 
 # ---------------------------------------------------------------------------
-# filter_egress -- mode behavior
+# filter_egress: mode behavior
 # ---------------------------------------------------------------------------
 
 

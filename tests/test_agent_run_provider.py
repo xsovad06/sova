@@ -95,7 +95,7 @@ async def test_is_configured_true_when_projects_registered(monkeypatch: pytest.M
 
 
 # ---------------------------------------------------------------------------
-# fetch_items -- empty / no projects
+# fetch_items: empty / no projects
 # ---------------------------------------------------------------------------
 
 

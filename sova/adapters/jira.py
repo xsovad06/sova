@@ -170,7 +170,7 @@ class JiraAdapter(TaskAdapter):
         state_transitions: dict[str, str] | None = None,
         status_mapping: dict[str, str] | None = None,
     ) -> None:
-        # jql_filter is appended verbatim to queries -- callers own validation.
+        # jql_filter is appended verbatim to queries: callers own validation.
         # component is sanitized; jql_filter is not because it may contain
         # operators, functions, and nested clauses that sanitization would break.
         super().__init__(repo="", github_user="")

@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Systematic debugging workflow -- reproduce, locate, diagnose, fix, verify, prevent.
+description: Systematic debugging workflow (reproduce, locate, diagnose, fix, verify, prevent).
 user-invocable: true
 category: meta
 inputs:
@@ -27,12 +27,12 @@ Debug an issue in the project.
 ### 2. Locate
 - Identify the relevant code path (URL -> view/controller -> service -> model)
 - Read the relevant source files to understand the flow
-- Check recent changes with `git log --oneline -10` and `git diff` -- was something recently changed?
+- Check recent changes with `git log --oneline -10` and `git diff`: was something recently changed?
 - Search for related error messages in the codebase
 
 ### 3. Diagnose
 - Trace the execution flow from entry point to the error
-- Identify the root cause -- not just the symptom
+- Identify the root cause, not just the symptom
 - Check common issues:
   - Missing migrations or schema changes
   - Import errors / circular imports
@@ -43,7 +43,7 @@ Debug an issue in the project.
 
 ### 4. Fix
 - Apply the minimal fix that addresses the root cause
-- Do not introduce workarounds -- fix the actual problem
+- Do not introduce workarounds: fix the actual problem
 - If the fix touches multiple files, explain the connection
 - **Scout rule**: while in each file, fix any pre-existing issues you notice (lint warnings, dead imports, obvious bugs adjacent to your fix). Keep scout fixes small and low-risk.
 

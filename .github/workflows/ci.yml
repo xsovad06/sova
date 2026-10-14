@@ -187,7 +187,7 @@ jobs:
 
   # Real work is skipped ONLY on an explicit docs-only signal
   # (needs.changes.outputs.code == 'false'). If the `changes` gate is skipped
-  # or fails, its output is empty (not 'false'), so the suite runs -- fail-open.
+  # or fails, its output is empty (not 'false'), so the suite runs (fail-open).
   # The job-level `if` uses always() so a failed `needs: changes` does not skip
   # the whole job (a skipped required check would strand the PR forever).
   python-test:
@@ -270,7 +270,7 @@ jobs:
 
           echo "Integration test passed"
 
-  # Secrets scanning runs on EVERY change (including docs-only PRs) -- a leaked
+  # Secrets scanning runs on EVERY change (including docs-only PRs). A leaked
   # credential in a markdown file is still a leak. Not gated on the `changes`
   # job. Scans git history via `gitleaks git`, matching the pre-push hook.
   secrets-scan:

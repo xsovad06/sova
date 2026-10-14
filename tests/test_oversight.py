@@ -1,4 +1,4 @@
-"""Tests for sova.oversight.agent -- oversight agent daemon."""
+"""Tests for sova.oversight.agent: oversight agent daemon."""
 
 from __future__ import annotations
 

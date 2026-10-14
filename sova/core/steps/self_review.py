@@ -1,4 +1,4 @@
-"""Step 5b: Self-review -- review own changes before pushing."""
+"""Step 5b: Self-review. Review own changes before pushing."""
 
 from __future__ import annotations
 

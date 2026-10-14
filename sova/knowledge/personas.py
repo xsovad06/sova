@@ -111,7 +111,7 @@ def detect_persona(project_dir: Path) -> str | None:
     if _has_file(project_dir, "Cargo.toml"):
         return "rust"
 
-    # Python (generic -- after framework-specific checks)
+    # Python (generic, after framework-specific checks)
     if _has_file(project_dir, "pyproject.toml") or _has_file(project_dir, _SETUP_PY):
         return "python"
 

@@ -11,7 +11,7 @@ Scheduler (sova/scheduler/) -- Watch loop, parallel executor, server daemon
 
 Supporting modules: adapters (GitHub/Jira), LLM providers, git operations, IPC/handoff, knowledge system, config, and database.
 
-For the full architecture reference -- component details, design decisions, and key patterns -- see [`.claude/rules/architecture.md`](../.claude/rules/architecture.md).
+For the full architecture reference (component details, design decisions, and key patterns), see [`.claude/rules/architecture.md`](../.claude/rules/architecture.md).
 
 For domain-specific implementation patterns, code examples, and gotchas, see the guideline files in this directory:
 

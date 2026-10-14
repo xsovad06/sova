@@ -84,7 +84,7 @@ _ALEMBIC_HEAD_CACHE: str | None = None
 def _get_alembic_head(alembic_cfg) -> str | None:
     """Return the current head revision from migration scripts, or None on error.
 
-    Result is cached for the process lifetime -- the head revision never changes
+    Result is cached for the process lifetime: the head revision never changes
     while the server is running, so repeated restarts only pay the I/O cost once.
     """
     global _ALEMBIC_HEAD_CACHE
@@ -160,7 +160,7 @@ async def _run_migrations(engine) -> bool:
 
     has_tables = bool(set(table_names) - {"alembic_version"}) if not has_alembic else bool(table_names)
 
-    # Fast path: DB is already at migration head -- skip the upgrade entirely.
+    # Fast path: DB is already at migration head, skip the upgrade entirely.
     # This saves ~300ms of Alembic script loading on every server restart.
     # Only safe when version is non-empty (empty string means corrupted tracking).
     if has_alembic and current_version:
@@ -248,7 +248,7 @@ def _register_sqlite_pragmas(engine) -> None:
 async def _enable_sqlite_wal(engine) -> None:
     """Enable WAL journal mode on the first connection.
 
-    WAL mode persists in the database file after the first set -- subsequent
+    WAL mode persists in the database file after the first set. Subsequent
     connections automatically use WAL without re-running the PRAGMA.
     The busy timeout is handled per-connection via connect_args={"timeout": 30},
     and ``synchronous`` via the connect listener registered above.
@@ -294,7 +294,7 @@ async def init_db(project_dir: Path | None = None, *, run_migrations: bool = Tru
         if is_sqlite_file and ddl_executed:
             # Alembic's synchronous DDL via run_sync can leave aiosqlite
             # connections with a stale schema cache. Only dispose when DDL
-            # actually ran -- skipping dispose saves one connection round-trip
+            # actually ran: skipping dispose saves one connection round-trip
             # (~300 ms) on every restart when the DB is already at head.
             _backup_db(url)
             await _engine.dispose()

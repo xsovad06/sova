@@ -125,7 +125,7 @@ class TestScanProjectStep:
         ctx = _make_ctx(project_dir=tmp_path)
         step = ScanProjectStep()
 
-        # Before execution -- no plan_result
+        # Before execution: no plan_result
         gate = await step.validate_output(ctx)
         assert not gate.passed
 

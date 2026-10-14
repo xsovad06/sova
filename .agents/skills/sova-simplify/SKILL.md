@@ -39,7 +39,7 @@ Apply each simplification directly. After changes, verify tests still pass:
 make check
 ```
 
-If a simplification is risky, skip it: only apply safe, clear improvements.
+If a simplification is risky, skip it. Only apply safe, clear improvements.
 
 ### Step 4: Summary
 

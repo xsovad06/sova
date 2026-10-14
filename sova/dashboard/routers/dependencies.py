@@ -1,4 +1,4 @@
-"""Dependency graph API router -- DAG visualization, readiness, and chain queries."""
+"""Dependency graph API router: DAG visualization, readiness, and chain queries."""
 
 from __future__ import annotations
 
