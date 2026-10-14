@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "source_hashes": {
     "commands/develop.md": "3e5be97fa5b7e761a7c842eaf0a049e54cbf022b9fa89071025ca620030db714",
-    "commands/spec.md": "7437bc56af0200b84065d9b1679c3279d3a12c760d1d182765c14873df3e4088",
+    "commands/spec.md": "b32565b13959c8b6e3c4a62b7a61c61ce15d23ff865ad0649263eefa82971790",
     "commands/review.md": "824792c330c88f0fc082a6c41658976a30cf83fe9c9ef4ae476bc2eaf9fcd142",
     "commands/pr.md": "46e7b4fdc52691596c47521022a3272d5169d787c53e7ae88f3c08ae0c92f313",
     "commands/debug.md": "de73b844862aa9c728ccea7edc26e31b36f9fb3edb6e4986ff303e020c2bbb0d",
