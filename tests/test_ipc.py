@@ -48,7 +48,7 @@ class TestHandoffAction:
             description="Squash-merge into main",
             style="approve",
             mode="claude-command",
-            command="approve-merge",
+            command="integrate-pr",
             args={"pr": 15},
         )
         assert a.id == "merge"
@@ -97,7 +97,7 @@ class TestDashboardHandoff:
             summary="Rebased and pushed. CI pending.",
             details={"actions_taken": ["Rebased onto main"], "ci_status": "pending"},
             next_actions=[
-                HandoffAction(id="merge", label="Merge PR", style="approve", command="approve-merge"),
+                HandoffAction(id="merge", label="Merge PR", style="approve", command="integrate-pr"),
                 HandoffAction(id="abort", label="Abort", style="danger", mode="shell", command="rm handoff.json"),
             ],
         )

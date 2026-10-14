@@ -31,8 +31,8 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 1. Check for an approved spec: look for `.claude/specs/{issue-number}-*.md` (where issue-number matches `the arguments provided when this skill is invoked` if it's a number). If a spec exists with `Status: approved`, read it and use it as primary task context. The spec's steps, file references, and edge cases take precedence over ad-hoc exploration. When spec context is provided inline (below `the arguments provided when this skill is invoked`), use it directly. Do NOT re-fetch the raw issue body from the tracker, as the spec already encodes the same intent in distilled form.
 2. Read the project's CLAUDE.md and AGENTS.md for conventions
 3. Read agent memory files if they exist:
-   - `.claude/agent-memory/MEMORY.md`
-   - `.claude/agent-memory/cookbook.md`
+   - `.claude/agent-memory/MEMORY.md` and `.claude/agent-memory/common-mistakes.md`
+   - The cookbook: when `.claude/agent-memory/cookbook/` exists, read its `README.md` index and then only the domain files for the modules this work touches (the whole cookbook is too large to load); otherwise read `.claude/agent-memory/cookbook.md`
 4. Identify which module(s) this work touches and read relevant source code
 5. Understand the existing patterns before writing any code
 

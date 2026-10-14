@@ -131,9 +131,9 @@ After `integrate-pr` rebases, pushes, and waits for CI:
     {
       "id": "merge-now",
       "label": "Merge PR",
-      "description": "Squash-merge PR #15 and run post-merge cleanup",
+      "description": "Verify, merge PR #15 and run post-merge cleanup",
       "mode": "claude-command",
-      "command": "approve-merge",
+      "command": "integrate-pr",
       "args": {"pr": 15, "issue": "#42"},
       "style": "approve"
     },
@@ -150,15 +150,15 @@ After `integrate-pr` rebases, pushes, and waits for CI:
 }
 ```
 
-## Example: approve-merge Completion
+## Example: integrate-pr Completion
 
-After `approve-merge` finishes:
+After `integrate-pr` finishes:
 
 ```json
 {
   "id": "f9e8d7c6-b5a4-3210-fedc-ba0987654321",
   "created_at": "2026-04-16T14:35:00Z",
-  "source": "approve-merge",
+  "source": "integrate-pr",
   "issue": "#42",
   "pr_number": 15,
   "branch": "feat/add-caching",

@@ -14,7 +14,7 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
 1. Get the task from `the arguments provided when this skill is invoked`: either a GitHub Issue number or a task description.
 2. **Check for spec** (issue numbers only): look for `.claude/specs/{issue-number}-*.md`.
    - If found with `Status: approved`: read it. Report: "Using approved spec: {filename}". The `sova-develop` skill step will follow this spec as its primary guide.
-   - If found with `Status: draft`: warn the user: "Draft spec exists at {filename} but is not approved. Run the `sova-spec` skill {issue} to review and approve it, or proceed without spec guidance." Wait for user confirmation before continuing.
+   - If found with `Status: draft`: warn the user: "Draft spec exists at {filename} but is not approved. Run the `sova-spec` skill {issue} to review and approve it, or proceed without spec guidance." Wait for user confirmation before continuing (when running headless, with no user to confirm, proceed without spec guidance and say so in the summary).
    - If not found: continue silently. Specs are optional; not every task needs one.
 3. If it's an issue number, fetch details. When an approved spec was found in step 2, it already encodes the task intent in distilled form, so omit `body` and fetch only the fields this phase still needs (claiming, branch naming, labels):
    ```bash
@@ -31,10 +31,10 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
    If the project uses a GitHub Projects board, move the issue to "In Progress".
 5. Read the project's CLAUDE.md and AGENTS.md for conventions and patterns.
 6. Read agent memory files if they exist:
-   - `.claude/agent-memory/MEMORY.md`
-   - `.claude/agent-memory/cookbook.md`
+   - `.claude/agent-memory/MEMORY.md` and `.claude/agent-memory/common-mistakes.md`
+   - The cookbook: when `.claude/agent-memory/cookbook/` exists, read its `README.md` index and then only the domain files for the modules this work touches (the whole cookbook is too large to load); otherwise read `.claude/agent-memory/cookbook.md`
 7. Identify which module(s) this work touches and read relevant source code.
-8. **Check current branch**: if on main/master, create a feature branch before developing:
+8. **Check current branch**: if on main/master, create a feature branch before developing, the same way the `sova-new-feature` skill does (in a dedicated worktree when the project keeps branches under `.claude/worktrees/`, so the primary checkout stays on the base branch):
    ```bash
    BRANCH=$(git branch --show-current)
    if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
@@ -74,7 +74,7 @@ Follow the `sova-rearrange-commits` skill approach:
 1. **Separate concerns**: schema/model changes, core logic, tests, config in distinct commits.
 2. **Each commit should be self-contained** and reviewable on its own.
 3. **Commit message format**: `type(scope): description`
-   - Types: feat, fix, refactor, test, docs, chore, perf
+   - Types and scopes: only those the project's commit format invariant or AGENTS.md lists (commonly feat, fix, refactor, test, docs, chore, ci); never invent one such as `perf`, since pre-push hooks reject it
    - Example: `feat(auth): add token refresh endpoint`
 4. **NEVER create a single monolithic commit** with all changes.
 5. Commit messages should explain the 'why', not just the 'what'.

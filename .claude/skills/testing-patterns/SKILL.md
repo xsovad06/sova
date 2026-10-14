@@ -20,12 +20,11 @@ When writing or modifying files in `tests/`, follow these conventions. Reference
 ### In-memory DB (autouse in any file touching ORM):
 ```python
 @pytest.fixture(autouse=True)
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+async def setup_db(monkeypatch):
+    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
     await init_db(run_migrations=False)
     yield
     await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
 ```
 
 ### Dashboard client:
@@ -47,6 +46,9 @@ async def client(tmp_path):
    # Wrong
    patch("sova.utils.shell.run", new_callable=AsyncMock)
    ```
+   Exception: when the code under test imports inside the function body (`from x import y` in the function), there is no module-level binding to patch, so patch the source module (`x.y`). Leave a one-line comment at the patch site so a reviewer does not "fix" it back.
+
+1b. **Environment variables**: always `monkeypatch.setenv`/`delenv`, never assign to or pop from `os.environ` directly. A direct mutation outlives a failing test and leaks into every later test in the process.
 
 2. **Use `patch.object` for split modules**: patch the actual submodule, not the re-export facade:
    ```python
@@ -76,6 +78,8 @@ async def client(tmp_path):
 - **Session pattern**: always `async with await get_session() as session:`.
 - **DB fixture scope**: per-test only. Never `scope="module"`.
 - **Don't add new shared fixtures to `tests/conftest.py`** beyond `_isolate_sova_env`/`seed_config`: copy per-file helpers instead, unless the fixture is genuinely needed suite-wide.
+- **A new module-level cache or lock dict needs an autouse clear fixture in the same PR**: any `_cache: dict` or `_locks: dict[..., asyncio.Lock]` added to `sova/` gets an autouse fixture that `.clear()`s it before and after each test. An `asyncio.Lock` is bound to the event loop that first used it, so a stale one leaks across tests and can bypass active patches.
+- **A regression or concurrency test must fail with the fix reverted**: before trusting it, revert the fix locally and watch it fail. A `gather()` test whose mocks never suspend (no `await asyncio.sleep(0)` or `asyncio.Event` barrier) runs sequentially and proves nothing about concurrency.
 - **Module-level cache requires `setup_method` in ALL test classes**: when a service function has a module-level cache, add `setup_method: clear_cache()` to every test class in the file that calls it, not just new ones. Cache type changes (`tuple|None` -> `dict`) require updating all reset patterns (`= None` -> `.clear()`).
 - **Direct unit tests for mocked functions**: if a function is always mocked in integration tests, SonarCloud flags 0% coverage. Add a dedicated test class with direct calls to cover the implementation paths (e.g. `TestIsIssue` alongside code that always mocks `_is_issue()`).
 - **Cover except blocks explicitly for the SonarCloud gate**: swallowed-error handlers (`except (OSError, Exception)`) add uncovered lines that can fail the `new_coverage` threshold (80%) even on a small diff. Add a test with `side_effect=OSError(...)` (or the specific exception) that triggers each except path; for file I/O, `patch.object(Path, "read_text"/"write_text", side_effect=OSError(...))` covers read and write failures independently.

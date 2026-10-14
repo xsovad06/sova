@@ -42,7 +42,7 @@ This command runs as a headless agent. You MUST execute every step below through
       git branch --show-current
       ```
 
-   b. If the output matches `headRefName` from step 2, you are in the right place. Continue to step 4.
+   b. If the output matches `headRefName` from step 2, you are in the right place. Continue to 3e (the sync and account checks below apply on every path, including this one, so do not skip ahead to step 4).
 
    c. If they differ, find the worktree for the PR branch:
       ```bash
@@ -52,7 +52,7 @@ This command runs as a headless agent. You MUST execute every step below through
       WORKTREE_PATH=$(git worktree list --porcelain | grep -Fx -B2 "$HEAD_BRANCH_REF" | grep "^worktree " | head -1 | sed 's/^worktree //')
       echo "Worktree: $WORKTREE_PATH"
       ```
-      If `WORKTREE_PATH` is non-empty, navigate into it and verify:
+      If `WORKTREE_PATH` is non-empty, navigate into it, verify, and then continue to 3e:
       ```bash
       HEAD_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName --jq .headRefName)
       cd "<WORKTREE_PATH printed above>"
@@ -65,6 +65,18 @@ This command runs as a headless agent. You MUST execute every step below through
    d. **STOP if the worktree cannot be found**: if `WORKTREE_PATH` is empty and the current branch is not `headRefName`, report the mismatch and exit. Do NOT use `git checkout <HEAD_BRANCH>` to fix this: doing so switches the main repo's working tree to the PR branch, causing any uncommitted changes to bleed onto main after cleanup.
 
    Never resolve the worktree by issue number alone: always use the branch name from the PR metadata.
+
+   e. **Sync to the PR head before editing anything a review cites.** A local branch behind its remote means fixing code the reviewer never saw, and the later force-push would discard the remote commits:
+      ```bash
+      HEAD_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName --jq .headRefName)
+      git fetch origin "$HEAD_BRANCH" || { echo "Fetch failed: STOP" >&2; exit 1; }
+      BEHIND=$(git rev-list --count "HEAD..origin/$HEAD_BRANCH")
+      AHEAD=$(git rev-list --count "origin/$HEAD_BRANCH..HEAD")
+      echo "Behind: $BEHIND, ahead: $AHEAD"
+      ```
+      Behind and not ahead: `git merge --ff-only "origin/$HEAD_BRANCH"`. Both behind and ahead: STOP and report the divergence rather than guessing which side wins. If work you expected seems missing, check `git stash list` and `git reflog` before concluding it was lost.
+
+   f. **Verify the GitHub account** before any thread or review write: `gh auth status` must show the account the project configures as its GitHub user (for SOVA projects, `sova config get github_user` prints it). Resolving threads or dismissing reviews as the wrong account fails with FORBIDDEN after the code is already pushed. If it differs, run `gh auth switch --user <github_user>`.
 
 4. **Classify comment sources**: Separate human reviewer comments from bot comments (e.g., `sourcery-ai[bot]`, `coderabbitai[bot]`). Both get scored the same way, but bot comments are addressed in bulk and may warrant a re-review request.
 
@@ -88,7 +100,8 @@ This command runs as a headless agent. You MUST execute every step below through
 
    This is the only place in the PR lifecycle where documentation and knowledge
    can be written for free. The branch is about to be squashed and pushed
-   anyway, so anything folded in here rides that push. Anything left until the
+   anyway, so tracked documentation folded in here rides that push (the agent
+   memory in step b may be local-only and then never does). Anything left until the
    `integrate-pr` workflow would need a push of its own on an otherwise-ready
    PR, which costs a full CI cycle and delays the merge by the length of the
    suite.
@@ -115,11 +128,16 @@ This command runs as a headless agent. You MUST execute every step below through
       ```
 
    b. **Record this round's learnings**: append actionable lessons from the
-      review findings to `.claude/agent-memory/cookbook.md` under the matching
-      domain section. Enumerate every review thread from the whole PR history,
+      review findings to the cookbook in the PRIMARY checkout, never the
+      worktree's copy: `.claude/agent-memory/` may be gitignored, and a
+      worktree's copy is deleted with the worktree. The cookbook is
+      `$PRIMARY_ROOT/.claude/agent-memory/cookbook/<domain>.md` (domains listed
+      in that directory's `README.md`) when that directory exists, otherwise
+      `$PRIMARY_ROOT/.claude/agent-memory/cookbook.md` under the matching
+      section. Enumerate every review thread from the whole PR history,
       resolved and unresolved, not only what came up in this round. Skip
       duplicates and generic advice. Promote a pattern confirmed in 2 or more
-      PRs to `.claude/rules/*.md`.
+      PRs to `.claude/rules/*.md` (tracked, so it rides the push).
 
    c. **Fix documentation drift**: run the project's verification commands
       (test count, service count, router count) and correct any drifted values
@@ -136,7 +154,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
    **Before starting**: run `git fetch origin || { echo "Fetch failed: STOP" >&2; exit 1; }`, then verify `git branch --show-current` equals `headRefName`. If not, STOP: never reset commits while on the wrong branch.
 
-   a. Run the project's linter and tests (see CLAUDE.md for commands). All must pass before proceeding.
+   a. Run the project's linter and tests (see CLAUDE.md for commands). All must pass before proceeding. If the project has pre-push invariant scripts (`invariants/*.sh`), run them too, re-assigning `BASE` first as in step 2 (`for s in invariants/*.sh; do bash "$s" . "$BASE" || echo "FAIL: $s"; done`) and fix every failure: a commit-format or prose invariant that fails only at push time costs a full squash cycle. Never bypass a failing hook with `--no-verify`.
 
    b. Record the fork point and the original commits for replay, before anything else touches history. The reset below targets the fork point (`git merge-base`), never `origin/$BASE` itself: if the base branch moved since this branch was last rebased, re-committing the branch's tree on top of the newer base would silently revert everything the base gained in between. Step 10 rebases afterwards.
       ```bash
@@ -211,6 +229,8 @@ This command runs as a headless agent. You MUST execute every step below through
 
     If rebase was a no-op (already up to date), continue to the next step.
 
+    After a rebase that moved the branch, confirm it did not silently revert the base: `git diff "origin/$BASE"...HEAD --stat` must list only this PR's files, and `bash invariants/silent-revert-guard.sh . "$BASE"` must pass when the project has it. On a failure, restore from the step 9c backup (`git reset --hard "$BACKUP"`) and redo the rebase.
+
 11. **Push and wait for CI** (MANDATORY, do not skip):
    ```bash
    BACKUP=<backup branch printed in step 9c>
@@ -251,14 +271,14 @@ This command runs as a headless agent. You MUST execute every step below through
                 path
                 line
                 originalLine
-                comments(first: 1) { nodes { body author { login __typename } } }
+                comments(first: 1) { totalCount nodes { body author { login __typename } } }
               }
             }
           }
         }
       }'
     ```
-    Keep every thread with `isResolved: false`, **including outdated ones**. GitHub marks a thread outdated as soon as a push changes the lines it is anchored to, which is exactly what fixing it does, so after step 11's push most of the threads you just fixed are outdated; dropping them leaves them open on the PR. Match each thread to a finding by `path` plus `line`, falling back to `originalLine` when `line` is null (it always is on an outdated thread), and by the comment body when two threads share a location. A reviewer can post the same finding as more than one thread: every duplicate still needs its own reply and resolve in step 13, and the same reply text is fine. Use `author.__typename` to classify thread authors: `Bot` for automated reviewers, `User` for humans. If `__typename` is absent, fall back to checking whether `login` ends with `[bot]`.
+    Keep every thread with `isResolved: false`, **including outdated ones**. GitHub marks a thread outdated as soon as a push changes the lines it is anchored to, which is exactly what fixing it does, so after step 11's push most of the threads you just fixed are outdated; dropping them leaves them open on the PR. Match each thread to a finding by `path` plus `line`, falling back to `originalLine` when `line` is null (it always is on an outdated thread), and by the comment body when two threads share a location. A reviewer can post the same finding as more than one thread: every duplicate still needs its own reply and resolve in step 13, and the same reply text is fine. Also keep every thread with `isResolved: true` and `comments.totalCount` of 1 that matches one of this PR's findings: someone resolved it without a reply, so step 13 still posts the reply (it needs no re-resolve). Use `author.__typename` to classify thread authors: `Bot` for automated reviewers, `User` for humans. If `__typename` is absent, fall back to checking whether `login` ends with `[bot]`.
 
 13. **Reply to each thread, then resolve all of them** (MANDATORY: this is what unblocks the PR):
 

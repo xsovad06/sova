@@ -51,17 +51,16 @@ Tests use classes to group related assertions. Fixtures are defined per-file, no
 
 ```python
 @pytest.fixture(autouse=True)
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+async def setup_db(monkeypatch):
+    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
     await init_db(run_migrations=False)
     yield
     await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
 ```
 
 - `run_migrations=False` uses `create_all` (faster than Alembic for tests)
 - `close_db()` disposes the engine so each test gets a fresh DB
-- Env var scoping prevents cross-test pollution
+- `monkeypatch.setenv` scopes the env var to the test, so a failing test cannot leak it into later ones. Never assign to or pop from `os.environ` directly
 
 ## Mock Patterns
 
@@ -74,6 +73,8 @@ with patch("sova.adapters.github.run", new_callable=AsyncMock) as mock_run:
 # Wrong: patching the definition module has no effect on the importer
 with patch("sova.utils.shell.run", new_callable=AsyncMock):
 ```
+
+Exception: when the code under test imports inside the function body (`from x import y` in the function), there is no module-level binding to patch, so patch the source module (`x.y`) and leave a one-line comment at the patch site explaining why.
 
 ### ShellResult helpers
 
@@ -176,6 +177,8 @@ def test_rejects_invalid_values(model_cls, field, invalid_value):
 1. **Missing cache clears**: file-backed services cache by mtime. Clear `_handoff_caches` in tests.
 2. **Async context managers**: always `async with await get_session() as session:`.
 3. **autouse DB fixture scope**: per-test (default). Never use `scope="module"` for DB fixtures.
+3a. **Module-level caches and lock dicts**: a PR that adds one to `sova/` also adds an autouse fixture that `.clear()`s it before and after each test. An `asyncio.Lock` is bound to the event loop that first used it.
+3b. **A regression test must fail with the fix reverted**: revert the fix locally and confirm the test fails before trusting it. A concurrency test whose mocks never suspend (no `await asyncio.sleep(0)` or `asyncio.Event` barrier) runs sequentially and proves nothing.
 4. **No per-file-only helpers in conftest.py**: helpers used by a single file (`_make_ctx`, `_shell_result`) are defined per-file. Copy the pattern. `tests/conftest.py` is reserved for autouse isolation fixtures and helpers genuinely shared across multiple test modules.
 5. **Ambient `SOVA_*` env vars**: a dev shell running SOVA agents may export `SOVA_MCP_TOKEN`, `SOVA_AGENT_RUN`, etc. `tests/conftest.py`'s autouse `_isolate_sova_env` fixture strips all `SOVA_*` vars except `SOVA_DATABASE_URL` before each test so Pydantic Settings config construction is deterministic. If a test needs a specific `SOVA_*` var, set it explicitly via `monkeypatch.setenv` inside the test.
 6. **Never write to a hard-coded `/tmp/...` path**: use the `tmp_path`/`tmp_path_factory` fixtures. A fixed path is a real, shared location on disk that collides across `pytest-xdist` workers and survives between runs. `tests/conftest.py`'s autouse `_isolate_cwd` fixture already chdirs each test into a fresh temp directory (so `load_config(None)`'s `Path.cwd()` fallback can't read the developer's real `.claude/sova.db`), and the sibling autouse `_isolate_home_config` fixture monkeypatches `Path.home()` (plus `sova.config.registry._REGISTRY_DIR`/`_REGISTRY_FILE` directly, since those module constants are bound to the real `Path.home()` at import time) to a fresh temp directory, so `sova/db/session.py:_get_database_url()`'s no-project-dir fallback and the project registry can never resolve under the developer's real `~/.config/sova/`. These two fixtures cover the ambient fallback paths; they do not protect an explicit `Path("/tmp/...")` literal passed as `project_dir` or similar, which must be replaced with `tmp_path` at each call site.

@@ -81,6 +81,15 @@ This pattern appears in 100+ locations including:
 - Memory extraction (`extract_memory.py`)
 - Handoff file/DB writes
 
+## Failure Must Not Look Like Success
+
+A helper that swallows an error must never return a value inside its own success range. `0`, `[]`, `False` or `None`-as-"not found" returned on failure is indistinguishable from a real answer, so the caller acts on "nothing to do" when the truth is "could not tell". Seen in at least seven separate PRs (counts, label lookups, verdict caches, PR-state checks).
+
+- Return a sentinel or a multi-state result (`CHANGED`/`UNCHANGED`/`ERROR`, or `None` for unknown next to a real `0`) and let each caller choose its own fail-open or fail-closed policy.
+- Never cache a failure as a negative result: the next call must retry.
+- When several independent checks feed one negative ("no PR", "no conflict"), require every check to succeed before trusting it (`and`, not `or`).
+- A function documented to fail open must guard every call that can raise, not just the one nearest the return: `asyncio.create_subprocess_exec` raises `FileNotFoundError` (an `OSError`) before any `ShellResult` exists, so a credential lookup placed above the `try` breaks the contract.
+
 ## Typer Exit and Dashboard Endpoints
 
 `typer.Exit` inherits from `SystemExit` (a `BaseException`), **not** `Exception`. Any dashboard endpoint that calls a CLI function raising `typer.Exit` must catch `SystemExit` explicitly: `except Exception` will not intercept it, causing an unhandled 500 with a raw traceback.

@@ -22,7 +22,10 @@ Follow the `/simplify` workflow. Review all changed code for opportunities to re
 
 1. Get the diff scope:
    ```bash
-   git diff main..HEAD --stat
+   BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+   BASE=${BASE:-main}
+   git fetch --quiet origin "$BASE"
+   git diff "origin/$BASE"...HEAD --stat
    git diff --cached --stat
    git diff --stat
    ```
@@ -54,9 +57,9 @@ See `/review` for the full review checklist and scoring criteria.
 
 Follow the `/rearrange-commits` command workflow:
 
-1. Soft reset all commits back to origin/main (stash uncommitted changes first if needed).
+1. Snapshot uncommitted work as a WIP commit and create a backup branch, then soft reset to the fork point (`git merge-base HEAD "origin/$BASE"`), exactly as `/rearrange-commits` Step 2 does. Never reset to `origin/$BASE` itself: re-committing this branch's tree on top of a base that moved silently reverts everything the base gained. Never use `git stash`: the stash stack is shared by every worktree and session.
 2. Create small, logical, atomic commits in dependency order.
-3. Verify: all changes committed, each commit atomic, total diff matches original.
+3. Verify: all changes committed, each commit atomic, total diff matches the backup branch.
 
 See `/rearrange-commits` for the full commit organization process.
 

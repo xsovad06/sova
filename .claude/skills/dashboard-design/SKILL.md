@@ -169,6 +169,9 @@ With MOTION_INTENSITY at 2 (Static), interactions should be:
 ### Stats
 `.sova-stat` + `.sova-stat-label` + `.sova-stat-value` or `stat_card()` macro
 
+### Capacity and quota meters
+Use the fuel-gauge model: a full bar means all capacity is available, an empty bar means it is depleted. Compute the fill as `remaining / total * 100`, never `consumed / total * 100`, and label it "X of Y available" or "X remaining", not "X / Y consumed". A filling-up bar next to "0 / 4 reviews" reads as contradictory (a full green bar with nothing used). Applies to every remaining-capacity widget: CodeRabbit quota, CI budget, agent slots.
+
 ### Icons
 `{{ icon("name", "w-5 h-5") }}`: never use ASCII characters for icons
 

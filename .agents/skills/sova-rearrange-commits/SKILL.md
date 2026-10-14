@@ -71,10 +71,7 @@ type(scope): short description
 Detailed explanation of WHAT, WHY, and HOW.
 ```
 
-Types: feat, fix, refactor, test, docs, chore, perf
-
-Check the project's commit format invariant or AGENTS.md for valid scopes.
-Do NOT invent new scopes: pre-push hooks may reject them.
+Types and scopes come from the project's commit format invariant (for example `invariants/commit-format.sh`) or AGENTS.md; use only those. A common set is feat, fix, refactor, test, docs, chore, ci (`ci` alone may omit the scope). Do NOT invent types such as `perf` or new scopes: pre-push hooks reject them. The scope names the directory the diff actually touches, not a semantically related area.
 
 ### Step 4: Verify
 
@@ -100,18 +97,24 @@ Ensure:
 - Commits are in logical order
 - The total diff matches what it was before reorganization
 
-Only once all of that holds, delete the backup:
+### Step 5: Rebase (optional), Then Delete the Backup
+
+If the branch must also be brought up to date with the base, rebase it now, while the backup still exists. This is a fresh shell, so resolve `BASE` again rather than relying on Step 1's value:
+```bash
+BASE=$(gh pr view --json baseRefName --jq .baseRefName 2>&1) || { case "$BASE" in *"no pull requests found"*) BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name) ;; *) echo "Unable to resolve the base branch: $BASE" >&2; exit 1 ;; esac; }
+[ -n "$BASE" ] || { echo "Unable to resolve the base branch" >&2; exit 1; }
+git fetch origin || { echo "Fetch failed: STOP" >&2; exit 1; }
+git rebase "origin/$BASE"
+```
+
+- **Conflicts**: resolve each file's markers, `git add <file>`, `git rebase --continue`. If a conflict cannot be resolved with confidence, `git rebase --abort` and report the conflicting files; the branch is back to the rearranged history.
+- **After a rebase that moved the branch**: `git diff "origin/$BASE"...HEAD --stat` must list only this branch's files, and `bash invariants/silent-revert-guard.sh . "$BASE"` must pass when the project has it. An unrelated file or a deletion far beyond this branch's scope is a silent revert of the base: `git reset --hard "$BACKUP"` and redo the rebase.
+
+Only once the rearranged (and, if rebased, verified) history holds, delete the backup:
 
 ```bash
 BACKUP=<backup branch printed in Step 2>
 git branch -D "$BACKUP"
-```
-
-If the branch must also be brought up to date with the base, rebase it afterwards. This is a fresh shell, so resolve `BASE` again rather than relying on Step 1's value:
-```bash
-BASE=$(gh pr view --json baseRefName --jq .baseRefName 2>&1) || { case "$BASE" in *"no pull requests found"*) BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name) ;; *) echo "Unable to resolve the base branch: $BASE" >&2; exit 1 ;; esac; }
-[ -n "$BASE" ] || { echo "Unable to resolve the base branch" >&2; exit 1; }
-git fetch origin && git rebase "origin/$BASE"
 ```
 
 ## Cross-References

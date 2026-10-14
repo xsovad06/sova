@@ -97,7 +97,7 @@ sova/
 
 This project uses **GitHub Issues** with a project board.
 
-- **GitHub account**: use the `github_user` configured in `sova.toml` (verify with `gh auth status`)
+- **GitHub account**: use the configured `github_user` (`sova config get github_user`; verify with `gh auth status`)
 - **Issue templates**: `.github/ISSUE_TEMPLATE/` (bug.md, feature.md, task.md)
 - **Labels**: `type:` (feature/task/infra/bug/epic), `priority:` (critical/high/medium/low), `area:` (agent/dashboard/commands/personas/invariants/knowledge/docs), `agent:` (triaged/researched/ready/in-progress/in-review/needs-spec/needs-research/human-only/interactive-recommended)
 
@@ -125,8 +125,15 @@ This project uses **GitHub Issues** with a project board.
 - **No double dashes**: never use `--` as a separator in prose, comments, descriptions, PR bodies, review comments, or any text output. Use a colon, period, comma, or parentheses instead. Example: `Fixed: updated type hint` not `Fixed -- updated type hint`. This applies everywhere: code comments, commit messages, PR descriptions, review findings, issue bodies, command descriptions, and documentation. Enforced on the whole tree, not only on changed lines: `tests/test_no_double_dash.py` runs `invariants/no-double-dash.sh --all` over every tracked file, and the same script checks added lines in pre-push and CI.
 - **Line length**: 120 max
 - **Formatter**: Ruff (lint + format) when available
+- **Never clamp an explicit config value against a broader default**: `min(develop.step_timeout, agent.step_timeout)` silently discards the operator's specific override. Let the more specific value win; if a hard ceiling is genuinely required, log when it fires.
+- **Failure must not look like success**: a helper that swallows an error returns a sentinel or a multi-state result, never a value in its success range (`0`, `[]`, `False`). See `docs/error-handling-guidelines.md` "Failure Must Not Look Like Success".
+- **Pass context explicitly into deferred work**: anything queued, scheduled, or run in a background task receives `project_dir` and `github_user` as arguments rather than reading an ambient contextvar or the current working directory, which belong to whoever happens to run it later.
 - **Falsy-default trap**: never use `x or default` when `x` can be a legitimate falsy non-`None` value (`0`, `""`, `[]`, `False`). It silently discards the real value. Use `x if x is not None else default` or an explicit membership/identity check instead.
 - **Reading text files: always specify `encoding="utf-8"` and catch `(OSError, UnicodeDecodeError)`**: bare `path.read_text()` uses the platform default encoding, and `UnicodeDecodeError` is not a subclass of `OSError`, so an `except OSError` guard alone still crashes on a non-UTF-8 file. This applies to any "read a file, return `None` on failure" helper, and equally to any read inside a loop over many files where one bad file must not abort the whole batch. Confirmed three times: `sova/core/steps/spec.py` (PR #680), `sova/dashboard/services/settings_service.py` (PR #1070), and `sova/commands/distribution.py:_reverse_diff_files()` (issue #695, a per-file loop where the guard `continue`s past the unreadable file instead of returning `None`). By the third confirmation the pattern was extracted into a single shared helper, `read_text_or_none()` in `sova/utils/files.py`, used by `sova/commands/distribution.py` (`_diff_files`, `_reverse_diff_files`, `_update_files`) and `sova/dashboard/services/settings_service.py`, rather than adding a fourth and fifth hand-rolled copy in the same PR that documented the convention (issue #695 review).
+
+### Change Discipline
+- **Fan-out audit**: when adding a status value, schema field, signal, or helper, or changing a function's return contract, grep every producer, consumer, sibling closure, and mirrored function and update them in the same PR. A translation function's fallback bucket is where a new value is silently absorbed into the wrong category.
+- **LLM-written prose is a claim, not a fact**: before acting on an LLM-written description of code (a PR body, a bot or self-review finding, a doc or cookbook paragraph), grep the cited symbols and check the cited behavior. A finding that contradicts a convention a test enforces is the thing to distrust.
 
 ### Code Patterns: Markdown (commands, personas, knowledge)
 - **Frontmatter**: commands use YAML frontmatter (`name`, `description`, `user-invocable`)
@@ -170,7 +177,7 @@ Examples:
 - When the guard fires, restore the code. Add `silent-revert-ok: <reason>` to the commit body only for a deliberate removal, and give the reason: a bare acknowledgment does not exempt the commit.
 
 ### Pull Requests
-- Always assign PRs to the user configured as `github_user` in `sova.toml`
+- Always assign PRs to the configured `github_user` (`sova config get github_user`)
 - Link to issue via `Closes #<number>` in PR body
 - Never include "Generated with Claude Code" or similar AI branding in PR descriptions
 - Include a Test Plan section
@@ -235,7 +242,6 @@ This repo has Claude Code commands in `.claude/commands/`:
 
 ### Shipping Pipeline
 - `/integrate-pr`: full pipeline: rebase, CI, merge, cleanup, learn (one click)
-- `/approve-merge`: merge PR (squash), delete branch, post-merge cleanup
 - `/agent-resume`: smart router: assess PR state and decide next action
 
 ### Post-Work

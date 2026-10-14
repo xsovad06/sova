@@ -761,7 +761,7 @@ def _strip_command_prefix(role: str | None) -> str:
 
 
 async def _validate_merge_command(run_id: int, agent: AgentState) -> OutcomeValidation:
-    """Check that integrate-pr / approve-merge actually reached a terminal PR state.
+    """Check that integrate-pr actually reached a terminal PR state.
 
     A headless `claude -p` process can exit cleanly (exit 0, is_error=False)
     after the model spawns a long-running wait (e.g. the CI-polling phase) as
@@ -807,7 +807,6 @@ _COMMAND_VALIDATORS = {
     "address-pr": _validate_address_pr,
     "review-pr": _validate_review_pr,
     "integrate-pr": _validate_merge_command,
-    "approve-merge": _validate_merge_command,
 }
 
 _PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})

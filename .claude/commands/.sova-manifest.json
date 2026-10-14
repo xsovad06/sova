@@ -2,11 +2,11 @@
   "version": 1,
   "commands": {
     "address-pr.md": {
-      "hash": "28dd03e83d9f53ca",
+      "hash": "caa2672823242ac6",
       "managed": true
     },
     "after-merge.md": {
-      "hash": "a62723c2a7eb99c6",
+      "hash": "1f7e860309775fdb",
       "managed": true
     },
     "agent-readiness.md": {
@@ -26,15 +26,15 @@
       "managed": true
     },
     "develop-full.md": {
-      "hash": "949992b537ed74a8",
+      "hash": "9d9da9ad6b9f0db3",
       "managed": true
     },
     "develop.md": {
-      "hash": "0e4f3bf9463813ca",
+      "hash": "c3660fcbb06a7ea8",
       "managed": true
     },
     "extract-knowledge.md": {
-      "hash": "f19cee476833daf0",
+      "hash": "1575fd791e2b411f",
       "managed": true
     },
     "find-task.md": {
@@ -46,11 +46,11 @@
       "managed": true
     },
     "ingest-review.md": {
-      "hash": "f7053cb6906f4c09",
+      "hash": "0d0fa7c4399db4bd",
       "managed": true
     },
     "integrate-pr.md": {
-      "hash": "d3bd12c567e44bca",
+      "hash": "2ce823f7998cc9aa",
       "managed": true
     },
     "issue.md": {
@@ -58,7 +58,7 @@
       "managed": true
     },
     "new-feature.md": {
-      "hash": "e1771b833f7a66d5",
+      "hash": "8d79c4c6eb781918",
       "managed": true
     },
     "optimize-knowledge.md": {
@@ -66,19 +66,19 @@
       "managed": true
     },
     "pr.md": {
-      "hash": "ce31d1fad4a8585e",
+      "hash": "5f079244d8029553",
       "managed": true
     },
     "rearrange-commits.md": {
-      "hash": "92e6ec31d7f0b732",
+      "hash": "3336b08d74939ff3",
       "managed": true
     },
     "research.md": {
-      "hash": "9270d15643ca768a",
+      "hash": "4e083b7e54243ee5",
       "managed": true
     },
     "review-full.md": {
-      "hash": "f8af055516280a05",
+      "hash": "774012559657f5ca",
       "managed": true
     },
     "review-pr.md": {
@@ -86,15 +86,15 @@
       "managed": true
     },
     "review.md": {
-      "hash": "d7d5890e558e3ed2",
+      "hash": "8bcb81814a7fbfa9",
       "managed": true
     },
     "simplify.md": {
-      "hash": "46df4559199eaae3",
+      "hash": "a88ff193ce652416",
       "managed": true
     },
     "spec.md": {
-      "hash": "e89464945c75f194",
+      "hash": "d2bb8b0e19f68077",
       "managed": true
     },
     "standup.md": {

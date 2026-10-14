@@ -61,7 +61,7 @@ No changes needed. The research step confirmed this issue is already fully imple
 Read whatever exists; skip files that are missing:
 - `CLAUDE.md` and `AGENTS.md` for project conventions
 - `.claude/rules/architecture.md` for component overview and design decisions
-- `.claude/agent-memory/cookbook.md` for known patterns and past mistakes
+- The cookbook for known patterns and past mistakes: the `README.md` index of `.claude/agent-memory/cookbook/` plus the domain files relevant to this task when that directory exists, otherwise `.claude/agent-memory/cookbook.md`; also `.claude/agent-memory/common-mistakes.md` if present
 
 ### Step 3: Explore the Codebase
 
@@ -107,6 +107,16 @@ Generate a slug from the issue title (lowercase, hyphens, max 40 chars). Write t
 ## Problem
 
 What problem does this solve? 1-3 sentences from the user's perspective.
+
+## Use Cases
+
+What the feature does for the user, written before how it is built. One entry per concrete scenario (typically 1-4):
+
+1. **As a {role}, I want {goal}, so that {benefit}.**
+   Done when: {observable, testable outcome}; {another outcome, including the unhappy path}.
+2. ...
+
+(Include this section for new features and other non-trivial new capabilities. Omit it for bug fixes and small enhancements, where the Problem section already says everything.)
 
 ## Solution
 
@@ -196,6 +206,7 @@ Items that require user input before development can start: business rules, scop
 - Complexity rating: simple (1-2 files, <50 lines), moderate (3-6 files, 50-200 lines), complex (7+ files or >200 lines)
 - Prefer reusing existing patterns over introducing new abstractions
 - If the issue has acceptance criteria, every criterion must be covered by at least one implementation step
+- When the spec has a Use Cases section, write it before the Solution, and make sure every "Done when" outcome is covered by an implementation step and named in the Testing Strategy: the use cases define what done means, and the plan only describes how to get there
 
 ### Step 5: Present for Review
 

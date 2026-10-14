@@ -36,7 +36,7 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
 
-_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
+_MERGE_ROLES = frozenset({"integrate-pr"})
 
 _DB_TERMINAL_POLL_INTERVAL = 30.0
 

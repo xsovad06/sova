@@ -196,9 +196,10 @@ Headroom is optional and licensed under Apache 2.0. `sova doctor` does not check
   - `bash-patterns.md`: Shell scripting conventions and gotchas
 - `.claude/commands/*.md`: Workflow commands (on-demand, loaded via `/command`)
 
-### Tier 2: Agent Memory (persists across tasks, gitignored)
-- `.claude/agent-memory/MEMORY.md`: Index file
-- `.claude/agent-memory/cookbook.md`: Topical knowledge by domain, common mistakes with occurrence counts
+### Tier 2: Agent Memory (persists across tasks, gitignored, primary checkout only)
+- `.claude/agent-memory/cookbook/README.md`: domain index; `cookbook/<domain>.md`: one bullet per lesson, read only the domains a change touches
+- `.claude/agent-memory/common-mistakes.md`: recurring mistakes with occurrence counts, checked by `/review` against every diff
+- Always write these in the primary checkout, never a worktree's copy (see `.claude/rules/workflow.md` "Agent Memory Location")
 
 ### Tier 3: Session Memory (auto-managed by Claude Code)
 - `~/.claude/projects/.../memory/MEMORY.md`: User preferences, project state (200-line limit)
