@@ -2142,6 +2142,148 @@ class TestLLMProvider:
 
 
 # ---------------------------------------------------------------------------
+# get_model_capabilities (layer-1 + layer-2 composition, issue #1038)
+# ---------------------------------------------------------------------------
+
+
+class TestGetModelCapabilities:
+    async def test_both_layers_available(self) -> None:
+        from sova.llm.models import ModelFamily, ModelInfo
+        from sova.llm.provider import get_model_capabilities
+
+        fake_runtime = AsyncMock()
+        fake_runtime.list_available_models = AsyncMock(return_value=["claude-opus-5"])
+
+        fake_provider = AsyncMock()
+        fake_provider.check_available = AsyncMock(return_value=(True, "ok"))
+        fake_provider.list_available_models = AsyncMock(
+            return_value=[
+                ModelInfo(
+                    id="claude-sonnet-5", family=ModelFamily.ANTHROPIC, tier="", display_name="", source="curated"
+                )
+            ]
+        )
+
+        with (
+            patch("sova.ipc.runtime.get_runtime", return_value=fake_runtime),
+            patch("sova.llm.client.get_provider", return_value=fake_provider),
+        ):
+            caps = await get_model_capabilities()
+
+        assert caps == {"layer1": ["claude-opus-5"], "layer2": ["claude-sonnet-5"]}
+
+    async def test_layer1_unavailable_layer2_available(self) -> None:
+        """A bare API key (layer2 works) with no coding-agent runtime installed (layer1 does not)."""
+        from sova.llm.models import ModelFamily, ModelInfo
+        from sova.llm.provider import get_model_capabilities
+
+        fake_runtime = AsyncMock()
+        fake_runtime.list_available_models = AsyncMock(return_value=None)
+
+        fake_provider = AsyncMock()
+        fake_provider.check_available = AsyncMock(return_value=(True, "ok"))
+        fake_provider.list_available_models = AsyncMock(
+            return_value=[
+                ModelInfo(
+                    id="claude-sonnet-5", family=ModelFamily.ANTHROPIC, tier="", display_name="", source="curated"
+                )
+            ]
+        )
+
+        with (
+            patch("sova.ipc.runtime.get_runtime", return_value=fake_runtime),
+            patch("sova.llm.client.get_provider", return_value=fake_provider),
+        ):
+            caps = await get_model_capabilities()
+
+        assert caps == {"layer1": "unavailable", "layer2": ["claude-sonnet-5"]}
+
+    async def test_both_layers_unavailable(self) -> None:
+        from sova.llm.provider import get_model_capabilities
+
+        fake_runtime = AsyncMock()
+        fake_runtime.list_available_models = AsyncMock(return_value=None)
+
+        fake_provider = AsyncMock()
+        fake_provider.check_available = AsyncMock(return_value=(False, "not configured"))
+
+        with (
+            patch("sova.ipc.runtime.get_runtime", return_value=fake_runtime),
+            patch("sova.llm.client.get_provider", return_value=fake_provider),
+        ):
+            caps = await get_model_capabilities()
+
+        assert caps == {"layer1": "unavailable", "layer2": "unavailable"}
+
+    async def test_layer2_failure_does_not_hide_layer1(self) -> None:
+        """One layer raising must degrade that layer only, never the whole view."""
+        from sova.llm.provider import get_model_capabilities
+
+        fake_runtime = AsyncMock()
+        fake_runtime.list_available_models = AsyncMock(return_value=["claude-opus-5"])
+
+        fake_provider = AsyncMock()
+        fake_provider.check_available = AsyncMock(side_effect=ValueError("unknown provider type"))
+
+        with (
+            patch("sova.ipc.runtime.get_runtime", return_value=fake_runtime),
+            patch("sova.llm.client.get_provider", return_value=fake_provider),
+        ):
+            caps = await get_model_capabilities()
+
+        assert caps == {"layer1": ["claude-opus-5"], "layer2": "unavailable"}
+
+    async def test_layer1_failure_does_not_hide_layer2(self) -> None:
+        from sova.llm.models import ModelFamily, ModelInfo
+        from sova.llm.provider import get_model_capabilities
+
+        fake_runtime = AsyncMock()
+        fake_runtime.list_available_models = AsyncMock(side_effect=RuntimeError("probe exploded"))
+
+        fake_provider = AsyncMock()
+        fake_provider.check_available = AsyncMock(return_value=(True, "ok"))
+        fake_provider.list_available_models = AsyncMock(
+            return_value=[
+                ModelInfo(
+                    id="claude-sonnet-5", family=ModelFamily.ANTHROPIC, tier="", display_name="", source="curated"
+                )
+            ]
+        )
+
+        with (
+            patch("sova.ipc.runtime.get_runtime", return_value=fake_runtime),
+            patch("sova.llm.client.get_provider", return_value=fake_provider),
+        ):
+            caps = await get_model_capabilities()
+
+        assert caps == {"layer1": "unavailable", "layer2": ["claude-sonnet-5"]}
+
+    async def test_hanging_layer_times_out_as_unavailable(self) -> None:
+        """Neither layer's enumeration has an internal timeout, so this view bounds both."""
+        from sova.llm import provider as provider_mod
+        from sova.llm.provider import get_model_capabilities
+
+        async def never_returns() -> list[str]:
+            await asyncio.sleep(60)
+            return ["never"]
+
+        fake_runtime = AsyncMock()
+        fake_runtime.list_available_models = never_returns
+
+        fake_provider = AsyncMock()
+        fake_provider.check_available = AsyncMock(return_value=(False, "not configured"))
+
+        with (
+            patch.object(provider_mod, "_CAPABILITY_PROBE_TIMEOUT", 0.01),
+            patch("sova.ipc.runtime.get_runtime", return_value=fake_runtime),
+            patch("sova.llm.client.get_provider", return_value=fake_provider),
+        ):
+            caps = await get_model_capabilities()
+
+        assert caps == {"layer1": "unavailable", "layer2": "unavailable"}
+
+
+# ---------------------------------------------------------------------------
 # _assert_command_exists
 # ---------------------------------------------------------------------------
 

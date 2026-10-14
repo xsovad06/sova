@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +17,8 @@ from sova.db.session import close_db, get_session, init_db
 from sova.utils.shell import ShellResult
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sova.ipc.runtime import AgentRuntime, StreamParser
     from sova.llm.models import CostSource
 
@@ -1119,6 +1122,40 @@ class TestNotifyDispatcher:
 # ---------------------------------------------------------------------------
 
 
+def _minimal_runtime(
+    *,
+    available: bool = True,
+    probe: Callable[[], Awaitable[list[str] | None]] | None = None,
+) -> AgentRuntime:
+    """Build the smallest concrete AgentRuntime, so the ABC's own defaults are what is under test.
+
+    *probe* stands in for a subclass that enumerates models itself: when given
+    it replaces ``_probe_models()``, which otherwise keeps the base behaviour.
+    """
+    from sova.ipc.runtime import AgentRuntime
+
+    class _MinimalRuntime(AgentRuntime):
+        @property
+        def name(self) -> str:
+            return "minimal"
+
+        async def spawn(self, prompt, cwd, **kwargs):  # noqa: ANN001, ANN003 (test double)
+            raise NotImplementedError
+
+        def parse_output(self, line: str):
+            return None
+
+        async def check_available(self) -> tuple[bool, str]:
+            return available, "ok" if available else "not installed"
+
+        async def _probe_models(self):
+            if probe is None:
+                return await super()._probe_models()
+            return await probe()
+
+    return _MinimalRuntime()
+
+
 class TestAgentRuntimeABC:
     def test_claude_code_runtime_name(self) -> None:
         from sova.ipc.runtime import ClaudeCodeRuntime
@@ -1148,6 +1185,144 @@ class TestAgentRuntimeABC:
         from sova.ipc.runtime import ClaudeCodeRuntime
 
         assert ClaudeCodeRuntime().stream_reader_drain_timeout() is None
+
+    async def test_list_available_models_default_unavailable(self) -> None:
+        """A runtime that only implements check_available() fails open to None via the base probe."""
+        rt = _minimal_runtime(available=False)
+        assert await rt.list_available_models() is None
+
+    async def test_list_available_models_default_available_empty(self) -> None:
+        rt = _minimal_runtime()
+        assert await rt.list_available_models() == []
+
+    async def test_list_available_models_concurrent_calls_probe_once(self) -> None:
+        """Concurrent callers during an in-flight refresh must share one probe, not duplicate it."""
+        probe_calls = 0
+
+        async def probe() -> list[str]:
+            nonlocal probe_calls
+            probe_calls += 1
+            await asyncio.sleep(0.01)
+            return ["model-a"]
+
+        rt = _minimal_runtime(probe=probe)
+        results = await asyncio.gather(*(rt.list_available_models() for _ in range(5)))
+
+        assert probe_calls == 1
+        assert all(r == ["model-a"] for r in results)
+
+    async def test_unavailable_answer_expires_on_the_short_reactive_ttl(self) -> None:
+        """An "unavailable" answer must not be pinned for the positive TTL.
+
+        A `claude login` or a CLI install done mid-session has to be picked up
+        without restarting the process, and this per-instance cache has no
+        clear_enumeration() equivalent to drop a stale negative.
+        """
+        from sova.ipc import runtime as runtime_mod
+
+        probe_calls = 0
+
+        async def probe() -> list[str] | None:
+            nonlocal probe_calls
+            probe_calls += 1
+            return None if probe_calls == 1 else ["model-a"]
+
+        rt = _minimal_runtime(probe=probe)
+        assert await rt.list_available_models() is None
+        assert await rt.list_available_models() is None
+        assert probe_calls == 1
+
+        base = time.monotonic()
+        with patch.object(
+            runtime_mod.time, "monotonic", return_value=base + runtime_mod._RUNTIME_MODEL_UNAVAILABLE_TTL + 1
+        ):
+            assert await rt.list_available_models() == ["model-a"]
+
+        assert probe_calls == 2
+
+    async def test_available_answer_survives_the_short_reactive_ttl(self) -> None:
+        """A real catalog is a stable positive fact and keeps the long TTL."""
+        from sova.ipc import runtime as runtime_mod
+
+        probe_calls = 0
+
+        async def probe() -> list[str]:
+            nonlocal probe_calls
+            probe_calls += 1
+            return ["model-a"]
+
+        rt = _minimal_runtime(probe=probe)
+        assert await rt.list_available_models() == ["model-a"]
+
+        base = time.monotonic()
+        with patch.object(
+            runtime_mod.time, "monotonic", return_value=base + runtime_mod._RUNTIME_MODEL_UNAVAILABLE_TTL + 1
+        ):
+            assert await rt.list_available_models() == ["model-a"]
+
+        assert probe_calls == 1
+
+    async def test_check_available_raising_reports_unavailable(self) -> None:
+        """check_available() shells out to a CLI and has no never-raises contract of
+        its own, so the enumeration gate has to absorb it."""
+        from sova.ipc.runtime import AgentRuntime
+
+        class _RaisingRuntime(AgentRuntime):
+            @property
+            def name(self) -> str:
+                return "raising"
+
+            async def spawn(self, prompt, cwd, **kwargs):  # noqa: ANN001, ANN003 (test double)
+                raise NotImplementedError
+
+            def parse_output(self, line: str):
+                return None
+
+            async def check_available(self) -> tuple[bool, str]:
+                raise OSError("CLI blew up")
+
+        assert await _RaisingRuntime().list_available_models() is None
+
+    async def test_probe_models_raising_reports_unavailable(self) -> None:
+        async def probe() -> list[str]:
+            raise RuntimeError("probe exploded")
+
+        rt = _minimal_runtime(probe=probe)
+        assert await rt.list_available_models() is None
+
+    async def test_list_available_models_without_super_init(self) -> None:
+        """A subclass that defines __init__ and forgets super() must still enumerate.
+
+        This ABC had no __init__ at all before model enumeration existed, and
+        set_runtime() accepts out-of-tree runtimes, so the cache cannot depend
+        on every subclass having been amended.
+        """
+        from sova.ipc.runtime import AgentRuntime
+
+        class _NoSuperInitRuntime(AgentRuntime):
+            def __init__(self) -> None:  # deliberately no super().__init__()
+                self.tag = "no-super"
+
+            @property
+            def name(self) -> str:
+                return "no-super"
+
+            async def spawn(self, prompt, cwd, **kwargs):  # noqa: ANN001, ANN003 (test double)
+                raise NotImplementedError
+
+            def parse_output(self, line: str):
+                return None
+
+            async def check_available(self) -> tuple[bool, str]:
+                return True, "ok"
+
+            async def _probe_models(self) -> list[str]:
+                return ["model-a"]
+
+        rt = _NoSuperInitRuntime()
+        assert await rt.list_available_models() == ["model-a"]
+        # And the cache it lazily created is still a real cache.
+        assert await rt.list_available_models() == ["model-a"]
 
     def test_aider_stream_reader_drain_timeout_defaults_to_none(self) -> None:
         from sova.ipc.runtime import AiderRuntime
@@ -1359,6 +1534,52 @@ class TestClaudeCodeRuntime:
 
         assert ok is False
         assert "not found" in detail
+
+    async def test_list_available_models_unavailable(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        with patch("sova.ipc.runtime.shutil.which", return_value=None):
+            result = await rt.list_available_models()
+
+        assert result is None
+
+    async def test_list_available_models_available(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+        from sova.llm.models import CURATED_MODELS
+
+        rt = ClaudeCodeRuntime()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"1.0.0\n", b""))
+        mock_proc.returncode = 0
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/claude"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            result = await rt.list_available_models()
+
+        assert result == [m.id for m in CURATED_MODELS]
+
+    async def test_list_available_models_is_cached(self) -> None:
+        """A second call must not re-probe the CLI within the cache TTL."""
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"1.0.0\n", b""))
+        mock_proc.returncode = 0
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/claude"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            first = await rt.list_available_models()
+
+        with patch("sova.ipc.runtime.shutil.which", side_effect=AssertionError("must not re-probe")):
+            second = await rt.list_available_models()
+
+        assert first == second
 
     async def test_spawn_with_model(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import ClaudeCodeRuntime
@@ -1721,6 +1942,59 @@ class TestAiderRuntime:
         assert ok is False
         assert "not found" in detail
 
+    async def test_list_available_models_cli_missing(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        with patch("sova.ipc.runtime.shutil.which", return_value=None):
+            result = await rt.list_available_models()
+
+        assert result is None
+
+    async def test_list_available_models_reports_empty_catalog(self) -> None:
+        """Aider has no discovery endpoint: an installed CLI reports [], never a fabricated list."""
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"aider v0.50.0\n", b""))
+        mock_proc.returncode = 0
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/aider"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            result = await rt.list_available_models()
+
+        assert result == []
+
+    async def test_list_available_models_ignores_llm_provider(self) -> None:
+        """Layer 1 must stay independent of layer 2: an unavailable LLM provider is not consulted.
+
+        Borrowing the layer-2 catalog would make a layer-2 credential failure
+        report the Aider runtime itself as unavailable, collapsing the two
+        axes ``get_model_capabilities()`` exists to report separately.
+        """
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"aider v0.50.0\n", b""))
+        mock_proc.returncode = 0
+
+        fake_provider = AsyncMock()
+        fake_provider.check_available = AsyncMock(return_value=(False, "not configured"))
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/aider"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.llm.client.get_provider", return_value=fake_provider) as mock_get_provider,
+        ):
+            result = await rt.list_available_models()
+
+        assert result == []
+        mock_get_provider.assert_not_called()
+
     def test_transform_prompt_plain_text(self) -> None:
         """Plain task descriptions pass through unchanged."""
         from sova.ipc.runtime import AiderRuntime
@@ -1826,6 +2100,78 @@ def _parsed_cost_source(parser: StreamParser) -> CostSource:
     event = parser.parse_line('{"type": "turn.completed", "usage": {}}')
     assert event is not None and event.result is not None
     return event.result.cost_source
+
+
+class TestNoModelProbeOnSpawnHotPath:
+    """Enumeration must never run at spawn time (issue #1038 acceptance criterion).
+
+    ``_probe_models()`` spawns subprocesses (and for Aider reaches the layer-2
+    provider), so a probe on the spawn path would add latency and a hang
+    surface to every agent launch. The probe is patched to raise rather than
+    merely counted, so a regression fails loudly instead of silently.
+    """
+
+    @staticmethod
+    def _mock_proc(pid: int) -> AsyncMock:
+        proc = AsyncMock()
+        proc.pid = pid
+        proc.returncode = None
+        proc.stdout = AsyncMock()
+        proc.stderr = AsyncMock()
+        proc.stdin = _stdin_mock()
+        return proc
+
+    async def test_claude_code_spawn_does_not_enumerate(self, tmp_path: Path) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        spy = AsyncMock(side_effect=AssertionError("spawn must not probe models"))
+
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._mock_proc(200)),
+            patch.object(rt, "_probe_models", spy),
+            patch.object(rt, "list_available_models", spy),
+        ):
+            ap = await rt.spawn("test", tmp_path, model="claude-sonnet-5")
+
+        assert ap.pid == 200
+        spy.assert_not_called()
+
+    async def test_codex_spawn_does_not_enumerate(self, tmp_path: Path) -> None:
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
+        spy = AsyncMock(side_effect=AssertionError("spawn must not probe models"))
+
+        with (
+            # Same reason as TestCodexRuntime's autouse fixture: the stdin
+            # capability probe's own subprocess call is not modelled here.
+            patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._mock_proc(201)),
+            patch.object(rt, "_probe_models", spy),
+            patch.object(rt, "list_available_models", spy),
+        ):
+            ap = await rt.spawn("test", tmp_path)
+
+        assert ap.pid == 201
+        spy.assert_not_called()
+
+    async def test_aider_spawn_does_not_enumerate(self, tmp_path: Path) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        spy = AsyncMock(side_effect=AssertionError("spawn must not probe models"))
+
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._mock_proc(202)),
+            patch.object(rt, "_probe_models", spy),
+            patch.object(rt, "list_available_models", spy),
+        ):
+            ap = await rt.spawn("test", tmp_path)
+
+        assert ap.pid == 202
+        spy.assert_not_called()
 
 
 class TestCodexRuntime:
@@ -2401,6 +2747,52 @@ class TestCodexRuntime:
 
         assert ok is True
         assert "authenticated" in detail
+
+    async def test_list_available_models_authenticated_no_configured_model(self) -> None:
+        """An empty codex.model means "the CLI's own default", which SOVA cannot name.
+
+        Reachable, with no model ID to report: an empty list, not unavailable.
+        """
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        probe = ShellResult(returncode=0, stdout="Logged in via ChatGPT session.\n", stderr="")
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
+            patch("sova.ipc.runtime.run", return_value=probe),
+        ):
+            result = await rt.list_available_models()
+
+        assert result == []
+
+    async def test_list_available_models_reports_configured_model(self) -> None:
+        """The Codex CLI has no listing endpoint and ignores the model override, so the
+        one model an authenticated runtime can drive is codex.model itself."""
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
+        probe = ShellResult(returncode=0, stdout="Logged in via ChatGPT session.\n", stderr="")
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
+            patch("sova.ipc.runtime.run", return_value=probe),
+        ):
+            result = await rt.list_available_models()
+
+        assert result == ["gpt-5-codex"]
+
+    async def test_list_available_models_not_installed(self) -> None:
+        from sova.ipc.runtime import CodexRuntime
+
+        rt = CodexRuntime()
+        with patch("sova.ipc.runtime.shutil.which", return_value=None):
+            result = await rt.list_available_models()
+
+        assert result is None
 
     async def test_check_available_auth_probe_timeout_fails_open(self) -> None:
         """An unparseable/timed-out auth probe must not block an otherwise working CLI."""

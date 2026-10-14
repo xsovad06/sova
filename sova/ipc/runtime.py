@@ -12,8 +12,9 @@ import json
 import os
 import re
 import shutil
+import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
@@ -23,7 +24,7 @@ from sova.ipc.codex import CodexStreamParser
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
 from sova.llm.errors import ConfigurationError
-from sova.llm.models import CostSource, StreamEvent, build_claude_cli_result
+from sova.llm.models import CURATED_MODELS, CostSource, StreamEvent, build_claude_cli_result
 from sova.utils.env import ANTHROPIC_CREDENTIAL_VARS, configured_passthrough, scrub_agent_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, write_stdin_and_close
@@ -205,6 +206,71 @@ async def _spawn_agent_process(
     return AgentProcess(proc)
 
 
+# Matches _ENUMERATION_TTL_SECONDS in sova/llm/client.py: a runtime's model
+# catalog is a stable positive fact for the life of a deployment, not
+# something that needs reactive-TTL treatment the way a negative probe does.
+_RUNTIME_MODEL_CACHE_TTL = 1800.0
+
+# Matches _UNAVAILABLE_TTL_SECONDS in sova/llm/client.py, and for the same
+# reason: "unavailable" is a reactive negative, not a stable fact about the
+# deployment, so it has to expire fast enough that a `claude login` or a CLI
+# install done mid-session is picked up without restarting the process.
+# There is no clear_enumeration() equivalent for this per-instance cache, so
+# a negative pinned for the positive TTL would be unfixable for half an hour.
+_RUNTIME_MODEL_UNAVAILABLE_TTL = 300.0
+
+
+class _RuntimeModelCache:
+    """Per-instance, single-flighted cache for ``AgentRuntime.list_available_models()``.
+
+    Mirrors ``sova.llm.client.cached_enumeration()``'s check-cache /
+    take-lock / re-check / compute / store sequence, scoped to one runtime
+    instance rather than a module-level identity map: every ``AgentRuntime``
+    concrete class is already a process-wide singleton via ``get_runtime()``,
+    so caching on ``self`` gives the same effect as keying a shared cache by
+    runtime identity, without introducing a second global registry.
+
+    Caches ``None`` (unavailable) too, not just a real answer, so a missing
+    or unauthenticated CLI is not re-probed on every call, but only for the
+    much shorter ``_RUNTIME_MODEL_UNAVAILABLE_TTL``: pinning it for the full
+    positive TTL would reproduce exactly what ``cached_enumeration()``
+    refuses to do when its own ``compute`` returns ``None`` (serve the
+    fallback without caching it, so the next call retries).
+    """
+
+    def __init__(self) -> None:
+        # (expiry_monotonic, value); the expiry is stamped after compute()
+        # returns, so a slow probe does not eat into its own TTL.
+        self._entry: tuple[float, list[str] | None] | None = None
+        self._lock = asyncio.Lock()
+
+    def _cached(self) -> tuple[bool, list[str] | None]:
+        """Return ``(hit, value)``, dropping and reporting a miss for an expired entry."""
+        entry = self._entry
+        if entry is None:
+            return False, None
+        expiry, value = entry
+        if time.monotonic() >= expiry:
+            self._entry = None
+            return False, None
+        return True, list(value) if value is not None else None
+
+    async def get_or_compute(self, compute: Callable[[], Awaitable[list[str] | None]]) -> list[str] | None:
+        hit, value = self._cached()
+        if hit:
+            return value
+
+        async with self._lock:
+            hit, value = self._cached()
+            if hit:
+                return value
+
+            computed = await compute()
+            ttl = _RUNTIME_MODEL_CACHE_TTL if computed is not None else _RUNTIME_MODEL_UNAVAILABLE_TTL
+            self._entry = (time.monotonic() + ttl, computed)
+            return list(computed) if computed is not None else None
+
+
 class StreamParser(Protocol):
     """A stateful parser scoped to one spawned process's output stream.
 
@@ -226,6 +292,25 @@ class AgentRuntime(ABC):
     provider layer (which handles prompt -> response), this is a full
     autonomous coding agent.
     """
+
+    def __init__(self) -> None:
+        self._model_cache: _RuntimeModelCache | None = None
+
+    def _models_cache(self) -> _RuntimeModelCache:
+        """Return this instance's model cache, creating it on first use.
+
+        Lazy rather than relying on ``__init__`` alone: this ABC had no
+        ``__init__`` before model enumeration existed, so a subclass that
+        defines its own without calling ``super().__init__()`` (every
+        in-repo one had to be amended for exactly this, and ``set_runtime()``
+        accepts out-of-tree runtimes) would otherwise raise
+        ``AttributeError`` the first time anything asked it for models.
+        """
+        cache = getattr(self, "_model_cache", None)
+        if cache is None:
+            cache = _RuntimeModelCache()
+            self._model_cache = cache
+        return cache
 
     @property
     @abstractmethod
@@ -394,6 +479,58 @@ class AgentRuntime(ABC):
         """
         ...
 
+    async def list_available_models(self) -> list[str] | None:
+        """Return the model IDs this runtime's CLI can reach, or ``None`` if unavailable.
+
+        Layer-1 (runtime) counterpart of ``LLMProvider.list_available_models()``
+        (layer-2): ``None`` is the "unavailable" sentinel (CLI not installed,
+        not authenticated, or probe failure), kept distinct from ``[]``
+        (available, but this runtime knows of zero reachable models), the
+        same shape ``get_model_capabilities()`` in ``sova.llm.provider``
+        composes (not to be confused with ``LLMProvider.capabilities``, the
+        unrelated budget/cost capability declaration).
+
+        Cached per instance and single-flighted (``_RuntimeModelCache``), so
+        a caller polling ``get_model_capabilities()`` repeatedly, or multiple
+        concurrent callers, never re-run the underlying probe more than once
+        per TTL window: ``_RUNTIME_MODEL_CACHE_TTL`` for a real answer, the
+        much shorter ``_RUNTIME_MODEL_UNAVAILABLE_TTL`` for ``None``. Never
+        raises: subclasses override ``_probe_models()``, not this method, and
+        must keep that same fail-open contract.
+        """
+        return await self._models_cache().get_or_compute(self._enumerate_models)
+
+    async def _enumerate_models(self) -> list[str] | None:
+        """Apply the availability gate once for every runtime, then delegate to ``_probe_models()``.
+
+        Kept here rather than in each ``_probe_models()`` override so no
+        subclass has to repeat (or can forget) the "CLI missing or
+        unauthenticated means ``None``" half of the contract.
+
+        Also the one place the "never raises" half is actually enforced:
+        ``check_available()`` has no such contract of its own (it shells out
+        to a CLI), and an override that lets a probe error escape would
+        otherwise break every caller of ``list_available_models()``.
+        """
+        try:
+            available, _ = await self.check_available()
+            if not available:
+                return None
+            return await self._probe_models()
+        except Exception:  # noqa: BLE001 (any probe failure means "unavailable", never a raise)
+            log.debug("runtime.model_enumeration_failed", runtime=self.name, exc_info=True)
+            return None
+
+    async def _probe_models(self) -> list[str] | None:
+        """Return this runtime's own model catalog, its CLI already known to be usable.
+
+        Called only once ``_enumerate_models()``'s availability gate passes.
+        Default implementation: available, but with no catalog of its own
+        (``[]``). Overrides must never raise; any probe exception, timeout,
+        or auth failure must be caught and translated to ``None``.
+        """
+        return []
+
 
 def _claude_result_stop_reason(data: dict) -> str:
     """Return ``"error"`` when a Claude CLI result event reports a failed turn.
@@ -494,12 +631,32 @@ class ClaudeCodeRuntime(AgentRuntime):
     async def check_available(self) -> tuple[bool, str]:
         return await _check_cli_available("claude", "https://docs.anthropic.com/en/docs/claude-code")
 
+    async def _probe_models(self) -> list[str] | None:
+        """Report the curated Anthropic model IDs.
+
+        Reuses ``CURATED_MODELS`` (the same static list layer-2's
+        ``LLMProvider`` default returns) rather than hand-rolling a second
+        catalog: Claude Code runs whatever Anthropic model it is passed, so
+        the reachable set is the same one SOVA already curates.
+        """
+        return [m.id for m in CURATED_MODELS]
+
 
 class AiderRuntime(AgentRuntime):
     """Runtime that spawns Aider CLI processes.
 
     Aider (https://aider.chat) is an open-source AI pair programming tool.
     It supports multiple LLM backends and edits code via git commits.
+
+    Deliberately keeps ``AgentRuntime._probe_models()``'s default (``[]``,
+    "reachable, no catalog of its own") rather than overriding it: Aider's
+    ``--model`` is an arbitrary litellm-style string and the CLI has no
+    discovery endpoint, so there is nothing to enumerate. Delegating to the
+    configured layer-2 provider instead would fuse the two axes that
+    ``get_model_capabilities()`` exists to keep apart: the same catalog would
+    be reported under both ``layer1`` and ``layer2``, and a layer-2
+    credential failure would report layer 1 unavailable even though the
+    Aider CLI itself is installed and usable. Issue #1038.
     """
 
     @property
@@ -586,6 +743,10 @@ class AiderRuntime(AgentRuntime):
 
     async def check_available(self) -> tuple[bool, str]:
         return await _check_cli_available("aider", "pip install aider-chat")
+
+    # No _probe_models() override: see the class docstring. Aider reports the
+    # ABC default ([] when the CLI is installed, None when it is not), never a
+    # borrowed layer-2 catalog.
 
 
 # codex login status is a local keychain/credential-store read, matching the
@@ -1051,6 +1212,7 @@ class CodexRuntime(AgentRuntime):
     """
 
     def __init__(self, config: CodexConfig | None = None) -> None:
+        super().__init__()
         self._config = config if config is not None else CodexConfig()
         # Threaded through here too, not just create_stream_parser(), so this
         # convenience parser's provenance (used by parse_output(), a
@@ -1236,6 +1398,21 @@ class CodexRuntime(AgentRuntime):
         if authenticated is False:
             return False, f"{version_detail} but {auth_detail}"
         return True, f"{version_detail} ({auth_detail})"
+
+    async def _probe_models(self) -> list[str] | None:
+        """Report the one configured Codex model, if there is one.
+
+        The Codex CLI exposes no model-listing endpoint, and
+        ``honours_model_override`` is False, so an authenticated Codex
+        runtime drives exactly one model: ``codex.model``. Reporting it is
+        strictly more informative than the base ``[]`` for a capability view
+        whose question is "what can this layer actually run". An empty
+        ``codex.model`` means "whatever the Codex CLI's own config defaults
+        to", a value SOVA cannot name, so that case keeps the base answer:
+        reachable, with no model ID to report.
+        """
+        model = self._config.model.strip()
+        return [model] if model else []
 
 
 # ---------------------------------------------------------------------------
