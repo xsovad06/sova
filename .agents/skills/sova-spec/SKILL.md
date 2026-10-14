@@ -54,7 +54,7 @@ No changes needed. The research step confirmed this issue is already fully imple
 Read whatever exists; skip files that are missing:
 - `CLAUDE.md` and `AGENTS.md` for project conventions
 - `.claude/rules/architecture.md` for component overview and design decisions
-- `.claude/agent-memory/cookbook.md` for known patterns and past mistakes
+- The cookbook for known patterns and past mistakes: the `README.md` index of `.claude/agent-memory/cookbook/` plus the domain files relevant to this task when that directory exists, otherwise `.claude/agent-memory/cookbook.md`; also `.claude/agent-memory/common-mistakes.md` if present
 
 ### Step 3: Explore the Codebase
 

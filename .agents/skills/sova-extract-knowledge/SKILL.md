@@ -20,8 +20,11 @@ Stable patterns loaded into every session via CLAUDE.md. Primary destination for
 ### Tier 2: `.claude/agent-memory/` (agent learnings)
 Lessons learned from development and review cycles. Destination for agent-specific patterns not yet promoted to Tier 1.
 
-- **`MEMORY.md`**: index file
-- **`cookbook.md`**: topical knowledge by domain, common mistakes with occurrence counts
+- **`MEMORY.md`**: index file (if the project has one)
+- **`cookbook/<domain>.md`** (index in `cookbook/README.md`), or a single **`cookbook.md`** in smaller projects: topical knowledge by domain, one bullet per lesson with `(PR #N; confirmed: N)`
+- **`common-mistakes.md`**: recurring mistakes with `(occurrences: N)`, checked against every diff by the `sova-review` skill
+
+Always write Tier 2 files in the PRIMARY checkout (`git rev-parse --git-common-dir` resolves it from a worktree): `.claude/agent-memory/` may be gitignored, and a worktree's copy is deleted with the worktree.
 
 ### Tier 3: User auto-memory (`~/.claude/projects/.../memory/`)
 User preferences, workflow conventions, and project state.
@@ -39,7 +42,8 @@ For each finding, determine the right destination:
 | Finding type | Destination |
 |---|---|
 | Domain-specific patterns (security, performance, etc.) | `.claude/rules/<domain>.md` |
-| ORM/framework gotchas, review lessons, recurring mistakes | `.claude/agent-memory/cookbook.md` (under matching domain section) |
+| ORM/framework gotchas, review lessons | the matching `.claude/agent-memory/cookbook/<domain>.md` (or the section of `cookbook.md`) |
+| Recurring mistakes | `.claude/agent-memory/common-mistakes.md` |
 | Agent workflow or project pattern changes | `.claude/agent-memory/MEMORY.md` |
 | User preferences, workflow, collaboration style | User auto-memory |
 
@@ -71,7 +75,7 @@ Before writing anything:
 
 Agent memory files should stay concise:
 - `MEMORY.md`: under 20 lines (index only)
-- `cookbook.md`: under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
+- Each cookbook file (or a single `cookbook.md`): under 200 lines and about 40 KB, since agents read whole files. Entries stay one bullet of at most ~500 characters; the incident narrative belongs in the PR, not the cookbook. When a domain file outgrows that, prune stale entries (verify against the code first), drop entries that are now enforced by a test or invariant, and promote confirmed ones; split a single `cookbook.md` into `cookbook/<domain>.md` files once it outgrows the limit.
 
 If a pattern has matured from agent-memory into a stable convention, promote it to the appropriate `.claude/rules/*.md` file and remove the agent-memory entry.
 

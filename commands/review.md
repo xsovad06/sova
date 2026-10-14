@@ -168,6 +168,16 @@ git diff  # review your own fixes
 
 Run the full CI-equivalent checks: `{{ check_cmd }}`. That command is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them). If any check fails, fix the issue and loop back to Step 6.
 
+If the project has pre-push invariant scripts (`invariants/*.sh`), run every one against the base too; they are what the pre-push hook and CI enforce, and a lint-plus-test target usually leaves them out:
+
+```bash
+BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+BASE=${BASE:-main}
+for s in invariants/*.sh; do [ -f "$s" ] && { bash "$s" . "$BASE" || echo "FAIL: $s"; }; done
+```
+
+Fix every `FAIL` the same way as a test failure. Never plan to bypass one with `--no-verify`.
+
 ## 8. Summary
 
 ```

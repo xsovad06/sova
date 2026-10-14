@@ -56,7 +56,7 @@ Each shell block below runs as its own shell invocation, so each one assigns eve
 6. **Capture learnings** from the PR review (run the `sova-ingest-review` skill):
    - Fetch PR review data
    - Extract lessons: patterns to follow, mistakes to avoid, style preferences, test coverage gaps
-   - Update `.claude/agent-memory/cookbook.md` (under matching domain section)
+   - Update the PRIMARY checkout's cookbook (`cookbook/<domain>.md` when split, otherwise `cookbook.md` under the matching section) before removing any worktree: a worktree's copy of `.claude/agent-memory/` may be gitignored and is deleted with it
 
 7. **Report** what was cleaned up, any worktree or branch kept and why, and what was learned.
 

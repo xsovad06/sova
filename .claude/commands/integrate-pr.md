@@ -386,7 +386,11 @@ project AND `PUSHED` is `0`.
    (`gh pr view`, `gh api repos/.../pulls/<N>/comments`,
    `gh api repos/.../pulls/<N>/reviews`). Enumerate every review thread from
    the whole PR history, resolved and unresolved, and check whether the
-   actionable ones are already reflected in `.claude/agent-memory/cookbook.md`.
+   actionable ones are already reflected in the primary checkout's cookbook
+   (`cookbook/` domain files when split, otherwise `cookbook.md`). When
+   `.claude/agent-memory/` is gitignored, missing cookbook entries need no
+   queue or push: write them straight to `$PRIMARY_ROOT/.claude/agent-memory/`
+   and queue only tracked documentation below.
 
 2. **Check documentation counts**: run the verification commands (test count,
    service count, router count) and compare against `AGENTS.md`, `README.md`,
@@ -407,7 +411,7 @@ project AND `PUSHED` is `0`.
      reading exactly `EOF`, which would end a heredoc early and run the rest).
      ```
      ## From PR #<PR_NUMBER> (<DATE>)
-     <the cookbook entries, rule promotions and count corrections, verbatim>
+     <the rule promotions and count corrections for tracked files, verbatim>
      ```
      `/address-pr` drains this queue at the start of its next run, resolving
      the primary checkout the same way, and folds the content into that

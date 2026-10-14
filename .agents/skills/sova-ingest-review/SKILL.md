@@ -66,13 +66,12 @@ Parse structured review findings from TaskRun records and update agent memory.
    ```
 
 6. Classify findings into memory categories:
-   - **Severity >= 7**: likely a "common_mistake", so check `.claude/agent-memory/cookbook.md` for existing entries
+   - **Severity >= 7**: likely a "common_mistake", so check `.claude/agent-memory/common-mistakes.md` (or the cookbook's mistakes section) for existing entries
    - **Severity 4-6 with "style" or "naming" category**: "style preference"
    - **Repeated patterns across findings**: "review pattern" worth codifying
    - **Test-related findings**: "test coverage gap"
 
-7. Read existing memory file:
-   - `.claude/agent-memory/cookbook.md`
+7. Read the existing memory: `.claude/agent-memory/common-mistakes.md` if present, and the cookbook (the relevant domain files of `.claude/agent-memory/cookbook/` when that directory exists, otherwise `.claude/agent-memory/cookbook.md`).
 
 8. Before writing anything, check whether each lesson is already recorded in
    a higher tier: `.claude/rules/*.md`, `AGENTS.md`, and `docs/*-guidelines.md`.
@@ -83,18 +82,21 @@ Parse structured review findings from TaskRun records and update agent memory.
      did not check X"), instead of restating the rule.
    - **Not recorded anywhere**: continue to step 9.
 
-9. Update `.claude/agent-memory/cookbook.md`:
-   - Append new findings under the matching domain section (no duplicates).
+9. Update the cookbook in the PRIMARY checkout (resolve `PRIMARY_ROOT` from `git rev-parse --git-common-dir`; a worktree's copy of `.claude/agent-memory/` may be gitignored and is deleted with the worktree): `$PRIMARY_ROOT/.claude/agent-memory/cookbook/<domain>.md` when that directory exists (domains listed in its `README.md`), otherwise `$PRIMARY_ROOT/.claude/agent-memory/cookbook.md`:
+   - Append new findings to the matching domain (no duplicates), one bullet each:
+     `- **<rule as a short imperative>** (PR #123; confirmed: 1): <rule and why>.`
      File by topic, never under a per-PR heading: per-PR sections cannot be
-     deduplicated or promoted. Cite the PR inline, e.g. `(PR #123, reviewer)`.
-   - If a mistake already exists, increment its `[Nx]` count
-   - If a finding is high-impact (severity >= 8), also add it to `.claude/agent-memory/MEMORY.md`
+     deduplicated or promoted. Cite the PR inline.
+   - A recurring mistake goes in `$PRIMARY_ROOT/.claude/agent-memory/common-mistakes.md` as `- **<mistake>** (occurrences: N): <how to catch it in a diff>.`
+     If it already exists, increment its count rather than adding a duplicate;
+     the `sova-review` skill checks every diff against this list.
+   - If a finding is high-impact (severity >= 8) and `.claude/agent-memory/MEMORY.md` exists, also add it there
 
 10. Report what was learned and which files were updated.
 
 ## Cross-References
 
-- **Review learnings during the PR**: the `sova-address-pr` skill's knowledge-capture step records each review round's lessons in `.claude/agent-memory/cookbook.md`; run this command afterwards only for anything that step missed
+- **Review learnings during the PR**: the `sova-address-pr` skill's knowledge-capture step records each review round's lessons in the primary checkout's cookbook; run this command afterwards only for anything that step missed
 - **Extract broader knowledge**: Run the `sova-extract-knowledge` skill for session-wide lessons
 
 ## Rules

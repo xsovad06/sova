@@ -13,8 +13,13 @@ Scope: the arguments provided when this skill is invoked
 
 ### Step 1: Get the Diff Scope
 
+Compare against the fork point with the remote base (three dots), not a local `main`: two dots against a stale or moved base also lists the base's own newer commits as if this branch made them.
+
 ```bash
-git diff main..HEAD --stat
+BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+BASE=${BASE:-main}
+git fetch --quiet origin "$BASE"
+git diff "origin/$BASE"...HEAD --stat
 git diff --cached --stat
 git diff --stat
 ```

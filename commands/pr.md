@@ -25,6 +25,7 @@ Create a pull request for the current branch using the project's standard PR tem
    echo "Base branch: $BASE"
    ```
    - **Never check out the base branch**: in a linked worktree it is usually checked out elsewhere, so `git checkout "$BASE"` fails. Rebase onto the remote-tracking ref instead.
+   - **Verify the GitHub account**: `gh auth status` must show the account the project configures as its GitHub user (for SOVA projects, `sova config get github_user` prints it). Otherwise `--assignee @me` in step 11 assigns the wrong user and later thread writes fail with FORBIDDEN. If it differs, run `gh auth switch --user <github_user>`.
 
 2. **Gather branch information**. These commands do not need `$BASE` and can run in parallel:
    - `git status`: check for uncommitted changes
@@ -41,7 +42,7 @@ Create a pull request for the current branch using the project's standard PR tem
    ```
 
 3. **Handle existing PR, then rebase only when it is safe**:
-   If a PR already exists, **ASK THE USER** which workflow they want:
+   If a PR already exists, **ASK THE USER** which workflow they want (when running headless, with no user to ask, use Option B: it never rewrites history the remote already has):
    - **Option A: AI feedback workflow**: reset and recreate all commits (soft reset to `origin/$BASE`, reorganize). Rebasing is safe here since step 10 force-pushes this option.
    - **Option B: Incremental workflow**: add new commits on top of the existing remote history. Do NOT rebase: step 10 pushes this option with a plain `git push`, which fails as non-fast-forward if the rebase rewrote commit IDs the remote already has.
 
@@ -58,7 +59,7 @@ Create a pull request for the current branch using the project's standard PR tem
      [ -n "$BASE" ] || { echo "Unable to resolve the base branch" >&2; exit 1; }
      git rebase "origin/$BASE"
      ```
-   - **Handle rebase conflicts** (if any): read each conflicted file, resolve the markers, `git add <file>`, then `git rebase --continue`. If a conflict cannot be resolved with confidence, run `git rebase --abort`, report the conflicting files to the user, and stop.
+   - **Handle rebase conflicts** (if any): read each conflicted file, resolve the markers, `git add <file>`, then `git rebase --continue`. If a conflict cannot be resolved with confidence, run `git rebase --abort`, then undo the WIP commit if one was made (`git log -1 --format=%s` prints `chore: WIP snapshot before rebase`: run `git reset --soft HEAD~1`), report the conflicting files to the user, and stop.
 
 4. **Handle the base branch** (if the current branch is the base branch itself):
    - Create a new feature branch from changes
@@ -134,6 +135,8 @@ Create a pull request for the current branch using the project's standard PR tem
 8. **Run preflight CI checks locally** before pushing:
    Run `{{ check_cmd }}`. It is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them). This must pass before any push. Fix any failures before proceeding.
 
+   If the project has pre-push invariant scripts (`invariants/*.sh`), run every one against the base (`for s in invariants/*.sh; do bash "$s" . "$BASE" || echo "FAIL: $s"; done`, with `BASE` resolved as in step 1) and fix every failure: the pre-push hook runs the same scripts, and a push it blocks is fixed by correcting the reported problem, never by `--no-verify`.
+
    If the project has an executable `.claude/scripts/prepush-check.sh`, run it too. It holds project-specific mechanical checks (deploy config drift, dependency downgrades after a rebase, spec regeneration) that generic commands cannot know about. Treat every `FAIL` line as blocking and every `WARN` line as something to confirm before pushing.
 
 9. **Verify authorship and text** before pushing. Each check must print nothing; fix any hit (reword the commit, correct the author, or edit the body file) and re-run all of them:
@@ -171,14 +174,15 @@ Create a pull request for the current branch using the project's standard PR tem
     rm -f "$BODY_FILE"
     ```
 
-12. **Trigger CodeRabbit review** (if configured):
+12. **Trigger CodeRabbit review** (if configured): do this only once the code it should review is final. When steps 14-18 will run (they push again: visual fixes, CI fixes, self-review fixes), defer this step until step 19, after the last push; a review of pre-fix code spends the bot's limited quota and its findings go stale on the next push.
     This key is not in the `sova config` table, so resolve it through the config loader:
     ```bash
     python3 -c "from pathlib import Path; from sova.config.loader import load_config; \
 print(load_config(Path('.')).external_reviews.coderabbit.trigger_review)"
     ```
-    If it prints `True` and the PR was newly created (not an update), post a comment to trigger CodeRabbit:
+    If it prints `True` and the PR was newly created (not an update), post a comment to trigger CodeRabbit. This is a fresh shell, so resolve the PR number in the same block:
     ```bash
+    PR_NUM=$(gh pr view --json number --jq .number) || { echo "Unable to resolve the PR number" >&2; exit 1; }
     gh pr comment "$PR_NUM" --body "@coderabbitai review"
     ```
 
@@ -225,7 +229,9 @@ These phases run after the PR is created/updated. They enable autonomous operati
     5. Re-run step 9's checks, then force push: `git push --force-with-lease`
     6. Wait for CI again (go back to step 15 logic, max 3 total CI cycles across the entire run)
 
-19. **Report**:
+19. **Trigger CodeRabbit now** if step 12 was deferred, using step 12's block unchanged. Do the same before stopping early at step 16 (CI still pending, or the retry limit reached), so a deferred trigger is never dropped.
+
+20. **Report**:
     ```
     ## PR Summary
 
