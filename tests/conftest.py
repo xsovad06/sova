@@ -94,13 +94,18 @@ def _isolate_home_config(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pyte
     monkeypatch.setattr(registry, "_REGISTRY_DIR", fake_config_dir)
     monkeypatch.setattr(registry, "_REGISTRY_FILE", fake_config_dir / "projects.json")
 
-    # ``_ALLOWED_ROOTS`` is also bound to the real ``Path.home()`` at import time,
-    # so a test that validates a path built from the (now-patched) ``Path.home()``
-    # against it would otherwise see a mismatch and a spurious ValueError.
+    # ``_CONFIG_DIR``, ``_ALLOWED_ROOTS``, and the ``DEFAULT_TOKEN_PATH``/
+    # ``DEFAULT_CREDENTIALS_PATH`` constants derived from it are all bound to
+    # the real ``Path.home()`` at import time, so a test that forgets to pass
+    # an explicit ``token_path``/``credentials_path`` would otherwise read or
+    # write the developer's real Google OAuth token and client secrets under
+    # ``~/.config/sova`` instead of hitting the ``_ALLOWED_ROOTS`` guard.
     from sova.awareness.auth import google_oauth
 
     monkeypatch.setattr(google_oauth, "_CONFIG_DIR", fake_config_dir)
     monkeypatch.setattr(google_oauth, "_ALLOWED_ROOTS", frozenset({fake_config_dir}))
+    monkeypatch.setattr(google_oauth, "DEFAULT_TOKEN_PATH", fake_config_dir / "google_token.pickle")
+    monkeypatch.setattr(google_oauth, "DEFAULT_CREDENTIALS_PATH", fake_config_dir / "google_credentials.json")
 
 
 @pytest.fixture(autouse=True)
