@@ -136,6 +136,7 @@ class MockRuntime(AgentRuntime):
         duration_seconds: float = 0.0,
         should_hang: bool = False,
     ) -> None:
+        super().__init__()
         self._stdout_lines = stdout_lines
         self._stderr_lines = stderr_lines
         self._exit_code = exit_code

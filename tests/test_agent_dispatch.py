@@ -85,6 +85,7 @@ class _StubRuntime(AgentRuntime):
     """AgentRuntime double that returns a terminal 'result' StreamEvent for a fixed marker line."""
 
     def __init__(self, process: _StubProcess, *, available: bool = True, detail: str = "ok") -> None:
+        super().__init__()
         self._process = process
         self._available = available
         self._detail = detail

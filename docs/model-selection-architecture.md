@@ -331,8 +331,9 @@ their catalog rather than returning empty.
   in 2.8, and the settings UI's grouped `<select>` pattern documented in
   `.claude/rules/architecture.md`). The launch modal's separate agent/runtime "Model" select is
   populated from the complexity suggestion endpoint's `model_options`, not from this endpoint.
-  `layer="runtime"` (e.g. `codex.model`) is not implemented and returns 501: discovery today
-  covers the LLM layer only.
+  `layer="runtime"` (e.g. `codex.model`) is not implemented and returns 501: the HTTP surface
+  covers the LLM layer only, even though the layer-1 enumeration it would serve now exists
+  underneath it (2.10).
 - Just-in-time, fail-open, and cached at two independent layers, matching the Q2 guarantee this
   primitive is built on: each provider's own `cached_enumeration()` (`sova/llm/client.py`, 1800s
   TTL) dedupes repeated probes/API calls across every caller, and `models_service.py` adds a
@@ -356,6 +357,65 @@ their catalog rather than returning empty.
   `litellm_provider.py` notes "may differ from `client.provider_identity()`", the separate
   per-model availability/probe cache key), so a `detect_backend()` change alters what discovery
   reports, not what it caches under.
+
+### 2.10 Layer-1 (agent-runtime) enumeration and the per-layer capability view (#1038)
+
+2.9 covers layer 2 (`llm.provider`, the text-only LLM). The coding-agent runtime
+(`agent.runtime`) is an independent axis with its own credential: an Anthropic API key makes
+layer 2 work while leaving the Claude Code CLI unauthenticated, and `codex login` is the reverse.
+A dropdown fed only by 2.9 would therefore offer models the active runtime cannot drive.
+
+- `AgentRuntime.list_available_models() -> list[str] | None` (`sova/ipc/runtime.py`) is the
+  layer-1 counterpart. `None` is the "unavailable" sentinel (CLI missing, unauthenticated, or a
+  failed probe), kept distinct from `[]` (reachable, but no model IDs of its own to report),
+  mirroring `_enumerate_vertex()`'s `None`/`[]` distinction in 2.9. Subclasses override
+  `_probe_models()`, never `list_available_models()`: the base method applies the
+  `check_available()` gate once for every runtime (so no subclass can forget the "CLI missing
+  means `None`" half of the contract), absorbs any exception from that gate or from the override
+  into `None` (so the "never raises" half holds even for an out-of-tree runtime, and even though
+  `check_available()` itself makes no such promise), and owns the cache.
+  - `ClaudeCodeRuntime` reports `CURATED_MODELS`' IDs: the CLI runs whatever Anthropic model it
+    is handed, so its reachable set is the one SOVA already curates, and re-probing per candidate
+    here would duplicate `ClaudeCodeProvider`'s layer-2 pass.
+  - `CodexRuntime` reports `[codex.model]`, or `[]` when that is empty. The Codex CLI has no
+    listing endpoint and `honours_model_override` is False, so an authenticated Codex runtime
+    drives exactly one model; an empty `codex.model` means "the CLI's own configured default",
+    which SOVA cannot name.
+  - `AiderRuntime` keeps the ABC default: `[]` once its CLI is installed, `None` when it is not.
+    Its `--model` is an arbitrary litellm-style string and the CLI has no discovery endpoint, so
+    there is nothing to enumerate. Reporting the configured layer-2 provider's catalog instead
+    would fuse the two axes this view exists to separate: the same list would appear under both
+    `layer1` and `layer2`, and a layer-2 credential failure would report layer 1 unavailable
+    while the Aider CLI is installed and usable. The empty answer here is deliberate, not an
+    oversight to "fix" for consistency with the `LLMProvider` ABC default (which does return a
+    curated Anthropic list, a family Aider is never pinned to).
+- Caching is per runtime instance (`_RuntimeModelCache`), not a module-level identity map: every
+  concrete runtime is already a process-wide singleton via `get_runtime()`, so caching on `self`
+  is equivalent to keying a shared cache by runtime identity without a second global registry. It
+  mirrors `cached_enumeration()`'s check / lock / re-check / compute / store sequence and its
+  split TTLs: a real catalog keeps `_RUNTIME_MODEL_CACHE_TTL` (1800s, matching
+  `_ENUMERATION_TTL_SECONDS`), while an "unavailable" answer keeps only
+  `_RUNTIME_MODEL_UNAVAILABLE_TTL` (300s, matching `_UNAVAILABLE_TTL_SECONDS`). Pinning the
+  negative for the full positive TTL would be the one thing `cached_enumeration()` explicitly
+  refuses to do, and it is worse here: this cache has no `clear_enumeration()` equivalent, so a
+  `claude login` or a CLI install done mid-session would be invisible for half an hour.
+- The probe never runs on the spawn hot path. `spawn()` does not touch enumeration for any
+  runtime (pinned by `tests/test_ipc.py::TestNoModelProbeOnSpawnHotPath`, which patches
+  `_probe_models()` to raise rather than merely counting calls), so an agent launch pays no probe
+  latency and gains no hang surface.
+- `get_model_capabilities()` (`sova/llm/provider.py`) composes the two layers into
+  `{"layer1": [...] | "unavailable", "layer2": [...] | "unavailable"}` for whatever
+  `get_runtime()`/`get_provider()` currently point at (both kept in sync with config by
+  `reload_runtime()`/`reload_provider()`, so no credential or config argument is threaded
+  through). Each layer is probed under its own `try`/`except` and its own
+  `_CAPABILITY_PROBE_TIMEOUT` (45s, the same figure as `models_service`'s
+  `_ENUMERATION_TIMEOUT_SECONDS`, duplicated rather than imported because `sova.llm` must not
+  depend on `sova.dashboard`), so a provider that raises on a misconfigured deployment, or a CLI
+  probe that hangs, degrades that one layer while the other still reports its real catalog.
+  Neither layer's enumeration has an internal timeout, which is why this view supplies one. The
+  two run concurrently (`asyncio.gather`), so the worst case is one timeout, not two in series.
+- No UI consumes this yet: `layer="runtime"` still returns 501 and the runtime-model dropdown is
+  deferred to B2.
 
 ---
 
