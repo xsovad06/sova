@@ -64,6 +64,46 @@ def _isolate_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempP
 
 
 @pytest.fixture(autouse=True)
+def _isolate_home_config(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Redirect ``~/.config/sova`` so no test can reach the developer's real global state.
+
+    ``_get_database_url()`` (``sova/db/session.py``) falls back to
+    ``Path.home() / ".config" / "sova" / "sova.db"`` whenever a test calls into DB
+    code with no ``project_dir`` and no ``SOVA_DATABASE_URL``; a test that hits
+    this path writes real ``task_runs``/``step_executions`` rows into the
+    developer's actual database (observed: 655 polluting rows removed by hand on
+    2026-10-13). ``sova.config.registry`` and ``sova.awareness.auth.google_oauth``
+    have the same problem one layer worse: their ``_REGISTRY_DIR``/``_REGISTRY_FILE``
+    and ``_CONFIG_DIR``/``_ALLOWED_ROOTS`` module constants are bound to the real
+    ``Path.home()`` at import time, so patching ``Path.home`` after those modules
+    have already been imported would not retroactively change them; they are
+    monkeypatched directly here as well.
+
+    This is the sibling of ``_isolate_cwd`` above, one layer up: that fixture
+    redirects ``Path.cwd()`` fallbacks, this one redirects ``Path.home()``
+    fallbacks. Function-scoped (one fake home per test, like ``_isolate_cwd``)
+    rather than session-scoped, so one test's registry writes can't leak into
+    another's.
+    """
+    fake_home = tmp_path_factory.mktemp("home")
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    fake_config_dir = fake_home / ".config" / "sova"
+
+    from sova.config import registry
+
+    monkeypatch.setattr(registry, "_REGISTRY_DIR", fake_config_dir)
+    monkeypatch.setattr(registry, "_REGISTRY_FILE", fake_config_dir / "projects.json")
+
+    # ``_ALLOWED_ROOTS`` is also bound to the real ``Path.home()`` at import time,
+    # so a test that validates a path built from the (now-patched) ``Path.home()``
+    # against it would otherwise see a mismatch and a spurious ValueError.
+    from sova.awareness.auth import google_oauth
+
+    monkeypatch.setattr(google_oauth, "_CONFIG_DIR", fake_config_dir)
+    monkeypatch.setattr(google_oauth, "_ALLOWED_ROOTS", frozenset({fake_config_dir}))
+
+
+@pytest.fixture(autouse=True)
 def _reset_connectivity_tracker() -> None:
     """Start every test with the network considered healthy.
 

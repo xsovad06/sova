@@ -9123,7 +9123,7 @@ class TestMemoryPressureGate:
         assert "error" in result
         assert "Insufficient memory" in result["error"]
 
-    async def test_start_agent_force_bypasses_memory_gate(self) -> None:
+    async def test_start_agent_force_bypasses_memory_gate(self, tmp_path: Path) -> None:
         """start_agent with force=True skips the memory check."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9147,7 +9147,7 @@ class TestMemoryPressureGate:
             from sova.dashboard.services.agent_pool import ProjectAgents
 
             pa = ProjectAgents()
-            pa.project_dir = Path("/tmp/fake-project")
+            pa.project_dir = tmp_path
             mock_gpa.return_value = pa
 
             result = await agent_lifecycle.start_agent("42", force=True)
@@ -16358,14 +16358,13 @@ class TestWaitAndFinalizeOrdering:
 class TestPeriodicRecoveryLoopIsolation:
     """A failure recovering one project must not skip the rest until the next tick."""
 
-    async def test_one_project_failing_does_not_block_the_others(self) -> None:
-        from pathlib import Path
+    async def test_one_project_failing_does_not_block_the_others(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.app import _periodic_recovery_loop
 
-        project_a = Path("/tmp/project-a")
-        project_b = Path("/tmp/project-b")
+        project_a = tmp_path / "project-a"
+        project_b = tmp_path / "project-b"
         recovered: list[Path] = []
 
         async def fake_recover(path: Path) -> None:

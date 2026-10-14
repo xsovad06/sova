@@ -32,11 +32,11 @@ def _task() -> Task:
     return Task(id="42", title="Test issue", body="Some description", state=TaskState.IN_REVIEW)
 
 
-def _review_ctx(config: ProjectConfig | None = None) -> ExecutionContext:
+def _review_ctx(tmp_path: Path, config: ProjectConfig | None = None) -> ExecutionContext:
     adapter = AsyncMock()
     adapter.get_state.return_value = TaskState.IN_REVIEW
     return ExecutionContext(
-        project_dir=Path("/tmp/test"),
+        project_dir=tmp_path,
         config=config or ProjectConfig(),
         adapter=adapter,
         issue_number="42",
@@ -155,8 +155,8 @@ class TestPerTierParity:
 
 
 class TestReviewerModelResolution:
-    async def test_stock_config_uses_sonnet(self) -> None:
-        ctx = _review_ctx()
+    async def test_stock_config_uses_sonnet(self, tmp_path: Path) -> None:
+        ctx = _review_ctx(tmp_path)
         role = ReviewerRole()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text=_findings_response(), model="sonnet")
@@ -164,9 +164,9 @@ class TestReviewerModelResolution:
 
         assert mock_invoke.call_args[1]["model"] == "sonnet"
 
-    async def test_configured_reviewer_model_is_used(self) -> None:
+    async def test_configured_reviewer_model_is_used(self, tmp_path: Path) -> None:
         config = ProjectConfig(roles=RolesConfig(reviewer_model="haiku"))
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text=_findings_response(), model="haiku")
@@ -174,7 +174,7 @@ class TestReviewerModelResolution:
 
         assert mock_invoke.call_args[1]["model"] == "haiku"
 
-    async def test_role_config_currently_wins_over_task_type_routing(self) -> None:
+    async def test_role_config_currently_wins_over_task_type_routing(self, tmp_path: Path) -> None:
         """Locks in the documented precedence gap: llm.routing[task_type] is inert
 
         today because invoke() is always called with an explicit, already-resolved
@@ -182,7 +182,7 @@ class TestReviewerModelResolution:
         ``_resolve_task_type_model`` to consult config even when model is set.
         """
         config = ProjectConfig(roles=RolesConfig(reviewer_model="opus"), llm=LLMConfig(routing={"review": "haiku"}))
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text=_findings_response(), model="opus")
@@ -190,8 +190,8 @@ class TestReviewerModelResolution:
 
         assert mock_invoke.call_args[1]["model"] == "opus"
 
-    async def test_review_passes_task_type(self) -> None:
-        ctx = _review_ctx()
+    async def test_review_passes_task_type(self, tmp_path: Path) -> None:
+        ctx = _review_ctx(tmp_path)
         role = ReviewerRole()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text=_findings_response(), model="sonnet")
@@ -199,10 +199,10 @@ class TestReviewerModelResolution:
 
         assert mock_invoke.call_args[1]["task_type"] == "review"
 
-    async def test_schema_retry_uses_same_model(self) -> None:
+    async def test_schema_retry_uses_same_model(self, tmp_path: Path) -> None:
         """The retry closure must not fall back to the hardcoded literal."""
         config = ProjectConfig(roles=RolesConfig(reviewer_model="haiku"))
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         responses = [
             LLMResult(text="not json at all", model="haiku"),
@@ -214,11 +214,11 @@ class TestReviewerModelResolution:
         assert mock_invoke.await_count == 2
         assert [call[1]["model"] for call in mock_invoke.call_args_list] == ["haiku", "haiku"]
 
-    async def test_all_chunks_use_one_model(self) -> None:
+    async def test_all_chunks_use_one_model(self, tmp_path: Path) -> None:
         from sova.roles.reviewer import DIFF_CHUNK_SIZE
 
         config = ProjectConfig(roles=RolesConfig(reviewer_model="haiku"))
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         big_diff = "diff --git a/a.py b/a.py\n" + "+" * DIFF_CHUNK_SIZE + "\ndiff --git a/b.py b/b.py\n" + "+" * 100
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
@@ -228,10 +228,10 @@ class TestReviewerModelResolution:
         assert mock_invoke.await_count == 2
         assert {call[1]["model"] for call in mock_invoke.call_args_list} == {"haiku"}
 
-    async def test_panel_path_receives_resolved_default_model(self) -> None:
+    async def test_panel_path_receives_resolved_default_model(self, tmp_path: Path) -> None:
         config = ProjectConfig(roles=RolesConfig(reviewer_model="haiku"))
         config.review.panel.enabled = True
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         with patch("sova.roles.panel_review.run_panel_review", new_callable=AsyncMock) as mock_panel:
             mock_panel.return_value = MagicMock(total_cost=Decimal("0"))
@@ -250,9 +250,9 @@ class TestReviewerModelProviderAwareFallback:
     any backend other than Claude Code / the Anthropic API's own alias table. A
     non-Claude llm.provider must fall back to its own configured llm.model instead."""
 
-    async def test_stock_reviewer_model_falls_back_to_llm_model_for_openai(self) -> None:
+    async def test_stock_reviewer_model_falls_back_to_llm_model_for_openai(self, tmp_path: Path) -> None:
         config = ProjectConfig(llm=LLMConfig(provider="openai", model="gpt-5"))
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text=_findings_response(), model="gpt-5")
@@ -260,7 +260,7 @@ class TestReviewerModelProviderAwareFallback:
 
         assert mock_invoke.call_args[1]["model"] == "gpt-5"
 
-    async def test_explicit_reviewer_model_alias_resolves_to_its_own_vertex_candidate(self) -> None:
+    async def test_explicit_reviewer_model_alias_resolves_to_its_own_vertex_candidate(self, tmp_path: Path) -> None:
         """An explicitly configured but still-bare alias ("opus") is resolved through
         resolve_alias()'s own Vertex tier-candidate table rather than being silently
         replaced by the unrelated general-purpose llm.model."""
@@ -268,7 +268,7 @@ class TestReviewerModelProviderAwareFallback:
             roles=RolesConfig(reviewer_model="opus"),
             llm=LLMConfig(provider="vertex", model="vertex_ai/gemini-2.5-pro"),
         )
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text=_findings_response(), model="vertex_ai/claude-opus-4-6@20260401")
@@ -276,14 +276,14 @@ class TestReviewerModelProviderAwareFallback:
 
         assert mock_invoke.call_args[1]["model"] == "vertex_ai/claude-opus-4-6@20260401"
 
-    async def test_non_alias_reviewer_model_is_not_overridden(self) -> None:
+    async def test_non_alias_reviewer_model_is_not_overridden(self, tmp_path: Path) -> None:
         """A reviewer_model that is already a concrete, non-alias ID passes through
         unchanged regardless of provider."""
         config = ProjectConfig(
             roles=RolesConfig(reviewer_model="gpt-4o-mini"),
             llm=LLMConfig(provider="openai", model="gpt-5"),
         )
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text=_findings_response(), model="gpt-4o-mini")
@@ -291,11 +291,11 @@ class TestReviewerModelProviderAwareFallback:
 
         assert mock_invoke.call_args[1]["model"] == "gpt-4o-mini"
 
-    async def test_anthropic_provider_keeps_bare_alias(self) -> None:
+    async def test_anthropic_provider_keeps_bare_alias(self, tmp_path: Path) -> None:
         """The Anthropic API provider resolves bare aliases itself (resolve_model_alias),
         so it is excluded from the override."""
         config = ProjectConfig(llm=LLMConfig(provider="anthropic", model="claude-sonnet-5"))
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text=_findings_response(), model="sonnet")
@@ -303,9 +303,9 @@ class TestReviewerModelProviderAwareFallback:
 
         assert mock_invoke.call_args[1]["model"] == "sonnet"
 
-    async def test_claude_code_provider_keeps_bare_alias(self) -> None:
+    async def test_claude_code_provider_keeps_bare_alias(self, tmp_path: Path) -> None:
         config = ProjectConfig(llm=LLMConfig(provider="claude-code"))
-        ctx = _review_ctx(config)
+        ctx = _review_ctx(tmp_path, config)
         role = ReviewerRole()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text=_findings_response(), model="sonnet")
@@ -386,30 +386,30 @@ class TestPanelDefaultModel:
 
 
 class TestPlannerModelResolution:
-    def _planner(self, roles: RolesConfig | None = None) -> SupervisorPlanner:
+    def _planner(self, tmp_path: Path, roles: RolesConfig | None = None) -> SupervisorPlanner:
         config = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, llm_planning=True),
             github_repo="test/repo",
             roles=roles or RolesConfig(),
         )
-        return SupervisorPlanner(config=config, project_dir=Path("/tmp/test"), session_factory=MagicMock())
+        return SupervisorPlanner(config=config, project_dir=tmp_path, session_factory=MagicMock())
 
-    async def test_stock_config_uses_default_model(self) -> None:
-        planner = self._planner()
+    async def test_stock_config_uses_default_model(self, tmp_path: Path) -> None:
+        planner = self._planner(tmp_path)
         mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model=_DEFAULT_MODEL)
         with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result) as mock_invoke:
             await planner._call_llm("system", "user", planner._resolve_model())
 
         assert mock_invoke.call_args[1]["model"] == _DEFAULT_MODEL
 
-    async def test_configured_planner_model_is_used(self) -> None:
-        planner = self._planner(RolesConfig(planner_model="opus"))
+    async def test_configured_planner_model_is_used(self, tmp_path: Path) -> None:
+        planner = self._planner(tmp_path, RolesConfig(planner_model="opus"))
         mock_result = LLMResult(text='{"reasoning": "x", "actions": []}', model="opus")
         with patch("sova.supervisor.planner.invoke", new_callable=AsyncMock, return_value=mock_result) as mock_invoke:
             await planner._call_llm("system", "user", planner._resolve_model())
 
         assert mock_invoke.call_args[1]["model"] == "opus"
 
-    def test_empty_planner_model_falls_back_to_literal(self) -> None:
-        planner = self._planner(RolesConfig(planner_model=""))
+    def test_empty_planner_model_falls_back_to_literal(self, tmp_path: Path) -> None:
+        planner = self._planner(tmp_path, RolesConfig(planner_model=""))
         assert planner._resolve_model() == _DEFAULT_MODEL
