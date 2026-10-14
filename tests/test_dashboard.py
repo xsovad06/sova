@@ -19,6 +19,7 @@ from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_
 from sova.db.models import CostRecord, Memory, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
 from tests.conftest import csrf_request_headers as _csrf_request_headers
+from tests.conftest import drain_feed_persist
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +28,7 @@ async def setup_db():
     os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
     await init_db(run_migrations=False)
     yield
+    await drain_feed_persist()
     await close_db()
     os.environ.pop("SOVA_DATABASE_URL", None)
 

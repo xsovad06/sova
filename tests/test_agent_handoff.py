@@ -8,6 +8,7 @@ import pytest
 
 from sova.db.models import TaskRun
 from sova.db.session import close_db, get_session, init_db
+from tests.conftest import drain_feed_persist
 
 # agent_handoff.py resolves `get_session` via a function-local `from sova.db.session
 # import get_session` on every call (not a module-level import), so patching
@@ -21,6 +22,7 @@ async def setup_db(monkeypatch):
     monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
     await init_db(run_migrations=False)
     yield
+    await drain_feed_persist()
     await close_db()
 
 

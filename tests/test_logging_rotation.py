@@ -6,6 +6,10 @@ import logging
 from pathlib import Path
 
 import pytest
+import structlog
+from structlog.testing import capture_logs
+
+from tests.conftest import configure_test_logging
 
 
 @pytest.fixture
@@ -18,7 +22,7 @@ def log_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def cleanup_logging():
-    """Clean up logging handlers between tests."""
+    """Clean up logging handlers and restore the test structlog config between tests."""
     # Clear all handlers before test
     root = logging.getLogger()
     for handler in root.handlers[:]:
@@ -34,6 +38,43 @@ def cleanup_logging():
         root.removeHandler(handler)
         if hasattr(handler, "close"):
             handler.close()
+
+    # Every test here calls production setup_logging() unpatched, which
+    # reconfigures structlog process-wide: filtering at INFO, plus a
+    # _FileLogProcessor bound to the handler just closed above. The session
+    # fixture in conftest.py cannot reinstate its own configuration, so
+    # without this every test ordered after this module (on this xdist
+    # worker) would silently drop debug events. The restore only reaches
+    # loggers that re-read the config on each call: production setup_logging()
+    # sets cache_logger_on_first_use, so a logger whose very first use lands
+    # inside one of these tests stays frozen at INFO for the rest of the
+    # process. No test here logs through sova, so none is frozen today.
+    configure_test_logging()
+
+
+class TestTestLoggingConfiguration:
+    """Guard the conftest structlog config these tests depend on for their own restore."""
+
+    def test_capture_logs_sees_an_already_used_logger_after_a_reconfigure(self) -> None:
+        """A re-applied config must reach loggers that were already used once.
+
+        ``configure_test_logging()`` is re-applied by this module's teardown and
+        installs a fresh processor list each time. With
+        ``cache_logger_on_first_use`` on, a logger that has been used once is
+        frozen against the list it saw then, so neither the restore nor
+        ``capture_logs()`` (which swaps the *configured* list in place) reaches
+        it again, and the loss is silent: no error, just no events.
+        """
+        configure_test_logging()
+        log = structlog.get_logger(component="reconfigure-probe")
+        log.debug("first use")
+
+        configure_test_logging()
+
+        with capture_logs() as entries:
+            log.debug("probe")
+
+        assert [entry["event"] for entry in entries] == ["probe"]
 
 
 class TestLogRotation:
