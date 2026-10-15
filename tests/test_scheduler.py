@@ -12,17 +12,10 @@ import pytest
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, WatchConfig
-from sova.db.session import close_db, init_db
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for scheduler tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Every test in this module runs against the shared per-worker in-memory DB
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 def _make_config(**overrides: object) -> ProjectConfig:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,7 +11,6 @@ from typer.testing import CliRunner
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig
-from sova.db.session import close_db, init_db
 
 runner = CliRunner()
 
@@ -30,14 +28,9 @@ def _scaffold_install_artifacts(tmp_path: Path) -> None:
     settings_path.write_text(json.dumps({"permissions": {"allow": ["Bash(*)", "Read(*)", "Edit(*)", "Write(*)"]}}))
 
 
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for CLI tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Every test in this module runs against the shared per-worker in-memory DB
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 def _mock_adapter(state: TaskState = TaskState.BACKLOG) -> AsyncMock:
@@ -524,7 +517,7 @@ class TestMemoryCommands:
         from sova.cli.app import app
 
         mock_init.return_value = None
-        # The autouse setup_db fixture has already created a real in-memory DB,
+        # The module-wide reset_db_rows fixture has already created a real in-memory DB,
         # which is empty: so there are no memories without embeddings.
         result = runner.invoke(app, ["memory", "backfill-embeddings"])
         assert result.exit_code == 0

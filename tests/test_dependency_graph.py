@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -11,7 +10,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sova.adapters.base import Task, TaskState
-from sova.db.session import close_db, init_db
 from sova.supervisor.dependency_graph import (
     DependencyGraph,
     _extract_priority,
@@ -910,15 +908,6 @@ class TestBuildDependencyGraph:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
-
-
 def _mock_graph_context(tasks: list[Task]):
     """Return context managers that patch config+adapter+build for API tests."""
     from unittest.mock import MagicMock
@@ -953,7 +942,7 @@ def _mock_fetch_context(pr_map=None):
 
 
 @pytest.fixture
-async def client(setup_db):
+async def client(reset_db_rows):
     from sova.dashboard.app import create_app
 
     app = create_app(multi_project=False)
@@ -1276,7 +1265,7 @@ class TestFetchLastRunMap:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_returns_newest_terminal_run_per_issue(self, setup_db) -> None:
+    async def test_returns_newest_terminal_run_per_issue(self, reset_db_rows) -> None:
         from sova.dashboard.routers.dependencies import _fetch_last_run_map
         from sova.db.models import TaskRun
         from sova.db.session import get_session

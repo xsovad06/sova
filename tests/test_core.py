@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
@@ -20,7 +19,7 @@ from sova.core.state import InvalidTransitionError, TaskStatus, get_valid_transi
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.workflow import WorkflowEngine, _is_billing_failure
 from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 from sova.llm.errors import (
     BillingError,
     LLMInvocationError,
@@ -28,15 +27,9 @@ from sova.llm.errors import (
     RateLimitError,
 )
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for workflow engine tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Every test in this module runs against the shared per-worker in-memory DB
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 def _mock_adapter() -> AsyncMock:
@@ -788,7 +781,7 @@ class TestWorkflowEngine:
         real_url = f"sqlite+aiosqlite:///{real_dir}/.claude/sova.db"
         other_url = f"sqlite+aiosqlite:///{other_dir}/.claude/sova.db"
 
-        # The module-wide autouse setup_db fixture points every project_dir at
+        # The module-wide reset_db_rows fixture points every project_dir at
         # the same in-memory DB, which would mask the routing bug this test
         # exists to catch.
         monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
