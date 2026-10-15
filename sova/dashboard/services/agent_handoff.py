@@ -37,7 +37,7 @@ async def _check_address_review_circuit_breaker(
     Fails closed when the count could not be read at all: the cycle count now
     lives entirely in GitHub's review history, so an unreachable GitHub makes
     it unknown rather than zero, and authorizing one more cycle on an unknown
-    count is how a capped loop silently runs uncapped. ``/address-pr`` step 16
+    count is how a capped loop silently runs uncapped. ``/address-pr`` step 17
     takes the same position for the same decision, and the blocked state is
     recoverable by a human click rather than a dead end.
     """

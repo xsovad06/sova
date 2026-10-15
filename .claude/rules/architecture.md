@@ -196,6 +196,8 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Address-review finding loading uses four fallback sources
 - External review thread lifecycle
 - address-pr wrong-directory failure mode
+- address-pr own-PR and push-access guard
+- `.claude/scripts/ci-failures.sh` project hook contract
 - Verify `gh auth` account before review thread operations
 - Headless agent autonomy
 - Direct subprocess spawn for pipeline roles

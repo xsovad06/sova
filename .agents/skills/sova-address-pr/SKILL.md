@@ -9,7 +9,7 @@ Score each review comment, address all of them (fix or acknowledge with justific
 
 ## CRITICAL: Complete ALL Steps
 
-This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately, so NEVER output a final summary without having completed steps 8-17 first (capture knowledge, squash, rebase, push, reply, resolve, dismiss). If you discover that all findings are already addressed, you MUST still complete steps 8-11 (capture knowledge, squash, rebase and push) to fold in pending documentation and resolve any merge conflicts, then skip to step 12 to handle thread resolution before the summary.
+This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately, so NEVER output a final summary without having completed steps 9-18 first (capture knowledge, squash, rebase, push, reply, resolve, dismiss). If you discover that all findings are already addressed, you MUST still complete steps 9-12 (capture knowledge, squash, rebase and push) to fold in pending documentation and resolve any merge conflicts, then skip to step 13 to handle thread resolution before the summary.
 
 **Incomplete execution is worse than failure**: a run that fixes code but never commits/pushes wastes the cost and leaves the PR unchanged.
 
@@ -28,14 +28,58 @@ This command runs as a headless agent. You MUST execute every step below through
    ```
    Every shell block runs in a fresh shell, so variables do not carry over between blocks: each later block that uses `BASE` or `HEAD_BRANCH` re-assigns them first with the same two `gh pr view` lines (or the literal values printed here).
 
-3. **Verify you are in the correct working directory**: this is the most critical safety check. Working in the wrong directory means modifying the wrong branch and leaving garbage uncommitted changes on main.
+3. **Verify this is your PR and that you can push to it** (STOP if not, before any worktree or commit work happens). A STOP anywhere in this step must end the run as a failure (a non-zero exit / an incomplete-run outcome), never a clean summary: the supervisor's address-cycle counter only increments on a posted `sova-addressed` marker (step 15), so a guard STOP that reports cleanly looks like "nothing to do" and the supervisor respawns the `sova-address-pr` skill on the same PR every poll with no cap on it. Reporting the STOP as a failed run at least makes the repetition visible in the run history; `check_repeated_failures_gate()` does not apply here (it only gates the `researcher` and `developer` roles, never `command:address-pr`), so today only the `already_running` concurrency guard prevents a second simultaneous spawn, and nothing caps the respawn *count* on an unpushable or foreign PR. Closing that gap means wiring `command:address-pr` into `check_repeated_failures_gate()`, which is out of scope for this change.
+
+   a. **Reconcile the GitHub account before resolving identity**, since comparing against the wrong account produces a false "not your PR": `gh auth status` must show the account the project configures as its GitHub user (for SOVA projects, `sova config get github_user` prints it). If it differs, run `gh auth switch --user <github_user>` now, before step b. (Step 4f repeats this same check right before any thread/review write, since a long-running fix can leave time for the active account to drift again.)
+
+   b. Resolve your authenticated login and the PR's author, state, and head repository, and print both so the comparison in step c has an input to compare against (every shell block is fresh, so nothing here survives into the next one):
+      ```bash
+      ERR=$(mktemp)
+      if ! LOGIN=$(gh api user --jq .login 2>"$ERR"); then
+        case "$(cat "$ERR")" in
+          *"Resource not accessible by integration"*|*"HTTP 404"*) LOGIN="" ;;  # identity genuinely unavailable (e.g. a GitHub App token)
+          *) echo "gh api user failed: STOP, identity could not be verified (network/API error or rate limit): $(cat "$ERR")" >&2; rm -f "$ERR"; exit 1 ;;
+        esac
+      fi
+      rm -f "$ERR"
+      echo "Authenticated login: ${LOGIN:-<unresolved>}"
+      gh pr view <PR_NUMBER> --json author,state,isCrossRepository,headRepository,headRepositoryOwner,maintainerCanModify \
+        || { echo "PR metadata fetch failed: STOP" >&2; exit 1; }
+      ```
+      Streams are captured separately so a successful `LOGIN` is never polluted by stderr noise (a deprecation notice, a config warning) that would otherwise make it differ from `author.login` and trigger a false "not your PR" STOP in step c. Only the app-token-unavailable condition (`Resource not accessible by integration`, or a bare 404) resolves to an empty `LOGIN`; every other 403 (secondary rate limiting, a token missing the `user` scope) and any other error STOPs here rather than falling through to an empty `LOGIN`, since treating "could not verify" as "could not find" would silently skip the identity check on a transient or permission blip instead of only on a genuinely unavailable identity.
+
+   c. **Identity check**: compare the printed `Authenticated login` to the PR's `author.login` from step b's output. If `LOGIN` is non-empty and differs from `author.login`, STOP and report "not your PR: authored by `<author.login>`, authenticated as `<LOGIN>`", regardless of push access. If `LOGIN` is empty (identity genuinely unavailable, e.g. a GitHub App token), skip this check and say so explicitly in the guard summary printed in step g; still enforce the state and push-access checks below.
+
+   d. **State check**: `state` must be `OPEN`. A merged or closed PR fails this check even when you authored it: STOP and report the state.
+
+   e. **Head repository check**: if `headRepository` is null (the fork was deleted), STOP and report that the head repository is unavailable, regardless of the checks below.
+
+   f. **Push-access check**, per GitHub's own permission model:
+      - **Same-repo PR** (`isCrossRepository: false`): push access is your permission on the base repository.
+        ```bash
+        gh api repos/<OWNER>/<REPO> --jq .permissions.push
+        ```
+      - **Fork PR** (`isCrossRepository: true`): push access is your permission on the head repository (the fork) OR, when the fork owner enabled "Allow edits from maintainers", your permission on the base repository:
+        ```bash
+        FORK_PUSH=$(gh api repos/<HEAD_OWNER>/<HEAD_REPO> --jq .permissions.push)
+        if [ "$FORK_PUSH" != "true" ] && [ "<maintainerCanModify from step b>" = "true" ]; then
+          FORK_PUSH=$(gh api repos/<OWNER>/<REPO> --jq .permissions.push)
+        fi
+        ```
+        using `headRepositoryOwner.login`/`headRepository.name` from step b. `maintainerCanModify` never grants push access to anyone but a base-repo maintainer; this OR matters mainly when `LOGIN` was empty in step c, since step c already stopped on a PR you did not author whenever identity could be checked.
+
+      If the resulting `permissions.push` (or `FORK_PUSH`) is not `true`, STOP and report that you lack push access to the branch.
+
+   g. Print a one-line guard summary before continuing to step 4: whether the identity check ran or was skipped, the state, and the push-access result.
+
+4. **Verify you are in the correct working directory**: this is the most critical safety check. Working in the wrong directory means modifying the wrong branch and leaving garbage uncommitted changes on main.
 
    a. Check the current branch:
       ```bash
       git branch --show-current
       ```
 
-   b. If the output matches `headRefName` from step 2, you are in the right place. Continue to 3e (the sync and account checks below apply on every path, including this one, so do not skip ahead to step 4).
+   b. If the output matches `headRefName` from step 2, you are in the right place. Continue to 4e (the sync and account checks below apply on every path, including this one, so do not skip ahead to step 5).
 
    c. If they differ, find the worktree for the PR branch:
       ```bash
@@ -45,7 +89,7 @@ This command runs as a headless agent. You MUST execute every step below through
       WORKTREE_PATH=$(git worktree list --porcelain | grep -Fx -B2 "$HEAD_BRANCH_REF" | grep "^worktree " | head -1 | sed 's/^worktree //')
       echo "Worktree: $WORKTREE_PATH"
       ```
-      If `WORKTREE_PATH` is non-empty, navigate into it, verify, and then continue to 3e:
+      If `WORKTREE_PATH` is non-empty, navigate into it, verify, and then continue to 4e:
       ```bash
       HEAD_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName --jq .headRefName)
       cd "<WORKTREE_PATH printed above>"
@@ -69,11 +113,19 @@ This command runs as a headless agent. You MUST execute every step below through
       ```
       Behind and not ahead: `git merge --ff-only "origin/$HEAD_BRANCH"`. Both behind and ahead: STOP and report the divergence rather than guessing which side wins. If work you expected seems missing, check `git stash list` and `git reflog` before concluding it was lost.
 
+      **Confirm the git remote is reachable on the credential that will be used later**: step 3f's `permissions.push` check runs against the `gh` OAuth token, but the push in step 12 is `git push --force-with-lease`, which authenticates over whatever this repo's git remote is configured for (SSH key, credential helper, etc.) and can resolve to a different identity. Since the branch was just synced to its remote above, this dry-run has no ref update to propose (it reports "Everything up-to-date"), so it only proves the credential can reach `git-receive-pack` on the push target: it does NOT exercise a branch-protection rule, which is evaluated only at an actual ref update. Branch-protection rejections still surface only at the real push in step 12. `--no-verify` skips this repo's local pre-push hook (lint/tests/invariants), which would otherwise run here against the unfixed, pre-squash branch and STOP on findings this very command is about to fix; the hook still runs for real at the step 12 push after step 10a's own lint/test/invariant pass. The remote is derived from the branch's configured upstream rather than hardcoded to `origin`, since a fork PR's actual push target (step 3f's cross-repo case) can differ from `origin`:
+      ```bash
+      HEAD_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName --jq .headRefName)
+      REMOTE=$(git config "branch.$HEAD_BRANCH.remote" || echo origin)
+      git push --dry-run --no-verify --force-with-lease "$REMOTE" "$HEAD_BRANCH" \
+        || { echo "Dry-run push failed: STOP, the remote is unreachable on this credential" >&2; exit 1; }
+      ```
+
    f. **Verify the GitHub account** before any thread or review write: `gh auth status` must show the account the project configures as its GitHub user (for SOVA projects, `sova config get github_user` prints it). Resolving threads or dismissing reviews as the wrong account fails with FORBIDDEN after the code is already pushed. If it differs, run `gh auth switch --user <github_user>`.
 
-4. **Classify comment sources**: Separate human reviewer comments from bot comments (e.g., `sourcery-ai[bot]`, `coderabbitai[bot]`). Both get scored the same way, but bot comments are addressed in bulk and may warrant a re-review request.
+5. **Classify comment sources**: Separate human reviewer comments from bot comments (e.g., `sourcery-ai[bot]`, `coderabbitai[bot]`). Both get scored the same way, but bot comments are addressed in bulk and may warrant a re-review request.
 
-5. **Score each comment 1-10**:
+6. **Score each comment 1-10**:
    - 1-2: low-priority: style preference, minor naming, formatting
    - 3-5: moderate: DRY violations, missing edge cases, error handling
    - 6-8: important: potential bugs, missing validation, test gaps
@@ -83,13 +135,13 @@ This command runs as a headless agent. You MUST execute every step below through
 
    For bot suggestions: evaluate critically and don't blindly accept. Bots lack project context and may suggest changes that conflict with project conventions.
 
-6. **Address all findings** (regardless of score): Fix the issue in the code.
+7. **Address all findings** (regardless of score): Fix the issue in the code.
    - If you CANNOT fix it (needs architectural decision, unclear requirements): add to NEEDS_HUMAN_INPUT list.
    - If a finding is a false positive, not applicable in context, or requires a human decision: acknowledge it with a one-line justification instead of fixing. Do not skip findings based on score alone.
 
-7. **Scout check**: while fixing findings, scan each touched file for pre-existing issues (failing tests, lint warnings, dead imports, obvious bugs adjacent to your changes). Fix them alongside the review findings. Keep scout fixes small and low-risk.
+8. **Scout check**: while fixing findings, scan each touched file for pre-existing issues (failing tests, lint warnings, dead imports, obvious bugs adjacent to your changes). Fix them alongside the review findings. Keep scout fixes small and low-risk.
 
-8. **Capture knowledge and documentation updates NOW, before the squash** (MANDATORY):
+9. **Capture knowledge and documentation updates NOW, before the squash** (MANDATORY):
 
    This is the only place in the PR lifecycle where documentation and knowledge
    can be written for free. The branch is about to be squashed and pushed
@@ -103,7 +155,7 @@ This command runs as a headless agent. You MUST execute every step below through
       the PRIMARY checkout, if it exists, holds documentation and knowledge
       that a previous run of the `sova-integrate-pr` skill found missing and
       deferred rather than pushing. This step usually runs inside a per-issue
-      worktree (per step 3 above), not the main checkout, and `.claude/agent-control/` is
+      worktree (per step 4 above), not the main checkout, and `.claude/agent-control/` is
       not mirrored into worktrees, so resolve the primary checkout explicitly
       rather than checking a bare relative path:
       ```bash
@@ -141,7 +193,7 @@ This command runs as a headless agent. You MUST execute every step below through
    These edits are part of the change, not a separate concern: fold them into
    the relevant commit in the next step. Never create a standalone docs commit.
 
-9. **Squash fixes into original commits** (MANDATORY, no fix-on-fix commits):
+10. **Squash fixes into original commits** (MANDATORY, no fix-on-fix commits):
 
    The PR must read as clean feature development. Do NOT create a separate "address review findings" commit: fold each fix into the commit that introduced the code being fixed. The final history should look as if the code was written correctly from the start.
 
@@ -149,7 +201,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
    a. Run the project's linter and tests (see CLAUDE.md for commands). All must pass before proceeding. If the project has pre-push invariant scripts (`invariants/*.sh`), run them too, re-assigning `BASE` first as in step 2 (`for s in invariants/*.sh; do bash "$s" . "$BASE" || echo "FAIL: $s"; done`) and fix every failure: a commit-format or prose invariant that fails only at push time costs a full squash cycle. Never bypass a failing hook with `--no-verify`.
 
-   b. Record the fork point and the original commits for replay, before anything else touches history. The reset below targets the fork point (`git merge-base`), never `origin/$BASE` itself: if the base branch moved since this branch was last rebased, re-committing the branch's tree on top of the newer base would silently revert everything the base gained in between. Step 10 rebases afterwards.
+   b. Record the fork point and the original commits for replay, before anything else touches history. The reset below targets the fork point (`git merge-base`), never `origin/$BASE` itself: if the base branch moved since this branch was last rebased, re-committing the branch's tree on top of the newer base would silently revert everything the base gained in between. Step 11 rebases afterwards.
       ```bash
       BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName)
       FORK_POINT=$(git merge-base HEAD "origin/$BASE")
@@ -200,9 +252,9 @@ This command runs as a headless agent. You MUST execute every step below through
       git reset --hard "$BACKUP"
       ```
 
-   g. Keep the backup branch until the push in step 11 succeeds; it is deleted there, not here.
+   g. Keep the backup branch until the push in step 12 succeeds; it is deleted there, not here.
 
-10. **Rebase onto base branch** to ensure the PR is mergeable after fixes:
+11. **Rebase onto base branch** to ensure the PR is mergeable after fixes:
     ```bash
     BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName)
     git fetch origin || { echo "Fetch failed: STOP, origin/$BASE may be stale" >&2; exit 1; }
@@ -222,11 +274,11 @@ This command runs as a headless agent. You MUST execute every step below through
 
     If rebase was a no-op (already up to date), continue to the next step.
 
-    After a rebase that moved the branch, confirm it did not silently revert the base: `git diff "origin/$BASE"...HEAD --stat` must list only this PR's files, and `bash invariants/silent-revert-guard.sh . "$BASE"` must pass when the project has it. On a failure, restore from the step 9c backup (`git reset --hard "$BACKUP"`) and redo the rebase.
+    After a rebase that moved the branch, confirm it did not silently revert the base: `git diff "origin/$BASE"...HEAD --stat` must list only this PR's files, and `bash invariants/silent-revert-guard.sh . "$BASE"` must pass when the project has it. On a failure, restore from the step 10c backup (`git reset --hard "$BACKUP"`) and redo the rebase.
 
-11. **Push and wait for CI** (MANDATORY, do not skip):
+12. **Push and wait for CI** (MANDATORY, do not skip):
    ```bash
-   BACKUP=<backup branch printed in step 9c>
+   BACKUP=<backup branch printed in step 10c>
    git push --force-with-lease && git branch -D "$BACKUP"
    ```
    The backup branch is deleted only once the push has succeeded. If the push fails, keep it and report its name.
@@ -239,17 +291,50 @@ This command runs as a headless agent. You MUST execute every step below through
 
    **Run each poll loop as a synchronous foreground command**, never as a background task: in headless mode nothing resumes you when a background task finishes, and ending a turn without a tool call ends the run. The Bash tool caps a single call at 10 minutes (600000 ms) and defaults to 2, so pass an explicit `timeout` of at least 540000 ms on every poll call, and keep each call to at most 16 polls of 30 seconds (8 minutes). When a call ends with checks still pending, start another call the same way, until every check completes or the 30 minute total is used up.
 
-   **If checks are still pending when the 30 minutes are used up**, that is not a failure: continue to step 12. The fixes are pushed, so the review threads and the address summary must still be written; stopping here would leave every fixed thread open on the PR. Record the head SHA and the names of the checks still pending, state in the step 14 summary that CI was still running on that commit, and report it in step 17. The `sova-integrate-pr` skill re-checks CI before merging, so an unfinished run is never merged unverified.
+   **If checks are still pending when the 30 minutes are used up**, that is not a failure: continue to step 13. The fixes are pushed, so the review threads and the address summary must still be written; stopping here would leave every fixed thread open on the PR. Record the head SHA and the names of the checks still pending, state in the step 15 summary that CI was still running on that commit, and report it in step 18. The `sova-integrate-pr` skill re-checks CI before merging, so an unfinished run is never merged unverified.
 
-   **If any check fails**: fetch the failure logs, analyze, fix the code, re-push, and re-poll (max 2 retries):
-   ```bash
-   gh run view <RUN_ID> --log-failed
-   ```
+   **If any check fails**: gather failure evidence, trying progressively looser sources until one actually produces text (GitHub Actions is not the only CI backend a project may run, but it is still the common case, so the GitHub Actions log stays in the chain rather than being replaced):
+
+   1. **Project hook**: prefer the project's own `.claude/scripts/ci-failures.sh` hook when it exists and is executable (mirroring the `prepush-check.sh` pattern in the `sova-pr` skill). It takes the PR number as its only argument and prints failure text to stdout; a non-zero exit or empty stdout means "no evidence from this source", not an error to react to. This step usually runs inside a per-issue worktree (per step 4), and an untracked project hook exists only in the primary checkout, so resolve it from there rather than a bare relative path:
+      ```bash
+      COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+      case "$COMMON_DIR" in
+        /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;;   # linked worktree
+        *)  PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;;  # already primary
+      esac
+      HOOK="$PRIMARY_ROOT/.claude/scripts/ci-failures.sh"
+      if [ -x "$HOOK" ]; then
+        "$HOOK" <PR_NUMBER>
+      fi
+      ```
+   2. **GitHub Actions log**: when the hook is absent, not executable, or produced nothing, and a failing check's `link` points at a GitHub Actions run, read that run's own failed-step log directly. Every job in the same workflow run shares one run id, so run ids are deduplicated before fetching and each log is capped, mirroring `get_ci_failure_logs()` in `sova/git/pr.py`:
+      ```bash
+      FAILED=$(gh pr checks <PR_NUMBER> --json name,bucket,link \
+        --jq '.[] | select(.bucket == "fail" or .bucket == "cancel") | "\(.name)\t\(.link)"') || true
+      printf '%s\n' "$FAILED" | cut -f2 | sed -n 's#.*/actions/runs/\([0-9]\{1,\}\).*#\1#p' | sort -u | \
+      while read -r RUN_ID; do
+        [ -n "$RUN_ID" ] || continue
+        echo "=== run $RUN_ID ==="
+        gh run view "$RUN_ID" --log-failed | tail -c 8000
+      done
+      printf '%s\n' "$FAILED" | while IFS=$'\t' read -r NAME LINK; do
+        [ -n "$NAME" ] || continue
+        case "$LINK" in
+          */actions/runs/*) ;;  # already covered by the run-id loop above
+          *) echo "$NAME: $LINK (not a GitHub Actions run, no log available from this source)" ;;
+        esac
+      done
+      ```
+      `gh pr checks` exits non-zero by design whenever any check is failing (this is the only branch this block runs in), so the `|| true` above is expected and does not mean the capture failed; only an empty `$FAILED` means no evidence came from this call.
+   3. **Name and link only**: when neither (1) nor (2) produced a failure *log* (a bare `NAME: LINK ...` line from the second loop's `else` branch does not count as log text), you have no failure text to diagnose from. Do not guess a fix from the name alone: stop, report each failing check's name and link (from `$FAILED` above), and leave it for a human to investigate.
+
+   Only analyze, fix the code, re-push, and re-poll (max 2 retries) when (1) or (2) gave you actual failure text to diagnose from.
+
    Common CI failures: commit-format invariant (wrong scope/type), test timeouts, lint errors, SonarCloud coverage.
 
-   **Only a failing check blocks step 12.** Continue when all required checks pass, or when the 30 minute wait ran out with checks still pending (see above). If checks are still failing after 2 retries, report the specific failures and stop. Do not proceed to reply/resolve steps with a red CI.
+   **Only a failing check blocks step 13.** Continue when all required checks pass, or when the 30 minute wait ran out with checks still pending (see above). If checks are still failing after 2 retries, report the specific failures and stop. Do not proceed to reply/resolve steps with a red CI.
 
-12. **Fetch all unresolved review threads** using GraphQL (`--paginate` follows `endCursor`, so a PR with more than 100 threads is not silently truncated):
+13. **Fetch all unresolved review threads** using GraphQL (`--paginate` follows `endCursor`, so a PR with more than 100 threads is not silently truncated):
     ```bash
     gh api graphql --paginate -f owner='<OWNER>' -f repo='<REPO>' -F pr=<PR_NUMBER> -f query='
       query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
@@ -271,9 +356,9 @@ This command runs as a headless agent. You MUST execute every step below through
         }
       }'
     ```
-    Keep every thread with `isResolved: false`, **including outdated ones**. GitHub marks a thread outdated as soon as a push changes the lines it is anchored to, which is exactly what fixing it does, so after step 11's push most of the threads you just fixed are outdated; dropping them leaves them open on the PR. Match each thread to a finding by `path` plus `line`, falling back to `originalLine` when `line` is null (it always is on an outdated thread), and by the comment body when two threads share a location. A reviewer can post the same finding as more than one thread: every duplicate still needs its own reply and resolve in step 13, and the same reply text is fine. Also keep every thread with `isResolved: true` and `comments.totalCount` of 1 that matches one of this PR's findings: someone resolved it without a reply, so step 13 still posts the reply (it needs no re-resolve). Use `author.__typename` to classify thread authors: `Bot` for automated reviewers, `User` for humans. If `__typename` is absent, fall back to checking whether `login` ends with `[bot]`.
+    Keep every thread with `isResolved: false`, **including outdated ones**. GitHub marks a thread outdated as soon as a push changes the lines it is anchored to, which is exactly what fixing it does, so after step 12's push most of the threads you just fixed are outdated; dropping them leaves them open on the PR. Match each thread to a finding by `path` plus `line`, falling back to `originalLine` when `line` is null (it always is on an outdated thread), and by the comment body when two threads share a location. A reviewer can post the same finding as more than one thread: every duplicate still needs its own reply and resolve in step 14, and the same reply text is fine. Also keep every thread with `isResolved: true` and `comments.totalCount` of 1 that matches one of this PR's findings: someone resolved it without a reply, so step 14 still posts the reply (it needs no re-resolve). Use `author.__typename` to classify thread authors: `Bot` for automated reviewers, `User` for humans. If `__typename` is absent, fall back to checking whether `login` ends with `[bot]`.
 
-13. **Reply to each thread, then resolve all of them** (MANDATORY: this is what unblocks the PR):
+14. **Reply to each thread, then resolve all of them** (MANDATORY: this is what unblocks the PR):
 
     For each unresolved thread, post an inline reply explaining the disposition, then resolve it, regardless of author (bot or human) or disposition (Fixed or Acknowledged). Replying is always required; skipping replies leaves reviewers unclear on what was done. The PR must end with zero unresolved conversations so it reads as ready to merge.
 
@@ -293,7 +378,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
     Reply to every thread, then resolve every thread: bot and human reviewers alike, Fixed and Acknowledged findings alike. A PR must show zero unresolved conversations before merge; leaving "Acknowledged" human threads open only creates unnecessary back-and-forth for the reviewer.
 
-14. **Post the address summary as a COMMENT review** on the PR with all dispositions in one table. The first line MUST be the `sova-addressed` marker carrying the pushed head commit: the dashboard reads it from the PR's review list to learn that the standing SOVA verdict has been addressed. A plain `gh pr comment` is invisible to that check and leaves the PR stuck at "SOVA Changes Requested".
+15. **Post the address summary as a COMMENT review** on the PR with all dispositions in one table. The first line MUST be the `sova-addressed` marker carrying the pushed head commit: the dashboard reads it from the PR's review list to learn that the standing SOVA verdict has been addressed. A plain `gh pr comment` is invisible to that check and leaves the PR stuck at "SOVA Changes Requested".
 
     ```bash
     HEAD_SHA=$(git rev-parse HEAD)
@@ -327,7 +412,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
     Keep the Action column SHORT and DIRECT. No filler words, no emojis.
 
-15. **Dismiss bot CHANGES_REQUESTED reviews** (mandatory when any bot review is in CHANGES_REQUESTED state after addressing findings):
+16. **Dismiss bot CHANGES_REQUESTED reviews** (mandatory when any bot review is in CHANGES_REQUESTED state after addressing findings):
 
     Fetch bot reviews that are still CHANGES_REQUESTED:
     ```bash
@@ -342,10 +427,10 @@ This command runs as a headless agent. You MUST execute every step below through
 
     **Never dismiss human reviews**: only bot reviews (`user.type == "Bot"`) whose findings have been addressed.
 
-16. **Request bot re-review** (only if bot comments were addressed AND the cycle cap allows it). Every re-review trigger produces a fresh round of bot findings and a new address run, so an uncapped loop burns tokens on both sides. The cap is the same `pipeline.max_address_review_cycles` that bounds the autonomous address-review pipeline (default 3; 0 means unlimited). Read it from the primary checkout's SOVA database (this command usually runs inside a worktree).
+17. **Request bot re-review** (only if bot comments were addressed AND the cycle cap allows it). Every re-review trigger produces a fresh round of bot findings and a new address run, so an uncapped loop burns tokens on both sides. The cap is the same `pipeline.max_address_review_cycles` that bounds the autonomous address-review pipeline (default 3; 0 means unlimited). Read it from the primary checkout's SOVA database (this command usually runs inside a worktree).
 
     This block is self-contained: each bash invocation is a fresh shell, so it
-    recomputes the round rather than reusing step 14's variable. Step 14 has
+    recomputes the round rather than reusing step 15's variable. Step 15 has
     already posted this round's summary, so the marker count now equals the
     round just completed. Both values are forced to digits before any numeric
     comparison, since the setting is stored as JSON (a string value would
@@ -395,13 +480,13 @@ This command runs as a headless agent. You MUST execute every step below through
       echo "Bot re-review skipped: address cycle cap reached ($ROUND of $MAX_CYCLES)"
     fi
     ```
-    Set `SOURCERY_ADDRESSED=1` / `CODERABBIT_ADDRESSED=1` based on whether step 4-6 addressed at least one finding from that bot on this PR; leave a variable unset (or `0`) when the bot posted no comments this round. Only request re-review for bots whose comments were actually addressed. When the cap skips the trigger, say so in the step 17 summary so the next reviewer knows the cap ended the loop, not a clean pass.
+    Set `SOURCERY_ADDRESSED=1` / `CODERABBIT_ADDRESSED=1` based on whether step 5-7 addressed at least one finding from that bot on this PR; leave a variable unset (or `0`) when the bot posted no comments this round. Only request re-review for bots whose comments were actually addressed. When the cap skips the trigger, say so in the step 18 summary so the next reviewer knows the cap ended the loop, not a clean pass.
 
-17. **Print summary**:
+18. **Print summary**:
     - Table: | Comment | Source | Score | Action |
     - Source column distinguishes human vs bot reviewers
     - Status: `ALL_RESOLVED` or `NEEDS_HUMAN_INPUT` (with bullet list of items needing input)
-    - When step 11's wait ran out with checks still pending, say so: the head SHA and the pending check names
+    - When step 12's wait ran out with checks still pending, say so: the head SHA and the pending check names
 
 ## Cross-References
 

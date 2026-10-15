@@ -194,7 +194,7 @@ REVIEW_JSON
 
 **Scoring guidance**: bump to 3+ (not 1-2) if the finding removes code/duplication, improves error handling, fixes misleading docs, or eliminates dead code. Reserve 1-2 only for purely subjective preferences (naming, comment wording, formatting not caught by linter).
 
-Read the severity thresholds from the primary checkout's SOVA database (this command usually runs inside a worktree), mirroring the `sova-address-pr` skill step 16's pattern. Findings at or above `REVISE_AT` block the verdict and get inline comments; findings below it are advisory (body text only, never discarded).
+Read the severity thresholds from the primary checkout's SOVA database (this command usually runs inside a worktree), mirroring the `sova-address-pr` skill step 17's pattern. Findings at or above `REVISE_AT` block the verdict and get inline comments; findings below it are advisory (body text only, never discarded).
 
 This block resolves the thresholds exactly once and saves them to `${ARTIFACT_PREFIX}-thresholds.sh`, so every later block (Step 7 and its fallbacks) sources identical values instead of re-reading the database. It then formats the review body through the shared SOVA formatter and saves it to `${ARTIFACT_PREFIX}-body.md`:
 

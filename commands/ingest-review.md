@@ -52,9 +52,9 @@ Parse structured review findings from TaskRun records and update agent memory.
    "
    ```
 
-3. If the output is `NO_FINDINGS`, report "No reviewer findings found for PR #N" and stop.
+3. If the output is `NO_FINDINGS`, do not stop here: the SOVA reviewer may simply not have run a TaskRun for this PR while external reviewers (CodeRabbit, human reviewers) still left comments. Continue to step 4 (there is nothing to parse from this source, so skip it) and step 5. Only report "No reviewer findings found for PR #N (no SOVA reviewer TaskRun and no external review comments)" and stop if step 5 also finds nothing.
 
-4. Parse the `pending_findings` array from the handoff JSON. Each finding has:
+4. Parse the `pending_findings` array from the handoff JSON (skip this step if step 2 returned `NO_FINDINGS`). Each finding has:
    - `file`: file path
    - `line`: line number
    - `severity`: 1-10 score
@@ -68,12 +68,19 @@ Parse structured review findings from TaskRun records and update agent memory.
    be fetched separately via the PR review-comments API:
    ```bash
    gh pr view <PR_NUMBER> --json reviews,comments --jq '(.reviews[] | {author: .author.login, state: .state, body: .body}), (.comments[] | {author: .author.login, body: .body})'
-   gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/comments --jq '.[] | {author: .user.login, path: .path, line: .line, body: .body}'
+   gh api --paginate repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/comments --jq '.[] | {author: .user.login, path: .path, line: .line, body: .body}'
    ```
+   `--paginate` matters here: a CodeRabbit review on a sizable PR routinely exceeds the API's default 30-per-page limit, and without it everything past the first page is silently dropped.
+
+   **Normalize each external comment into the same `{file, line, severity, category, description}` shape step 4's findings use**, so steps 6-9 have a defined input on this path too (an external comment has no `severity`/`category` field of its own):
+   - `file`/`line`: the inline comment's `path`/`line` fields above; a top-level review body with no inline anchor has neither.
+   - `severity`/`category`: derive from a stated reviewer label where one exists (CodeRabbit's `_Critical_`/`_Major_`/`_Minor_` or its `_Potential issue_` marker map to roughly 8/5/4 and category `bug`), otherwise default to severity 4, category `style` for unlabelled human prose. Do not use LLM summarization to invent a severity the comment never stated (the Rules section below forbids LLM summarization for parsing structured data; this default is how an unstructured comment still gets a defined, documented value rather than an improvised one).
+   - `description`: the comment body itself.
 
 6. Classify findings into memory categories:
    - **Severity >= 7**: likely a "common_mistake", so check `.claude/agent-memory/common-mistakes.md` (or the cookbook's mistakes section) for existing entries
-   - **Severity 4-6 with "style" or "naming" category**: "style preference"
+   - **Severity 1-6 with "style" or "naming" category**: "style preference"
+   - **Severity 4-6 with "bug" category**: "review pattern" worth codifying
    - **Repeated patterns across findings**: "review pattern" worth codifying
    - **Test-related findings**: "test coverage gap"
 
