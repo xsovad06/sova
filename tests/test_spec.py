@@ -1193,6 +1193,23 @@ class TestSpecService:
         assert questions[0]["text"] == "Which approach?"
         assert questions[0]["answer"] == "Option 1 A: use POST"
 
+    def test_extract_open_questions_qa_no_question_text(self) -> None:
+        """Pinning: a degenerate 'Q: A: answer' line with no question text is kept unsplit.
+
+        The original ``^Q:\\s*(.+?)\\s+A:\\s*(.+)$`` regex requires a
+        non-empty question-text group before the whitespace-A: separator;
+        with only one space between 'Q:' and 'A:' there is no room for
+        both, so the regex never matched and the whole line was kept as
+        the question text with no answer extracted.
+        """
+        from sova.dashboard.services.spec_service import _extract_open_questions
+
+        text = "## Open Questions\n\n- Q: A: some answer\n"
+        questions = _extract_open_questions(text)
+        assert len(questions) == 1
+        assert questions[0]["text"] == "A: some answer"
+        assert questions[0]["answer"] == ""
+
     def test_extract_open_questions_qa_regex_adversarial(self) -> None:
         """python:S8786 pinning: no super-linear backtrack on a long run with no ' A:'."""
         import time
