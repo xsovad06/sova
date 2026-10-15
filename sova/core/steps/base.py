@@ -73,7 +73,7 @@ class BaseStep(ABC):
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Validate that the step produced acceptable output."""
 
-    async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:  # noqa: RUF029
+    async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:  # noqa: RUF029  # NOSONAR(S7503)
         """Heavyweight verification pass after the structural gate passes.
 
         Override in subclasses that need expensive verification (e.g., running
@@ -84,7 +84,7 @@ class BaseStep(ABC):
         """
         return GateCheckResult(passed=True)
 
-    async def can_skip(self, ctx: ExecutionContext) -> bool:  # noqa: RUF029
+    async def can_skip(self, ctx: ExecutionContext) -> bool:  # noqa: RUF029  # NOSONAR(S7503)
         """Whether this step can be skipped for the given context.
 
         Default: skip if this step already passed in a prior run (resume).
