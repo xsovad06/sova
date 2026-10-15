@@ -202,6 +202,53 @@ def _resolve_pr(script: str, pulls: object, head_sha: str, tmp_path: Path) -> di
     return parsed
 
 
+def _report_check_result(script: str, env_overrides: dict[str, str], tmp_path: Path) -> str | None:
+    """Execute the terminal "Report check result" step against a stubbed `gh`.
+
+    Returns the `conclusion` value passed to the Checks API PATCH call, or
+    None if `gh` was never invoked. The stub always succeeds, so this pins the
+    if/elif ordering behaviourally: a reordered or inverted branch changes
+    which conclusion is recorded, unlike a substring assertion over the
+    surrounding text.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    argv_file = tmp_path / "gh_argv"
+    gh = bin_dir / "gh"
+    gh.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{argv_file}"\nexit 0\n')
+    gh.chmod(0o755)
+
+    defaults = {
+        "CI_CONCLUSION": "success",
+        "JOB_STATUS": "success",
+        "ARTIFACT_OUTCOME": "success",
+        "COVERAGE_PRESENT": "true",
+        "BASELINE_VERDICT": "success",
+        "TOKEN_AVAILABLE": "true",
+        "PR_GUARD_RESOLVABLE": "true",
+        "SCAN_OUTCOME": "success",
+    }
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "REPO": "xsovad06/sova",
+            "CHECK_ID": "123",
+            **defaults,
+            **env_overrides,
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    if not argv_file.exists():
+        return None
+    match = re.search(r"-f conclusion=(\S+)", argv_file.read_text())
+    return match.group(1) if match else None
+
+
 def _run_detector(*args: str, stdin: str = "", **env: str) -> subprocess.CompletedProcess[str]:
     """Run the detector script with a controlled environment."""
     child_env = {**os.environ, **env}
@@ -681,7 +728,10 @@ class TestSonarCloudWorkflowGate:
         updating main's own branch analysis.
         """
         block = _between(sonar_text, "- name: Resolve PR for this run's head commit", "- uses: actions/checkout@v4")
-        assert "if: github.event.workflow_run.event == 'pull_request'" in block
+        assert (
+            "if: github.event.workflow_run.conclusion == 'success' "
+            "&& github.event.workflow_run.event == 'pull_request'" in block
+        )
 
     @pytest.mark.parametrize(
         ("label", "pulls", "head_sha", "expected"),
@@ -821,6 +871,72 @@ class TestSonarCloudWorkflowGate:
         """A push to main has no PR context, only a branch."""
         assert "sonar.branch.name={0}" in sonar_text
         assert "github.event.workflow_run.head_branch" in sonar_text
+
+    def test_docs_only_skip_is_justified_by_a_green_sonarcloud_run(self, sonar_text: str) -> None:
+        """A SonarCloud skip must be justified by a green SonarCloud run, not a green CI run.
+
+        ci.yml's own baseline for the docs-only skip is the last successful
+        run of CI itself, which succeeds independently of the SonarCloud
+        quality gate. Without mirroring the baseline commit's own
+        "SonarCloud Analysis" check, a docs-only amend on top of a commit
+        whose quality gate failed would flip the required check green with
+        the scanner never consulted again.
+        """
+        assert "Resolve baseline verdict for docs-only skip" in sonar_text
+        assert '[.check_runs[] | select(.name == "SonarCloud Analysis")]' in sonar_text
+        block = _between(sonar_text, '"$COVERAGE_PRESENT" != "true"', 'elif [ "$TOKEN_AVAILABLE"')
+        assert '"$BASELINE_VERDICT" = "none"' in block
+        assert '"$BASELINE_VERDICT" = "success"' in block
+
+    @pytest.mark.parametrize(
+        ("label", "overrides", "expected"),
+        [
+            ("non-success CI run", {"CI_CONCLUSION": "failure"}, "failure"),
+            ("CI run cancelled", {"CI_CONCLUSION": "cancelled"}, "failure"),
+            ("a step above failed", {"JOB_STATUS": "failure"}, "failure"),
+            ("this job was cancelled", {"JOB_STATUS": "cancelled"}, "cancelled"),
+            ("coverage artifact undownloadable", {"ARTIFACT_OUTCOME": "failure"}, "failure"),
+            (
+                "docs-only skip, baseline SonarCloud run was green",
+                {"COVERAGE_PRESENT": "false", "BASELINE_VERDICT": "success"},
+                "success",
+            ),
+            (
+                "docs-only skip, no earlier scanned commit",
+                {"COVERAGE_PRESENT": "false", "BASELINE_VERDICT": "none"},
+                "success",
+            ),
+            (
+                "docs-only skip, baseline SonarCloud run failed",
+                {"COVERAGE_PRESENT": "false", "BASELINE_VERDICT": "failure"},
+                "failure",
+            ),
+            ("SONAR_TOKEN missing", {"TOKEN_AVAILABLE": "false"}, "neutral"),
+            ("PR could not be resolved", {"PR_GUARD_RESOLVABLE": "false"}, "neutral"),
+            ("scan reported success", {"SCAN_OUTCOME": "success"}, "success"),
+            ("scan reported failure", {"SCAN_OUTCOME": "failure"}, "failure"),
+        ],
+    )
+    def test_reporter_outcome_matrix(
+        self,
+        sonar_text: str,
+        label: str,
+        overrides: dict[str, str],
+        expected: str,
+        tmp_path: Path,
+    ) -> None:
+        """Executed against the real branch ordering, not pattern-matched.
+
+        A substring assertion over a slice of the text (the prior approach)
+        cannot detect a reordered or inverted branch: moving the
+        COVERAGE_PRESENT branch above ARTIFACT_OUTCOME, for instance, still
+        contains every substring those tests look for. Running the step for
+        real against each point in the outcome matrix pins the ordering
+        behaviourally.
+        """
+        script = _step_script(sonar_text, "Report check result")
+        conclusion = _report_check_result(script, overrides, tmp_path)
+        assert conclusion == expected, label
 
     def test_no_install_or_test_steps_remain(self, sonar_text: str) -> None:
         """This job must only consume CI's artifact, never re-run the suite."""
