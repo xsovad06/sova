@@ -411,8 +411,28 @@ class TestManifest:
         """file_hash() returns consistent SHA-256 for file content."""
         from sova.commands.manifest import file_hash
 
-        assert file_hash("hello world\n") == file_hash("hello world\n")
+        first = file_hash("hello world\n")
+        second = file_hash("hello world\n")
+        assert first == second
         assert file_hash("a") != file_hash("b")
+
+    def test_frontmatter_re_pinned(self) -> None:
+        from sova.commands.catalog import _FRONTMATTER_RE
+
+        m = _FRONTMATTER_RE.match("---\nname: foo\ndescription: bar\n---\nBody content")
+        assert m is not None
+        assert m.group(1) == "name: foo\ndescription: bar"
+
+    def test_frontmatter_re_adversarial(self) -> None:
+        """python:S8786 pinning: no super-linear backtrack with no closing fence."""
+        import time
+
+        from sova.commands.catalog import _FRONTMATTER_RE
+
+        text = "---\n" + ("key: " + "a" * 2000 + "\n") * 10
+        start = time.monotonic()
+        _FRONTMATTER_RE.match(text)
+        assert time.monotonic() - start < 2.0
 
 
 # ---------------------------------------------------------------------------

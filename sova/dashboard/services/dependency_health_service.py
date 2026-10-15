@@ -41,9 +41,11 @@ _OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
 _NPM_REGISTRY_URL = "https://registry.npmjs.org/{name}"
 _PYPI_REGISTRY_URL = "https://pypi.org/pypi/{name}/json"
 
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+_VERSION_RE = re.compile(r"(?>(\d+))\.(?>(\d+))\.(?>(\d+))")
 _NPM_RANGE_PREFIX_RE = re.compile(r"^[\^~>=<\s]+")
-_REQUIREMENT_RE = re.compile(r"^([A-Za-z0-9_.\-]+)\s*(?:\[[^\]]*\])?\s*(==|>=|<=|~=)\s*([A-Za-z0-9_.\-]+)")
+_REQUIREMENT_RE = re.compile(
+    r"^(?>([A-Za-z0-9_.\-]+))(?>\s*)(?:\[(?>[^\]]*)\])?(?>\s*)(==|>=|<=|~=)(?>\s*)(?>([A-Za-z0-9_.\-]+))"
+)
 _PEP508_NAME_RE = re.compile(r"^([A-Za-z0-9_.\-]+)")
 
 # Bounded LRU: caps memory growth from projects that are renamed or unregistered

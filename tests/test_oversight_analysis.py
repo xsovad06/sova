@@ -868,6 +868,19 @@ class TestComputeFingerprint:
         fp2 = compute_fingerprint("high cpu", "global", "")
         assert fp1 == fp2
 
+    def test_normalizes_decimal_percentages(self) -> None:
+        """python:S8786 pinning: the digit-dot-digit-percent regex still normalizes decimals."""
+        fp1 = compute_fingerprint("CPU at 85.5%", "global", "")
+        fp2 = compute_fingerprint("CPU at 92.25%", "global", "")
+        assert fp1 == fp2
+
+    def test_percent_regex_adversarial(self) -> None:
+        import time
+
+        start = time.monotonic()
+        compute_fingerprint("CPU at " + "9" * 20000 + "% usage", "global", "")
+        assert time.monotonic() - start < 2.0
+
     def test_different_titles_differ(self) -> None:
         fp1 = compute_fingerprint("CPU issue", "global", "")
         fp2 = compute_fingerprint("Memory issue", "global", "")

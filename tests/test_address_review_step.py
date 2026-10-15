@@ -13,6 +13,7 @@ error surfaced anywhere.
 
 from __future__ import annotations
 
+import time
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -622,3 +623,86 @@ class TestGithubReviewFindingsSkipAddressSummaries:
 
         assert len(findings) == 1
         assert findings[0]["file"] == "a.py"
+
+
+# ---------------------------------------------------------------------------
+# Regex pinning + adversarial-input tests (issue #1193, python:S8786).
+# Each regex below was rewritten to remove a super-linear backtracking shape
+# while matching exactly what it matched before; these tests pin that.
+# ---------------------------------------------------------------------------
+
+
+class TestAddressReviewRegexesPinned:
+    def test_section_heading_re_pinned(self) -> None:
+        from sova.core.steps.address_review import _SECTION_HEADING_RE
+
+        body = "### Findings  \nsome body\n### Summary\nmore"
+        headings = list(_SECTION_HEADING_RE.finditer(body))
+        assert [h.group(1).rstrip() for h in headings] == ["Findings", "Summary"]
+
+    def test_section_heading_re_adversarial(self) -> None:
+        from sova.core.steps.address_review import _SECTION_HEADING_RE
+
+        body = "### " + "a " * 20000
+        start = time.monotonic()
+        list(_SECTION_HEADING_RE.finditer(body))
+        assert time.monotonic() - start < 2.0
+
+    def test_fix_split_re_pinned(self) -> None:
+        from sova.core.steps.address_review import _FIX_SPLIT_RE
+
+        parts = _FIX_SPLIT_RE.split("Description text   Fix:   suggestion", maxsplit=1)
+        assert parts == ["Description text", "suggestion"]
+
+    def test_fix_split_re_adversarial(self) -> None:
+        from sova.core.steps.address_review import _FIX_SPLIT_RE
+
+        text = "a" * 20000 + " " * 20000
+        start = time.monotonic()
+        _FIX_SPLIT_RE.split(text, maxsplit=1)
+        assert time.monotonic() - start < 2.0
+
+    def test_legacy_header_re_pinned(self) -> None:
+        from sova.core.steps.address_review import _LEGACY_HEADER_RE
+
+        sep = "-" * 2  # avoid a literal double-dash separator in test source
+        m = _LEGACY_HEADER_RE.match(f"**[HIGH] Category Name {sep} Description with {sep} a dash**")
+        assert m is not None
+        assert m.groups() == ("HIGH", "Category Name", f"Description with {sep} a dash")
+
+    def test_legacy_header_re_adversarial(self) -> None:
+        from sova.core.steps.address_review import _LEGACY_HEADER_RE
+
+        text = "[HIGH] " + "a " * 20000
+        start = time.monotonic()
+        _LEGACY_HEADER_RE.match(text)
+        assert time.monotonic() - start < 2.0
+
+    def test_inline_comment_head_re_pinned(self) -> None:
+        from sova.core.steps.address_review import _INLINE_COMMENT_HEAD_RE
+
+        text = "**[HIGH] bug**: the description"
+        stripped = _INLINE_COMMENT_HEAD_RE.sub("", text, count=1)
+        assert stripped == "the description"
+
+    def test_inline_comment_head_re_adversarial(self) -> None:
+        from sova.core.steps.address_review import _INLINE_COMMENT_HEAD_RE
+
+        text = "**[HIGH] " + "a" * 20000
+        start = time.monotonic()
+        _INLINE_COMMENT_HEAD_RE.match(text)
+        assert time.monotonic() - start < 2.0
+
+    def test_inline_suggestion_re_pinned(self) -> None:
+        from sova.core.steps.address_review import _INLINE_SUGGESTION_RE
+
+        parts = _INLINE_SUGGESTION_RE.split("description\n\n**Suggestion**: fix it", maxsplit=1)
+        assert parts == ["description", "fix it"]
+
+    def test_inline_suggestion_re_adversarial(self) -> None:
+        from sova.core.steps.address_review import _INLINE_SUGGESTION_RE
+
+        text = "\n" * 20000
+        start = time.monotonic()
+        _INLINE_SUGGESTION_RE.split(text, maxsplit=1)
+        assert time.monotonic() - start < 2.0

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -775,3 +776,43 @@ class TestRenderSelfSkills:
         assert (target / "sova-foo" / "SKILL.md").is_file()
         assert (target / "bar" / "SKILL.md").is_file()
         assert (target / ".sova-manifest.json").is_file()
+
+
+class TestFrontmatterNameLineRePinned:
+    """python:S8786 regex pinning for _FRONTMATTER_NAME_LINE_RE (issue #1193)."""
+
+    def _declared_name(self, line: str) -> str | None:
+        from sova.commands.skill_render import _FRONTMATTER_NAME_LINE_RE
+
+        match = _FRONTMATTER_NAME_LINE_RE.match(line.rstrip())
+        if not match:
+            return None
+        return match.group(2) if match.group(2) is not None else match.group(3)
+
+    def test_bare_name(self) -> None:
+        assert self._declared_name("name: foo-bar") == "foo-bar"
+
+    def test_bare_name_trailing_whitespace_trimmed(self) -> None:
+        assert self._declared_name("name:   foo-bar_baz  \n") == "foo-bar_baz"
+
+    def test_single_quoted_name(self) -> None:
+        assert self._declared_name("name: 'foo'") == "foo"
+
+    def test_double_quoted_name(self) -> None:
+        assert self._declared_name('name: "foo"') == "foo"
+
+    def test_quoted_name_with_trailing_whitespace(self) -> None:
+        assert self._declared_name("name: 'foo bar'  ") == "foo bar"
+
+    def test_non_name_line_does_not_match(self) -> None:
+        assert self._declared_name("description: something") is None
+
+    def test_adversarial_long_unquoted_value(self) -> None:
+        start = time.monotonic()
+        self._declared_name("name: " + "a" * 20000)
+        assert time.monotonic() - start < 2.0
+
+    def test_adversarial_long_quoted_value(self) -> None:
+        start = time.monotonic()
+        self._declared_name("name: '" + "a" * 20000 + "'")
+        assert time.monotonic() - start < 2.0

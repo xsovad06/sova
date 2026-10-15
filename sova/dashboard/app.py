@@ -1041,7 +1041,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
             from sova.cli.commands.project import _uninstall
 
             try:
-                failures = await _uninstall(
+                failures = _uninstall(
                     path=project_path,
                     remove_commands=req.remove_commands,
                     remove_rules=req.remove_rules,

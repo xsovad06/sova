@@ -435,18 +435,16 @@ def uninstall(
     By default keeps commands, rules, memory, and config. Use --remove-* flags to opt in to deleting them.
     Database and ephemeral files (worktrees, agent-control) are always removed.
     """
-    asyncio.run(
-        _uninstall(
-            path=path,
-            remove_commands=remove_commands,
-            remove_rules=remove_rules,
-            remove_memory=remove_memory,
-            remove_config=remove_config,
-        )
+    _uninstall(
+        path=path,
+        remove_commands=remove_commands,
+        remove_rules=remove_rules,
+        remove_memory=remove_memory,
+        remove_config=remove_config,
     )
 
 
-async def _uninstall(
+def _uninstall(
     *,
     path: Path | None,
     remove_commands: bool = False,

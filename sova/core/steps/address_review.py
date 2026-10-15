@@ -90,8 +90,8 @@ _FINDING_LINE_RE = re.compile(
     r"^-\s+\*\*\[\w+\s+(?P<severity>\d+)/10\]\*\*\s*"
     r"\[(?P<category>[^\]]*)\]\s*`(?P<location>[^`]*)`:\s*(?P<rest>.*)$"
 )
-_SECTION_HEADING_RE = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
-_FIX_SPLIT_RE = re.compile(r"\s+Fix:\s+")
+_SECTION_HEADING_RE = re.compile(r"^###\s+(.*)$", re.MULTILINE)
+_FIX_SPLIT_RE = re.compile(r"(?>\s+)Fix:(?>\s+)")
 
 
 _LINE_RANGE_RE = re.compile(r"^\d+\s*-\s*\d+$")
@@ -127,7 +127,7 @@ def _extract_markdown_sections(body: str) -> dict[str, list[str]]:
     for i, m in enumerate(headings):
         start = m.end()
         end = headings[i + 1].start() if i + 1 < len(headings) else len(body)
-        sections.setdefault(m.group(1), []).append(body[start:end])
+        sections.setdefault(m.group(1).rstrip(), []).append(body[start:end])
     return sections
 
 
@@ -162,7 +162,7 @@ _LEGACY_SEVERITY_MAP = {"CRITICAL": 10, "HIGH": 9, "MEDIUM": 6, "LOW": 3}
 # hand-written human reviews that follow SOVA's original documented layout:
 # a bracketed severity, a category, a dash-dash separator, a description,
 # then optional "Location:", "Problem:", and "Suggestion:" fields.
-_LEGACY_HEADER_RE = re.compile(r"\*{0,2}\[(\w+)\]\s*([\w][\w ]*?)\s*--\s*(.*?)\*{0,2}\s*$", re.MULTILINE)
+_LEGACY_HEADER_RE = re.compile(r"\*{0,2}\[(\w+)\]\s*([\w][\w ]*?)(?>\s*)--(?>\s*)(.*?)\*{0,2}\s*$", re.MULTILINE)
 _LEGACY_BLOCK_SPLIT_RE = re.compile(r"\n(?=\*{0,2}\[(?:CRITICAL|HIGH|MEDIUM|LOW)\])")
 _LEGACY_LOCATION_RE = re.compile(r"Location:\s*(\S+?)(?:\n|$)")
 _LEGACY_PROBLEM_RE = re.compile(r"Problem:\s*(.*?)(?:\nSuggestion:|\Z)", re.DOTALL)
@@ -257,8 +257,8 @@ def _parse_review_body(body: str) -> list[dict]:
 
 # Matches the inline-comment shape sova.roles._review_comments._format_inline_comment()
 # emits: "**[HIGH] bug**: description" then an optional "**Suggestion**: ..." block.
-_INLINE_COMMENT_HEAD_RE = re.compile(r"^\*\*\[\w+\]\s*[^*]*\*\*:\s*", re.DOTALL)
-_INLINE_SUGGESTION_RE = re.compile(r"\n+\*\*Suggestion\*\*:\s*", re.DOTALL)
+_INLINE_COMMENT_HEAD_RE = re.compile(r"^\*\*\[\w+\][^*]*\*\*:\s*", re.DOTALL)
+_INLINE_SUGGESTION_RE = re.compile(r"(?>\n+)\*\*Suggestion\*\*:\s*", re.DOTALL)
 
 
 def _parse_inline_comment_body(text: str) -> tuple[str, str]:

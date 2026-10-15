@@ -1206,14 +1206,14 @@ class TestUninstallCommand:
         result = runner.invoke(app, ["uninstall", "--help"])
         assert result.exit_code == 0
 
-    async def test_uninstall_default_keeps_optional(self, tmp_path: Path) -> None:
+    def test_uninstall_default_keeps_optional(self, tmp_path: Path) -> None:
         """Default uninstall keeps commands, rules, memory, and config."""
         from sova.cli.commands.project import _uninstall
 
         _scaffold_full_install(tmp_path)
 
         with patch("sova.config.registry.list_projects", return_value={}):
-            await _uninstall(path=tmp_path)
+            _uninstall(path=tmp_path)
 
         assert (tmp_path / ".claude" / "commands" / "dummy.md").exists()
         assert (tmp_path / ".claude" / "rules" / "managed-rule.md").exists()
@@ -1222,7 +1222,7 @@ class TestUninstallCommand:
         assert not (tmp_path / ".claude" / "sova.db").exists()
         assert not (tmp_path / ".claude" / "worktrees").exists()
 
-    async def test_uninstall_remove_commands_flag(self, tmp_path: Path) -> None:
+    def test_uninstall_remove_commands_flag(self, tmp_path: Path) -> None:
         """--remove-commands removes managed commands, keeps local ones."""
         from sova.cli.commands.project import _uninstall
 
@@ -1231,13 +1231,13 @@ class TestUninstallCommand:
         (commands_dir / "local-cmd.md").write_text("---\nname: local\n---\n")
 
         with patch("sova.config.registry.list_projects", return_value={}):
-            await _uninstall(path=tmp_path, remove_commands=True)
+            _uninstall(path=tmp_path, remove_commands=True)
 
         assert not (commands_dir / "dummy.md").exists()
         assert (commands_dir / "local-cmd.md").exists()
         assert not (commands_dir / ".sova-manifest.json").exists()
 
-    async def test_uninstall_remove_rules_flag(self, tmp_path: Path) -> None:
+    def test_uninstall_remove_rules_flag(self, tmp_path: Path) -> None:
         """--remove-rules removes managed rules/guidelines."""
         from sova.cli.commands.project import _uninstall
 
@@ -1246,62 +1246,62 @@ class TestUninstallCommand:
         (rules_dir / "local-rule.md").write_text("# Local rule")
 
         with patch("sova.config.registry.list_projects", return_value={}):
-            await _uninstall(path=tmp_path, remove_rules=True)
+            _uninstall(path=tmp_path, remove_rules=True)
 
         assert not (rules_dir / "managed-rule.md").exists()
         assert (rules_dir / "local-rule.md").exists()
         assert not (rules_dir / ".sova-manifest.json").exists()
 
-    async def test_uninstall_removes_db_always(self, tmp_path: Path) -> None:
+    def test_uninstall_removes_db_always(self, tmp_path: Path) -> None:
         """Database is always removed even without opt-in flags."""
         from sova.cli.commands.project import _uninstall
 
         _scaffold_full_install(tmp_path)
 
         with patch("sova.config.registry.list_projects", return_value={}):
-            await _uninstall(path=tmp_path)
+            _uninstall(path=tmp_path)
 
         assert not (tmp_path / ".claude" / "sova.db").exists()
         assert not (tmp_path / ".claude" / "sova.db.bak").exists()
         assert (tmp_path / ".claude" / "agent-memory").is_dir()
 
-    async def test_uninstall_remove_memory_flag(self, tmp_path: Path) -> None:
+    def test_uninstall_remove_memory_flag(self, tmp_path: Path) -> None:
         """--remove-memory removes agent-memory directory."""
         from sova.cli.commands.project import _uninstall
 
         _scaffold_full_install(tmp_path)
 
         with patch("sova.config.registry.list_projects", return_value={}):
-            await _uninstall(path=tmp_path, remove_memory=True)
+            _uninstall(path=tmp_path, remove_memory=True)
 
         assert not (tmp_path / ".claude" / "agent-memory").exists()
         assert (tmp_path / "sova.toml").exists()
 
-    async def test_uninstall_remove_config_flag(self, tmp_path: Path) -> None:
+    def test_uninstall_remove_config_flag(self, tmp_path: Path) -> None:
         """--remove-config removes sova.toml."""
         from sova.cli.commands.project import _uninstall
 
         _scaffold_full_install(tmp_path)
 
         with patch("sova.config.registry.list_projects", return_value={}):
-            await _uninstall(path=tmp_path, remove_config=True)
+            _uninstall(path=tmp_path, remove_config=True)
 
         assert not (tmp_path / "sova.toml").exists()
         assert not (tmp_path / ".claude" / "sova.db").exists()
 
-    async def test_uninstall_ephemeral_dirs(self, tmp_path: Path) -> None:
+    def test_uninstall_ephemeral_dirs(self, tmp_path: Path) -> None:
         """Worktrees and agent-control dirs are always removed."""
         from sova.cli.commands.project import _uninstall
 
         _scaffold_full_install(tmp_path)
 
         with patch("sova.config.registry.list_projects", return_value={}):
-            await _uninstall(path=tmp_path)
+            _uninstall(path=tmp_path)
 
         assert not (tmp_path / ".claude" / "worktrees").exists()
         assert not (tmp_path / ".claude" / "agent-control").exists()
 
-    async def test_uninstall_unregisters_project(self, tmp_path: Path) -> None:
+    def test_uninstall_unregisters_project(self, tmp_path: Path) -> None:
         """Project is removed from the registry."""
         from sova.cli.commands.project import _uninstall
 
@@ -1314,7 +1314,7 @@ class TestUninstallCommand:
             ),
             patch("sova.config.registry.unregister_project") as mock_unreg,
         ):
-            await _uninstall(path=tmp_path)
+            _uninstall(path=tmp_path)
 
         mock_unreg.assert_called_once_with("myproj")
 
@@ -1328,14 +1328,14 @@ class TestUninstallCommand:
         assert count == 0
         assert (tmp_path / "some-cmd.md").exists()
 
-    async def test_uninstall_no_artifacts(self, tmp_path: Path) -> None:
+    def test_uninstall_no_artifacts(self, tmp_path: Path) -> None:
         """Running uninstall on a project without SOVA is a no-op."""
         from sova.cli.commands.project import _uninstall
 
         with patch("sova.config.registry.list_projects", return_value={}):
-            await _uninstall(path=tmp_path)
+            _uninstall(path=tmp_path)
 
-    async def test_uninstall_db_failure_continues_to_next(self, tmp_path: Path) -> None:
+    def test_uninstall_db_failure_continues_to_next(self, tmp_path: Path) -> None:
         """If one db file fails to delete, remaining files are still attempted."""
         from sova.cli.commands.project import _uninstall
 
@@ -1346,23 +1346,23 @@ class TestUninstallCommand:
             patch("sova.config.registry.list_projects", return_value={}),
             patch.object(Path, "unlink", side_effect=[OSError("locked"), None]) as mock_unlink,
         ):
-            failures = await _uninstall(path=tmp_path)
+            failures = _uninstall(path=tmp_path)
 
         assert any("sova.db" in f for f in failures)
         assert mock_unlink.call_count >= 2
 
-    async def test_uninstall_registry_error_is_non_fatal(self, tmp_path: Path) -> None:
+    def test_uninstall_registry_error_is_non_fatal(self, tmp_path: Path) -> None:
         """Registry errors are captured, not propagated."""
         from sova.cli.commands.project import _uninstall
 
         _scaffold_full_install(tmp_path)
 
         with patch("sova.config.registry.list_projects", side_effect=OSError("corrupt")):
-            failures = await _uninstall(path=tmp_path)
+            failures = _uninstall(path=tmp_path)
 
         assert any("registry" in f for f in failures)
 
-    async def test_uninstall_rtk_hook_failure_is_non_fatal(self, tmp_path: Path) -> None:
+    def test_uninstall_rtk_hook_failure_is_non_fatal(self, tmp_path: Path) -> None:
         """A raising remove_rtk_hook is captured and reported, not propagated."""
         from sova.cli.commands.project import _uninstall
 
@@ -1372,11 +1372,11 @@ class TestUninstallCommand:
             patch("sova.config.registry.list_projects", return_value={}),
             patch("sova.utils.rtk.remove_rtk_hook", side_effect=RuntimeError("settings.json corrupt")),
         ):
-            failures = await _uninstall(path=tmp_path)
+            failures = _uninstall(path=tmp_path)
 
         assert any("RTK hook" in f for f in failures)
 
-    async def test_uninstall_mcp_servers_failure_is_non_fatal(self, tmp_path: Path) -> None:
+    def test_uninstall_mcp_servers_failure_is_non_fatal(self, tmp_path: Path) -> None:
         """A raising remove_mcp_server is captured and reported, not propagated."""
         from sova.cli.commands.project import _uninstall
 
@@ -1386,7 +1386,7 @@ class TestUninstallCommand:
             patch("sova.config.registry.list_projects", return_value={}),
             patch("sova.utils.mcp_config.remove_mcp_server", side_effect=RuntimeError("settings.json corrupt")),
         ):
-            failures = await _uninstall(path=tmp_path)
+            failures = _uninstall(path=tmp_path)
 
         assert any("MCP servers" in f for f in failures)
 
@@ -1580,10 +1580,10 @@ class TestDoctorHelpers:
         assert check[1] is True
         assert check[2] == ".githooks"
 
-    async def test_check_sova_config_no_toml(self, tmp_path: Path) -> None:
+    def test_check_sova_config_no_toml(self, tmp_path: Path) -> None:
         from sova.cli.commands.doctor import _check_sova_config
 
-        checks = await _check_sova_config(tmp_path)
+        checks = _check_sova_config(tmp_path)
         assert len(checks) == 1
         assert checks[0][0] == "config"
         assert checks[0][1] is False

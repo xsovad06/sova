@@ -51,10 +51,10 @@ async def _doctor(project: Path | None) -> None:
     project_dir = (project or Path.cwd()).resolve()
     checks.extend(await _check_git_identity(project_dir))
     checks.append(await _check_git_hooks(project_dir))
-    checks.extend(await _check_sova_config(project_dir))
+    checks.extend(_check_sova_config(project_dir))
     checks.extend(_check_install_completeness(project_dir))
     checks.extend(await _check_llm_provider(project_dir))
-    checks.extend(await _check_keyring_secrets(project_dir))
+    checks.extend(_check_keyring_secrets(project_dir))
     checks.extend(await _check_ollama(project_dir))
     checks.extend(await _check_agent_runtime(project_dir))
     checks.extend(await _check_awareness_providers(project_dir))
@@ -181,7 +181,7 @@ async def _check_git_hooks(project_dir: Path) -> _Check:
     return ("git hooks", hooks_ok, hooks_detail, True)
 
 
-async def _check_sova_config(project_dir: Path) -> list[_Check]:
+def _check_sova_config(project_dir: Path) -> list[_Check]:
     """Check project configuration (DB or sova.toml)."""
     checks: list[_Check] = []
 
@@ -273,7 +273,7 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
     return checks
 
 
-async def _check_keyring_secrets(project_dir: Path) -> list[_Check]:
+def _check_keyring_secrets(project_dir: Path) -> list[_Check]:
     """Report a sentinel-without-entry mismatch for any keyring-backed secret.
 
     Only emits a row when something is actionable: a secret's database value

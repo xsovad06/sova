@@ -3613,9 +3613,9 @@ class TestMultiProject:
         assert "Issue " in resp.text and "#42" in resp.text
 
     async def test_uninstall_api_accepts_json_body(self, multi_client: AsyncClient) -> None:
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import Mock, patch
 
-        with patch("sova.cli.commands.project._uninstall", new_callable=AsyncMock) as mock_uninstall:
+        with patch("sova.cli.commands.project._uninstall", new_callable=Mock) as mock_uninstall:
             mock_uninstall.return_value = []
             resp = await multi_client.post(
                 "/api/projects/uninstall",
@@ -3625,7 +3625,7 @@ class TestMultiProject:
         data = resp.json()
         assert data["removed"] is True
         assert data["files_cleaned"] is True
-        mock_uninstall.assert_awaited_once()
+        mock_uninstall.assert_called_once()
         kwargs = mock_uninstall.call_args.kwargs
         assert kwargs["remove_commands"] is True
         assert kwargs["remove_rules"] is False
@@ -3633,9 +3633,9 @@ class TestMultiProject:
         assert kwargs["remove_config"] is False
 
     async def test_uninstall_unknown_slug_unregisters(self, multi_client: AsyncClient) -> None:
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import Mock, patch
 
-        with patch("sova.cli.commands.project._uninstall", new_callable=AsyncMock) as mock_uninstall:
+        with patch("sova.cli.commands.project._uninstall", new_callable=Mock) as mock_uninstall:
             resp = await multi_client.post(
                 "/api/projects/uninstall",
                 json={"slug": "nonexistent", "remove_files": True},
@@ -7911,7 +7911,7 @@ class TestRecordCostRuntimeModel:
         async with await get_session() as session:
             async with session.begin():
                 task_run = await session.get(TaskRun, run_id)
-                await _record_cost(task_run, run_id, Decimal(str(agent.last_result_cost)), agent, session)
+                _record_cost(task_run, run_id, Decimal(str(agent.last_result_cost)), agent, session)
 
         records = await self._cost_records(run_id)
         assert len(records) == 1
@@ -7935,7 +7935,7 @@ class TestRecordCostRuntimeModel:
         async with await get_session() as session:
             async with session.begin():
                 task_run = await session.get(TaskRun, run_id)
-                await _record_cost(task_run, run_id, Decimal("1.5"), agent, session)
+                _record_cost(task_run, run_id, Decimal("1.5"), agent, session)
 
         records = await self._cost_records(run_id)
         assert len(records) == 1
@@ -7958,7 +7958,7 @@ class TestRecordCostRuntimeModel:
         async with await get_session() as session:
             async with session.begin():
                 task_run = await session.get(TaskRun, run_id)
-                await _record_cost(task_run, run_id, Decimal("0"), agent, session)
+                _record_cost(task_run, run_id, Decimal("0"), agent, session)
 
         records = await self._cost_records(run_id)
         assert len(records) == 1
@@ -7991,7 +7991,7 @@ class TestRecordCostRuntimeModel:
         async with await get_session() as session:
             async with session.begin():
                 task_run = await session.get(TaskRun, run_id)
-                await _record_cost(task_run, run_id, Decimal(str(agent.last_result_cost)), agent, session)
+                _record_cost(task_run, run_id, Decimal(str(agent.last_result_cost)), agent, session)
 
         records = await self._cost_records(run_id)
         assert len(records) == 1
@@ -8017,7 +8017,7 @@ class TestRecordCostRuntimeModel:
         async with await get_session() as session:
             async with session.begin():
                 task_run = await session.get(TaskRun, run_id)
-                await _record_cost(task_run, run_id, Decimal("1.5"), agent, session)
+                _record_cost(task_run, run_id, Decimal("1.5"), agent, session)
 
         records = await self._cost_records(run_id)
         assert len(records) == 1
@@ -8037,7 +8037,7 @@ class TestRecordCostRuntimeModel:
         async with await get_session() as session:
             async with session.begin():
                 task_run = await session.get(TaskRun, run_id)
-                await _record_cost(task_run, run_id, Decimal("0"), agent, session)
+                _record_cost(task_run, run_id, Decimal("0"), agent, session)
 
         records = await self._cost_records(run_id)
         assert len(records) == 0

@@ -104,7 +104,7 @@ def parse_shared_file(path: Path) -> list[SharedEntry]:
         if not section:
             continue
 
-        title_match = re.match(r"^##\s+(.+)$", section, re.MULTILINE)
+        title_match = re.match(r"^##\s+(.+)", section)
         if not title_match:
             continue
 
@@ -128,7 +128,7 @@ def parse_shared_file(path: Path) -> list[SharedEntry]:
             body = body.strip()
 
         tags: list[str] = []
-        tags_match = re.search(r"(?m)^Tags:\s*(.+)$", body)
+        tags_match = re.search(r"(?m)^Tags:\s*(.+)", body)
         if tags_match:
             tags = [t.strip() for t in tags_match.group(1).split(",") if t.strip()]
             body = body[: tags_match.start()] + body[tags_match.end() :]

@@ -33,6 +33,43 @@ class TestParseVersion:
     def test_empty_string(self) -> None:
         assert svc._parse_version("") is None
 
+    def test_version_re_adversarial(self) -> None:
+        """python:S8786 pinning: no super-linear backtrack on a long digit run with no match."""
+        import time
+
+        start = time.monotonic()
+        svc._VERSION_RE.search("v" + "1" * 20000)
+        assert time.monotonic() - start < 2.0
+
+
+class TestRequirementRePinned:
+    """python:S8786 regex pinning for _REQUIREMENT_RE (issue #1193)."""
+
+    def test_simple_requirement(self) -> None:
+        m = svc._REQUIREMENT_RE.match("requests==2.31.0")
+        assert m is not None
+        assert m.groups() == ("requests", "==", "2.31.0")
+
+    def test_requirement_with_extra_bracket(self) -> None:
+        m = svc._REQUIREMENT_RE.match("sova[dev]>=1.0.0")
+        assert m is not None
+        assert m.groups() == ("sova", ">=", "1.0.0")
+
+    def test_requirement_with_spaces(self) -> None:
+        m = svc._REQUIREMENT_RE.match("package  [extra]  ~=  1.2")
+        assert m is not None
+        assert m.groups() == ("package", "~=", "1.2")
+
+    def test_requirement_no_operator_does_not_match(self) -> None:
+        assert svc._REQUIREMENT_RE.match("just-a-name") is None
+
+    def test_requirement_re_adversarial(self) -> None:
+        import time
+
+        start = time.monotonic()
+        svc._REQUIREMENT_RE.match("a" * 20000 + " " * 20000)
+        assert time.monotonic() - start < 2.0
+
 
 class TestLagCategory:
     def test_up_to_date(self) -> None:
