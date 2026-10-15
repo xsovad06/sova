@@ -29,13 +29,21 @@ on:
     workflows: ["CI"]
     types: [completed]
 
-# Keyed on the triggering run's branch, and (as before this moved to
-# workflow_run) a push is never cancelled: two merges landing on main in quick
-# succession can have their CI runs finish out of order, and cancelling the
-# newer commit's scan because the older one's arrived late would leave main
-# analyzed at the older tree and report `failure` for a commit never scanned.
+# Keyed on the triggering run's head REPOSITORY and branch, and (as before
+# this moved to workflow_run) a push is never cancelled: two merges landing on
+# main in quick succession can have their CI runs finish out of order, and
+# cancelling the newer commit's scan because the older one's arrived late would
+# leave main analyzed at the older tree and report `failure` for a commit never
+# scanned.
+#
+# The repository half matters because head_branch is a bare branch name with no
+# owner in it: a fork PR from `someone/sova:main` would otherwise share a group
+# with this repo's own `main` push, and since every non-push run sets
+# cancel-in-progress, that fork's scan would cancel the push's. A cancelled run
+# reports the required check as `cancelled` (or, if it is cancelled before the
+# first step creates it, leaves it uncreated), either of which blocks the PR.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: ${{ github.event.workflow_run.event != 'push' }}
 
 jobs:
@@ -78,21 +86,46 @@ jobs:
       # workflow_run.pull_requests is empty for fork PRs (a documented GitHub
       # limitation), so the PR is resolved from the head commit instead, via
       # the same commits/{sha}/pulls lookup for same-repo and fork PRs alike.
-      # A push to main, or a run with no associated PR (e.g. a manual
-      # workflow_dispatch of CI), legitimately has none: every output is left
-      # empty rather than failing the job.
+      #
+      # Gated on the ORIGINAL event being `pull_request`, because
+      # commits/{sha}/pulls is documented to return the MERGED pull request a
+      # commit arrived in once that commit is on the default branch. Running it
+      # unconditionally meant every post-merge push to main resolved the PR
+      # that had just been merged and was then analyzed with
+      # -Dsonar.pullrequest.* parameters, decorating an already-closed PR
+      # instead of updating main's own branch analysis. A push (and a manual
+      # workflow_dispatch of CI) leaves every output empty and falls through to
+      # the branch-analysis parameters below.
+      #
+      # Among the pull requests the lookup does return, only an OPEN one whose
+      # own head is this exact commit describes the analysis being run; the
+      # `// .[0]` tail keeps an open PR whose head has moved on (a force-push
+      # landing between CI finishing and this scan starting) rather than
+      # silently degrading that PR to branch analysis. A lookup FAILURE is a
+      # hard error, never an empty result: `|| echo '[]'` would have turned a
+      # transient GitHub outage into a spurious `sonar.branch.name` analysis of
+      # a PR branch.
       - name: Resolve PR for this run's head commit
         id: pr
+        if: github.event.workflow_run.event == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          pulls="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" 2>/dev/null || echo '[]')"
-          echo "number=$(echo "$pulls" | jq -r '.[0].number // empty')" >> "$GITHUB_OUTPUT"
-          echo "head=$(echo "$pulls" | jq -r '.[0].head.ref // empty')" >> "$GITHUB_OUTPUT"
-          echo "base=$(echo "$pulls" | jq -r '.[0].base.ref // empty')" >> "$GITHUB_OUTPUT"
+          if ! pulls="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls")"; then
+            echo "::error::Could not list pull requests for ${HEAD_SHA}"
+            exit 1
+          fi
+          open="$(jq -c '[.[] | select(.state == "open")]' <<<"$pulls")"
+          pr="$(jq -c --arg sha "$HEAD_SHA" \
+            '[.[] | select(.head.sha == $sha)][0] // .[0] // {}' <<<"$open")"
+          {
+            echo "number=$(jq -r '.number // empty' <<<"$pr")"
+            echo "head=$(jq -r '.head.ref // empty' <<<"$pr")"
+            echo "base=$(jq -r '.base.ref // empty' <<<"$pr")"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
         if: github.event.workflow_run.conclusion == 'success'
@@ -101,9 +134,15 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
-      # Guarded with continue-on-error: an expired or never-uploaded artifact
-      # (coverage-xml is only uploaded when CI's python-test job actually ran
-      # tests) must be treated as "no coverage", not a job failure.
+      # Guarded with continue-on-error so the terminal reporter below, not an
+      # aborted job, decides what a failed download means. It means FAILURE:
+      # ci.yml publishes the coverage-xml artifact on every run of its
+      # python-test job, carrying a no-coverage.marker instead of a
+      # coverage.xml on the documentation-only path, so "the artifact is
+      # missing" is never the intended docs-only case. An expired or
+      # unreachable artifact is a scan that did not happen, and reporting the
+      # required check green for it would pass the quality gate without
+      # SonarCloud ever running.
       - name: Download coverage report from the triggering CI run
         id: artifact
         if: github.event.workflow_run.conclusion == 'success'
@@ -114,9 +153,26 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
 
+      # Which of the two shapes arrived decides everything downstream: a real
+      # coverage.xml is scanned, the marker is an intentional skip. This is
+      # read off the downloaded files rather than inferred from the download's
+      # own outcome, which cannot tell "CI had nothing to measure" from "the
+      # artifact could not be fetched".
+      - name: Classify the downloaded artifact
+        id: coverage
+        if: steps.artifact.outcome == 'success'
+        run: |
+          set -euo pipefail
+          if [ -f coverage.xml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::CI published no coverage (documentation-only change); skipping the scan"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check SONAR_TOKEN is available
         id: check-token
-        if: steps.artifact.outcome == 'success'
+        if: steps.coverage.outputs.present == 'true'
         run: |
           if [ -n "$SONAR_TOKEN" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
@@ -178,6 +234,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           ARTIFACT_OUTCOME: ${{ steps.artifact.outcome }}
+          COVERAGE_PRESENT: ${{ steps.coverage.outputs.present }}
           TOKEN_AVAILABLE: ${{ steps.check-token.outputs.available }}
           SCAN_OUTCOME: ${{ steps.scan.outcome }}
         run: |
@@ -201,13 +258,21 @@ jobs:
             title="SonarCloud analysis cancelled"
             summary="This run was cancelled before the scan could report. No quality gate verdict was produced."
           elif [ "$ARTIFACT_OUTCOME" != "success" ]; then
-            # CI succeeded without producing coverage: per
-            # .github/scripts/detect-code-changes.sh, that only happens on a
-            # docs-only change (python-test skips its own test step), so this
-            # is a legitimate success, not a failure.
+            # ci.yml uploads coverage-xml on every run of python-test, so a
+            # failed download is an expired, deleted or unreachable artifact,
+            # never the docs-only path. The scan did not happen; say so rather
+            # than passing the required check on a gate nobody consulted.
+            conclusion=failure
+            title="Coverage artifact unavailable"
+            summary="CI succeeded, but its coverage-xml artifact could not be downloaded. SonarCloud analysis was not run."
+          elif [ "$COVERAGE_PRESENT" != "true" ]; then
+            # The artifact carried a no-coverage.marker instead of a
+            # coverage.xml: per .github/scripts/detect-code-changes.sh that is
+            # a docs-only change, where python-test skips its own test step.
+            # A legitimate success, not a failure.
             conclusion=success
             title="No coverage to scan"
-            summary="CI succeeded without producing a coverage report (docs-only change). Skipping SonarCloud analysis."
+            summary="CI deliberately produced no coverage (documentation-only change). Skipping SonarCloud analysis."
           elif [ "$TOKEN_AVAILABLE" != "true" ]; then
             conclusion=neutral
             title="SONAR_TOKEN unavailable"

@@ -203,8 +203,20 @@ jobs:
         if: needs.changes.outputs.code == 'false'
         run: echo "Documentation-only change (${{ needs.changes.outputs.reason }}). Reporting success without re-running tests."
 
+      # Pinned to the PR HEAD, not the default `pull_request` checkout (the
+      # synthetic merge commit), because sonarcloud.yml analyzes
+      # workflow_run.head_sha, which is the PR head. Measuring coverage on the
+      # merge tree and reporting it against the head tree hands Sonar line
+      # numbers from a revision it never analyzed, so coverage lands on the
+      # wrong lines (or no lines) whenever main has moved under the PR. The
+      # merge-result signal this gives up is recovered by /integrate-pr, which
+      # rebases onto main and re-runs CI before merging. On a push to main
+      # there is no pull_request payload and this resolves to github.sha, the
+      # default.
       - uses: actions/checkout@v4
         if: needs.changes.outputs.code != 'false'
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-python@v5
         if: needs.changes.outputs.code != 'false'
@@ -227,13 +239,30 @@ jobs:
           COVERAGE_CORE: sysmon
         run: pytest tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60
 
+      # On a documentation-only change no tests ran, so there is no
+      # coverage.xml. The artifact is still published, carrying this marker
+      # instead: sonarcloud.yml's required check has to tell "CI deliberately
+      # produced no coverage" apart from "the coverage artifact could not be
+      # downloaded", and the absence of an artifact cannot distinguish them.
+      # Without the marker, an expired or failed download reported the quality
+      # gate as green without SonarCloud having run at all.
+      - name: Write the no-coverage marker (documentation-only change)
+        if: needs.changes.outputs.code == 'false'
+        env:
+          REASON: ${{ needs.changes.outputs.reason }}
+        run: echo "$REASON" > no-coverage.marker
+
+      # if-no-files-found: error, not ignore. Neither path existing means the
+      # test step ran and produced no coverage.xml, which is a real failure
+      # that must not reach the scan job as a silent "docs-only" success.
       - name: Upload coverage report
-        if: needs.changes.outputs.code != 'false'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
-          path: coverage.xml
-          if-no-files-found: ignore
+          path: |
+            coverage.xml
+            no-coverage.marker
+          if-no-files-found: error
 
   integration:
     name: Integration Test

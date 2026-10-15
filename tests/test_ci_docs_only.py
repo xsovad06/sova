@@ -55,6 +55,10 @@ REPO_ROOT = Path(__file__).parent.parent
 
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 SONAR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sonarcloud.yml"
+
+# Every output is written, empty, when no PR is resolved: the scan step tests
+# `steps.pr.outputs.number != ''`, so an empty value is the "no PR" signal.
+_NO_PR = {"number": "", "head": "", "base": ""}
 DETECTOR = REPO_ROOT / ".github" / "scripts" / "detect-code-changes.sh"
 INTEGRATE_SOVA = REPO_ROOT / ".claude" / "commands" / "integrate-pr.md"
 INTEGRATE_DIST = REPO_ROOT / "commands" / "integrate-pr.md"
@@ -143,6 +147,59 @@ def _job_block(workflow_text: str, job_key: str) -> str:
             break
         block.append(line)
     return "\n".join(block)
+
+
+def _step_script(workflow_text: str, step_name: str) -> str:
+    """Return the `run:` body of a named workflow step, dedented.
+
+    Text extraction rather than a YAML parse: these tests deliberately carry no
+    YAML dependency (see the module docstring), and the body is a plain block
+    scalar at a fixed indent.
+    """
+    block = workflow_text[workflow_text.index(f"- name: {step_name}") :]
+    body = block[block.index("run: |") + len("run: |\n") :]
+    indent = " " * 10
+    lines: list[str] = []
+    for line in body.splitlines():
+        if line.strip() and not line.startswith(indent):
+            break
+        lines.append(line[len(indent) :])
+    return "\n".join(lines)
+
+
+def _resolve_pr(script: str, pulls: object, head_sha: str, tmp_path: Path) -> dict[str, str]:
+    """Execute the PR-resolution step against a stubbed `gh`, return its outputs.
+
+    `pulls` is the JSON body the stub prints; pass None to make `gh` exit
+    non-zero, which is how a GitHub outage reaches the step.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh = bin_dir / "gh"
+    if pulls is None:
+        gh.write_text("#!/usr/bin/env bash\necho 'boom' >&2\nexit 1\n")
+    else:
+        gh.write_text(f"#!/usr/bin/env bash\ncat <<'JSON'\n{json.dumps(pulls)}\nJSON\n")
+    gh.chmod(0o755)
+
+    out_file = tmp_path / "github_output"
+    out_file.write_text("")
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "REPO": "xsovad06/sova",
+            "HEAD_SHA": head_sha,
+            "GITHUB_OUTPUT": str(out_file),
+        },
+    )
+    parsed = _parse_output(out_file.read_text())
+    parsed["__rc"] = str(result.returncode)
+    return parsed
 
 
 def _run_detector(*args: str, stdin: str = "", **env: str) -> subprocess.CompletedProcess[str]:
@@ -458,6 +515,36 @@ class TestCIWorkflowGate:
             for condition in job_level_ifs:
                 assert "always()" in condition, f"{job}: job-level condition may skip the check: {condition}"
 
+    def test_python_test_checks_out_the_pr_head_not_the_merge_commit(self, ci_text: str) -> None:
+        """Coverage must be measured on the revision SonarCloud analyzes.
+
+        sonarcloud.yml analyzes workflow_run.head_sha (the PR head), while the
+        default `pull_request` checkout is the synthetic merge commit.
+        Measuring on the merge tree and reporting against the head tree hands
+        Sonar line numbers from a revision it never analyzed.
+        """
+        block = _job_block(ci_text, "python-test")
+        assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in block
+
+    def test_coverage_artifact_is_published_on_every_run(self, ci_text: str) -> None:
+        """The docs-only path uploads a marker instead of skipping the upload.
+
+        sonarcloud.yml has to tell "CI deliberately produced no coverage" from
+        "the artifact could not be downloaded", and a missing artifact cannot
+        distinguish them.
+        """
+        block = _job_block(ci_text, "python-test")
+        upload = block[block.index("- name: Upload coverage report") :]
+        assert "if:" not in upload, "the upload must not be gated on the detector"
+        assert "coverage.xml" in upload
+        assert "no-coverage.marker" in upload
+
+    def test_missing_coverage_fails_the_upload_rather_than_passing_silently(self, ci_text: str) -> None:
+        """Neither path existing means tests ran and produced nothing."""
+        block = _job_block(ci_text, "python-test")
+        assert "if-no-files-found: error" in block
+        assert "if-no-files-found: ignore" not in block
+
     def test_required_job_names_are_present(self, ci_text: str) -> None:
         for name in REQUIRED_CI_JOB_NAMES:
             assert f"name: {name}" in ci_text
@@ -571,6 +658,91 @@ class TestSonarCloudWorkflowGate:
         """
         assert "cancel-in-progress: ${{ github.event.workflow_run.event != 'push' }}" in sonar_text
 
+    def test_concurrency_group_is_keyed_on_the_head_repository_too(self, sonar_text: str) -> None:
+        """head_branch is a bare branch name with no owner in it.
+
+        A fork PR from `someone/sova:main` would otherwise share a group with
+        this repo's own `main` push, and since every non-push run sets
+        cancel-in-progress, that fork's scan would cancel the push's. A
+        cancelled run reports the required check as `cancelled`, or leaves it
+        uncreated if it is cancelled before the first step runs.
+        """
+        group = re.search(r"^  group: (.+)$", sonar_text, re.MULTILINE)
+        assert group is not None
+        assert "github.event.workflow_run.head_repository.full_name" in group.group(1)
+        assert "github.event.workflow_run.head_branch" in group.group(1)
+
+    def test_pr_lookup_is_scoped_to_pull_request_runs(self, sonar_text: str) -> None:
+        """commits/{sha}/pulls returns the MERGED PR for a default-branch commit.
+
+        Run unconditionally, every post-merge push to main resolved the PR
+        that had just been merged and was then analyzed with
+        -Dsonar.pullrequest.* parameters, decorating a closed PR instead of
+        updating main's own branch analysis.
+        """
+        block = _between(sonar_text, "- name: Resolve PR for this run's head commit", "- uses: actions/checkout@v4")
+        assert "if: github.event.workflow_run.event == 'pull_request'" in block
+
+    @pytest.mark.parametrize(
+        ("label", "pulls", "head_sha", "expected"),
+        [
+            (
+                "merged PR for a default-branch commit is ignored",
+                [{"number": 1, "state": "closed", "head": {"sha": "abc", "ref": "feat/x"}, "base": {"ref": "main"}}],
+                "abc",
+                _NO_PR,
+            ),
+            (
+                "open PR whose head is this commit",
+                [{"number": 2, "state": "open", "head": {"sha": "abc", "ref": "feat/y"}, "base": {"ref": "main"}}],
+                "abc",
+                {"number": "2", "head": "feat/y", "base": "main"},
+            ),
+            (
+                "a closed PR never outranks the open one",
+                [
+                    {"number": 3, "state": "closed", "head": {"sha": "abc", "ref": "old"}, "base": {"ref": "main"}},
+                    {"number": 4, "state": "open", "head": {"sha": "abc", "ref": "new"}, "base": {"ref": "main"}},
+                ],
+                "abc",
+                {"number": "4", "head": "new", "base": "main"},
+            ),
+            (
+                "force-push between CI and the scan still resolves the PR",
+                [{"number": 5, "state": "open", "head": {"sha": "zzz", "ref": "feat/z"}, "base": {"ref": "main"}}],
+                "abc",
+                {"number": "5", "head": "feat/z", "base": "main"},
+            ),
+            ("no associated PR at all", [], "abc", _NO_PR),
+        ],
+    )
+    def test_pr_lookup_selects_the_open_pr(
+        self,
+        sonar_text: str,
+        label: str,
+        pulls: list[dict[str, object]],
+        head_sha: str,
+        expected: dict[str, str],
+        tmp_path: Path,
+    ) -> None:
+        """Executed, not just pattern-matched: a jq typo here is silent otherwise."""
+        script = _step_script(sonar_text, "Resolve PR for this run's head commit")
+        outputs = _resolve_pr(script, pulls, head_sha, tmp_path)
+        assert outputs.pop("__rc") == "0", label
+        assert outputs == expected, label
+
+    def test_pr_lookup_failure_is_an_error_not_an_empty_result(self, sonar_text: str, tmp_path: Path) -> None:
+        """A GitHub outage must not read as "this PR has no PR".
+
+        The old `|| echo '[]'` turned a transient API failure into empty
+        outputs, which fall through to -Dsonar.branch.name and register the PR
+        branch as a long-lived branch in SonarCloud.
+        """
+        script = _step_script(sonar_text, "Resolve PR for this run's head commit")
+        assert "|| echo '[]'" not in script
+        outputs = _resolve_pr(script, None, "abc", tmp_path)
+        assert outputs["__rc"] != "0"
+
     def test_one_terminal_step_reports_every_outcome(self, sonar_text: str) -> None:
         """A single always() reporter, not one step per outcome.
 
@@ -581,7 +753,15 @@ class TestSonarCloudWorkflowGate:
         block = sonar_text[sonar_text.index("- name: Report check result") :]
         assert "if: always() && steps.check.outputs.id != ''" in block
         assert sonar_text.count('check-runs/${CHECK_ID}" -X PATCH') == 1
-        for guard in ("$CI_CONCLUSION", "$JOB_STATUS", "$ARTIFACT_OUTCOME", "$TOKEN_AVAILABLE", "$SCAN_OUTCOME"):
+        guards = (
+            "$CI_CONCLUSION",
+            "$JOB_STATUS",
+            "$ARTIFACT_OUTCOME",
+            "$COVERAGE_PRESENT",
+            "$TOKEN_AVAILABLE",
+            "$SCAN_OUTCOME",
+        )
+        for guard in guards:
             assert guard in block, f"the reporter ignores {guard}"
 
     def test_non_success_ci_run_reports_failure_not_silent_success(self, sonar_text: str) -> None:
@@ -589,14 +769,45 @@ class TestSonarCloudWorkflowGate:
         block = _between(sonar_text, '"$CI_CONCLUSION" != "success"', 'elif [ "$JOB_STATUS"')
         assert "conclusion=failure" in block
 
-    def test_missing_artifact_on_success_is_reported_as_success_not_failure(self, sonar_text: str) -> None:
-        """A docs-only CI run has no coverage artifact; that is not a failure."""
-        block = _between(sonar_text, '"$ARTIFACT_OUTCOME" != "success"', 'elif [ "$TOKEN_AVAILABLE"')
-        assert "conclusion=success" in block
+    def test_undownloadable_artifact_is_reported_as_failure_not_success(self, sonar_text: str) -> None:
+        """An unfetchable artifact is a scan that did not happen.
 
-    def test_artifact_download_is_cross_run_and_fails_open(self, sonar_text: str) -> None:
-        """An expired or missing artifact must not fail the job outright."""
-        block = _between(sonar_text, "Download coverage report", "Check SONAR_TOKEN is available")
+        ci.yml publishes coverage-xml on EVERY run of python-test, carrying a
+        no-coverage.marker on the docs-only path, so a failed download can no
+        longer be the intended docs-only case: it is an expired, deleted or
+        unreachable artifact. Reporting it green passed the required check
+        with SonarCloud never having run.
+        """
+        block = _between(sonar_text, '"$ARTIFACT_OUTCOME" != "success"', 'elif [ "$COVERAGE_PRESENT"')
+        assert "conclusion=failure" in block
+        assert "conclusion=success" not in block
+
+    def test_no_coverage_marker_is_reported_as_success(self, sonar_text: str) -> None:
+        """A docs-only CI run deliberately produced no coverage, which is fine."""
+        block = _between(sonar_text, '"$COVERAGE_PRESENT" != "true"', 'elif [ "$TOKEN_AVAILABLE"')
+        assert "conclusion=success" in block
+        assert 'title="No coverage to scan"' in block
+
+    def test_coverage_presence_is_read_from_the_files_not_the_download_outcome(self, sonar_text: str) -> None:
+        """The download's own outcome cannot tell the two apart.
+
+        "CI had nothing to measure" and "the artifact could not be fetched"
+        are both a non-success outcome, so the distinction has to come from
+        which file actually arrived.
+        """
+        block = _between(sonar_text, "Classify the downloaded artifact", "Check SONAR_TOKEN is available")
+        assert "if [ -f coverage.xml ]; then" in block
+        assert 'echo "present=true" >> "$GITHUB_OUTPUT"' in block
+        assert 'echo "present=false" >> "$GITHUB_OUTPUT"' in block
+
+    def test_scan_runs_only_when_a_real_coverage_file_arrived(self, sonar_text: str) -> None:
+        """The marker path must not reach the scanner with no coverage to read."""
+        block = _between(sonar_text, "Check SONAR_TOKEN is available", "- name: SonarCloud Scan")
+        assert "if: steps.coverage.outputs.present == 'true'" in block
+
+    def test_artifact_download_defers_its_verdict_to_the_reporter(self, sonar_text: str) -> None:
+        """continue-on-error so the terminal reporter, not an aborted job, decides."""
+        block = _between(sonar_text, "Download coverage report", "Classify the downloaded artifact")
         assert "continue-on-error: true" in block
         assert "run-id: ${{ github.event.workflow_run.id }}" in block
         assert "name: coverage-xml" in block
