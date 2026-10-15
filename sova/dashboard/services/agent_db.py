@@ -252,7 +252,7 @@ async def _handle_terminal_status(task_run: object, file_handoff: dict | None, s
     await _finalize_orphaned_steps(session, run_id)
 
 
-async def _record_cost(task_run: object, run_id: int, cost: Decimal, agent: AgentState, session: object) -> None:
+def _record_cost(task_run: object, run_id: int, cost: Decimal, agent: AgentState, session: object) -> None:
     """Record cost for a completed task run.
 
     Gated on ``last_result_cost is not None`` (a terminal result actually
@@ -365,7 +365,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                             message = f"{message}; {snapshot}"[:_ERROR_MESSAGE_MAX_LENGTH]
                     task_run.error_message = message
 
-                await _record_cost(task_run, run_id, cost, agent, session)
+                _record_cost(task_run, run_id, cost, agent, session)
 
                 if not task_run.handoff_json:
                     _apply_file_handoff(task_run, file_handoff, run_id)

@@ -95,6 +95,26 @@ def _parse_spec(text: str, path: Path, issue_number: str) -> dict:
     return result
 
 
+def _find_answer_marker(text: str) -> int | None:
+    """Return the index of a whitespace-preceded ``A:`` in ``text``, or ``None``.
+
+    Requires at least two characters before ``A:`` (one for the question
+    text, one of whitespace separating it), matching the original
+    ``\\s+A:`` regex: a lone whitespace char immediately before ``A:`` with
+    nothing before it (e.g. ``"Q: A: answer"``) has no room left for a
+    non-empty question-text group, so the old regex failed to match at all
+    and left the line unsplit.
+    """
+    start = 0
+    while True:
+        idx = text.find("A:", start)
+        if idx == -1:
+            return None
+        if idx >= 2 and text[idx - 1].isspace():
+            return idx
+        start = idx + 1
+
+
 def _extract_open_questions(text: str) -> list[dict]:
     """Extract open questions from the spec."""
     content = _extract_section(text, "Open Questions")
@@ -112,17 +132,20 @@ def _extract_open_questions(text: str) -> list[dict]:
         cleaned = re.sub(r"^[-*\d.]+\s*", "", line)
         if not cleaned:
             continue
-        # Detect Q: ... A: ... format written by write_answers(); non-greedy first
-        # group ensures we split on the FIRST " A: " occurrence, so answers
-        # containing " A: " are preserved.
+        # Detect Q: ... A: ... format written by write_answers(). A long run
+        # of spaces with no " A:" marker made both a negative-lookahead scan
+        # and a backtracking "\s+A:" regex super-linear (each rescans the
+        # whole remaining run from every position in the run). A direct
+        # str.find() for the literal "A:" is unambiguous here and O(n).
         answer = ""
         if cleaned.startswith("Q:"):
-            qa_match = re.match(r"^Q:\s*(.+?)\s+A:\s*(.+)$", cleaned)
-            if qa_match:
-                cleaned = qa_match.group(1).strip()
-                answer = qa_match.group(2).strip()
+            rest = cleaned[2:]
+            sep = _find_answer_marker(rest)
+            if sep is not None:
+                cleaned = rest[:sep].strip()
+                answer = rest[sep + 2 :].strip()
             else:
-                cleaned = cleaned[2:].strip()
+                cleaned = rest.strip()
         questions.append({"id": question_id, "text": cleaned, "answer": answer})
         question_id += 1
 

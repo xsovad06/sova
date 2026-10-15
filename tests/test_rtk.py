@@ -635,8 +635,6 @@ def test_remove_mcp_server_cleans_mcp_json(tmp_path: Path) -> None:
 
 def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
     """_uninstall removes PatternFly MCP from .mcp.json and drops its approval."""
-    import asyncio
-
     from sova.cli.commands.project import _uninstall
 
     project_dir = tmp_path / "project"
@@ -647,7 +645,7 @@ def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
     (project_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"patternfly-mcp": pf_config}}))
     (claude_dir / "settings.json").write_text(json.dumps({"enabledMcpjsonServers": ["patternfly-mcp"]}))
 
-    asyncio.run(_uninstall(path=project_dir, remove_config=False, remove_memory=False))
+    _uninstall(path=project_dir, remove_config=False, remove_memory=False)
 
     assert not (project_dir / ".mcp.json").exists()
     data = json.loads((claude_dir / "settings.json").read_text())
@@ -656,8 +654,6 @@ def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
 
 def test_uninstall_removes_legacy_settings_mcp_entry(tmp_path: Path) -> None:
     """Entries written by pre-.mcp.json installs are cleaned out of settings.json."""
-    import asyncio
-
     from sova.cli.commands.project import _uninstall
 
     project_dir = tmp_path / "project"
@@ -667,7 +663,7 @@ def test_uninstall_removes_legacy_settings_mcp_entry(tmp_path: Path) -> None:
     pf_config = {"command": "npx", "args": ["-y", "@patternfly/patternfly-mcp@latest"]}
     (claude_dir / "settings.json").write_text(json.dumps({"mcpServers": {"patternfly-mcp": pf_config}}))
 
-    asyncio.run(_uninstall(path=project_dir, remove_config=False, remove_memory=False))
+    _uninstall(path=project_dir, remove_config=False, remove_memory=False)
 
     data = json.loads((claude_dir / "settings.json").read_text())
     assert "patternfly-mcp" not in data.get("mcpServers", {})
@@ -675,8 +671,6 @@ def test_uninstall_removes_legacy_settings_mcp_entry(tmp_path: Path) -> None:
 
 def test_uninstall_removes_atlassian_mcp(tmp_path: Path) -> None:
     """_uninstall removes the Atlassian MCP sidecar from .mcp.json."""
-    import asyncio
-
     from sova.cli.commands.project import _uninstall
 
     project_dir = tmp_path / "project"
@@ -686,7 +680,7 @@ def test_uninstall_removes_atlassian_mcp(tmp_path: Path) -> None:
     atlassian_config = {"command": "uvx", "args": ["mcp-atlassian"], "env": {}}
     (project_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"atlassian-mcp": atlassian_config}}))
 
-    asyncio.run(_uninstall(path=project_dir, remove_config=False, remove_memory=False))
+    _uninstall(path=project_dir, remove_config=False, remove_memory=False)
 
     assert not (project_dir / ".mcp.json").exists()
 

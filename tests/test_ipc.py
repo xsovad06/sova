@@ -2019,6 +2019,18 @@ class TestAiderRuntime:
         prompt = "Run:\n```bash\nls -la\n```"
         assert rt.transform_prompt(prompt) == prompt
 
+    def test_shell_cmd_re_adversarial(self) -> None:
+        """python:S8786 pinning: no super-linear backtrack on an unterminated fence."""
+        import time
+
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        prompt = "```bash\n" + ("a " * 10000 + "\n") * 5
+        start = time.monotonic()
+        rt.transform_prompt(prompt)
+        assert time.monotonic() - start < 2.0
+
     async def test_spawn_shell_prompt_executes_directly(self) -> None:
         """Shell-command prompts with sova should be executed as subprocess."""
         from sova.ipc.runtime import AiderRuntime

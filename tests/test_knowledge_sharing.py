@@ -25,6 +25,21 @@ async def setup_db():
 # ---------------------------------------------------------------------------
 
 
+def test_parse_shared_file_title_and_tags_adversarial(tmp_path: Path) -> None:
+    """python:S8786 pinning: no super-linear backtrack on long heading/Tags lines."""
+    import time
+
+    from sova.knowledge.sharing import parse_shared_file
+
+    content = "## " + "a" * 20000 + "\n\nBody.\n\nTags: " + "b" * 20000 + "\n"
+    filepath = tmp_path / "adversarial.md"
+    filepath.write_text(content)
+
+    start = time.monotonic()
+    parse_shared_file(filepath)
+    assert time.monotonic() - start < 2.0
+
+
 def test_compute_content_hash_deterministic() -> None:
     """compute_content_hash() returns the same hash for the same content."""
     from sova.knowledge.sharing import compute_content_hash

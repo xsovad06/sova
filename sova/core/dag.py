@@ -304,7 +304,7 @@ def _topological_sort(graph_json: dict) -> list[str]:
     edges = graph_json.get("edges", [])
     node_ids = {n["id"] for n in nodes}
 
-    in_degree: dict[str, int] = {nid: 0 for nid in node_ids}
+    in_degree: dict[str, int] = dict.fromkeys(node_ids, 0)
     adjacency: dict[str, list[str]] = {nid: [] for nid in node_ids}
 
     for edge in edges:

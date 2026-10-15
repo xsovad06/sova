@@ -77,7 +77,7 @@ def compute_fingerprint(title: str, scope: str, project_slug: str) -> str:
     are recognized as duplicates.
     """
     normalized = re.sub(r"#\d+", "#N", title.lower().strip())
-    normalized = re.sub(r"\d+\.?\d*%", "N%", normalized)
+    normalized = re.sub(r"(?>\d+)(?:\.(?>\d*))?%", "N%", normalized)
     normalized = re.sub(r"(?<!\S)\d{2,}(?=\s|$)", "N", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     key = f"{scope}:{project_slug}:{normalized}"

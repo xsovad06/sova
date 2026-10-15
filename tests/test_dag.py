@@ -154,6 +154,19 @@ class TestTopologicalSort:
         result = _topological_sort(graph)
         assert set(result) == {"a", "b"}
 
+    def test_fan_in_in_degree_not_overwritten(self):
+        """Each node's in-degree starts at its own independent counter (dict.fromkeys(node_ids, 0))."""
+        graph = {
+            "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+            "edges": [
+                {"source": "a", "target": "c"},
+                {"source": "b", "target": "c"},
+            ],
+        }
+        result = _topological_sort(graph)
+        assert result.index("c") > result.index("a")
+        assert result.index("c") > result.index("b")
+
 
 # Condition evaluation tests ------------------------------------------------
 

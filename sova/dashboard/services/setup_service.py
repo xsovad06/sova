@@ -1277,7 +1277,7 @@ async def start_reconnect(project_dir: Path, *, is_loopback_bind: bool = True) -
     return {"status": "ok"}
 
 
-async def get_reconnect_status(project_dir: Path) -> dict:
+def get_reconnect_status(project_dir: Path) -> dict:
     """Report the current/last reconnect session's status for this project."""
     cache_key = str(project_dir.resolve())
     session = _reconnect_sessions.get(cache_key)

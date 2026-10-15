@@ -73,18 +73,23 @@ class BaseStep(ABC):
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Validate that the step produced acceptable output."""
 
-    async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:
+    async def verify_output(self, ctx: ExecutionContext) -> GateCheckResult:  # noqa: RUF029  # NOSONAR(S7503)
         """Heavyweight verification pass after the structural gate passes.
 
         Override in subclasses that need expensive verification (e.g., running
-        the full test suite). The default is a passing no-op.
+        the full test suite). The default is a passing no-op, but it stays a
+        coroutine (python:S7503 accepted exception, issue #1193): every
+        caller awaits it polymorphically through the ABC, and real overrides
+        (e.g. ValidateStep) do await inside their body.
         """
         return GateCheckResult(passed=True)
 
-    async def can_skip(self, ctx: ExecutionContext) -> bool:
+    async def can_skip(self, ctx: ExecutionContext) -> bool:  # noqa: RUF029  # NOSONAR(S7503)
         """Whether this step can be skipped for the given context.
 
         Default: skip if this step already passed in a prior run (resume).
-        Override in subclasses for additional skip logic.
+        Override in subclasses for additional skip logic. Stays a coroutine
+        (python:S7503 accepted exception, issue #1193) for the same
+        polymorphic-await reason as verify_output() above.
         """
         return self.name in ctx.completed_steps

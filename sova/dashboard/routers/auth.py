@@ -123,7 +123,7 @@ async def start_reconnect(request: Request) -> dict:
 @router.get("/connections/reconnect/status")
 async def reconnect_status() -> dict:
     project_dir = get_project_dir() or Path.cwd()
-    return await setup_service.get_reconnect_status(project_dir)
+    return setup_service.get_reconnect_status(project_dir)
 
 
 @router.post(

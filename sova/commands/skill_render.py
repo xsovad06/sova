@@ -479,7 +479,21 @@ def render_codex_skills(
     return rendered
 
 
-_FRONTMATTER_NAME_LINE_RE = re.compile(r'^(name:\s*)([\'"]?)(.+?)\2\s*$')
+def _parse_frontmatter_name_line(line: str) -> str | None:
+    """Parse the declared value out of a ``name: ...`` frontmatter line, or None if absent.
+
+    A quoted-vs-bare alternation regex with a backreference for the closing
+    quote reads as backtracking-DoS-prone to static analysis (a long quoted
+    value with no closing quote retries the bare-content match char by char).
+    A direct string scan has no such ambiguity: there is exactly one way to
+    read a prefix, an optional matching quote pair, and the remainder.
+    """
+    if not line.startswith("name:"):
+        return None
+    value = line[len("name:") :].strip()
+    if len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0]:
+        value = value[1:-1]
+    return value or None
 
 
 def _check_skill_frontmatter_name(content: str, skill_dir_name: str) -> None:
@@ -504,10 +518,12 @@ def _check_skill_frontmatter_name(content: str, skill_dir_name: str) -> None:
     for line in lines[1:]:
         if line.strip() == "---":
             return
-        match = _FRONTMATTER_NAME_LINE_RE.match(line)
-        if match and match.group(3) != skill_dir_name:
+        declared_name = _parse_frontmatter_name_line(line.rstrip())
+        if declared_name is None:
+            continue
+        if declared_name != skill_dir_name:
             raise SkillRenderError(
-                f"skills/{skill_dir_name}/SKILL.md declares name {match.group(3)!r}, which does not match its "
+                f"skills/{skill_dir_name}/SKILL.md declares name {declared_name!r}, which does not match its "
                 f"directory name {skill_dir_name!r}"
             )
 

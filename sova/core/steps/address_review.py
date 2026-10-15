@@ -90,11 +90,28 @@ _FINDING_LINE_RE = re.compile(
     r"^-\s+\*\*\[\w+\s+(?P<severity>\d+)/10\]\*\*\s*"
     r"\[(?P<category>[^\]]*)\]\s*`(?P<location>[^`]*)`:\s*(?P<rest>.*)$"
 )
-_SECTION_HEADING_RE = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
-_FIX_SPLIT_RE = re.compile(r"\s+Fix:\s+")
+_SECTION_HEADING_RE = re.compile(r"^###\s+(.*)$", re.MULTILINE)
 
 
 _LINE_RANGE_RE = re.compile(r"^\d+\s*-\s*\d+$")
+
+
+def _split_on_fix_marker(rest: str) -> tuple[str, str]:
+    """Split ``description Fix: suggestion`` on the first whitespace-bounded ``Fix:``.
+
+    A regex split on ``(?>\\s+)Fix:(?>\\s+)`` re-scans a long whitespace run
+    from every starting position once the atomic group fails to find
+    ``Fix:`` after it, making a run with no marker O(n^2). A direct
+    ``str.find`` for the literal ``Fix:`` is unambiguous and O(n).
+    """
+    start = 0
+    while True:
+        idx = rest.find("Fix:", start)
+        if idx == -1:
+            return rest, ""
+        if idx > 0 and rest[idx - 1].isspace():
+            return rest[:idx].rstrip(), rest[idx + len("Fix:") :].lstrip()
+        start = idx + 1
 
 
 def _split_location(location: str) -> tuple[str, int | None]:
@@ -127,7 +144,7 @@ def _extract_markdown_sections(body: str) -> dict[str, list[str]]:
     for i, m in enumerate(headings):
         start = m.end()
         end = headings[i + 1].start() if i + 1 < len(headings) else len(body)
-        sections.setdefault(m.group(1), []).append(body[start:end])
+        sections.setdefault(m.group(1).rstrip(), []).append(body[start:end])
     return sections
 
 
@@ -139,9 +156,7 @@ def _parse_finding_lines(section_text: str) -> list[dict]:
         if not m:
             continue
         file_path, line_num = _split_location(m.group("location"))
-        parts = _FIX_SPLIT_RE.split(m.group("rest"), maxsplit=1)
-        description = parts[0]
-        suggestion = parts[1] if len(parts) > 1 else ""
+        description, suggestion = _split_on_fix_marker(m.group("rest"))
         findings.append(
             {
                 "file": file_path,
@@ -162,11 +177,34 @@ _LEGACY_SEVERITY_MAP = {"CRITICAL": 10, "HIGH": 9, "MEDIUM": 6, "LOW": 3}
 # hand-written human reviews that follow SOVA's original documented layout:
 # a bracketed severity, a category, a dash-dash separator, a description,
 # then optional "Location:", "Problem:", and "Suggestion:" fields.
-_LEGACY_HEADER_RE = re.compile(r"\*{0,2}\[(\w+)\]\s*([\w][\w ]*?)\s*--\s*(.*?)\*{0,2}\s*$", re.MULTILINE)
+_LEGACY_HEADER_PREFIX_RE = re.compile(r"\*{0,2}\[(\w+)\]\s*")
 _LEGACY_BLOCK_SPLIT_RE = re.compile(r"\n(?=\*{0,2}\[(?:CRITICAL|HIGH|MEDIUM|LOW)\])")
 _LEGACY_LOCATION_RE = re.compile(r"Location:\s*(\S+?)(?:\n|$)")
 _LEGACY_PROBLEM_RE = re.compile(r"Problem:\s*(.*?)(?:\nSuggestion:|\Z)", re.DOTALL)
 _LEGACY_SUGGESTION_RE = re.compile(r"Suggestion:\s*(.*?)(?:\n\[|```|\Z)", re.DOTALL)
+
+
+def _match_legacy_header(line: str) -> tuple[str, str, str] | None:
+    """Match ``[SEVERITY] category -- description`` on a single line.
+
+    A single backtracking regex for this (lazy category text followed by an
+    atomic whitespace run before the ``--`` separator) rescans a long space
+    run from every position once it fails to find ``--``, which is O(n^2)
+    for a header with no separator. A direct ``str.find`` for the literal
+    ``--`` is unambiguous here and O(n).
+    """
+    prefix_m = _LEGACY_HEADER_PREFIX_RE.match(line)
+    if not prefix_m:
+        return None
+    rest = line[prefix_m.end() :]
+    sep_idx = rest.find("--")
+    if sep_idx == -1:
+        return None
+    category = rest[:sep_idx].strip()
+    if not category or not all(c.isalnum() or c in " _" for c in category):
+        return None
+    description = rest[sep_idx + 2 :].strip().rstrip("*").strip()
+    return prefix_m.group(1), category, description
 
 
 def _parse_legacy_review_body(body: str) -> list[dict]:
@@ -179,9 +217,11 @@ def _parse_legacy_review_body(body: str) -> list[dict]:
     """
     findings: list[dict] = []
     for block in _LEGACY_BLOCK_SPLIT_RE.split(body):
-        m = _LEGACY_HEADER_RE.match(block.strip())
-        if not m:
+        first_line = block.strip().split("\n", 1)[0]
+        header = _match_legacy_header(first_line)
+        if not header:
             continue
+        severity_key, category, description_fallback = header
 
         file_path = ""
         line_num = None
@@ -195,9 +235,9 @@ def _parse_legacy_review_body(body: str) -> list[dict]:
             {
                 "file": file_path,
                 "line": line_num,
-                "severity": _LEGACY_SEVERITY_MAP.get(m.group(1).upper(), 5),
-                "category": m.group(2).lower(),
-                "description": problem_m.group(1).strip() if problem_m else m.group(3),
+                "severity": _LEGACY_SEVERITY_MAP.get(severity_key.upper(), 5),
+                "category": category.lower(),
+                "description": problem_m.group(1).strip() if problem_m else description_fallback,
                 "suggestion": suggestion_m.group(1).strip() if suggestion_m else "",
                 "source": "github-review",
             }
@@ -257,8 +297,8 @@ def _parse_review_body(body: str) -> list[dict]:
 
 # Matches the inline-comment shape sova.roles._review_comments._format_inline_comment()
 # emits: "**[HIGH] bug**: description" then an optional "**Suggestion**: ..." block.
-_INLINE_COMMENT_HEAD_RE = re.compile(r"^\*\*\[\w+\]\s*[^*]*\*\*:\s*", re.DOTALL)
-_INLINE_SUGGESTION_RE = re.compile(r"\n+\*\*Suggestion\*\*:\s*", re.DOTALL)
+_INLINE_COMMENT_HEAD_RE = re.compile(r"^\*\*\[\w+\][^*]*\*\*:\s*", re.DOTALL)
+_INLINE_SUGGESTION_RE = re.compile(r"(?>\n+)\*\*Suggestion\*\*:\s*", re.DOTALL)
 
 
 def _parse_inline_comment_body(text: str) -> tuple[str, str]:

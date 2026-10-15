@@ -97,7 +97,10 @@ class MockAgentProcess:
             self._returncode = self._exit_code
         return self._returncode
 
-    async def stop(self, timeout: float = 10.0) -> None:
+    async def stop(self, timeout: float = 10.0) -> None:  # noqa: RUF029
+        # Stays a coroutine (python:S7503 accepted exception, issue #1193):
+        # it duck-types _BaseAgentProcess.stop() (sova/ipc/control.py), which
+        # is awaited polymorphically at agent_dispatch.py:617.
         _ = timeout  # interface compatibility
         if self._returncode is not None:
             return

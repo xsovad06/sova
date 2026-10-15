@@ -275,6 +275,15 @@ class TestExtractSpecContent:
     def test_handles_empty_text(self) -> None:
         assert _extract_spec_content("") == ""
 
+    def test_fence_regex_adversarial(self) -> None:
+        """python:S8786 pinning: no super-linear backtrack on a fence with no closing ```."""
+        import time
+
+        text = "```markdown\n" + ("a" * 20000 + "\n") * 10
+        start = time.monotonic()
+        _extract_spec_content(text)
+        assert time.monotonic() - start < 2.0
+
 
 class TestFindSpecFile:
     def test_finds_matching_file(self, tmp_path: Path) -> None:
@@ -1183,6 +1192,34 @@ class TestSpecService:
         assert len(questions) == 1
         assert questions[0]["text"] == "Which approach?"
         assert questions[0]["answer"] == "Option 1 A: use POST"
+
+    def test_extract_open_questions_qa_no_question_text(self) -> None:
+        """Pinning: a degenerate 'Q: A: answer' line with no question text is kept unsplit.
+
+        The original ``^Q:\\s*(.+?)\\s+A:\\s*(.+)$`` regex requires a
+        non-empty question-text group before the whitespace-A: separator;
+        with only one space between 'Q:' and 'A:' there is no room for
+        both, so the regex never matched and the whole line was kept as
+        the question text with no answer extracted.
+        """
+        from sova.dashboard.services.spec_service import _extract_open_questions
+
+        text = "## Open Questions\n\n- Q: A: some answer\n"
+        questions = _extract_open_questions(text)
+        assert len(questions) == 1
+        assert questions[0]["text"] == "A: some answer"
+        assert questions[0]["answer"] == ""
+
+    def test_extract_open_questions_qa_regex_adversarial(self) -> None:
+        """python:S8786 pinning: no super-linear backtrack on a long run with no ' A:'."""
+        import time
+
+        from sova.dashboard.services.spec_service import _extract_open_questions
+
+        text = "## Open Questions\n\n- Q: " + "a " * 20000 + "\n"
+        start = time.monotonic()
+        _extract_open_questions(text)
+        assert time.monotonic() - start < 2.0
 
     def test_write_answers_reanswer_no_corruption(self, tmp_path: Path) -> None:
         """Re-answering an already-answered question does not corrupt the file."""
