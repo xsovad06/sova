@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
+from sova.config.models import AgentConfig, LLMConfig, ProjectConfig, RolesConfig
 from sova.core.agent_dispatch import AgentRuntimeUnavailableError, dispatch_command, dispatch_prompt
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.ipc.runtime import AgentRuntime
+from sova.ipc.runtime import RUN_RUNTIME_MODEL_OVERRIDE_ENV, AgentRuntime
 from sova.llm.errors import BillingError, LLMTimeoutError, RateLimitError
 from sova.llm.models import LLMResult, StreamEvent
 
@@ -1152,3 +1152,185 @@ class TestStopQuietlyShieldsCleanupFromCancellation:
             # Must return normally (the timeout is caught and logged), never
             # propagate as an unhandled TimeoutError out of _stop_quietly().
             await _stop_quietly(_HangingProc(), runtime, cause="agent_dispatch_timeout")
+
+
+class TestRoleRuntimeModelPin:
+    """roles.<role>_runtime_model and the per-run SOVA_RUNTIME_MODEL_OVERRIDE (#1039).
+
+    Either one pins the model a tool-using step hands the coding-agent runtime,
+    ahead of the routed model (llm.routing[task_type], role or complexity
+    routing), but only for a runtime that honours a caller-supplied model.
+    """
+
+    @staticmethod
+    def _ctx(tmp_path: Path, *, role: str = "developer", pin: str = "") -> ExecutionContext:
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=ProjectConfig(roles=RolesConfig(developer_runtime_model=pin)),
+            adapter=AsyncMock(),
+            issue_number="1",
+            role=role,
+            run_label="test",
+        )
+        ctx.resolved_model = "claude-opus-5"
+        return ctx
+
+    @pytest.fixture(autouse=True)
+    def _no_inherited_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(RUN_RUNTIME_MODEL_OVERRIDE_ENV, raising=False)
+
+    async def test_role_pin_replaces_the_routed_model(self, tmp_path: Path) -> None:
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = self._ctx(tmp_path, pin="claude-sonnet-5")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="routed-model"),
+        ):
+            await dispatch_command(_ToolStep(), "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert runtime.spawn_calls[0]["model"] == "claude-sonnet-5"
+
+    async def test_pinned_spend_is_attributed_to_the_model_that_ran(self, tmp_path: Path) -> None:
+        """The provider CostRecord is labelled ctx.resolved_model, which a pin does not
+        change (later text-only steps still read it). A pinned dispatch is therefore
+        tagged so its spend lands in the runtime CostRecord under the pinned model."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = self._ctx(tmp_path, pin="claude-sonnet-5")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="routed-model"),
+        ):
+            result = await dispatch_command(_ToolStep(), "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert result.runtime_name == "stub"
+        assert ctx.resolved_model == "claude-opus-5"
+        assert ctx.runtime_model == "stub-model"
+        assert ctx.runtime_model_reason == "role:developer runtime pin->claude-sonnet-5"
+
+    async def test_per_run_override_beats_the_role_pin(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(RUN_RUNTIME_MODEL_OVERRIDE_ENV, "claude-haiku-4-5")
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = self._ctx(tmp_path, pin="claude-sonnet-5")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="routed-model"),
+        ):
+            await dispatch_command(_ToolStep(), "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert runtime.spawn_calls[0]["model"] == "claude-haiku-4-5"
+        assert ctx.runtime_model_reason == "run override->claude-haiku-4-5"
+
+    async def test_freshly_loaded_config_wins_over_the_run_start_snapshot(self, tmp_path: Path) -> None:
+        """prepare_invocation() reloads config per call, so a pin saved mid-run applies
+        from the next step, the same as an llm.routing change does."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        fresh = ProjectConfig(roles=RolesConfig(developer_runtime_model="fresh-pin"))
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            patch(
+                "sova.core.agent_dispatch.client.prepare_invocation",
+                new_callable=AsyncMock,
+                return_value=(fresh, "routed-model", 900.0),
+            ),
+        ):
+            await dispatch_command(_ToolStep(), "/develop", cwd=tmp_path, ctx=self._ctx(tmp_path, pin="stale-pin"))
+
+        assert runtime.spawn_calls[0]["model"] == "fresh-pin"
+
+    async def test_no_pin_leaves_the_routed_model_and_attribution_alone(self, tmp_path: Path) -> None:
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = self._ctx(tmp_path)
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="routed-model"),
+        ):
+            result = await dispatch_command(_ToolStep(), "/develop", cwd=tmp_path, ctx=ctx)
+
+        assert runtime.spawn_calls[0]["model"] == "routed-model"
+        assert result.runtime_name is None
+        assert ctx.runtime_model is None
+
+    async def test_role_without_a_pin_field_is_not_pinned(self, tmp_path: Path) -> None:
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="routed-model"),
+        ):
+            await dispatch_command(
+                _ToolStep(), "/develop", cwd=tmp_path, ctx=self._ctx(tmp_path, role="reviewer", pin="claude-sonnet-5")
+            )
+
+        assert runtime.spawn_calls[0]["model"] == "routed-model"
+
+    async def test_per_run_override_does_not_pin_a_role_without_a_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The env override follows the same role rule as the config pin, so a nested
+        process inheriting it cannot pin a role that is not allowed one."""
+        monkeypatch.setenv(RUN_RUNTIME_MODEL_OVERRIDE_ENV, "claude-haiku-4-5")
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="routed-model"),
+        ):
+            await dispatch_command(_ToolStep(), "/develop", cwd=tmp_path, ctx=self._ctx(tmp_path, role="reviewer"))
+
+        assert runtime.spawn_calls[0]["model"] == "routed-model"
+
+    async def test_runtime_that_ignores_model_choice_is_not_pinned(self, tmp_path: Path) -> None:
+        """Codex drops spawn(model=...), so a pin would only mislabel the CostRecord."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _ModelIgnoringRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = self._ctx(tmp_path, pin="claude-sonnet-5")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="routed-model"),
+        ):
+            await dispatch_command(_ToolStep(), "/develop", cwd=tmp_path, ctx=ctx)
+
+        assert runtime.spawn_calls[0]["model"] == "routed-model"
+        assert ctx.runtime_model_reason == "runtime:codex reported model"
+
+    async def test_text_only_step_is_never_pinned(self, tmp_path: Path) -> None:
+        invoke_command = AsyncMock(return_value=LLMResult(text="ok", model="routed-model"))
+        with patch("sova.core.agent_dispatch.client.invoke_command", invoke_command):
+            await dispatch_command(
+                _TextOnlyStep(), "/research", model="routed-model", ctx=self._ctx(tmp_path, pin="claude-sonnet-5")
+            )
+
+        assert invoke_command.call_args.kwargs["model"] == "routed-model"
+
+    async def test_dispatch_prompt_applies_the_pin_too(self, tmp_path: Path) -> None:
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="routed-model"),
+        ):
+            await dispatch_prompt(_ToolStep(), "fix it", cwd=tmp_path, ctx=self._ctx(tmp_path, pin="claude-sonnet-5"))
+
+        assert runtime.spawn_calls[0]["model"] == "claude-sonnet-5"
+
+    async def test_pinned_model_still_falls_back_on_a_rate_limit(self, tmp_path: Path) -> None:
+        """A pin replaces the primary only; agent.fallback_models still applies."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _FlakyModelRuntime(_StubProcess(stdout=["__RESULT__"]), failing_model="claude-sonnet-5")
+        cfg = _config_with_fallbacks("backup-one")
+        cfg.roles.developer_runtime_model = "claude-sonnet-5"
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            patch(
+                "sova.core.agent_dispatch.client.prepare_invocation",
+                new_callable=AsyncMock,
+                return_value=(cfg, "routed-model", 900.0),
+            ),
+        ):
+            await dispatch_command(_ToolStep(), "/develop", cwd=tmp_path, ctx=self._ctx(tmp_path))
+
+        assert [c["model"] for c in runtime.spawn_calls] == ["claude-sonnet-5", "backup-one"]

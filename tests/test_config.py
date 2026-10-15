@@ -20,6 +20,7 @@ from sova.config.models import (
     PipelineDefinitions,
     ProjectConfig,
     ReviewConfig,
+    RolesConfig,
     TaskSourceConfig,
     TriageConfig,
     ValidateConfig,
@@ -34,6 +35,7 @@ def test_default_config() -> None:
     assert cfg.base_branch == "main"
     assert cfg.task_source.type == "github"
     assert cfg.agent.model == "opus"
+    assert cfg.roles.developer_runtime_model == ""
     assert cfg.agent.fallback_models == []
     assert cfg.agent.max_budget == Decimal("10.00")
     assert cfg.agent.step_timeout == 1800
@@ -1825,3 +1827,30 @@ class TestConfigGet:
         flat["llm.api_key"] = "sk-super-secret-token"
 
         assert get_config(raw=flat)["llm.api_key"] != "sk-super-secret-token"
+
+
+class TestRoleRuntimeModel:
+    """roles.<role>_runtime_model (#1039): a per-role pin for the coding-agent runtime."""
+
+    def test_returns_the_configured_value_for_a_role_that_has_one(self) -> None:
+        roles = RolesConfig(developer_runtime_model="claude-sonnet-5")
+        assert roles.runtime_model_for("developer") == "claude-sonnet-5"
+
+    def test_empty_by_default(self) -> None:
+        assert RolesConfig().runtime_model_for("developer") == ""
+
+    @pytest.mark.parametrize("role", ["reviewer", "researcher", "planner", "triage", "my-custom-role", ""])
+    def test_roles_without_a_field_report_no_pin(self, role: str) -> None:
+        """Only the developer role reaches the coding-agent runtime today, so it is
+        the only role with a field; any other role must read as "no pin", not raise."""
+        assert RolesConfig(developer_runtime_model="claude-sonnet-5").runtime_model_for(role) == ""
+
+    def test_agent_runtime_model_global_is_gone(self) -> None:
+        """Replaced by the per-role field: one global value could not tell roles apart."""
+        assert "runtime_model" not in AgentConfig.model_fields
+
+    def test_pin_roles_are_exactly_the_roles_with_a_field(self) -> None:
+        """resolve_runtime_model_pin() gates both pin sources on this one set."""
+        from sova.config.models import RUNTIME_MODEL_PIN_ROLES
+
+        assert RUNTIME_MODEL_PIN_ROLES == frozenset({"developer"})

@@ -510,9 +510,32 @@ class RolesConfig(BaseSettings):
     # routing for every developer run, since role config outranks it.
     developer_model: str = ""
     planner_model: str = "sonnet"
+    # Pins the model the coding-agent runtime runs for this role's tool-using
+    # pipeline steps, ahead of the routed model above (issue #1039). Sourced
+    # from the runtime's own catalog (layer 1), unlike the *_model fields,
+    # which also drive text-only LLM calls (layer 2). Empty means no pin.
+    # Only developer has a field: it is the only role whose steps reach the
+    # runtime (requires_tools), so a reviewer/researcher/planner/triage pin
+    # would silently do nothing. A role gaining such steps adds its field
+    # here and to _RUNTIME_MODEL_FIELDS.
+    developer_runtime_model: str = ""
     nicknames: dict[str, str] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_ROLES_")
+
+    def runtime_model_for(self, role: str) -> str:
+        """Return *role*'s runtime-model pin, or "" when it has none or no field."""
+        field_name = _RUNTIME_MODEL_FIELDS.get(role)
+        return getattr(self, field_name) if field_name else ""
+
+
+_RUNTIME_MODEL_FIELDS: dict[str, str] = {"developer": "developer_runtime_model"}
+
+# The roles a runtime-model pin applies to, from either source (the config
+# field above or the launch modal's per-run override). One set, read by
+# sova.ipc.runtime.resolve_runtime_model_pin() and the dashboard's start path,
+# so the sources cannot disagree about which roles can be pinned.
+RUNTIME_MODEL_PIN_ROLES: frozenset[str] = frozenset(_RUNTIME_MODEL_FIELDS)
 
 
 class SpecConfig(BaseSettings):
