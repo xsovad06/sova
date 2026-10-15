@@ -14,7 +14,7 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="commands.catalog")
 
-_FRONTMATTER_RE = re.compile(r"^---(?>[^\S\n]*\n)+(.*?)\n---(?>[^\S\n]*\n)+", re.DOTALL)
+_FRONTMATTER_RE = re.compile(r"^---[^\S\n]*\n(.*?)\n---[^\S\n]*\n", re.DOTALL)
 
 
 @dataclass
