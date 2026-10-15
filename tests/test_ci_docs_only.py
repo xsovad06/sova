@@ -1043,11 +1043,7 @@ class TestSonarCloudWorkflowGate:
         [
             (
                 "baseline is the previous green run, check success",
-                {
-                    "workflow_runs": [
-                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
-                    ]
-                },
+                {"workflow_runs": [{"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}]},
                 {"check_runs": [{"name": "SonarCloud Analysis", "status": "completed", "conclusion": "success"}]},
                 "success",
                 True,
@@ -1073,33 +1069,21 @@ class TestSonarCloudWorkflowGate:
             ),
             (
                 "baseline commit has no SonarCloud check at all",
-                {
-                    "workflow_runs": [
-                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
-                    ]
-                },
+                {"workflow_runs": [{"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}]},
                 {"check_runs": []},
                 "unknown",
                 True,
             ),
             (
                 "baseline SonarCloud check is still in progress",
-                {
-                    "workflow_runs": [
-                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
-                    ]
-                },
+                {"workflow_runs": [{"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}]},
                 {"check_runs": [{"name": "SonarCloud Analysis", "status": "in_progress", "conclusion": None}]},
                 "unknown",
                 True,
             ),
             (
                 "baseline SonarCloud check was cancelled: never consulted the gate, not a pass",
-                {
-                    "workflow_runs": [
-                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
-                    ]
-                },
+                {"workflow_runs": [{"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}]},
                 {"check_runs": [{"name": "SonarCloud Analysis", "status": "completed", "conclusion": "cancelled"}]},
                 "unknown",
                 True,
@@ -1113,11 +1097,7 @@ class TestSonarCloudWorkflowGate:
             ),
             (
                 "the baseline check-runs lookup fails outright",
-                {
-                    "workflow_runs": [
-                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
-                    ]
-                },
+                {"workflow_runs": [{"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}]},
                 "FAIL",
                 "unknown",
                 True,
