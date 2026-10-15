@@ -19,6 +19,7 @@ from sova.supervisor.dependency_graph import (
     invalidate_graph_cache,
     is_human_only,
     is_interactive_recommended,
+    is_ready,
     parse_dependencies,
 )
 
@@ -1636,7 +1637,7 @@ class TestNodePriorityField:
 
 
 # ---------------------------------------------------------------------------
-# is_human_only / is_interactive_recommended label helpers
+# is_human_only / is_interactive_recommended / is_ready label helpers
 # ---------------------------------------------------------------------------
 
 
@@ -1675,6 +1676,29 @@ class TestIsInteractiveRecommended:
 
     def test_unrelated_labels(self) -> None:
         assert is_interactive_recommended(["area: dashboard", "agent:human-only"]) is False
+
+
+class TestIsReady:
+    def test_no_labels(self) -> None:
+        assert is_ready([]) is False
+
+    def test_exact_match(self) -> None:
+        assert is_ready(["agent:ready"]) is True
+
+    def test_case_insensitive(self) -> None:
+        assert is_ready(["Agent:Ready"]) is True
+
+    def test_with_spaces(self) -> None:
+        assert is_ready(["  agent:ready  "]) is True
+
+    def test_unrelated_labels(self) -> None:
+        assert is_ready(["area: dashboard", "priority: high"]) is False
+
+    def test_among_other_labels(self) -> None:
+        assert is_ready(["type: feature", "agent:ready", "priority: low"]) is True
+
+    def test_prefix_is_not_a_match(self) -> None:
+        assert is_ready(["agent:ready-for-review"]) is False
 
 
 # ---------------------------------------------------------------------------

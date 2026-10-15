@@ -60,6 +60,11 @@ def is_interactive_recommended(labels: list[str]) -> bool:
     return any(label.lower().strip() == "agent:interactive-recommended" for label in labels)
 
 
+def is_ready(labels: list[str]) -> bool:
+    """Return True if labels include 'agent:ready' (case-insensitive)."""
+    return any(label.lower().strip() == "agent:ready" for label in labels)
+
+
 # States that should be excluded from "ready to work on": either already
 # being worked on, already completed, or explicitly rejected/blocked.
 _EXCLUDED_FROM_READY: frozenset[TaskState] = frozenset(

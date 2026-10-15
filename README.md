@@ -350,7 +350,7 @@ log_backup_count = 5
 | **Setup** | `sova install <path>`, `sova setup <path>`, `sova uninstall <path>`, `sova init-db`, `sova doctor` |
 | **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova learn-from-pr <pr>` |
 | **Monitor** | `sova status`, `sova costs`, `sova briefing` ([setup](docs/awareness-setup.md)), `sova config`, `sova dashboard` |
-| **Knowledge** | `sova memory search\|prune\|dump\|export\|import` |
+| **Knowledge** | `sova memory search\|prune\|dump\|export\|import`, `sova assess set\|get\|clear <issue>` |
 | **Commands** | `sova commands list\|diff\|update\|sync` |
 | **MCP** | `sova mcp serve` |
 | **Maintenance** | `sova cleanup` |

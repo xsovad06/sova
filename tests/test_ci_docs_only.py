@@ -991,7 +991,7 @@ class TestSonarCloudWorkflowGate:
         which file actually arrived.
         """
         block = _between(sonar_text, "Classify the downloaded artifact", "Check SONAR_TOKEN is available")
-        assert "if [ -f coverage.xml ]; then" in block
+        assert 'if [ -f "${RUNNER_TEMP}/sova-coverage/coverage.xml" ]; then' in block
         assert 'echo "present=true" >> "$GITHUB_OUTPUT"' in block
         assert 'echo "present=false" >> "$GITHUB_OUTPUT"' in block
 
@@ -1016,7 +1016,9 @@ class TestSonarCloudWorkflowGate:
         """The clone must be skipped on the docs-only path, and never delete the downloaded artifact."""
         block = _between(sonar_text, "actions/checkout@v4", "Fetch trusted sonar-project.properties")
         assert "if: steps.coverage.outputs.present == 'true'" in block
-        assert "clean: false" in block
+        # The artifact is downloaded outside $GITHUB_WORKSPACE (runner.temp), so
+        # this checkout's default clean behavior cannot delete it.
+        assert "path: ${{ runner.temp }}/sova-coverage" in sonar_text
         # The checkout must come after the download+classify steps, not before,
         # so the cheap classification can skip the clone entirely.
         assert sonar_text.index("Download coverage report") < sonar_text.index("actions/checkout@v4")

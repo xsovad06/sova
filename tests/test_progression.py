@@ -781,6 +781,9 @@ class TestEvaluateTask:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
@@ -810,6 +813,9 @@ class TestEvaluateTask:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
@@ -838,6 +844,9 @@ class TestEvaluateTask:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
@@ -972,6 +981,9 @@ class TestEvaluateAll:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
@@ -1011,6 +1023,9 @@ class TestEvaluateAll:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
@@ -1057,6 +1072,9 @@ class TestEvaluateAll:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
@@ -1094,6 +1112,9 @@ class TestEvaluateAll:
         quota_block = BlockReason(gate="quota", detail="CodeRabbit quota exhausted")
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=quota_block),
             patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
@@ -1534,6 +1555,9 @@ class TestConnectivityGate:
         memory_block = BlockReason(gate="memory", detail="Low memory")
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
@@ -1571,6 +1595,9 @@ class TestConnectivityGate:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
@@ -1855,6 +1882,9 @@ class TestEvaluateAllEdgeCases:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
@@ -1884,6 +1914,9 @@ class TestEvaluateAllEdgeCases:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
@@ -1917,6 +1950,9 @@ class TestEvaluateAllEdgeCases:
         )
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_dependency_gate", return_value=None),
             patch("sova.supervisor.progression.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
@@ -3619,6 +3655,9 @@ class TestEvaluateTaskAddressReview:
                 return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, PRInfo(number=55, url="")),
             ),
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.supervisor.progression.check_budget_gate", new_callable=AsyncMock, return_value=None),
             patch("sova.supervisor.progression.check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch(
@@ -3872,36 +3911,220 @@ class TestCIBudgetGate:
 
 
 class TestHumanInvolvementGate:
-    def test_no_labels_passes(self) -> None:
-        result = check_human_involvement_gate(1, [])
+    async def test_no_labels_passes(self) -> None:
+        result = await check_human_involvement_gate(1, [])
         assert result is None
 
-    def test_unrelated_labels_pass(self) -> None:
-        result = check_human_involvement_gate(1, ["area: dashboard", "priority: high"])
+    async def test_unrelated_labels_pass(self) -> None:
+        result = await check_human_involvement_gate(1, ["area: dashboard", "priority: high"])
         assert result is None
 
-    def test_human_only_label_blocks(self) -> None:
-        result = check_human_involvement_gate(1, ["agent:human-only"])
+    async def test_human_only_label_blocks(self) -> None:
+        result = await check_human_involvement_gate(1, ["agent:human-only"])
         assert result is not None
         assert result.gate == "human_involvement"
         assert "human-only" in result.detail
 
-    def test_interactive_recommended_label_blocks(self) -> None:
-        result = check_human_involvement_gate(1, ["agent:interactive-recommended"])
+    async def test_interactive_recommended_label_blocks(self) -> None:
+        result = await check_human_involvement_gate(1, ["agent:interactive-recommended"])
         assert result is not None
         assert result.gate == "human_involvement"
         assert "interactive-recommended" in result.detail
         assert "manual start only" in result.detail
 
-    def test_both_labels_blocks_human_only(self) -> None:
-        result = check_human_involvement_gate(1, ["agent:human-only", "agent:interactive-recommended"])
+    async def test_both_labels_blocks_human_only(self) -> None:
+        result = await check_human_involvement_gate(1, ["agent:human-only", "agent:interactive-recommended"])
         assert result is not None
         assert "human-only" in result.detail
 
-    def test_case_insensitive(self) -> None:
-        result = check_human_involvement_gate(1, ["Agent:Human-Only"])
+    async def test_case_insensitive(self) -> None:
+        result = await check_human_involvement_gate(1, ["Agent:Human-Only"])
         assert result is not None
         assert result.gate == "human_involvement"
+
+
+class TestHumanInvolvementGateLocalRecord:
+    """The `task_assessments` fallback consulted when no suitability label exists."""
+
+    @pytest.fixture
+    async def session_factory(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        project_dir = Path(tempfile.mkdtemp())
+        await init_db(project_dir, run_migrations=False)
+        yield await get_session_factory(project_dir)
+        await close_db()
+
+    @staticmethod
+    async def _record(session_factory, suitability: str, *, issue: str = "1", project: str = "owner/repo") -> None:
+        from sova.knowledge.assessments import set_assessment
+
+        async with session_factory() as session:
+            await set_assessment(
+                session,
+                issue_number=issue,
+                project_slug=project,
+                suitability=suitability,
+                reasoning="test",
+            )
+
+    async def test_local_human_only_blocks_when_no_label(self, session_factory) -> None:
+        await self._record(session_factory, "human_only")
+
+        result = await check_human_involvement_gate(
+            1, [], session_factory=session_factory, project_slug="owner/repo", candidate="spawn_triage"
+        )
+        assert result is not None
+        assert result.gate == "human_involvement"
+        assert "human-only" in result.detail
+        assert "sova assess clear 1" in result.detail
+
+    async def test_local_interactive_recommended_blocks_when_no_label(self, session_factory) -> None:
+        await self._record(session_factory, "interactive_recommended")
+
+        result = await check_human_involvement_gate(
+            1, [], session_factory=session_factory, project_slug="owner/repo", candidate="spawn_developer"
+        )
+        assert result is not None
+        assert "interactive-recommended" in result.detail
+        assert "manual start only" in result.detail
+        assert "sova assess clear 1" in result.detail
+
+    async def test_local_ready_record_does_not_block(self, session_factory) -> None:
+        await self._record(session_factory, "ready")
+
+        result = await check_human_involvement_gate(
+            1, [], session_factory=session_factory, project_slug="owner/repo", candidate="spawn_triage"
+        )
+        assert result is None
+
+    async def test_ready_label_wins_over_conflicting_local_record(self, session_factory) -> None:
+        await self._record(session_factory, "human_only")
+
+        result = await check_human_involvement_gate(
+            1,
+            ["agent:ready"],
+            session_factory=session_factory,
+            project_slug="owner/repo",
+            candidate="spawn_triage",
+        )
+        assert result is None
+
+    async def test_local_record_for_different_project_is_ignored(self, session_factory) -> None:
+        await self._record(session_factory, "human_only", project="other/repo")
+
+        result = await check_human_involvement_gate(
+            1, [], session_factory=session_factory, project_slug="owner/repo", candidate="spawn_triage"
+        )
+        assert result is None
+
+    async def test_local_record_for_different_issue_is_ignored(self, session_factory) -> None:
+        await self._record(session_factory, "human_only", issue="2")
+
+        result = await check_human_involvement_gate(
+            1, [], session_factory=session_factory, project_slug="owner/repo", candidate="spawn_triage"
+        )
+        assert result is None
+
+    async def test_no_session_factory_skips_local_fallback(self, session_factory) -> None:
+        """A blocking record exists, but without a factory the gate cannot see it."""
+        await self._record(session_factory, "human_only")
+
+        result = await check_human_involvement_gate(1, [], project_slug="owner/repo", candidate="spawn_triage")
+        assert result is None
+
+    async def test_unreadable_local_store_fails_open(self) -> None:
+        """A broken local store must not block a ticket that was never gated."""
+
+        def exploding_factory():
+            raise RuntimeError("local store unavailable")
+
+        result = await check_human_involvement_gate(
+            1, [], session_factory=exploding_factory, project_slug="owner/repo", candidate="spawn_triage"
+        )
+        assert result is None
+
+    async def test_no_candidate_skips_local_fallback(self, session_factory) -> None:
+        """Without a pre-development candidate, the fallback is never consulted."""
+        await self._record(session_factory, "human_only")
+
+        result = await check_human_involvement_gate(1, [], session_factory=session_factory, project_slug="owner/repo")
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            "spawn_address_review",
+            "spawn_integrate",
+            "spawn_reviewer",
+            "spawn_address_pr",
+            "spawn_rebase",
+            "reset_stale_state",
+            "repair_to_in_review",
+        ],
+    )
+    async def test_post_development_candidates_never_blocked_by_local_record(
+        self, session_factory, candidate: str
+    ) -> None:
+        """A local human-only record must never block finishing already-started work."""
+        await self._record(session_factory, "human_only")
+
+        result = await check_human_involvement_gate(
+            1, [], session_factory=session_factory, project_slug="owner/repo", candidate=candidate
+        )
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "label",
+        ["agent:triaged", "agent:researched", "agent:in-progress", "agent:in-review", "agent:on-qa"],
+    )
+    async def test_later_pipeline_labels_short_circuit_local_fallback(self, session_factory, label: str) -> None:
+        """A later pipeline-state label clears the local record the same way agent:ready does."""
+        await self._record(session_factory, "human_only")
+
+        result = await check_human_involvement_gate(
+            1, [label], session_factory=session_factory, project_slug="owner/repo", candidate="spawn_triage"
+        )
+        assert result is None
+
+    async def test_set_assessment_records_no_complexity_opinion(self, session_factory) -> None:
+        """The dashboard complexity endpoint treats a truthy value as authoritative."""
+        from sova.knowledge.assessments import get_latest_assessment
+
+        await self._record(session_factory, "human_only")
+        async with session_factory() as session:
+            record = await get_latest_assessment(session, issue_number="1", project_slug="owner/repo")
+        assert record is not None
+        assert record.estimated_complexity == ""
+
+
+class TestHumanInvolvementGateWiring:
+    """`_collect_gate_blockers` must thread its own store and project slug through."""
+
+    async def test_gate_receives_session_factory_and_project_slug(self) -> None:
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        engine = _make_engine()
+        graph = DependencyGraph([_task(1, state=TaskState.RESEARCHED)])
+        with patch(
+            "sova.supervisor.progression.check_human_involvement_gate",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as gate:
+            await engine._collect_gate_blockers(
+                1,
+                ProgressionAction.SPAWN_DEVELOPER,
+                graph,
+                task_labels=["area: dashboard"],
+            )
+        assert gate.await_count == 1
+        args, kwargs = gate.await_args
+        assert args[0] == 1
+        assert args[1] == ["area: dashboard"]
+        assert kwargs["session_factory"] is engine._session_factory
+        assert kwargs["project_slug"] == engine._config.github_repo
+        assert kwargs["candidate"] == ProgressionAction.SPAWN_DEVELOPER.value
 
 
 class TestExecuteDecisionsCap:
@@ -3942,6 +4165,9 @@ class TestStaleInProgressReset:
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
             patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
+            patch(
                 "sova.supervisor.progression.find_pr_for_issue_checked",
                 new_callable=AsyncMock,
                 return_value=None,
@@ -3962,6 +4188,9 @@ class TestStaleInProgressReset:
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
             patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
+            patch(
                 "sova.supervisor.progression.find_pr_for_issue_checked",
                 new_callable=AsyncMock,
                 return_value=None,
@@ -3981,6 +4210,9 @@ class TestStaleInProgressReset:
         pr_info = PRInfo(number=77, url="https://github.com/o/r/pull/77")
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch(
                 "sova.supervisor.progression.find_pr_for_issue_checked",
                 new_callable=AsyncMock,
@@ -4004,6 +4236,9 @@ class TestStaleInProgressReset:
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
             patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
+            patch(
                 "sova.supervisor.progression.find_pr_for_issue_checked",
                 new_callable=AsyncMock,
                 side_effect=PRLookupError("lookup failed"),
@@ -4023,6 +4258,9 @@ class TestStaleInProgressReset:
         engine._adapter.repo = ""
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch(
                 "sova.supervisor.progression.find_pr_for_issue_checked",
                 new_callable=AsyncMock,
@@ -4050,6 +4288,9 @@ class TestStaleInProgressReset:
         with (
             patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit,
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
         ):
             result = await engine.execute_decision(decision)
         assert result["repaired"] is True
@@ -4132,6 +4373,9 @@ class TestStaleInProgressReset:
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
             patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
+            patch(
                 "sova.supervisor.progression.find_pr_for_issue_checked",
                 new_callable=AsyncMock,
             ) as mock_find,
@@ -4209,6 +4453,9 @@ class TestStaleInProgressReset:
         decision = ProgressionDecision(issue_number=10, action=ProgressionAction.RESET_STALE_STATE, reason="stale")
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch("sova.dashboard.services.feed_service.emit_safe"),
         ):
             result = await engine.execute_decision(decision)
@@ -4326,6 +4573,9 @@ class TestStaleInProgressReset:
 
         with (
             patch("sova.supervisor.progression.check_already_running", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.supervisor.progression.check_human_involvement_gate", new_callable=AsyncMock, return_value=None
+            ),
             patch.object(engine._adapter, "get_state", new_callable=AsyncMock, return_value=TaskState.IN_PROGRESS),
             patch(
                 "sova.supervisor.progression.build_dependency_graph",
@@ -4538,7 +4788,7 @@ class TestReviewGatePassesPrData:
                 return_value=(None, None),
             ),
             patch(f"{_p}.check_dependency_gate", return_value=None),
-            patch(f"{_p}.check_human_involvement_gate", return_value=None),
+            patch(f"{_p}.check_human_involvement_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_p}.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_p}.check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_p}.check_memory_pressure_gate", return_value=None),
@@ -4589,7 +4839,7 @@ class TestReviewGatePassesPrData:
                 return_value=(None, None),
             ),
             patch(f"{_p}.check_dependency_gate", return_value=None),
-            patch(f"{_p}.check_human_involvement_gate", return_value=None),
+            patch(f"{_p}.check_human_involvement_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_p}.check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_p}.check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch(f"{_p}.check_memory_pressure_gate", return_value=None),

@@ -64,7 +64,7 @@ class TestCoverageReporting:
         assert "--timeout=60" in pytest_cmd
 
     def test_sonar_consumes_coverage_xml(self, sonar_text: str) -> None:
-        assert "sonar.python.coverage.reportPaths=coverage.xml" in sonar_text
+        assert "sonar.python.coverage.reportPaths=${{ runner.temp }}/sova-coverage/coverage.xml" in sonar_text
 
     def test_sonar_never_runs_pytest_itself(self, sonar_text: str) -> None:
         # sonarcloud.yml downloads the coverage-xml artifact ci.yml's python-test

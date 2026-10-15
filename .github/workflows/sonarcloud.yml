@@ -182,6 +182,17 @@ jobs:
       # talks to the Artifacts API by run-id), and classifying its result
       # first lets the expensive full-history clone be skipped entirely on
       # the documentation-only path.
+      #
+      # Downloaded to a directory OUTSIDE $GITHUB_WORKSPACE (runner.temp)
+      # rather than into the workspace itself: the checkout step below
+      # unconditionally empties $GITHUB_WORKSPACE before it initializes a
+      # fresh clone whenever that directory is not already the right git
+      # repo, regardless of its `clean` input (`clean: false` only skips the
+      # post-checkout `git clean`, not this initial wipe). With the artifact
+      # inside the workspace, that checkout silently deleted coverage.xml
+      # before the scan step ever read it, so every run analyzed 0% new-code
+      # coverage and failed the quality gate (observed on #1221 and on
+      # main's own #1218 landing commit).
       - name: Download coverage report from the triggering CI run
         id: artifact
         if: github.event.workflow_run.conclusion == 'success'
@@ -189,6 +200,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: coverage-xml
+          path: ${{ runner.temp }}/sova-coverage
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
 
@@ -202,7 +214,7 @@ jobs:
         if: steps.artifact.outcome == 'success'
         run: |
           set -euo pipefail
-          if [ -f coverage.xml ]; then
+          if [ -f "${RUNNER_TEMP}/sova-coverage/coverage.xml" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::CI published no coverage (documentation-only change); skipping the scan"
@@ -214,17 +226,15 @@ jobs:
       # tree (the baseline-verdict lookup and the reporter both work off the
       # GitHub API alone), so a full-history clone would be pure overhead on
       # every docs-only push, the exact path this whole workflow_run rewiring
-      # exists to make cheap. `clean: false` because the artifact above was
-      # already downloaded into this same workspace directory: checkout's
-      # default `git clean -ffdx` would delete that untracked coverage.xml
-      # before the scan step gets to read it.
+      # exists to make cheap. The coverage artifact lives outside the
+      # workspace (see above), so this checkout can use its normal defaults
+      # without risking that file.
       - uses: actions/checkout@v4
         if: steps.coverage.outputs.present == 'true'
         with:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-          clean: false
 
       # Closes the properties-trust gap for a fork PR: the scanner reads
       # sonar.exclusions, sonar.coverage.exclusions and sonar.projectKey
@@ -420,7 +430,7 @@ jobs:
         with:
           args: >
             -Dsonar.qualitygate.wait=true
-            -Dsonar.python.coverage.reportPaths=coverage.xml
+            -Dsonar.python.coverage.reportPaths=${{ runner.temp }}/sova-coverage/coverage.xml
             -Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }}
             ${{ steps.pr.outputs.number != '' && format(
               '-Dsonar.pullrequest.key={0} -Dsonar.pullrequest.branch={1} -Dsonar.pullrequest.base={2}',
