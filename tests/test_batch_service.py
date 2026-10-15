@@ -22,6 +22,7 @@ from sova.dashboard.services.batch_service import (
     start_batch_run,
 )
 from sova.db.session import close_db, init_db
+from tests.conftest import drain_feed_persist
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +30,7 @@ async def setup_db():
     os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
     await init_db(run_migrations=False)
     yield
+    await drain_feed_persist()
     await close_db()
     os.environ.pop("SOVA_DATABASE_URL", None)
 

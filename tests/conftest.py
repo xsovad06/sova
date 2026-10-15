@@ -10,17 +10,112 @@ an auto-migration fallback that epic #550 intends to remove. See issue #557.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+import structlog
 
 # ``SOVA_DATABASE_URL`` is set deliberately by several test modules (at import
 # time) to route ORM access to an in-memory SQLite DB, so it must survive the
 # env-isolation fixture below.
 _PRESERVED_ENV = frozenset({"SOVA_DATABASE_URL"})
+
+
+def configure_test_logging() -> None:
+    """Render exceptions as plain tracebacks instead of rich-with-locals.
+
+    ``tests/conftest.py`` never called ``structlog.configure()`` before this
+    helper, so every ``log.debug(..., exc_info=True)`` call rendered through
+    structlog's default chain, which leaves ``exc_info`` live for
+    ``ConsoleRenderer`` to format with a ``RichTracebackFormatter`` (locals
+    included) whenever ``rich`` is importable. That render costs about 0.43s
+    per call on an M4 and more under coverage, and the suite hits it hundreds
+    of times (see ``drain_feed_persist`` below for the most common trigger),
+    accounting for roughly a third of CI test time.
+
+    The chain below is production ``setup_logging()``'s own (see
+    ``sova/utils/logging.py``) with colors forced off: ``format_exc_info``
+    flattens the exception into a plain string before the renderer sees it,
+    which is what makes the render cheap, so passing ``ConsoleRenderer`` an
+    ``exception_formatter`` here would be dead config. Filtering stays at
+    DEBUG (the unconfigured default lets every level through), so
+    ``structlog.testing.capture_logs()`` still captures debug events: it swaps
+    the configured processor list in place for its own ``LogCapture``,
+    independent of whatever renderer sits ahead of it.
+
+    ``cache_logger_on_first_use`` stays off, unlike production, which sets it:
+    production configures once, whereas this helper is re-applied whenever a
+    test perturbs the process-global config. Caching turns a lazy proxy into a
+    bound logger on first use, freezing the wrapper class and the *identity* of
+    the processor list it holds, and a later ``structlog.configure()`` installs
+    a new list. Both the "swaps the list in place" guarantee above and the
+    re-application below then silently stop applying to every logger already
+    used: measured with structlog 26.1.0, ``capture_logs()`` sees 0 of 1 event
+    from such a logger with caching on and 1 of 1 with it off. Caching buys
+    nothing here either way (9 us per call measured with it both on and off).
+
+    Exposed as a plain function, not only as the fixture below, because
+    structlog's configuration is process-global and a session fixture cannot
+    reinstate it: a test that calls production ``setup_logging()`` unpatched
+    has to call this again afterwards (see ``tests/test_logging_rotation.py``).
+
+    ``logger_factory`` is set explicitly, to a ``PrintLoggerFactory`` bound to
+    whatever ``sys.stdout`` is live at call time, rather than left unset.
+    ``sys.stdout`` (not ``stderr``, unlike production ``setup_logging()``)
+    because ``tests/test_jira_adapter.py::test_unmapped_status_logs_warning``
+    already asserts a structlog warning lands on ``capsys``'s ``.out``, which
+    only holds with structlog's own unconfigured default
+    (``PrintLoggerFactory()`` with no ``file``, which resolves to ``stdout``);
+    switching the test suite's default to ``stderr`` to mirror production
+    would silently break that assertion. Binding fresh at call time is what
+    matters here: production binds its own ``PrintLoggerFactory`` to the
+    ``sys.stderr`` object live when *it* runs, and pytest's output capture
+    swaps in a fresh stream per test and closes the old one, so a test that
+    calls production ``setup_logging()`` and then re-applies this helper
+    (per the docstring above) would otherwise inherit that now-closed stream
+    rather than falling back to a working default, and the next structlog
+    write raises ``ValueError: I/O operation on closed file``.
+    """
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.dev.ConsoleRenderer(colors=False),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=False,
+    )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _configure_test_logging() -> None:
+    """Apply ``configure_test_logging()`` once, before the first test runs."""
+    configure_test_logging()
+
+
+async def drain_feed_persist() -> None:
+    """Await any in-flight feed-persistence tasks before a DB teardown fixture closes it.
+
+    ``FeedService.emit()`` (used via ``emit_safe()`` by ``start_agent``,
+    ``start_batch``, and auto-handoff) schedules ``_persist()`` as a
+    fire-and-forget background task. If a test's ``setup_db`` fixture calls
+    ``close_db()`` while that task is still pending, the task's commit throws
+    ("Cannot operate on a closed database") and logs ``feed.persist_failed``
+    with ``exc_info=True``. Call this before ``close_db()`` in any DB teardown
+    fixture whose test exercises feed events; a no-op when nothing is pending.
+    """
+    from sova.dashboard.services.feed_service import get_feed_service
+
+    await get_feed_service().drain_persist()
 
 
 @pytest.fixture(autouse=True)
