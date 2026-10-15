@@ -256,6 +256,7 @@ def _resolve_baseline_verdict(
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "REPO": "xsovad06/sova",
             "HEAD_SHA": "deadbeef",
+            "HEAD_REPO": "xsovad06/sova",
             "HEAD_BRANCH": "feat/x",
             "EVENT_NAME": "pull_request",
             "GITHUB_OUTPUT": str(out_file),
@@ -292,6 +293,8 @@ def _report_check_result(script: str, env_overrides: dict[str, str], tmp_path: P
         "TOKEN_AVAILABLE": "true",
         "PR_GUARD_RESOLVABLE": "true",
         "SCAN_OUTCOME": "success",
+        "HEAD_SHA": "deadbeef",
+        "DETAILS_URL": "https://example.invalid",
     }
     result = subprocess.run(
         ["bash", "-c", script],
@@ -930,8 +933,9 @@ class TestSonarCloudWorkflowGate:
         and strand the PR), which per-outcome steps cannot.
         """
         block = sonar_text[sonar_text.index("- name: Report check result") :]
-        assert "if: always() && steps.check.outputs.id != ''" in block
+        assert "if: always()" in block
         assert sonar_text.count('check-runs/${CHECK_ID}" -X PATCH') == 1
+        assert 'if [ -n "$CHECK_ID" ]; then' in block, "must fall back to POST when the pending check was never created"
         guards = (
             "$CI_CONCLUSION",
             "$JOB_STATUS",
@@ -993,8 +997,24 @@ class TestSonarCloudWorkflowGate:
 
     def test_checkout_uses_workflow_run_head_sha(self, sonar_text: str) -> None:
         """The scan must analyze the triggering run's actual head commit."""
-        block = _between(sonar_text, "actions/checkout@v4", "Download coverage report")
+        block = _between(sonar_text, "actions/checkout@v4", "Fetch trusted sonar-project.properties")
         assert "ref: ${{ github.event.workflow_run.head_sha }}" in block
+
+    def test_checkout_is_gated_on_coverage_present_and_preserves_the_artifact(self, sonar_text: str) -> None:
+        """The clone must be skipped on the docs-only path, and never delete the downloaded artifact."""
+        block = _between(sonar_text, "actions/checkout@v4", "Fetch trusted sonar-project.properties")
+        assert "if: steps.coverage.outputs.present == 'true'" in block
+        assert "clean: false" in block
+        # The checkout must come after the download+classify steps, not before,
+        # so the cheap classification can skip the clone entirely.
+        assert sonar_text.index("Download coverage report") < sonar_text.index("actions/checkout@v4")
+        assert sonar_text.index("Classify the downloaded artifact") < sonar_text.index("actions/checkout@v4")
+
+    def test_fork_properties_are_fetched_from_base_branch(self, sonar_text: str) -> None:
+        """A fork PR's own sonar-project.properties must not be trusted wholesale."""
+        block = sonar_text[sonar_text.index("- name: Fetch trusted sonar-project.properties for fork PRs") :]
+        assert "github.event.workflow_run.head_repository.full_name != github.repository" in block
+        assert "contents/sonar-project.properties" in block
 
     def test_scan_falls_back_to_branch_params_with_no_pr(self, sonar_text: str) -> None:
         """A push to main has no PR context, only a branch."""
@@ -1015,37 +1035,72 @@ class TestSonarCloudWorkflowGate:
         assert '[.check_runs[] | select(.name == "SonarCloud Analysis")]' in sonar_text
         block = _between(sonar_text, '"$COVERAGE_PRESENT" != "true"', 'elif [ "$TOKEN_AVAILABLE"')
         assert '"$BASELINE_VERDICT" in' in block
-        assert "none | success | neutral | cancelled" in block
-        assert "unknown)" in block
+        assert "none | success | neutral)" in block
+        assert "unknown | cancelled)" in block
 
     @pytest.mark.parametrize(
         ("label", "runs_json", "check_runs_json", "expected_verdict", "expect_runs_get"),
         [
             (
                 "baseline is the previous green run, check success",
-                {"workflow_runs": [{"head_sha": "baselinesha"}]},
+                {
+                    "workflow_runs": [
+                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
+                    ]
+                },
                 {"check_runs": [{"name": "SonarCloud Analysis", "status": "completed", "conclusion": "success"}]},
                 "success",
                 True,
             ),
             (
                 "baseline list contains only the current head sha",
-                {"workflow_runs": [{"head_sha": "deadbeef"}]},
+                {"workflow_runs": [{"head_sha": "deadbeef", "head_repository": {"full_name": "xsovad06/sova"}}]},
                 "FAIL",
                 "none",
                 True,
             ),
             (
+                "a candidate from a different fork sharing this branch name is excluded",
+                {
+                    "workflow_runs": [
+                        {"head_sha": "forksha", "head_repository": {"full_name": "someone/sova"}},
+                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}},
+                    ]
+                },
+                {"check_runs": [{"name": "SonarCloud Analysis", "status": "completed", "conclusion": "success"}]},
+                "success",
+                True,
+            ),
+            (
                 "baseline commit has no SonarCloud check at all",
-                {"workflow_runs": [{"head_sha": "baselinesha"}]},
+                {
+                    "workflow_runs": [
+                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
+                    ]
+                },
                 {"check_runs": []},
-                "none",
+                "unknown",
                 True,
             ),
             (
                 "baseline SonarCloud check is still in progress",
-                {"workflow_runs": [{"head_sha": "baselinesha"}]},
+                {
+                    "workflow_runs": [
+                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
+                    ]
+                },
                 {"check_runs": [{"name": "SonarCloud Analysis", "status": "in_progress", "conclusion": None}]},
+                "unknown",
+                True,
+            ),
+            (
+                "baseline SonarCloud check was cancelled: never consulted the gate, not a pass",
+                {
+                    "workflow_runs": [
+                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
+                    ]
+                },
+                {"check_runs": [{"name": "SonarCloud Analysis", "status": "completed", "conclusion": "cancelled"}]},
                 "unknown",
                 True,
             ),
@@ -1058,7 +1113,11 @@ class TestSonarCloudWorkflowGate:
             ),
             (
                 "the baseline check-runs lookup fails outright",
-                {"workflow_runs": [{"head_sha": "baselinesha"}]},
+                {
+                    "workflow_runs": [
+                        {"head_sha": "baselinesha", "head_repository": {"full_name": "xsovad06/sova"}}
+                    ]
+                },
                 "FAIL",
                 "unknown",
                 True,
@@ -1112,9 +1171,9 @@ class TestSonarCloudWorkflowGate:
                 "success",
             ),
             (
-                "docs-only skip, baseline run was cancelled",
+                "docs-only skip, baseline run was cancelled: never consulted the gate, must fail closed",
                 {"COVERAGE_PRESENT": "false", "BASELINE_VERDICT": "cancelled"},
-                "success",
+                "failure",
             ),
             (
                 "docs-only skip, baseline SonarCloud run failed",
@@ -1130,6 +1189,11 @@ class TestSonarCloudWorkflowGate:
             ("PR could not be resolved", {"PR_GUARD_RESOLVABLE": "false"}, "failure"),
             ("scan reported success", {"SCAN_OUTCOME": "success"}, "success"),
             ("scan reported failure", {"SCAN_OUTCOME": "failure"}, "failure"),
+            (
+                "pending check was never created: falls back to POSTing a completed one",
+                {"CHECK_ID": "", "SCAN_OUTCOME": "failure"},
+                "failure",
+            ),
         ],
     )
     def test_reporter_outcome_matrix(

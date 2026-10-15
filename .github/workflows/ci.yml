@@ -262,6 +262,13 @@ jobs:
       # if-no-files-found: error, not ignore. Neither path existing means the
       # test step ran and produced no coverage.xml, which is a real failure
       # that must not reach the scan job as a silent "docs-only" success.
+      #
+      # Deliberately carries no `if:` of its own (implicit success()), so a
+      # failing "Run tests with coverage" skips this upload. That is fine:
+      # a failing python-test job reports job conclusion != success, which
+      # sonarcloud.yml's `CI_CONCLUSION != "success"` check catches before it
+      # ever looks at whether the artifact downloaded, so a missing artifact
+      # on a failed run is never mistaken for the docs-only case either way.
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
