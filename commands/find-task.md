@@ -1,6 +1,6 @@
 ---
 name: find-task
-description: Triage the Jira or GitHub ticket backlog into AUTO/INTERACTIVE/BLOCKED/CLOSE, print one compact table, and write back suitability labels.
+description: Triage the Jira or GitHub ticket backlog into AUTO/INTERACTIVE/BLOCKED/CLOSE, print one compact table, and record suitability (tracker label for self-assigned tickets, local record for all of them).
 user-invocable: true
 category: management
 inputs:
@@ -11,7 +11,7 @@ outputs:
 
 # Find Next Task
 
-Triage this project's open tickets (Jira or GitHub, whichever `task_source.type` is configured) into AUTO, INTERACTIVE, BLOCKED or CLOSE, print one compact table, and write the matching `agent:` label back to the tracker.
+Triage this project's open tickets (Jira or GitHub, whichever `task_source.type` is configured) into AUTO, INTERACTIVE, BLOCKED or CLOSE, print one compact table, and record each ticket's suitability: the matching `agent:` label for a self-assigned ticket, and a local record (`sova assess set`) for every AUTO/INTERACTIVE/BLOCKED ticket regardless of assignee.
 
 **Scope**: $ARGUMENTS
 
@@ -100,18 +100,22 @@ Print exactly this, in this order:
 1. One table, columns `# | Key | Reporter | Repo | What | Status | Needs | Mode | Deps`, at most 12 rows, ordered: critical items blocking other teams first, then CLOSE, then AUTO by priority, then INTERACTIVE, then BLOCKED.
 2. At most 3 one-line actions (for example "close RHCLOUD-123, PR merged" or "ping @lead on RHCLOUD-456").
 3. One line: `Skipped: N` with counts by reason (epic, spike, held, other repo, ops).
-4. One line: `Labeled: N`, printed after the step 7 write-back completes.
+4. One line: `Labeled: N  Recorded: M`, printed after the step 7 write-back completes.
 
 These four items are the whole output. Do not print anything else: no prose summary, no per-ticket narration outside the table.
 
-### 7. Write Back Suitability Labels
+### 7. Write Back Suitability
 
-After the table is printed, apply the label matching each ticket's mode, and remove the other two of the three suitability labels (CLOSE gets no label change). Only touch these three labels; leave pipeline labels such as `agent:triaged` or `agent:in-review` untouched.
+After the table is printed, record each ticket's mode. The write-back splits by assignee: a self-assigned ticket keeps the existing tracker label plus a new local record; an unassigned ticket (no individual owns it, so this account cannot speak for it on the tracker) gets only the local record, never a label change. Every AUTO/INTERACTIVE/BLOCKED ticket this command evaluated gets the local record, including ones excluded from the printed table (spike, held, ops, other repo): only epics (never classified) and CLOSE (no suitability verdict, just "already done") are exempt from both the label and the local record. Only touch the three suitability labels; leave pipeline labels such as `agent:triaged` or `agent:in-review` untouched.
 
-- AUTO: add `agent:ready`; remove `agent:interactive-recommended`, `agent:human-only` (only if present).
-- INTERACTIVE: add `agent:interactive-recommended`; remove `agent:ready`, `agent:human-only` (only if present).
-- BLOCKED: add `agent:human-only`; remove `agent:ready`, `agent:interactive-recommended` (only if present).
-- CLOSE: no label change.
+Mode-to-shorthand mapping (used for both the label and the local record):
+
+- AUTO: `agent:ready` / local shorthand `ready`.
+- INTERACTIVE: `agent:interactive-recommended` / local shorthand `interactive`.
+- BLOCKED: `agent:human-only` / local shorthand `human-only`.
+- CLOSE: no label, no local record.
+
+For a **self-assigned** ticket, add the matching label and remove the other two suitability labels (only if present):
 
 ```bash
 # Jira
@@ -125,7 +129,15 @@ Only issue a `--label=-<remove>` (Jira) or `--remove-label` (GitHub) call for a 
 
 Jira labels are free-form, but GitHub's `--add-label` fails when the label does not exist in the repository. Create the three suitability labels once before the first write-back (the dashboard Settings page creates SOVA's whole required set, or `gh label create "agent:interactive-recommended" --force`).
 
-Print item 4 of the output contract, `Labeled: N`, counting the tickets whose labels were changed.
+For **every** AUTO/INTERACTIVE/BLOCKED ticket (self-assigned or unassigned), also write the local record, which the supervisor's human-involvement gate consults as a fallback when the tracker carries no suitability label:
+
+```bash
+sova assess set <ISSUE_NUMBER> <shorthand>
+```
+
+`<ISSUE_NUMBER>` can be passed as-is in any form the tracker uses (`1234`, `#1234`, `RHCLOUD-1234`): the CLI normalizes it to the bare number. Re-running this command on the same ticket is safe: the local record is append-only and the latest write wins.
+
+Print item 4 of the output contract, `Labeled: N  Recorded: M`: `N` counts only the self-assigned tickets whose tracker label changed, and `M` counts every successful `sova assess set` call (self-assigned and unassigned alike). A ticket counts toward `M` only when the command exits 0; a failed call (for example a rejected tracker-key prefix) does not increment it, so a wholly failed write-back loop is visible as `Recorded: 0` rather than looking identical to a correct run.
 
 ### 8. When the User Selects a Ticket
 

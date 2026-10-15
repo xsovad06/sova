@@ -1028,11 +1028,14 @@ class TaskProgressionEngine:
         if effective_labels is None and graph is not None:
             task_node = graph.get_task(issue_number)
             effective_labels = task_node.labels if task_node else []
-        human_block = check_human_involvement_gate(issue_number, effective_labels or [])
-        if human_block:
-            blockers.append(human_block)
-
-        running_result, budget_result, ownership_result = await asyncio.gather(
+        human_result, running_result, budget_result, ownership_result = await asyncio.gather(
+            check_human_involvement_gate(
+                issue_number,
+                effective_labels or [],
+                session_factory=self._session_factory,
+                project_slug=self._config.github_repo,
+                candidate=candidate.value,
+            ),
             check_already_running(issue_number, self._session_factory),
             check_budget_gate(issue_number, self._project_dir),
             check_ownership_gate(
@@ -1047,6 +1050,8 @@ class TaskProgressionEngine:
             ),
         )
         ownership_block, discovered_pr = ownership_result
+        if human_result:
+            blockers.append(human_result)
 
         simple_results: list[BlockReason | None] = [running_result, budget_result, ownership_block]
         if candidate == ProgressionAction.SPAWN_RESEARCHER:

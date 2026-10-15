@@ -10,6 +10,7 @@ from rich.console import Console
 
 import sova
 from sova.cli.commands.admin import cleanup, costs, status
+from sova.cli.commands.assess import app as assess_app
 from sova.cli.commands.briefing import briefing
 from sova.cli.commands.commands import app as commands_app
 from sova.cli.commands.config import config_app
@@ -80,6 +81,9 @@ app.add_typer(server_app)
 
 # Supervisor (subcommand group)
 app.add_typer(supervisor_app)
+
+# Assess (subcommand group)
+app.add_typer(assess_app)
 
 console = Console(stderr=True)
 
