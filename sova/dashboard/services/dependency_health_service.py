@@ -43,10 +43,8 @@ _PYPI_REGISTRY_URL = "https://pypi.org/pypi/{name}/json"
 
 _VERSION_RE = re.compile(r"(?>(\d+))\.(?>(\d+))\.(?>(\d+))")
 _NPM_RANGE_PREFIX_RE = re.compile(r"^[\^~>=<\s]+")
-_REQUIREMENT_RE = re.compile(
-    r"^(?>([A-Za-z0-9_.\-]+))(?>\s*)(?:\[(?>[^\]]*)\])?(?>\s*)(==|>=|<=|~=)(?>\s*)(?>([A-Za-z0-9_.\-]+))"
-)
-_PEP508_NAME_RE = re.compile(r"^([A-Za-z0-9_.\-]+)")
+_PEP508_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+_PEP508_OPERATORS = ("==", ">=", "<=", "~=")
 
 # Bounded LRU: caps memory growth from projects that are renamed or unregistered
 # over the process lifetime, since there is no explicit eviction hook for those events.
@@ -180,15 +178,44 @@ def _parse_requirement(line: str) -> tuple[str, str | None] | None:
     Only `==` identifies an exact installed version; `>=`, `<=`, and `~=` define a
     range, so the version boundary is discarded (kept as None) for those operators
     to avoid misreporting a range bound as the installed version.
+
+    Parsed with a direct index scan rather than a single regex: a name/extras/operator/
+    version shape chained through multiple quantifiers reads as a backtracking DoS risk
+    to static analysis even when every quantifier is atomic, and a scan over disjoint
+    character classes has no ambiguity to begin with.
     """
-    match = _REQUIREMENT_RE.match(line)
-    if match:
-        name, operator, version = match.group(1), match.group(2), match.group(3)
-        return name, version if operator == "==" else None
-    name_match = _PEP508_NAME_RE.match(line)
-    if name_match:
-        return name_match.group(1), None
-    return None
+    n = len(line)
+    i = 0
+    while i < n and line[i] in _PEP508_NAME_CHARS:
+        i += 1
+    name = line[:i]
+    if not name:
+        return None
+
+    while i < n and line[i].isspace():
+        i += 1
+    if i < n and line[i] == "[":
+        close = line.find("]", i)
+        if close == -1:
+            return name, None
+        i = close + 1
+
+    while i < n and line[i].isspace():
+        i += 1
+    operator = next((op for op in _PEP508_OPERATORS if line[i : i + 2] == op), None)
+    if operator is None:
+        return name, None
+    i += 2
+
+    while i < n and line[i].isspace():
+        i += 1
+    version_start = i
+    while i < n and line[i] in _PEP508_NAME_CHARS:
+        i += 1
+    version = line[version_start:i]
+    if not version:
+        return name, None
+    return name, version if operator == "==" else None
 
 
 def _scan_npm_lockfile(lockfile_path: Path, direct_names: set[str]) -> dict[str, str | None]:

@@ -42,32 +42,29 @@ class TestParseVersion:
         assert time.monotonic() - start < 2.0
 
 
-class TestRequirementRePinned:
-    """python:S8786 regex pinning for _REQUIREMENT_RE (issue #1193)."""
+class TestParseRequirement:
+    """python:S8786 regex-DoS avoidance pinning for _parse_requirement (issue #1193)."""
 
     def test_simple_requirement(self) -> None:
-        m = svc._REQUIREMENT_RE.match("requests==2.31.0")
-        assert m is not None
-        assert m.groups() == ("requests", "==", "2.31.0")
+        assert svc._parse_requirement("requests==2.31.0") == ("requests", "2.31.0")
 
     def test_requirement_with_extra_bracket(self) -> None:
-        m = svc._REQUIREMENT_RE.match("sova[dev]>=1.0.0")
-        assert m is not None
-        assert m.groups() == ("sova", ">=", "1.0.0")
+        assert svc._parse_requirement("sova[dev]>=1.0.0") == ("sova", None)
 
     def test_requirement_with_spaces(self) -> None:
-        m = svc._REQUIREMENT_RE.match("package  [extra]  ~=  1.2")
-        assert m is not None
-        assert m.groups() == ("package", "~=", "1.2")
+        assert svc._parse_requirement("package  [extra]  ~=  1.2") == ("package", None)
 
-    def test_requirement_no_operator_does_not_match(self) -> None:
-        assert svc._REQUIREMENT_RE.match("just-a-name") is None
+    def test_requirement_no_operator_returns_name_only(self) -> None:
+        assert svc._parse_requirement("just-a-name") == ("just-a-name", None)
 
-    def test_requirement_re_adversarial(self) -> None:
+    def test_requirement_no_name_returns_none(self) -> None:
+        assert svc._parse_requirement("[extra]==1.0") is None
+
+    def test_requirement_adversarial(self) -> None:
         import time
 
         start = time.monotonic()
-        svc._REQUIREMENT_RE.match("a" * 20000 + " " * 20000)
+        svc._parse_requirement("a" * 20000 + " " * 20000)
         assert time.monotonic() - start < 2.0
 
 
