@@ -64,6 +64,8 @@ INTEGRATE_SOVA = REPO_ROOT / ".claude" / "commands" / "integrate-pr.md"
 INTEGRATE_DIST = REPO_ROOT / "commands" / "integrate-pr.md"
 ADDRESS_SOVA = REPO_ROOT / ".claude" / "commands" / "address-pr.md"
 ADDRESS_DIST = REPO_ROOT / "commands" / "address-pr.md"
+INGEST_SOVA = REPO_ROOT / ".claude" / "commands" / "ingest-review.md"
+INGEST_DIST = REPO_ROOT / "commands" / "ingest-review.md"
 
 _JOB_KEY_RE = re.compile(r"^ {2}[A-Za-z0-9_-]+:")
 
@@ -113,6 +115,16 @@ def address_sova_text() -> str:
 @pytest.fixture(scope="module")
 def address_dist_text() -> str:
     return ADDRESS_DIST.read_text()
+
+
+@pytest.fixture(scope="module")
+def ingest_sova_text() -> str:
+    return INGEST_SOVA.read_text()
+
+
+@pytest.fixture(scope="module")
+def ingest_dist_text() -> str:
+    return INGEST_DIST.read_text()
 
 
 def _between(text: str, start_marker: str, end_marker: str) -> str:
@@ -1443,6 +1455,29 @@ class TestAddressPRCapturesEarly:
         numbers = [int(m) for m in re.findall(r"^(\d+)\. ", text, re.MULTILINE)]
         assert numbers == list(range(1, len(numbers) + 1)), numbers
 
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_step_cross_references_point_within_range(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A 'continue to Ne' cross-reference must name a step that exists.
+
+        Two stale references ("continue to 3e" and "Step 10 rebases
+        afterwards") shipped in the PR that added the own-PR guard, both
+        pointing one step short after a renumber, and both slipped past
+        `test_steps_are_numbered_contiguously`, which only checks the
+        numbering sequence itself, never what prose says about it.
+        """
+        text = request.getfixturevalue(fixture)
+        max_step = len(re.findall(r"^(\d+)\. ", text, re.MULTILINE))
+        # [Ss]tep N catches both "Step N" and the dominant lowercase "step N" form;
+        # the second alternative catches the bare "continue/skip to Ne" form without
+        # also matching unrelated prose like "up to 3 rebase steps" or "defaults to 2".
+        pattern = re.compile(r"\b[Ss]tep (\d+)[a-z]?\b|\b(?:continue|skip) to (\d+)[a-z]\b")
+        for m in pattern.finditer(text):
+            num = int(m.group(1) or m.group(2))
+            assert 1 <= num <= max_step, f"reference to step {num} out of range (1-{max_step}): {m.group(0)!r}"
+        # Pin the two concrete regressions that shipped past the old range-only check.
+        assert "continue to 3e" not in text
+        assert "Step 10 rebases" not in text
+
     def test_variants_stay_in_sync(self, address_sova_text: str, address_dist_text: str, tmp_path: Path) -> None:
         """The rendered .claude/commands/ copy must match canonical once rendering is applied.
 
@@ -1459,3 +1494,152 @@ class TestAddressPRCapturesEarly:
         install_commands(REPO_ROOT / "commands", tmp_path, self_config())
         rendered_dist = (tmp_path / "address-pr.md").read_text()
         assert address_sova_text == rendered_dist
+
+
+# ---------------------------------------------------------------------------
+# address-pr: own-PR and push-access guard (issue #1216)
+# ---------------------------------------------------------------------------
+
+
+class TestAddressPROwnPRGuard:
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_precedes_the_working_directory_check(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """The guard must stop before any worktree or commit work happens."""
+        text = request.getfixturevalue(fixture)
+        guard = text.index("Verify this is your PR and that you can push to it")
+        workdir_check = text.index("Verify you are in the correct working directory")
+        assert guard < workdir_check
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_compares_authenticated_login_to_pr_author(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "gh api user --jq .login" in text
+        assert "author.login" in text
+        assert "not your PR" in text
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_reads_the_four_api_inputs(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        guard_block = text[text.index("Verify this is your PR") : text.index("Verify you are in the correct")]
+        for field in ("state", "isCrossRepository", "headRepository,", "maintainerCanModify"):
+            assert field in guard_block, field
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_stops_on_non_open_state(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        guard_block = text[text.index("Verify this is your PR") : text.index("Verify you are in the correct")]
+        assert "must be `OPEN`" in guard_block
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_checks_push_access_on_the_correct_repo(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """Same-repo PRs check the base repo; fork PRs check the head repo."""
+        text = request.getfixturevalue(fixture)
+        guard_block = text[text.index("Verify this is your PR") : text.index("Verify you are in the correct")]
+        assert ".permissions.push" in guard_block
+        assert "Same-repo PR" in guard_block
+        assert "Fork PR" in guard_block
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_stops_on_identity_mismatch(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A LOGIN that disagrees with the PR author must stop before step 4, regardless of push access."""
+        text = request.getfixturevalue(fixture)
+        guard_block = text[text.index("Verify this is your PR") : text.index("Verify you are in the correct")]
+        assert 'STOP and report "not your PR' in guard_block
+        assert "regardless of push access" in guard_block
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_skips_identity_check_when_login_unresolved(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        """An unresolved LOGIN (e.g. a GitHub App token) skips only the identity check, not the rest of the guard."""
+        text = request.getfixturevalue(fixture)
+        guard_block = text[text.index("Verify this is your PR") : text.index("Verify you are in the correct")]
+        assert "If `LOGIN` is empty" in guard_block
+        assert "skip this check" in guard_block
+        assert "still enforce the state and push-access checks below" in guard_block
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_stops_on_unavailable_head_repository(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A deleted fork (null headRepository) must stop before step 4, regardless of the other checks."""
+        text = request.getfixturevalue(fixture)
+        guard_block = text[text.index("Verify this is your PR") : text.index("Verify you are in the correct")]
+        assert "STOP and report that the head repository is unavailable" in guard_block
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_stops_on_denied_push_access(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A false `permissions.push` result must stop before step 4."""
+        text = request.getfixturevalue(fixture)
+        guard_block = text[text.index("Verify this is your PR") : text.index("Verify you are in the correct")]
+        assert "STOP and report that you lack push access" in guard_block
+
+    @pytest.mark.parametrize("fixture", ADDRESS_FIXTURES)
+    def test_guard_stops_on_non_open_state_reports_it(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """The state check must both gate on OPEN and explicitly report the actual state on failure."""
+        text = request.getfixturevalue(fixture)
+        guard_block = text[text.index("Verify this is your PR") : text.index("Verify you are in the correct")]
+        assert "STOP and report the state" in guard_block
+
+
+# ---------------------------------------------------------------------------
+# address-pr / integrate-pr: CI failure evidence hook (issue #1216)
+# ---------------------------------------------------------------------------
+
+CI_HOOK_FIXTURES = ADDRESS_FIXTURES + INTEGRATE_FIXTURES
+
+
+class TestCIFailureEvidenceHook:
+    @pytest.mark.parametrize("fixture", CI_HOOK_FIXTURES)
+    def test_project_hook_is_tried_before_falling_back(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """GitHub Actions is not the only CI backend a project may run.
+
+        The project's own `.claude/scripts/ci-failures.sh` hook (mirroring
+        `prepush-check.sh`) is tried first. The GitHub Actions log read via
+        `gh run view --log-failed` is not removed: it stays as the second
+        tier, since GitHub Actions is still the common case and a project
+        with no hook must not lose it. `gh pr checks` name+link is the final,
+        last-resort tier.
+        """
+        text = request.getfixturevalue(fixture)
+        hook_check = text.index(".claude/scripts/ci-failures.sh")
+        # The failing-checks fetch (name+link) is shared by both the Actions-log
+        # tier and the final name-and-link-only tier, so it appears once, before
+        # the `gh run view` read that consumes its output.
+        fetch = text.index("gh pr checks <PR_NUMBER> --json name,bucket,link")
+        actions_log = text.index('gh run view "$RUN_ID" --log-failed')
+        assert hook_check < fetch < actions_log
+
+    @pytest.mark.parametrize("fixture", CI_HOOK_FIXTURES)
+    def test_fallback_reports_failing_checks_only(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert 'select(.bucket == "fail" or .bucket == "cancel")' in text
+
+
+# ---------------------------------------------------------------------------
+# ingest-review: learn without a SOVA reviewer run (issue #1216)
+# ---------------------------------------------------------------------------
+
+INGEST_FIXTURES = ["ingest_sova_text", "ingest_dist_text"]
+
+
+class TestIngestReviewFallsThroughOnNoFindings:
+    @pytest.mark.parametrize("fixture", INGEST_FIXTURES)
+    def test_no_findings_does_not_stop_immediately(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        step3 = text[text.index("If the output is `NO_FINDINGS`") :]
+        step3 = step3[: step3.index("\n\n")]
+        assert "do not stop here" in step3
+        assert "Continue to step 4" in step3
+
+    @pytest.mark.parametrize("fixture", INGEST_FIXTURES)
+    def test_only_stops_when_external_comments_also_find_nothing(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "no SOVA reviewer TaskRun and no external review comments" in text
+
+    @pytest.mark.parametrize("fixture", INGEST_FIXTURES)
+    def test_finding_parse_step_is_skippable(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "skip this step if step 2 returned `NO_FINDINGS`" in text

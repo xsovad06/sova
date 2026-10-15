@@ -503,8 +503,34 @@ Act on the result:
   - If `reviewDecision` is `CHANGES_REQUESTED`: stop. Never merge while a review (bot or human, including CodeRabbit) is requesting changes; treat it as a real reviewer with its own address-review cycle. Write a handoff pointing at the `sova-address-pr` skill <PR_NUMBER> and report that integration is blocked on unaddressed review feedback.
   - Otherwise, proceed to Phase 5.
 - **NO_CHECKS** (no CI checks configured): proceed to Phase 5. No checks means nothing to wait for.
-- **CI FAILED**: analyze the failure output briefly.
-  - For infrastructure/flaky issues (network timeouts, resource limits, unrelated tests), post a retry comment and re-run the polling block once more. On second failure, stop and report the diagnosis.
+- **CI FAILED**: gather failure evidence, trying progressively looser sources until one actually produces text, then analyze it briefly:
+  1. **Project hook**: prefer the project's own `.claude/scripts/ci-failures.sh` hook when it exists and is executable (mirroring the `prepush-check.sh` pattern in the `sova-pr` skill workflow). It takes the PR number as its only argument and prints failure text to stdout; a non-zero exit or empty stdout means "no evidence from this source".
+     ```bash
+     if [ -x .claude/scripts/ci-failures.sh ]; then
+       .claude/scripts/ci-failures.sh <PR_NUMBER>
+     fi
+     ```
+  2. **GitHub Actions log**: when the hook gave nothing, and a failing check's `link` points at a GitHub Actions run, read that run's own failed-step log directly. Every job in the same workflow run shares one run id, so run ids are deduplicated before fetching and each log is capped, mirroring `get_ci_failure_logs()` in `sova/git/pr.py`:
+     ```bash
+     FAILED=$(gh pr checks <PR_NUMBER> --json name,bucket,link \
+       --jq '.[] | select(.bucket == "fail" or .bucket == "cancel") | "\(.name)\t\(.link)"') || true
+     printf '%s\n' "$FAILED" | cut -f2 | sed -n 's#.*/actions/runs/\([0-9]\{1,\}\).*#\1#p' | sort -u | \
+     while read -r RUN_ID; do
+       [ -n "$RUN_ID" ] || continue
+       echo "=== run $RUN_ID ==="
+       gh run view "$RUN_ID" --log-failed | tail -c 8000
+     done
+     printf '%s\n' "$FAILED" | while IFS=$'\t' read -r NAME LINK; do
+       [ -n "$NAME" ] || continue
+       case "$LINK" in
+         */actions/runs/*) ;;  # already covered by the run-id loop above
+         *) echo "$NAME: $LINK (not a GitHub Actions run, no log available from this source)" ;;
+       esac
+     done
+     ```
+     `gh pr checks` exits non-zero by design whenever any check is failing, so the `|| true` above is expected and does not mean the capture failed; only an empty `$FAILED` means no evidence came from this call.
+  - Retry only after reading actual failure text from (1) or (2) and confirming an infrastructure or flaky issue (network timeouts, resource limits, unrelated tests): post a retry comment and re-run the polling block once more. On second failure, stop and report the diagnosis.
+  - If neither (1) nor (2) produced any text (only a check name and link from `$FAILED`), stop. Report the failed check and its link. Do not retry or re-run the polling block.
   - For real code issues, stop and report the diagnosis with failing check details.
 - **CI TIMEOUT**: re-run the polling block once more as a separate call. If it times out again, stop and report. The user can re-run the `sova-integrate-pr` skill after CI completes.
 

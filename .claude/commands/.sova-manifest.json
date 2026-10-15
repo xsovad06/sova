@@ -2,7 +2,7 @@
   "version": 1,
   "commands": {
     "address-pr.md": {
-      "hash": "caa2672823242ac6",
+      "hash": "5562629724345401",
       "managed": true
     },
     "after-merge.md": {
@@ -46,11 +46,11 @@
       "managed": true
     },
     "ingest-review.md": {
-      "hash": "0d0fa7c4399db4bd",
+      "hash": "9d9f04035dcc66f4",
       "managed": true
     },
     "integrate-pr.md": {
-      "hash": "2ce823f7998cc9aa",
+      "hash": "fe9ae9738bced41f",
       "managed": true
     },
     "issue.md": {
@@ -82,7 +82,7 @@
       "managed": true
     },
     "review-pr.md": {
-      "hash": "77aa13f39de1b0f5",
+      "hash": "2e9975d4238bb4bd",
       "managed": true
     },
     "review.md": {

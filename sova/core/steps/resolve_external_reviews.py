@@ -83,7 +83,7 @@ async def _dismiss_bot_reviews(
 async def _post_address_summary(ctx: ExecutionContext) -> bool:
     """Post the ``## Address Review`` summary as a COMMENT-state review on the PR.
 
-    The autonomous counterpart of ``/address-pr`` step 14. Runs after the push
+    The autonomous counterpart of ``/address-pr`` step 15. Runs after the push
     and CI so the marker is anchored to the commit that actually carries the
     fixes; the dashboard reads the marker from the PR's review list to tell
     that the standing SOVA verdict has been addressed, so without this post a
