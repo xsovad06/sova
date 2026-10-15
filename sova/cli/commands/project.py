@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Optional
 
@@ -444,53 +445,46 @@ def uninstall(
     )
 
 
-def _uninstall(
-    *,
-    path: Path | None,
-    remove_commands: bool = False,
-    remove_rules: bool = False,
-    remove_memory: bool = False,
-    remove_config: bool = False,
-) -> list[str]:
-    project_dir = (path or Path.cwd()).resolve()
-
-    if not project_dir.is_dir():
-        console.print(f"[red]Directory not found: {project_dir}[/red]")
-        raise typer.Exit(code=1)
-
-    claude_dir = project_dir / ".claude"
+def _uninstall_commands_step(claude_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 1: managed commands (opt-in removal)."""
     removed: list[str] = []
     failed: list[str] = []
+    try:
+        commands_dir = claude_dir / "commands"
+        if commands_dir.is_dir():
+            managed_count = _remove_managed_commands(commands_dir)
+            if managed_count > 0:
+                removed.append(f"{managed_count} managed commands")
+            if not any(commands_dir.iterdir()):
+                commands_dir.rmdir()
+                removed.append(".claude/commands/ (empty)")
+    except OSError as exc:
+        failed.append(f"commands: {exc}")
+    return removed, failed
 
-    # 1. Managed commands (opt-in removal)
-    if remove_commands:
-        try:
-            commands_dir = claude_dir / "commands"
-            if commands_dir.is_dir():
-                managed_count = _remove_managed_commands(commands_dir)
-                if managed_count > 0:
-                    removed.append(f"{managed_count} managed commands")
-                if not any(commands_dir.iterdir()):
-                    commands_dir.rmdir()
-                    removed.append(".claude/commands/ (empty)")
-        except OSError as exc:
-            failed.append(f"commands: {exc}")
 
-    # 2. Managed rules/guidelines (opt-in removal)
-    if remove_rules:
-        try:
-            rules_dir = claude_dir / "rules"
-            if rules_dir.is_dir():
-                managed_count = _remove_managed_commands(rules_dir)
-                if managed_count > 0:
-                    removed.append(f"{managed_count} managed rules")
-                if not any(rules_dir.iterdir()):
-                    rules_dir.rmdir()
-                    removed.append(".claude/rules/ (empty)")
-        except OSError as exc:
-            failed.append(f"rules: {exc}")
+def _uninstall_rules_step(claude_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 2: managed rules/guidelines (opt-in removal)."""
+    removed: list[str] = []
+    failed: list[str] = []
+    try:
+        rules_dir = claude_dir / "rules"
+        if rules_dir.is_dir():
+            managed_count = _remove_managed_commands(rules_dir)
+            if managed_count > 0:
+                removed.append(f"{managed_count} managed rules")
+            if not any(rules_dir.iterdir()):
+                rules_dir.rmdir()
+                removed.append(".claude/rules/ (empty)")
+    except OSError as exc:
+        failed.append(f"rules: {exc}")
+    return removed, failed
 
-    # 3. Remove database files (always)
+
+def _uninstall_database_files_step(claude_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 3: database files (always removed)."""
+    removed: list[str] = []
+    failed: list[str] = []
     for db_name in ("sova.db", "sova.db.bak"):
         db_file = claude_dir / db_name
         try:
@@ -499,8 +493,13 @@ def _uninstall(
                 removed.append(f".claude/{db_name}")
         except OSError as exc:
             failed.append(f".claude/{db_name}: {exc}")
+    return removed, failed
 
-    # 4. Remove ephemeral directories (always)
+
+def _uninstall_ephemeral_dirs_step(claude_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 4: ephemeral directories (always removed)."""
+    removed: list[str] = []
+    failed: list[str] = []
     for dir_name in ("worktrees", "agent-control"):
         target = claude_dir / dir_name
         try:
@@ -509,8 +508,13 @@ def _uninstall(
                 removed.append(f".claude/{dir_name}/")
         except OSError as exc:
             failed.append(f".claude/{dir_name}/: {exc}")
+    return removed, failed
 
-    # 5. RTK hook (always removed, SOVA-managed)
+
+def _uninstall_rtk_hook_step(claude_dir: Path, project_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 5: RTK hook (always removed, SOVA-managed)."""
+    removed: list[str] = []
+    failed: list[str] = []
     try:
         from sova.utils.rtk import remove_rtk_hook
 
@@ -519,8 +523,13 @@ def _uninstall(
     except Exception as exc:  # noqa: BLE001 (uninstall continues past any single step; failures are reported to the user)
         log.debug("uninstall.rtk_hook_failed", project_dir=str(project_dir), exc_info=True)
         failed.append(f"RTK hook: {exc}")
+    return removed, failed
 
-    # 6. MCP servers (always removed, SOVA-managed)
+
+def _uninstall_mcp_servers_step(claude_dir: Path, project_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 6: MCP servers (always removed, SOVA-managed)."""
+    removed: list[str] = []
+    failed: list[str] = []
     try:
         from sova.utils.mcp_config import (
             ATLASSIAN_MCP_NAME,
@@ -539,36 +548,53 @@ def _uninstall(
     except Exception as exc:  # noqa: BLE001 (uninstall continues past any single step; failures are reported to the user)
         log.debug("uninstall.mcp_servers_failed", project_dir=str(project_dir), exc_info=True)
         failed.append(f"MCP servers: {exc}")
+    return removed, failed
 
-    # 7. Agent memory (opt-in removal)
-    if remove_memory:
-        try:
-            memory_dir = claude_dir / "agent-memory"
-            if memory_dir.is_dir():
-                shutil.rmtree(memory_dir)
-                removed.append(".claude/agent-memory/")
-        except OSError as exc:
-            failed.append(f"agent memory: {exc}")
 
-    # 8. Config file (opt-in removal)
-    if remove_config:
-        try:
-            toml_file = project_dir / "sova.toml"
-            if toml_file.exists():
-                toml_file.unlink()
-                removed.append("sova.toml")
-        except OSError as exc:
-            failed.append(f"config: {exc}")
+def _uninstall_agent_memory_step(claude_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 7: agent memory (opt-in removal)."""
+    removed: list[str] = []
+    failed: list[str] = []
+    try:
+        memory_dir = claude_dir / "agent-memory"
+        if memory_dir.is_dir():
+            shutil.rmtree(memory_dir)
+            removed.append(".claude/agent-memory/")
+    except OSError as exc:
+        failed.append(f"agent memory: {exc}")
+    return removed, failed
 
-    # 9. Remove .claude/ if empty
+
+def _uninstall_config_file_step(project_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 8: config file (opt-in removal)."""
+    removed: list[str] = []
+    failed: list[str] = []
+    try:
+        toml_file = project_dir / "sova.toml"
+        if toml_file.exists():
+            toml_file.unlink()
+            removed.append("sova.toml")
+    except OSError as exc:
+        failed.append(f"config: {exc}")
+    return removed, failed
+
+
+def _uninstall_empty_claude_dir_step(claude_dir: Path) -> list[str]:
+    """Step 9: remove .claude/ if empty."""
+    removed: list[str] = []
     try:
         if claude_dir.is_dir() and not any(claude_dir.iterdir()):
             claude_dir.rmdir()
             removed.append(".claude/ (empty)")
     except OSError:
         pass
+    return removed
 
-    # 10. Unregister from project registry
+
+def _uninstall_registry_entry_step(project_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 10: unregister from project registry."""
+    removed: list[str] = []
+    failed: list[str] = []
     try:
         from sova.config.registry import list_projects, unregister_project
 
@@ -580,6 +606,64 @@ def _uninstall(
     except Exception as exc:  # noqa: BLE001 (uninstall continues past any single step; failures are reported to the user)
         log.debug("uninstall.registry_failed", project_dir=str(project_dir), exc_info=True)
         failed.append(f"registry: {exc}")
+    return removed, failed
+
+
+def _uninstall(
+    *,
+    path: Path | None,
+    remove_commands: bool = False,
+    remove_rules: bool = False,
+    remove_memory: bool = False,
+    remove_config: bool = False,
+) -> list[str]:
+    project_dir = (path or Path.cwd()).resolve()
+
+    if not project_dir.is_dir():
+        console.print(f"[red]Directory not found: {project_dir}[/red]")
+        raise typer.Exit(code=1)
+
+    claude_dir = project_dir / ".claude"
+    removed: list[str] = []
+    failed: list[str] = []
+
+    opt_in_steps: list[tuple[bool, Callable[[], tuple[list[str], list[str]]]]] = [
+        (remove_commands, lambda: _uninstall_commands_step(claude_dir)),
+        (remove_rules, lambda: _uninstall_rules_step(claude_dir)),
+    ]
+    always_steps: list[Callable[[], tuple[list[str], list[str]]]] = [
+        lambda: _uninstall_database_files_step(claude_dir),
+        lambda: _uninstall_ephemeral_dirs_step(claude_dir),
+        lambda: _uninstall_rtk_hook_step(claude_dir, project_dir),
+        lambda: _uninstall_mcp_servers_step(claude_dir, project_dir),
+    ]
+    trailing_opt_in_steps: list[tuple[bool, Callable[[], tuple[list[str], list[str]]]]] = [
+        (remove_memory, lambda: _uninstall_agent_memory_step(claude_dir)),
+        (remove_config, lambda: _uninstall_config_file_step(project_dir)),
+    ]
+
+    for enabled, step in opt_in_steps:
+        if enabled:
+            step_removed, step_failed = step()
+            removed.extend(step_removed)
+            failed.extend(step_failed)
+
+    for step in always_steps:
+        step_removed, step_failed = step()
+        removed.extend(step_removed)
+        failed.extend(step_failed)
+
+    for enabled, step in trailing_opt_in_steps:
+        if enabled:
+            step_removed, step_failed = step()
+            removed.extend(step_removed)
+            failed.extend(step_failed)
+
+    removed.extend(_uninstall_empty_claude_dir_step(claude_dir))
+
+    registry_removed, registry_failed = _uninstall_registry_entry_step(project_dir)
+    removed.extend(registry_removed)
+    failed.extend(registry_failed)
 
     if removed:
         console.print(f"[green]SOVA uninstalled from {project_dir}[/green]")
