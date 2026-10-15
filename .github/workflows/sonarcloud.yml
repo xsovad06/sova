@@ -1,153 +1,122 @@
 name: SonarCloud
 
+# Triggered by the CI workflow's completion rather than pull_request_target or
+# push directly (issue #1187). This lets the scan reuse the coverage report
+# CI already produced instead of re-running the whole test suite a second
+# time just to generate sonar.python.coverage.reportPaths input: that
+# duplication was costing a second ~15 minute run on every PR and push.
+#
+# workflow_run always executes in the context of this (base) repository, even
+# when the triggering CI run came from a fork PR, so SONAR_TOKEN and
+# GITHUB_TOKEN are available here exactly as they were for the former
+# pull_request_target trigger. No fork code is EXECUTED in this job: the
+# checkout below is read-only input to a static scan. It is still fork
+# CONTENT, though, and the scanner reads `sonar-project.properties` out of
+# that workspace, so the one property that decides where the authenticated
+# analysis is uploaded is pinned on the scan step itself (see SONAR_HOST_URL
+# there) rather than trusted from the checkout.
+#
+# Because this job runs as a different workflow than the PR's own checks, the
+# automatic job-status check GitHub reports for it lands on this workflow's
+# own trigger commit (the default branch tip), not the PR head, so it can
+# never satisfy branch protection. The required "SonarCloud Analysis" check is
+# created and completed explicitly via the Checks API instead, targeting
+# workflow_run.head_sha, so it reports on the commit branch protection
+# actually evaluates. The job is named something else on purpose so that
+# automatic check cannot shadow this one (see the job's own comment).
 on:
-  # pull_request_target runs in the base repo context so secrets are
-  # available even for PRs from forks. The workflow YAML always comes
-  # from the base branch (tamper-proof). Coverage (pip install + pytest)
-  # runs on fork code; secrets are scoped to individual steps.
-  pull_request_target:
-    branches: [main]
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
 
+# Keyed on the triggering run's branch, and (as before this moved to
+# workflow_run) a push is never cancelled: two merges landing on main in quick
+# succession can have their CI runs finish out of order, and cancelling the
+# newer commit's scan because the older one's arrived late would leave main
+# analyzed at the older tree and report `failure` for a commit never scanned.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: ${{ github.event.workflow_run.event != 'push' }}
 
 jobs:
   sonarcloud:
-    name: SonarCloud Analysis
+    # Deliberately NOT "SonarCloud Analysis": GitHub creates an automatic check
+    # run named after the job, and on a push to main that check lands on the
+    # same commit as the explicit one created below. Sharing the name would put
+    # two same-named checks on one commit, and since the scan runs under
+    # continue-on-error the automatic one reports success even when the quality
+    # gate failed. The required check name belongs to the Checks API call alone.
+    name: Scan
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: read
-      statuses: write
-      # Required by the detector to read this workflow's own past runs and
-      # find the last successful one to compare against.
       actions: read
+      checks: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          # For fork PRs: analyze the PR head, not the base branch
-          ref: ${{ github.event.pull_request.head.sha || '' }}
-          persist-credentials: false
-
-      # Decide whether this run needs the coverage run and the scan.
-      #
-      # Detection is DELTA-AWARE: asking only "is the whole pull request
-      # documentation" can never be true on a code-carrying PR, so that
-      # question alone made every documentation amend re-run the full
-      # 15-minute analysis. The detector also compares against the last
-      # successful run of this workflow on this branch, so a markdown-only
-      # push on top of already-green code is free.
-      #
-      # The script is fetched from the BASE branch through the API into
-      # RUNNER_TEMP, never read from the head checkout in the workspace:
-      # under pull_request_target a fork must not be able to edit the script
-      # that decides whether its own code gets scanned. Every failure path
-      # inside the script fails open (code=true).
-      # A push event has no PR diff base, so detect() always returns
-      # code=true/non-pr regardless of what the fetch below would find.
-      # Skip the fetch entirely for push, rather than spending an API call
-      # and a RUNNER_TEMP write on a result that is thrown away unused.
-      - name: Fetch the detector from the base branch
-        id: fetch-detector
-        if: github.event_name == 'pull_request_target'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          dest="${RUNNER_TEMP}/detect-code-changes.sh"
-          if gh api \
-              "repos/${{ github.repository }}/contents/.github/scripts/detect-code-changes.sh?ref=${BASE_SHA}" \
-              --jq '.content' | base64 -d > "$dest"; then
-            chmod +x "$dest"
-            echo "path=$dest" >> "$GITHUB_OUTPUT"
-          else
-            # Could not fetch the trusted copy: fall through to the full run.
-            echo "::warning::detector unavailable, running the full analysis"
-            echo "path=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Detect code changes
-        id: changes
+      # FIRST step in the job, before anything that can fail. The terminal
+      # reporter below is gated on this step's output, so any step that ran
+      # ahead of it and failed would abort the job with no check created at
+      # all, leaving the required check unreported ("Expected: waiting for
+      # status") and the PR blocked just as surely as leaving it pending.
+      - name: Create pending check run
+        id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-          WORKFLOW_FILE: sonarcloud.yml
-          DETECTOR: ${{ steps.fetch-detector.outputs.path }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" != "pull_request_target" ]; then
-            # Matches detect()'s own non-pr outcome; the fetch step above was
-            # skipped for exactly this case, so DETECTOR is empty here too.
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "reason=non-pr" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ -z "$DETECTOR" ] || [ ! -x "$DETECTOR" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "reason=detector-unavailable" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          "$DETECTOR" detect >> "$GITHUB_OUTPUT"
+          id=$(gh api "repos/${REPO}/check-runs" -X POST \
+            -f name="SonarCloud Analysis" \
+            -f head_sha="${HEAD_SHA}" \
+            -f status=in_progress \
+            --jq '.id')
+          echo "id=${id}" >> "$GITHUB_OUTPUT"
 
-      - name: Documentation-only change (skipping SonarCloud)
-        if: steps.changes.outputs.code != 'true'
-        run: echo "Documentation-only change (${{ steps.changes.outputs.reason }}). Reporting success without re-running coverage or scan."
-
-      # Coverage for push and pull_request_target events, only when code changed.
-      # pull_request_target uses the workflow from main (tamper-proof)
-      # and SONAR_TOKEN is scoped to its own step.
-      - uses: actions/setup-python@v5
-        if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
-        with:
-          python-version: "3.12"
-          cache: 'pip'
-
-      - name: Install package with test dependencies
-        if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
-        run: pip install -e ".[dev]" pytest-cov pytest-timeout
-
-      # Stopgap until SonarCloud consumes the CI coverage artifact (#1187):
-      # run on all runner cores, and use the sys.monitoring coverage core
-      # (Python 3.12+, no branch coverage configured), which measured 11%
-      # overhead against 47% for the default tracer. Serial with the default
-      # tracer this step reached 29 of the job's 30 minutes (#1183).
-      - name: Run tests with coverage
-        if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
+      # workflow_run.pull_requests is empty for fork PRs (a documented GitHub
+      # limitation), so the PR is resolved from the head commit instead, via
+      # the same commits/{sha}/pulls lookup for same-repo and fork PRs alike.
+      # A push to main, or a run with no associated PR (e.g. a manual
+      # workflow_dispatch of CI), legitimately has none: every output is left
+      # empty rather than failing the job.
+      - name: Resolve PR for this run's head commit
+        id: pr
         env:
-          COVERAGE_CORE: sysmon
-        run: pytest tests/ -n auto --cov=sova --cov-report=xml -q --timeout=60
-
-      - name: Find associated PR
-        id: find-pr
-        if: steps.changes.outputs.code == 'true'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
-            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
-            echo "head=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
-            echo "base=${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_name }}" != "main" ]; then
-            PR_NUMBER=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number // empty' 2>/dev/null || echo '')
-            echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-            echo "head=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "base=main" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
+          set -euo pipefail
+          pulls="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" 2>/dev/null || echo '[]')"
+          echo "number=$(echo "$pulls" | jq -r '.[0].number // empty')" >> "$GITHUB_OUTPUT"
+          echo "head=$(echo "$pulls" | jq -r '.[0].head.ref // empty')" >> "$GITHUB_OUTPUT"
+          echo "base=$(echo "$pulls" | jq -r '.[0].base.ref // empty')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: github.event.workflow_run.conclusion == 'success'
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      # Guarded with continue-on-error: an expired or never-uploaded artifact
+      # (coverage-xml is only uploaded when CI's python-test job actually ran
+      # tests) must be treated as "no coverage", not a job failure.
+      - name: Download coverage report from the triggering CI run
+        id: artifact
+        if: github.event.workflow_run.conclusion == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
 
       - name: Check SONAR_TOKEN is available
         id: check-token
-        if: steps.changes.outputs.code == 'true'
+        if: steps.artifact.outcome == 'success'
         run: |
           if [ -n "$SONAR_TOKEN" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
@@ -158,18 +127,102 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+      # No PR context (a direct push to main, or a run with no associated
+      # PR) falls back to Sonar's branch-analysis parameters instead of PR
+      # parameters, since push-to-main is a valid trigger path with no PR to
+      # decorate.
+      #
+      # SONAR_HOST_URL is pinned rather than left to default, because the
+      # workspace holds fork-authored content on a fork PR and the scanner
+      # reads `sonar-project.properties` from it: a `sonar.host.url` planted
+      # there would otherwise redirect the authenticated analysis upload and
+      # hand SONAR_TOKEN to that host. The action puts this on the scanner's
+      # command line, which wins over the properties file.
+      #
+      # sonar.scm.revision is pinned for the same class of reason, minus the
+      # security angle: the scanner's GitHub Actions auto-detection derives it
+      # from GITHUB_SHA, which under workflow_run is the DEFAULT BRANCH tip,
+      # not the commit being analyzed.
       - name: SonarCloud Scan
-        if: steps.changes.outputs.code == 'true' && steps.check-token.outputs.available == 'true'
+        id: scan
+        if: steps.check-token.outputs.available == 'true'
+        continue-on-error: true
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
         with:
           args: >
             -Dsonar.qualitygate.wait=true
             -Dsonar.python.coverage.reportPaths=coverage.xml
-            ${{ steps.find-pr.outputs.number != '' && format(
+            -Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }}
+            ${{ steps.pr.outputs.number != '' && format(
               '-Dsonar.pullrequest.key={0} -Dsonar.pullrequest.branch={1} -Dsonar.pullrequest.base={2}',
-              steps.find-pr.outputs.number,
-              steps.find-pr.outputs.head,
-              steps.find-pr.outputs.base
-            ) || '' }}
+              steps.pr.outputs.number,
+              steps.pr.outputs.head,
+              steps.pr.outputs.base
+            ) || format('-Dsonar.branch.name={0}', github.event.workflow_run.head_branch) }}
+
+      # One terminal step completes the check for every outcome, so the
+      # required "SonarCloud Analysis" check can never be left pending: a
+      # non-success CI run, a missing artifact, a missing token, the scan's own
+      # verdict, a cancellation, and an unexpected failure in any step above
+      # (an unguarded checkout failure would otherwise strand the PR forever)
+      # all land here.
+      - name: Report check result
+        if: always() && steps.check.outputs.id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          CHECK_ID: ${{ steps.check.outputs.id }}
+          JOB_STATUS: ${{ job.status }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          ARTIFACT_OUTCOME: ${{ steps.artifact.outcome }}
+          TOKEN_AVAILABLE: ${{ steps.check-token.outputs.available }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$CI_CONCLUSION" != "success" ]; then
+            # Cancelled counts as a failure here, never a silent success.
+            conclusion=failure
+            title="CI did not succeed"
+            summary="The triggering CI run concluded with '${CI_CONCLUSION}'. SonarCloud analysis was not run."
+          elif [ "$JOB_STATUS" = "failure" ]; then
+            conclusion=failure
+            title="SonarCloud workflow failed"
+            summary="A step in this workflow failed before the scan could report. See the workflow run for details."
+          elif [ "$JOB_STATUS" = "cancelled" ]; then
+            # Reported as cancelled, not failure: this job was superseded (the
+            # concurrency group) or cancelled by hand, so the quality gate was
+            # never consulted and must not be blamed. Falling through to the
+            # final else would write "the quality gate did not pass" for a
+            # commit that was never scanned.
+            conclusion=cancelled
+            title="SonarCloud analysis cancelled"
+            summary="This run was cancelled before the scan could report. No quality gate verdict was produced."
+          elif [ "$ARTIFACT_OUTCOME" != "success" ]; then
+            # CI succeeded without producing coverage: per
+            # .github/scripts/detect-code-changes.sh, that only happens on a
+            # docs-only change (python-test skips its own test step), so this
+            # is a legitimate success, not a failure.
+            conclusion=success
+            title="No coverage to scan"
+            summary="CI succeeded without producing a coverage report (docs-only change). Skipping SonarCloud analysis."
+          elif [ "$TOKEN_AVAILABLE" != "true" ]; then
+            conclusion=neutral
+            title="SONAR_TOKEN unavailable"
+            summary="SONAR_TOKEN secret was not set; the scan was skipped."
+          elif [ "$SCAN_OUTCOME" = "success" ]; then
+            conclusion=success
+            title="SonarCloud Analysis"
+            summary="SonarCloud quality gate passed."
+          else
+            conclusion=failure
+            title="SonarCloud Analysis"
+            summary="SonarCloud scan failed, or the quality gate did not pass."
+          fi
+          gh api "repos/${REPO}/check-runs/${CHECK_ID}" -X PATCH \
+            -f status=completed \
+            -f conclusion="${conclusion}" \
+            -f "output[title]=${title}" \
+            -f "output[summary]=${summary}"

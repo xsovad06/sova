@@ -15,11 +15,26 @@ The optimization has two layers, and the second is what makes it useful:
    run of this workflow on this branch is markdown. This is what makes a
    documentation push on top of already-green code free.
 
-Four invariants are protected:
+sonarcloud.yml no longer runs this detector itself (issue #1187): it triggers
+on ci.yml's own `workflow_run` completion and reuses the `coverage-xml`
+artifact ci.yml's `python-test` job already produced, rather than re-running
+the suite a second time just to get `sonar.python.coverage.reportPaths`
+input. Its own tests below guard that wiring: PR resolution from the head
+commit (not the empty-for-forks `workflow_run.pull_requests`), the explicit
+Checks API report against `workflow_run.head_sha` (not the job's own
+auto-status check, which would land on the wrong commit), and the single
+terminal reporter that completes that check for every outcome (coverage
+present, CI succeeded but skipped tests, CI did not succeed, or an
+unexpected failure in a step above).
+
+Invariants protected:
 
 * the detector classifies paths correctly and fails open on every bad input
-* both workflows use the shared detector and gate only their expensive steps,
-  so required jobs still run and report success
+* ci.yml gates only its expensive steps on the detector, so required jobs
+  still run and report success, and python-test runs on push to main too so
+  sonarcloud.yml's workflow_run trigger always has an artifact to consume
+* sonarcloud.yml never re-executes CI code, only consumes its artifact and
+  reports a check against the correct head SHA
 * `/integrate-pr` never pushes on its own account (a push there spends a CI
   cycle on an otherwise-ready PR and delays the merge by the length of the suite)
 * `/address-pr` captures documentation and knowledge BEFORE its squash, so the
@@ -94,6 +109,17 @@ def address_sova_text() -> str:
 @pytest.fixture(scope="module")
 def address_dist_text() -> str:
     return ADDRESS_DIST.read_text()
+
+
+def _between(text: str, start_marker: str, end_marker: str) -> str:
+    """Return the slice of `text` from `start_marker` up to the next `end_marker`.
+
+    Both markers must be present, and `end_marker` is searched for after
+    `start_marker`, so a marker that also occurs earlier in the file does not
+    produce an empty or inverted slice.
+    """
+    start = text.index(start_marker)
+    return text[start : text.index(end_marker, start)]
 
 
 def _job_block(workflow_text: str, job_key: str) -> str:
@@ -321,8 +347,11 @@ class TestDetectorScript:
     def test_uses_api_not_local_git(self) -> None:
         """The script must not read a working tree.
 
-        It is invoked from a pull_request_target workflow, where the checkout
-        in the workspace is fork-controlled content.
+        Its caller fetches just this one file from the base branch rather than
+        checking the repository out, which only works while every lookup goes
+        through the API. Reading the workspace would also make it unsafe to
+        reuse from a secret-holding workflow, where the checkout is
+        fork-controlled content.
         """
         text = DETECTOR.read_text()
         assert "git diff" not in text
@@ -440,62 +469,153 @@ class TestCIWorkflowGate:
 
 
 class TestSonarCloudWorkflowGate:
-    def test_fetches_detector_from_base_branch(self, sonar_text: str) -> None:
-        """Under pull_request_target the workspace holds fork content.
+    def test_triggers_on_ci_workflow_completion(self, sonar_text: str) -> None:
+        """Must trigger on CI's own completion, matching ci.yml's `name:`.
 
-        The detector must come from the base branch through the API and land
-        in RUNNER_TEMP, outside the workspace.
+        workflow_run matches by the workflow's declared name, not its
+        filename, so this has to line up with ci.yml's `name: CI` exactly.
         """
-        assert "contents/.github/scripts/detect-code-changes.sh?ref=${BASE_SHA}" in sonar_text
-        assert "${RUNNER_TEMP}/detect-code-changes.sh" in sonar_text
-        assert "BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}" in sonar_text
+        assert 'workflows: ["CI"]' in sonar_text
+        assert "types: [completed]" in sonar_text
+        assert "pull_request_target:" not in sonar_text
+        assert "\n  push:" not in sonar_text
 
-    def test_fetch_is_skipped_on_push_events(self, sonar_text: str) -> None:
-        """A push event has no PR diff base, so detect() always returns non-pr.
+    def test_resolves_pr_from_head_commit_not_workflow_run_pull_requests(self, sonar_text: str) -> None:
+        """workflow_run.pull_requests is empty for fork PRs (GitHub limitation).
 
-        Fetching the detector anyway would spend an API call and a
-        RUNNER_TEMP write on a result that is discarded unused.
+        The PR must be resolved via the commits/{sha}/pulls lookup instead,
+        which works for same-repo and fork PRs alike.
         """
-        fetch_step = sonar_text[
-            sonar_text.index("- name: Fetch the detector from the base branch") : sonar_text.index(
-                "- name: Detect code changes"
-            )
-        ]
-        assert "if: github.event_name == 'pull_request_target'" in fetch_step
+        assert "commits/${HEAD_SHA}/pulls" in sonar_text
+        assert "github.event.workflow_run.pull_requests" not in sonar_text
+        assert "HEAD_SHA: ${{ github.event.workflow_run.head_sha }}" in sonar_text
 
-    def test_push_events_get_accurate_reason_not_detector_unavailable(self, sonar_text: str) -> None:
-        """A push event must report reason=non-pr, not a misleading
+    def test_reports_via_checks_api_against_correct_head_sha(self, sonar_text: str) -> None:
+        """The automatic job-status check would land on the wrong commit.
 
-        'detector-unavailable': the detector was never needed, not missing.
+        Because this runs as a different workflow than the PR's own checks,
+        the required "SonarCloud Analysis" check must be created and
+        completed explicitly via the Checks API, targeting
+        workflow_run.head_sha, not left to GitHub's automatic job check.
         """
-        detect_step = sonar_text[
-            sonar_text.index("- name: Detect code changes") : sonar_text.index("- name: Documentation-only change")
-        ]
-        assert 'if [ "$EVENT_NAME" != "pull_request_target" ]; then' in detect_step
-        assert "reason=non-pr" in detect_step
+        assert "checks: write" in sonar_text
+        assert 'repos/${REPO}/check-runs" -X POST' in sonar_text
+        assert 'name="SonarCloud Analysis"' in sonar_text
+        assert 'head_sha="${HEAD_SHA}"' in sonar_text
+        assert "check-runs/${CHECK_ID}" in sonar_text
 
-    def test_missing_detector_runs_full_analysis(self, sonar_text: str) -> None:
-        assert "reason=detector-unavailable" in sonar_text
-        assert 'echo "code=true" >> "$GITHUB_OUTPUT"' in sonar_text
+    def test_pending_check_is_the_very_first_step(self, sonar_text: str) -> None:
+        """Every outcome must complete the check; none may leave it unreported.
 
-    def test_uses_its_own_workflow_as_baseline(self, sonar_text: str) -> None:
-        """A SonarCloud skip must be justified by a green SonarCloud run."""
-        assert "WORKFLOW_FILE: sonarcloud.yml" in sonar_text
+        "Before any conditional step" is not enough. The terminal reporter is
+        gated on this step's output, so a step that ran AHEAD of it and failed
+        would abort the job with no check created at all, which blocks the PR
+        on "Expected: waiting for status" exactly as surely as a check left
+        pending. It therefore has to be the first step, not merely an early
+        one: the PR-resolution step it used to sit behind calls `gh api` and
+        can fail.
+        """
+        steps = re.findall(r"^      - (?:name|uses): (.+)$", sonar_text, re.MULTILINE)
+        assert steps[0] == "Create pending check run", f"first step is {steps[0]!r}"
 
-    def test_can_read_workflow_runs(self, sonar_text: str) -> None:
-        assert "actions: read" in sonar_text
+    def test_cancellation_is_not_reported_as_a_gate_failure(self, sonar_text: str) -> None:
+        """A superseded run never consulted the quality gate.
 
-    def test_expensive_steps_are_gated(self, sonar_text: str) -> None:
-        """Coverage and the scan are the expensive halves."""
-        assert "steps.changes.outputs.code == 'true' && steps.check-token.outputs.available == 'true'" in sonar_text
-        assert sonar_text.count("steps.changes.outputs.code == 'true'") >= 5
+        Without its own branch, `job.status == 'cancelled'` falls through every
+        condition to the final else and writes "the quality gate did not pass"
+        for a commit that was never scanned.
+        """
+        block = _between(sonar_text, '"$JOB_STATUS" = "cancelled"', 'elif [ "$ARTIFACT_OUTCOME"')
+        assert "conclusion=cancelled" in block
 
-    def test_job_still_reports_on_documentation_change(self, sonar_text: str) -> None:
-        """The required check must be satisfied without the 15-minute run."""
-        assert "Documentation-only change (skipping SonarCloud)" in sonar_text
-        assert "steps.changes.outputs.code != 'true'" in sonar_text
-        # No job-level condition that would skip the whole job.
-        assert "\n    if:" not in sonar_text
+    def test_job_name_does_not_shadow_the_required_check_name(self, sonar_text: str) -> None:
+        """GitHub auto-creates a check run named after the job.
+
+        On a push to main that automatic check lands on the same commit as the
+        explicit one. Sharing the name would put two same-named checks on one
+        commit, and because the scan runs under continue-on-error the
+        automatic one reports success even when the quality gate failed.
+        """
+        job_name = re.search(r"^    name: (.+)$", sonar_text, re.MULTILINE)
+        assert job_name is not None
+        assert job_name.group(1).strip() != "SonarCloud Analysis"
+
+    def test_scanner_host_is_pinned_not_read_from_the_workspace(self, sonar_text: str) -> None:
+        """The workspace is fork content on a fork PR.
+
+        The scanner reads `sonar-project.properties` out of it, so a
+        `sonar.host.url` planted there would redirect the authenticated
+        analysis upload and hand SONAR_TOKEN to that host. The action puts an
+        explicit SONAR_HOST_URL on the scanner command line, which wins.
+        """
+        assert "SONAR_HOST_URL: https://sonarcloud.io" in sonar_text
+
+    def test_scm_revision_is_pinned_to_the_analyzed_commit(self, sonar_text: str) -> None:
+        """GITHUB_SHA is the DEFAULT BRANCH tip under workflow_run.
+
+        The scanner's GitHub Actions auto-detection would derive
+        sonar.scm.revision from it and attribute the analysis to the wrong
+        commit, so it is passed explicitly.
+        """
+        assert "-Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }}" in sonar_text
+
+    def test_push_triggered_scans_are_never_cancelled(self, sonar_text: str) -> None:
+        """Two merges to main can have their CI runs finish out of order.
+
+        Cancelling the newer commit's scan because the older one's workflow_run
+        arrived late would leave main analyzed at the older tree and report a
+        non-success check for a commit that was never scanned. The pre-
+        workflow_run version exempted push for this reason; the exemption now
+        reads the ORIGINAL event off the workflow_run payload, since
+        github.event_name is always "workflow_run" here.
+        """
+        assert "cancel-in-progress: ${{ github.event.workflow_run.event != 'push' }}" in sonar_text
+
+    def test_one_terminal_step_reports_every_outcome(self, sonar_text: str) -> None:
+        """A single always() reporter, not one step per outcome.
+
+        It has to cover an unexpected failure too (an unguarded checkout
+        failure would otherwise leave the required check in_progress forever
+        and strand the PR), which per-outcome steps cannot.
+        """
+        block = sonar_text[sonar_text.index("- name: Report check result") :]
+        assert "if: always() && steps.check.outputs.id != ''" in block
+        assert sonar_text.count('check-runs/${CHECK_ID}" -X PATCH') == 1
+        for guard in ("$CI_CONCLUSION", "$JOB_STATUS", "$ARTIFACT_OUTCOME", "$TOKEN_AVAILABLE", "$SCAN_OUTCOME"):
+            assert guard in block, f"the reporter ignores {guard}"
+
+    def test_non_success_ci_run_reports_failure_not_silent_success(self, sonar_text: str) -> None:
+        """Cancelled must be treated like failure: never a silent success."""
+        block = _between(sonar_text, '"$CI_CONCLUSION" != "success"', 'elif [ "$JOB_STATUS"')
+        assert "conclusion=failure" in block
+
+    def test_missing_artifact_on_success_is_reported_as_success_not_failure(self, sonar_text: str) -> None:
+        """A docs-only CI run has no coverage artifact; that is not a failure."""
+        block = _between(sonar_text, '"$ARTIFACT_OUTCOME" != "success"', 'elif [ "$TOKEN_AVAILABLE"')
+        assert "conclusion=success" in block
+
+    def test_artifact_download_is_cross_run_and_fails_open(self, sonar_text: str) -> None:
+        """An expired or missing artifact must not fail the job outright."""
+        block = _between(sonar_text, "Download coverage report", "Check SONAR_TOKEN is available")
+        assert "continue-on-error: true" in block
+        assert "run-id: ${{ github.event.workflow_run.id }}" in block
+        assert "name: coverage-xml" in block
+
+    def test_checkout_uses_workflow_run_head_sha(self, sonar_text: str) -> None:
+        """The scan must analyze the triggering run's actual head commit."""
+        block = _between(sonar_text, "actions/checkout@v4", "Download coverage report")
+        assert "ref: ${{ github.event.workflow_run.head_sha }}" in block
+
+    def test_scan_falls_back_to_branch_params_with_no_pr(self, sonar_text: str) -> None:
+        """A push to main has no PR context, only a branch."""
+        assert "sonar.branch.name={0}" in sonar_text
+        assert "github.event.workflow_run.head_branch" in sonar_text
+
+    def test_no_install_or_test_steps_remain(self, sonar_text: str) -> None:
+        """This job must only consume CI's artifact, never re-run the suite."""
+        assert "pytest" not in sonar_text
+        assert "pip install" not in sonar_text
+        assert "setup-python" not in sonar_text
 
 
 # ---------------------------------------------------------------------------

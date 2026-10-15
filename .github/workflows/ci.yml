@@ -44,14 +44,12 @@ jobs:
       reason: ${{ steps.decide.outputs.reason }}
     steps:
       # Fetch the detector script itself from the BASE branch via the
-      # contents API, rather than a full checkout at the base SHA. Two
-      # reasons: the script only ever calls `gh api` (see its own header
-      # comment), so a full working-tree checkout buys nothing; and this
-      # matches sonarcloud.yml's identical fetch step, so both workflows
-      # trust the same script the same way instead of two different
-      # mechanisms. This trigger is `pull_request`, not `pull_request_target`,
-      # so unlike sonarcloud.yml this is defense-in-depth against a narrower
-      # tampering vector (a fork PR quietly editing only the script), not full
+      # contents API, rather than a full checkout at the base SHA: the script
+      # only ever calls `gh api` (see its own header comment), so a full
+      # working-tree checkout buys nothing. This trigger is `pull_request`,
+      # not `pull_request_target`, so the base-branch fetch is only
+      # defense-in-depth against a narrow tampering vector (a fork PR quietly
+      # editing just the script), not full
       # immunity: under `pull_request`, GitHub already resolves this entire
       # workflow file from the fork's own head ref, so a fork PR can edit any
       # part of this job, including the `if:` gates below. That is the
@@ -190,10 +188,15 @@ jobs:
   # or fails, its output is empty (not 'false'), so the suite runs (fail-open).
   # The job-level `if` uses always() so a failed `needs: changes` does not skip
   # the whole job (a skipped required check would strand the PR forever).
+  #
+  # Runs on push to main too (not just pull_request), uploading its
+  # coverage-xml artifact: sonarcloud.yml's workflow_run trigger (#1187)
+  # consumes that artifact instead of re-running the suite itself, so a push
+  # to main needs this job's artifact just as much as a PR does.
   python-test:
     name: Python Tests
     needs: changes
-    if: always() && github.event_name != 'push'
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Documentation-only change (skipping tests)
@@ -217,8 +220,7 @@ jobs:
       # (Python 3.12+, valid because no branch coverage is configured): measured
       # 11% overhead against 47% for the default tracer, at a line rate within
       # half a point of it. The 60s per-test cap raises pyproject's 30s global,
-      # which worker contention on a slower runner breaches; sonarcloud.yml
-      # does the same.
+      # which worker contention on a slower runner breaches.
       - name: Run tests with coverage
         if: needs.changes.outputs.code != 'false'
         env:

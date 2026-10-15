@@ -45,8 +45,11 @@
 # untrusted input is never echoed into GITHUB_OUTPUT.
 #
 # All lookups go through the GitHub API rather than a local git checkout, so
-# this script is safe to invoke from a pull_request_target workflow without
-# ever reading or executing pull request head content.
+# this script never reads or executes pull request head content, and stays
+# safe to invoke from a workflow that holds secrets (a pull_request_target or
+# workflow_run one). Its only caller today is ci.yml, which is plain
+# pull_request, but that property is why the caller can fetch just this one
+# file from the base branch instead of checking the repository out.
 set -euo pipefail
 
 # How many recent successful runs to consider when looking for a baseline.

@@ -145,7 +145,7 @@ This project uses **GitHub Issues** with a project board.
 - **All checks**: `make check` (lint + test; close to CI, but see the CI test invocation below for what it does not cover)
 - **Bash scripts**: `make lint-bash` (shellcheck on `invariants/` + `.github/scripts/`) + `make test-bash` (`--help` smoke test on both)
 - **Python**: `make test-py` (pytest suite in `tests/` covering all `sova/` modules)
-- **CI test invocation**: `pytest tests/ -n auto -q --cov=sova --cov-report=xml --durations=25 --timeout=60` with `COVERAGE_CORE=sysmon` set (sharded across runner cores, sys.monitoring coverage core, 60s per-test cap because xdist contention breaches the 30s global). `coverage.xml` is uploaded as the `coverage-xml` artifact pending #1187; SonarCloud still runs its own coverage pass today. Unlike `make test-py`, CI does not deselect the `runtime`, `stress`, and `chaos` markers
+- **CI test invocation**: `pytest tests/ -n auto -q --cov=sova --cov-report=xml --durations=25 --timeout=60` with `COVERAGE_CORE=sysmon` set (sharded across runner cores, sys.monitoring coverage core, 60s per-test cap because xdist contention breaches the 30s global). `coverage.xml` is uploaded as the `coverage-xml` artifact, which `sonarcloud.yml` consumes via a `workflow_run` trigger on CI's completion instead of re-running the suite itself (#1187). Unlike `make test-py`, CI does not deselect the `runtime`, `stress`, and `chaos` markers
 - **Bash script contract**: every script under `invariants/` and `.github/scripts/` must handle `--help` gracefully and stay executable (CI enforces both)
 - **Commands**: validate markdown structure (frontmatter, sections)
 

@@ -227,6 +227,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - One shared next-action resolver replaces two independently-computed state machines
 - Dual-evaluation PR state experiment
 - A documentation push must not re-run the expensive CI suite, and the whole-PR test cannot deliver that
+- SonarCloud consumes CI's coverage artifact via `workflow_run` instead of running its own copy of the test suite
 - `/integrate-pr` must not push on its own account; knowledge capture belongs to `/address-pr`
 - Chat-style activity cockpit
 - Confidence scoring is advisory unless gated
