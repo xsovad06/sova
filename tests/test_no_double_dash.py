@@ -601,6 +601,11 @@ class TestEndOfLineMarker:
 class TestRepositoryHasNoProseDoubleDash:
     """The permanent guard: this repository stays clean no matter which lines a change touches."""
 
+    # Scans every tracked file, so its runtime scales with the repo, not with one
+    # unit of work: measured 57s sharing a runner under `-n auto`, overrunning both
+    # pyproject's 30s global and the 60s cap CI passes. A marker overrides both, so
+    # the cap has to live here rather than on the command line.
+    @pytest.mark.timeout(120)
     @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
     def test_whole_tree_is_clean(self) -> None:
         if not (REPO_ROOT / ".git").exists():

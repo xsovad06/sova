@@ -405,7 +405,7 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, cod
 SOVA has no bounty, reward, or paid-contribution program. There is no `/claim`, `/bounty`, or `/reward` command, and no bounty platform is connected to this repository. Pull requests carrying bounty claim syntax are closed automatically (see [No Bounty Program](CONTRIBUTING.md#no-bounty-program)).
 
 ```bash
-make check    # Lint + test (CI-equivalent)
+make check    # Lint + test (close to CI; see docs/testing-guidelines.md for what it does not cover)
 make lint     # ShellCheck + Ruff
 make test     # All tests (bash + python)
 make format   # Auto-format Python

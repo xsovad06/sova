@@ -29,7 +29,7 @@ sova server install-service --type systemd  # Install as system service
 make serve                          # Start web UI at http://localhost:8111
 
 # Development
-make check                          # Run all linters + tests (CI-equivalent)
+make check                          # Run all linters + tests (close to CI; see docs/testing-guidelines.md for what it does not cover)
 make test                           # Run bash + python tests
 make lint                           # ShellCheck + Ruff
 make format                         # Auto-format Python code

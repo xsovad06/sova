@@ -213,9 +213,17 @@ jobs:
         if: needs.changes.outputs.code != 'false'
         run: pip install -e ".[dev]"
 
+      # Shard across every runner core and use the sys.monitoring coverage core
+      # (Python 3.12+, valid because no branch coverage is configured): measured
+      # 11% overhead against 47% for the default tracer, at a line rate within
+      # half a point of it. The 60s per-test cap raises pyproject's 30s global,
+      # which worker contention on a slower runner breaches; sonarcloud.yml
+      # does the same.
       - name: Run tests with coverage
         if: needs.changes.outputs.code != 'false'
-        run: pytest tests/ -v --cov=sova --cov-report=xml --cov-report=term-missing
+        env:
+          COVERAGE_CORE: sysmon
+        run: pytest tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60
 
       - name: Upload coverage report
         if: needs.changes.outputs.code != 'false'

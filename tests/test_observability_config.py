@@ -40,8 +40,43 @@ class TestCoverageReporting:
         assert "--cov=sova" in ci_text
         assert "--cov-report=xml" in ci_text
 
+    def test_python_tests_run_parallel_with_sysmon_and_timings(self, ci_text: str) -> None:
+        # Scope to the python-test job body (up to the next top-level, 2-space-indented
+        # job key, skipping job-level comment lines) so another job cannot satisfy
+        # these flags.
+        job = re.search(r"^  python-test:\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)", ci_text, re.DOTALL | re.MULTILINE)
+        assert job is not None, "python-test job not found in ci.yml"
+        job_block = job.group(1)
+        # Scope to the step itself (its env: block immediately followed by its run:
+        # line), not the whole job, so COVERAGE_CORE set on a different step (or only
+        # mentioned in a comment) cannot satisfy this assertion, and assert against
+        # the pytest invocation itself so the step comment naming a flag cannot stand
+        # in for the flag being passed.
+        step = re.search(
+            r"env:\n\s+COVERAGE_CORE: sysmon\n\s+run: (pytest [^\n]*--cov=sova[^\n]*)",
+            job_block,
+        )
+        assert step is not None, "coverage pytest invocation with COVERAGE_CORE sysmon not found in python-test job"
+        pytest_cmd = step.group(1)
+        assert "-n auto" in pytest_cmd
+        assert "--durations=25" in pytest_cmd
+        # xdist worker contention breaches pyproject's 30s global timeout.
+        assert "--timeout=60" in pytest_cmd
+
     def test_sonar_consumes_coverage_xml(self, sonar_text: str) -> None:
         assert "sonar.python.coverage.reportPaths=coverage.xml" in sonar_text
+
+    def test_sonar_pytest_invocation_matches_ci(self, sonar_text: str) -> None:
+        # ci.yml's step comment claims sonarcloud.yml runs the identical coverage
+        # invocation. Enforce that claim instead of trusting the prose.
+        step = re.search(
+            r"env:\n\s+COVERAGE_CORE: sysmon\n\s+run: (pytest [^\n]*--cov=sova[^\n]*)",
+            sonar_text,
+        )
+        assert step is not None, "coverage pytest invocation with COVERAGE_CORE: sysmon not found in sonarcloud.yml"
+        pytest_cmd = step.group(1)
+        assert "-n auto" in pytest_cmd
+        assert "--timeout=60" in pytest_cmd
 
 
 class TestSecretsScan:

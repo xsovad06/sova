@@ -20,7 +20,7 @@ dev: ## Start the dashboard with auto-reload
 
 test: test-bash test-py ## Run all tests
 
-check: lint test ## Run linter + tests (CI-equivalent)
+check: lint test ## Run linter + tests (close to CI, not identical: see docs/testing-guidelines.md)
 
 # ── Testing ───────────────────────────────────────────────────
 

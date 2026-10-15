@@ -6,13 +6,13 @@ Conventions and patterns for writing and running tests in the SOVA codebase.
 
 | Command | Purpose |
 |---------|---------|
-| `make check` | Lint + test (CI-equivalent, run before every push) |
+| `make check` | Lint + test, run before every push (close to CI, not identical: see below) |
 | `make test` | Bash + Python tests |
 | `make test-py` | pytest suite only |
 | `make test-bash` | ShellCheck + invariant `--help` validation |
 | `make lint` | ShellCheck + Ruff (lint + format check) |
 
-CI runs `pytest tests/ --cov=sova --cov-report=xml -q`. The pre-push hook in `.githooks/pre-push` mirrors CI checks locally.
+CI runs `pytest tests/ -n auto -q --cov=sova --cov-report=xml --durations=25 --timeout=60` with `COVERAGE_CORE=sysmon` set. `-n auto` shards across every runner core, `sysmon` (the sys.monitoring coverage core, valid on Python 3.12+ because no branch coverage is configured) costs about 11% against 47% for the default tracer, at a line rate within half a point of it, and `--timeout=60` raises the 30s global, which worker contention on a CI runner breaches. `coverage.xml` is uploaded as the `coverage-xml` artifact pending #1187; SonarCloud still runs its own coverage pass in `.github/workflows/sonarcloud.yml` today. The pre-push hook in `.githooks/pre-push` mirrors CI's lint, invariant, and secrets checks; it does not run pytest, so run `make test-py` before pushing, remembering that it deselects the `runtime`, `stress`, and `chaos` markers CI does run, and that it caps each test at pyproject's 30s rather than the 60s CI passes, so a slow test can fail locally while passing CI.
 
 ## Framework Configuration
 
@@ -21,13 +21,14 @@ CI runs `pytest tests/ --cov=sova --cov-report=xml -q`. The pre-push hook in `.g
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+timeout = 30
 ```
 
-`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically: no `@pytest.mark.asyncio` needed. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `httpx` (ASGI testing), `aiosqlite`.
+`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically: no `@pytest.mark.asyncio` needed. `timeout = 30` caps every test; a test whose runtime scales with the repository rather than with one unit of work (for example `tests/test_no_double_dash.py`'s whole-tree scan) needs an explicit `@pytest.mark.timeout(N)`, which overrides both this value and any `--timeout` passed on the command line. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `pytest-timeout` (the `timeout` setting and `--timeout`), `pytest-xdist` (`-n auto`), `httpx` (ASGI testing), `aiosqlite`.
 
 ## Test File Layout
 
-All tests live in `tests/` as flat modules (no subdirectories). The single exception is `tests/conftest.py`, which holds only autouse isolation fixtures and a small set of fixtures/helpers shared across many test modules (`seed_config`, `csrf_request_headers`, `InvariantRepo`/`invariant_repo`): it does not host per-file-only fixtures or helpers, those stay in their own test modules.
+All tests live in `tests/` as flat modules, with one subdirectory: `tests/runtime/` holds the `@pytest.mark.runtime` process-lifecycle tests and the opt-in Codex smoke test, with its own `conftest.py`. The one flat-module exception is `tests/conftest.py`, which holds only autouse isolation fixtures and a small set of fixtures/helpers shared across many test modules (`seed_config`, `csrf_request_headers`, `InvariantRepo`/`invariant_repo`): it does not host per-file-only fixtures or helpers, those stay in their own test modules.
 
 | Test file | Source package | Approx tests |
 |-----------|---------------|--------------|
