@@ -44,14 +44,12 @@ jobs:
       reason: ${{ steps.decide.outputs.reason }}
     steps:
       # Fetch the detector script itself from the BASE branch via the
-      # contents API, rather than a full checkout at the base SHA. Two
-      # reasons: the script only ever calls `gh api` (see its own header
-      # comment), so a full working-tree checkout buys nothing; and this
-      # matches sonarcloud.yml's identical fetch step, so both workflows
-      # trust the same script the same way instead of two different
-      # mechanisms. This trigger is `pull_request`, not `pull_request_target`,
-      # so unlike sonarcloud.yml this is defense-in-depth against a narrower
-      # tampering vector (a fork PR quietly editing only the script), not full
+      # contents API, rather than a full checkout at the base SHA: the script
+      # only ever calls `gh api` (see its own header comment), so a full
+      # working-tree checkout buys nothing. This trigger is `pull_request`,
+      # not `pull_request_target`, so the base-branch fetch is only
+      # defense-in-depth against a narrow tampering vector (a fork PR quietly
+      # editing just the script), not full
       # immunity: under `pull_request`, GitHub already resolves this entire
       # workflow file from the fork's own head ref, so a fork PR can edit any
       # part of this job, including the `if:` gates below. That is the
@@ -190,18 +188,42 @@ jobs:
   # or fails, its output is empty (not 'false'), so the suite runs (fail-open).
   # The job-level `if` uses always() so a failed `needs: changes` does not skip
   # the whole job (a skipped required check would strand the PR forever).
+  #
+  # Runs on push to main too (not just pull_request), uploading its
+  # coverage-xml artifact: sonarcloud.yml's workflow_run trigger (#1187)
+  # consumes that artifact instead of re-running the suite itself, so a push
+  # to main needs this job's artifact just as much as a PR does.
   python-test:
     name: Python Tests
     needs: changes
-    if: always() && github.event_name != 'push'
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Documentation-only change (skipping tests)
         if: needs.changes.outputs.code == 'false'
         run: echo "Documentation-only change (${{ needs.changes.outputs.reason }}). Reporting success without re-running tests."
 
+      # Pinned to the PR HEAD, not the default `pull_request` checkout (the
+      # synthetic merge commit), because sonarcloud.yml analyzes
+      # workflow_run.head_sha, which is the PR head. Measuring coverage on the
+      # merge tree and reporting it against the head tree hands Sonar line
+      # numbers from a revision it never analyzed, so coverage lands on the
+      # wrong lines (or no lines) whenever main has moved under the PR. The
+      # merge-result signal this gives up is recovered by /integrate-pr, which
+      # rebases onto main and re-runs CI before merging; that recovery, in
+      # turn, depends on this repository's `main-protection` ruleset keeping
+      # strict_required_status_checks_policy: true (see
+      # detect-code-changes.sh's header comment), since that is what forces a
+      # stale branch to re-run CI against an up-to-date base before merge is
+      # allowed. python-lint and integration still check out the merge commit;
+      # only python-test needs the head tree, since it is the only job whose
+      # output (coverage.xml) sonarcloud.yml consumes against that exact SHA.
+      # On a push to main there is no pull_request payload and this resolves
+      # to github.sha, the default.
       - uses: actions/checkout@v4
         if: needs.changes.outputs.code != 'false'
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-python@v5
         if: needs.changes.outputs.code != 'false'
@@ -217,21 +239,44 @@ jobs:
       # (Python 3.12+, valid because no branch coverage is configured): measured
       # 11% overhead against 47% for the default tracer, at a line rate within
       # half a point of it. The 60s per-test cap raises pyproject's 30s global,
-      # which worker contention on a slower runner breaches; sonarcloud.yml
-      # does the same.
+      # which worker contention on a slower runner breaches.
       - name: Run tests with coverage
         if: needs.changes.outputs.code != 'false'
         env:
           COVERAGE_CORE: sysmon
         run: pytest tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60
 
+      # On a documentation-only change no tests ran, so there is no
+      # coverage.xml. The artifact is still published, carrying this marker
+      # instead: sonarcloud.yml's required check has to tell "CI deliberately
+      # produced no coverage" apart from "the coverage artifact could not be
+      # downloaded", and the absence of an artifact cannot distinguish them.
+      # Without the marker, an expired or failed download reported the quality
+      # gate as green without SonarCloud having run at all.
+      - name: Write the no-coverage marker (documentation-only change)
+        if: needs.changes.outputs.code == 'false'
+        env:
+          REASON: ${{ needs.changes.outputs.reason }}
+        run: echo "$REASON" > no-coverage.marker
+
+      # if-no-files-found: error, not ignore. Neither path existing means the
+      # test step ran and produced no coverage.xml, which is a real failure
+      # that must not reach the scan job as a silent "docs-only" success.
+      #
+      # Deliberately carries no `if:` of its own (implicit success()), so a
+      # failing "Run tests with coverage" skips this upload. That is fine:
+      # a failing python-test job reports job conclusion != success, which
+      # sonarcloud.yml's `CI_CONCLUSION != "success"` check catches before it
+      # ever looks at whether the artifact downloaded, so a missing artifact
+      # on a failed run is never mistaken for the docs-only case either way.
       - name: Upload coverage report
-        if: needs.changes.outputs.code != 'false'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
-          path: coverage.xml
-          if-no-files-found: ignore
+          path: |
+            coverage.xml
+            no-coverage.marker
+          if-no-files-found: error
 
   integration:
     name: Integration Test

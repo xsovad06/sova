@@ -66,17 +66,35 @@ class TestCoverageReporting:
     def test_sonar_consumes_coverage_xml(self, sonar_text: str) -> None:
         assert "sonar.python.coverage.reportPaths=coverage.xml" in sonar_text
 
-    def test_sonar_pytest_invocation_matches_ci(self, sonar_text: str) -> None:
-        # ci.yml's step comment claims sonarcloud.yml runs the identical coverage
-        # invocation. Enforce that claim instead of trusting the prose.
-        step = re.search(
-            r"env:\n\s+COVERAGE_CORE: sysmon\n\s+run: (pytest [^\n]*--cov=sova[^\n]*)",
-            sonar_text,
+    def test_sonar_never_runs_pytest_itself(self, sonar_text: str) -> None:
+        # sonarcloud.yml downloads the coverage-xml artifact ci.yml's python-test
+        # job already produced (issue #1187) rather than re-running the suite
+        # itself just to generate coverage.xml a second time. The "no pytest"
+        # substring check itself lives only in
+        # tests/test_ci_docs_only.py::TestSonarCloudWorkflow::test_no_install_or_test_steps_remain
+        # (which also covers pip install / setup-python) to avoid asserting
+        # the same thing in two files.
+        assert "coverage-xml" in sonar_text
+        assert "download-artifact" in sonar_text
+
+    def test_python_tests_runs_on_push_to_main(self, ci_text: str) -> None:
+        # sonarcloud.yml's workflow_run trigger needs an artifact on a push to
+        # main too, not just on pull requests. Asserts the positive contract
+        # (the job runs unconditionally, and its artifact upload step carries
+        # no `if:` of its own) rather than the absence of one literal string:
+        # excluding push via `if: github.event_name == 'pull_request'`, a
+        # `needs` gate, or an `if:` added to the upload step would all pass a
+        # substring-absence check while still breaking the artifact
+        # workflow_run depends on.
+        job = re.search(r"^  python-test:\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)", ci_text, re.DOTALL | re.MULTILINE)
+        assert job is not None, "python-test job not found in ci.yml"
+        job_block = job.group(1)
+        assert re.search(r"^\s*if:\s*always\(\)\s*$", job_block, re.MULTILINE), (
+            "python-test must run with if: always() so a push event is never excluded"
         )
-        assert step is not None, "coverage pytest invocation with COVERAGE_CORE: sysmon not found in sonarcloud.yml"
-        pytest_cmd = step.group(1)
-        assert "-n auto" in pytest_cmd
-        assert "--timeout=60" in pytest_cmd
+        rest = job_block[job_block.index("- name: Upload coverage report") :]
+        upload_step = rest[: rest.index("with:")]
+        assert "if:" not in upload_step, "the artifact upload step must have no condition of its own"
 
 
 class TestSecretsScan:

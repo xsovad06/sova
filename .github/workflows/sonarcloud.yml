@@ -1,153 +1,354 @@
 name: SonarCloud
 
+# Triggered by the CI workflow's completion rather than pull_request_target or
+# push directly (issue #1187). This lets the scan reuse the coverage report
+# CI already produced instead of re-running the whole test suite a second
+# time just to generate sonar.python.coverage.reportPaths input: that
+# duplication was costing a second ~15 minute run on every PR and push.
+#
+# workflow_run always executes in the context of this (base) repository, even
+# when the triggering CI run came from a fork PR, so SONAR_TOKEN and
+# GITHUB_TOKEN are available here exactly as they were for the former
+# pull_request_target trigger. No fork code is EXECUTED in this job: the
+# checkout below is read-only input to a static scan. It is still fork
+# CONTENT, though, and the scanner reads `sonar-project.properties` out of
+# that workspace: `sonar.host.url` is pinned on the scan step's own command
+# line (see SONAR_HOST_URL there) since a value planted in the file would
+# redirect the authenticated upload, and the remaining load-bearing
+# properties (`sonar.exclusions`, `sonar.coverage.exclusions`,
+# `sonar.projectKey`, ...) are defended by overwriting the checked-out
+# properties file with the base branch's own copy whenever the triggering
+# run came from a fork (see "Fetch trusted sonar-project.properties for fork
+# PRs" below).
+#
+# Because this job runs as a different workflow than the PR's own checks, the
+# automatic job-status check GitHub reports for it lands on this workflow's
+# own trigger commit (the default branch tip), not the PR head, so it can
+# never satisfy branch protection. The required "SonarCloud Analysis" check is
+# created and completed explicitly via the Checks API instead, targeting
+# workflow_run.head_sha, so it reports on the commit branch protection
+# actually evaluates. The job is named something else on purpose so that
+# automatic check cannot shadow this one (see the job's own comment).
 on:
-  # pull_request_target runs in the base repo context so secrets are
-  # available even for PRs from forks. The workflow YAML always comes
-  # from the base branch (tamper-proof). Coverage (pip install + pytest)
-  # runs on fork code; secrets are scoped to individual steps.
-  pull_request_target:
-    branches: [main]
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
 
+# Keyed on the triggering run's head REPOSITORY and branch, and (as before
+# this moved to workflow_run) a push is never cancelled: two merges landing on
+# main in quick succession can have their CI runs finish out of order, and
+# cancelling the newer commit's scan because the older one's arrived late would
+# leave main analyzed at the older tree and report `failure` for a commit never
+# scanned.
+#
+# The repository half matters because head_branch is a bare branch name with no
+# owner in it: a fork PR from `someone/sova:main` would otherwise share a group
+# with this repo's own `main` push, and since every non-push run sets
+# cancel-in-progress, that fork's scan would cancel the push's. A cancelled run
+# reports the required check as `cancelled` (or, if it is cancelled before the
+# first step creates it, leaves it uncreated), either of which blocks the PR.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: ${{ github.event.workflow_run.event != 'push' }}
 
 jobs:
   sonarcloud:
-    name: SonarCloud Analysis
+    # Deliberately NOT "SonarCloud Analysis": GitHub creates an automatic check
+    # run named after the job, and on a push to main that check lands on the
+    # same commit as the explicit one created below. Sharing the name would put
+    # two same-named checks on one commit, and since the scan runs under
+    # continue-on-error the automatic one reports success even when the quality
+    # gate failed. The required check name belongs to the Checks API call alone.
+    name: Scan
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: read
-      statuses: write
-      # Required by the detector to read this workflow's own past runs and
-      # find the last successful one to compare against.
       actions: read
+      checks: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          # For fork PRs: analyze the PR head, not the base branch
-          ref: ${{ github.event.pull_request.head.sha || '' }}
-          persist-credentials: false
-
-      # Decide whether this run needs the coverage run and the scan.
-      #
-      # Detection is DELTA-AWARE: asking only "is the whole pull request
-      # documentation" can never be true on a code-carrying PR, so that
-      # question alone made every documentation amend re-run the full
-      # 15-minute analysis. The detector also compares against the last
-      # successful run of this workflow on this branch, so a markdown-only
-      # push on top of already-green code is free.
-      #
-      # The script is fetched from the BASE branch through the API into
-      # RUNNER_TEMP, never read from the head checkout in the workspace:
-      # under pull_request_target a fork must not be able to edit the script
-      # that decides whether its own code gets scanned. Every failure path
-      # inside the script fails open (code=true).
-      # A push event has no PR diff base, so detect() always returns
-      # code=true/non-pr regardless of what the fetch below would find.
-      # Skip the fetch entirely for push, rather than spending an API call
-      # and a RUNNER_TEMP write on a result that is thrown away unused.
-      - name: Fetch the detector from the base branch
-        id: fetch-detector
-        if: github.event_name == 'pull_request_target'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          dest="${RUNNER_TEMP}/detect-code-changes.sh"
-          if gh api \
-              "repos/${{ github.repository }}/contents/.github/scripts/detect-code-changes.sh?ref=${BASE_SHA}" \
-              --jq '.content' | base64 -d > "$dest"; then
-            chmod +x "$dest"
-            echo "path=$dest" >> "$GITHUB_OUTPUT"
-          else
-            # Could not fetch the trusted copy: fall through to the full run.
-            echo "::warning::detector unavailable, running the full analysis"
-            echo "path=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Detect code changes
-        id: changes
+      # FIRST step in the job, before anything that can fail. The terminal
+      # reporter below is gated on this step's output, so any step that ran
+      # ahead of it and failed would abort the job with no check created at
+      # all, leaving the required check unreported ("Expected: waiting for
+      # status") and the PR blocked just as surely as leaving it pending.
+      - name: Create pending check run
+        id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-          WORKFLOW_FILE: sonarcloud.yml
-          DETECTOR: ${{ steps.fetch-detector.outputs.path }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EXTERNAL_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" != "pull_request_target" ]; then
-            # Matches detect()'s own non-pr outcome; the fetch step above was
-            # skipped for exactly this case, so DETECTOR is empty here too.
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "reason=non-pr" >> "$GITHUB_OUTPUT"
-            exit 0
+          # Retried: a failure here leaves steps.check.outputs.id empty, which
+          # skips the terminal reporter too (it is gated on that output), so a
+          # transient API error would otherwise strand the PR on "Expected:
+          # waiting for status" with no self-healing path.
+          id=""
+          for attempt in 1 2 3; do
+            if id=$(gh api "repos/${REPO}/check-runs" -X POST \
+              -f name="SonarCloud Analysis" \
+              -f head_sha="${HEAD_SHA}" \
+              -f status=in_progress \
+              -f details_url="${DETAILS_URL}" \
+              -f external_id="${EXTERNAL_ID}" \
+              --jq '.id'); then
+              break
+            fi
+            id=""
+            echo "::warning::attempt ${attempt} to create the pending check run failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 5))
+            fi
+          done
+          if [ -z "$id" ]; then
+            echo "::error::could not create the pending check run after 3 attempts"
+            exit 1
           fi
-          if [ -z "$DETECTOR" ] || [ ! -x "$DETECTOR" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "reason=detector-unavailable" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          "$DETECTOR" detect >> "$GITHUB_OUTPUT"
+          echo "id=${id}" >> "$GITHUB_OUTPUT"
 
-      - name: Documentation-only change (skipping SonarCloud)
-        if: steps.changes.outputs.code != 'true'
-        run: echo "Documentation-only change (${{ steps.changes.outputs.reason }}). Reporting success without re-running coverage or scan."
-
-      # Coverage for push and pull_request_target events, only when code changed.
-      # pull_request_target uses the workflow from main (tamper-proof)
-      # and SONAR_TOKEN is scoped to its own step.
-      - uses: actions/setup-python@v5
-        if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
-        with:
-          python-version: "3.12"
-          cache: 'pip'
-
-      - name: Install package with test dependencies
-        if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
-        run: pip install -e ".[dev]" pytest-cov pytest-timeout
-
-      # Stopgap until SonarCloud consumes the CI coverage artifact (#1187):
-      # run on all runner cores, and use the sys.monitoring coverage core
-      # (Python 3.12+, no branch coverage configured), which measured 11%
-      # overhead against 47% for the default tracer. Serial with the default
-      # tracer this step reached 29 of the job's 30 minutes (#1183).
-      - name: Run tests with coverage
-        if: steps.changes.outputs.code == 'true' && (github.event_name == 'push' || github.event_name == 'pull_request_target')
+      # workflow_run.pull_requests is empty for fork PRs (a documented GitHub
+      # limitation), so the PR is resolved from the head commit instead, via
+      # the same commits/{sha}/pulls lookup for same-repo and fork PRs alike.
+      #
+      # Gated on the ORIGINAL event being `pull_request`, because
+      # commits/{sha}/pulls is documented to return the MERGED pull request a
+      # commit arrived in once that commit is on the default branch. Running it
+      # unconditionally meant every post-merge push to main resolved the PR
+      # that had just been merged and was then analyzed with
+      # -Dsonar.pullrequest.* parameters, decorating an already-closed PR
+      # instead of updating main's own branch analysis. A push (and a manual
+      # workflow_dispatch of CI) leaves every output empty and falls through to
+      # the branch-analysis parameters below.
+      #
+      # Among the pull requests the lookup does return, only an OPEN one whose
+      # own head is this exact commit describes the analysis being run; the
+      # `// .[0]` tail keeps an open PR whose head has moved on (a force-push
+      # landing between CI finishing and this scan starting) rather than
+      # silently degrading that PR to branch analysis. A lookup FAILURE is a
+      # hard error, never an empty result: `|| echo '[]'` would have turned a
+      # transient GitHub outage into a spurious `sonar.branch.name` analysis of
+      # a PR branch.
+      #
+      # An empty resolution (no open PR found for this head) is retried up to
+      # 3 times with a short pause: commits/{sha}/pulls can lag just after a
+      # PR is opened, and treating that transient lag the same as "genuinely
+      # no PR" would make the pr-guard step below fail a brand-new PR's check.
+      - name: Resolve PR for this run's head commit
+        id: pr
+        if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request'
         env:
-          COVERAGE_CORE: sysmon
-        run: pytest tests/ -n auto --cov=sova --cov-report=xml -q --timeout=60
-
-      - name: Find associated PR
-        id: find-pr
-        if: steps.changes.outputs.code == 'true'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
-            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
-            echo "head=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
-            echo "base=${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_name }}" != "main" ]; then
-            PR_NUMBER=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number // empty' 2>/dev/null || echo '')
-            echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-            echo "head=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "base=main" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          pr="{}"
+          for attempt in 1 2 3; do
+            if ! pulls="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls")"; then
+              echo "::error::Could not list pull requests for ${HEAD_SHA}"
+              exit 1
+            fi
+            open="$(jq -c '[.[] | select(.state == "open")]' <<<"$pulls")"
+            pr="$(jq -c --arg sha "$HEAD_SHA" \
+              '[.[] | select(.head.sha == $sha)][0] // .[0] // {}' <<<"$open")"
+            if [ -n "$(jq -r '.number // empty' <<<"$pr")" ] || [ "$attempt" = 3 ]; then
+              break
+            fi
+            echo "::notice::no open PR found for ${HEAD_SHA} on attempt ${attempt}; retrying in case the commits/pulls index is lagging"
+            sleep 1
+          done
+          {
+            echo "number=$(jq -r '.number // empty' <<<"$pr")"
+            echo "head=$(jq -r '.head.ref // empty' <<<"$pr")"
+            echo "base=$(jq -r '.base.ref // empty' <<<"$pr")"
+          } >> "$GITHUB_OUTPUT"
+
+      # Guarded with continue-on-error so the terminal reporter below, not an
+      # aborted job, decides what a failed download means. It means FAILURE:
+      # ci.yml publishes the coverage-xml artifact on every run of its
+      # python-test job whose earlier steps succeeded (a failing test run
+      # reports job conclusion != success and is caught by the
+      # CI_CONCLUSION check ahead of this one in the reporter below), carrying
+      # a no-coverage.marker instead of a coverage.xml on the documentation-
+      # only path, so "the artifact is missing" is never the intended
+      # docs-only case. An expired or unreachable artifact is a scan that did
+      # not happen, and reporting the required check green for it would pass
+      # the quality gate without SonarCloud ever running. Deliberately placed
+      # BEFORE the checkout below: it needs no checked-out workspace (it
+      # talks to the Artifacts API by run-id), and classifying its result
+      # first lets the expensive full-history clone be skipped entirely on
+      # the documentation-only path.
+      - name: Download coverage report from the triggering CI run
+        id: artifact
+        if: github.event.workflow_run.conclusion == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      # Which of the two shapes arrived decides everything downstream: a real
+      # coverage.xml is scanned, the marker is an intentional skip. This is
+      # read off the downloaded files rather than inferred from the download's
+      # own outcome, which cannot tell "CI had nothing to measure" from "the
+      # artifact could not be fetched".
+      - name: Classify the downloaded artifact
+        id: coverage
+        if: steps.artifact.outcome == 'success'
+        run: |
+          set -euo pipefail
+          if [ -f coverage.xml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::CI published no coverage (documentation-only change); skipping the scan"
+            echo "present=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # Gated on real coverage having arrived, not just on CI's conclusion:
+      # on the documentation-only path nothing below reads the checked-out
+      # tree (the baseline-verdict lookup and the reporter both work off the
+      # GitHub API alone), so a full-history clone would be pure overhead on
+      # every docs-only push, the exact path this whole workflow_run rewiring
+      # exists to make cheap. `clean: false` because the artifact above was
+      # already downloaded into this same workspace directory: checkout's
+      # default `git clean -ffdx` would delete that untracked coverage.xml
+      # before the scan step gets to read it.
+      - uses: actions/checkout@v4
+        if: steps.coverage.outputs.present == 'true'
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+          clean: false
+
+      # Closes the properties-trust gap for a fork PR: the scanner reads
+      # sonar.exclusions, sonar.coverage.exclusions and sonar.projectKey
+      # (among others) out of sonar-project.properties in this checked-out
+      # workspace, and only sonar.host.url is pinned on the scan step's own
+      # command line. A fork could otherwise set sonar.exclusions=** to make
+      # its own code invisible to the analysis, or repoint sonar.projectKey,
+      # and still have the required check report green. Same-repo commits
+      # (including pushes to main) already own this file, so the fetch only
+      # runs for a fork head: overwriting this repo's own copy with itself
+      # would be a no-op that costs an API call.
+      - name: Fetch trusted sonar-project.properties for fork PRs
+        if: >-
+          steps.coverage.outputs.present == 'true' &&
+          github.event.workflow_run.head_repository.full_name != github.repository
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.workflow_run.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if ! content="$(gh api "repos/${REPO}/contents/sonar-project.properties?ref=${BASE_REF}" --jq '.content')"; then
+            echo "::error::could not fetch sonar-project.properties from ${BASE_REF}"
+            exit 1
+          fi
+          echo "$content" | base64 -d > sonar-project.properties
+
+      # A docs-only commit's "no coverage to scan" success has to be justified
+      # by a green SonarCloud run, not just a green CI run: ci.yml's baseline
+      # for the docs-only skip is the last successful run of CI ITSELF, which
+      # succeeds independently of the SonarCloud quality gate. Without this
+      # check, pushing a code commit whose quality gate fails and then
+      # amending with a docs-only commit (exactly what /address-pr's cycle and
+      # a force-push amend both do) flips the required check green on the
+      # unresolved gate: CI run 2 sees a markdown-only tree delta from CI run
+      # 1 (which succeeded) and reports code=false, so this job never
+      # consults the actual SonarCloud verdict from run 1 at all. This walks
+      # the most recent earlier successful ci.yml runs ON THIS SAME HEAD
+      # REPOSITORY (head_branch alone is a bare name with no owner, so two
+      # forks using the same branch name could otherwise mirror a stranger's
+      # verdict) and reads each candidate's own SonarCloud check, newest
+      # (`started_at`) first, skipping a cancelled/superseded/still-running
+      # one and falling back to an earlier commit rather than treating "never
+      # scanned" as a pass. Only once every candidate is exhausted is the
+      # verdict "unknown" (fail closed).
+      #
+      # `gh api` switches from GET to POST as soon as any -f/-F parameter is
+      # given, so --method GET must be explicit here, and `--jq --arg` is not
+      # valid syntax (the flag takes exactly one expression and no --arg); the
+      # sha is instead passed to a separate `jq --arg` invocation over the
+      # captured response. The two `gh api` calls that can return a
+      # genuinely-empty result (no earlier run; a candidate with no SonarCloud
+      # check at all) still guard their own failure explicitly with `if !`, so
+      # a transient outage there is distinguishable from that legitimate
+      # emptiness; every other failure (a bad jq pipeline, an unexpected
+      # payload shape) is left to abort the script under `set -e`, which
+      # fails the job and reports `conclusion=failure` downstream, rather than
+      # silently falling through to "no baseline" or "none".
+      - name: Resolve baseline verdict for docs-only skip
+        id: baseline
+        if: steps.coverage.outputs.present == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT_NAME: ${{ github.event.workflow_run.event }}
+        run: |
+          set -euo pipefail
+          if ! runs="$(gh api --method GET \
+            -f "branch=${HEAD_BRANCH}" \
+            -f status=success \
+            -f "event=${EVENT_NAME}" \
+            -F per_page=10 \
+            "repos/${REPO}/actions/workflows/ci.yml/runs")"; then
+            echo "::warning::could not list CI runs for ${HEAD_BRANCH}; treating the baseline verdict as unknown"
+            echo "verdict=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          candidates="$(jq -r --arg sha "$HEAD_SHA" --arg repo "$HEAD_REPO" \
+            '[.workflow_runs[] | select(.head_sha != $sha and .head_repository.full_name == $repo) | .head_sha] | unique' \
+            <<<"$runs")"
+          if [ "$(jq 'length' <<<"$candidates")" = "0" ]; then
+            echo "::notice::no earlier successful CI run found on ${HEAD_REPO}; treating the docs-only skip as a first scan"
+            echo "verdict=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          verdict="unknown"
+          baseline_sha=""
+          while IFS= read -r candidate_sha; do
+            if ! check_runs="$(gh api --method GET \
+              -f "check_name=SonarCloud Analysis" \
+              -F per_page=100 \
+              "repos/${REPO}/commits/${candidate_sha}/check-runs")"; then
+              echo "::warning::could not read check runs for baseline ${candidate_sha}; trying an earlier commit"
+              continue
+            fi
+            check="$(jq -c '[.check_runs[] | select(.name == "SonarCloud Analysis")] | max_by(.started_at) // empty' <<<"$check_runs")"
+            if [ -z "$check" ] || [ "$check" = "null" ]; then
+              echo "::notice::baseline ${candidate_sha} has no SonarCloud Analysis check at all; trying an earlier commit"
+              continue
+            fi
+            status="$(jq -r '.status // empty' <<<"$check")"
+            if [ "$status" != "completed" ]; then
+              echo "::warning::baseline SonarCloud check on ${candidate_sha} is still '${status}'; treating the baseline verdict as unknown"
+              baseline_sha="$candidate_sha"
+              break
+            fi
+            conclusion="$(jq -r '.conclusion // empty' <<<"$check")"
+            if [ -z "$conclusion" ] || [ "$conclusion" = "cancelled" ]; then
+              echo "::notice::baseline ${candidate_sha}'s SonarCloud check was cancelled or superseded, which never consulted the gate; trying an earlier commit"
+              continue
+            fi
+            verdict="$conclusion"
+            baseline_sha="$candidate_sha"
+            break
+          done <<<"$(jq -r '.[]' <<<"$candidates")"
+          echo "sha=${baseline_sha}" >> "$GITHUB_OUTPUT"
+          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
 
       - name: Check SONAR_TOKEN is available
         id: check-token
-        if: steps.changes.outputs.code == 'true'
+        if: steps.coverage.outputs.present == 'true'
         run: |
           if [ -n "$SONAR_TOKEN" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
@@ -158,18 +359,228 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+      # A pull_request-triggered CI run whose head commit resolves to no open
+      # PR (closed/merged between CI finishing and the scan starting, or the
+      # commits/{sha}/pulls index not yet caught up on a just-opened PR, which
+      # the PR-resolution step above already retries 3 times) must not
+      # silently fall back to branch analysis: that registers the PR's
+      # feature branch as a long-lived branch in SonarCloud and evaluates it
+      # against the main-branch gate with no PR decoration, the exact
+      # pollution the hard-error-on-API-failure above exists to prevent,
+      # reached through a different door. The terminal reporter fails this
+      # case closed (conclusion=failure), not neutral: a `neutral` check
+      # satisfies a required status check, which would pass the gate with no
+      # scan having run at all, and a closed/merged PR (the one case this
+      # guard also catches) is unaffected by a failing check on an old head.
+      - name: Guard against unresolvable PR context
+        id: pr-guard
+        if: steps.check-token.outputs.available == 'true'
+        env:
+          WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          if [ "$WORKFLOW_RUN_EVENT" = "pull_request" ] && [ -z "$PR_NUMBER" ]; then
+            echo "::warning::pull_request CI run has no resolvable open PR for its head commit after retries; failing closed rather than running a branch analysis of a PR branch"
+            echo "resolvable=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "resolvable=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # No PR context (a direct push to main, or a run with no associated
+      # PR) falls back to Sonar's branch-analysis parameters instead of PR
+      # parameters, since push-to-main is a valid trigger path with no PR to
+      # decorate.
+      #
+      # SONAR_HOST_URL is pinned rather than left to default, because the
+      # workspace holds fork-authored content on a fork PR and the scanner
+      # reads `sonar-project.properties` from it: a `sonar.host.url` planted
+      # there would otherwise redirect the authenticated analysis upload and
+      # hand SONAR_TOKEN to that host. The action puts this on the scanner's
+      # command line, which wins over the properties file.
+      #
+      # sonar.scm.revision is pinned for the same class of reason, minus the
+      # security angle: the scanner's GitHub Actions auto-detection derives it
+      # from GITHUB_SHA, which under workflow_run is the DEFAULT BRANCH tip,
+      # not the commit being analyzed.
       - name: SonarCloud Scan
-        if: steps.changes.outputs.code == 'true' && steps.check-token.outputs.available == 'true'
+        id: scan
+        if: steps.check-token.outputs.available == 'true' && steps.pr-guard.outputs.resolvable == 'true'
+        continue-on-error: true
+        # Own timeout, shorter than the job's: a step-level timeout marks
+        # `steps.scan.outcome` as 'failure', which the terminal reporter names
+        # correctly ("the quality gate did not pass"). A job-level timeout
+        # instead reports `job.status == 'cancelled'`, which reads in the
+        # check run as "superseded, nothing to see" and is indistinguishable
+        # from a concurrency-group supersede.
+        timeout-minutes: 15
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
         with:
           args: >
             -Dsonar.qualitygate.wait=true
             -Dsonar.python.coverage.reportPaths=coverage.xml
-            ${{ steps.find-pr.outputs.number != '' && format(
+            -Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }}
+            ${{ steps.pr.outputs.number != '' && format(
               '-Dsonar.pullrequest.key={0} -Dsonar.pullrequest.branch={1} -Dsonar.pullrequest.base={2}',
-              steps.find-pr.outputs.number,
-              steps.find-pr.outputs.head,
-              steps.find-pr.outputs.base
-            ) || '' }}
+              steps.pr.outputs.number,
+              steps.pr.outputs.head,
+              steps.pr.outputs.base
+            ) || format('-Dsonar.branch.name={0}', github.event.workflow_run.head_branch) }}
+
+      # One terminal step completes the check for every outcome, so the
+      # required "SonarCloud Analysis" check can never be left pending: a
+      # non-success CI run, a missing artifact, a missing token, the scan's own
+      # verdict, a cancellation, and an unexpected failure in any step above
+      # (an unguarded checkout failure would otherwise strand the PR forever)
+      # all land here. Runs unconditionally (`if: always()`, not gated on
+      # `steps.check.outputs.id != ''`): if the pending check's own 3 retries
+      # above were exhausted, there is no check ID to PATCH, so this step
+      # falls back to POSTing a brand-new, already-completed check run
+      # instead of leaving the required check absent.
+      - name: Report check result
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          CHECK_ID: ${{ steps.check.outputs.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          ARTIFACT_OUTCOME: ${{ steps.artifact.outcome }}
+          COVERAGE_PRESENT: ${{ steps.coverage.outputs.present }}
+          BASELINE_SHA: ${{ steps.baseline.outputs.sha }}
+          BASELINE_VERDICT: ${{ steps.baseline.outputs.verdict }}
+          TOKEN_AVAILABLE: ${{ steps.check-token.outputs.available }}
+          PR_GUARD_RESOLVABLE: ${{ steps.pr-guard.outputs.resolvable }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$CI_CONCLUSION" != "success" ]; then
+            # Cancelled counts as a failure here, never a silent success.
+            conclusion=failure
+            title="CI did not succeed"
+            summary="The triggering CI run concluded with '${CI_CONCLUSION}'. SonarCloud analysis was not run."
+          elif [ "$JOB_STATUS" = "failure" ]; then
+            conclusion=failure
+            title="SonarCloud workflow failed"
+            summary="A step in this workflow failed before the scan could report. See the workflow run for details."
+          elif [ "$JOB_STATUS" = "cancelled" ]; then
+            # Reported as cancelled, not failure: this job was superseded (the
+            # concurrency group) or cancelled by hand, so the quality gate was
+            # never consulted and must not be blamed. Falling through to the
+            # final else would write "the quality gate did not pass" for a
+            # commit that was never scanned.
+            conclusion=cancelled
+            title="SonarCloud analysis cancelled"
+            summary="This run was cancelled before the scan could report. No quality gate verdict was produced."
+          elif [ "$ARTIFACT_OUTCOME" != "success" ]; then
+            # Reached only once CI_CONCLUSION == success above, so python-test's
+            # earlier steps already succeeded and it uploaded coverage-xml; a
+            # failed download here is an expired, deleted or unreachable
+            # artifact, never the docs-only path. The scan did not happen; say
+            # so rather than passing the required check on a gate nobody
+            # consulted.
+            conclusion=failure
+            title="Coverage artifact unavailable"
+            summary="CI succeeded, but its coverage-xml artifact could not be downloaded. SonarCloud analysis was not run."
+          elif [ "$COVERAGE_PRESENT" != "true" ]; then
+            # The artifact carried a no-coverage.marker instead of a
+            # coverage.xml: per .github/scripts/detect-code-changes.sh that is
+            # a docs-only change, where python-test skips its own test step.
+            # That alone is NOT enough to pass: ci.yml's own baseline for this
+            # skip is the last successful run of CI itself, which succeeds
+            # independently of the SonarCloud quality gate, so a code commit
+            # whose gate failed and was never fixed can reach here on a later
+            # docs-only amend. BASELINE_VERDICT mirrors the last scanned
+            # commit's own "SonarCloud Analysis" check instead of hardcoding
+            # success. "none" (no earlier scanned commit to compare against)
+            # and "success" are legitimate passes. "neutral" is not a gate
+            # failure either (SONAR_TOKEN missing on that earlier commit,
+            # never an actual quality gate verdict), so blocking a docs-only
+            # push on it would be a false negative. "cancelled" is NOT a
+            # legitimate pass: the baseline step above already walks past a
+            # cancelled/superseded candidate to an earlier one, so a literal
+            # "cancelled" reaching here means every candidate it tried was
+            # cancelled, i.e. the code was never actually scanned; treat it
+            # like "unknown" and fail closed. Only a genuine gate failure
+            # (failure/timed_out/action_required) falls to the final branch.
+            case "$BASELINE_VERDICT" in
+              none | success | neutral)
+                conclusion=success
+                title="No coverage to scan"
+                summary="CI deliberately produced no coverage (documentation-only change). Skipping SonarCloud analysis."
+                ;;
+              unknown | cancelled)
+                conclusion=failure
+                title="Baseline SonarCloud verdict unknown"
+                summary="This commit only changes documentation, but the SonarCloud verdict on the baseline commit (${BASELINE_SHA:-unknown}) could not be established (an API failure, that commit's scan is still in progress, or every candidate tried was cancelled/superseded and never consulted the gate). Failing closed rather than passing an unverified gate."
+                ;;
+              *)
+                conclusion=failure
+                title="Baseline SonarCloud gate not satisfied"
+                summary="This commit only changes documentation, but the baseline commit (${BASELINE_SHA:-unknown}) on this branch reported '${BASELINE_VERDICT}'. A docs-only push cannot clear that gate on its own; fix the underlying commit."
+                ;;
+            esac
+          elif [ "$TOKEN_AVAILABLE" != "true" ]; then
+            conclusion=neutral
+            title="SONAR_TOKEN unavailable"
+            summary="SONAR_TOKEN secret was not set; the scan was skipped."
+          elif [ "$PR_GUARD_RESOLVABLE" = "false" ]; then
+            conclusion=failure
+            title="PR could not be resolved"
+            summary="This pull_request CI run has no resolvable open PR for its head commit, even after retries. Failing the check rather than running a branch-level scan of a PR branch or passing the gate without a scan."
+          elif [ "$SCAN_OUTCOME" = "success" ]; then
+            conclusion=success
+            title="SonarCloud Analysis"
+            summary="SonarCloud quality gate passed."
+          else
+            conclusion=failure
+            title="SonarCloud Analysis"
+            summary="SonarCloud scan failed, or the quality gate did not pass."
+          fi
+          # Retried for the same reason as the pending check's own creation:
+          # a transient failure here leaves the required check `in_progress`
+          # forever, blocking the PR just as hard as never creating it.
+          if [ -n "$CHECK_ID" ]; then
+            for attempt in 1 2 3; do
+              if gh api "repos/${REPO}/check-runs/${CHECK_ID}" -X PATCH \
+                -f status=completed \
+                -f conclusion="${conclusion}" \
+                -f "output[title]=${title}" \
+                -f "output[summary]=${summary}"; then
+                exit 0
+              fi
+              echo "::warning::attempt ${attempt} to report the check result failed"
+              if [ "$attempt" -lt 3 ]; then
+                sleep $((attempt * 5))
+              fi
+            done
+            echo "::error::could not report the check result after 3 attempts"
+            exit 1
+          fi
+          # The pending check was never created (its own 3 retries were
+          # exhausted), so there is no check ID to PATCH. POST a new,
+          # already-completed check run directly rather than leaving the
+          # required check absent, which blocks the PR exactly as hard as
+          # leaving it pending forever would.
+          for attempt in 1 2 3; do
+            if gh api "repos/${REPO}/check-runs" -X POST \
+              -f name="SonarCloud Analysis" \
+              -f head_sha="${HEAD_SHA}" \
+              -f status=completed \
+              -f conclusion="${conclusion}" \
+              -f details_url="${DETAILS_URL}" \
+              -f "output[title]=${title}" \
+              -f "output[summary]=${summary}"; then
+              exit 0
+            fi
+            echo "::warning::attempt ${attempt} to create the completed check run failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 5))
+            fi
+          done
+          echo "::error::could not create the completed check run after 3 attempts"
+          exit 1
