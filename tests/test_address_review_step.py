@@ -649,33 +649,48 @@ class TestAddressReviewRegexesPinned:
         assert time.monotonic() - start < 2.0
 
     def test_fix_split_re_pinned(self) -> None:
-        from sova.core.steps.address_review import _FIX_SPLIT_RE
+        from sova.core.steps.address_review import _split_on_fix_marker
 
-        parts = _FIX_SPLIT_RE.split("Description text   Fix:   suggestion", maxsplit=1)
-        assert parts == ["Description text", "suggestion"]
+        parts = _split_on_fix_marker("Description text   Fix:   suggestion")
+        assert parts == ("Description text", "suggestion")
 
     def test_fix_split_re_adversarial(self) -> None:
-        from sova.core.steps.address_review import _FIX_SPLIT_RE
+        from sova.core.steps.address_review import _split_on_fix_marker
 
         text = "a" * 20000 + " " * 20000
         start = time.monotonic()
-        _FIX_SPLIT_RE.split(text, maxsplit=1)
+        _split_on_fix_marker(text)
         assert time.monotonic() - start < 2.0
 
     def test_legacy_header_re_pinned(self) -> None:
-        from sova.core.steps.address_review import _LEGACY_HEADER_RE
+        from sova.core.steps.address_review import _match_legacy_header
 
         sep = "-" * 2  # avoid a literal double-dash separator in test source
-        m = _LEGACY_HEADER_RE.match(f"**[HIGH] Category Name {sep} Description with {sep} a dash**")
+        m = _match_legacy_header(f"**[HIGH] Category Name {sep} Description with {sep} a dash**")
         assert m is not None
-        assert m.groups() == ("HIGH", "Category Name", f"Description with {sep} a dash")
+        assert m == ("HIGH", "Category Name", f"Description with {sep} a dash")
+
+    def test_legacy_header_re_rejects_punctuation_in_category(self) -> None:
+        """Pinning: a category with punctuation (e.g. a stray '*') never matches.
+
+        The original ``[\\w ]*?`` character class requires every character
+        of the category text to be a word character or space, so a stray
+        punctuation character (such as an unbalanced markdown '*') before
+        the separator must fail to match, not just a non-word first
+        character.
+        """
+        from sova.core.steps.address_review import _match_legacy_header
+
+        sep = "-" * 2  # avoid a literal double-dash separator in test source
+        m = _match_legacy_header(f"[HIGH] Category* Name {sep} Description")
+        assert m is None
 
     def test_legacy_header_re_adversarial(self) -> None:
-        from sova.core.steps.address_review import _LEGACY_HEADER_RE
+        from sova.core.steps.address_review import _match_legacy_header
 
         text = "[HIGH] " + "a " * 20000
         start = time.monotonic()
-        _LEGACY_HEADER_RE.match(text)
+        _match_legacy_header(text)
         assert time.monotonic() - start < 2.0
 
     def test_inline_comment_head_re_pinned(self) -> None:
