@@ -109,7 +109,7 @@ def _extract_spec_content(text: str) -> str:
     if not text:
         return ""
 
-    fence_match = re.search(r"```(?:markdown|md)(?>[^\S\n]*\n)+(.*?)```", text, re.DOTALL)
+    fence_match = re.search(r"```(?:markdown|md)[^\S\n]*\n(.*?)```", text, re.DOTALL)
     if fence_match:
         return fence_match.group(1).strip()
 
