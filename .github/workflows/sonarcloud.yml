@@ -56,7 +56,7 @@ jobs:
     # gate failed. The required check name belongs to the Checks API call alone.
     name: Scan
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: read
@@ -125,6 +125,11 @@ jobs:
       # hard error, never an empty result: `|| echo '[]'` would have turned a
       # transient GitHub outage into a spurious `sonar.branch.name` analysis of
       # a PR branch.
+      #
+      # An empty resolution (no open PR found for this head) is retried up to
+      # 3 times with a short pause: commits/{sha}/pulls can lag just after a
+      # PR is opened, and treating that transient lag the same as "genuinely
+      # no PR" would make the pr-guard step below fail a brand-new PR's check.
       - name: Resolve PR for this run's head commit
         id: pr
         if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request'
@@ -134,13 +139,21 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          if ! pulls="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls")"; then
-            echo "::error::Could not list pull requests for ${HEAD_SHA}"
-            exit 1
-          fi
-          open="$(jq -c '[.[] | select(.state == "open")]' <<<"$pulls")"
-          pr="$(jq -c --arg sha "$HEAD_SHA" \
-            '[.[] | select(.head.sha == $sha)][0] // .[0] // {}' <<<"$open")"
+          pr="{}"
+          for attempt in 1 2 3; do
+            if ! pulls="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls")"; then
+              echo "::error::Could not list pull requests for ${HEAD_SHA}"
+              exit 1
+            fi
+            open="$(jq -c '[.[] | select(.state == "open")]' <<<"$pulls")"
+            pr="$(jq -c --arg sha "$HEAD_SHA" \
+              '[.[] | select(.head.sha == $sha)][0] // .[0] // {}' <<<"$open")"
+            if [ -n "$(jq -r '.number // empty' <<<"$pr")" ] || [ "$attempt" = 3 ]; then
+              break
+            fi
+            echo "::notice::no open PR found for ${HEAD_SHA} on attempt ${attempt}; retrying in case the commits/pulls index is lagging"
+            sleep 1
+          done
           {
             echo "number=$(jq -r '.number // empty' <<<"$pr")"
             echo "head=$(jq -r '.head.ref // empty' <<<"$pr")"
@@ -199,10 +212,23 @@ jobs:
       # a force-push amend both do) flips the required check green on the
       # unresolved gate: CI run 2 sees a markdown-only tree delta from CI run
       # 1 (which succeeded) and reports code=false, so this job never
-      # consults the actual SonarCloud verdict from run 1 at all. Resolving
-      # the same baseline CI run detect-code-changes.sh would have used and
-      # reading ITS SonarCloud check mirrors that verdict instead of
-      # hardcoding success.
+      # consults the actual SonarCloud verdict from run 1 at all. This looks
+      # up the most recent earlier successful ci.yml run on this branch (the
+      # run the detector would have compared against; a layer-1
+      # `docs-only-pr` skip has no detector baseline at all, so this check is
+      # strictly more conservative there) and reads THAT commit's own
+      # SonarCloud check, mirroring its verdict instead of hardcoding success.
+      #
+      # `gh api` switches from GET to POST as soon as any -f/-F parameter is
+      # given, so --method GET must be explicit here, and `--jq --arg` is not
+      # valid syntax (the flag takes exactly one expression and no --arg); the
+      # sha is instead passed to a separate `jq --arg` invocation over the
+      # captured response. Each `gh api` call's exit status is captured
+      # explicitly rather than allowed to abort under `set -e`, but a failure
+      # is never read as "no baseline": verdict=unknown is written instead,
+      # and the terminal reporter treats "unknown" as a failure (fail
+      # closed), the same as an in-progress baseline check, since a lookup
+      # that could not complete proves nothing about the gate.
       - name: Resolve baseline verdict for docs-only skip
         id: baseline
         if: steps.coverage.outputs.present == 'false'
@@ -213,24 +239,36 @@ jobs:
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           EVENT_NAME: ${{ github.event.workflow_run.event }}
         run: |
-          set -euo pipefail
-          baseline_sha="$(gh api \
+          set -uo pipefail
+          if ! runs="$(gh api --method GET \
             -f "branch=${HEAD_BRANCH}" \
             -f status=success \
             -f "event=${EVENT_NAME}" \
             -F per_page=5 \
-            "repos/${REPO}/actions/workflows/ci.yml/runs" \
-            --jq --arg sha "$HEAD_SHA" \
-              '[.workflow_runs[] | select(.head_sha != $sha)][0].head_sha // empty' \
-            2>/dev/null || true)"
+            "repos/${REPO}/actions/workflows/ci.yml/runs")"; then
+            echo "::warning::could not list CI runs for ${HEAD_BRANCH}; treating the baseline verdict as unknown"
+            echo "verdict=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          baseline_sha="$(jq -r --arg sha "$HEAD_SHA" \
+            '[.workflow_runs[] | select(.head_sha != $sha)][0].head_sha // empty' <<<"$runs")"
           if [ -z "$baseline_sha" ]; then
             echo "::notice::no earlier successful CI run found; treating the docs-only skip as a first scan"
             echo "verdict=none" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          verdict="$(gh api "repos/${REPO}/commits/${baseline_sha}/check-runs" \
-            --jq '[.check_runs[] | select(.name == "SonarCloud Analysis")][0].conclusion // empty' \
-            2>/dev/null || true)"
+          if ! check_runs="$(gh api --method GET "repos/${REPO}/commits/${baseline_sha}/check-runs")"; then
+            echo "::warning::could not read check runs for baseline ${baseline_sha}; treating the baseline verdict as unknown"
+            echo "verdict=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          status="$(jq -r '[.check_runs[] | select(.name == "SonarCloud Analysis")][0].status // empty' <<<"$check_runs")"
+          if [ -n "$status" ] && [ "$status" != "completed" ]; then
+            echo "::warning::baseline SonarCloud check on ${baseline_sha} is still '${status}'; treating the baseline verdict as unknown"
+            echo "verdict=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          verdict="$(jq -r '[.check_runs[] | select(.name == "SonarCloud Analysis")][0].conclusion // empty' <<<"$check_runs")"
           echo "sha=${baseline_sha}" >> "$GITHUB_OUTPUT"
           echo "verdict=${verdict:-none}" >> "$GITHUB_OUTPUT"
 
@@ -249,12 +287,17 @@ jobs:
 
       # A pull_request-triggered CI run whose head commit resolves to no open
       # PR (closed/merged between CI finishing and the scan starting, or the
-      # commits/{sha}/pulls index not yet caught up on a just-opened PR) must
-      # not silently fall back to branch analysis: that registers the PR's
+      # commits/{sha}/pulls index not yet caught up on a just-opened PR, which
+      # the PR-resolution step above already retries 3 times) must not
+      # silently fall back to branch analysis: that registers the PR's
       # feature branch as a long-lived branch in SonarCloud and evaluates it
       # against the main-branch gate with no PR decoration, the exact
       # pollution the hard-error-on-API-failure above exists to prevent,
-      # reached through a different door.
+      # reached through a different door. The terminal reporter fails this
+      # case closed (conclusion=failure), not neutral: a `neutral` check
+      # satisfies a required status check, which would pass the gate with no
+      # scan having run at all, and a closed/merged PR (the one case this
+      # guard also catches) is unaffected by a failing check on an old head.
       - name: Guard against unresolvable PR context
         id: pr-guard
         if: steps.check-token.outputs.available == 'true'
@@ -263,7 +306,7 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           if [ "$WORKFLOW_RUN_EVENT" = "pull_request" ] && [ -z "$PR_NUMBER" ]; then
-            echo "::warning::pull_request CI run has no resolvable open PR for its head commit; skipping the scan rather than running a branch analysis of a PR branch"
+            echo "::warning::pull_request CI run has no resolvable open PR for its head commit after retries; failing closed rather than running a branch analysis of a PR branch"
             echo "resolvable=false" >> "$GITHUB_OUTPUT"
           else
             echo "resolvable=true" >> "$GITHUB_OUTPUT"
@@ -289,6 +332,13 @@ jobs:
         id: scan
         if: steps.check-token.outputs.available == 'true' && steps.pr-guard.outputs.resolvable == 'true'
         continue-on-error: true
+        # Own timeout, shorter than the job's: a step-level timeout marks
+        # `steps.scan.outcome` as 'failure', which the terminal reporter names
+        # correctly ("the quality gate did not pass"). A job-level timeout
+        # instead reports `job.status == 'cancelled'`, which reads in the
+        # check run as "superseded, nothing to see" and is indistinguishable
+        # from a concurrency-group supersede.
+        timeout-minutes: 15
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -363,25 +413,41 @@ jobs:
             # whose gate failed and was never fixed can reach here on a later
             # docs-only amend. BASELINE_VERDICT mirrors the last scanned
             # commit's own "SonarCloud Analysis" check instead of hardcoding
-            # success; "none" (no earlier scanned commit to compare against)
-            # is treated as a legitimate first scan.
-            if [ "$BASELINE_VERDICT" = "none" ] || [ "$BASELINE_VERDICT" = "success" ]; then
-              conclusion=success
-              title="No coverage to scan"
-              summary="CI deliberately produced no coverage (documentation-only change). Skipping SonarCloud analysis."
-            else
-              conclusion=failure
-              title="Baseline SonarCloud gate not satisfied"
-              summary="This commit only changes documentation, but the last scanned commit on this branch reported '${BASELINE_VERDICT}'. A docs-only push cannot clear that gate on its own; fix the underlying commit."
-            fi
+            # success. "none" (no earlier scanned commit to compare against)
+            # and "success" are legitimate passes. "neutral" and "cancelled"
+            # are not gate failures either (SONAR_TOKEN missing or a
+            # superseded run on that earlier commit, never an actual quality
+            # gate verdict), so blocking a docs-only push on them would be a
+            # false negative; only a genuine gate failure
+            # (failure/timed_out/action_required) blocks. "unknown" (the
+            # baseline step's own lookup failed, or that commit's scan is
+            # still in progress) fails closed, the one case here that is not
+            # a baseline verdict at all.
+            case "$BASELINE_VERDICT" in
+              none | success | neutral | cancelled)
+                conclusion=success
+                title="No coverage to scan"
+                summary="CI deliberately produced no coverage (documentation-only change). Skipping SonarCloud analysis."
+                ;;
+              unknown)
+                conclusion=failure
+                title="Baseline SonarCloud verdict unknown"
+                summary="This commit only changes documentation, but the last scanned commit's SonarCloud verdict could not be established (an API failure, or that commit's scan is still in progress). Failing closed rather than passing an unverified gate."
+                ;;
+              *)
+                conclusion=failure
+                title="Baseline SonarCloud gate not satisfied"
+                summary="This commit only changes documentation, but the last scanned commit on this branch reported '${BASELINE_VERDICT}'. A docs-only push cannot clear that gate on its own; fix the underlying commit."
+                ;;
+            esac
           elif [ "$TOKEN_AVAILABLE" != "true" ]; then
             conclusion=neutral
             title="SONAR_TOKEN unavailable"
             summary="SONAR_TOKEN secret was not set; the scan was skipped."
           elif [ "$PR_GUARD_RESOLVABLE" = "false" ]; then
-            conclusion=neutral
+            conclusion=failure
             title="PR could not be resolved"
-            summary="This pull_request CI run has no resolvable open PR for its head commit. Skipping analysis rather than running a branch-level scan of a PR branch."
+            summary="This pull_request CI run has no resolvable open PR for its head commit, even after retries. Failing the check rather than running a branch-level scan of a PR branch or passing the gate without a scan."
           elif [ "$SCAN_OUTCOME" = "success" ]; then
             conclusion=success
             title="SonarCloud Analysis"

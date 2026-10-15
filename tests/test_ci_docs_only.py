@@ -181,6 +181,10 @@ def _resolve_pr(script: str, pulls: object, head_sha: str, tmp_path: Path) -> di
     else:
         gh.write_text(f"#!/usr/bin/env bash\ncat <<'JSON'\n{json.dumps(pulls)}\nJSON\n")
     gh.chmod(0o755)
+    # A no-op `sleep` so the "no PR found yet, retry" backoff does not slow the suite.
+    sleep_stub = bin_dir / "sleep"
+    sleep_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+    sleep_stub.chmod(0o755)
 
     out_file = tmp_path / "github_output"
     out_file.write_text("")
@@ -199,6 +203,67 @@ def _resolve_pr(script: str, pulls: object, head_sha: str, tmp_path: Path) -> di
     )
     parsed = _parse_output(out_file.read_text())
     parsed["__rc"] = str(result.returncode)
+    return parsed
+
+
+def _resolve_baseline_verdict(
+    script: str,
+    tmp_path: Path,
+    *,
+    runs_json: object = "FAIL",
+    check_runs_json: object = "FAIL",
+) -> dict[str, str]:
+    """Execute the baseline-verdict step against a stubbed `gh`, return its outputs.
+
+    `runs_json`/`check_runs_json` are the JSON bodies the stub prints for the
+    "ci.yml/runs" and "check-runs" calls respectively; pass the literal string
+    "FAIL" (the default) to make that call exit non-zero, modeling a GitHub
+    outage. The stub also records every invocation's argv so the test can
+    assert the runs lookup is a real GET, not a POST sent to a GET-only
+    endpoint (the defect that made this step inert, PR #1218/#1187 review).
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    argv_file = tmp_path / "gh_argv"
+    gh = bin_dir / "gh"
+
+    def _branch(json_body: object, marker: str) -> str:
+        if json_body == "FAIL":
+            return f'  *"{marker}"*) echo boom >&2; exit 1 ;;\n'
+        return f"  *\"{marker}\"*) printf '%s' '{json.dumps(json_body)}' ;;\n"
+
+    script_body = (
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> "{argv_file}"\n'
+        'case "$*" in\n'
+        + _branch(runs_json, "ci.yml/runs")
+        + _branch(check_runs_json, "check-runs")
+        + '  *) echo "unexpected gh invocation: $*" >&2; exit 1 ;;\n'
+        "esac\n"
+    )
+    gh.write_text(script_body)
+    gh.chmod(0o755)
+
+    out_file = tmp_path / "github_output"
+    out_file.write_text("")
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "REPO": "xsovad06/sova",
+            "HEAD_SHA": "deadbeef",
+            "HEAD_BRANCH": "feat/x",
+            "EVENT_NAME": "pull_request",
+            "GITHUB_OUTPUT": str(out_file),
+        },
+    )
+    parsed = _parse_output(out_file.read_text())
+    parsed["__rc"] = str(result.returncode)
+    parsed["__argv"] = argv_file.read_text() if argv_file.exists() else ""
     return parsed
 
 
@@ -793,6 +858,70 @@ class TestSonarCloudWorkflowGate:
         outputs = _resolve_pr(script, None, "abc", tmp_path)
         assert outputs["__rc"] != "0"
 
+    def _create_pending_check(self, sonar_text: str, tmp_path: Path, fail_count: int) -> dict[str, str]:
+        """Execute "Create pending check run" against a stub `gh` that fails
+        `fail_count` times (of its 3 attempts) before succeeding, or always
+        fails when `fail_count >= 3`.
+        """
+        script = _step_script(sonar_text, "Create pending check run")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        counter_file = tmp_path / "gh_attempts"
+        counter_file.write_text("0")
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            f'count="$(cat "{counter_file}")"\n'
+            "count=$((count + 1))\n"
+            f'echo "$count" > "{counter_file}"\n'
+            f'if [ "$count" -le {fail_count} ]; then\n'
+            "  echo boom >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "echo 999\n"
+        )
+        gh.chmod(0o755)
+        # A no-op `sleep` so the step's retry backoff does not slow the suite.
+        sleep_stub = bin_dir / "sleep"
+        sleep_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+        sleep_stub.chmod(0o755)
+        out_file = tmp_path / "github_output"
+        out_file.write_text("")
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "REPO": "xsovad06/sova",
+                "HEAD_SHA": "deadbeef",
+                "DETAILS_URL": "https://example.invalid",
+                "EXTERNAL_ID": "1",
+                "GITHUB_OUTPUT": str(out_file),
+            },
+        )
+        parsed = _parse_output(out_file.read_text())
+        parsed["__rc"] = str(result.returncode)
+        return parsed
+
+    def test_pending_check_run_retries_then_succeeds(self, sonar_text: str, tmp_path: Path) -> None:
+        """A transient failure on attempt 1 must not strand the required check."""
+        outputs = self._create_pending_check(sonar_text, tmp_path, fail_count=1)
+        assert outputs["__rc"] == "0"
+        assert outputs.get("id") == "999"
+
+    def test_pending_check_run_exhausts_retries_and_fails(self, sonar_text: str, tmp_path: Path) -> None:
+        """3 straight failures must hard-fail the job, not strand it silently.
+
+        A failure here must not leave `steps.check.outputs.id` set to an empty
+        string that downstream `if:` guards treat as truthy.
+        """
+        outputs = self._create_pending_check(sonar_text, tmp_path, fail_count=3)
+        assert outputs["__rc"] != "0"
+        assert "id" not in outputs
+
     def test_one_terminal_step_reports_every_outcome(self, sonar_text: str) -> None:
         """A single always() reporter, not one step per outcome.
 
@@ -885,8 +1014,79 @@ class TestSonarCloudWorkflowGate:
         assert "Resolve baseline verdict for docs-only skip" in sonar_text
         assert '[.check_runs[] | select(.name == "SonarCloud Analysis")]' in sonar_text
         block = _between(sonar_text, '"$COVERAGE_PRESENT" != "true"', 'elif [ "$TOKEN_AVAILABLE"')
-        assert '"$BASELINE_VERDICT" = "none"' in block
-        assert '"$BASELINE_VERDICT" = "success"' in block
+        assert '"$BASELINE_VERDICT" in' in block
+        assert "none | success | neutral | cancelled" in block
+        assert "unknown)" in block
+
+    @pytest.mark.parametrize(
+        ("label", "runs_json", "check_runs_json", "expected_verdict", "expect_runs_get"),
+        [
+            (
+                "baseline is the previous green run, check success",
+                {"workflow_runs": [{"head_sha": "baselinesha"}]},
+                {"check_runs": [{"name": "SonarCloud Analysis", "status": "completed", "conclusion": "success"}]},
+                "success",
+                True,
+            ),
+            (
+                "baseline list contains only the current head sha",
+                {"workflow_runs": [{"head_sha": "deadbeef"}]},
+                "FAIL",
+                "none",
+                True,
+            ),
+            (
+                "baseline commit has no SonarCloud check at all",
+                {"workflow_runs": [{"head_sha": "baselinesha"}]},
+                {"check_runs": []},
+                "none",
+                True,
+            ),
+            (
+                "baseline SonarCloud check is still in progress",
+                {"workflow_runs": [{"head_sha": "baselinesha"}]},
+                {"check_runs": [{"name": "SonarCloud Analysis", "status": "in_progress", "conclusion": None}]},
+                "unknown",
+                True,
+            ),
+            (
+                "the CI runs lookup fails outright",
+                "FAIL",
+                "FAIL",
+                "unknown",
+                True,
+            ),
+            (
+                "the baseline check-runs lookup fails outright",
+                {"workflow_runs": [{"head_sha": "baselinesha"}]},
+                "FAIL",
+                "unknown",
+                True,
+            ),
+        ],
+    )
+    def test_baseline_verdict_resolution(
+        self,
+        sonar_text: str,
+        label: str,
+        runs_json: object,
+        check_runs_json: object,
+        expected_verdict: str,
+        expect_runs_get: bool,
+        tmp_path: Path,
+    ) -> None:
+        """Executed, not just pattern-matched (see the module docstring's rationale).
+
+        This is the step that decides whether a documentation-only push can
+        bypass a quality gate. Pinning only the substrings in the surrounding
+        text let both a `--jq --arg` syntax error and a GET-switched-to-POST
+        defect reach review with every test green (PR #1218 review).
+        """
+        script = _step_script(sonar_text, "Resolve baseline verdict for docs-only skip")
+        outputs = _resolve_baseline_verdict(script, tmp_path, runs_json=runs_json, check_runs_json=check_runs_json)
+        assert outputs.get("verdict") == expected_verdict, label
+        if expect_runs_get:
+            assert "--method GET" in outputs["__argv"], label
 
     @pytest.mark.parametrize(
         ("label", "overrides", "expected"),
@@ -907,12 +1107,27 @@ class TestSonarCloudWorkflowGate:
                 "success",
             ),
             (
+                "docs-only skip, baseline check was neutral (its own SONAR_TOKEN missing)",
+                {"COVERAGE_PRESENT": "false", "BASELINE_VERDICT": "neutral"},
+                "success",
+            ),
+            (
+                "docs-only skip, baseline run was cancelled",
+                {"COVERAGE_PRESENT": "false", "BASELINE_VERDICT": "cancelled"},
+                "success",
+            ),
+            (
                 "docs-only skip, baseline SonarCloud run failed",
                 {"COVERAGE_PRESENT": "false", "BASELINE_VERDICT": "failure"},
                 "failure",
             ),
+            (
+                "docs-only skip, baseline verdict could not be established",
+                {"COVERAGE_PRESENT": "false", "BASELINE_VERDICT": "unknown"},
+                "failure",
+            ),
             ("SONAR_TOKEN missing", {"TOKEN_AVAILABLE": "false"}, "neutral"),
-            ("PR could not be resolved", {"PR_GUARD_RESOLVABLE": "false"}, "neutral"),
+            ("PR could not be resolved", {"PR_GUARD_RESOLVABLE": "false"}, "failure"),
             ("scan reported success", {"SCAN_OUTCOME": "success"}, "success"),
             ("scan reported failure", {"SCAN_OUTCOME": "failure"}, "failure"),
         ],

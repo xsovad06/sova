@@ -210,9 +210,16 @@ jobs:
       # numbers from a revision it never analyzed, so coverage lands on the
       # wrong lines (or no lines) whenever main has moved under the PR. The
       # merge-result signal this gives up is recovered by /integrate-pr, which
-      # rebases onto main and re-runs CI before merging. On a push to main
-      # there is no pull_request payload and this resolves to github.sha, the
-      # default.
+      # rebases onto main and re-runs CI before merging; that recovery, in
+      # turn, depends on this repository's `main-protection` ruleset keeping
+      # strict_required_status_checks_policy: true (see
+      # detect-code-changes.sh's header comment), since that is what forces a
+      # stale branch to re-run CI against an up-to-date base before merge is
+      # allowed. python-lint and integration still check out the merge commit;
+      # only python-test needs the head tree, since it is the only job whose
+      # output (coverage.xml) sonarcloud.yml consumes against that exact SHA.
+      # On a push to main there is no pull_request payload and this resolves
+      # to github.sha, the default.
       - uses: actions/checkout@v4
         if: needs.changes.outputs.code != 'false'
         with:

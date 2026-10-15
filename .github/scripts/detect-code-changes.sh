@@ -154,17 +154,22 @@ fetch_pr_files() {
 # transitive, so the chain stays anchored to real evidence.
 #
 # Branch and query values are passed as -f/-F params, not interpolated into
-# the URL string: `gh api` appends them as URL-encoded query parameters on a
-# GET request, so a branch name containing `&`, `#`, or other characters that
-# are valid in a git ref but meaningful in a URL cannot corrupt the query.
+# the URL string, so a branch name containing `&`, `#`, or other characters
+# that are valid in a git ref but meaningful in a URL cannot corrupt the
+# query. `--method GET` has to be explicit: `gh api` otherwise switches the
+# request method to POST as soon as any -f/-F parameter is given, which sends
+# these filters as a JSON body to an endpoint that only answers GET and
+# returns 404 (verified against the live API), silently defeating the lookup.
 fetch_baseline_sha() {
-  gh api \
+  local sha
+  sha="$(gh api --method GET \
     -f "branch=${HEAD_BRANCH}" \
     -f status=success \
     -f "event=${EVENT_NAME}" \
     -F "per_page=${BASELINE_SEARCH_LIMIT}" \
     "repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/runs" \
-    --jq '.workflow_runs[0].head_sha' 2>/dev/null || true
+    --jq '.workflow_runs[0].head_sha' 2>/dev/null)" || return 1
+  printf '%s' "$sha"
 }
 
 # Print "<path>\t<mode>\t<sha>" for every file and submodule pointer (gitlink)
@@ -233,8 +238,12 @@ detect() {
   fi
 
   # Layer 2: does anything but documentation differ from the last green tree?
+  # fetch_baseline_sha can now fail (a real lookup failure, not merely "no
+  # baseline exists"); `|| baseline=""` keeps that under `set -e` and routes
+  # it through the same no-baseline fail-open path below, since a failed
+  # lookup proves just as little as a genuinely empty one.
   local baseline
-  baseline="$(fetch_baseline_sha)"
+  baseline="$(fetch_baseline_sha)" || baseline=""
   if [ -z "$baseline" ] || [ "$baseline" = "null" ]; then
     log "no earlier successful ${WORKFLOW_FILE} run on ${HEAD_BRANCH}"
     emit true no-baseline
