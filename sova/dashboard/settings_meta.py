@@ -979,6 +979,17 @@ _REGISTRY: list[SettingMeta] = [
         options_source="llm",
     ),
     SettingMeta(
+        "roles.developer_runtime_model",
+        "Developer runtime model",
+        "Model the coding agent runs for every developer step that edits code (develop, "
+        "simplify, review, fix loops), picked from the active runtime's own catalog. Overrides "
+        "Developer model and per-step routing for those steps only; summaries and other text "
+        "calls keep their routing. Empty means no pin. Hidden for a runtime that does not "
+        "support choosing a model (e.g. Codex)",
+        "roles",
+        options_source="runtime",
+    ),
+    SettingMeta(
         "roles.planner_model",
         "Planner model",
         "Model for the supervisor planner",

@@ -1,10 +1,11 @@
-"""Models service: read-only LLM model enumeration for the dashboard.
+"""Models service: read-only model enumeration for the dashboard.
 
 Mirrors ``setup_service.get_auth_status()`` (#933): resolves the project's
-configured provider, calls ``list_available_models()``, and caches the
-result per project directory so the model dropdown this feeds (#A4, not yet
-built) does not re-run ``load_config()`` (a blocking TOML + DB read) and
-``create_provider()`` on every poll.
+configured provider (``layer="llm"``) or agent runtime (``layer="runtime"``),
+calls its ``list_available_models()``, and caches the result per layer and
+project directory so the model dropdowns this feeds do not re-run
+``load_config()`` (a blocking TOML + DB read) and ``create_provider()`` on
+every poll.
 
 Two independent caches are involved, and both stay: the provider's own
 ``cached_enumeration()`` (``sova.llm.client``, 1800s TTL) prevents duplicate
@@ -12,8 +13,9 @@ probes/API calls across every caller of ``list_available_models()``, while
 this module's cache additionally avoids the config-load/provider-construction
 work on top of that for this one read path.
 
-A result is only cached here when it carries a real answer: at least one
-model, and an aggregated ``source`` other than ``"curated"``.
+On the llm layer, a result is only cached here when it carries a real
+answer: at least one model, and an aggregated ``source`` other than
+``"curated"``.
 ``CURATED_MODELS`` is the universal "enumeration did not produce a real
 answer" fallback shared by a provider that never overrides enumeration, an
 unauthenticated ``ClaudeCodeProvider``, a misconfigured provider, and a
@@ -21,6 +23,9 @@ timed-out enumeration attempt alike: caching any of those for the full TTL
 would serve a stale fallback for minutes after the underlying condition
 (login, config fix, transient slowness) resolved, defeating the "next poll
 retries" contract ``cached_enumeration()`` already honors one layer down.
+(The runtime layer has its own rule, see ``_resolve_runtime_models()``: it
+caches every reachable answer, an empty one included, and never an
+``"unavailable"`` one.)
 An empty list is excluded for the same reason rather than on its
 ``"unknown"`` source alone: every provider shipped here reports an outage as
 ``None`` (which ``cached_enumeration()`` turns into the curated fallback) and
@@ -42,9 +47,13 @@ import asyncio
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.llm.models import ModelInfo
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.models")
 
@@ -158,20 +167,29 @@ def _aggregate_source(models: list[ModelInfo]) -> str:
     return "mixed"
 
 
-def _build_result(provider_identity: str, models: list[ModelInfo], *, layer: str, detail: str = "") -> dict:
+def _build_result(
+    provider_identity: str, models: list[ModelInfo], *, layer: str, detail: str = "", source: str | None = None
+) -> dict:
     """Build a freshly enumerated payload.
 
     ``cached`` is part of the stored value so a cache read only has to
     override it (``{**cached, "cached": True}``) and every fresh path can
     return the result as-is. ``layer`` is echoed back because the endpoint
-    contracts one shape across both the LLM and (Phase B) runtime axes, so a
-    client holding a payload must be able to tell which axis produced it.
+    contracts one shape across both the LLM and runtime axes, so a client
+    holding a payload must be able to tell which axis produced it.
+
+    ``source`` defaults to the per-model aggregation (``_aggregate_source``),
+    which collapses to ``"unknown"`` for an empty model list. The runtime
+    layer needs an explicit override for an empty list: a reachable runtime
+    with nothing to offer (``"reachable"``) and an unreachable one
+    (``"unavailable"``) both carry ``models=[]``, and those are not the same
+    condition for the UI's fail-open check.
     """
     return {
         "layer": layer,
         "provider_identity": provider_identity,
         "models": [_serialize_model(m) for m in models],
-        "source": _aggregate_source(models),
+        "source": source if source is not None else _aggregate_source(models),
         "detail": detail,
         "cached_at": datetime.now(timezone.utc).isoformat(),
         "cached": False,
@@ -187,23 +205,19 @@ def _check_refresh_rate_limit(cache_key: str, now: float) -> None:
 async def get_available_models(project_dir: Path, *, layer: str = "llm", refresh: bool = False) -> dict:
     """Assemble the read-only available-models payload for the dashboard.
 
-    Cached per project directory for ``_MODELS_CACHE_TTL`` seconds, except
-    when the result carries no real answer (see module docstring).
+    Cached per layer and project directory for ``_MODELS_CACHE_TTL`` seconds,
+    except when the result carries no real answer (see module docstring).
     ``refresh=True`` drops the provider-level enumeration cache first, forcing
     a fresh pass, and is rate-limited per project via
     ``ModelsRefreshRateLimitedError``.
 
-    The cache key is the project directory alone: only ``layer="llm"`` is
-    implemented today (the router rejects ``runtime`` before reaching here),
-    so a second layer must extend the key before it can be served.
+    The cache key is ``f"{layer}:{project_dir.resolve()}"``: ``layer="llm"``
+    and ``layer="runtime"`` for the same project must not collide or share a
+    refresh allowance, since they enumerate independent credentials.
     """
     from sova.config.loader import load_config
-    from sova.llm.backends import detect_backend
-    from sova.llm.client import clear_enumeration
-    from sova.llm.models import CURATED_MODELS
-    from sova.llm.provider import create_provider
 
-    cache_key = str(project_dir.resolve())
+    cache_key = f"{layer}:{project_dir.resolve()}"
     now = time.monotonic()
     _prune_stale_entries(now)
 
@@ -227,66 +241,185 @@ async def get_available_models(project_dir: Path, *, layer: str = "llm", refresh
             _check_refresh_rate_limit(cache_key, now)
 
         cfg = await asyncio.to_thread(load_config, project_dir)
-        provider_identity = f"{cfg.llm.provider}:{detect_backend(cfg.llm)}"
 
-        try:
-            provider = create_provider(cfg.llm, project_dir)
-        except (ValueError, ImportError) as exc:
-            # A misconfigured/unknown provider type, or a configured provider
-            # whose optional SDK extra (litellm, anthropic) isn't installed,
-            # is a routine reportable state, mirroring
-            # setup_service.get_auth_status() and
-            # doctor.py:_check_llm_provider, not a genuine service failure.
-            # The refresh allowance is deliberately not spent here (see
-            # below): no refresh happened, so a retry should not be
-            # throttled.
-            return _build_result(provider_identity, list(CURATED_MODELS), layer=layer, detail=str(exc))
+        if layer == "runtime":
+            return await _resolve_runtime_models(cfg, refresh=refresh, cache_key=cache_key, now=now)
+        return await _resolve_llm_models(cfg, project_dir, refresh=refresh, cache_key=cache_key, now=now)
 
-        if refresh:
-            # The refresh allowance is consumed here, only once the config
-            # load and provider construction have actually succeeded and a
-            # refresh is really about to happen: spending it any earlier
-            # (e.g. right after the rate-limit check) would throttle a retry
-            # for the full window even though load_config/create_provider
-            # failed and no refresh occurred.
-            _last_refresh_at[cache_key] = now
-            # Also deliberately after the config load and provider
-            # construction, and inside the lock: this wipes every identity's
-            # entry process-wide (see client.clear_enumeration), so a
-            # request that was going to fail before it could enumerate
-            # anything must not pay that cost for every other project
-            # sharing the process.
-            clear_enumeration()
 
-        try:
-            # On timeout, asyncio.wait_for cancels the awaited coroutine, and
-            # that cancellation is delivered wherever it is currently
-            # suspended. For ClaudeCodeProvider that is always inside
-            # run()'s `await proc.communicate()` (sova/utils/shell.py,
-            # _probe_model() in providers/claude_code.py has no subprocess
-            # handling of its own), and run() already guarantees
-            # kill-then-reap before re-raising on asyncio.CancelledError
-            # (sova/utils/shell.py's `except asyncio.CancelledError` branch
-            # in run()), pinned by
-            # tests/test_shell_timeout.py::test_run_kills_process_on_cancelled_error.
-            # No orphaned subprocess is possible from this timeout.
-            models = await asyncio.wait_for(
-                provider.list_available_models(allow_probe=True),
-                timeout=_ENUMERATION_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            log.warning("models.enumeration_timeout", provider_identity=provider_identity)
-            return _build_result(
-                provider_identity,
-                list(CURATED_MODELS),
-                layer=layer,
-                detail="Enumeration timed out; showing curated fallback",
-            )
+async def _resolve_llm_models(
+    cfg: ProjectConfig, project_dir: Path, *, refresh: bool, cache_key: str, now: float
+) -> dict:
+    """Enumerate layer-2 (LLM provider) models. Runs with the per-project lock already held."""
+    from sova.llm.backends import detect_backend
+    from sova.llm.client import clear_enumeration
+    from sova.llm.models import CURATED_MODELS
+    from sova.llm.provider import create_provider
 
-        result = _build_result(provider_identity, models, layer=layer)
-        if models and result["source"] != "curated":
-            # Cache its own dict: the caller gets the original, and the read
-            # path's ``{**cached, "cached": True}`` is likewise a copy, so no
-            # caller holds a reference into the cached entry.
-            _models_cache[cache_key] = (time.monotonic(), dict(result))
-        return result
+    provider_identity = f"{cfg.llm.provider}:{detect_backend(cfg.llm)}"
+
+    try:
+        provider = create_provider(cfg.llm, project_dir)
+    except (ValueError, ImportError) as exc:
+        # A misconfigured/unknown provider type, or a configured provider
+        # whose optional SDK extra (litellm, anthropic) isn't installed,
+        # is a routine reportable state, mirroring
+        # setup_service.get_auth_status() and
+        # doctor.py:_check_llm_provider, not a genuine service failure.
+        # The refresh allowance is deliberately not spent here (see
+        # below): no refresh happened, so a retry should not be
+        # throttled.
+        return _build_result(provider_identity, list(CURATED_MODELS), layer="llm", detail=str(exc))
+
+    if refresh:
+        # The refresh allowance is consumed here, only once the config
+        # load and provider construction have actually succeeded and a
+        # refresh is really about to happen: spending it any earlier
+        # (e.g. right after the rate-limit check) would throttle a retry
+        # for the full window even though load_config/create_provider
+        # failed and no refresh occurred.
+        _last_refresh_at[cache_key] = now
+        # Also deliberately after the config load and provider
+        # construction, and inside the lock: this wipes every identity's
+        # entry process-wide (see client.clear_enumeration), so a
+        # request that was going to fail before it could enumerate
+        # anything must not pay that cost for every other project
+        # sharing the process.
+        clear_enumeration()
+
+    try:
+        # On timeout, asyncio.wait_for cancels the awaited coroutine, and
+        # that cancellation is delivered wherever it is currently
+        # suspended. For ClaudeCodeProvider that is always inside
+        # run()'s `await proc.communicate()` (sova/utils/shell.py,
+        # _probe_model() in providers/claude_code.py has no subprocess
+        # handling of its own), and run() already guarantees
+        # kill-then-reap before re-raising on asyncio.CancelledError
+        # (sova/utils/shell.py's `except asyncio.CancelledError` branch
+        # in run()), pinned by
+        # tests/test_shell_timeout.py::test_run_kills_process_on_cancelled_error.
+        # No orphaned subprocess is possible from this timeout.
+        models = await asyncio.wait_for(
+            provider.list_available_models(allow_probe=True),
+            timeout=_ENUMERATION_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        log.warning("models.enumeration_timeout", provider_identity=provider_identity)
+        return _build_result(
+            provider_identity,
+            list(CURATED_MODELS),
+            layer="llm",
+            detail="Enumeration timed out; showing curated fallback",
+        )
+
+    result = _build_result(provider_identity, models, layer="llm")
+    if models and result["source"] != "curated":
+        # Cache its own dict: the caller gets the original, and the read
+        # path's ``{**cached, "cached": True}`` is likewise a copy, so no
+        # caller holds a reference into the cached entry.
+        _models_cache[cache_key] = (time.monotonic(), dict(result))
+    return result
+
+
+def _runtime_unavailable(provider_identity: str, detail: str, *, honours_model_override: bool | None = None) -> dict:
+    """Report a runtime that could not be enumerated.
+
+    There is no universal cross-runtime curated fallback to fall open to: a
+    runtime's model ID shape is specific to that runtime, so an unreachable
+    one is reported as an empty list with an explicit ``"unavailable"``
+    source rather than a borrowed catalog.
+
+    ``honours_model_override`` is ``None`` only when there is no runtime
+    instance to ask (an unknown runtime type): see
+    ``_resolve_runtime_models()`` on why that key is always present on this
+    layer's payloads.
+    """
+    result = _build_result(provider_identity, [], layer="runtime", detail=detail, source="unavailable")
+    result["honours_model_override"] = honours_model_override
+    return result
+
+
+async def _resolve_runtime_models(cfg: ProjectConfig, *, refresh: bool, cache_key: str, now: float) -> dict:
+    """Enumerate layer-1 (agent runtime) models. Runs with the per-project lock already held.
+
+    Every failure path reports through ``_runtime_unavailable()``; see its
+    docstring for why there is no curated fallback on this axis.
+
+    Payloads on this layer carry one extra key the llm layer has no analogue
+    for: ``honours_model_override``, mirrored straight from
+    ``AgentRuntime.honours_model_override``. A runtime that ignores a
+    caller-supplied model (Codex) must render no model selector at all, and
+    that is a capability of the runtime, not something a client can derive
+    from a catalog; reporting it here keeps the single source of truth on the
+    runtime class instead of a runtime name repeated in each template.
+
+    The runtime is constructed per call (``create_runtime``, deliberately not
+    the ``get_runtime()`` process singleton, which is bound to whichever
+    project configured it at startup rather than ``project_dir``), so
+    ``AgentRuntime``'s own per-instance ``_RuntimeModelCache`` never carries
+    across requests for this caller: an "unavailable" answer is therefore
+    re-probed on the next request rather than pinned, which is the same
+    retry-soon contract the llm branch gets by not caching its curated
+    fallback.
+    """
+    from sova.ipc.runtime import create_runtime
+    from sova.llm.models import CURATED_MODELS, classify_model_family, model_tier_for_id
+
+    provider_identity = cfg.agent.runtime
+
+    try:
+        runtime = create_runtime(cfg.agent.runtime, codex=cfg.codex)
+    except ValueError as exc:
+        # Unknown runtime type: a routine reportable misconfiguration, not a
+        # service failure. The refresh allowance is not spent (mirrors the
+        # llm branch's create_provider failure path).
+        return _runtime_unavailable(provider_identity, str(exc))
+
+    if refresh:
+        _last_refresh_at[cache_key] = now
+
+    try:
+        model_ids = await asyncio.wait_for(runtime.list_available_models(), timeout=_ENUMERATION_TIMEOUT_SECONDS)
+    except TimeoutError:
+        log.warning("models.enumeration_timeout", provider_identity=provider_identity)
+        return _runtime_unavailable(
+            provider_identity, "Enumeration timed out", honours_model_override=runtime.honours_model_override
+        )
+
+    if model_ids is None:
+        # CLI missing or unauthenticated: distinct from a reachable runtime
+        # that simply has no catalog of its own (see module/AgentRuntime
+        # docstrings on None vs []).
+        return _runtime_unavailable(
+            provider_identity,
+            "Runtime unavailable or unauthenticated",
+            honours_model_override=runtime.honours_model_override,
+        )
+
+    # A runtime reports bare IDs. Reusing the curated display name for an ID
+    # SOVA already names keeps one model from reading as "claude-opus-5" in
+    # this dropdown and "Claude Opus 5" in the llm-layer one; an ID with no
+    # curated entry keeps itself as its own label. source "runtime" says the
+    # runtime reported the entry, not that it was probed (ClaudeCodeRuntime
+    # reports its list without probing) and not "curated", which every model
+    # dropdown treats as a fallback rather than an answer.
+    curated_display_names = {m.id: m.display_name for m in CURATED_MODELS}
+    models = [
+        ModelInfo(
+            id=model_id,
+            family=classify_model_family(model_id),
+            tier=model_tier_for_id(model_id),
+            display_name=curated_display_names.get(model_id, model_id),
+            source="runtime",
+        )
+        for model_id in model_ids
+    ]
+
+    result = _build_result(provider_identity, models, layer="runtime", source=None if models else "reachable")
+    result["honours_model_override"] = runtime.honours_model_override
+    # [] is a real, cacheable "reachable, nothing to offer" answer here,
+    # distinct from the llm branch's curated/empty exclusion: every runtime
+    # that reaches this point already passed check_available(), so an empty
+    # list is a confirmed answer, not an outage.
+    _models_cache[cache_key] = (time.monotonic(), dict(result))
+    return result

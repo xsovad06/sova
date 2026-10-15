@@ -17,6 +17,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.dashboard.services.agent_approval import (  # re-export facade
     _claim_awaiting_approval as _claim_awaiting_approval,
 )
@@ -175,7 +176,14 @@ from sova.dashboard.services.agent_validation import (
 )
 from sova.dashboard.services.feed_service import emit_safe
 from sova.dashboard.services.output_service import OutputWriter
-from sova.ipc.runtime import _PIPELINE_ROLES, _codex_extra_env, get_runtime, spawn_direct
+from sova.ipc.runtime import (
+    _PIPELINE_ROLES,
+    RUN_RUNTIME_MODEL_OVERRIDE_ENV,
+    _codex_extra_env,
+    get_runtime,
+    spawn_direct,
+)
+from sova.llm.backends import TIER_NAMES
 from sova.llm.client import RUN_MODEL_OVERRIDE_ENV
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
@@ -208,6 +216,26 @@ _DIRECT_SPAWN_ROLES = _PIPELINE_ROLES | {"reviewer"}
 # path the moment a pipeline role is added. Any other role is rejected up
 # front rather than launched with an override that never reaches a model call.
 LLM_MODEL_OVERRIDE_ROLES = _DIRECT_SPAWN_ROLES
+
+# Direct-spawn roles whose launch-modal Model choice reaches a runtime: the
+# ``sova run`` child reads it from ``RUN_RUNTIME_MODEL_OVERRIDE_ENV`` and pins
+# every tool-using step to it (agent_dispatch, issue #1039). The same set the
+# config pin uses (sova.config.models.RUNTIME_MODEL_PIN_ROLES), since only
+# those roles have steps that reach the coding-agent runtime. Any other
+# direct-spawn role keeps ignoring the choice with a warning, and so does a
+# bare tier alias for any role: see _is_runtime_model_pin().
+
+
+def _is_runtime_model_pin(role: str, model: str | None) -> bool:
+    """Whether a start request's *model* becomes a runtime pin for *role*.
+
+    A bare tier alias (``sonnet``) is not a catalog ID: pinned, it would skip
+    the backend-aware ``resolve_alias()`` every routed model goes through, and
+    ``backend_can_serve()`` documents a bare tier name as unservable on Vertex
+    and Bedrock. The alias keeps the old behavior for a direct-spawn role: it
+    is ignored with a warning.
+    """
+    return bool(model) and role in RUNTIME_MODEL_PIN_ROLES and model not in TIER_NAMES
 
 
 def llm_model_override_role_error(role: str | None) -> str | None:
@@ -610,7 +638,7 @@ async def start_agent(
 
             model_override_warning = None
             if effective_role in _DIRECT_SPAWN_ROLES:
-                if model:
+                if model and not _is_runtime_model_pin(effective_role, model):
                     log.warning("agent.model_override_ignored", role=effective_role, model=model)
                     model_override_warning = (
                         f"model override {model!r} ignored: {effective_role} runs resolve their model from config"
@@ -627,6 +655,9 @@ async def start_agent(
                 direct_extra_env: dict[str, str] = {}
                 if effective_role == "reviewer" and _resolve_repo_context_agent_enabled(project_dir):
                     direct_extra_env.update(_codex_extra_env(gh_env) or {})
+                if _is_runtime_model_pin(effective_role, model):
+                    direct_extra_env[RUN_RUNTIME_MODEL_OVERRIDE_ENV] = model
+                    log.info("agent.runtime_model_override", run_id=run_id, role=effective_role, model=model)
                 if llm_model_override:
                     direct_extra_env[RUN_MODEL_OVERRIDE_ENV] = llm_model_override
                     log.info(

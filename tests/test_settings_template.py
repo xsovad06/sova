@@ -203,3 +203,77 @@ class TestLaunchModalLlmOverride:
         start = agents_source.index("function confirmLaunch(")
         body = agents_source[start : agents_source.index("\n}\n", start)]
         assert "llmSel.disabled ? null" in body
+
+
+class TestRuntimeModelSelectors:
+    """The runtime-layer model selectors (#1039): settings row plus launch modal.
+
+    Both live in JavaScript, so these are source-level drift guards in the same
+    spirit as TestLaunchModalLlmOverride above.
+    """
+
+    @pytest.fixture(scope="class")
+    def agents_source(self) -> str:
+        return _AGENTS_TEMPLATE.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _runtime_select_body(agents_source: str) -> str:
+        start = agents_source.index("function _prepareRuntimeModelSelect(")
+        return agents_source[start : agents_source.index("\n}\n", start)]
+
+    def test_registered_as_a_runtime_layer_enumerable_setting(self) -> None:
+        meta = next(m for m in _REGISTRY if m.key == "roles.developer_runtime_model")
+        assert meta.options_source == "runtime"
+        assert not any(m.key == "agent.runtime_model" for m in _REGISTRY)
+
+    def test_launch_modal_sources_the_runtime_layer(self, agents_source: str) -> None:
+        assert "/models/available?layer=runtime" in self._runtime_select_body(agents_source)
+
+    def test_launch_modal_defaults_to_no_override_when_suggestion_is_not_in_catalog(self, agents_source: str) -> None:
+        """The suggestion is a layer-2 routing alias ("sonnet"), rarely a member
+        of the runtime's catalog. Without an explicit no-override entry the
+        browser silently selects the catalog's first model and launches that."""
+        body = self._runtime_select_body(agents_source)
+        assert "no override" in body
+        fallback = "if (!appendModelOptgroups(sel, groupModelsByFamily(data.models), suggestedModel))"
+        assert fallback + " sel.value = ''" in body
+
+    def test_launch_modal_hides_on_reported_capability_not_a_runtime_name(self, agents_source: str) -> None:
+        body = self._runtime_select_body(agents_source)
+        assert "data.honours_model_override === false" in body
+        assert "'codex'" not in body
+
+    def test_settings_row_hidden_for_runtimes_that_drop_the_override(self, template_source: str) -> None:
+        assert (
+            "_setConfigRowVisible('roles.developer_runtime_model', !_NO_MODEL_CHOICE_RUNTIMES[runtime])"
+            in template_source
+        )
+
+    def test_settings_runtime_set_mirrors_honours_model_override(self, template_source: str) -> None:
+        """A new runtime that ignores the model override must not keep showing a
+        selector whose value it will drop."""
+        from sova.ipc.runtime import _RUNTIMES, create_runtime
+
+        match = re.search(r"var _NO_MODEL_CHOICE_RUNTIMES = \{([^}]*)\};", template_source)
+        assert match, "_NO_MODEL_CHOICE_RUNTIMES not found in settings.html"
+        client_set = set(re.findall(r"([\w-]+): true", match.group(1)))
+        server_set = {name for name in _RUNTIMES if not create_runtime(name).honours_model_override}
+        assert client_set == server_set
+
+    def test_pin_roles_mirror_the_server_side_set(self, agents_source: str) -> None:
+        from sova.dashboard.services.agent_lifecycle import RUNTIME_MODEL_PIN_ROLES
+
+        match = re.search(r"var _RUNTIME_MODEL_PIN_ROLES = \{([^}]*)\};", agents_source)
+        assert match, "_RUNTIME_MODEL_PIN_ROLES not found in agents.html"
+        assert set(re.findall(r"(\w+): true", match.group(1))) == set(RUNTIME_MODEL_PIN_ROLES)
+
+    def test_pin_mode_never_preselects_the_suggestion(self, agents_source: str) -> None:
+        """A preselected pin would override per-step routing on a plain Launch click."""
+        assert "if (mode === 'pin') suggestedModel = undefined;" in self._runtime_select_body(agents_source)
+
+    def test_roles_that_ignore_the_choice_get_no_selector(self, agents_source: str) -> None:
+        body = self._runtime_select_body(agents_source)
+        assert "if (mode === 'ignored') {" in body
+
+    def test_auto_launch_sends_the_suggestion_only_for_non_direct_roles(self, agents_source: str) -> None:
+        assert "var autoModel = _runtimeModelMode(role) === 'spawn' ? data.suggested_model : null;" in agents_source

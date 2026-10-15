@@ -13901,12 +13901,36 @@ def _model(model_id: str = "m1", display_name: str = "M1", *, tier: str = "smart
     return ModelInfo(id=model_id, family=ModelFamily.ANTHROPIC, tier=tier, display_name=display_name, source=source)
 
 
+class _FakeRuntimeForModels:
+    """Fake AgentRuntime exposing the two members layer=runtime enumeration reads."""
+
+    def __init__(self, model_ids, *, delay: float = 0.0, honours_model_override: bool = True) -> None:
+        self._model_ids = model_ids
+        self._delay = delay
+        self.honours_model_override = honours_model_override
+
+    async def list_available_models(self):
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return self._model_ids
+
+
 @contextmanager
 def _patch_models_env(provider, cfg=None):
     """Patch the config load and provider construction every test here needs."""
     with (
         patch("sova.config.loader.load_config", return_value=cfg if cfg is not None else _fake_cfg()),
         patch("sova.llm.provider.create_provider", return_value=provider),
+    ):
+        yield
+
+
+@contextmanager
+def _patch_runtime_env(runtime):
+    """_patch_models_env's layer=runtime counterpart: config load + runtime construction."""
+    with (
+        patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+        patch("sova.ipc.runtime.create_runtime", return_value=runtime),
     ):
         yield
 
@@ -14243,9 +14267,92 @@ class TestAvailableModelsAPI:
             resp = await client.get("/api/models/available", params={"layer": "llm"})
         assert resp.status_code == 503
 
-    async def test_layer_runtime_returns_501(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/models/available", params={"layer": "runtime"})
-        assert resp.status_code == 501
+    async def test_layer_runtime_reachable_returns_runtime_reported_models(self, client: AsyncClient) -> None:
+        runtime = _FakeRuntimeForModels(["claude-sonnet-5"])
+        with _patch_runtime_env(runtime):
+            resp = await client.get("/api/models/available", params={"layer": "runtime"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["layer"] == "runtime"
+        assert data["provider_identity"] == "claude-code"
+        assert data["source"] == "runtime"
+        # display_name is the curated label for an ID SOVA already names, so the
+        # same model does not read differently in the two layers' dropdowns.
+        assert data["models"] == [
+            {"id": "claude-sonnet-5", "family": "anthropic", "display_name": "Claude Sonnet 5", "tier": "fast"}
+        ]
+        assert data["honours_model_override"] is True
+
+    async def test_layer_runtime_unnamed_model_id_keeps_itself_as_its_label(self, client: AsyncClient) -> None:
+        """An ID with no curated entry must still be offered, labelled by itself."""
+        runtime = _FakeRuntimeForModels(["some-local-model"])
+        with _patch_runtime_env(runtime):
+            resp = await client.get("/api/models/available", params={"layer": "runtime"})
+        assert resp.json()["models"][0]["display_name"] == "some-local-model"
+
+    async def test_layer_runtime_reports_model_override_capability(self, client: AsyncClient) -> None:
+        """A runtime that drops a caller-supplied model says so in the payload:
+        both model selectors hide themselves on this flag rather than on a
+        hardcoded runtime name."""
+        runtime = _FakeRuntimeForModels(["gpt-5-codex"], honours_model_override=False)
+        with _patch_runtime_env(runtime):
+            resp = await client.get("/api/models/available", params={"layer": "runtime"})
+        assert resp.json()["honours_model_override"] is False
+
+    async def test_layer_runtime_unavailable_returns_200_empty(self, client: AsyncClient) -> None:
+        """``None`` (CLI missing/unauthenticated) is reported as a real 200
+        with an empty catalog and a distinct source, not a 503: a dropdown
+        consuming this must hide, not error out."""
+        runtime = _FakeRuntimeForModels(None)
+        with _patch_runtime_env(runtime):
+            resp = await client.get("/api/models/available", params={"layer": "runtime"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["models"] == []
+        assert data["source"] == "unavailable"
+
+    async def test_layer_runtime_reachable_empty_is_distinct_from_unavailable(self, client: AsyncClient) -> None:
+        """A reachable runtime with no catalog of its own (``[]``) must not be
+        reported the same way as an unreachable one (``None``)."""
+        runtime = _FakeRuntimeForModels([])
+        with _patch_runtime_env(runtime):
+            resp = await client.get("/api/models/available", params={"layer": "runtime"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["models"] == []
+        assert data["source"] == "reachable"
+
+    async def test_layer_runtime_timeout_returns_200_unavailable(self, client: AsyncClient) -> None:
+        runtime = _FakeRuntimeForModels(["m1"], delay=0.2)
+        with (
+            _patch_runtime_env(runtime),
+            patch("sova.dashboard.services.models_service._ENUMERATION_TIMEOUT_SECONDS", 0.01),
+        ):
+            resp = await client.get("/api/models/available", params={"layer": "runtime"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source"] == "unavailable"
+        assert "timed out" in data["detail"].lower()
+
+    async def test_layer_runtime_unknown_runtime_type_returns_200_unavailable(self, client: AsyncClient) -> None:
+        with patch("sova.config.loader.load_config", return_value=_fake_full_cfg(agent_runtime="bogus")):
+            resp = await client.get("/api/models/available", params={"layer": "runtime"})
+        assert resp.status_code == 200
+        assert resp.json()["source"] == "unavailable"
+
+    async def test_llm_and_runtime_layers_do_not_share_a_cache_entry(self, client: AsyncClient) -> None:
+        """The cache key must be layer-aware: enumerating one layer must not
+        serve a cached answer meant for the other layer of the same project."""
+        llm_provider = _FakeModelsProvider([_model("claude-llm-model")])
+        runtime = _FakeRuntimeForModels(["claude-runtime-model"])
+        with (
+            _patch_runtime_env(runtime),
+            patch("sova.llm.provider.create_provider", return_value=llm_provider),
+        ):
+            llm_resp = await client.get("/api/models/available", params={"layer": "llm"})
+            runtime_resp = await client.get("/api/models/available", params={"layer": "runtime"})
+        assert llm_resp.json()["models"][0]["id"] == "claude-llm-model"
+        assert runtime_resp.json()["models"][0]["id"] == "claude-runtime-model"
 
     async def test_missing_layer_returns_422(self, client: AsyncClient) -> None:
         resp = await client.get("/api/models/available")
@@ -18603,8 +18710,52 @@ class TestComplexityEndpoint:
         data = resp.json()
         assert data["complexity"] == "complex"
         assert data["suggested_model"] == "opus"
-        assert "model_options" in data
-        assert len(data["model_options"]) == 5
+        # The launch modal's Model select is fed by runtime-layer discovery
+        # (#1039); the per-tier option list this endpoint used to return has no
+        # consumer left.
+        assert "model_options" not in data
+
+    async def test_complexity_suggestion_is_resolved_to_a_concrete_id(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        """The runtime catalog the launch modal preselects from lists concrete
+        IDs, never a bare tier alias, so the suggestion must be resolved the
+        same way the pipeline resolves it or it can never be preselected."""
+        from unittest.mock import patch
+
+        from sova.db.models import TaskAssessmentRecord
+
+        session.add(
+            TaskAssessmentRecord(
+                issue_number="98",
+                suitability="suitable",
+                confidence=Decimal("0.8"),
+                reasoning="test",
+                estimated_complexity="complex",
+            )
+        )
+        await session.commit()
+
+        with patch("sova.llm.client.resolve_alias", return_value="claude-opus-5") as resolve:
+            resp = await client.get("/api/agents/issue/98/complexity")
+        data = resp.json()
+        assert data["suggested_model"] == "opus"
+        assert data["suggested_model_id"] == "claude-opus-5"
+        assert resolve.call_args.args[0] == "opus"
+
+    async def test_complexity_suggestion_id_falls_back_to_alias_on_resolve_failure(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_task = AsyncMock(side_effect=RuntimeError("API error"))
+
+        with (
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch("sova.llm.client.resolve_alias", side_effect=ValueError("bad alias map")),
+        ):
+            resp = await client.get("/api/agents/issue/97/complexity")
+        assert resp.status_code == 200
+        assert resp.json()["suggested_model_id"] == "sonnet"
 
     async def test_complexity_fallback_to_adapter(self, client: AsyncClient) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch

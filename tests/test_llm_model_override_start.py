@@ -21,7 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from sova.dashboard.app import create_app
 from sova.dashboard.services import agent_lifecycle
 from sova.dashboard.services.control_service import ProjectAgents, start_agent
-from sova.ipc.runtime import _inject_agent_marker
+from sova.ipc.runtime import RUN_RUNTIME_MODEL_OVERRIDE_ENV, _inject_agent_marker
 from sova.llm.client import RUN_MODEL_OVERRIDE_ENV
 
 _DISCOVERY = {
@@ -285,3 +285,183 @@ class TestStartAgentRouter:
             )
         assert resp.status_code == 503
         mock_start.assert_not_awaited()
+
+
+class TestRuntimeModelOverrideStart:
+    """The launch modal's Model choice for a developer launch (#1039).
+
+    A developer run direct-spawns ``sova run``, so the choice cannot go to
+    runtime.spawn(model=...); it travels in the child's env as a per-run
+    runtime-model pin that agent_dispatch applies to every tool-using step.
+    """
+
+    async def test_developer_model_reaches_child_env_as_a_runtime_pin(self) -> None:
+        pa = ProjectAgents()
+        spawn = AsyncMock(return_value=_mock_process())
+        with _spawn_harness(pa, spawn):
+            result = await start_agent("99", role="developer", model="claude-sonnet-5")
+
+        assert "warnings" not in result
+        assert spawn.call_args.kwargs["extra_env"] == {RUN_RUNTIME_MODEL_OVERRIDE_ENV: "claude-sonnet-5"}
+        assert RUN_RUNTIME_MODEL_OVERRIDE_ENV not in os.environ
+
+    async def test_both_per_run_overrides_travel_together(self) -> None:
+        pa = ProjectAgents()
+        spawn = AsyncMock(return_value=_mock_process())
+        with _spawn_harness(pa, spawn):
+            await start_agent("99", role="developer", model="claude-sonnet-5", llm_model_override="claude-haiku-4-5")
+
+        assert spawn.call_args.kwargs["extra_env"] == {
+            RUN_RUNTIME_MODEL_OVERRIDE_ENV: "claude-sonnet-5",
+            RUN_MODEL_OVERRIDE_ENV: "claude-haiku-4-5",
+        }
+
+    @pytest.mark.parametrize("role", ["reviewer", "researcher", "planner"])
+    async def test_roles_without_tool_steps_still_ignore_it_with_a_warning(self, role: str) -> None:
+        """No step of theirs reaches the runtime, so a pin would do nothing."""
+        pa = ProjectAgents()
+        spawn = AsyncMock(return_value=_mock_process())
+        with _spawn_harness(pa, spawn):
+            result = await start_agent("99", role=role, model="claude-sonnet-5")
+
+        assert result["warnings"] == [
+            f"model override 'claude-sonnet-5' ignored: {role} runs resolve their model from config"
+        ]
+        assert spawn.call_args.kwargs["extra_env"] is None
+
+    @pytest.mark.parametrize("alias", ["sonnet", "opus", "haiku", "fast", "smart", "cheap"])
+    async def test_bare_alias_is_not_forwarded_as_a_pin(self, alias: str) -> None:
+        """An alias is not a catalog ID: pinned, it would skip the backend-aware alias
+        resolution every routed model gets, and a bare tier name is unservable on
+        Vertex and Bedrock. A developer start keeps ignoring it with a warning."""
+        pa = ProjectAgents()
+        spawn = AsyncMock(return_value=_mock_process())
+        with _spawn_harness(pa, spawn):
+            result = await start_agent("99", role="developer", model=alias)
+
+        assert spawn.call_args.kwargs["extra_env"] is None
+        assert result["warnings"] == [
+            f"model override {alias!r} ignored: developer runs resolve their model from config"
+        ]
+
+    def test_pin_roles_are_the_roles_with_a_runtime_model_field(self) -> None:
+        """A role accepted here without a roles.<role>_runtime_model field (or the
+        reverse) would mean the launch modal and settings disagree about which
+        roles a runtime model reaches."""
+        from sova.config.models import _RUNTIME_MODEL_FIELDS
+
+        assert agent_lifecycle.RUNTIME_MODEL_PIN_ROLES == frozenset(_RUNTIME_MODEL_FIELDS)
+        assert agent_lifecycle.RUNTIME_MODEL_PIN_ROLES <= agent_lifecycle._DIRECT_SPAWN_ROLES
+
+    def test_runtime_pin_survives_the_spawn_scrub(self) -> None:
+        child_env = _inject_agent_marker(
+            {"PATH": "/usr/bin"}, extra_env={RUN_RUNTIME_MODEL_OVERRIDE_ENV: "claude-sonnet-5"}
+        )
+        assert child_env[RUN_RUNTIME_MODEL_OVERRIDE_ENV] == "claude-sonnet-5"
+
+
+_RUNTIME_DISCOVERY = {
+    "layer": "runtime",
+    "provider_identity": "claude-code",
+    "models": [{"id": "claude-sonnet-5", "family": "anthropic", "display_name": "Claude Sonnet 5", "tier": "fast"}],
+    "source": "runtime",
+    "detail": "",
+    "cached_at": "2026-10-15T00:00:00+00:00",
+    "cached": False,
+    "honours_model_override": True,
+}
+
+
+class TestStartAgentRouterRuntimeModel:
+    """The launch modal's Model select offers runtime catalog IDs (#1039).
+
+    The request model used to accept only a bare alias, so every pick from that
+    catalog was a 422. A catalog ID is now checked against a fresh layer=runtime
+    discovery at submit, the way llm_model_override is checked against layer=llm.
+    """
+
+    @staticmethod
+    def _patches(discovery: dict | Exception):
+        discovery_kwargs = (
+            {"side_effect": discovery} if isinstance(discovery, Exception) else {"return_value": discovery}
+        )
+        return (
+            patch(
+                "sova.dashboard.services.models_service.get_available_models",
+                new_callable=AsyncMock,
+                **discovery_kwargs,
+            ),
+            patch(
+                "sova.dashboard.services.control_service.start_agent",
+                new_callable=AsyncMock,
+                return_value={"run_id": 1, "status": "started"},
+            ),
+        )
+
+    async def test_catalog_id_is_accepted_and_passed_through(self, client: AsyncClient) -> None:
+        discovery_patch, start_patch = self._patches(_RUNTIME_DISCOVERY)
+        with discovery_patch as mock_discovery, start_patch as mock_start:
+            resp = await client.post(
+                "/api/agents/start", json={"issue": "42", "role": "developer", "model": "claude-sonnet-5"}
+            )
+        assert resp.status_code == 200
+        assert mock_start.call_args.kwargs["model"] == "claude-sonnet-5"
+        assert mock_discovery.call_args.kwargs["layer"] == "runtime"
+
+    async def test_bare_alias_still_skips_discovery(self, client: AsyncClient) -> None:
+        """The auto-launch path and existing API callers send an alias."""
+        discovery_patch, start_patch = self._patches(_RUNTIME_DISCOVERY)
+        with discovery_patch as mock_discovery, start_patch as mock_start:
+            resp = await client.post("/api/agents/start", json={"issue": "42", "role": "triage", "model": "Opus"})
+        assert resp.status_code == 200
+        assert mock_start.call_args.kwargs["model"] == "opus"
+        mock_discovery.assert_not_awaited()
+
+    async def test_id_missing_from_the_catalog_is_400(self, client: AsyncClient) -> None:
+        discovery_patch, start_patch = self._patches(_RUNTIME_DISCOVERY)
+        with discovery_patch, start_patch as mock_start:
+            resp = await client.post("/api/agents/start", json={"issue": "42", "role": "developer", "model": "gpt-9"})
+        assert resp.status_code == 400
+        assert "gpt-9" in resp.json()["detail"]
+        mock_start.assert_not_awaited()
+
+    async def test_runtime_without_model_choice_is_400(self, client: AsyncClient) -> None:
+        discovery_patch, start_patch = self._patches({**_RUNTIME_DISCOVERY, "honours_model_override": False})
+        with discovery_patch, start_patch as mock_start:
+            resp = await client.post(
+                "/api/agents/start", json={"issue": "42", "role": "developer", "model": "claude-sonnet-5"}
+            )
+        assert resp.status_code == 400
+        mock_start.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "discovery",
+        [{**_RUNTIME_DISCOVERY, "models": [], "source": "unavailable"}, RuntimeError("boom")],
+        ids=["unavailable", "raised"],
+    )
+    async def test_unverifiable_catalog_is_503(self, client: AsyncClient, discovery: dict | Exception) -> None:
+        discovery_patch, start_patch = self._patches(discovery)
+        with discovery_patch, start_patch as mock_start:
+            resp = await client.post(
+                "/api/agents/start", json={"issue": "42", "role": "developer", "model": "claude-sonnet-5"}
+            )
+        assert resp.status_code == 503
+        mock_start.assert_not_awaited()
+
+    @pytest.mark.parametrize("role", ["reviewer", "researcher", "planner"])
+    async def test_direct_spawn_roles_without_a_pin_field_skip_discovery(self, client: AsyncClient, role: str) -> None:
+        """A catalog ID for a role that only ever ignores ``model`` with a warning
+
+        (direct-spawn but not in RUNTIME_MODEL_PIN_ROLES) must not be checked
+        against runtime discovery: the value never reaches the runtime, so an
+        unavailable or unauthenticated catalog must not 503 a request the
+        server was always going to accept.
+        """
+        discovery_patch, start_patch = self._patches(RuntimeError("discovery must not be called"))
+        with discovery_patch as mock_discovery, start_patch as mock_start:
+            resp = await client.post(
+                "/api/agents/start", json={"issue": "42", "role": role, "model": "claude-sonnet-5"}
+            )
+        assert resp.status_code == 200
+        mock_discovery.assert_not_awaited()
+        assert mock_start.call_args.kwargs["model"] == "claude-sonnet-5"
