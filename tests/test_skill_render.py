@@ -779,15 +779,12 @@ class TestRenderSelfSkills:
 
 
 class TestFrontmatterNameLineRePinned:
-    """python:S8786 regex pinning for _FRONTMATTER_NAME_LINE_RE (issue #1193)."""
+    """python:S8786 regex-DoS avoidance pinning for _parse_frontmatter_name_line (issue #1193)."""
 
     def _declared_name(self, line: str) -> str | None:
-        from sova.commands.skill_render import _FRONTMATTER_NAME_LINE_RE
+        from sova.commands.skill_render import _parse_frontmatter_name_line
 
-        match = _FRONTMATTER_NAME_LINE_RE.match(line.rstrip())
-        if not match:
-            return None
-        return match.group(2) if match.group(2) is not None else match.group(3)
+        return _parse_frontmatter_name_line(line.rstrip())
 
     def test_bare_name(self) -> None:
         assert self._declared_name("name: foo-bar") == "foo-bar"

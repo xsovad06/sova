@@ -479,13 +479,21 @@ def render_codex_skills(
     return rendered
 
 
-# Trailing whitespace is trimmed by the caller before matching (line.rstrip()),
-# so this never needs a trailing \s*$: that avoided an ambiguous overlap
-# between the lazy content group and trailing-whitespace matching. The two
-# alternatives (quoted vs bare) replace a single backreference-based pattern
-# whose optional quote group created a similar ambiguity with the lazy
-# content group that followed it.
-_FRONTMATTER_NAME_LINE_RE = re.compile(r"^name:\s*(?:(['\"])(.+)\1|(.+))$")
+def _parse_frontmatter_name_line(line: str) -> str | None:
+    """Parse the declared value out of a ``name: ...`` frontmatter line, or None if absent.
+
+    A quoted-vs-bare alternation regex with a backreference for the closing
+    quote reads as backtracking-DoS-prone to static analysis (a long quoted
+    value with no closing quote retries the bare-content match char by char).
+    A direct string scan has no such ambiguity: there is exactly one way to
+    read a prefix, an optional matching quote pair, and the remainder.
+    """
+    if not line.startswith("name:"):
+        return None
+    value = line[len("name:") :].strip()
+    if len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0]:
+        value = value[1:-1]
+    return value or None
 
 
 def _check_skill_frontmatter_name(content: str, skill_dir_name: str) -> None:
@@ -510,10 +518,9 @@ def _check_skill_frontmatter_name(content: str, skill_dir_name: str) -> None:
     for line in lines[1:]:
         if line.strip() == "---":
             return
-        match = _FRONTMATTER_NAME_LINE_RE.match(line.rstrip())
-        if not match:
+        declared_name = _parse_frontmatter_name_line(line.rstrip())
+        if declared_name is None:
             continue
-        declared_name = match.group(2) if match.group(2) is not None else match.group(3)
         if declared_name != skill_dir_name:
             raise SkillRenderError(
                 f"skills/{skill_dir_name}/SKILL.md declares name {declared_name!r}, which does not match its "
