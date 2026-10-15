@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.commands.catalog import parse_frontmatter
-from sova.ipc.runtime import AgentRuntime, get_runtime
+from sova.ipc.runtime import AgentRuntime, get_runtime, resolve_runtime_model_pin
 from sova.llm import client
 from sova.llm.cli_output_parsing import extract_claude_cli_failure_detail
 from sova.llm.egress import scan_and_redact
@@ -443,6 +443,46 @@ async def _dispatch_to_runtime(
     )
 
 
+def _apply_runtime_model_pin(
+    runtime: AgentRuntime,
+    cfg: ProjectConfig | None,
+    ctx: ExecutionContext | None,
+    routed_model: str | None,
+) -> tuple[str | None, tuple[str, str] | None]:
+    """Return the model to hand *runtime*, and the ``(model, reason)`` pin when one applied.
+
+    The role comes from *ctx*; without one (a direct test call) there is no
+    role to pin for. *cfg* is ``prepare_invocation()``'s fresh load, so a pin
+    saved mid-run applies from the next step, the same as an ``llm.routing``
+    change; ``ctx.config`` (the run-start snapshot) covers a failed reload.
+    """
+    if ctx is None:
+        return routed_model, None
+    pin = resolve_runtime_model_pin(runtime, cfg if cfg is not None else ctx.config, ctx.role)
+    if pin is None:
+        return routed_model, None
+    log.info("agent_dispatch.runtime_model_pin", runtime=runtime.name, model=pin[0], routed=routed_model, reason=pin[1])
+    return pin[0], pin
+
+
+def _attribute_pinned_result(
+    result: LLMResult, runtime: AgentRuntime, ctx: ExecutionContext | None, pin: tuple[str, str] | None
+) -> None:
+    """Route a pinned dispatch's spend to the runtime CostRecord, under the model that ran.
+
+    The provider CostRecord is labelled ``ctx.resolved_model``, which a pin
+    deliberately leaves alone (later text-only steps read it), so without the
+    ``runtime_name`` tag the pinned model's tokens would be recorded under the
+    routed model's name. Same mechanism as the model-ignoring branch of
+    ``_dispatch_to_runtime()`` (issue #1128).
+    """
+    if pin is None or ctx is None:
+        return
+    result.runtime_name = runtime.name
+    ctx.runtime_model = result.model or pin[0]
+    ctx.runtime_model_reason = pin[1]
+
+
 # Cap on how many non-result stdout lines _run_agent_process() retains for a
 # failure-detail fallback. A develop/address-review agent can run for tens of
 # minutes and emit far more content than any failure message needs; bounding
@@ -682,6 +722,7 @@ async def dispatch_command(
         args = client.maybe_compress(args, cwd, cfg=cfg)
 
     prompt = _assemble_prompt(body, args)
+    resolved_model, pin = _apply_runtime_model_pin(runtime, cfg, ctx, resolved_model)
     log.info("agent_dispatch.invoke", step=step.name, command=command, runtime=runtime.name)
     result = await _dispatch_to_runtime(
         runtime,
@@ -694,6 +735,7 @@ async def dispatch_command(
         timeout=resolved_timeout,
         ctx=ctx,
     )
+    _attribute_pinned_result(result, runtime, ctx, pin)
     # original_args vs args (not the assembled prompt): compression ran only
     # on args, and record_compression_savings()'s identity check needs the
     # exact pre/post pair maybe_compress() saw, not the whole templated body.
@@ -745,6 +787,7 @@ async def dispatch_prompt(
     original_prompt = prompt
     prompt = client.maybe_compress(prompt, cwd, cfg=cfg)
 
+    resolved_model, pin = _apply_runtime_model_pin(runtime, cfg, ctx, resolved_model)
     log.info("agent_dispatch.invoke_prompt", step=step.name, runtime=runtime.name, prompt_len=len(prompt))
     result = await _dispatch_to_runtime(
         runtime,
@@ -757,5 +800,6 @@ async def dispatch_prompt(
         timeout=resolved_timeout,
         ctx=ctx,
     )
+    _attribute_pinned_result(result, runtime, ctx, pin)
     client.record_compression_savings(result, original_prompt, prompt)
     return result

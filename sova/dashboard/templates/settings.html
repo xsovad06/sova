@@ -832,6 +832,15 @@ function cancelEdit(span, input) {
   if (btn) btn.style.display = '';
 }
 
+// A setting that does not apply to the active provider/runtime is hidden
+// rather than deleted: the stored value is retained server-side.
+function _setConfigRowVisible(key, visible) {
+  var span = document.querySelector('.config-val[data-key="' + key + '"]');
+  if (!span) return;
+  var row = span.closest('tr');
+  if (row) row.style.display = visible ? '' : 'none';
+}
+
 function enhanceLLMGroup() {
   var providerSpan = document.querySelector('.config-val[data-key="llm.provider"]');
   var provider = 'claude-code';
@@ -839,13 +848,8 @@ function enhanceLLMGroup() {
     try { provider = JSON.parse(providerSpan.dataset.raw); } catch (e) { provider = 'claude-code'; }
   }
 
-  // Only the anthropic provider uses a stored API key; hide the row otherwise
-  // (the stored value is retained server-side, not deleted).
-  var keySpan = document.querySelector('.config-val[data-key="llm.api_key"]');
-  if (keySpan) {
-    var keyRow = keySpan.closest('tr');
-    if (keyRow) keyRow.style.display = (provider === 'anthropic') ? '' : 'none';
-  }
+  // Only the anthropic provider uses a stored API key.
+  _setConfigRowVisible('llm.api_key', provider === 'anthropic');
 
   var body = document.getElementById('group-body-llm');
   if (!body || document.getElementById('llm-tools')) return;
@@ -886,6 +890,10 @@ async function testLLMConnection() {
   return _testConnection('/settings/llm/test-connection', 'llm-test-result', 'Connected', 'provider unavailable');
 }
 
+// Runtimes whose AgentRuntime.honours_model_override is False: a model passed
+// to them is silently dropped, so a runtime-model pin has nothing to select.
+var _NO_MODEL_CHOICE_RUNTIMES = { codex: true };
+
 function enhanceAgentGroup() {
   var runtimeSpan = document.querySelector('.config-val[data-key="agent.runtime"]');
   var runtime = 'claude-code';
@@ -893,15 +901,21 @@ function enhanceAgentGroup() {
     try { runtime = JSON.parse(runtimeSpan.dataset.raw); } catch (e) { runtime = 'claude-code'; }
   }
 
-  // codex.* settings only apply when agent.runtime = codex; hide them
-  // otherwise (the stored value is retained server-side, not deleted).
+  // codex.* settings only apply when agent.runtime = codex.
   ['codex.model', 'codex.sandbox'].forEach(function(key) {
-    var span = document.querySelector('.config-val[data-key="' + key + '"]');
-    if (span) {
-      var row = span.closest('tr');
-      if (row) row.style.display = (runtime === 'codex') ? '' : 'none';
-    }
+    _setConfigRowVisible(key, runtime === 'codex');
   });
+
+  // The converse for roles.developer_runtime_model (rendered in the roles
+  // group, found document-wide): a runtime that never forwards a
+  // caller-supplied model (codex, whose model comes from codex.model alone)
+  // gets no selector at all under #1039 rather than the plain, unhelpful
+  // text box fetchEnumerableOptions would otherwise leave behind. Decided
+  // from a mirrored set rather than a fetch so the row's final visibility is
+  // settled before renderSettings() measures group heights below; the set is
+  // pinned against AgentRuntime.honours_model_override by
+  // tests/test_settings_template.py, so a new runtime cannot drift past it.
+  _setConfigRowVisible('roles.developer_runtime_model', !_NO_MODEL_CHOICE_RUNTIMES[runtime]);
 
   var body = document.getElementById('group-body-agent');
   if (!body || document.getElementById('agent-runtime-tools')) return;

@@ -19,14 +19,10 @@ log = get_logger(component="dashboard.models")
     "/models/available",
     responses={
         429: {"description": "Refresh rate limit exceeded"},
-        501: {"description": "layer=runtime enumeration is not implemented"},
         503: {"description": "Model enumeration unavailable"},
     },
 )
 async def available_models(layer: Literal["llm", "runtime"], refresh: bool = False) -> dict:
-    if layer == "runtime":
-        raise HTTPException(status_code=501, detail="layer=runtime enumeration is not implemented")
-
     project_dir = get_project_dir() or Path.cwd()
     try:
         return await models_service.get_available_models(project_dir, layer=layer, refresh=refresh)

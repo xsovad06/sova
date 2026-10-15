@@ -19,7 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
 
-from sova.config.models import CodexConfig, ProjectConfig
+from sova.config.models import RUNTIME_MODEL_PIN_ROLES, CodexConfig, ProjectConfig
 from sova.ipc.codex import CodexStreamParser
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
@@ -1569,6 +1569,37 @@ def create_runtime(runtime_type: str = "claude-code", *, codex: CodexConfig | No
     if cls is CodexRuntime:
         return CodexRuntime(config=codex)
     return cls()
+
+
+# ---------------------------------------------------------------------------
+# Runtime-model pin (issue #1039)
+# ---------------------------------------------------------------------------
+
+# The launch modal's per-run Model choice for a pipeline role. Like
+# sova.llm.client.RUN_MODEL_OVERRIDE_ENV, the dashboard sets it only in the
+# spawned `sova run` child's own env, never in config, so concurrent runs
+# cannot see each other's choice and nothing is persisted.
+RUN_RUNTIME_MODEL_OVERRIDE_ENV = "SOVA_RUNTIME_MODEL_OVERRIDE"
+
+
+def resolve_runtime_model_pin(runtime: AgentRuntime, cfg: ProjectConfig | None, role: str) -> tuple[str, str] | None:
+    """Return ``(model, reason)`` pinning *runtime*'s model for *role*, or None.
+
+    The per-run override wins over ``roles.<role>_runtime_model``. Either one
+    replaces the routed model for a tool-using step, and only for a role in
+    ``RUNTIME_MODEL_PIN_ROLES``. None when neither is set
+    or when *runtime* ignores a caller-supplied model (Codex): pinning it
+    there would change nothing the agent runs, only what the step reports.
+    """
+    if not runtime.honours_model_override:
+        return None
+    override = os.environ.get(RUN_RUNTIME_MODEL_OVERRIDE_ENV, "").strip()
+    if override and role in RUNTIME_MODEL_PIN_ROLES:
+        return override, f"run override->{override}"
+    pinned = cfg.roles.runtime_model_for(role) if cfg is not None else ""
+    if pinned:
+        return pinned, f"role:{role} runtime pin->{pinned}"
+    return None
 
 
 # ---------------------------------------------------------------------------

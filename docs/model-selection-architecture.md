@@ -329,11 +329,25 @@ their catalog rather than returning empty.
   `available_models` handler, `sova/dashboard/services/models_service.py:get_available_models()`)
   is the one HTTP surface that feeds every LLM-layer dropdown (the launch modal's per-run override
   in 2.8, and the settings UI's grouped `<select>` pattern documented in
-  `.claude/rules/architecture.md`). The launch modal's separate agent/runtime "Model" select is
-  populated from the complexity suggestion endpoint's `model_options`, not from this endpoint.
-  `layer="runtime"` (e.g. `codex.model`) is not implemented and returns 501: the HTTP surface
-  covers the LLM layer only, even though the layer-1 enumeration it would serve now exists
-  underneath it (2.10).
+  `.claude/rules/architecture.md`). `layer="runtime"` is served as well (#1039) and backs the
+  launch modal's separate agent/runtime "Model" select plus the `roles.developer_runtime_model`
+  setting; the complexity suggestion endpoint now only supplies the default that select
+  preselects for a role that hands the choice straight to `runtime.spawn()`.
+  That layer has no cross-runtime curated catalog to fall open to (a model ID's shape is
+  specific to one runtime), so instead of borrowing one it reports an unreachable or unknown
+  runtime as an empty list with `source: "unavailable"`, and a reachable runtime with no
+  catalog of its own as `source: "reachable"`. Every reachable answer, an empty `"reachable"`
+  one included, is cached for the full TTL: a runtime reaches that point having passed
+  `check_available()`, so even an empty catalog is a confirmed answer rather than an outage.
+  `"unavailable"` is not cached (the same
+  retry-soon contract the LLM layer's curated fallback gets), nor is it absorbed by
+  `AgentRuntime`'s own per-instance cache, since this path builds a project-scoped runtime per
+  call rather than reusing the `get_runtime()` singleton; a `claude login` therefore shows up on
+  the next request. Runtime-layer payloads also carry `honours_model_override`, mirrored from
+  the runtime class, which the launch modal's Model select gates its visibility on. The settings
+  page hides `roles.developer_runtime_model` from a mirrored `_NO_MODEL_CHOICE_RUNTIMES` set
+  instead (row visibility must be settled before it measures group heights), pinned to the same
+  class property by `tests/test_settings_template.py`.
 - Just-in-time, fail-open, and cached at two independent layers, matching the Q2 guarantee this
   primitive is built on: each provider's own `cached_enumeration()` (`sova/llm/client.py`, 1800s
   TTL) dedupes repeated probes/API calls across every caller, and `models_service.py` adds a
@@ -414,8 +428,44 @@ A dropdown fed only by 2.9 would therefore offer models the active runtime canno
   probe that hangs, degrades that one layer while the other still reports its real catalog.
   Neither layer's enumeration has an internal timeout, which is why this view supplies one. The
   two run concurrently (`asyncio.gather`), so the worst case is one timeout, not two in series.
-- No UI consumes this yet: `layer="runtime"` still returns 501 and the runtime-model dropdown is
-  deferred to B2.
+- No UI consumes `get_model_capabilities()` itself. The layer-1 catalog reaches the UI through
+  `layer="runtime"` (2.9) instead, which feeds the `roles.developer_runtime_model` setting and
+  the launch modal's per-run Model select (#1039).
+- A runtime-model pin is per role, and it reaches the pipeline (#1039). `RolesConfig` carries
+  `roles.<role>_runtime_model`, read through `RolesConfig.runtime_model_for(role)`; only
+  `developer_runtime_model` exists, because the developer role is the only one with steps that
+  reach the coding-agent runtime (every `requires_tools = True` step runs under it), so a
+  reviewer, researcher, planner or triage field would silently do nothing. A role that gains such
+  steps adds its field to `RolesConfig` and to `_RUNTIME_MODEL_FIELDS`.
+  `resolve_runtime_model_pin()` (`sova/ipc/runtime.py`) decides the pin: the per-run
+  `SOVA_RUNTIME_MODEL_OVERRIDE` (the launch modal's choice, set by `start_agent()` only in the
+  `sova run` child's env, never persisted) beats `roles.<role>_runtime_model`, and neither applies
+  to a runtime whose `honours_model_override` is False (Codex). `agent_dispatch` applies it in
+  both `dispatch_command()` and `dispatch_prompt()` after `prepare_invocation()`, so for a
+  tool-using step it replaces the routed model (`llm.routing[task_type]`, role or complexity
+  routing) as the primary; `agent.fallback_models` still applies after it, and text-only calls
+  (implementation notes, PR text, research) keep their routing untouched. The pin is read from
+  `prepare_invocation()`'s fresh config load, so a change saved mid-run applies from the next
+  step. `ctx.resolved_model` is deliberately left alone (later text-only steps read it); the
+  pinned result is instead tagged with `runtime_name`, so its spend lands in the step's runtime
+  `CostRecord` labelled with the model that ran, the same mechanism the Codex branch uses
+  (issue #1128). The launch modal mirrors `RUNTIME_MODEL_PIN_ROLES`: a developer launch offers
+  the select defaulting to "no override" (never the complexity suggestion, since a pin overrides
+  per-step routing), the other direct-spawn roles get no select, and the dashboard's own
+  `runtime.spawn()` paths (`start_command()`, non-direct roles) keep reading `agent.model` through
+  `_resolve_config_model()`. `POST /api/agents/start` accepts a bare alias in `model` as before
+  and checks any other value against a fresh `layer="runtime"` discovery, mirroring the
+  `llm_model_override` check: 400 for an ID outside the catalog or a runtime without model
+  choice, 503 when the catalog is unavailable or the fetch fails. That check only runs for a
+  role in `RUNTIME_MODEL_PIN_ROLES` or a role outside `LLM_MODEL_OVERRIDE_ROLES` (a non-direct-spawn
+  role, whose `model` reaches `runtime.spawn()` directly): a direct-spawn role with no pin field
+  (`reviewer`, `researcher`, `planner`) always ignores `model` with a warning, so validating it
+  there would 400 or 503 a request for a value the server was never going to use. A bare tier alias
+  (`sova.llm.backends.TIER_NAMES`) is never forwarded as a pin: the pin is applied after
+  `prepare_invocation()`'s `resolve_alias()`, so an alias would skip the backend-aware correction
+  and be unservable on Vertex and Bedrock; a developer start with an alias keeps ignoring it with
+  a warning. Both pin sources (config field and per-run env) are gated on the one
+  `RUNTIME_MODEL_PIN_ROLES` set in `sova/config/models.py`.
 
 ---
 

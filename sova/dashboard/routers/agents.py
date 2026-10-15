@@ -14,11 +14,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
+from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services import control_service
+from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES
 from sova.dashboard.services.output_stream_service import get_output_stream_service
 from sova.db.models import TaskRun
 from sova.db.session import get_session
+from sova.llm.backends import TIER_NAMES
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["agents"])
@@ -164,15 +167,21 @@ class StartAgentRequest(BaseModel):
     @field_validator("model")
     @classmethod
     def validate_model(cls, v: str | None) -> str | None:
+        """Normalize a bare tier alias; any other ID is checked against runtime discovery at submit.
+
+        A bare alias (``sova.llm.backends.TIER_NAMES``) is accepted without discovery:
+        the auto-launch path and existing API callers send the complexity suggestion.
+
+        The launch modal's Model select offers the active runtime's own catalog
+        IDs (#1039), which this check alone cannot verify, so it hands them to
+        ``_validate_runtime_model()`` in the endpoint instead of rejecting them.
+        """
         if v is None:
             return v
-        value = v.strip().lower()
+        value = v.strip()
         if not value:
             return None
-        _KNOWN_ALIASES = {"haiku", "sonnet", "opus", "fast", "smart", "cheap"}
-        if value not in _KNOWN_ALIASES:
-            raise ValueError(f"unknown model alias {value!r}, expected one of: {', '.join(sorted(_KNOWN_ALIASES))}")
-        return value
+        return value.lower() if value.lower() in TIER_NAMES else value
 
 
 class RunCommandRequest(BaseModel):
@@ -279,17 +288,28 @@ async def get_issue_complexity(issue_number: str) -> dict:
         tier = ComplexityTier.MODERATE
     model_alias, reason = route_model(tier, llm_config=cfg.llm)
 
-    # Build model options for the dropdown (config-aware via route_model)
-    model_options = []
-    for t in ComplexityTier:
-        alias, _ = route_model(t, llm_config=cfg.llm)
-        model_options.append({"tier": t.value, "model": alias})
+    # The runtime catalog lists concrete IDs ("claude-opus-5"), never a bare
+    # tier alias ("opus"), so the modal can only preselect the suggestion once
+    # it is resolved the way the pipeline resolves it. A resolution failure
+    # leaves the alias, which simply matches nothing and falls back to "no
+    # override" in the modal.
+    try:
+        from sova.llm.client import resolve_alias
 
+        suggested_model_id = resolve_alias(model_alias, cfg.llm)
+    except Exception:  # noqa: BLE001 (a suggestion must never fail the launch modal)
+        log.debug("complexity.resolve_alias_failed", alias=model_alias, exc_info=True)
+        suggested_model_id = model_alias
+
+    # No per-tier option list: the launch modal's Model select is populated
+    # from runtime-layer discovery (GET /api/models/available?layer=runtime,
+    # #1039) and reads only the suggestion below, as the default it
+    # preselects when that model is in the active runtime's catalog.
     return {
         "complexity": tier.value,
         "suggested_model": model_alias,
+        "suggested_model_id": suggested_model_id,
         "reason": reason,
-        "model_options": model_options,
         "confirm_model": cfg.dashboard.confirm_model,
     }
 
@@ -461,18 +481,60 @@ async def _validate_llm_model_override(role: str | None, model_id: str) -> None:
         )
 
 
+async def _validate_runtime_model(model_id: str) -> None:
+    """Reject a runtime model the run could not honor, before anything is spawned.
+
+    The ``layer="runtime"`` counterpart of ``_validate_llm_model_override()``,
+    against a fresh read of the discovery the launch modal populated from. A
+    runtime that ignores a caller-supplied model (``honours_model_override``
+    false, e.g. Codex) is a 400, not a silent no-op; an ``"unavailable"``
+    catalog cannot vouch for any ID, so it is a 503 like a failed fetch.
+    """
+    from sova.config.context import get_project_dir
+    from sova.dashboard.services import models_service
+
+    try:
+        available = await models_service.get_available_models(get_project_dir() or Path.cwd(), layer="runtime")
+    except Exception as exc:  # noqa: BLE001 (any discovery failure means the model cannot be verified)
+        log.warning("agents.runtime_model_discovery_failed", model=model_id, exc_info=True)
+        raise HTTPException(
+            status_code=503, detail="Could not verify the runtime model: model discovery is unavailable"
+        ) from exc
+
+    if available.get("source") == "unavailable":
+        log.warning("agents.runtime_model_discovery_unavailable", model=model_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify the runtime model: the agent runtime is unavailable or unauthenticated",
+        )
+    if available.get("honours_model_override") is False:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The {available.get('provider_identity')} runtime does not support choosing a model",
+        )
+    known_ids = {entry.get("id") for entry in available.get("models", [])}
+    if model_id not in known_ids:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown runtime model {model_id!r}: not in the active runtime's catalog"
+        )
+
+
 @router.post(
     "/agents/start",
     responses={
-        400: {"description": "Invalid request, or an internal LLM model override the run cannot honor"},
+        400: {"description": "Invalid request, or a model or internal LLM model override the run cannot honor"},
         409: {"description": "Agent already running for this issue, or budget exceeded"},
-        503: {"description": "Model discovery unavailable to verify an internal LLM model override"},
+        503: {"description": "Model discovery unavailable to verify a model or internal LLM model override"},
     },
 )
 async def start_agent(req: StartAgentRequest) -> dict:
     """Start a new agent process."""
     if not req.issue and not req.role:
         raise HTTPException(status_code=400, detail="Either issue or role is required for starting an agent")
+    if req.model is not None and req.model not in TIER_NAMES:
+        effective_role = req.role or "developer"
+        if effective_role in RUNTIME_MODEL_PIN_ROLES or effective_role not in LLM_MODEL_OVERRIDE_ROLES:
+            await _validate_runtime_model(req.model)
     if req.llm_model_override is not None:
         await _validate_llm_model_override(req.role, req.llm_model_override)
     result = await control_service.start_agent(

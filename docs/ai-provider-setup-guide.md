@@ -102,7 +102,7 @@ validation error, not a fallback. Set `llm.model` before `llm.provider`, as desc
 Model discovery (`GET /api/models/available?layer=llm`, see
 `docs/model-selection-architecture.md` section 2.9) is what keeps those model fields typo-proof: the
 `layer` parameter here names the endpoint's own axis (LLM-layer enumeration vs. `layer="runtime"`,
-which returns 501 today), not the axis of every setting it feeds. It enumerates what the configured
+the active agent runtime's own catalog, #1039), not the axis of every setting it feeds. It enumerates what the configured
 `llm.provider` can actually reach and feeds the grouped dropdowns on the settings page and the
 launch modal's per-run override, for the fields that are themselves LLM-layer values (`llm.model`,
 `llm.fallback_model`, and similar; `llm.routing` is object-valued and has no enumerable editor
@@ -112,7 +112,10 @@ routed through `prepare_invocation()` reaches the AgentRuntime for any pipeline 
 `reviewer_model`, etc., all `options_source="llm"`) and any `llm.routing[task_type]` value are
 dual-axis: a non-Claude ID (`openai/...`, `ollama/...`) chosen there breaks tool-using steps under
 `agent.runtime = "claude-code"` with `AgentRuntimeUnavailableError` from
-`_sanitize_model_for_claude_cli()`. `agent.model` and `agent.fallback_models` are the purely
+`_sanitize_model_for_claude_cli()`. To choose the coding agent's model for those steps without
+that risk, set `roles.developer_runtime_model` instead: its dropdown is sourced from
+`layer="runtime"`, and it replaces the routed model for tool-using developer steps only, leaving
+text-only calls on their LLM-layer routing. `agent.model` and `agent.fallback_models` are the purely
 runtime-axis pair: they go to the coding agent runtime's `--model` flag (see above), not to
 `llm.provider`, so on a non-Anthropic `llm.provider` (`ollama`, `openai`) their dropdowns can offer
 IDs the runtime will reject outright; use the "Custom..." escape hatch for `agent.model` (a

@@ -607,6 +607,10 @@ class TestRepositoryHasNoProseDoubleDash:
     # the cap has to live here rather than on the command line.
     @pytest.mark.timeout(120)
     @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+    # Overrides pyproject.toml's global 30s: the scan reads every tracked file
+    # in bash, about 15s alone and past 30s under `make check`'s parallel load,
+    # where the timeout reads as a violation and is not one.
+    @pytest.mark.timeout(180)
     def test_whole_tree_is_clean(self) -> None:
         if not (REPO_ROOT / ".git").exists():
             pytest.skip("not a git checkout (for example an sdist)")

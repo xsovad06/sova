@@ -229,7 +229,7 @@
           <span class="text-xs text-gray-500 uppercase tracking-wider">Complexity</span>
           <span id="launch-complexity" class="px-2 py-0.5 rounded-full text-xs bg-gray-600/30 text-gray-300"></span>
         </div>
-        <div>
+        <div id="launch-model-field">
           <label for="launch-model" class="text-xs text-gray-500 uppercase tracking-wider block mb-1.5">Model</label>
           <select id="launch-model" class="sova-input text-sm"></select>
           <p id="launch-reason" class="text-xs text-gray-500 mt-1.5"></p>
@@ -3408,25 +3408,76 @@ function _setComplexityBadge(el, tier) {
 
 var _CONFIRM_TIERS = { complex: true, epic: true };
 
-function _populateModelDropdown(sel, modelOptions) {
+var _runtimeModelRequestId = 0;
+
+// Mirrors _prepareLlmOverrideSelect's fail-open discipline, but hides the
+// field entirely instead of disabling it: #1039's acceptance criteria call
+// for "no selector" when the active runtime does not support choosing a
+// model (e.g. Codex, or an unreachable/unauthenticated runtime CLI), not a
+// disabled one still showing a value that will be ignored. A one-shot,
+// never-persisted override, mirroring #launch-llm-model: only this launch
+// call consumes it, nothing is written back to roles.developer_runtime_model.
+function _prepareRuntimeModelSelect(role, suggestedModel) {
+  var field = document.getElementById('launch-model-field');
+  var sel = document.getElementById('launch-model');
+  var requestId = ++_runtimeModelRequestId;
+  var mode = _runtimeModelMode(role);
   sel.innerHTML = '';
-  var seen = {};
-  if (modelOptions && modelOptions.length) {
-    modelOptions.forEach(function(opt) {
-      if (seen[opt.model]) return;
-      seen[opt.model] = true;
-      var o = document.createElement('option');
-      o.value = opt.model;
-      o.textContent = opt.model;
-      sel.appendChild(o);
-    });
-  } else {
-    ['haiku', 'sonnet', 'opus'].forEach(function(m) {
-      var o = document.createElement('option');
-      o.value = m; o.textContent = m;
-      sel.appendChild(o);
-    });
+  if (mode === 'ignored') {
+    field.style.display = 'none';
+    return;
   }
+  field.style.display = '';
+  // A pin replaces per-step routing for every code-editing step of the run,
+  // so it must be a deliberate pick, never the complexity suggestion riding
+  // along on a plain Launch click (same rule as #launch-llm-model).
+  if (mode === 'pin') suggestedModel = undefined;
+
+  fetchAPI(apiUrl('/models/available?layer=runtime'))
+    .then(function(data) {
+      if (requestId !== _runtimeModelRequestId) return;
+      // A runtime that ignores a caller-supplied model (honours_model_override
+      // false, e.g. Codex, whose enumeration can only echo back the single
+      // configured codex.model) gets no selector at all rather than one whose
+      // value would be dropped. Gated on the capability the payload reports,
+      // not on a runtime name hardcoded here: a second runtime with the same
+      // capability must not have to be remembered in the client too.
+      if (data.honours_model_override === false || data.source === 'unavailable' || !(data.models || []).length) {
+        field.style.display = 'none';
+        return;
+      }
+      // Leading "no override" entry, kept selected unless the suggested model
+      // is really in this runtime's catalog: the suggestion comes from the
+      // complexity endpoint's layer-2 tier routing, resolved to a concrete ID
+      // (suggested_model_id), and a backend-specific ID such as a Vertex
+      // "@"-pinned one is not in the runtime's catalog. Without it the browser
+      // silently selects the catalog's first entry and that unrelated model,
+      // not the suggestion the reason line below describes, is what gets
+      // submitted and launched.
+      var none = document.createElement('option');
+      none.value = '';
+      none.textContent = 'Use configured model (no override)';
+      sel.appendChild(none);
+      if (!appendModelOptgroups(sel, groupModelsByFamily(data.models), suggestedModel)) sel.value = '';
+    })
+    .catch(function() {
+      if (requestId !== _runtimeModelRequestId) return;
+      field.style.display = 'none';
+    });
+}
+
+// Mirrors agent_lifecycle.RUNTIME_MODEL_PIN_ROLES: for these direct-spawn
+// roles the Model choice travels to `sova run` as a per-run runtime pin for
+// its code-editing steps. Every other direct-spawn role (_LLM_OVERRIDE_ROLES)
+// has no step that reaches the runtime and ignores the choice server-side,
+// so it gets no selector; a non-direct role hands it to runtime.spawn().
+var _RUNTIME_MODEL_PIN_ROLES = { developer: true };
+
+function _runtimeModelMode(role) {
+  var effectiveRole = role || 'developer';
+  if (_RUNTIME_MODEL_PIN_ROLES[effectiveRole]) return 'pin';
+  if (_LLM_OVERRIDE_ROLES[effectiveRole]) return 'ignored';
+  return 'spawn';
 }
 
 // Mirrors agent_lifecycle.LLM_MODEL_OVERRIDE_ROLES. The server rejects an
@@ -3511,15 +3562,17 @@ function showLaunchModal(issue, role, force, prNumber) {
 
       if (!shouldPrompt) {
         _launchModalState = null;
-        _doStartAgent(issue, role, force || false, prNumber || null, data.suggested_model);
+        // Only a non-direct role ever used the suggestion: a developer run
+        // would turn it into a pin overriding per-step routing, and the
+        // other direct-spawn roles ignore it.
+        var autoModel = _runtimeModelMode(role) === 'spawn' ? data.suggested_model : null;
+        _doStartAgent(issue, role, force || false, prNumber || null, autoModel);
         return;
       }
 
       _showModalChrome();
       _setComplexityBadge(document.getElementById('launch-complexity'), data.complexity);
-      var sel = document.getElementById('launch-model');
-      _populateModelDropdown(sel, data.model_options);
-      sel.value = data.suggested_model;
+      _prepareRuntimeModelSelect(role, data.suggested_model_id || data.suggested_model);
       document.getElementById('launch-reason').textContent = data.reason;
       document.getElementById('launch-modal-loading').classList.add('hidden');
       document.getElementById('launch-modal-body').classList.remove('hidden');
@@ -3543,9 +3596,7 @@ function _showModalChrome() {
 
 function _populateLaunchDefaults() {
   _setComplexityBadge(document.getElementById('launch-complexity'), 'unknown');
-  var sel = document.getElementById('launch-model');
-  _populateModelDropdown(sel, null);
-  sel.value = 'sonnet';
+  _prepareRuntimeModelSelect(_launchModalState ? _launchModalState.role : null);
   document.getElementById('launch-reason').textContent = 'default (no complexity data)';
   document.getElementById('launch-modal-loading').classList.add('hidden');
   document.getElementById('launch-modal-body').classList.remove('hidden');
