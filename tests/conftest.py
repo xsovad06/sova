@@ -10,6 +10,7 @@ an auto-migration fallback that epic #550 intends to remove. See issue #557.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -19,6 +20,17 @@ from typing import Any
 
 import pytest
 import structlog
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
+from sqlalchemy.pool import StaticPool
+
+import sova.db.session as _dbs
+from sova.db.models import Base
+from sova.db.session import get_session, init_db
+
+# Enables the ``pytester`` fixture: ``tests/test_shared_db_fixture.py`` uses it to
+# drive a deterministic, isolated two-test pytest run in a subprocess.
+pytest_plugins = ["pytester"]
 
 # ``SOVA_DATABASE_URL`` is set deliberately by several test modules (at import
 # time) to route ORM access to an in-memory SQLite DB, so it must survive the
@@ -116,6 +128,234 @@ async def drain_feed_persist() -> None:
     from sova.dashboard.services.feed_service import get_feed_service
 
     await get_feed_service().drain_persist()
+
+
+@pytest.fixture(scope="session")
+def _shared_test_db_engine():
+    """Initialize one in-memory DB per xdist worker, reused across every migrated test module.
+
+    ``create_async_engine()`` doesn't need a running loop, and empirically
+    aiosqlite (current version) resolves the event loop per call rather than
+    binding a connection to the loop that opened it, so a connection pooled
+    here under ``asyncio.run()``'s throwaway loop is reused safely by each
+    test's own per-test loop later. ``asyncio.run()`` is used (not an async
+    fixture) specifically so this fixture can be session-scoped without
+    requiring every consuming test to opt into a session-scoped event loop.
+
+    ``init_db()``'s own pool (the default ``AsyncAdaptedQueuePool``, sized for
+    production) opens a brand-new, separately-empty ``sqlite+aiosqlite://``
+    connection on every checkout beyond the first: fine for the old per-test
+    pattern (one engine per test, effectively one connection ever checked
+    out), but this engine is now shared and some suites
+    (``test_supervisor_api.py::test_concurrent_adds_no_duplicates``, which
+    fires three concurrent requests via ``asyncio.gather`` against the same
+    app) legitimately hold several concurrent sessions per test, each
+    demanding its own checkout from the pool, exhausting the single
+    already-schema'd connection and handing out "no such table" connections
+    instead. Patching ``create_async_engine`` to force ``StaticPool`` only for
+    this call keeps one physical connection (and therefore one schema) for
+    every checkout, without touching ``sova/db/session.py``'s production pool
+    choice.
+
+    Consequence: every session opened against this engine within a migrated
+    test shares that one physical connection, and therefore one transaction,
+    with every other session opened in the same test (confirmed: a write made
+    by one uncommitted session is visible to a second session opened in the
+    same test, and that second session's ``commit()`` persists the first
+    session's uncommitted write; a later ``rollback()`` on the first session
+    cannot undo it). Production never shares a connection this way (it uses
+    the default queue pool over a real file). A test for commit/rollback
+    semantics specifically, or for "the failure path leaves no row behind",
+    cannot be migrated onto this shared engine and still assert what it
+    means to assert; give it its own engine (a ``tmp_path`` file DB via
+    ``init_db()``/``close_db()``, as ``tests/test_db.py`` does) instead.
+
+    Session-scoped per worker process, not global: in-memory SQLite is
+    process-local, so pytest-xdist's default per-worker-process session scope
+    already gives each worker its own isolated DB with no extra configuration.
+
+    Not autouse: only the test modules that migrated off a local
+    ``init_db``/``close_db`` fixture depend on this (see ``reset_db_rows``
+    below), since forcing ``SOVA_DATABASE_URL`` onto every test in the suite
+    would break tests that specifically assert default DB path fallback
+    behavior with that variable unset.
+
+    Returns the ``(engine, session_factory, url)`` this fixture created, not
+    ``None``: ``reset_db_rows`` re-pins ``sova.db.session``'s globals to these
+    exact objects before every test, because an unmigrated file elsewhere in
+    the same xdist worker runs its own private ``init_db()``/``close_db()``
+    per test (about 50 files still do, out of scope for this migration) and
+    those calls overwrite the same module-level ``_engine``/``_session_factory``
+    globals this fixture set up. Holding the objects here, rather than trusting
+    the globals to still point at them later, is what survives that
+    interleaving.
+
+    One of those unmigrated files' own ``close_db()`` can still dispose this
+    engine's actual connection outright, in the rare case its own entry in
+    ``_engines`` still happens to be this engine when that call fires (e.g. a
+    migrated test's ``reset_db_rows`` pinned it as current, then a background
+    task or nested app lifespan calls ``close_db()`` before the next
+    migrated test re-pins it): ``close_db()`` disposes *every* engine in that
+    dict, not just the caller's own. For true in-memory SQLite that is not a
+    "lost connection", it is a lost *database*: the next checkout silently
+    opens a brand-new, schema-less one. ``reset_db_rows`` below treats a
+    missing-table error on its own delete sweep as exactly that signal and
+    recreates the schema rather than failing the test.
+    """
+    mp = pytest.MonkeyPatch()
+    url = "sqlite+aiosqlite://"
+    mp.setenv("SOVA_DATABASE_URL", url)
+    mp.setattr(
+        "sova.db.session.create_async_engine",
+        lambda u, **kwargs: _create_async_engine(u, **{**kwargs, "poolclass": StaticPool}),
+    )
+    asyncio.run(init_db(run_migrations=False))
+
+    engine, factory = _dbs._engine, _dbs._session_factory
+    # Undo immediately rather than at session teardown: this monkeypatch is only
+    # needed to get ``init_db()`` to build *this* engine. Left in place for the
+    # rest of the session it would pin ``SOVA_DATABASE_URL`` in ``os.environ`` for
+    # every other test in the worker too, since ``mp.undo()`` only runs at the
+    # very end. ``_get_database_url()`` treats that env var as taking precedence
+    # over an explicit ``project_dir``, so a test calling
+    # ``get_session(project_dir=tmp_path)`` after this fixture first ran would
+    # silently be redirected onto this shared in-memory DB instead of its own
+    # project directory (observed in ``tests/test_settings_service.py``'s
+    # per-project DB tests under a full-suite run). ``reset_db_rows`` below reasserts
+    # the env var and the ``create_async_engine`` call is never needed again (the
+    # same ``engine``/``factory`` objects are reused directly), so nothing here
+    # depends on the patch staying active past this point.
+    mp.undo()
+    yield (engine, factory, url)
+    asyncio.run(engine.dispose())
+
+
+async def _delete_all_rows() -> None:
+    """Empty every table on the current engine, in FK-safe order.
+
+    Acquired through ``async with await get_session()`` rather than a bare
+    ``session = await get_session()``: ``docs/database-guidelines.md`` documents
+    the latter as the leaking pattern, and this runs once per test across the
+    whole suite, so a session left unclosed on the error path would be the most
+    frequently executed instance of it in the repository.
+    """
+    async with await get_session() as session, session.begin():
+        for table in reversed(Base.metadata.sorted_tables):
+            await session.execute(table.delete())
+
+
+@pytest.fixture
+async def reset_db_rows(_shared_test_db_engine: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delete every row from every table so each test starts with an empty, migrated schema.
+
+    Thin wrapper around ``reset_shared_db_rows()``: the fixture form is what every
+    migrated test module requests, and the plain-function form is what
+    ``tests/test_shared_db_fixture.py`` calls directly to exercise this logic
+    deterministically within a single test, since relying on two separate test
+    items to land on the same pytest-xdist worker is not guaranteed under the
+    default ``load`` distribution CI runs under (``-n auto`` with no ``--dist``
+    flag): confirmed by running the row-isolation pair under ``-n 4`` with the
+    delete sweep stubbed out, which still passed because the two tests landed on
+    different workers, each with its own empty in-memory DB.
+
+    Ordering hazard for file-specific seeding fixtures: this fixture is
+    requested via ``pytest.mark.usefixtures("reset_db_rows")``, not
+    ``autouse=True``, so pytest resolves it *after* any module- or
+    class-level ``autouse=True`` fixture in the same file. A seeding fixture
+    written the natural way, as ``@pytest.fixture(autouse=True)``, runs
+    *before* this sweep and has its rows silently deleted before the test
+    body ever sees them (confirmed: such a fixture inserting one ``TaskRun``
+    leaves the test body with zero rows). The fix is to take this fixture as
+    an explicit parameter even when the seeding fixture is itself autouse
+    (``async def seed_rows(reset_db_rows): ...``), which forces pytest to
+    resolve it first regardless of autouse ordering.
+    """
+    engine, factory, url = _shared_test_db_engine
+    await reset_shared_db_rows(engine, factory, url, monkeypatch)
+
+
+async def reset_shared_db_rows(engine: Any, factory: Any, url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delete every row from every table so each test starts with an empty, migrated schema.
+
+    Row deletion, not engine disposal: the shared engine above is reused for
+    the whole worker process, and an ``init_db(run_migrations=False)`` plus
+    ``close_db()`` cycle per test measured 22.7ms against 3.2ms for a delete
+    sweep over all 26 tables (40 iterations each, matching the 23.5ms/3.5ms
+    figures in issue #1189). Runs before
+    the test body, not after, so a test that errors before its own cleanup
+    never leaves rows for the next test to trip over. Reverse
+    ``Base.metadata.sorted_tables`` order matches the dependency order
+    ``create_all`` uses, so a delete never hits a row another table's FK still
+    points at (SQLite does not enforce FK constraints by default here, but the
+    order is kept correct regardless).
+
+    Re-pins ``sova.db.session``'s ``_engine``/``_session_factory``/``_engines``
+    and ``os.environ["SOVA_DATABASE_URL"]`` before touching the DB: an
+    unmigrated file's own ``init_db()``/``close_db()`` fixture, run earlier in
+    the same worker, binds those same module globals to its own private engine
+    and, at its teardown, both nulls them out and unconditionally
+    ``os.environ.pop("SOVA_DATABASE_URL", None)``s the exact env var
+    ``_shared_test_db_engine`` set once for the whole worker session. Once
+    that var is gone, the next call to ``get_session()`` resolves a completely
+    different (file-backed or home-fallback) database with no schema at all,
+    which is what actually produced this fixture's "no such table" failures
+    under full-suite xdist runs, not a lost connection. So both the globals
+    and the env var are reasserted here, every test, rather than once.
+
+    Sets the env var through the test's own ``monkeypatch`` fixture (the same
+    instance injected into the test function, since ``monkeypatch`` is
+    function-scoped and every consumer within one test shares it), not a raw
+    ``os.environ`` assignment: a raw assignment plus a hand-rolled "restore
+    the prior value" in a ``finally`` block is not safe when the test body
+    *also* calls ``monkeypatch.setenv("SOVA_DATABASE_URL", ...)`` (e.g.
+    ``tests/test_roles.py``'s env-scrubbing tests), because pytest does not
+    guarantee that our fixture's teardown runs after that monkeypatch
+    instance's own undo. When it runs first, the test's later undo restores
+    to whatever this fixture had just set, permanently pinning the shared
+    in-memory URL in ``os.environ`` for every later test in the worker
+    (observed: it broke ``tests/test_settings_service.py``'s per-project DB
+    tests under a full-suite run, since ``_get_database_url()`` treats that
+    env var as taking precedence over an explicit ``project_dir``). Routing
+    both mutations through the one shared ``monkeypatch`` instance's own undo
+    stack makes the two sets unwind in the correct order regardless of which
+    fixture's teardown pytest happens to run first.
+
+    Re-pinning the globals and the env var is not sufficient on its own: an
+    ``OperationalError: no such table`` on the delete sweep below, confirmed
+    under full-suite xdist runs, means some unmigrated file's ``close_db()``
+    disposed this *exact* engine object's one physical connection (not just
+    reassigned the globals away from it) before this fixture re-pinned them.
+    Re-pinning the Python objects cannot undo that: for ``sqlite+aiosqlite://``
+    (true in-memory, no file), a disposed engine's next checkout silently
+    opens a brand-new, schema-less in-memory database rather than erroring.
+    Recreating the schema on that same engine, once, self-heals it: the next
+    checkout lands on the same fresh connection the disposal already produced,
+    and the delete sweep (which found nothing to delete anyway, since that
+    connection starts empty) is retried against it. The retry is a real second
+    attempt, not a bare ``except`` that assumes the first failure was harmless:
+    an ``OperationalError`` from any other cause (a locked database, say) rolls
+    the first sweep's deletes back, so swallowing it would hand the test a
+    half-populated DB and a silently broken isolation guarantee. Letting the
+    second attempt raise fails the test loudly instead.
+    """
+    monkeypatch.setenv("SOVA_DATABASE_URL", url)
+    _dbs._engine = engine
+    _dbs._session_factory = factory
+    _dbs._engines[url] = (engine, factory)
+
+    # No ``await drain_feed_persist()`` here: this runs as fixture *setup*, before
+    # the test body, so it could only ever drain tasks left over from the
+    # *previous* test, and pytest-asyncio 1.4.0's per-test ``asyncio.Runner.close()``
+    # already cancels and drains any pending task at that test's teardown, so
+    # there is nothing left to drain by the time this runs. A migrated test that
+    # itself calls ``emit()``/``emit_safe()`` and then queries feed rows must
+    # ``await drain_feed_persist()`` inside the test body, before the query.
+    try:
+        await _delete_all_rows()
+    except OperationalError:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await _delete_all_rows()
 
 
 @pytest.fixture(autouse=True)

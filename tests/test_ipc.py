@@ -13,7 +13,7 @@ import pytest
 
 from sova.config.models import NotificationConfig
 from sova.db.models import TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 from sova.utils.shell import ShellResult
 
 if TYPE_CHECKING:
@@ -23,14 +23,9 @@ if TYPE_CHECKING:
     from sova.llm.models import CostSource
 
 
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for IPC tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Every test in this module runs against the shared per-worker in-memory DB
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 # ---------------------------------------------------------------------------

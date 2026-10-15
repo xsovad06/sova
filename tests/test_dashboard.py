@@ -23,14 +23,27 @@ from tests.conftest import drain_feed_persist
 
 
 @pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for dashboard tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+async def setup_db(monkeypatch: pytest.MonkeyPatch):
+    """Initialize an in-memory DB for dashboard tests.
+
+    Kept as a private, per-test engine rather than migrated onto the shared
+    ``reset_db_rows`` fixture in ``tests/conftest.py``: a test in this file
+    that leaves a background task still touching the DB when its own
+    function-scoped event loop closes (observed via
+    ``TestDuplicateAgentPrevention``'s real, unmocked ``start_agent()`` calls)
+    raises ``asyncio.CancelledError`` through the pooled connection.
+    SQLAlchemy treats that as a dead connection and transparently reconnects
+    on the next checkout, which for ``sqlite+aiosqlite://`` means a brand new,
+    schema-less in-memory DB silently replacing the shared one for every test
+    that runs afterward in the same worker. Disposing the engine per test (as
+    here) makes that irrelevant: the engine is already on its way out, so an
+    invalidated connection on a doomed engine harms nothing.
+    """
+    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
     await init_db(run_migrations=False)
     yield
     await drain_feed_persist()
     await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
 
 
 @pytest.fixture

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,18 +17,12 @@ from sova.core.dag import DAGExecutor
 from sova.core.state import TaskStatus
 from sova.core.workflow import WorkflowEngine
 from sova.db.models import TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 from sova.roles.base import TaskAssessment
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for role tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Every test in this module runs against the shared per-worker in-memory DB
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 def _mock_adapter(state: TaskState = TaskState.BACKLOG) -> AsyncMock:

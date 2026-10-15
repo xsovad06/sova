@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -25,17 +24,10 @@ from sova.core.steps.spec import (
     _text_has_open_questions,
 )
 from sova.dashboard.services.spec_service import find_spec_file
-from sova.db.session import close_db, init_db
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for step tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Every test in this module runs against the shared per-worker in-memory DB
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 def _mock_adapter(state: TaskState = TaskState.TRIAGED) -> AsyncMock:

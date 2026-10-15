@@ -1556,19 +1556,9 @@ class TestParseResult:
 # ---------------------------------------------------------------------------
 
 
+# Uses the shared per-worker in-memory DB (see ``tests/conftest.py:reset_db_rows``).
+@pytest.mark.usefixtures("reset_db_rows")
 class TestRecordCost:
-    @pytest.fixture(autouse=True)
-    async def setup_db(self):
-        import os
-
-        from sova.db.session import close_db, init_db
-
-        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-        await init_db(run_migrations=False)
-        yield
-        await close_db()
-        os.environ.pop("SOVA_DATABASE_URL", None)
-
     async def test_record_cost_creates_entry(self) -> None:
         from sqlalchemy import select
 

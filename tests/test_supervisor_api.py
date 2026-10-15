@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,16 +11,11 @@ from sqlalchemy.exc import OperationalError
 
 from sova.dashboard.services.supervisor_service import get_decision_counts, get_planner_health, get_recent_decisions
 from sova.db.models import SupervisorDecision
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Every test in this module runs against the shared per-worker in-memory DB
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture

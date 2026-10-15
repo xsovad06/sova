@@ -46,15 +46,22 @@ def _import_migration(migration_number: str) -> types.ModuleType:
 
 
 @pytest.fixture(autouse=True)
-async def setup_db(tmp_path):
-    """Initialize a fresh in-memory DB for each test."""
-    import os
+async def setup_db(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Initialize a fresh in-memory DB for each test.
 
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+    Kept as a private, per-test engine rather than migrated onto the shared
+    fixture in ``tests/conftest.py``: several tests in this file (e.g.
+    ``test_init_db_for_project_lock_prevents_concurrent_init``,
+    ``test_init_db_enables_wal_for_file_sqlite``,
+    ``test_init_db_disposes_when_ddl_executed``) call ``init_db()``/
+    ``close_db()``/``init_db_for_project()`` themselves as the thing under
+    test, against their own ``tmp_path`` project directories, and need
+    engine disposal and WAL/migration side effects to actually occur.
+    """
+    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
     await init_db(run_migrations=False)
     yield
     await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
 
 
 async def test_create_task_run() -> None:
