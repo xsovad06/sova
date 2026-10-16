@@ -100,6 +100,9 @@ from sova.git.pr import (
     get_ci_checks as get_ci_checks,
 )
 from sova.git.pr import (
+    get_ci_checks_for_sha as get_ci_checks_for_sha,
+)
+from sova.git.pr import (
     get_ci_failure_logs as get_ci_failure_logs,
 )
 from sova.git.pr import (

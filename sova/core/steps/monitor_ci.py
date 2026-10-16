@@ -9,14 +9,14 @@ pre-existing behaviour).
 from __future__ import annotations
 
 import asyncio
-import json
+import time
 from collections.abc import Callable
 from typing import Any
 
 from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.git.operations import CICheck, get_ci_checks, get_ci_failure_logs
+from sova.git.operations import CICheck, get_ci_checks, get_ci_checks_for_sha, get_ci_failure_logs
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import format_fix_llm_failure
 from sova.utils.logging import get_logger
@@ -128,39 +128,49 @@ class MonitorCIStep(BaseStep):
     ) -> tuple[StepResult, list[CICheck]]:
         """Poll CI checks until completion. Returns (result, failed_checks).
 
-        When *expected_sha* is provided (e.g. after a force-push), the first
-        poll verifies the PR's head SHA matches.  Stale checks from a prior
-        commit are treated as "no checks yet" until GitHub registers the push.
+        Checks are looked up for *expected_sha* (resolved from the local
+        working tree's HEAD when not passed in), so a poll right after a
+        push can never see a prior commit's stale, possibly-green checks.
+        A SHA GitHub hasn't registered checks for yet is treated as pending:
+        once the grace period elapses, an empty SHA-scoped result only
+        passes the step after the PR-level lookup confirms the PR genuinely
+        has no CI configured, since the empty SHA-scoped result is itself
+        ambiguous between "no CI" and "not registered yet". Falls back to
+        the PR-level lookup only when the local HEAD SHA cannot be resolved.
         """
         poll_interval = ctx.config.ci.poll_interval
         max_wait = ctx.config.ci.max_wait
         grace_period = ctx.config.ci.no_checks_grace_period
+        start_time = time.monotonic()
         elapsed = 0
-        sha_validated = not expected_sha
+
+        if not expected_sha:
+            expected_sha = await self._get_local_head_sha(ctx)
+            if not expected_sha:
+                log.warning("step.monitor_ci.head_sha_unresolved", pr=ctx.pr_number)
 
         sha_short = expected_sha[:8] if expected_sha else ""
         log.info("step.monitor_ci.poll", pr=ctx.pr_number, max_wait=max_wait, expected_sha=sha_short)
 
         while elapsed < max_wait:
-            if not sha_validated:
-                sha_validated = await self._verify_pr_head_sha(ctx, expected_sha)
-                if not sha_validated:
-                    log.debug("step.monitor_ci.sha_mismatch", elapsed=elapsed)
-                    await asyncio.sleep(poll_interval)
-                    elapsed += poll_interval
-                    continue
-
-            checks = await get_ci_checks(
-                ctx.pr_number,
-                repo=ctx.repo,
-                github_user=ctx.config.github_user,
-            )
+            if expected_sha:
+                checks = await get_ci_checks_for_sha(
+                    expected_sha,
+                    repo=ctx.repo,
+                    github_user=ctx.config.github_user,
+                )
+            else:
+                checks = await get_ci_checks(
+                    ctx.pr_number,
+                    repo=ctx.repo,
+                    github_user=ctx.config.github_user,
+                )
 
             if checks is None:
                 log.warning("step.monitor_ci.fetch_failed", elapsed=elapsed)
                 self._write_heartbeat(ctx, f"CI poll: {elapsed}s/{max_wait}s elapsed, fetch failed (retrying)")
                 await asyncio.sleep(poll_interval)
-                elapsed += poll_interval
+                elapsed = int(time.monotonic() - start_time)
                 continue
 
             exclude = ctx.config.ci.exclude_checks
@@ -173,6 +183,20 @@ class MonitorCIStep(BaseStep):
 
             if not checks:
                 if elapsed >= grace_period:
+                    if expected_sha and not await self._pr_confirms_no_checks(ctx):
+                        log.info(
+                            "step.monitor_ci.sha_checks_not_registered",
+                            elapsed=elapsed,
+                            sha=sha_short,
+                        )
+                        self._write_heartbeat(
+                            ctx,
+                            f"CI poll: {elapsed}s/{max_wait}s elapsed, no checks registered yet for "
+                            f"{sha_short} (PR reports checks exist)",
+                        )
+                        await asyncio.sleep(poll_interval)
+                        elapsed = int(time.monotonic() - start_time)
+                        continue
                     log.warning(
                         "step.monitor_ci.no_checks_after_grace",
                         elapsed=elapsed,
@@ -188,7 +212,7 @@ class MonitorCIStep(BaseStep):
                 log.debug("step.monitor_ci.no_checks", elapsed=elapsed)
                 self._write_heartbeat(ctx, f"CI poll: {elapsed}s/{max_wait}s elapsed, no checks registered yet")
                 await asyncio.sleep(poll_interval)
-                elapsed += poll_interval
+                elapsed = int(time.monotonic() - start_time)
                 continue
 
             all_completed = all(c.is_completed for c in checks)
@@ -218,7 +242,7 @@ class MonitorCIStep(BaseStep):
                 f"CI poll: {elapsed}s/{max_wait}s elapsed, {completed_count}/{len(checks)} checks completed",
             )
             await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
+            elapsed = int(time.monotonic() - start_time)
 
         return (
             StepResult(
@@ -229,14 +253,22 @@ class MonitorCIStep(BaseStep):
             [],
         )
 
-    @staticmethod
-    async def _check_ci_on_resume(ctx: ExecutionContext) -> StepResult | None:
+    async def _check_ci_on_resume(self, ctx: ExecutionContext) -> StepResult | None:
         """On resume, check CI once. Return a result if CI already completed, else None to continue polling."""
-        checks = await get_ci_checks(
-            ctx.pr_number,
-            repo=ctx.repo,
-            github_user=ctx.config.github_user,
-        )
+        expected_sha = await self._get_local_head_sha(ctx)
+        if expected_sha:
+            checks = await get_ci_checks_for_sha(
+                expected_sha,
+                repo=ctx.repo,
+                github_user=ctx.config.github_user,
+            )
+        else:
+            log.warning("step.monitor_ci.head_sha_unresolved", pr=ctx.pr_number)
+            checks = await get_ci_checks(
+                ctx.pr_number,
+                repo=ctx.repo,
+                github_user=ctx.config.github_user,
+            )
         if checks is None or not checks:
             return None
         exclude = ctx.config.ci.exclude_checks
@@ -259,39 +291,44 @@ class MonitorCIStep(BaseStep):
             ctx.output_writer.write_line(message)
 
     @staticmethod
-    async def _verify_pr_head_sha(ctx: ExecutionContext, expected_sha: str) -> bool:
-        """Check that the PR's head commit matches *expected_sha*."""
-        from sova.utils.gh import resolve_gh_env
-        from sova.utils.shell import run
+    async def _pr_confirms_no_checks(ctx: ExecutionContext) -> bool:
+        """Whether the PR-level lookup also reports no (non-excluded) checks.
 
-        env = await resolve_gh_env(ctx.config.github_user)
-        result = await run(
-            "gh",
-            "pr",
-            "view",
-            str(ctx.pr_number),
-            "--repo",
-            ctx.repo,
-            "--json",
-            "headRefOid",
-            env=env,
-        )
-        if not result.success:
-            log.warning("step.monitor_ci.sha_check_failed", pr=ctx.pr_number)
+        Used to disambiguate an empty SHA-scoped result: GitHub may simply
+        not have registered checks for this specific commit yet, which the
+        PR-level lookup (backed by ``gh pr checks``) can still see since it
+        is not SHA-bound. The PR-level result is filtered through the same
+        ``ci.exclude_checks`` patterns as the SHA-scoped list, otherwise a
+        project whose only checks are excluded would see this cross-check
+        report "the PR has checks" forever and poll until ``max_wait``.
+        Fails closed (returns False, i.e. "not confirmed empty") on a
+        PR-level fetch failure, since reading an unverified fetch failure as
+        "confirmed no CI" is the same silent pass this cross-check exists to
+        prevent, just moved behind one failed API call; the caller keeps
+        polling, with ``max_wait`` as the fail-closed terminal outcome.
+        """
+        pr_checks = await get_ci_checks(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+        if pr_checks is None:
+            log.warning("step.monitor_ci.pr_confirm_fetch_failed", pr=ctx.pr_number)
             return False
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            log.warning("step.monitor_ci.sha_check_parse_failed", pr=ctx.pr_number)
-            return False
-        return data.get("headRefOid", "").startswith(expected_sha[:12])
+        exclude = ctx.config.ci.exclude_checks
+        if exclude and pr_checks:
+            pr_checks = [c for c in pr_checks if not any(pat in c.name for pat in exclude)]
+        return not pr_checks
 
     @staticmethod
     async def _get_local_head_sha(ctx: ExecutionContext) -> str:
         """Get the current HEAD SHA in the working directory."""
         from sova.utils.shell import run
 
-        result = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
+        try:
+            result = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
+        except OSError:
+            # A pruned or never-created ``working_dir`` makes the spawn
+            # itself raise (FileNotFoundError on the cwd). Fall back to the
+            # PR-level lookup rather than letting this abort the whole step.
+            log.warning("step.monitor_ci.head_sha_spawn_failed", cwd=str(ctx.working_dir), exc_info=True)
+            return ""
         return result.stdout.strip() if result.success else ""
 
     # ------------------------------------------------------------------

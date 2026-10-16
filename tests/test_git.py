@@ -24,6 +24,7 @@ from sova.git.operations import (
     create_pr,
     find_pr_for_issue,
     get_ci_checks,
+    get_ci_checks_for_sha,
     get_ci_failure_logs,
     get_current_branch,
     get_pr_body,
@@ -1276,6 +1277,156 @@ class TestGetCIChecks:
                 check="Mystery",
                 state="WEIRD_STATE",
             )
+
+
+class TestGetCIChecksForSha:
+    async def test_merges_check_runs_and_statuses(self) -> None:
+        check_runs = json.dumps(
+            {
+                "check_runs": [
+                    {
+                        "name": "tests",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "details_url": "https://github.com/runs/1",
+                    }
+                ]
+            }
+        )
+        statuses = json.dumps(
+            {
+                "statuses": [
+                    {"context": "sonarcloud", "state": "success", "target_url": "https://sonar/1"},
+                ]
+            }
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout=check_runs), _shell_ok(stdout=statuses)]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert len(checks) == 2
+            assert checks[0].name == "tests"
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.SUCCESS
+            assert checks[1].name == "sonarcloud"
+            assert checks[1].status == CheckStatus.COMPLETED
+            assert checks[1].conclusion == CheckConclusion.SUCCESS
+
+            args = mock_run.call_args_list[0][0]
+            assert args == (
+                "gh",
+                "api",
+                "repos/user/repo/commits/abc123/check-runs",
+                "--method",
+                "GET",
+                "-f",
+                "per_page=100",
+            )
+
+    async def test_check_run_queued_and_in_progress(self) -> None:
+        check_runs = json.dumps(
+            {
+                "check_runs": [
+                    {"name": "build", "status": "queued", "conclusion": None, "details_url": ""},
+                    {"name": "deploy", "status": "in_progress", "conclusion": None, "details_url": ""},
+                ]
+            }
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout=check_runs), _shell_ok(stdout="{}")]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks[0].status == CheckStatus.QUEUED
+            assert checks[0].conclusion is None
+            assert checks[1].status == CheckStatus.IN_PROGRESS
+            assert checks[1].conclusion is None
+
+    async def test_check_run_stale_conclusion_maps_to_neutral(self) -> None:
+        check_runs = json.dumps(
+            {"check_runs": [{"name": "old", "status": "completed", "conclusion": "stale", "details_url": ""}]}
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout=check_runs), _shell_ok(stdout="{}")]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.NEUTRAL
+
+    async def test_check_run_startup_failure_maps_to_failure(self) -> None:
+        check_runs = json.dumps(
+            {
+                "check_runs": [
+                    {"name": "build", "status": "completed", "conclusion": "startup_failure", "details_url": ""}
+                ]
+            }
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout=check_runs), _shell_ok(stdout="{}")]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.FAILURE
+            assert checks[0].is_failed
+
+    async def test_commit_status_pending_maps_to_in_progress(self) -> None:
+        statuses = json.dumps({"statuses": [{"context": "ci/other", "state": "pending", "target_url": ""}]})
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout="{}"), _shell_ok(stdout=statuses)]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.IN_PROGRESS
+            assert checks[0].conclusion is None
+
+    async def test_commit_status_error_maps_to_failure(self) -> None:
+        statuses = json.dumps({"statuses": [{"context": "ci/other", "state": "error", "target_url": ""}]})
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout="{}"), _shell_ok(stdout=statuses)]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.FAILURE
+
+    async def test_returns_empty_when_no_checks_registered_yet(self) -> None:
+        """A SHA GitHub hasn't registered checks for yet returns [], not None (pending, not a pass)."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout="{}"), _shell_ok(stdout="{}")]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks == []
+
+    async def test_returns_none_when_check_runs_fetch_fails(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_fail(), _shell_ok(stdout="{}")]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks is None
+
+    async def test_returns_none_when_status_fetch_fails(self) -> None:
+        """A failure on only one of the two endpoints is still an overall fetch failure."""
+        check_runs = json.dumps({"check_runs": []})
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout=check_runs), _shell_fail()]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks is None
+
+    async def test_returns_none_on_bad_json(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout="not json"), _shell_ok(stdout="{}")]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks is None
 
 
 # ---------------------------------------------------------------------------

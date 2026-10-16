@@ -885,6 +885,112 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
     return checks
 
 
+_CHECK_RUN_STATUS_MAP: dict[str, CheckStatus] = {
+    "queued": CheckStatus.QUEUED,
+    "in_progress": CheckStatus.IN_PROGRESS,
+    "completed": CheckStatus.COMPLETED,
+}
+
+_CHECK_RUN_CONCLUSION_MAP: dict[str, CheckConclusion] = {
+    "success": CheckConclusion.SUCCESS,
+    "failure": CheckConclusion.FAILURE,
+    "neutral": CheckConclusion.NEUTRAL,
+    "cancelled": CheckConclusion.CANCELLED,
+    "timed_out": CheckConclusion.TIMED_OUT,
+    "action_required": CheckConclusion.ACTION_REQUIRED,
+    "skipped": CheckConclusion.SKIPPED,
+    "stale": CheckConclusion.NEUTRAL,
+    "startup_failure": CheckConclusion.FAILURE,
+}
+
+_COMMIT_STATUS_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] = {
+    "success": (CheckStatus.COMPLETED, CheckConclusion.SUCCESS),
+    "failure": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
+    "error": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
+    "pending": (CheckStatus.IN_PROGRESS, None),
+}
+
+
+async def get_ci_checks_for_sha(sha: str, *, repo: str, github_user: str = "") -> list[CICheck] | None:
+    """Get CI check results reported against a specific commit SHA.
+
+    Unlike :func:`get_ci_checks`, which asks ``gh pr checks`` for whatever
+    the PR currently reports, this binds the lookup to *sha* via GitHub's
+    REST check-runs and commit-status endpoints, so a poll right after a
+    force-push can never see a prior commit's stale (and possibly green)
+    check results. Returns ``None`` on fetch failures (network, auth, CLI
+    errors) so callers can distinguish "no checks reported yet" (``[]``)
+    from "unable to query GitHub" (``None``); a SHA GitHub hasn't registered
+    checks for yet also returns ``[]``, which callers must treat as pending.
+    """
+    env = await resolve_gh_env(github_user)
+    check_runs_result, status_result = await asyncio.gather(
+        run(
+            "gh",
+            "api",
+            f"repos/{repo}/commits/{sha}/check-runs",
+            "--method",
+            "GET",
+            "-f",
+            "per_page=100",
+            env=env,
+        ),
+        run(
+            "gh",
+            "api",
+            f"repos/{repo}/commits/{sha}/status",
+            "--method",
+            "GET",
+            "-f",
+            "per_page=100",
+            env=env,
+        ),
+    )
+    _track_gh_rate_limit(check_runs_result, github_user)
+    _track_gh_rate_limit(status_result, github_user)
+
+    if not check_runs_result.success or not status_result.success:
+        log.warning(
+            "git.ci_checks_for_sha.failed",
+            sha=sha[:8],
+            stderr=(check_runs_result.stderr or status_result.stderr)[:200],
+        )
+        return None
+
+    try:
+        check_runs_data = json.loads(check_runs_result.stdout)
+        status_data = json.loads(status_result.stdout)
+    except json.JSONDecodeError:
+        log.warning("git.ci_checks_for_sha.bad_json", sha=sha[:8])
+        return None
+
+    checks: list[CICheck] = []
+    for item in check_runs_data.get("check_runs", []):
+        status = _CHECK_RUN_STATUS_MAP.get(item.get("status", ""), CheckStatus.IN_PROGRESS)
+        conclusion = _CHECK_RUN_CONCLUSION_MAP.get(item.get("conclusion") or "")
+        checks.append(
+            CICheck(
+                name=item.get("name", ""),
+                status=status,
+                conclusion=conclusion,
+                details_url=item.get("details_url", ""),
+            )
+        )
+
+    for item in status_data.get("statuses", []):
+        status, conclusion = _COMMIT_STATUS_STATE_MAP.get(item.get("state", ""), (CheckStatus.IN_PROGRESS, None))
+        checks.append(
+            CICheck(
+                name=item.get("context", ""),
+                status=status,
+                conclusion=conclusion,
+                details_url=item.get("target_url", "") or "",
+            )
+        )
+
+    return checks
+
+
 def _parse_run_id(details_url: str) -> str | None:
     """Extract the GitHub Actions run ID from a check's details URL."""
     # Format: https://github.com/owner/repo/actions/runs/<run_id>/job/<job_id>
