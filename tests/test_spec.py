@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import ProjectConfig, SpecConfig
+from sova.config.models import ProjectConfig, RolesConfig, SpecConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps.spec import (
     SpecStep,
@@ -430,6 +430,38 @@ class TestSpecStep:
         spec_path = find_spec_file("42", project_dir=tmp_path)
         assert spec_path is not None
         assert "Add widget feature" in spec_path.read_text()
+
+    async def test_execute_honors_researcher_model(self, tmp_path: Path) -> None:
+        """roles.researcher_model drives this step, matching ResearchStep (#1129)."""
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            adapter=adapter,
+            config=ProjectConfig(
+                spec=SpecConfig(auto_approve_simple=True),
+                roles=RolesConfig(researcher_model="custom-researcher-model"),
+            ),
+        )
+
+        step = SpecStep()
+        llm_result = LLMResult(
+            text="# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo things.\n",
+            model="sonnet",
+            cost_usd=Decimal("0.05"),
+            input_tokens=100,
+            output_tokens=200,
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke:
+            await step.execute(ctx)
+
+        assert mock_invoke.call_args.kwargs["model"] == "custom-researcher-model"
 
     async def test_execute_writes_fenced_spec(self, tmp_path: Path) -> None:
         """Step extracts spec from markdown-fenced LLM response."""
