@@ -32,7 +32,7 @@ class ResearchStep(BaseStep):
             result = await invoke_command(
                 "/research",
                 args=ctx.issue_number,
-                model=ctx.resolved_model or ctx.config.agent.model,
+                model=ctx.resolved_model or ctx.config.roles.researcher_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
                 task_type=ctx.routing_task_type(self.TASK_TYPE),
                 cwd=ctx.project_dir,
