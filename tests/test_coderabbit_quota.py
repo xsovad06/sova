@@ -12,6 +12,7 @@ import pytest
 from sova.config.models import CodeRabbitQuotaConfig
 from sova.db.session import close_db, init_db
 from sova.utils.shell import ShellResult
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 
 @pytest.fixture(autouse=True)
@@ -380,6 +381,7 @@ class TestQuotaAPI:
         app = create_app()
         with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/quota/coderabbit")
         assert resp.status_code == 200
         data = resp.json()
@@ -395,6 +397,7 @@ class TestQuotaAPI:
         app = create_app()
         with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/quota/coderabbit/sync")
         assert resp.status_code == 200
         data = resp.json()
@@ -422,6 +425,7 @@ class TestQuotaAPI:
             patch("sova.dashboard.routers.quota.get_quota_status", new_callable=AsyncMock, return_value=mock_status),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/quota/coderabbit")
         assert resp.status_code == 200
         data = resp.json()
@@ -446,6 +450,7 @@ class TestQuotaAPI:
             ),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/quota/coderabbit")
         assert resp.status_code == 500
 
@@ -465,6 +470,7 @@ class TestQuotaAPI:
             patch("sova.dashboard.routers.quota.sync_from_github", new_callable=AsyncMock, return_value=3),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/quota/coderabbit/sync")
         assert resp.status_code == 200
         data = resp.json()
@@ -484,6 +490,7 @@ class TestQuotaAPI:
         app = create_app()
         with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/quota/coderabbit/sync")
         assert resp.status_code == 503
         assert "github_repo" in resp.json()["detail"]
@@ -508,6 +515,7 @@ class TestQuotaAPI:
             ),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/quota/coderabbit/sync")
         assert resp.status_code == 500
 
@@ -521,6 +529,7 @@ class TestQuotaAPI:
         app = create_app()
         with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/quota/pr-queue")
         assert resp.status_code == 200
         data = resp.json()
@@ -544,6 +553,7 @@ class TestQuotaAPI:
             patch("sova.dashboard.routers.quota.get_session", new_callable=AsyncMock, side_effect=RuntimeError("db")),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/quota/pr-queue")
         assert resp.status_code == 500
 
@@ -581,6 +591,7 @@ class TestQuotaAPI:
         app = create_app()
         with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/quota/pr-queue")
         assert resp.status_code == 200
         data = resp.json()

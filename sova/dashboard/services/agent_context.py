@@ -232,6 +232,36 @@ def _strip_frontmatter(content: str) -> str:
     return content
 
 
+def known_command_names(project_dir: Path) -> frozenset[str]:
+    """Collect command names `_resolve_command_prompt` can actually resolve.
+
+    Mirrors its lookup order exactly (project's own `.claude/commands/`, then
+    the SOVA root's `.claude/commands/`, then its `commands/`) and its exact
+    match criterion, file existence by filename stem (`target_cmd.is_file()`),
+    so a validator built from this set never rejects a command
+    `_resolve_command_prompt` would have found, and never accepts one it would
+    silently stringify as a bare `/command` with no backing file (the fallback
+    at the end of that function). Deliberately does not use
+    `sova.commands.catalog.discover()`: that filters to files with a valid
+    frontmatter `name:` field, which is a stricter criterion than
+    `_resolve_command_prompt`'s and would reject a real, resolvable command
+    file that happens to lack one (e.g. `agent-resume.md`, `request-review.md`).
+    """
+    from sova.commands.catalog import get_canonical_dir
+
+    sova_root = get_canonical_dir().parent
+    dirs = (
+        project_dir / _CLAUDE_DIR / "commands",
+        sova_root / _CLAUDE_DIR / "commands",
+        sova_root / "commands",
+    )
+    names: set[str] = set()
+    for d in dirs:
+        if d.is_dir():
+            names.update(p.stem for p in d.glob("*.md") if p.is_file())
+    return frozenset(names)
+
+
 def _resolve_command_prompt(command: str, args: dict | None, project_dir: Path) -> str:
     """Build the prompt for a Claude Code command."""
     arg_str = ""

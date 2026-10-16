@@ -170,6 +170,16 @@ class TestTelemetryIngest:
             result = await session.execute(select(func.count(TelemetryEvent.id)))
             assert result.scalar_one() == 1
 
+    async def test_malformed_run_at_returns_422(self, telemetry_token: str) -> None:
+        """A genuinely malformed timestamp is a 422 validation error, not a 500."""
+        app = _make_app()
+        headers = {"Authorization": f"Bearer {telemetry_token}"}
+        payload = _make_payload(run_at="not-a-timestamp")
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/telemetry/ingest", json=payload, headers=headers)
+        assert resp.status_code == 422
+
     async def test_different_run_ids_both_stored(self, telemetry_token: str) -> None:
         app = _make_app()
         headers = {"Authorization": f"Bearer {telemetry_token}"}

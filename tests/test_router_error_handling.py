@@ -28,6 +28,7 @@ async def client():
     app = create_app(multi_project=False)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        ac.headers.update(_csrf_request_headers(ac))
         yield ac
 
 

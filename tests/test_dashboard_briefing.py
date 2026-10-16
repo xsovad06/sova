@@ -12,6 +12,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sova.db.session import close_db, init_db
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +40,7 @@ async def client():
     app = create_app(project_dir=Path.cwd())
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
+        c.headers.update(_csrf_request_headers(c))
         yield c
 
 

@@ -47,6 +47,7 @@ CSRF_HEADER_NAME = "x-csrf-token"
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _SCHEMES = ("http", "https")
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 def _strip_brackets(host: str) -> str:
@@ -113,6 +114,20 @@ def build_allowed_origins(host: str, port: int) -> frozenset[str]:
     return frozenset(f"{scheme}://{_format_host(h)}:{port}" for h in hosts for scheme in _SCHEMES)
 
 
+def build_allowed_hosts(host: str) -> list[str]:
+    """Build the bare hostnames `TrustedHostMiddleware` should accept for a bind host.
+
+    Mirrors `build_allowed_origins`'s loopback handling (all loopback spellings for a
+    loopback bind, else only the configured host) so there is one place deciding what
+    counts as this dashboard's own address, just without the scheme+port that
+    `TrustedHostMiddleware.allowed_hosts` does not take. Callers must handle a
+    wildcard bind (`is_wildcard_host`) separately: there is no bare hostname a real
+    client's Host header could match, matching this module's CSRF fail-closed path.
+    """
+    hosts = (_LOOPBACK_HOSTS | {host}) if is_loopback_host(host) else {host}
+    return sorted({_strip_brackets(h) for h in hosts})
+
+
 def validate_origin(request: Request, allowed_origins: frozenset[str]) -> bool:
     """Check the request's Origin (falling back to Referer) against `allowed_origins`.
 
@@ -164,10 +179,20 @@ def issue_csrf_cookie(response: Response, request: Request) -> str:
 def require_same_origin_csrf(request: Request) -> None:
     """FastAPI dependency guarding state-changing routes.
 
+    A no-op for safe methods (GET/HEAD/OPTIONS), so it can be registered once
+    at router level (covering every route the router carries, including reads)
+    instead of opted into per mutating route. A per-route opt-in is exactly how
+    most of this dashboard's mutating routes went unguarded: a new route is
+    covered by construction only if the dependency is unconditionally present
+    on every router and self-exempts the methods that need no protection.
+
     Raises `HTTPException(403)` when the origin check fails, the CSRF token is
     missing or mismatched, or the app is bound non-loopback with no shared secret
     configured (fail-closed).
     """
+    if request.method in _SAFE_METHODS:
+        return
+
     if getattr(request.app.state, "csrf_fail_closed", False):
         raise HTTPException(status_code=403, detail="Dashboard is bound to a non-loopback host without a shared secret")
 

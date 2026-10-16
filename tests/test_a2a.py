@@ -10,8 +10,18 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from sova.dashboard.services import mcp_service
 from sova.db.models import TaskRun
 from sova.db.session import close_db, get_session, init_db
+
+
+def _cancel_auth_headers(project_dir, run_id: int) -> dict[str, str]:
+    """Bearer token for POST /a2a/tasks/{task_id}/cancel: the same run-scoped
+    HMAC scheme sova.dashboard.services.mcp_service issues for /mcp (#1204)."""
+    secret = mcp_service.get_or_generate_secret(project_dir)
+    token = mcp_service.generate_mcp_token(run_id, secret)
+    return {"Authorization": f"Bearer {token}"}
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -270,10 +280,29 @@ class TestA2ARouter:
             assert data["status"]["state"] == "working"
 
     @pytest.mark.asyncio
-    async def test_cancel_task_not_found(self, app):
+    async def test_cancel_task_not_found(self, app, project_dir):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/a2a/tasks/sova-run-999/cancel", headers=_cancel_auth_headers(project_dir, 999))
+            assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_cancel_missing_auth_returns_401(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/a2a/tasks/sova-run-999/cancel")
-            assert resp.status_code == 404
+            assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_cancel_invalid_token_returns_401(self, app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/a2a/tasks/sova-run-999/cancel", headers={"Authorization": "Bearer garbage"})
+            assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_cancel_wrong_run_token_returns_403(self, app, project_dir):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # Token minted for a different run_id than the one in the path.
+            resp = await client.post("/a2a/tasks/sova-run-999/cancel", headers=_cancel_auth_headers(project_dir, 1))
+            assert resp.status_code == 403
 
     @pytest.mark.asyncio
     async def test_tasks_return_404_when_disabled(self, disabled_app):
@@ -339,7 +368,7 @@ class TestA2ARouter:
             assert data2["offset"] == 2
 
     @pytest.mark.asyncio
-    async def test_cancel_running_task(self, app):
+    async def test_cancel_running_task(self, app, project_dir):
         async with await get_session() as session:
             run = TaskRun(
                 issue_number="77",
@@ -360,7 +389,9 @@ class TestA2ARouter:
             new_callable=AsyncMock,
         ) as mock_stop:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post(f"/a2a/tasks/sova-run-{run_id}/cancel")
+                resp = await client.post(
+                    f"/a2a/tasks/sova-run-{run_id}/cancel", headers=_cancel_auth_headers(project_dir, run_id)
+                )
                 assert resp.status_code == 200
                 data = resp.json()
                 assert data["status"]["state"] == "canceled"
@@ -371,7 +402,7 @@ class TestA2ARouter:
             assert updated.status == "rejected"
 
     @pytest.mark.asyncio
-    async def test_cancel_already_terminal_task(self, app):
+    async def test_cancel_already_terminal_task(self, app, project_dir):
         async with await get_session() as session:
             run = TaskRun(
                 issue_number="78",
@@ -388,14 +419,16 @@ class TestA2ARouter:
             run_id = run.id
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.post(f"/a2a/tasks/sova-run-{run_id}/cancel")
+            resp = await client.post(
+                f"/a2a/tasks/sova-run-{run_id}/cancel", headers=_cancel_auth_headers(project_dir, run_id)
+            )
             assert resp.status_code == 200
             data = resp.json()
             assert data["status"]["state"] == "failed"
             assert data["status"]["message"] == "Already terminal"
 
     @pytest.mark.asyncio
-    async def test_cancel_stop_agent_failure_still_succeeds(self, app):
+    async def test_cancel_stop_agent_failure_still_succeeds(self, app, project_dir):
         async with await get_session() as session:
             run = TaskRun(
                 issue_number="79",
@@ -417,7 +450,9 @@ class TestA2ARouter:
             side_effect=RuntimeError("process already dead"),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post(f"/a2a/tasks/sova-run-{run_id}/cancel")
+                resp = await client.post(
+                    f"/a2a/tasks/sova-run-{run_id}/cancel", headers=_cancel_auth_headers(project_dir, run_id)
+                )
                 assert resp.status_code == 200
                 data = resp.json()
                 assert data["status"]["state"] == "canceled"

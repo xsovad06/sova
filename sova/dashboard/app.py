@@ -29,7 +29,8 @@ if TYPE_CHECKING:
     from sova.supervisor.pr_throttle import PRThrottleLoop
     from sova.supervisor.watchdog import AgentWatchdog
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -72,7 +73,14 @@ from sova.dashboard.routers import (
     tasks,
     work,
 )
-from sova.dashboard.security import build_allowed_origins, is_loopback_host, is_wildcard_host, issue_csrf_cookie
+from sova.dashboard.security import (
+    build_allowed_hosts,
+    build_allowed_origins,
+    is_loopback_host,
+    is_wildcard_host,
+    issue_csrf_cookie,
+    require_same_origin_csrf,
+)
 from sova.dashboard.services import awareness_service, control_service, handoff_service
 from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
@@ -110,6 +118,23 @@ _RECOVERY_INTERVAL = 300  # 5 minutes
 _CONNECTIVITY_PROBE_INTERVAL = 30  # seconds
 _SWEEP_WRITE_RETRY_ATTEMPTS = 5
 _SWEEP_WRITE_RETRY_DELAY = 3.0
+
+# CDN hosts pinned (exact version + integrity hash) by invariants/cdn-integrity.sh.
+# 'unsafe-inline' is required because templates use inline <script> blocks (Jinja-
+# interpolated data) and inline onclick handlers extensively; tightening this to a
+# nonce/hash scheme is a template-by-template rewrite out of scope for this change.
+_CSP_CDN_HOSTS = "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com"
+_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    f"script-src 'self' 'unsafe-inline' {_CSP_CDN_HOSTS}; "
+    f"style-src 'self' 'unsafe-inline' {_CSP_CDN_HOSTS}; "
+    "img-src 'self' data: https://avatars.githubusercontent.com; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'"
+)
 
 
 class _DaemonComponents(TypedDict, total=False):
@@ -868,6 +893,29 @@ def create_app(
     if app.state.csrf_fail_closed:
         log.warning("dashboard.nonloopback_no_secret", host=host, port=port, wildcard=is_wildcard_host(host))
 
+    # Host header validation (Starlette's TrustedHostMiddleware). A wildcard bind has
+    # no single derivable host (the browser sends the server's real LAN IP/hostname,
+    # never the literal wildcard), so there is nothing meaningful to allowlist here.
+    # The CSRF guard's fail-closed behavior above only covers state-changing routes;
+    # a GET on a wildcard bind is still reachable through a spoofed Host (e.g. DNS
+    # rebinding), matching is_wildcard_host's docstring in security.py. That is the
+    # accepted "access to the bound interface implies access to the dashboard"
+    # deployment model (`docs/architecture-deep-dive.md`, "Dashboard access control"),
+    # not a gap this middleware closes: fully closing it needs an operator-supplied
+    # trusted-host list for wildcard binds, which is a config surface this PR does
+    # not add.
+    #
+    # "test"/"testserver" are permanently included: httpx's ASGITransport (this
+    # repo's dashboard test harness, used across dozens of test modules) sends
+    # Host: test for the conventional base_url="http://test", and "testserver"
+    # is Starlette's own TestClient default. Neither is a registrable production
+    # hostname, and even a spoofed "Host: test" against a real deployment still
+    # cannot pass the separate Origin/CSRF guard above, which never allowlists
+    # it: that guard, not this middleware, carries the real protection.
+    _TEST_TRANSPORT_HOSTS = ("test", "testserver")
+    trusted_hosts = ["*"] if is_wildcard_host(host) else [*build_allowed_hosts(host), *_TEST_TRANSPORT_HOSTS]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
+
     if rate_limit > 0:
 
         def rate_limit_key(request: Request) -> str | None:
@@ -948,6 +996,22 @@ def create_app(
             response.headers["Cache-Control"] = "public, max-age=3600"
         return response
 
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        """Browser-enforced defense in depth, independent of the CSRF/origin guard.
+
+        None of these authenticate a caller; they narrow what a successfully
+        injected or framed page can do. Content-Type-Options and Frame-Options
+        apply to every response (including errors), unlike Cache-Control above
+        which is static-asset-specific.
+        """
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = _CONTENT_SECURITY_POLICY
+        return response
+
     templates = Jinja2Templates(directory=BASE / "templates")
 
     def _awareness_nav_enabled() -> bool:
@@ -1002,32 +1066,32 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     app.add_middleware(ProjectContextMiddleware)
 
     # Fleet Manager API (global, not project-scoped)
-    app.include_router(fleet_manager.router, prefix="/api")
+    app.include_router(fleet_manager.router, prefix="/api", dependencies=[Depends(require_same_origin_csrf)])
 
     # Home page (Fleet Manager command center)
     @app.get("/")
     async def home(request: Request) -> Response:
         projects = list_projects()
-        return templates.TemplateResponse(request, "home.html", {"projects": projects})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "home.html", {"projects": projects}))
 
     # Project API
     @app.get("/api/projects")
     async def api_list_projects() -> dict:
         return {"projects": list_projects()}
 
-    @app.post("/api/projects/register")
+    @app.post("/api/projects/register", dependencies=[Depends(require_same_origin_csrf)])
     async def api_register_project(req: RegisterRequest) -> dict:
         p = Path(req.path)
         result_slug = register_project(p, req.slug)
         await init_db_for_project(p)
         return {"slug": result_slug, "path": str(p)}
 
-    @app.post("/api/projects/unregister")
+    @app.post("/api/projects/unregister", dependencies=[Depends(require_same_origin_csrf)])
     async def api_unregister_project(req: UnregisterRequest) -> dict:
         removed = unregister_project(req.slug)
         return {"removed": removed}
 
-    @app.post("/api/projects/uninstall")
+    @app.post("/api/projects/uninstall", dependencies=[Depends(require_same_origin_csrf)])
     async def api_uninstall_project(req: UninstallRequest) -> dict[str, bool]:
         from sova.config.registry import get_project_path
 
@@ -1062,7 +1126,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     # Setup page (global, not project-scoped)
     @app.get("/setup")
     async def setup_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "setup.html", {"page": "setup"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "setup.html", {"page": "setup"}))
 
     # Project-scoped page routes (new)
     @app.get("/p/{slug}")
@@ -1071,15 +1135,15 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/briefing")
     async def project_briefing(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "briefing.html", "briefing")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "briefing.html", "briefing"))
 
     @app.get("/p/{slug}/dashboard")
     async def project_dashboard(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "dashboard.html", "dashboard")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "dashboard.html", "dashboard"))
 
     @app.get("/p/{slug}/agents")
     async def project_agents(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "agents.html", "agents")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "agents.html", "agents"))
 
     @app.get("/p/{slug}/work")
     async def project_work_redirect(slug: str) -> RedirectResponse:
@@ -1087,7 +1151,9 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/work/{run_id}")
     async def project_work_detail(request: Request, slug: str, run_id: int) -> Response:
-        return _project_page(request, templates, slug, "run_detail.html", "agents", run_id=run_id)
+        return _with_csrf_cookie(
+            request, _project_page(request, templates, slug, "run_detail.html", "agents", run_id=run_id)
+        )
 
     # Old routes as redirects
     @app.get("/p/{slug}/overview")
@@ -1113,19 +1179,19 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     # Unchanged project pages
     @app.get("/p/{slug}/costs")
     async def project_costs(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "costs.html", "costs")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "costs.html", "costs"))
 
     @app.get("/p/{slug}/queue")
     async def project_queue(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "queue.html", "queue")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "queue.html", "queue"))
 
     @app.get("/p/{slug}/specs")
     async def project_specs(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "specs.html", "specs")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "specs.html", "specs"))
 
     @app.get("/p/{slug}/logs")
     async def project_logs(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "logs.html", "logs")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "logs.html", "logs"))
 
     @app.get("/p/{slug}/settings")
     async def project_settings(request: Request, slug: str) -> Response:
@@ -1137,28 +1203,34 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/memory")
     async def project_memory(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "memory.html", "memory")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "memory.html", "memory"))
 
     @app.get("/p/{slug}/lifecycle/{issue_number}")
     async def project_lifecycle(request: Request, slug: str, issue_number: int) -> Response:
-        return _project_page(request, templates, slug, "lifecycle.html", "agents", issue_number=issue_number)
+        return _with_csrf_cookie(
+            request, _project_page(request, templates, slug, "lifecycle.html", "agents", issue_number=issue_number)
+        )
 
     @app.get("/p/{slug}/roles")
     async def project_roles(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "roles.html", "roles")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "roles.html", "roles"))
 
     @app.get("/p/{slug}/roles/{name}")
     async def project_role_detail(request: Request, slug: str, name: str) -> Response:
-        return _project_page(request, templates, slug, "role_editor.html", "roles", role_name=name)
+        return _with_csrf_cookie(
+            request, _project_page(request, templates, slug, "role_editor.html", "roles", role_name=name)
+        )
 
     @app.get("/p/{slug}/commands")
     async def project_commands(request: Request, slug: str) -> Response:
         """Render the command content browser page for a specific project."""
-        return _project_page(request, templates, slug, "commands.html", "commands")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "commands.html", "commands"))
 
     @app.get("/p/{slug}/spec/{issue_number}")
     async def project_spec(request: Request, slug: str, issue_number: str) -> Response:
-        return _project_page(request, templates, slug, "spec.html", "agents", issue_number=issue_number)
+        return _with_csrf_cookie(
+            request, _project_page(request, templates, slug, "spec.html", "agents", issue_number=issue_number)
+        )
 
     @app.get("/p/{slug}/supervisor")
     async def project_supervisor(request: Request, slug: str) -> Response:
@@ -1175,27 +1247,29 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/fleet")
     async def project_fleet(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "fleet.html", "fleet")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "fleet.html", "fleet"))
 
     @app.get("/p/{slug}/oversight")
     async def project_oversight(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "oversight.html", "oversight")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "oversight.html", "oversight"))
 
     @app.get("/p/{slug}/pr-metrics")
     async def project_pr_metrics(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "pr_metrics.html", "pr-metrics")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "pr_metrics.html", "pr-metrics"))
 
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "style_guide.html", "style-guide")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "style_guide.html", "style-guide"))
 
     @app.get("/p/{slug}/dependency-health")
     async def project_dependency_health(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "dependency_health.html", "dependency-health")
+        return _with_csrf_cookie(
+            request, _project_page(request, templates, slug, "dependency_health.html", "dependency-health")
+        )
 
     @app.get("/p/{slug}/reliability")
     async def project_reliability(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "reliability.html", "reliability")
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "reliability.html", "reliability"))
 
     # Project-scoped API
     _register_api_routers(app, prefix="/p/{slug}/api")
@@ -1244,15 +1318,15 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     # New pages
     @app.get("/briefing")
     async def briefing_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "briefing.html", {"page": "briefing"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "briefing.html", {"page": "briefing"}))
 
     @app.get("/dashboard")
     async def dashboard_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "dashboard.html", {"page": "dashboard"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "dashboard.html", {"page": "dashboard"}))
 
     @app.get("/agents")
     async def agents_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "agents.html", {"page": "agents"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "agents.html", {"page": "agents"}))
 
     @app.get("/work")
     async def work_redirect() -> RedirectResponse:
@@ -1260,7 +1334,9 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/work/{run_id}")
     async def work_detail_page(request: Request, run_id: int) -> Response:
-        return templates.TemplateResponse(request, "run_detail.html", {"page": "agents", "run_id": run_id})
+        return _with_csrf_cookie(
+            request, templates.TemplateResponse(request, "run_detail.html", {"page": "agents", "run_id": run_id})
+        )
 
     # Old pages kept as redirects
     @app.get("/overview")
@@ -1286,23 +1362,25 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     # Unchanged pages
     @app.get("/costs")
     async def costs_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "costs.html", {"page": "costs"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "costs.html", {"page": "costs"}))
 
     @app.get("/pr-metrics")
     async def pr_metrics_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "pr_metrics.html", {"page": "pr-metrics"})
+        return _with_csrf_cookie(
+            request, templates.TemplateResponse(request, "pr_metrics.html", {"page": "pr-metrics"})
+        )
 
     @app.get("/queue")
     async def queue_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "queue.html", {"page": "queue"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "queue.html", {"page": "queue"}))
 
     @app.get("/specs")
     async def specs_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "specs.html", {"page": "specs"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "specs.html", {"page": "specs"}))
 
     @app.get("/logs")
     async def logs_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "logs.html", {"page": "logs"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "logs.html", {"page": "logs"}))
 
     @app.get("/settings")
     async def settings_page(request: Request) -> Response:
@@ -1315,28 +1393,35 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/memory")
     async def memory_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "memory.html", {"page": "memory"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "memory.html", {"page": "memory"}))
 
     @app.get("/lifecycle/{issue_number}")
     async def lifecycle_page(request: Request, issue_number: int) -> Response:
-        return templates.TemplateResponse(request, "lifecycle.html", {"page": "agents", "issue_number": issue_number})
+        return _with_csrf_cookie(
+            request,
+            templates.TemplateResponse(request, "lifecycle.html", {"page": "agents", "issue_number": issue_number}),
+        )
 
     @app.get("/roles")
     async def roles_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "roles.html", {"page": "roles"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "roles.html", {"page": "roles"}))
 
     @app.get("/roles/{name}")
     async def role_detail_page(request: Request, name: str) -> Response:
-        return templates.TemplateResponse(request, "role_editor.html", {"page": "roles", "role_name": name})
+        return _with_csrf_cookie(
+            request, templates.TemplateResponse(request, "role_editor.html", {"page": "roles", "role_name": name})
+        )
 
     @app.get("/commands")
     async def commands_page(request: Request) -> Response:
         """Render the command content browser page."""
-        return templates.TemplateResponse(request, "commands.html", {"page": "commands"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "commands.html", {"page": "commands"}))
 
     @app.get("/spec/{issue_number}")
     async def spec_page(request: Request, issue_number: str) -> Response:
-        return templates.TemplateResponse(request, "spec.html", {"page": "agents", "issue_number": issue_number})
+        return _with_csrf_cookie(
+            request, templates.TemplateResponse(request, "spec.html", {"page": "agents", "issue_number": issue_number})
+        )
 
     @app.get("/supervisor")
     async def supervisor_page(request: Request) -> Response:
@@ -1356,57 +1441,78 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/dependency-health")
     async def dependency_health_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "dependency_health.html", {"page": "dependency-health"})
+        return _with_csrf_cookie(
+            request, templates.TemplateResponse(request, "dependency_health.html", {"page": "dependency-health"})
+        )
 
     @app.get("/reliability")
     async def reliability_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "reliability.html", {"page": "reliability"})
+        return _with_csrf_cookie(
+            request, templates.TemplateResponse(request, "reliability.html", {"page": "reliability"})
+        )
 
     @app.get("/fleet")
     async def fleet_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "fleet.html", {"page": "fleet"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "fleet.html", {"page": "fleet"}))
 
     @app.get("/oversight")
     async def oversight_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "oversight.html", {"page": "oversight"})
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "oversight.html", {"page": "oversight"}))
 
     @app.get("/style-guide")
     async def style_guide_page(request: Request) -> Response:
-        return templates.TemplateResponse(request, "style_guide.html", {"page": "style-guide"})
+        return _with_csrf_cookie(
+            request, templates.TemplateResponse(request, "style_guide.html", {"page": "style-guide"})
+        )
 
 
 def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
-    """Register API routers under the given prefix."""
-    app.include_router(auth.router, prefix=prefix)
-    app.include_router(overview.router, prefix=prefix)
-    app.include_router(runs.router, prefix=prefix)
-    app.include_router(costs.router, prefix=prefix)
-    app.include_router(briefing.router, prefix=prefix)
-    app.include_router(control.router, prefix=prefix)
-    app.include_router(handoff.router, prefix=prefix)
-    app.include_router(memory.router, prefix=prefix)
-    app.include_router(models.router, prefix=prefix)
-    app.include_router(logs.router, prefix=prefix)
-    app.include_router(tasks.router, prefix=prefix)
-    app.include_router(queue.router, prefix=prefix)
-    app.include_router(settings.router, prefix=prefix)
-    app.include_router(setup.router, prefix=prefix)
-    app.include_router(agents.router, prefix=prefix)
-    app.include_router(work.router, prefix=prefix)
-    app.include_router(lifecycle.router, prefix=prefix)
-    app.include_router(roles.router, prefix=prefix)
-    app.include_router(spec.router, prefix=prefix)
-    app.include_router(prs.router, prefix=prefix)
-    app.include_router(quota.router, prefix=prefix)
-    app.include_router(dependencies.router, prefix=prefix)
-    app.include_router(dependency_health.router, prefix=prefix)
-    app.include_router(resources.router, prefix=prefix)
-    app.include_router(supervisor.router, prefix=prefix)
-    app.include_router(oversight.router, prefix=prefix)
+    """Register API routers under the given prefix.
+
+    Every router gets ``require_same_origin_csrf`` applied here rather than opted
+    into per mutating route: the guard self-exempts safe methods (GET/HEAD/OPTIONS),
+    so this covers every mutating route a router carries by construction, including
+    one added later with no per-route annotation. The sole exception is ``mcp.router``
+    (its own bearer-token scheme already authenticates every call, and `/mcp` is a
+    single JSON-RPC POST endpoint a browser page is not meant to call with a cookie).
+    `/api/telemetry/ingest` is exempt structurally: it is registered separately by
+    `_register_telemetry_router`, not through this function.
+    """
+    csrf_dep = [Depends(require_same_origin_csrf)]
+    app.include_router(auth.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(overview.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(runs.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(costs.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(briefing.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(control.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(handoff.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(memory.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(models.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(logs.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(tasks.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(queue.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(settings.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(setup.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(agents.router, prefix=prefix, dependencies=csrf_dep)
+    # agents.ws_router carries only the /ws/agents/status websocket route: the CSRF
+    # dependency expects an HTTP Request, which FastAPI cannot supply to a websocket
+    # handler, so that one route is split onto its own un-guarded router.
+    app.include_router(agents.ws_router, prefix=prefix)
+    app.include_router(work.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(lifecycle.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(roles.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(spec.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(prs.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(quota.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(dependencies.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(dependency_health.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(resources.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(supervisor.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(oversight.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(mcp.router, prefix=prefix)
-    app.include_router(feed.router, prefix=prefix)
-    app.include_router(fleet_insights.router, prefix=prefix)
-    app.include_router(reliability.router, prefix=prefix)
+    app.include_router(feed.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(fleet_insights.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(reliability.router, prefix=prefix, dependencies=csrf_dep)
 
 
 def _register_telemetry_router(app: FastAPI) -> None:

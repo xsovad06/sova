@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from sova.db.session import close_db, init_db
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 
 @pytest.fixture(autouse=True)
@@ -626,6 +627,7 @@ async def test_api_list_memories_with_tier_filter(
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        client.headers.update(_csrf_request_headers(client))
         resp = await client.get("/api/memory?tier=shared")
         assert resp.status_code == 200
         data = resp.json()
@@ -662,6 +664,7 @@ async def test_api_export_memories(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        client.headers.update(_csrf_request_headers(client))
         resp = await client.post("/api/memory/export")
         assert resp.status_code == 200
         data = resp.json()
@@ -700,6 +703,7 @@ async def test_api_export_memories_dry_run(tmp_path: Path, monkeypatch: pytest.M
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        client.headers.update(_csrf_request_headers(client))
         resp = await client.post("/api/memory/export?dry_run=true")
         assert resp.status_code == 200
         data = resp.json()
@@ -743,6 +747,7 @@ async def test_api_import_memories(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        client.headers.update(_csrf_request_headers(client))
         resp = await client.post("/api/memory/import")
         assert resp.status_code == 200
         data = resp.json()
@@ -789,6 +794,7 @@ async def test_api_import_memories_dry_run(tmp_path: Path, monkeypatch: pytest.M
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        client.headers.update(_csrf_request_headers(client))
         resp = await client.post("/api/memory/import?dry_run=true")
         assert resp.status_code == 200
         data = resp.json()

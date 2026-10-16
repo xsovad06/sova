@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any, Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from starlette.requests import Request
@@ -16,6 +17,24 @@ from sova.utils.logging import get_logger
 log = get_logger(component="dashboard.mcp")
 
 router = APIRouter(tags=["mcp"])
+
+# Server-owned context a tool resolves for itself (from the authenticated request),
+# never from the client's JSON-RPC arguments. A caller passing its own project_dir
+# here would let a token scoped to one run query an unrelated project's DB.
+_CONTEXT_ONLY_PARAMS = frozenset({"project_dir"})
+
+
+def _filter_tool_arguments(tool_func: Callable[..., Any], arguments: dict) -> dict:
+    """Keep only the keys `tool_func`'s own signature declares as client-facing.
+
+    Built per tool from `inspect.signature` rather than one global "safe keys"
+    list, so a tool whose signature legitimately differs (an optional parameter
+    another tool doesn't have) is never broken by a list sized for a different
+    tool, while a key the function's signature does not declare at all (most
+    importantly `project_dir`, injected by the server) is always dropped.
+    """
+    allowed = set(inspect.signature(tool_func).parameters) - _CONTEXT_ONLY_PARAMS
+    return {k: v for k, v in arguments.items() if k in allowed}
 
 
 def _get_mcp_secret(project_dir: Path | None = None) -> str:
@@ -139,6 +158,7 @@ async def mcp_endpoint(
             service_args = {k: v for k, v in arguments.items() if k != "token_run_id"}
 
             tool_func = tool_map[tool_name]
+            service_args = _filter_tool_arguments(tool_func, service_args)
             result = await tool_func(**service_args)
 
             return {

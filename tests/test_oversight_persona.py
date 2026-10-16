@@ -17,6 +17,7 @@ from sova.oversight.persona import (
     get_persona_info,
     load_persona,
 )
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 # ---------------------------------------------------------------------------
 # _get_persona_path
@@ -341,6 +342,7 @@ class TestPersonaEndpoints:
                     ):
                         transport = ASGITransport(app=app)
                         async with AsyncClient(transport=transport, base_url="http://test") as client:
+                            client.headers.update(_csrf_request_headers(client))
                             resp = await client.get("/api/settings/persona")
 
                         assert resp.status_code == 200
@@ -367,6 +369,7 @@ class TestPersonaEndpoints:
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/settings/persona/open")
 
             assert resp.status_code == 400
@@ -397,6 +400,7 @@ class TestPersonaEndpoints:
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/settings/persona/open")
 
             assert resp.status_code == 200
@@ -426,6 +430,7 @@ class TestPersonaEndpoints:
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/settings/persona/open")
 
             assert resp.status_code == 400
@@ -445,6 +450,7 @@ class TestPersonaEndpoints:
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/settings/persona/open")
 
             assert resp.status_code == 500

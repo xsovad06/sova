@@ -212,3 +212,45 @@ async def test_mcp_endpoint_missing_run_id(client: AsyncClient, seed_runs, test_
     data = response.json()
     assert "error" in data
     assert data["error"]["code"] == -32602
+
+
+@pytest.mark.asyncio
+async def test_mcp_endpoint_ignores_client_supplied_project_dir(
+    client: AsyncClient, seed_runs, test_secret, monkeypatch
+):
+    """A client-supplied project_dir argument must never reach the tool function.
+
+    project_dir scopes every DB/session call a tool makes; if the server forwarded
+    it verbatim from client JSON, a token valid for one run could redirect a query
+    at an arbitrary other project's database (#1204). The server must always
+    resolve it itself and ignore whatever the caller sends.
+    """
+    run1 = seed_runs[0]
+    token = generate_mcp_token(run1.id, test_secret)
+
+    def mock_get_secret(project_dir=None):
+        return test_secret
+
+    monkeypatch.setattr(
+        "sova.dashboard.routers.mcp._get_mcp_secret",
+        mock_get_secret,
+    )
+
+    response = await client.post(
+        "/api/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "get_run_status",
+                "arguments": {"run_id": run1.id, "project_dir": "/nonexistent/other-project"},
+            },
+            "id": 1,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "result" in data, data
+    assert data["result"]["status"] == "running"

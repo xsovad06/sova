@@ -128,6 +128,7 @@ _SUSPICIOUS_PATHS = frozenset(
         "node_modules",
         ".DS_Store",
         "__pycache__",
+        ".mcp.json",
     }
 )
 

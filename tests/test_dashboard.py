@@ -168,12 +168,28 @@ async def seed_data(session: AsyncSession):
     return {"runs": [run1, run2, run3], "costs": costs}
 
 
+# httpx merges per-call headers over the client's defaults rather than clearing
+# them, so a test proving a route rejects a *missing* CSRF pair must explicitly
+# blank out both headers the `client` fixture below pre-arms on every request.
+NO_CSRF = {"origin": "", "x-csrf-token": ""}
+
+
 @pytest.fixture
 async def client():
+    """Shared dashboard test client, pre-armed with a valid CSRF/origin pair.
 
+    Router-level `require_same_origin_csrf` (#1204) now guards every mutating
+    route by construction, so a mutating request needs a matching Origin header
+    and CSRF cookie/header pair even for routes that were never individually
+    opted in before. Setting it once here, rather than per call site, is what
+    `csrf_request_headers()`'s own docstring recommends to avoid duplicating it
+    across the (now much larger) set of tests that post to a guarded route; a
+    GET request is unaffected since the guard no-ops for safe methods.
+    """
     app = create_app(multi_project=False)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        ac.headers.update(_csrf_request_headers(ac))
         yield ac
 
 
@@ -3455,6 +3471,85 @@ class TestHandoffAPI:
 
 
 # ---------------------------------------------------------------------------
+# Router-level CSRF coverage (#1204): every mutating route is guarded by
+# construction, not by a per-route opt-in that a new route can miss.
+# ---------------------------------------------------------------------------
+
+
+class TestRouterLevelCsrfCoverage:
+    """Every router _register_api_routers() installs must guard its mutating
+    routes with require_same_origin_csrf by construction (#1204): the previous
+    per-route opt-in is exactly how most of them went unguarded. mcp.router is
+    the sole exemption (its own bearer-token scheme already authenticates every
+    call); /api/telemetry/ingest is exempt structurally, since it is registered
+    by a separate call and never passes through this function at all.
+    """
+
+    _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    @staticmethod
+    def _unguarded_mutating_routes(app, *, exempt: frozenset[str] = frozenset()) -> list[str]:
+        from fastapi.routing import APIRoute
+
+        from sova.dashboard.security import require_same_origin_csrf
+
+        unguarded = []
+        for route in app.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            if not (TestRouterLevelCsrfCoverage._MUTATING & route.methods):
+                continue
+            if route.path in exempt:
+                continue
+            guarded = any(dep.call is require_same_origin_csrf for dep in route.dependant.dependencies)
+            if not guarded:
+                unguarded.append(route.path)
+        return unguarded
+
+    def test_single_api_prefix_guards_every_mutating_route(self) -> None:
+        from fastapi import FastAPI
+
+        from sova.dashboard.app import _register_api_routers
+
+        app = FastAPI()
+        _register_api_routers(app, prefix="/api")
+        assert self._unguarded_mutating_routes(app, exempt=frozenset({"/api/mcp"})) == []
+
+    def test_project_scoped_api_prefix_guards_every_mutating_route(self) -> None:
+        """Edge case: a router registered under the multi-project /p/{slug}/api
+        prefix must get the dependency too, not just the default /api prefix."""
+        from fastapi import FastAPI
+
+        from sova.dashboard.app import _register_api_routers
+
+        app = FastAPI()
+        _register_api_routers(app, prefix="/p/{slug}/api")
+        assert self._unguarded_mutating_routes(app, exempt=frozenset({"/p/{slug}/api/mcp"})) == []
+
+    def test_exemption_set_is_exactly_mcp(self) -> None:
+        """/api/telemetry/ingest never reaches this function's routes at all
+        (registered separately), so the one real exemption here is /mcp."""
+        from fastapi import FastAPI
+
+        from sova.dashboard.app import _register_api_routers
+
+        app = FastAPI()
+        _register_api_routers(app, prefix="/api")
+        assert self._unguarded_mutating_routes(app) == ["/api/mcp"]
+
+    def test_full_app_guards_fleet_manager_and_project_admin_routes(self) -> None:
+        """fleet_manager.router and the ad-hoc /api/projects/* routes are not
+        registered via _register_api_routers, so they need their own check."""
+        app = create_app(multi_project=True)
+        unguarded = [
+            path
+            for path in self._unguarded_mutating_routes(app)
+            if path.startswith("/api/projects/") or path.startswith("/api/fleet")
+        ]
+        assert unguarded == []
+
+
+# ---------------------------------------------------------------------------
 # Multi-project mode
 # ---------------------------------------------------------------------------
 
@@ -3488,6 +3583,7 @@ class TestMultiProject:
         app = create_app(multi_project=True)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            ac.headers.update(_csrf_request_headers(ac))
             yield ac
 
         reg_mod._REGISTRY_FILE = orig_file
@@ -4357,6 +4453,24 @@ class TestAgentsAPI:
         data = resp.json()
         assert data["status"] == "started"
         assert data["run_id"] == 1
+
+    async def test_run_command_rejects_unknown_command(self, client: AsyncClient) -> None:
+        """An unrecognized command name must never reach start_command.
+
+        _resolve_command_prompt falls back to sending a bare "/{command}" to the
+        headless agent for anything it cannot resolve to a real file, and the
+        same unvalidated string is also used to build a filesystem path, so an
+        unknown value is both a prompt-injection and a path-traversal vector.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import control_service as cs
+
+        with patch.object(cs, "start_command", new_callable=AsyncMock) as mock_start:
+            resp = await client.post("/api/agents/command", json={"command": "../../etc/passwd"})
+
+        assert resp.status_code == 400
+        mock_start.assert_not_called()
 
 
 class TestKanbanAPI:
@@ -8545,7 +8659,7 @@ class TestBudgetOverride:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             with patch.object(control_service, "start_agent", mock_start):
-                resp = await ac.post("/api/agents/start", json={"issue": "42"})
+                resp = await ac.post("/api/agents/start", json={"issue": "42"}, headers=_csrf_request_headers(ac))
 
         assert resp.status_code == 409
         body = resp.json()
@@ -8567,7 +8681,7 @@ class TestBudgetOverride:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             with patch.object(control_service, "start_agent", mock_start):
-                resp = await ac.post("/api/agents/start", json={"issue": "42"})
+                resp = await ac.post("/api/agents/start", json={"issue": "42"}, headers=_csrf_request_headers(ac))
 
         assert resp.status_code == 409
         body = resp.json()
@@ -11123,6 +11237,65 @@ class TestAgentContextHelpers:
         result = _resolve_command_prompt("nonexistent", {"x": "1"}, tmp_path)
         assert result == "/nonexistent x=1"
 
+    def test_known_command_names_includes_project_local_command(self, tmp_path: Path) -> None:
+        """A command in the project's own .claude/commands/ is in the known set."""
+        from sova.dashboard.services.agent_context import known_command_names
+
+        cmd_dir = tmp_path / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "test-cmd.md").write_text("---\nname: test-cmd\n---\n# Test")
+
+        assert "test-cmd" in known_command_names(tmp_path)
+
+    def test_known_command_names_includes_sova_fallback_command(self, tmp_path: Path) -> None:
+        """A project with no local override still resolves SOVA's own catalog,
+        matching _resolve_command_prompt's own fallback lookup order."""
+        from sova.dashboard.services.agent_context import known_command_names
+
+        # A real SOVA-distributed command, never vendored into this empty project dir.
+        assert "integrate-pr" in known_command_names(tmp_path)
+
+    def test_known_command_names_excludes_unknown_name(self, tmp_path: Path) -> None:
+        """A name with no backing file anywhere is not in the known set."""
+        from sova.dashboard.services.agent_context import known_command_names
+
+        assert "nonexistent" not in known_command_names(tmp_path)
+        assert "../../etc/passwd" not in known_command_names(tmp_path)
+
+    def test_known_command_names_includes_file_with_no_frontmatter_name(self, tmp_path: Path) -> None:
+        """A resolvable command file with no frontmatter `name:` field is still known.
+
+        `_resolve_command_prompt` matches by filename alone (`target_cmd.is_file()`),
+        not by parsing frontmatter, so a validator built from `sova.commands.catalog.discover()`
+        (which skips files with no `name:` field) would reject a command it would
+        actually resolve. `.claude/commands/agent-resume.md` and `request-review.md`
+        are real examples of this in SOVA's own command set.
+        """
+        from sova.dashboard.services.agent_context import known_command_names
+
+        cmd_dir = tmp_path / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "no-name-field.md").write_text("---\ndescription: no name field\n---\n# Body")
+
+        assert "no-name-field" in known_command_names(tmp_path)
+
+    def test_known_command_names_excludes_directory_matching_glob(self, tmp_path: Path) -> None:
+        """A directory named like a command file (`rogue.md/`) is not a known command.
+
+        `glob("*.md")` matches directories as well as files; `_resolve_command_prompt`
+        only ever resolves a real file (`target_cmd.is_file()`), so a directory match
+        here would let `known_command_names` falsely validate a name that endpoint can
+        never actually serve, and that resolver's own fallback would then stringify
+        it as a bare `/rogue` sent to the agent with no backing file.
+        """
+        from sova.dashboard.services.agent_context import known_command_names
+
+        cmd_dir = tmp_path / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "rogue.md").mkdir()
+
+        assert "rogue" not in known_command_names(tmp_path)
+
     async def test_resolve_command_context_with_issue(self, tmp_path: Path) -> None:
         """_resolve_command_context extracts issue from args."""
         from sova.dashboard.services.agent_context import _resolve_command_context
@@ -13311,11 +13484,15 @@ class TestConnectionsAPI:
     async def test_validate_llm_requires_csrf(self, client: AsyncClient) -> None:
         """The probe reaches a caller-supplied api_base and spawns provider
         CLIs, so it is guarded even though it persists nothing."""
-        resp = await client.post("/api/connections/llm/validate", json={"provider": "claude-code"})
+        resp = await client.post(
+            "/api/connections/llm/validate",
+            json={"provider": "claude-code"},
+            headers=NO_CSRF,
+        )
         assert resp.status_code == 403
 
     async def test_validate_runtime_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/runtime/validate", json={"runtime": "aider"})
+        resp = await client.post("/api/connections/runtime/validate", json={"runtime": "aider"}, headers=NO_CSRF)
         assert resp.status_code == 403
 
     async def test_catalog_reports_active_api_base_for_prefill(self, client: AsyncClient) -> None:
@@ -13458,7 +13635,7 @@ class TestConnectionsAPI:
         assert data == {"ok": True, "detail": "ok"}
 
     async def test_activate_llm_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/llm/activate", json={"provider": "claude-code"})
+        resp = await client.post("/api/connections/llm/activate", json={"provider": "claude-code"}, headers=NO_CSRF)
         assert resp.status_code == 403
 
     async def test_activate_llm_persists_after_validation_passes(self, client: AsyncClient) -> None:
@@ -13594,7 +13771,7 @@ class TestConnectionsAPI:
         assert data["reason"] == "persist_failed"
 
     async def test_test_llm_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/llm/test", json={"provider": "claude-code"})
+        resp = await client.post("/api/connections/llm/test", json={"provider": "claude-code"}, headers=NO_CSRF)
         assert resp.status_code == 403
 
     async def test_test_llm_runs_real_invoke(self, client: AsyncClient) -> None:
@@ -13695,7 +13872,7 @@ class TestConnectionsAPI:
         assert data["reason"] == "unknown_runtime"
 
     async def test_activate_runtime_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/runtime/activate", json={"runtime": "aider"})
+        resp = await client.post("/api/connections/runtime/activate", json={"runtime": "aider"}, headers=NO_CSRF)
         assert resp.status_code == 403
 
     async def test_activate_runtime_persists_after_validation_passes(self, client: AsyncClient) -> None:
@@ -13740,7 +13917,7 @@ class TestConnectionsAPI:
         mock_reload.assert_called_once()
 
     async def test_reconnect_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/reconnect/start")
+        resp = await client.post("/api/connections/reconnect/start", headers=NO_CSRF)
         assert resp.status_code == 403
 
     async def test_reconnect_status_idle_by_default(self, client: AsyncClient) -> None:
@@ -13829,7 +14006,7 @@ class TestConnectionsAPI:
         assert process.killed is True
 
     async def test_cancel_reconnect_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/reconnect/cancel")
+        resp = await client.post("/api/connections/reconnect/cancel", headers=NO_CSRF)
         assert resp.status_code == 403
 
     async def test_cancel_reconnect_with_no_session_is_an_error(self, client: AsyncClient) -> None:
@@ -16171,6 +16348,7 @@ class TestInstallationAPI:
         app = create_app(project_dir=project_dir)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            ac.headers.update(_csrf_request_headers(ac))
             yield ac
 
     async def test_installation_status_returns_200(self, install_client: AsyncClient) -> None:
@@ -17467,7 +17645,7 @@ class TestResumeFromApproval:
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/agents/999999/resume-from-approval")
+            resp = await client.post("/api/agents/999999/resume-from-approval", headers=_csrf_request_headers(client))
         assert resp.status_code == 404
 
     async def test_resume_endpoint_409(self) -> None:
@@ -17487,7 +17665,9 @@ class TestResumeFromApproval:
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post(f"/api/agents/{run_id}/resume-from-approval")
+            resp = await client.post(
+                f"/api/agents/{run_id}/resume-from-approval", headers=_csrf_request_headers(client)
+            )
         assert resp.status_code == 409
 
     async def test_resume_spawn_failure_reverts_status(self) -> None:
@@ -17578,7 +17758,9 @@ class TestResumeFromApproval:
             return_value={"error": "spawn_failed", "detail": "Agent process died"},
         ):
             async with AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post(f"/api/agents/{run_id}/resume-from-approval")
+                resp = await client.post(
+                    f"/api/agents/{run_id}/resume-from-approval", headers=_csrf_request_headers(client)
+                )
 
         assert resp.status_code == 500
         assert "Agent process died" in resp.json()["detail"]
@@ -18680,7 +18862,9 @@ class TestSettingsMaxParallelSync:
 
         mock_service = MagicMock(update_config=AsyncMock(return_value={"status": "ok"}))
         monkeypatch.setattr("sova.dashboard.routers.settings.settings_service", mock_service)
-        resp = await client.post("/api/settings/config", json={"key": "github_repo", "value": "org/repo"})
+        resp = await client.post(
+            "/api/settings/config", json={"key": "github_repo", "value": "org/repo"}, headers=NO_CSRF
+        )
         assert resp.status_code == 403
         mock_service.update_config.assert_not_called()
 
