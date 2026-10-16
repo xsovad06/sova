@@ -913,6 +913,14 @@ _COMMIT_STATUS_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] 
 }
 
 
+_MAX_CHECK_RUN_PAGES = 50  # 5000 check runs; a hard stop against a pathological total_count
+
+
+def _has_more_pages(items: list[dict], total_count: int | None) -> bool:
+    """Whether a full (len % 100 == 0) page suggests another page remains."""
+    return bool(items) and len(items) % 100 == 0 and (total_count is None or len(items) < total_count)
+
+
 async def get_ci_checks_for_sha(sha: str, *, repo: str, github_user: str = "") -> list[CICheck] | None:
     """Get CI check results reported against a specific commit SHA.
 
@@ -924,6 +932,13 @@ async def get_ci_checks_for_sha(sha: str, *, repo: str, github_user: str = "") -
     errors) so callers can distinguish "no checks reported yet" (``[]``)
     from "unable to query GitHub" (``None``); a SHA GitHub hasn't registered
     checks for yet also returns ``[]``, which callers must treat as pending.
+
+    GitHub caps ``per_page`` at 100, so a SHA with more than 100 check runs
+    or commit statuses needs follow-up pages fetched here, or a later
+    check's completion status goes unseen. Returns ``None`` (rather than a
+    truncated list) if a page cap is hit, since a partial result could
+    silently report "all completed" while an unfetched check is still
+    pending or failing.
     """
     env = await resolve_gh_env(github_user)
     check_runs_result, status_result = await asyncio.gather(
@@ -966,10 +981,105 @@ async def get_ci_checks_for_sha(sha: str, *, repo: str, github_user: str = "") -
         log.warning("git.ci_checks_for_sha.bad_json", sha=sha[:8])
         return None
 
+    check_run_items: list[dict] = list(check_runs_data.get("check_runs", []))
+    total_count = check_runs_data.get("total_count")
+    page = 2
+    while _has_more_pages(check_run_items, total_count):
+        if page > _MAX_CHECK_RUN_PAGES:
+            log.warning("git.ci_checks_for_sha.check_runs_page_limit", sha=sha[:8], pages=page - 1)
+            return None
+        page_result = await run(
+            "gh",
+            "api",
+            f"repos/{repo}/commits/{sha}/check-runs",
+            "--method",
+            "GET",
+            "-f",
+            "per_page=100",
+            "-f",
+            f"page={page}",
+            env=env,
+        )
+        _track_gh_rate_limit(page_result, github_user)
+        if not page_result.success:
+            log.warning(
+                "git.ci_checks_for_sha.check_runs_page_failed",
+                sha=sha[:8],
+                page=page,
+                stderr=page_result.stderr[:200],
+            )
+            return None
+        try:
+            page_data = json.loads(page_result.stdout)
+        except json.JSONDecodeError:
+            log.warning("git.ci_checks_for_sha.check_runs_bad_json", sha=sha[:8], page=page)
+            return None
+        page_items = page_data.get("check_runs", [])
+        check_run_items.extend(page_items)
+        if len(page_items) < 100:
+            break
+        page += 1
+
+    status_items: list[dict] = list(status_data.get("statuses", []))
+    status_total = status_data.get("total_count")
+    status_page = 2
+    while _has_more_pages(status_items, status_total):
+        if status_page > _MAX_CHECK_RUN_PAGES:
+            log.warning("git.ci_checks_for_sha.status_page_limit", sha=sha[:8], pages=status_page - 1)
+            return None
+        status_page_result = await run(
+            "gh",
+            "api",
+            f"repos/{repo}/commits/{sha}/status",
+            "--method",
+            "GET",
+            "-f",
+            "per_page=100",
+            "-f",
+            f"page={status_page}",
+            env=env,
+        )
+        _track_gh_rate_limit(status_page_result, github_user)
+        if not status_page_result.success:
+            log.warning(
+                "git.ci_checks_for_sha.status_page_failed",
+                sha=sha[:8],
+                page=status_page,
+                stderr=status_page_result.stderr[:200],
+            )
+            return None
+        try:
+            status_page_data = json.loads(status_page_result.stdout)
+        except json.JSONDecodeError:
+            log.warning("git.ci_checks_for_sha.status_bad_json", sha=sha[:8], page=status_page)
+            return None
+        status_page_items = status_page_data.get("statuses", [])
+        status_items.extend(status_page_items)
+        if len(status_page_items) < 100:
+            break
+        status_page += 1
+
     checks: list[CICheck] = []
-    for item in check_runs_data.get("check_runs", []):
-        status = _CHECK_RUN_STATUS_MAP.get(item.get("status", ""), CheckStatus.IN_PROGRESS)
-        conclusion = _CHECK_RUN_CONCLUSION_MAP.get(item.get("conclusion") or "")
+    for item in check_run_items:
+        status_raw = item.get("status", "")
+        if status_raw not in _CHECK_RUN_STATUS_MAP:
+            log.warning("git.ci_checks_for_sha.unknown_status", check=item.get("name"), status=status_raw)
+        status = _CHECK_RUN_STATUS_MAP.get(status_raw, CheckStatus.IN_PROGRESS)
+
+        conclusion_raw = item.get("conclusion") or ""
+        conclusion = _CHECK_RUN_CONCLUSION_MAP.get(conclusion_raw)
+        if status == CheckStatus.COMPLETED and conclusion_raw and conclusion is None:
+            # An unrecognized conclusion on a completed run must not look like a
+            # pass (conclusion=None, like a still-running check, reads as neither
+            # failed nor passed). Fail closed so an unknown value blocks instead
+            # of silently joining the non-blocking bucket.
+            log.warning(
+                "git.ci_checks_for_sha.unknown_conclusion",
+                check=item.get("name"),
+                conclusion=conclusion_raw,
+            )
+            conclusion = CheckConclusion.FAILURE
+
         checks.append(
             CICheck(
                 name=item.get("name", ""),
@@ -979,8 +1089,11 @@ async def get_ci_checks_for_sha(sha: str, *, repo: str, github_user: str = "") -
             )
         )
 
-    for item in status_data.get("statuses", []):
-        status, conclusion = _COMMIT_STATUS_STATE_MAP.get(item.get("state", ""), (CheckStatus.IN_PROGRESS, None))
+    for item in status_items:
+        state_raw = item.get("state", "")
+        if state_raw not in _COMMIT_STATUS_STATE_MAP:
+            log.warning("git.ci_checks_for_sha.unknown_status_state", check=item.get("context"), state=state_raw)
+        status, conclusion = _COMMIT_STATUS_STATE_MAP.get(state_raw, (CheckStatus.IN_PROGRESS, None))
         checks.append(
             CICheck(
                 name=item.get("context", ""),
