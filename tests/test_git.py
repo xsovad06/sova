@@ -1598,7 +1598,7 @@ class TestGetCIChecksForSha:
         )
         with (
             patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.git.pr._MAX_CHECK_RUN_PAGES", 2),
+            patch("sova.git.pr._MAX_CHECK_PAGES", 2),
         ):
             mock_run.side_effect = [_shell_ok(stdout=full_page), _shell_ok(stdout="{}"), _shell_ok(stdout=full_page)]
 
@@ -1639,7 +1639,7 @@ class TestGetCIChecksForSha:
         )
         with (
             patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.git.pr._MAX_CHECK_RUN_PAGES", 2),
+            patch("sova.git.pr._MAX_CHECK_PAGES", 2),
         ):
             mock_run.side_effect = [_shell_ok(stdout="{}"), _shell_ok(stdout=full_page), _shell_ok(stdout=full_page)]
 

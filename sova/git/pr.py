@@ -913,7 +913,7 @@ _COMMIT_STATUS_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] 
 }
 
 
-_MAX_CHECK_RUN_PAGES = 50  # 5000 check runs; a hard stop against a pathological total_count
+_MAX_CHECK_PAGES = 50  # 50 pages of 100 entries per endpoint; a hard stop against a pathological total_count
 
 
 class UnknownCommitError(RuntimeError):
@@ -943,6 +943,67 @@ def _is_unknown_commit_error(result: ShellResult) -> bool:
 def _has_more_pages(items: list[dict], total_count: int | None) -> bool:
     """Whether a full (len % 100 == 0) page suggests another page remains."""
     return bool(items) and len(items) % 100 == 0 and (total_count is None or len(items) < total_count)
+
+
+async def _fetch_remaining_pages(
+    *,
+    sha: str,
+    repo: str,
+    endpoint: str,
+    items_key: str,
+    items: list[dict],
+    total_count: int | None,
+    env: dict,
+    github_user: str,
+) -> list[dict] | None:
+    """Fetch pages 2.. of a paginated commit sub-resource, appending to *items*.
+
+    Shared by the check-runs and commit-status loops in
+    :func:`get_ci_checks_for_sha`, which differ only in *endpoint* (``"check-runs"``
+    or ``"status"``) and *items_key* (``"check_runs"`` or ``"statuses"``). Returns
+    ``None`` (never a truncated list) on a failed page fetch, bad JSON, or when
+    the page cap (:data:`_MAX_CHECK_PAGES`) is hit, since a partial result could
+    silently report "all completed" while an unfetched check is still pending
+    or failing.
+    """
+    page = 2
+    while _has_more_pages(items, total_count):
+        if page > _MAX_CHECK_PAGES:
+            log.warning("git.ci_checks_for_sha.page_limit", sha=sha[:8], endpoint=endpoint, pages=page - 1)
+            return None
+        page_result = await run(
+            "gh",
+            "api",
+            f"repos/{repo}/commits/{sha}/{endpoint}",
+            "--method",
+            "GET",
+            "-f",
+            "per_page=100",
+            "-f",
+            f"page={page}",
+            env=env,
+        )
+        _track_gh_rate_limit(page_result, github_user)
+        if not page_result.success:
+            log.warning(
+                "git.ci_checks_for_sha.page_failed",
+                sha=sha[:8],
+                endpoint=endpoint,
+                page=page,
+                stderr=page_result.stderr[:200],
+            )
+            return None
+        try:
+            page_data = json.loads(page_result.stdout)
+        except json.JSONDecodeError:
+            log.warning("git.ci_checks_for_sha.page_bad_json", sha=sha[:8], endpoint=endpoint, page=page)
+            return None
+        page_items = page_data.get(items_key, [])
+        items.extend(page_items)
+        if len(page_items) < 100:
+            break
+        page += 1
+    return items
 
 
 async def get_ci_checks_for_sha(sha: str, *, repo: str, github_user: str = "") -> list[CICheck] | None:
@@ -1017,83 +1078,35 @@ async def get_ci_checks_for_sha(sha: str, *, repo: str, github_user: str = "") -
         log.warning("git.ci_checks_for_sha.bad_json", sha=sha[:8])
         return None
 
-    check_run_items: list[dict] = list(check_runs_data.get("check_runs", []))
+    check_run_items: list[dict] | None = list(check_runs_data.get("check_runs", []))
     total_count = check_runs_data.get("total_count")
-    page = 2
-    while _has_more_pages(check_run_items, total_count):
-        if page > _MAX_CHECK_RUN_PAGES:
-            log.warning("git.ci_checks_for_sha.check_runs_page_limit", sha=sha[:8], pages=page - 1)
-            return None
-        page_result = await run(
-            "gh",
-            "api",
-            f"repos/{repo}/commits/{sha}/check-runs",
-            "--method",
-            "GET",
-            "-f",
-            "per_page=100",
-            "-f",
-            f"page={page}",
-            env=env,
-        )
-        _track_gh_rate_limit(page_result, github_user)
-        if not page_result.success:
-            log.warning(
-                "git.ci_checks_for_sha.check_runs_page_failed",
-                sha=sha[:8],
-                page=page,
-                stderr=page_result.stderr[:200],
-            )
-            return None
-        try:
-            page_data = json.loads(page_result.stdout)
-        except json.JSONDecodeError:
-            log.warning("git.ci_checks_for_sha.check_runs_bad_json", sha=sha[:8], page=page)
-            return None
-        page_items = page_data.get("check_runs", [])
-        check_run_items.extend(page_items)
-        if len(page_items) < 100:
-            break
-        page += 1
+    check_run_items = await _fetch_remaining_pages(
+        sha=sha,
+        repo=repo,
+        endpoint="check-runs",
+        items_key="check_runs",
+        items=check_run_items,
+        total_count=total_count,
+        env=env,
+        github_user=github_user,
+    )
+    if check_run_items is None:
+        return None
 
-    status_items: list[dict] = list(status_data.get("statuses", []))
+    status_items: list[dict] | None = list(status_data.get("statuses", []))
     status_total = status_data.get("total_count")
-    status_page = 2
-    while _has_more_pages(status_items, status_total):
-        if status_page > _MAX_CHECK_RUN_PAGES:
-            log.warning("git.ci_checks_for_sha.status_page_limit", sha=sha[:8], pages=status_page - 1)
-            return None
-        status_page_result = await run(
-            "gh",
-            "api",
-            f"repos/{repo}/commits/{sha}/status",
-            "--method",
-            "GET",
-            "-f",
-            "per_page=100",
-            "-f",
-            f"page={status_page}",
-            env=env,
-        )
-        _track_gh_rate_limit(status_page_result, github_user)
-        if not status_page_result.success:
-            log.warning(
-                "git.ci_checks_for_sha.status_page_failed",
-                sha=sha[:8],
-                page=status_page,
-                stderr=status_page_result.stderr[:200],
-            )
-            return None
-        try:
-            status_page_data = json.loads(status_page_result.stdout)
-        except json.JSONDecodeError:
-            log.warning("git.ci_checks_for_sha.status_bad_json", sha=sha[:8], page=status_page)
-            return None
-        status_page_items = status_page_data.get("statuses", [])
-        status_items.extend(status_page_items)
-        if len(status_page_items) < 100:
-            break
-        status_page += 1
+    status_items = await _fetch_remaining_pages(
+        sha=sha,
+        repo=repo,
+        endpoint="status",
+        items_key="statuses",
+        items=status_items,
+        total_count=status_total,
+        env=env,
+        github_user=github_user,
+    )
+    if status_items is None:
+        return None
 
     checks: list[CICheck] = []
     for item in check_run_items:
