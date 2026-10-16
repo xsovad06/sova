@@ -631,19 +631,31 @@ async def dismiss_interrupted_runs() -> int:
 
 
 def _summarize_ci_checks(checks: list | None) -> str:
-    """Summarize CI check results into a single status string."""
-    from sova.git.operations import CheckConclusion, CheckStatus
+    """Summarize CI check results into a single status string.
 
+    Delegates to CICheck.is_failed/is_completed rather than comparing
+    conclusions directly, so this classifier cannot drift from
+    MonitorCIStep's (e.g. both must treat ACTION_REQUIRED and TIMED_OUT as
+    blocking). A check that completed with neither a pass nor a blocking
+    failure (NEUTRAL/SKIPPED) falls through to "passed", matching how
+    pr_service.py and pr_status.py classify those same conclusions as
+    non-blocking. A CANCELLED conclusion is the exception: it is the normal
+    effect of a superseding push, so a set with no passing check at all and
+    at least one CANCELLED is reported as "failed", mirroring
+    MonitorCIStep._poll_ci's identical carve-out.
+    """
     if checks is None:
         return "unknown"
     if not checks:
         return "none"
-    if all(c.status == CheckStatus.COMPLETED and c.conclusion == CheckConclusion.SUCCESS for c in checks):
-        return "passed"
-    if any(c.status == CheckStatus.COMPLETED and c.conclusion == CheckConclusion.FAILURE for c in checks):
+    if any(c.is_failed for c in checks):
         return "failed"
-    if any(c.status == CheckStatus.IN_PROGRESS for c in checks):
+    if any(not c.is_completed for c in checks):
         return "pending"
+    from sova.git.operations import CheckConclusion
+
+    if not any(c.is_passed for c in checks) and any(c.conclusion == CheckConclusion.CANCELLED for c in checks):
+        return "failed"
     return "passed"
 
 

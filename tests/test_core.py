@@ -4600,6 +4600,18 @@ class TestContextPersistence:
 
 
 class TestMonitorCIStep:
+    @pytest.fixture(autouse=True)
+    def _stub_pr_head_verification(self):
+        """Most tests here resolve a local head sha of "abc123def456" via
+        _get_local_head_sha; default the PR-head verification to agree with
+        it so these tests don't shell out to the real `gh` CLI. Tests that
+        exercise a head mismatch override this patch explicitly."""
+        with patch(
+            "sova.core.steps.monitor_ci.get_pr_head_sha",
+            AsyncMock(return_value="abc123def456"),
+        ):
+            yield
+
     async def test_passes_when_all_checks_pass(self) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
@@ -4607,12 +4619,16 @@ class TestMonitorCIStep:
         step = MonitorCIStep()
 
         check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+        ):
             mock_checks.return_value = [check]
             result = await step.execute(ctx)
 
         assert result.success
         assert "1 CI checks passed" in result.summary
+        mock_checks.assert_awaited_once_with("abc123def456", repo=ctx.repo, github_user=ctx.config.github_user)
 
     async def test_fails_when_check_fails_and_fix_disabled(self) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
@@ -4624,7 +4640,10 @@ class TestMonitorCIStep:
 
         check = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
         check.name = "lint"
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+        ):
             mock_checks.return_value = [check]
             result = await step.execute(ctx)
 
@@ -4639,12 +4658,111 @@ class TestMonitorCIStep:
         ctx = _make_ctx(pr_number=10, config=config)
         step = MonitorCIStep()
 
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+        ):
             mock_checks.return_value = []
+            mock_pr_checks.return_value = []
             result = await step.execute(ctx)
 
         assert result.success
         assert "no ci checks" in result.summary.lower()
+        mock_pr_checks.assert_awaited_once_with(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+
+    async def test_sha_checks_not_registered_keeps_polling_when_pr_has_checks(self) -> None:
+        """An empty SHA-scoped result past the grace period must not pass the
+        step while the PR-level lookup reports checks exist: GitHub may simply
+        not have registered the SHA-scoped checks yet (#1175 CodeRabbit review:
+        finding 1). The step must keep polling until the PR-level lookup also
+        confirms no checks, with ``max_wait`` as the fail-closed terminal
+        outcome rather than a silent pass."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 20
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+            # elapsed is now measured via time.monotonic() (#1175 finding 6), so a
+            # loop that never completes on its own needs a fake clock that actually
+            # advances past max_wait, or mocking out asyncio.sleep leaves real wall
+            # time nearly frozen and the test would spin until real 20s pass.
+            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=[0, 10, 20]),
+        ):
+            mock_checks.return_value = []
+            failing_check = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
+            failing_check.name = "lint"
+            mock_pr_checks.return_value = [failing_check]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "timed out" in result.summary.lower()
+
+    async def test_exclude_checks_matching_everything_passes_after_grace_period(self) -> None:
+        """When every check on both the SHA-scoped and PR-level lookups
+        matches ci.exclude_checks, the no-checks cross-check must apply the
+        same exclude patterns to the PR-level result, or a project whose
+        only checks are excluded polls until max_wait instead of passing
+        after the grace period (#1175 CodeRabbit review: finding 1)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.exclude_checks = ["Konflux"]
+        config.ci.no_checks_grace_period = 0
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        excluded = MagicMock(is_completed=False, is_passed=False, is_failed=False)
+        excluded.name = "Red Hat Konflux / build"
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+        ):
+            mock_checks.return_value = [excluded]
+            mock_pr_checks.return_value = [excluded]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "no ci checks" in result.summary.lower()
+
+    async def test_pr_confirm_fetch_failure_does_not_false_pass(self) -> None:
+        """A transient failure of the PR-level cross-check lookup must not be
+        read as 'confirmed no CI': that is the same silent pass the
+        cross-check exists to prevent, just moved behind one failed API call.
+        The step must keep polling to max_wait rather than pass (#1175
+        CodeRabbit review: finding 3)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 20
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=[0, 10, 20]),
+        ):
+            mock_checks.return_value = []
+            mock_pr_checks.return_value = None
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "timed out" in result.summary.lower()
 
     async def test_no_checks_waits_during_grace_period(self) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
@@ -4658,7 +4776,8 @@ class TestMonitorCIStep:
 
         check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
             # No checks on first poll, then checks appear
@@ -4680,7 +4799,8 @@ class TestMonitorCIStep:
 
         passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
             mock_checks.side_effect = [None, None, [passed_check]]
@@ -4700,8 +4820,10 @@ class TestMonitorCIStep:
         step = MonitorCIStep()
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=[0, 10, 20]),
         ):
             mock_checks.return_value = None
             result = await step.execute(ctx)
@@ -4720,29 +4842,140 @@ class TestMonitorCIStep:
         assert not result.success
         assert "no pr" in result.summary.lower()
 
-    async def test_poll_ci_waits_for_sha_match(self) -> None:
-        """When expected_sha is set, poll waits until PR head matches before checking CI."""
+    async def test_poll_ci_binds_to_resolved_head_sha(self) -> None:
+        """The initial poll resolves the local HEAD SHA and scopes the lookup to it.
+
+        This is the core fix for issue #1175: a PR-level check lookup can
+        report a prior commit's stale, already-green checks right after a
+        push. Binding to the resolved HEAD SHA makes that impossible.
+        """
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        config = ProjectConfig()
-        config.ci.poll_interval = 10
-        config.ci.max_wait = 60
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(pr_number=10)
         step = MonitorCIStep()
 
         passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
         with (
-            patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock) as mock_verify,
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
-            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_sha_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
         ):
-            mock_verify.side_effect = [False, False, True]
-            mock_checks.return_value = [passed_check]
-            result, _ = await step._poll_ci(ctx, expected_sha="abc123def456")
+            mock_sha_checks.return_value = [passed_check]
+            result, _ = await step._poll_ci(ctx)
 
         assert result.success
-        assert mock_verify.call_count == 3
-        assert mock_checks.call_count == 1
+        mock_sha_checks.assert_awaited_once_with("abc123def456", repo=ctx.repo, github_user=ctx.config.github_user)
+        mock_pr_checks.assert_not_awaited()
+
+    async def test_poll_ci_rebinds_when_pr_head_no_longer_matches(self) -> None:
+        """If another actor updates the PR after this pipeline's push (a human
+        pushing a review fix, GitHub's 'Update branch' button, a concurrent
+        SOVA run), that is a benign event, not a failure of this pipeline's
+        own work. The step rebinds to the new head and keeps polling so it
+        reports CI for the commit that actually matters now, rather than
+        failing the whole run and feeding the repeated-failure gate over
+        someone else's push (#1175 CodeRabbit review: finding 5)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 30
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        stale_passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        new_passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                side_effect=[[stale_passed], [new_passed]],
+            ) as mock_checks,
+            patch(
+                "sova.core.steps.monitor_ci.get_pr_head_sha",
+                new_callable=AsyncMock,
+                return_value="differentsha789",
+            ),
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert mock_checks.call_count == 2
+        mock_checks.assert_any_call("differentsha789", repo=ctx.repo, github_user=ctx.config.github_user)
+        mock_sleep.assert_not_awaited()
+
+    async def test_rebind_resets_no_checks_grace_clock(self) -> None:
+        """Rebinding to a new PR head must reset the no-checks grace clock,
+        not just the SHA: the overall ``elapsed`` clock can already exceed
+        ``no_checks_grace_period`` by the time a mismatch is confirmed (the
+        old SHA's checks took a while to complete), so without its own
+        baseline the very first empty, not-yet-registered result for the
+        freshly bound head would be immediately eligible for a false
+        'No CI checks found' pass (#1175 CodeRabbit review round 4, finding
+        2). The PR-level cross-check must never even be consulted here: with
+        the clock correctly reset, the empty result falls into the ordinary
+        'not yet registered, keep polling' branch instead."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 1000
+        config.ci.no_checks_grace_period = 50
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        stale_passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        new_passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                side_effect=[[stale_passed], [], [new_passed]],
+            ) as mock_checks,
+            patch(
+                "sova.core.steps.monitor_ci.get_pr_head_sha",
+                new_callable=AsyncMock,
+                return_value="newsha789",
+            ),
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+            # start_time=0; rebind resets grace_start=60 and elapsed=60; the
+            # next empty-checks grace check reads 65-60=5s since reset (well
+            # under the 50s grace period) even though overall elapsed is 60s
+            # past start_time; final elapsed read is 70.
+            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=[0, 60, 60, 65, 70]),
+        ):
+            mock_pr_checks.return_value = []
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "All 1 CI checks passed" in result.summary
+        assert mock_checks.call_count == 3
+        mock_pr_checks.assert_not_awaited()
+
+    async def test_poll_ci_falls_back_to_pr_level_when_sha_unresolved(self) -> None:
+        """When the local HEAD SHA can't be resolved, fall back to the PR-level lookup
+        instead of failing the whole step outright (design decision 4)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value=""),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_sha_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+        ):
+            mock_pr_checks.return_value = [passed_check]
+            result, _ = await step._poll_ci(ctx)
+
+        assert result.success
+        mock_sha_checks.assert_not_awaited()
+        mock_pr_checks.assert_awaited_once_with(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
 
     async def test_skipped_checks_do_not_block_or_fail(self) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
@@ -4752,7 +4985,10 @@ class TestMonitorCIStep:
 
         passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="Tests")
         skipped = MagicMock(is_completed=True, is_passed=False, is_failed=False, name="Fork Gate")
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+        ):
             mock_checks.return_value = [passed, skipped]
             result = await step.execute(ctx)
 
@@ -4772,7 +5008,10 @@ class TestMonitorCIStep:
         passed.name = "Tests"
         excluded = MagicMock(is_completed=False, is_passed=False, is_failed=False)
         excluded.name = "Red Hat Konflux / rbac-bonfire-tekton / insights-rbac"
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+        ):
             mock_checks.return_value = [passed, excluded]
             result = await step.execute(ctx)
 
@@ -4791,7 +5030,10 @@ class TestMonitorCIStep:
 
         failed = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
         failed.name = "lint"
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+        ):
             mock_checks.return_value = [failed]
             result = await step.execute(ctx)
 
@@ -4806,7 +5048,10 @@ class TestMonitorCIStep:
         step = MonitorCIStep()
 
         check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+        ):
             mock_checks.return_value = [check]
             result = await step.execute(ctx)
 
@@ -4824,7 +5069,10 @@ class TestMonitorCIStep:
 
         check = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
         check.name = "lint"
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+        ):
             mock_checks.return_value = [check]
             result = await step.execute(ctx)
 
@@ -4841,7 +5089,8 @@ class TestMonitorCIStep:
         incomplete = MagicMock(is_completed=False, is_passed=False, is_failed=False, name="CI")
         passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
             # Resume check returns incomplete, then normal poll returns passed
@@ -4864,7 +5113,10 @@ class TestMonitorCIStep:
         passed.name = "Tests"
         excluded_fail = MagicMock(is_completed=True, is_passed=False, is_failed=True)
         excluded_fail.name = "sonar-quality-gate"
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+        ):
             mock_checks.return_value = [passed, excluded_fail]
             result = await step.execute(ctx)
 
@@ -4886,7 +5138,8 @@ class TestMonitorCIStep:
         incomplete = MagicMock(is_completed=False, is_passed=False, is_failed=False, name="CI")
         passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
             mock_checks.side_effect = [[incomplete], [passed]]
@@ -4896,6 +5149,182 @@ class TestMonitorCIStep:
         assert mock_writer.write_line.called
         heartbeat_msg = mock_writer.write_line.call_args_list[0][0][0]
         assert "CI poll:" in heartbeat_msg
+
+    async def test_get_local_head_sha_returns_empty_on_missing_git(self) -> None:
+        """A missing ``git`` executable (or pruned working_dir) must not raise
+        out of ``_get_local_head_sha``; it should fall back to an empty string
+        so callers degrade to the PR-level lookup (#1175 CodeRabbit review:
+        finding 7)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        with patch("sova.utils.shell.run", new_callable=AsyncMock, side_effect=FileNotFoundError("no git")):
+            result = await step._get_local_head_sha(ctx)
+
+        assert result == ""
+
+    async def test_unknown_commit_fails_with_named_diagnosis_not_bare_timeout(self) -> None:
+        """A SHA GitHub has no record of at all (e.g. a push that silently
+        failed) can never resolve on retry. The step must fail immediately
+        with a diagnosis naming the unresolvable commit, rather than polling
+        until max_wait and reporting a bare, misleading 'timed out'
+        (#1175 CodeRabbit review: finding 7, covering finding 3's fix)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.git.operations import UnknownCommitError
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 9999
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="deadbeef0000"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                side_effect=UnknownCommitError("GitHub has no record of commit deadbeef0000"),
+            ) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "deadbeef" in result.summary.lower()
+        assert "timed out" not in result.summary.lower()
+        mock_checks.assert_awaited_once()
+        mock_sleep.assert_not_awaited()
+
+    async def test_unknown_commit_retries_when_pr_head_still_matches(self) -> None:
+        """A corroborated UnknownCommitError (both check-runs and commit-status
+        404/422) is still not conclusive if the PR's own head SHA confirms the
+        commit exists: that is strong evidence of a transient GitHub-side
+        inconsistency rather than a failed push, so the step keeps polling
+        instead of failing outright (#1175 CodeRabbit review: finding 2)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.git.operations import UnknownCommitError
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 30
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                side_effect=[UnknownCommitError("transient"), [passed_check]],
+            ) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            # Autouse fixture stubs get_pr_head_sha to "abc123def456", matching
+            # expected_sha, so the cross-check confirms the commit exists.
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_sleep.assert_awaited_once()
+        assert mock_checks.call_count == 2
+
+    async def test_unknown_commit_retries_when_pr_head_unverifiable(self) -> None:
+        """An unreadable PR head (get_pr_head_sha returning "" on a transient
+        gh/network failure) is 'no corroboration either way', not 'confirmed
+        bad push': the step must keep polling rather than failing terminally
+        on the very first poll (#1175 CodeRabbit review: finding 2)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.git.operations import UnknownCommitError
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 30
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                side_effect=[UnknownCommitError("transient"), [passed_check]],
+            ) as mock_checks,
+            patch(
+                "sova.core.steps.monitor_ci.get_pr_head_sha",
+                new_callable=AsyncMock,
+                return_value="",
+            ),
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_sleep.assert_awaited_once()
+        assert mock_checks.call_count == 2
+
+    async def test_all_cancelled_checks_do_not_report_success(self) -> None:
+        """A fully cancelled check set on the bound SHA (the normal consequence
+        of a superseding push cancelling the polled commit's runs) must not
+        read as 'CI passed': CANCELLED is completed but neither passed nor
+        failed, so a naive 'all completed and nothing failed' check reports a
+        false green (#1175 CodeRabbit review: finding 3)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.git.operations import CheckConclusion
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 30
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        cancelled_check = MagicMock(
+            is_completed=True, is_passed=False, is_failed=False, conclusion=CheckConclusion.CANCELLED
+        )
+        cancelled_check.name = "CI"
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                return_value=[cancelled_check],
+            ),
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+
+    async def test_all_skipped_checks_with_no_passing_check_still_pass(self) -> None:
+        """An all-SKIPPED (or all-NEUTRAL) set is a deliberate non-blocking
+        outcome, not a failure: the 'nothing passed' guard added for the
+        CANCELLED case must be scoped to CANCELLED specifically, or it
+        regresses every project whose CI skips every job for e.g. a docs-only
+        PR via path filters (#1175 CodeRabbit review round 4, finding 1)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.git.operations import CheckConclusion
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        skipped_a = MagicMock(is_completed=True, is_passed=False, is_failed=False, conclusion=CheckConclusion.SKIPPED)
+        skipped_a.name = "Tests"
+        skipped_b = MagicMock(is_completed=True, is_passed=False, is_failed=False, conclusion=CheckConclusion.SKIPPED)
+        skipped_b.name = "Lint"
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                return_value=[skipped_a, skipped_b],
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "2 CI checks passed" in result.summary
 
 
 # ---------------------------------------------------------------------------
@@ -6005,6 +6434,17 @@ def _shell_side_effect(*args: str, **kwargs: object) -> MagicMock:
 
 
 class TestMonitorCIFixLoop:
+    @pytest.fixture(autouse=True)
+    def _stub_pr_head_verification(self):
+        """Same rationale as TestMonitorCIStep: default the PR-head
+        verification to agree with the "abc123def456" local head sha these
+        tests resolve, so they don't shell out to the real `gh` CLI."""
+        with patch(
+            "sova.core.steps.monitor_ci.get_pr_head_sha",
+            AsyncMock(return_value="abc123def456"),
+        ):
+            yield
+
     async def test_ci_fails_fix_succeeds_first_attempt(self) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.models import LLMResult
@@ -6018,7 +6458,8 @@ class TestMonitorCIFixLoop:
         passed_check = _make_ci_check("Tests", passed=True)
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -6033,7 +6474,6 @@ class TestMonitorCIFixLoop:
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
-                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("1.00"))
                 mock_run.side_effect = _shell_side_effect
@@ -6056,7 +6496,8 @@ class TestMonitorCIFixLoop:
         passed_check = _make_ci_check("Tests", passed=True)
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -6072,7 +6513,6 @@ class TestMonitorCIFixLoop:
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
-                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
                 mock_run.side_effect = _shell_side_effect
@@ -6097,7 +6537,8 @@ class TestMonitorCIFixLoop:
         )
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -6109,7 +6550,6 @@ class TestMonitorCIFixLoop:
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
-                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_invoke.return_value = LLMResult(text="Tried fix", model="opus", cost_usd=Decimal("0.50"))
                 mock_run.side_effect = _shell_side_effect
@@ -6134,7 +6574,8 @@ class TestMonitorCIFixLoop:
         )
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -6150,7 +6591,6 @@ class TestMonitorCIFixLoop:
                     side_effect=LLMTimeoutError("Command timed out after 180s"),
                 ),
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
-                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_run.side_effect = _shell_side_effect
                 result = await step.execute(ctx)
@@ -6176,7 +6616,8 @@ class TestMonitorCIFixLoop:
         )
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -6188,7 +6629,6 @@ class TestMonitorCIFixLoop:
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
-                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_run.side_effect = _shell_side_effect
                 result = await step.execute(ctx)
@@ -6207,7 +6647,10 @@ class TestMonitorCIFixLoop:
         step = MonitorCIStep()
 
         failed_check = _make_ci_check("lint", passed=False)
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+        ):
             mock_checks.return_value = [failed_check]
             result = await step.execute(ctx)
 
@@ -6224,7 +6667,8 @@ class TestMonitorCIFixLoop:
         failed_check = _make_ci_check("Tests", passed=False, details_url="https://github.com/o/r/actions/runs/1/job/2")
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
             mock_checks.return_value = [failed_check]
@@ -6245,7 +6689,8 @@ class TestMonitorCIFixLoop:
         failed_check = _make_ci_check("Tests", passed=False, details_url="https://github.com/o/r/actions/runs/1/job/2")
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value="error"),
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -6285,7 +6730,8 @@ class TestMonitorCIFixLoop:
         failed_check = _make_ci_check("Tests", passed=False, details_url="https://github.com/o/r/actions/runs/1/job/2")
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value="error"),
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -6315,7 +6761,8 @@ class TestMonitorCIFixLoop:
         passed_check = _make_ci_check("Tests", passed=True)
 
         with (
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -6327,7 +6774,6 @@ class TestMonitorCIFixLoop:
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
-                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
                 mock_run.side_effect = _shell_side_effect

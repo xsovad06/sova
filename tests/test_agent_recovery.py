@@ -631,6 +631,60 @@ class TestSummarizeCiChecks:
         ]
         assert _summarize_ci_checks(checks) == "passed"
 
+    def test_returns_failed_for_action_required(self) -> None:
+        """ACTION_REQUIRED and TIMED_OUT are merge-blocking (CICheck.is_failed treats
+        them as such), so this classifier must agree rather than fall through to
+        'passed' via a conclusion-only comparison (#1175 CodeRabbit review: finding 1)."""
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+        from sova.git.operations import CheckConclusion, CheckStatus, CICheck
+
+        checks = [
+            CICheck(
+                name="deploy-approval",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+                details_url="",
+            ),
+        ]
+        assert _summarize_ci_checks(checks) == "failed"
+
+    def test_returns_failed_for_timed_out(self) -> None:
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+        from sova.git.operations import CheckConclusion, CheckStatus, CICheck
+
+        checks = [
+            CICheck(
+                name="slow-test", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.TIMED_OUT, details_url=""
+            ),
+        ]
+        assert _summarize_ci_checks(checks) == "failed"
+
+    def test_returns_failed_for_all_cancelled(self) -> None:
+        """An all-CANCELLED set (the normal effect of a superseding push) must
+        not read as 'passed': MonitorCIStep._poll_ci treats the identical set
+        as a failure, and this classifier feeds PRFacts.ci_status, which can
+        otherwise unlock Integrate for a run that never actually passed CI
+        (#1175 CodeRabbit review round 4, finding 1)."""
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+        from sova.git.operations import CheckConclusion, CheckStatus, CICheck
+
+        checks = [
+            CICheck(name="CI", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.CANCELLED, details_url=""),
+        ]
+        assert _summarize_ci_checks(checks) == "failed"
+
+    def test_returns_passed_for_cancelled_plus_success(self) -> None:
+        """A CANCELLED run alongside a genuine SUCCESS still passes: the
+        carve-out only applies when nothing passed at all."""
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+        from sova.git.operations import CheckConclusion, CheckStatus, CICheck
+
+        checks = [
+            CICheck(name="flaky", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.CANCELLED, details_url=""),
+            CICheck(name="CI", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.SUCCESS, details_url=""),
+        ]
+        assert _summarize_ci_checks(checks) == "passed"
+
 
 class TestLoadRepoConfig:
     def test_load_repo_config_no_project_dir(self) -> None:
