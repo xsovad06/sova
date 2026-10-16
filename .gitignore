@@ -26,6 +26,8 @@ dashboard/.venv/
 *.log
 *.log.*
 *.db.bak
+*.db.bak.*
+*.migrate.lock
 
 # Test artifacts (MagicMock path evaluations creating real SQLite files)
 <MagicMock*
