@@ -2536,3 +2536,167 @@ class TestSetupFunction:
         ):
             with pytest.raises(Exit):
                 await _setup(path=tmp_path)
+
+
+class TestDbCommand:
+    """`sova db status`/`sova db backup` (issue #1205).
+
+    Each test deletes SOVA_DATABASE_URL first: the module-level ``reset_db_rows``
+    fixture pins it to the shared in-memory worker DB, which would otherwise take
+    priority over the explicit ``--project`` directory these commands target.
+    """
+
+    def test_status_reports_not_initialized_for_a_fresh_project(self, tmp_path: Path, monkeypatch) -> None:
+        from sova.cli.app import app
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        result = runner.invoke(app, ["db", "status", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "not initialized" in result.output.lower()
+
+    def test_status_does_not_create_claude_dir_on_a_non_project_path(self, tmp_path: Path, monkeypatch) -> None:
+        """A read-only diagnostic command must not mutate the filesystem it inspects."""
+        from sova.cli.app import app
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        result = runner.invoke(app, ["db", "status", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert not (tmp_path / ".claude").exists()
+
+    def test_backup_does_not_create_claude_dir_on_a_non_project_path(self, tmp_path: Path, monkeypatch) -> None:
+        from sova.cli.app import app
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        result = runner.invoke(app, ["db", "backup", "--project", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert not (tmp_path / ".claude").exists()
+
+    def test_status_reports_legacy_database_and_continues_diagnostics(self, tmp_path: Path, monkeypatch) -> None:
+        """A database with real tables but no alembic_version must not be reported as empty."""
+        import asyncio
+
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.cli.app import app
+        from sova.db.session import _get_database_url
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        url = _get_database_url(tmp_path)
+
+        async def _create_legacy_db() -> None:
+            from sova.db.models import Base
+
+            engine = create_async_engine(url, connect_args={"check_same_thread": False})
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            await engine.dispose()
+
+        asyncio.run(_create_legacy_db())
+
+        result = runner.invoke(app, ["db", "status", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "legacy" in result.output.lower()
+        assert "missing orm columns" in result.output.lower()
+
+    def test_status_reports_current_and_head_revision(self, tmp_path: Path, monkeypatch) -> None:
+        import asyncio
+
+        from sova.cli.app import app
+        from sova.db.session import close_db, init_db
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        asyncio.run(init_db(project_dir=tmp_path))
+        asyncio.run(close_db())
+
+        result = runner.invoke(app, ["db", "status", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Current revision" in result.output
+        assert "yes" in result.output.lower()  # at head
+
+    def test_status_reports_schema_drift(self, tmp_path: Path, monkeypatch) -> None:
+        """A missing ORM column is surfaced as schema drift, not silently ignored."""
+        import asyncio
+
+        from sova.cli.app import app
+        from sova.db.session import close_db, init_db
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        asyncio.run(init_db(project_dir=tmp_path))
+        asyncio.run(close_db())
+
+        with patch("sova.db.session._find_missing_columns", return_value=["task_runs.bogus_column"]):
+            result = runner.invoke(app, ["db", "status", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Schema drift" in result.output
+        assert "task_runs.bogus_column" in result.output
+
+    def test_backup_reports_unsupported_backend_for_postgres(self, tmp_path: Path, monkeypatch) -> None:
+        """A Postgres deployment must get an explicit "not supported" message, not a false "nothing to back up"."""
+        from sova.cli.app import app
+
+        monkeypatch.setenv("SOVA_DATABASE_URL", "postgresql://user:pass@localhost/sova")
+        result = runner.invoke(app, ["db", "backup", "--project", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "only supported for sqlite" in result.output.lower()
+
+    def test_backup_reports_nothing_to_back_up_for_a_fresh_project(self, tmp_path: Path, monkeypatch) -> None:
+        from sova.cli.app import app
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        result = runner.invoke(app, ["db", "backup", "--project", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "nothing to back up" in result.output.lower()
+
+    def test_backup_writes_a_file(self, tmp_path: Path, monkeypatch) -> None:
+        import asyncio
+
+        from sova.cli.app import app
+        from sova.db.session import close_db, init_db
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        asyncio.run(init_db(project_dir=tmp_path))
+        asyncio.run(close_db())
+
+        result = runner.invoke(app, ["db", "backup", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        backup_path = tmp_path / ".claude" / "sova.db.bak"
+        assert backup_path.exists()
+        assert "Backup written to" in result.output
+
+    def test_backup_acquires_migration_lock(self, tmp_path: Path, monkeypatch) -> None:
+        """A manual backup must be serialized with migration backup rotation, not race it."""
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        from sova.cli.app import app
+        from sova.db import session as db_session_module
+        from sova.db.session import close_db, init_db
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        asyncio.run(init_db(project_dir=tmp_path))
+        asyncio.run(close_db())
+
+        calls: list[str] = []
+        real_lock = db_session_module._migration_lock
+
+        @asynccontextmanager
+        async def _tracking_lock(url: str):
+            calls.append("acquire")
+            async with real_lock(url):
+                yield
+            calls.append("release")
+
+        with patch("sova.db.session._migration_lock", _tracking_lock):
+            result = runner.invoke(app, ["db", "backup", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert calls == ["acquire", "release"]

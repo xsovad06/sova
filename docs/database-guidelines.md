@@ -234,6 +234,25 @@ Handled in `_run_migrations()` (`sova/db/session.py`):
 4. **Behind head** (version < head): back up, then upgrade to head; dispose pool. A failure during upgrade re-raises instead of falling back to `create_all` + stamp, since that would silently mask a partially-applied migration as fully applied
 5. **Empty/corrupted `alembic_version`**: a missing row, or a row whose `version_num` is `NULL`/empty/whitespace-only, is dropped (`DROP TABLE alembic_version`) and treated as case 1; a version string that fails to resolve to a real revision (rather than a blank one) is case 2 or 4 depending on whether other tables exist, and re-raises on failure like they do. `has_tables` (used both to pick stamp-vs-upgrade and to decide whether a later failure may fall back to `create_all`) always excludes `alembic_version` itself from the table count, so a database whose only table is a corrupted `alembic_version` is correctly treated as "no tables at all", not as "real data present"
 
+### `sova db status` / `sova db backup`
+
+`sova db status` prints the current revision, the head revision, whether they match, and any
+`_find_missing_columns()` drift; a database with no `alembic_version` table at all prints a
+plain "not initialized" message instead of raising. `sova db backup` calls the same
+`_backup_db()` used internally before DDL, writing a WAL-consistent copy and printing the path
+(or exiting non-zero when there is nothing to back up: no file yet, or an empty one). Against a
+non-SQLite deployment (`SOVA_DATABASE_URL` pointing at Postgres) it instead prints an explicit
+"backup is only supported for SQLite" message rather than the misleading "nothing to back up"
+one, since the database is neither missing nor empty, backup for that backend is simply
+unsupported. `_run_migrations()` logs the backup path it wrote (`_log.info`) whenever one is
+taken, so the restore target is visible in the logs next to any migration failure that follows.
+Both commands resolve their url via `_get_database_url(resolved_dir, create_dirs=False)`: the
+default (`create_dirs=True`) path every other caller uses creates `.claude/` as a side effect of
+just computing the path, which would leave a stray `.claude/` directory behind on a directory
+that is not a SOVA project at all, just because a read-only diagnostic command was pointed at it.
+`status` additionally checks the file exists before creating an engine against it, so it never
+even opens a connection to a path with no database file.
+
 ### SQLite foreign keys
 
 `_register_sqlite_pragmas()`'s connect listener sets `PRAGMA foreign_keys=ON`, so
