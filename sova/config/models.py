@@ -503,7 +503,10 @@ class RolesConfig(BaseSettings):
     """Agent roles configuration."""
 
     default: str = "developer"
-    researcher_model: str = "opus"
+    # Empty by design, like developer_model below: a non-empty default would
+    # silently retarget every research/spec run away from the operator's
+    # pinned agent.model (see .claude/rules/architecture.md and #619/#702).
+    researcher_model: str = ""
     triage_model: str = "sonnet"
     reviewer_model: str = "sonnet"
     # Empty by design: a non-empty default would short-circuit complexity-based

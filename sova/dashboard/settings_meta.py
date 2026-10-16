@@ -953,7 +953,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "roles.researcher_model",
         "Researcher model",
-        "Model for the researcher role",
+        "Model for the researcher role, used by both its research and spec steps",
         "roles",
         options_source="llm",
     ),

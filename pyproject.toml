@@ -110,4 +110,5 @@ markers = [
     "stress: high-concurrency stress tests (deselect with -m 'not stress')",
     "chaos: failure injection and crash recovery tests (deselect with -m 'not chaos')",
     "codex_smoke: opt-in smoke tests against a real Codex CLI (set SOVA_CODEX_SMOKE=1; deselect with -m 'not codex_smoke')",
+    "evaluation: opt-in model-evaluation harness tests against live providers (set SOVA_EVAL_LIVE=1; deselect with -m 'not evaluation')",
 ]

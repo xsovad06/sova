@@ -606,6 +606,29 @@ class TestResearchStep:
         assert ctx.cost_usd == Decimal("0.02")
         assert mock_invoke.call_args.kwargs["task_type"] == "research"
 
+    async def test_execute_honors_researcher_model(self) -> None:
+        # roles.researcher_model must apply here too, matching SpecStep's
+        # resolution so the setting has one meaning across both steps (#1129).
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.core.steps.research import ResearchStep
+        from sova.llm.models import LLMResult
+
+        config = ProjectConfig(roles=RolesConfig(researcher_model="custom-researcher-model"))
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, config=config)
+        step = ResearchStep()
+
+        llm_result = LLMResult(
+            text="done", model="sonnet", cost_usd=Decimal("0.02"), input_tokens=100, output_tokens=50
+        )
+        with patch(
+            "sova.core.steps.research.invoke_command", new_callable=AsyncMock, return_value=llm_result
+        ) as mock_invoke:
+            await step.execute(ctx)
+
+        assert mock_invoke.call_args.kwargs["model"] == "custom-researcher-model"
+
     async def test_execute_runtime_error(self) -> None:
         from unittest.mock import patch
 
@@ -714,6 +737,23 @@ class TestResearchStep:
         step = ResearchStep()
 
         gate = await step.validate_output(ctx)
+        assert not gate.passed
+        assert "comments" in gate.reason
+
+    async def test_validate_output_fails_closed_when_comments_fetch_raises(self) -> None:
+        # The comments lookup is best-effort: an adapter/transport failure must
+        # fall through to the "not found" verdict rather than propagate, since
+        # the body already proved the section is absent.
+        from sova.core.steps.research import ResearchStep
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        adapter.get_task.return_value = Task(id="42", title="Test", body="No research here", state=TaskState.TRIAGED)
+        adapter.get_comments.side_effect = RuntimeError("tracker unreachable")
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        step = ResearchStep()
+
+        gate = await step.validate_output(ctx)
+
         assert not gate.passed
         assert "comments" in gate.reason
 

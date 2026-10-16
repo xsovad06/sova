@@ -32,8 +32,8 @@ test-bash: lint-bash ## Validate bash scripts (shellcheck + --help)
 		bash "$$f" --help >/dev/null 2>&1 && echo "ok" || echo "FAIL"; \
 	done
 
-test-py: ## Run pytest suite (excludes runtime/stress/chaos)
-	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos" -n auto
+test-py: ## Run pytest suite (excludes runtime/stress/chaos/evaluation)
+	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos and not evaluation" -n auto
 
 test-runtime: ## Run runtime, stress, and chaos tests (manual)
 	$(PYTEST) tests/ -v -m "runtime or stress or chaos" --timeout=120
@@ -43,6 +43,9 @@ test-all: ## Run ALL tests including runtime/stress/chaos
 
 test-codex-smoke: ## Run the opt-in Codex CLI smoke test (requires: codex CLI installed and logged in)
 	SOVA_CODEX_SMOKE=1 $(PYTEST) tests/runtime/test_codex_smoke.py -v -m codex_smoke
+
+test-evaluation: ## Run the model-evaluation harness against live providers (requires: SOVA_EVAL_MODEL_ID and provider credentials)
+	SOVA_EVAL_LIVE=1 $(PYTEST) tests/evaluation/ -v -s -m evaluation
 
 # ── Linting ───────────────────────────────────────────────────
 

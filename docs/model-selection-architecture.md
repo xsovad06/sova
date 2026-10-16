@@ -467,6 +467,109 @@ A dropdown fed only by 2.9 would therefore offer models the active runtime canno
   a warning. Both pin sources (config field and per-run env) are gated on the one
   `RUNTIME_MODEL_PIN_ROLES` set in `sova/config/models.py`.
 
+### 2.11 Role/step model evaluation harness (#1129)
+
+Choosing a model per role and step is a measurement problem, not a reading-the-price-list problem,
+so the comparison figure is **cost per accepted result**, not token price: a cheap model that is
+rejected and escalated twice costs more per shipped output than a pricier one accepted first time.
+The harness that produces those numbers lives under `tests/evaluation/`:
+
+- `fixtures.py`: `FIXTURES`, one or more fixtures per workload named in issue #1129 (triage,
+  extraction, planning, research, spec drafting, development, review, validation and CI fixes,
+  PR-body drafting, and oversight; ten fixtures total, since the researcher role contributes both
+  a `research` and a `spec` fixture). Each carries the prompt and the `accept_marker` that decides
+  pass or fail, plus (for most fixtures) `required_content`, substrings a genuinely correct answer
+  must contain, not merely a correctly-formatted one (e.g. `self_review`'s diff has a real
+  `ZeroDivisionError` the response must name). Three fixtures use a custom `accept` override instead
+  of `required_content` specifically to avoid a prompt-echo false accept: `research` and `triage`
+  word-boundary/negative-match the classification instead of a plain substring (their prompts hand
+  the model the exact value, "45", or list "bug, feature, or task" outright, so a naive substring
+  check also accepts a restated prompt, or "450"), and `develop` counts `assert` occurrences since
+  "three test cases" has no fixed string to check for. `validate`'s prompt deliberately withholds the
+  diagnosis term (`StopIteration`) it requires in the answer, for the same reason. Three fixtures
+  (`generate_tasks`, `extract_memory`, `oversight/analysis`) stay heading-only: their prompts have no
+  single correct answer to verify against, so those three rows' `cost_per_accepted_result()` reflects
+  format compliance, not answer quality, and should be read that way when comparing candidates. The
+  `role`/`step` pair is the pipeline's own naming, so a result maps straight back to the
+  `roles.*_model` / `agent.model` setting it stands in for; `oversight` is the one exception, a
+  background daemon configured by `oversight.analysis_model` rather than a pipeline role. CI-fix
+  coverage is approximated by the `validate` fixture alone; there is no separate `monitor_ci` fixture.
+- `harness.py`: provider-independent attempt recording and aggregation. `run_fixture()` times one
+  call and records tokens, cost, acceptance, the served model snapshot (`LLMResult.model`, which
+  litellm routinely resolves away from the requested alias) and the verbatim response text, so a
+  merged results file can say which concrete model produced a number and a false accept/reject can
+  be spot-checked without re-paying for the whole matrix. `run_fixture_with_escalation()` retries a
+  rejected attempt once on an escalation model and tags it `escalated_from_model`, keeping the
+  escalation's spend attributed to the role/step that triggered it rather than to a synthetic
+  escalation row; an escalation call's own provider exception is caught inside this function and
+  recorded as a synthetic failed attempt (tagged with the escalation model id), so it can never
+  discard the primary attempt that already succeeded and was already billed.
+  `cost_per_accepted_result()` returns `None` rather than `0` when nothing was accepted, since a
+  zero would read as "this model is free". `combined_cost_source()` folds each attempt's
+  `LLMResult.cost_source` with `combine_cost_sources()`, so a total built from a subscription-backed
+  or unpriced turn reports `subscription`/`unknown` instead of presenting a 0.00 as a priced figure;
+  an attempt carrying `error` is excluded from the fold, since a call that never completed is a known
+  zero rather than an unpriced one and must not make an otherwise fully-priced group report
+  `unknown`. `run_matrix()` catches a per-call provider exception (a transient 429, a read timeout),
+  records it as a failed `EvalAttempt` (`accepted=False`, `error` set) instead of abandoning the rest
+  of the already-billed matrix, and re-raises only when every call failed; only a *primary* call
+  failure counts toward that, since an escalation failure is already captured by
+  `run_fixture_with_escalation` above. A `repeats` parameter (default 1) runs each fixture that many
+  times, since LLM acceptance is nondeterministic and a single sample per role/step cannot rank
+  candidate models on anything but price. Being provider-free, all of this is unit-tested at zero
+  cost in `tests/test_evaluation_harness.py`, which runs in the default suite.
+- `test_role_step_matrix.py`: the only part that spends money. Gated three ways, mirroring
+  `tests/runtime/test_codex_smoke.py`'s own tool-availability gate: the `evaluation` marker keeps
+  it out of `make test-py` (but not CI or `make test-all`, which collect it with no `-m`
+  deselection); a `skipif` requiring `SOVA_EVAL_LIVE=1` plus `SOVA_EVAL_MODEL_ID`; and a `skipif`
+  on the `litellm` extra (`importlib.util.find_spec`), since every `SOVA_EVAL_PROVIDER` value
+  routes through `LiteLLMProvider`. The per-call timeout (`SOVA_EVAL_PER_CALL_TIMEOUT_S`, default
+  300s, passed explicitly into `provider.invoke(timeout=...)`) and the overall `pytest.mark.timeout`
+  (`SOVA_EVAL_TIMEOUT_S`, default `2 * per_call_timeout * len(FIXTURES) * repeats`) are both scaled
+  to the matrix size, so one slow turn fails that fixture rather than the whole billed run being
+  killed before its summary prints. `SOVA_EVAL_REPEATS` (default 1) is threaded straight into
+  `run_matrix(repeats=...)`: a meaningful cost-per-accepted-result requires more than one sample per
+  role/step, since acceptance is nondeterministic. Setting `SOVA_EVAL_OUTPUT` to a file path makes
+  every `EvalAttempt` (plus a run id and UTC timestamp) durable as a JSON line, so a killed run's
+  already-billed attempts, and several runs across candidate models or repeats, can be merged by
+  script rather than copied by hand from terminal output; the per-role/step summary line also lists
+  the distinct model ids behind its blended cost figure, so it is never mistaken for one model's
+  number.
+
+Run it with `make test-evaluation` after setting `SOVA_EVAL_MODEL_ID` (the candidate),
+optionally `SOVA_EVAL_ESCALATION_MODEL_ID` and `SOVA_EVAL_REPEATS` (N re-runs per fixture, needed for
+a meaningful cost-per-accepted-result since acceptance is nondeterministic), and the credentials
+`SOVA_EVAL_PROVIDER` (default `openai`, requires the `litellm` extra: `pip install "sova[litellm]"`)
+and `SOVA_LLM_API_KEY` resolve to. That target passes `-s` deliberately: the run's only output is
+printed per attempt as it completes, and pytest's default capture would discard all of it on a
+passing test (pytest does still show captured output for a failing or erroring test, so a provider
+error partway through is not at risk here).
+
+This change also fixes a real mismatch: `roles.researcher_model` drove `SpecStep` but not
+`ResearchStep`, which read `agent.model` directly. `ResearchStep` now reads
+`roles.researcher_model` too (`sova/core/steps/research.py`), the same setting `SpecStep` already
+used, so both researcher-role steps are governed by one knob. Fixing that required changing
+`roles.researcher_model`'s default from `"opus"` to `""` (`sova/config/models.py`): empty now means
+"fall through to the operator's pinned `agent.model`", consistent with `developer_model`'s existing
+empty-by-design default, rather than every research/spec run being silently pinned to a bare `opus`
+alias regardless of what the operator configured for `agent.model`. A deployment that left
+`roles.researcher_model` unset therefore sees `SpecStep` (and now `ResearchStep`) move from `opus`
+to its pinned `agent.model`; one that set it explicitly is unaffected.
+
+**Deferred (not in this change, tracked as follow-up work against #1129):** provider-aware
+role/task model profiles in `sova/config/models.py`, `sova/llm/routing.py`, `sova/ipc/runtime.py`;
+load-time config validation rejecting a role/step with no provider-valid candidate; rejection of
+reasoning-effort settings on backends that do not support them; per-role/step effective-model
+dropdown controls in Settings beyond the metadata description change; and applying the
+backend-scoped `"{backend}:{alias}"` key pattern (Design Decision 2 above) to role/step model
+routing. A dedicated tracking issue for these five items (opened against, or as a follow-up to,
+#1129) should exist before this list is treated as closed; filing it is a tracker/process decision
+left to the PR's human reviewer rather than this change.
+
+The harness produces evidence; it does not change any model-routing default beyond making
+`roles.researcher_model` default to unset (above). Adopting a mapping, or any deferred item above,
+is a separate, explicit config or code change, which is what makes it rollback-able.
+
 ---
 
 ## 3. Answers to the eight investigation questions
