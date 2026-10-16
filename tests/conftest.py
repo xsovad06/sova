@@ -375,6 +375,34 @@ def _isolate_sova_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_provider_routing_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip ambient third-party provider-routing env vars and parent-session markers.
+
+    A developer machine configured to route the Claude Code CLI through
+    Vertex/Bedrock (``CLAUDE_CODE_USE_VERTEX``, ``ANTHROPIC_VERTEX_PROJECT_ID``,
+    ``CLOUD_ML_REGION``, ...) exports these in every shell, including the one
+    the test runner inherits. ``sova.llm.backends.detect_backend`` and
+    ``sova.dashboard.services.setup_service``'s routing-warning check both read
+    ``os.environ`` directly (by design: see their docstrings), so without this
+    fixture a test asserting "no routing vars present" passes in CI but fails
+    on exactly that kind of machine. ``PARENT_SESSION_VARS`` (``CLAUDECODE``,
+    ``CLAUDE_CODE_SESSION_ID``, ``CLAUDE_CODE_MESSAGING_TOKEN``, ...) is scrubbed
+    alongside it so a suite run from inside a Claude Code session matches CI.
+    This is the sibling of ``_isolate_sova_env`` above, for env vars rather than
+    ``SOVA_*`` config. Deliberately narrower than ``sova.utils.env.SCRUBBED_VARS``:
+    that production constant also folds in ``CODEX_CREDENTIAL_VARS`` and
+    ``OPENAI_CREDENTIAL_VARS``, which are real credentials a test may need to
+    set and assert against, not routing/session noise to isolate from. Tests
+    that need a specific var set it explicitly via ``monkeypatch.setenv`` after
+    this fixture runs.
+    """
+    from sova.utils.env import PARENT_SESSION_VARS, PROVIDER_ROUTING_VARS
+
+    for key in PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS:
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Run each test from an empty directory so the repo's own config cannot leak.
 
