@@ -1204,6 +1204,24 @@ class TestGetCIChecks:
             assert not checks[0].is_passed
             assert checks[0].is_failed
 
+    async def test_action_required_state_maps_to_failed(self) -> None:
+        """ACTION_REQUIRED must map the same way via get_ci_checks() (gh pr
+        checks) as it does via get_ci_checks_for_sha() (REST check-runs),
+        or the two lookup paths classify the same check differently
+        (#1175 CodeRabbit review: finding 2)."""
+        checks_json = json.dumps([{"name": "Deploy Approval", "state": "ACTION_REQUIRED", "link": ""}])
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.ACTION_REQUIRED
+            assert checks[0].is_completed
+            assert not checks[0].is_passed
+            assert checks[0].is_failed
+
     async def test_stale_state_maps_to_neutral(self) -> None:
         checks_json = json.dumps([{"name": "Old Check", "state": "STALE", "link": ""}])
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
@@ -1371,6 +1389,31 @@ class TestGetCIChecksForSha:
             assert checks[0].status == CheckStatus.COMPLETED
             assert checks[0].conclusion == CheckConclusion.FAILURE
             assert checks[0].is_failed
+
+    async def test_check_run_action_required_is_treated_as_failed(self) -> None:
+        """GitHub treats action_required as blocking merge; CICheck.is_failed must agree
+        so a poll never reports CI passed while a check is waiting on manual action."""
+        check_runs = json.dumps(
+            {
+                "check_runs": [
+                    {
+                        "name": "deploy-approval",
+                        "status": "completed",
+                        "conclusion": "action_required",
+                        "details_url": "",
+                    }
+                ]
+            }
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_ok(stdout=check_runs), _shell_ok(stdout="{}")]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.ACTION_REQUIRED
+            assert checks[0].is_failed
+            assert not checks[0].is_passed
 
     async def test_commit_status_pending_maps_to_in_progress(self) -> None:
         statuses = json.dumps({"statuses": [{"context": "ci/other", "state": "pending", "target_url": ""}]})

@@ -125,6 +125,7 @@ class CICheck:
         return self.is_completed and self.conclusion in (
             CheckConclusion.FAILURE,
             CheckConclusion.TIMED_OUT,
+            CheckConclusion.ACTION_REQUIRED,
         )
 
 
@@ -795,6 +796,7 @@ _GH_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] = {
     "NEUTRAL": (CheckStatus.COMPLETED, CheckConclusion.NEUTRAL),
     "EXPECTED": (CheckStatus.COMPLETED, CheckConclusion.NEUTRAL),
     "STALE": (CheckStatus.COMPLETED, CheckConclusion.NEUTRAL),
+    "ACTION_REQUIRED": (CheckStatus.COMPLETED, CheckConclusion.ACTION_REQUIRED),
 }
 
 
