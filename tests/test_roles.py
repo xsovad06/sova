@@ -740,6 +740,23 @@ class TestResearchStep:
         assert not gate.passed
         assert "comments" in gate.reason
 
+    async def test_validate_output_fails_closed_when_comments_fetch_raises(self) -> None:
+        # The comments lookup is best-effort: an adapter/transport failure must
+        # fall through to the "not found" verdict rather than propagate, since
+        # the body already proved the section is absent.
+        from sova.core.steps.research import ResearchStep
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        adapter.get_task.return_value = Task(id="42", title="Test", body="No research here", state=TaskState.TRIAGED)
+        adapter.get_comments.side_effect = RuntimeError("tracker unreachable")
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        step = ResearchStep()
+
+        gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "comments" in gate.reason
+
 
 # ---------------------------------------------------------------------------
 # WorkflowEngine: _adopt_task_run hardening
