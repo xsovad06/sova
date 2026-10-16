@@ -90,6 +90,7 @@ class TaskRun(Base):
         Index("ix_task_runs_issue", "issue_number"),
         Index("ix_task_runs_status", "status"),
         Index("ix_task_runs_project", "project_slug"),
+        Index("ix_task_runs_started", "started_at"),
     )
 
 
@@ -185,6 +186,8 @@ class CostRecord(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     task_run: Mapped["TaskRun | None"] = relationship(back_populates="cost_records")
+
+    __table_args__ = (Index("ix_cost_records_recorded", "recorded_at"),)
 
 
 _MEMORIES_ID_FK = "memories.id"
