@@ -14136,18 +14136,6 @@ class TestAvailableModelsAPI:
         models_service._models_locks.clear()
         models_service._last_refresh_at.clear()
 
-    @pytest.fixture(autouse=True)
-    def _no_ambient_routing_vars(self):
-        """``provider_identity`` embeds ``detect_backend()``, which reads the
-        routing env vars, so a developer running with Vertex or Bedrock routing
-        exported would otherwise fail these assertions on an unrelated change."""
-        import os
-
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("CLAUDE_CODE_USE_VERTEX", None)
-            os.environ.pop("CLAUDE_CODE_USE_BEDROCK", None)
-            yield
-
     async def test_default_provider_returns_curated_response_shape(self, client: AsyncClient) -> None:
         from sova.llm.models import CURATED_MODELS
 
