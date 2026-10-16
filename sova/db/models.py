@@ -83,7 +83,7 @@ class TaskRun(Base):
 
     lifecycle_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("issue_lifecycles.id"), index=True)
     workflow_definition_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("workflow_definitions.id"), index=True
+        Integer, ForeignKey("workflow_definitions.id", ondelete="SET NULL"), index=True
     )
 
     __table_args__ = (

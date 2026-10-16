@@ -492,6 +492,35 @@ async def test_register_sqlite_pragmas_sets_synchronous_normal(tmp_path) -> None
         await engine.dispose()
 
 
+async def test_register_sqlite_pragmas_swallows_exception(tmp_path) -> None:
+    """A failure setting PRAGMAs on connect must be logged and swallowed, not raised.
+
+    Invokes the registered "connect" listener directly with a fake DBAPI
+    connection whose cursor() raises: going through a real engine.connect()
+    is not viable here, since the dialect's own "connect" listener (registered
+    before ours) already calls cursor() first for get_isolation_level(), so a
+    generically flaky cursor breaks dialect initialization instead of
+    exercising our pragma listener's except branch.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from sova.db.session import _register_sqlite_pragmas
+
+    db_path = tmp_path / "pragma_fail_test.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    _register_sqlite_pragmas(engine)
+
+    pragma_listener = list(engine.sync_engine.pool.dispatch.connect)[-1]
+
+    class _RaisingConnection:
+        def cursor(self):
+            raise RuntimeError("boom")
+
+    pragma_listener(_RaisingConnection(), None)  # must not raise
+
+    await engine.dispose()
+
+
 async def test_create_memory() -> None:
     """Create a memory entry."""
     async with await get_session() as session:
@@ -645,10 +674,20 @@ async def test_filter_assessments_by_project_slug() -> None:
 
 
 class TestMigrationFallback:
-    """_run_migrations fallback should self-heal corrupted alembic_version."""
+    """The create_all+stamp fallback is scoped to a genuinely fresh database.
 
-    async def test_bogus_version_self_heals_on_fallback(self, tmp_path) -> None:
-        """A bogus alembic_version should be dropped during fallback so stamp succeeds."""
+    A database that already has tables (pre-Alembic, or stamped behind head)
+    must re-raise on a migration failure instead of silently stamping over
+    unknown prior state: see issue #1205.
+    """
+
+    async def test_bogus_version_reraises_instead_of_self_healing(self, tmp_path) -> None:
+        """A stamped revision outside the chain must propagate, not self-heal.
+
+        Self-healing here would silently stamp a database with unverified prior
+        state at head, masking whatever DDL never actually ran.
+        """
+        from alembic.util.exc import CommandError
         from sqlalchemy import text
         from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -663,18 +702,108 @@ class TestMigrationFallback:
         # First run: create tables and stamp at head
         await _run_migrations(engine)
 
-        # Corrupt: set a bogus version_num
+        # Corrupt: set a bogus version_num that does not exist in the revision chain.
         async with engine.begin() as conn:
             await conn.execute(text("UPDATE alembic_version SET version_num = 'bogus_xyz'"))
 
-        # Second run: should fallback and self-heal
-        await _run_migrations(engine)
+        with pytest.raises(CommandError, match="Can't locate revision"):
+            await _run_migrations(engine)
 
-        # Verify: alembic_version should have the real head, not 'bogus_xyz'
+        # alembic_version must remain untouched, not silently repaired at head.
+        async with engine.connect() as conn:
+            row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
+        assert row[0] == "bogus_xyz"
+
+        await engine.dispose()
+
+    async def test_upgrade_failure_on_existing_schema_reraises(self, tmp_path) -> None:
+        """A migration failure on a DB with real tables must propagate, not self-heal."""
+        from unittest.mock import patch
+
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "real-schema-fail.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        await _run_migrations(engine)
+        async with engine.begin() as conn:
+            await conn.execute(text("UPDATE alembic_version SET version_num = '001'"))
+
+        with (
+            patch("alembic.command.upgrade", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await _run_migrations(engine)
+
+        async with engine.connect() as conn:
+            row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
+        assert row[0] == "001"
+
+        await engine.dispose()
+
+    async def test_stamp_failure_on_pre_alembic_db_reraises(self, tmp_path) -> None:
+        """A pre-Alembic DB with real tables (stamp path) must also re-raise on failure."""
+        from unittest.mock import patch
+
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.models import Base
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "pre-alembic-fail.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+        # Simulate a pre-Alembic database: real tables exist, no alembic_version.
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        with (
+            patch("alembic.command.stamp", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await _run_migrations(engine)
+
+        async with engine.connect() as conn:
+            table_names = await conn.run_sync(lambda c: inspect(c).get_table_names())
+        assert "alembic_version" not in table_names
+
+        await engine.dispose()
+
+    async def test_fresh_db_upgrade_failure_still_falls_back(self, tmp_path) -> None:
+        """A genuinely fresh DB (no tables at all) must still self-heal on failure."""
+        from unittest.mock import patch
+
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "fresh-fail.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+        # Force the file to exist and be non-empty so the fallback's create_all has
+        # something to run against (the backup-before-DDL path is exercised too).
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE TABLE _touch (id INTEGER PRIMARY KEY)"))
+            await conn.execute(text("DROP TABLE _touch"))
+
+        with patch("alembic.command.upgrade", side_effect=RuntimeError("boom")):
+            result = await _run_migrations(engine)
+
+        assert result is True
         async with engine.connect() as conn:
             row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
         assert row is not None
-        assert row[0] != "bogus_xyz"
 
         await engine.dispose()
 
@@ -703,6 +832,43 @@ class TestMigrationFallback:
             row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
         assert row is not None
         assert row[0] != ""
+
+        await engine.dispose()
+
+    async def test_blank_version_num_self_heals(self, tmp_path) -> None:
+        """A single-table DB with version_num='' (case 5) must self-heal, not raise.
+
+        A row that exists but holds an empty/whitespace string is just as corrupt
+        as no row at all: left in place, Alembic's own MigrationContext chokes on
+        it with a bare AssertionError. It must be dropped and treated like a fresh
+        database, same as the no-row case covered by
+        test_empty_alembic_version_self_heals above.
+        """
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "blank-version.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        # A database whose only table is alembic_version, holding a blank version_num.
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            await conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('   ')"))
+
+        result = await _run_migrations(engine)
+
+        assert result is True
+        async with engine.connect() as conn:
+            table_names = await conn.run_sync(lambda c: inspect(c).get_table_names())
+            row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
+        assert "task_runs" in table_names
+        assert row is not None
+        assert row[0].strip() != ""
 
         await engine.dispose()
 
@@ -1126,13 +1292,177 @@ class TestRunMigrationsAtHead:
         await engine.dispose()
 
     async def test_upgrade_runs_when_behind_head(self, tmp_path) -> None:
-        """When DB is behind head, upgrade must run and return True."""
+        """When DB is behind head, upgrade must run and return True.
+
+        Uses a real partial upgrade (stopping at an early revision), not a fresh
+        head schema with the version stamp rewound: the real chain is not
+        idempotent against already-applied DDL (e.g. migration 002's
+        unguarded ``ADD COLUMN``), so faking "behind head" that way would fail
+        for a reason unrelated to what this test checks.
+        """
+        from pathlib import Path
+
+        from alembic import command
+        from alembic.config import Config
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db import session as db_session
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "behind-head.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        alembic_cfg = Config(str(Path(db_session.__file__).parent / "alembic.ini"))
+
+        def _upgrade_partial(sync_conn):
+            alembic_cfg.attributes["connection"] = sync_conn
+            command.upgrade(alembic_cfg, "020")
+
+        async with engine.begin() as conn:
+            await conn.run_sync(_upgrade_partial)
+
+        result = await _run_migrations(engine)
+        assert result is True
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# _get_db_path_from_url: file vs. non-file SQLite URLs (issue #1205)
+# ---------------------------------------------------------------------------
+
+
+class TestGetDbPathFromUrl:
+    def test_file_backed_url_returns_path(self) -> None:
+        from pathlib import Path
+
+        from sova.db.session import _get_db_path_from_url
+
+        assert _get_db_path_from_url("sqlite+aiosqlite:////tmp/sova.db") == Path("/tmp/sova.db")
+
+    def test_bare_in_memory_url_returns_none(self) -> None:
+        from sova.db.session import _get_db_path_from_url
+
+        assert _get_db_path_from_url("sqlite+aiosqlite://") is None
+
+    def test_explicit_memory_url_returns_none(self) -> None:
+        """``:memory:`` must be treated like the bare in-memory form.
+
+        Disposal of an in-memory engine destroys the database, not just its
+        connections, so every file-vs-memory gate in session.py (the
+        migration lock, the previous-engine dispose guard, the post-migration
+        dispose-and-reopen step) depends on this returning None here too.
+        """
+        from sova.db.session import _get_db_path_from_url
+
+        assert _get_db_path_from_url("sqlite+aiosqlite:///:memory:") is None
+
+    def test_shared_cache_memory_uri_returns_none(self) -> None:
+        from sova.db.session import _get_db_path_from_url
+
+        assert _get_db_path_from_url("sqlite+aiosqlite:///file:test?mode=memory&cache=shared&uri=true") is None
+
+    def test_non_sqlite_url_returns_none(self) -> None:
+        from sova.db.session import _get_db_path_from_url
+
+        assert _get_db_path_from_url("postgresql+asyncpg://user:pass@localhost/sova") is None
+
+
+# ---------------------------------------------------------------------------
+# _backup_db: WAL-consistent, rotates two generations (issue #1205)
+# ---------------------------------------------------------------------------
+
+
+class TestBackupDb:
+    async def test_backup_writes_a_restorable_copy(self, tmp_path) -> None:
+        """The backup must contain the data committed before it was taken."""
+        import sqlite3
+
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _backup_db
+
+        db_path = tmp_path / "wal-backup.db"
+        url = f"sqlite+aiosqlite:///{db_path}"
+        engine = create_async_engine(url, connect_args={"check_same_thread": False})
+
+        async with engine.begin() as conn:
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("CREATE TABLE probe (value TEXT)"))
+            await conn.execute(text("INSERT INTO probe VALUES ('kept')"))
+
+        backup_path = await _backup_db(url)
+        await engine.dispose()
+
+        assert backup_path is not None
+        assert backup_path.exists()
+
+        raw = sqlite3.connect(str(backup_path))
+        try:
+            rows = raw.execute("SELECT value FROM probe").fetchall()
+        finally:
+            raw.close()
+        assert rows == [("kept",)]
+
+    async def test_backup_rotates_to_one_prior_generation(self, tmp_path) -> None:
+        """A second backup must move the first to .db.bak.1, not discard it."""
+        import sqlite3
+
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _backup_db
+
+        db_path = tmp_path / "rotate.db"
+        url = f"sqlite+aiosqlite:///{db_path}"
+        engine = create_async_engine(url, connect_args={"check_same_thread": False})
+
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE TABLE probe (value TEXT)"))
+            await conn.execute(text("INSERT INTO probe VALUES ('first')"))
+
+        first_backup = await _backup_db(url)
+
+        async with engine.begin() as conn:
+            await conn.execute(text("INSERT INTO probe VALUES ('second')"))
+
+        second_backup = await _backup_db(url)
+        await engine.dispose()
+
+        previous = db_path.with_suffix(".db.bak.1")
+        assert previous.exists()
+        assert first_backup == second_backup  # same .db.bak path, rotated contents
+
+        for path, expected in ((previous, [("first",)]), (second_backup, [("first",), ("second",)])):
+            raw = sqlite3.connect(str(path))
+            try:
+                assert raw.execute("SELECT value FROM probe ORDER BY rowid").fetchall() == expected
+            finally:
+                raw.close()
+
+    async def test_backup_returns_none_for_empty_file(self, tmp_path) -> None:
+        """A 0-byte database must not produce a pointless empty backup."""
+        from sova.db.session import _backup_db
+
+        db_path = tmp_path / "empty.db"
+        db_path.touch()
+        url = f"sqlite+aiosqlite:///{db_path}"
+
+        assert await _backup_db(url) is None
+
+    async def test_run_migrations_backs_up_before_ddl(self, tmp_path) -> None:
+        """A database with real prior schema must be backed up before upgrade runs."""
+        from unittest.mock import AsyncMock, patch
+
         from sqlalchemy import text
         from sqlalchemy.ext.asyncio import create_async_engine
 
         from sova.db.session import _run_migrations
 
-        db_path = tmp_path / "behind-head.db"
+        db_path = tmp_path / "backup-before-ddl.db"
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{db_path}",
             connect_args={"check_same_thread": False},
@@ -1142,9 +1472,468 @@ class TestRunMigrationsAtHead:
         async with engine.begin() as conn:
             await conn.execute(text("UPDATE alembic_version SET version_num = '001'"))
 
-        result = await _run_migrations(engine)
+        # The real migration chain is not idempotent against a DB already fully
+        # upgraded (only the version stamp was rewound), so upgrade itself is
+        # stubbed out here: this test asserts backup ordering, not upgrade success.
+        with (
+            patch("sova.db.session._backup_db", new_callable=AsyncMock) as mock_backup,
+            patch("alembic.command.upgrade"),
+        ):
+            result = await _run_migrations(engine)
+
+        mock_backup.assert_awaited_once()
         assert result is True
         await engine.dispose()
+
+    async def test_run_migrations_skips_backup_on_fast_path(self, tmp_path) -> None:
+        """A DB already at head must not pay for a backup it does not need."""
+        from unittest.mock import AsyncMock, patch
+
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "fast-path-no-backup.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        await _run_migrations(engine)
+
+        with patch("sova.db.session._backup_db", new_callable=AsyncMock) as mock_backup:
+            result = await _run_migrations(engine)
+
+        assert result is False
+        mock_backup.assert_not_awaited()
+        await engine.dispose()
+
+    async def test_orphan_cleanup_backup_does_not_overwrite_pre_migration_backup(self, tmp_path) -> None:
+        """The orphan-edge sweep's backup must not demote the real pre-migration restore point.
+
+        Regression test for issue #1205 review: both backups previously wrote
+        to the same ``.db.bak``/``.db.bak.1`` rotation slots, so a migrating
+        startup that also found a pre-existing orphaned memory_edges row ended
+        with ``.db.bak`` holding a POST-migration snapshot while the log line
+        claimed it was the pre-migration restore point, and the real
+        pre-migration backup silently demoted into ``.db.bak.1``.
+        """
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _enable_sqlite_wal, _run_migrations
+
+        db_path = tmp_path / "orphan-vs-migration-backup.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        await _run_migrations(engine)  # builds full schema, stamped at head
+
+        async with engine.begin() as conn:
+            # No foreign_keys pragma active yet, so this orphan insert succeeds,
+            # mimicking data left over from before the pragma was ever enabled.
+            await conn.execute(
+                text("INSERT INTO memories (id, category, title, content) VALUES (1, 'learning', 't', 'c')")
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO memory_edges (source_id, target_id, relation, weight) "
+                    "VALUES (1, 999, 'relates_to', 1.0)"
+                )
+            )
+            # Rewind the version stamp so the next _run_migrations() call performs
+            # a real upgrade (and therefore a real pre-migration backup).
+            await conn.execute(text("UPDATE alembic_version SET version_num = '039'"))
+
+        await _run_migrations(engine)  # real upgrade 039 -> head, takes the pre-migration backup
+        await engine.dispose()
+        await _enable_sqlite_wal(engine)  # runs the orphan sweep, which finds the row inserted above
+
+        async with engine.connect() as conn:
+            edge_count = (await conn.execute(text("SELECT COUNT(*) FROM memory_edges"))).scalar()
+        await engine.dispose()
+
+        assert edge_count == 0  # orphan was actually removed
+
+        import sqlite3
+
+        pre_migration_backup = db_path.with_suffix(".db.bak")
+        orphan_cleanup_backup = db_path.with_suffix(".db.bak.pre-orphan-cleanup")
+        assert pre_migration_backup.exists()
+        assert orphan_cleanup_backup.exists()
+
+        raw = sqlite3.connect(str(pre_migration_backup))
+        try:
+            version = raw.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+        finally:
+            raw.close()
+        assert version == "039"  # the pre-migration restore point, not overwritten by the cleanup sweep
+
+
+# ---------------------------------------------------------------------------
+# PRAGMA foreign_keys and orphan cleanup (issue #1205)
+# ---------------------------------------------------------------------------
+
+
+class TestSqliteForeignKeys:
+    async def test_foreign_keys_pragma_is_on(self, tmp_path) -> None:
+        """Every new SQLite connection must enforce foreign keys."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _enable_sqlite_wal
+
+        db_path = tmp_path / "fk-pragma.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        await _enable_sqlite_wal(engine)
+
+        async with engine.connect() as conn:
+            result = await conn.execute(text("PRAGMA foreign_keys"))
+            value = result.scalar()
+        await engine.dispose()
+
+        assert value == 1
+
+    async def test_batch_migration_succeeds_on_populated_fk_tables(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A real batch-recreate migration must not fail under foreign_keys=ON.
+
+        Regression test for issue #1205: Alembic's SQLite batch mode (required for
+        any ALTER/DROP COLUMN) does CREATE tmp / INSERT / DROP TABLE <orig> / RENAME,
+        and PRAGMA foreign_keys=ON turns the DROP of a table other populated tables
+        reference into an IntegrityError. Builds a DB at revision 019 (one migration
+        before 020's `batch_alter_table("task_runs").drop_column(...)`) with a
+        task_runs row and a child output_lines row referencing it, then drives the
+        upgrade to head through the real init_db_for_project() path, the same one
+        the dashboard/CLI/scheduler use.
+        """
+        import sqlite3
+        from pathlib import Path
+
+        from alembic import command
+        from alembic.config import Config
+        from sqlalchemy import text
+
+        from sova.db.session import _engines, _get_database_url, init_db_for_project
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        project_dir = tmp_path / "fk-batch-project"
+        (project_dir / ".claude").mkdir(parents=True)
+        url = _get_database_url(project_dir)
+        db_path = project_dir / ".claude" / "sova.db"
+        _engines.pop(url, None)
+
+        alembic_cfg = Config(str(Path(__file__).parent.parent / "sova" / "db" / "alembic.ini"))
+        alembic_cfg.set_main_option("sqlalchemy.url", url)
+        # Alembic's own env.py calls asyncio.run() in this (no-connection-passed)
+        # mode, which cannot nest inside this already-running test event loop.
+        import asyncio
+
+        await asyncio.to_thread(command.upgrade, alembic_cfg, "019")
+
+        raw = sqlite3.connect(str(db_path))
+        raw.execute("INSERT INTO task_runs (id, issue_number) VALUES (1, '1')")
+        raw.execute("INSERT INTO output_lines (task_run_id, line_number, text) VALUES (1, 1, 'kept')")
+        raw.commit()
+        raw.close()
+
+        try:
+            await init_db_for_project(project_dir)
+
+            engine, _ = _engines[url]
+            async with engine.connect() as conn:
+                fk = (await conn.execute(text("PRAGMA foreign_keys"))).scalar()
+                rows = (await conn.execute(text("SELECT text FROM output_lines WHERE task_run_id = 1"))).fetchall()
+        finally:
+            engine_entry = _engines.pop(url, None)
+            if engine_entry is not None:
+                await engine_entry[0].dispose()
+
+        assert fk == 1
+        assert [r[0] for r in rows] == ["kept"]
+
+    async def test_deleting_workflow_definition_nulls_task_run_reference(self, tmp_path) -> None:
+        """With foreign_keys enabled, deleting a workflow_definitions row must not block on task_runs.
+
+        Regression test for issue #1205: the FK had no ondelete behavior, so
+        PRAGMA foreign_keys=ON turned role_service.delete_definition()'s bare
+        session.delete() into an IntegrityError for any role that was ever run.
+        ondelete="SET NULL" (migration 040) preserves the TaskRun audit row
+        instead of blocking the delete.
+        """
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _enable_sqlite_wal, _run_migrations
+
+        db_path = tmp_path / "workflow-fk.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+        await _run_migrations(engine)
+        await engine.dispose()
+        await _enable_sqlite_wal(engine)
+
+        async with engine.begin() as conn:
+            await conn.execute(text("INSERT INTO workflow_definitions (id, name, graph_json) VALUES (1, 'wf', '{}')"))
+            await conn.execute(text("INSERT INTO task_runs (id, workflow_definition_id) VALUES (1, 1)"))
+
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM workflow_definitions WHERE id = 1"))
+
+        async with engine.connect() as conn:
+            row = (await conn.execute(text("SELECT workflow_definition_id FROM task_runs WHERE id = 1"))).fetchone()
+        await engine.dispose()
+
+        assert row[0] is None
+
+    async def test_migration_040_handles_unnamed_fk_from_create_all(self, tmp_path) -> None:
+        """Migration 040 must not assume the FK it drops carries a specific name.
+
+        Regression test for issue #1205 review: `Base.metadata` has no
+        naming_convention, so a `task_runs` table built the way the pre-#1205
+        self-healing fallback built it (raw DDL, no ORM `ondelete`) has an
+        *unnamed* FK on `workflow_definition_id`. The original migration 040
+        assumed the name `fk_task_runs_workflow_definition` and crashed with
+        "No such constraint" on exactly this shape. Builds that shape by hand
+        (not via `Base.metadata.create_all`, which already carries the fixed
+        model's `ondelete="SET NULL"`), stamps at 039, then upgrades to head.
+        """
+        import sqlite3
+        from pathlib import Path
+
+        from alembic import command
+        from alembic.config import Config
+
+        db_path = tmp_path / "unnamed-fk.db"
+        url = f"sqlite+aiosqlite:///{db_path}"
+
+        raw = sqlite3.connect(str(db_path))
+        try:
+            raw.execute(
+                "CREATE TABLE workflow_definitions ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(100) NOT NULL UNIQUE, graph_json JSON NOT NULL)"
+            )
+            raw.execute(
+                "CREATE TABLE task_runs ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_definition_id INTEGER, "
+                "FOREIGN KEY(workflow_definition_id) REFERENCES workflow_definitions (id))"
+            )
+            raw.commit()
+            fks_before = raw.execute("PRAGMA foreign_key_list(task_runs)").fetchall()
+        finally:
+            raw.close()
+
+        assert fks_before[0][3] == "workflow_definition_id"
+        assert fks_before[0][6] == "NO ACTION"  # no ondelete yet
+
+        alembic_cfg = Config(str(Path(__file__).parent.parent / "sova" / "db" / "alembic.ini"))
+        alembic_cfg.set_main_option("sqlalchemy.url", url)
+        import asyncio
+
+        await asyncio.to_thread(command.stamp, alembic_cfg, "039")
+        await asyncio.to_thread(command.upgrade, alembic_cfg, "head")  # must not raise
+
+        raw = sqlite3.connect(str(db_path))
+        try:
+            fks_after = raw.execute("PRAGMA foreign_key_list(task_runs)").fetchall()
+        finally:
+            raw.close()
+
+        assert fks_after[0][3] == "workflow_definition_id"
+        assert fks_after[0][6] == "SET NULL"
+
+    async def test_cascade_delete_removes_memory_edges(self, tmp_path) -> None:
+        """With foreign_keys enabled, deleting a memory cascades to its edges."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _enable_sqlite_wal, _run_migrations
+
+        db_path = tmp_path / "cascade.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+        await _run_migrations(engine)
+        await engine.dispose()
+        await _enable_sqlite_wal(engine)
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("INSERT INTO memories (id, category, title, content) VALUES (1, 'learning', 't', 'c')")
+            )
+            await conn.execute(
+                text("INSERT INTO memories (id, category, title, content) VALUES (2, 'learning', 't2', 'c2')")
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO memory_edges (source_id, target_id, relation, weight) VALUES (1, 2, 'relates_to', 1.0)"
+                )
+            )
+
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM memories WHERE id = 1"))
+
+        async with engine.connect() as conn:
+            result = await conn.execute(text("SELECT COUNT(*) FROM memory_edges"))
+            count = result.scalar()
+        await engine.dispose()
+
+        assert count == 0
+
+    async def test_cleanup_removes_preexisting_orphans(self, tmp_path) -> None:
+        """A dangling memory_edges row from before the pragma must be removed at startup."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _cleanup_orphaned_memory_edges, _run_migrations
+
+        db_path = tmp_path / "orphans.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+        await _run_migrations(engine)
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("INSERT INTO memories (id, category, title, content) VALUES (1, 'learning', 't', 'c')")
+            )
+            # No foreign_keys pragma active on this connection, so this orphan insert succeeds.
+            await conn.execute(
+                text(
+                    "INSERT INTO memory_edges (source_id, target_id, relation, weight) "
+                    "VALUES (1, 999, 'relates_to', 1.0)"
+                )
+            )
+
+        await _cleanup_orphaned_memory_edges(engine)
+
+        async with engine.connect() as conn:
+            result = await conn.execute(text("SELECT COUNT(*) FROM memory_edges"))
+            count = result.scalar()
+        await engine.dispose()
+
+        assert count == 0
+
+    async def test_cleanup_is_a_noop_before_tables_exist(self, tmp_path) -> None:
+        """A fresh engine with no tables must not raise."""
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _cleanup_orphaned_memory_edges
+
+        db_path = tmp_path / "no-tables-yet.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        await _cleanup_orphaned_memory_edges(engine)  # must not raise
+
+        await engine.dispose()
+
+    async def test_cleanup_swallows_exception(self, tmp_path) -> None:
+        """A failure inspecting or deleting rows must not abort startup."""
+        from unittest.mock import patch
+
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _cleanup_orphaned_memory_edges, _run_migrations
+
+        db_path = tmp_path / "cleanup-fail.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+        await _run_migrations(engine)
+
+        with patch("sova.db.session.inspect", side_effect=RuntimeError("boom")):
+            await _cleanup_orphaned_memory_edges(engine)  # must not raise
+
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Cross-process migration lock (issue #1205)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationLock:
+    async def test_lock_serializes_a_concurrent_holder(self, tmp_path) -> None:
+        """A second acquirer must block until the first releases the lock."""
+        import threading
+        import time
+
+        from sova.db.session import _acquire_migration_lock_sync, _release_migration_lock_sync
+
+        lock_path = tmp_path / "test.migrate.lock"
+        events: list[str] = []
+
+        first_fd = _acquire_migration_lock_sync(lock_path)
+        events.append("first-acquired")
+
+        def second_holder() -> None:
+            fd = _acquire_migration_lock_sync(lock_path)
+            events.append("second-acquired")
+            _release_migration_lock_sync(fd)
+
+        thread = threading.Thread(target=second_holder)
+        thread.start()
+        time.sleep(0.1)
+        # The second thread must still be blocked: only one event recorded so far.
+        assert events == ["first-acquired"]
+
+        _release_migration_lock_sync(first_fd)
+        thread.join(timeout=5)
+
+        assert events == ["first-acquired", "second-acquired"]
+
+    async def test_migration_lock_is_a_noop_for_non_file_databases(self) -> None:
+        """In-memory and non-SQLite URLs must not attempt any file locking."""
+        from sova.db.session import _migration_lock
+
+        async with _migration_lock("sqlite+aiosqlite://"):
+            pass  # must not raise, no lock file touched
+
+    async def test_init_db_for_project_uses_the_migration_lock(self, tmp_path) -> None:
+        """init_db_for_project must take the cross-process lock around migrations."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.db.session import _engines, init_db_for_project
+
+        test_dir = tmp_path / "lock-wired-project"
+        test_url = f"sqlite+aiosqlite:///{test_dir}/.claude/sova.db"
+        _engines.pop(test_url, None)
+
+        calls: list[str] = []
+
+        class _FakeLock:
+            async def __aenter__(self):
+                calls.append("enter")
+
+            async def __aexit__(self, *exc):
+                calls.append("exit")
+
+        with (
+            patch("sova.db.session._get_database_url", return_value=test_url),
+            patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=False),
+            patch("sova.db.session._enable_sqlite_wal", new_callable=AsyncMock),
+            patch("sova.db.session._get_db_path_from_url", return_value=None),
+            patch("sova.db.session._migration_lock", return_value=_FakeLock()),
+        ):
+            await init_db_for_project(test_dir)
+
+        assert calls == ["enter", "exit"]
+        _engines.pop(test_url, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1340,21 +2129,31 @@ async def test_init_db_enables_wal_for_file_sqlite(tmp_path) -> None:
         await close_db()
 
 
-async def test_init_db_disposes_when_ddl_executed(tmp_path) -> None:
-    """init_db disposes the engine after migration only when DDL actually ran."""
-    import os
+@pytest.mark.parametrize("ddl_executed", [True, False])
+async def test_init_db_disposes_regardless_of_ddl(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, ddl_executed: bool
+) -> None:
+    """init_db always disposes a file-SQLite engine after migrations, DDL or not.
+
+    Pragmas (foreign_keys in particular, see _enable_sqlite_wal's docstring) must
+    not be registered until migrations finish, so any connection migrations opened
+    beforehand has to be evicted from the pool before _enable_sqlite_wal() runs.
+    That dispose is unconditional: it no longer depends on whether DDL actually
+    executed (the "already at head" fast path still opens connections of its own
+    during the version/drift checks).
+    """
     from unittest.mock import AsyncMock, MagicMock, patch
 
     from sova.db.session import close_db, init_db
 
-    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     try:
         mock_engine = MagicMock()
         mock_engine.dispose = AsyncMock()
 
         with (
             patch("sova.db.session._enable_sqlite_wal", new_callable=AsyncMock),
-            patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=True),
+            patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=ddl_executed),
             patch("sova.db.session._backup_db"),
             patch("sova.db.session.create_async_engine", return_value=mock_engine),
             patch("sova.db.session.async_sessionmaker"),
@@ -1362,35 +2161,186 @@ async def test_init_db_disposes_when_ddl_executed(tmp_path) -> None:
             await init_db(project_dir=tmp_path)
             mock_engine.dispose.assert_awaited_once()
     finally:
-        if saved is not None:
-            os.environ["SOVA_DATABASE_URL"] = saved
         await close_db()
 
 
-async def test_init_db_skips_dispose_when_no_ddl(tmp_path) -> None:
-    """init_db skips dispose when _run_migrations returns False (already at head)."""
-    import os
+async def test_init_db_skips_dispose_when_previous_engine_still_registered(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """init_db() must not dispose a previous engine another project's url still holds.
+
+    project-a and project-b resolve to different urls, so the first engine stays
+    reachable via ``_engines[url_a]`` (and therefore via
+    ``get_session(project_dir=proj-a)``/``get_session_factory()``) even after a
+    second ``init_db()`` call replaces the module-level ``_engine`` pointer.
+    Disposing it anyway would pull the pool out from under any other code still
+    holding that factory.
+
+    Each engine also disposes itself exactly once as part of the pragma-timing
+    fix (see ``_enable_sqlite_wal``'s docstring), independent of this "previous
+    engine" logic, so ``first_engine.dispose`` is awaited once after the first
+    call regardless. The behavior under test is that the *second* call does not
+    push that count to two.
+    """
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from sova.db.session import close_db, init_db
+    from sova.db.session import _engines, close_db, init_db
 
-    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     try:
-        mock_engine = MagicMock()
-        mock_engine.dispose = AsyncMock()
+        first_engine = MagicMock()
+        first_engine.dispose = AsyncMock()
+        second_engine = MagicMock()
+        second_engine.dispose = AsyncMock()
 
         with (
             patch("sova.db.session._enable_sqlite_wal", new_callable=AsyncMock),
             patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=False),
             patch("sova.db.session._backup_db"),
-            patch("sova.db.session.create_async_engine", return_value=mock_engine),
+            patch("sova.db.session.create_async_engine", side_effect=[first_engine, second_engine]),
             patch("sova.db.session.async_sessionmaker"),
         ):
-            await init_db(project_dir=tmp_path)
-            mock_engine.dispose.assert_not_awaited()
+            await init_db(project_dir=tmp_path / "proj-a")
+            url_a = next(url for url, (engine, _) in _engines.items() if engine is first_engine)
+            first_engine.dispose.assert_awaited_once()  # its own pragma-timing self-dispose
+
+            await init_db(project_dir=tmp_path / "proj-b")
+            first_engine.dispose.assert_awaited_once()  # unchanged: still reachable via _engines[url_a]
+            second_engine.dispose.assert_awaited_once()  # its own pragma-timing self-dispose
+            assert _engines[url_a][0] is first_engine
     finally:
-        if saved is not None:
-            os.environ["SOVA_DATABASE_URL"] = saved
+        await close_db()
+
+
+async def test_init_db_disposes_previous_engine_when_unreachable(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second init_db() call for the *same* project must dispose the first engine.
+
+    Same project_dir means the same url, so the second call overwrites
+    ``_engines[url]`` in place: the first engine is no longer reachable through
+    any path, and must be disposed rather than leaking its pool.
+
+    ``first_engine.dispose`` is awaited once after the first call already (its
+    own pragma-timing self-dispose, see the sibling test above), so the second
+    call must push its count to two: one more for being genuinely orphaned.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from sova.db.session import close_db, init_db
+
+    monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+    try:
+        first_engine = MagicMock()
+        first_engine.dispose = AsyncMock()
+        second_engine = MagicMock()
+        second_engine.dispose = AsyncMock()
+
+        with (
+            patch("sova.db.session._enable_sqlite_wal", new_callable=AsyncMock),
+            patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=False),
+            patch("sova.db.session._backup_db"),
+            patch("sova.db.session.create_async_engine", side_effect=[first_engine, second_engine]),
+            patch("sova.db.session.async_sessionmaker"),
+        ):
+            await init_db(project_dir=tmp_path / "proj-a")
+            first_engine.dispose.assert_awaited_once()
+
+            await init_db(project_dir=tmp_path / "proj-a")
+            assert first_engine.dispose.await_count == 2
+            second_engine.dispose.assert_awaited_once()
+    finally:
+        await close_db()
+
+
+async def test_init_db_skips_dispose_for_in_memory_previous_engine(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A previous in-memory engine must never be disposed: its pool *is* the database.
+
+    Regression test for issue #1205 review: unlike a file-backed SQLite engine
+    (whose pool is just a reclaimable connection cache), an in-memory SQLite
+    engine's pool holds the only copy of its data (see tests/conftest.py's
+    close_db() warning). The old same-url dispose check didn't distinguish the
+    two, so a second init_db() call resolving to the same in-memory url (e.g.
+    SOVA_DATABASE_URL="sqlite+aiosqlite://", the shared worker url reset_db_rows
+    pins before every test) silently destroyed data a concurrent caller might
+    still be using.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from sova.db.session import close_db, init_db
+
+    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+    try:
+        first_engine = MagicMock()
+        first_engine.dispose = AsyncMock()
+        second_engine = MagicMock()
+        second_engine.dispose = AsyncMock()
+
+        with (
+            patch("sova.db.session._enable_sqlite_wal", new_callable=AsyncMock),
+            patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=False),
+            patch("sova.db.session._backup_db"),
+            patch("sova.db.session.create_async_engine", side_effect=[first_engine, second_engine]),
+            patch("sova.db.session.async_sessionmaker"),
+        ):
+            await init_db()
+            first_engine.dispose.assert_not_awaited()
+
+            await init_db()
+            first_engine.dispose.assert_not_awaited()
+            second_engine.dispose.assert_not_awaited()
+    finally:
+        await close_db()
+
+
+async def test_init_db_serializes_concurrent_calls_for_the_same_url(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two concurrent init_db() calls for the same url must not interleave.
+
+    Regression test for issue #1205 review: unlike init_db_for_project(),
+    init_db() took no per-url asyncio lock, so two concurrent callers (e.g.
+    two requests both hitting get_session() right after startup, both finding
+    _session_factory still None) could each create an engine, each overwrite
+    _engines[url], and the second one's reachability check would then find
+    the first one's engine orphaned and dispose it while the first coroutine
+    was still inside _run_migrations() on it. Wrapping the body in
+    _get_init_lock(url), the same per-url guard init_db_for_project() already
+    uses, forces the second call to wait for the first to finish entirely
+    (migrations included) before it starts its own prologue: a fake
+    _run_migrations that sleeps makes any interleaving observable as
+    "enter, enter, exit, exit" instead of "enter, exit, enter, exit".
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from sova.db.session import close_db, init_db
+
+    monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+    events: list[str] = []
+
+    async def _fake_run_migrations(engine):
+        events.append("enter")
+        await asyncio.sleep(0.05)
+        events.append("exit")
+        return False
+
+    try:
+        engine_a = MagicMock()
+        engine_a.dispose = AsyncMock()
+        engine_b = MagicMock()
+        engine_b.dispose = AsyncMock()
+
+        with (
+            patch("sova.db.session._enable_sqlite_wal", new_callable=AsyncMock),
+            patch("sova.db.session._run_migrations", side_effect=_fake_run_migrations),
+            patch("sova.db.session._backup_db"),
+            patch("sova.db.session.create_async_engine", side_effect=[engine_a, engine_b]),
+            patch("sova.db.session.async_sessionmaker"),
+        ):
+            await asyncio.gather(
+                init_db(project_dir=tmp_path / "proj-race"),
+                init_db(project_dir=tmp_path / "proj-race"),
+            )
+
+        assert events == ["enter", "exit", "enter", "exit"]
+    finally:
         await close_db()
 
 
@@ -1491,69 +2441,84 @@ async def test_init_db_secures_new_file_before_engine_opens(tmp_path) -> None:
         await close_db()
 
 
-def test_backup_db_sets_restrictive_file_mode(tmp_path) -> None:
-    """_backup_db's .db.bak copy gets the same 0600 mode as the original:
-    a backup of a secrets-bearing file is itself secrets-bearing."""
+def _write_probe_db(db_path) -> None:
+    """Create a minimal, valid SQLite database at db_path (SQLite's backup API
+    requires a real database, not arbitrary bytes)."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("CREATE TABLE probe (value TEXT)")
+        conn.execute("INSERT INTO probe VALUES ('kept')")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def test_backup_db_sets_restrictive_file_mode(tmp_path) -> None:
+    """_backup_db's copy gets 0600 mode: a backup of a secrets-bearing file is
+    itself secrets-bearing."""
     import os
     import stat
 
     from sova.db.session import _backup_db
 
     db_path = tmp_path / "sova.db"
-    db_path.write_bytes(b"not empty")
+    _write_probe_db(db_path)
     os.chmod(db_path, 0o644)
 
-    backup = _backup_db(f"sqlite+aiosqlite:///{db_path}")
+    backup = await _backup_db(f"sqlite+aiosqlite:///{db_path}")
 
     assert backup is not None
     assert backup.exists()
     assert stat.S_IMODE(backup.stat().st_mode) == 0o600
 
 
-def test_backup_db_destination_restrictive_before_copy_runs(tmp_path) -> None:
-    """The backup destination is created at 0600 before any content is
-    copied into it, not chmod'd only after the copy finishes: a copy
-    mid-flight under a permissive, umask-derived mode would otherwise expose
-    the secrets being copied for the duration of the write."""
+async def test_backup_db_destination_restrictive_before_copy_runs(tmp_path) -> None:
+    """The backup destination is created at 0600 before any content is written
+    into it, not chmod'd only after: writing under a permissive, umask-derived
+    mode would otherwise expose the secrets being written for the duration of
+    the backup."""
     import os
-    import shutil
+    import sqlite3
     import stat
     from unittest.mock import patch
 
     from sova.db.session import _backup_db
 
     db_path = tmp_path / "sova.db"
-    db_path.write_bytes(b"not empty")
+    _write_probe_db(db_path)
     os.chmod(db_path, 0o644)
 
+    backup_path = tmp_path / "sova.db.bak"
     observed_mode = {}
-    real_copyfile = shutil.copyfile
+    real_connect = sqlite3.connect
 
-    def _spy_copyfile(src, dst):
-        observed_mode["mode"] = stat.S_IMODE(os.stat(dst).st_mode)
-        return real_copyfile(src, dst)
+    def _spy_connect(target, *args, **kwargs):
+        if str(target) == str(backup_path) and backup_path.exists():
+            observed_mode["mode"] = stat.S_IMODE(os.stat(backup_path).st_mode)
+        return real_connect(target, *args, **kwargs)
 
-    with patch("sova.db.session.shutil.copyfile", side_effect=_spy_copyfile):
-        backup = _backup_db(f"sqlite+aiosqlite:///{db_path}")
+    with patch("sova.db.session.sqlite3.connect", side_effect=_spy_connect):
+        backup = await _backup_db(f"sqlite+aiosqlite:///{db_path}")
 
     assert backup is not None
     assert observed_mode.get("mode") == 0o600
 
 
-def test_backup_db_chmods_preexisting_permissive_backup_before_copy(tmp_path) -> None:
-    """A stale backup file left over from before this ordering fix (created
-    at a permissive, umask-derived mode by an older `shutil.copy2`-based
-    version) is chmod'd before being overwritten, not just after: `O_CREAT |
-    O_TRUNC` does not change the mode of a file that already exists."""
+async def test_backup_db_chmods_preexisting_permissive_backup_before_copy(tmp_path) -> None:
+    """A stale, permissive backup from an older version is rotated aside and the
+    new backup is created fresh at 0600, so its secrets are never written
+    through the stale file's permissive mode."""
     import os
-    import shutil
+    import sqlite3
     import stat
     from unittest.mock import patch
 
     from sova.db.session import _backup_db
 
     db_path = tmp_path / "sova.db"
-    db_path.write_bytes(b"not empty")
+    _write_probe_db(db_path)
     os.chmod(db_path, 0o644)
 
     backup_path = tmp_path / "sova.db.bak"
@@ -1561,17 +2526,19 @@ def test_backup_db_chmods_preexisting_permissive_backup_before_copy(tmp_path) ->
     os.chmod(backup_path, 0o644)
 
     observed_mode = {}
-    real_copyfile = shutil.copyfile
+    real_connect = sqlite3.connect
 
-    def _spy_copyfile(src, dst):
-        observed_mode["mode"] = stat.S_IMODE(os.stat(dst).st_mode)
-        return real_copyfile(src, dst)
+    def _spy_connect(target, *args, **kwargs):
+        if str(target) == str(backup_path) and backup_path.exists():
+            observed_mode["mode"] = stat.S_IMODE(os.stat(backup_path).st_mode)
+        return real_connect(target, *args, **kwargs)
 
-    with patch("sova.db.session.shutil.copyfile", side_effect=_spy_copyfile):
-        backup = _backup_db(f"sqlite+aiosqlite:///{db_path}")
+    with patch("sova.db.session.sqlite3.connect", side_effect=_spy_connect):
+        backup = await _backup_db(f"sqlite+aiosqlite:///{db_path}")
 
     assert backup is not None
     assert observed_mode.get("mode") == 0o600
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
 
 
 def test_secure_db_file_secures_wal_and_shm_sidecars(tmp_path) -> None:

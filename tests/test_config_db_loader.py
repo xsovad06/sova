@@ -134,6 +134,28 @@ class TestLoadConfigFromDB:
         }
 
     @pytest.mark.asyncio
+    async def test_excludes_internal_orphan_sweep_marker(self, db_session: AsyncSession) -> None:
+        """The orphan-edge sweep's own bookkeeping row must never surface as user config."""
+        from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY
+
+        db_session.add(ProjectSetting(key=_ORPHAN_SWEEP_MARKER_KEY, value="true"))
+        db_session.add(ProjectSetting(key="github_repo", value='"user/repo"'))
+        await db_session.flush()
+
+        result = await load_config_from_db(db_session)
+        assert result == {"github_repo": "user/repo"}
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_only_internal_marker_present(self, db_session: AsyncSession) -> None:
+        from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY
+
+        db_session.add(ProjectSetting(key=_ORPHAN_SWEEP_MARKER_KEY, value="true"))
+        await db_session.flush()
+
+        result = await load_config_from_db(db_session)
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_returns_none_on_missing_table(self) -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
