@@ -17,6 +17,7 @@ from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.operations import (
+    CheckConclusion,
     CICheck,
     UnknownCommitError,
     get_ci_checks,
@@ -157,8 +158,11 @@ class MonitorCIStep(BaseStep):
         pipeline's push), the step rebinds to the new head, resets the
         no-checks grace clock (the freshly bound head has its own
         registration window), and keeps polling rather than failing the run
-        over a benign event. Falls back to the PR-level lookup only when the
-        local HEAD SHA cannot be resolved.
+        over a benign event. A completed check set with nothing passing only
+        fails the step when it contains a CANCELLED conclusion (the normal
+        effect of a superseding push); an all-SKIPPED or all-NEUTRAL set is a
+        deliberate non-blocking outcome and still passes. Falls back to the
+        PR-level lookup only when the local HEAD SHA cannot be resolved.
         Elapsed time is measured from a real monotonic clock, not by
         counting polls, so extra API round trips per iteration never drift
         the loop past ``max_wait``.
@@ -302,6 +306,20 @@ class MonitorCIStep(BaseStep):
                         ),
                         failed,
                     )
+                if not any(c.is_passed for c in checks) and any(
+                    c.conclusion == CheckConclusion.CANCELLED for c in checks
+                ):
+                    # A cancelled run from a superseded push is not evidence of
+                    # success. Scoped to CANCELLED specifically (not "nothing
+                    # passed" generally), since an all-SKIPPED or all-NEUTRAL
+                    # set is a deliberate non-blocking outcome, not a failure.
+                    names = ", ".join(c.name for c in checks)
+                    msg = f"CI checks completed without any passing: {names}"
+                    self._write_heartbeat(ctx, msg)
+                    return (
+                        StepResult(success=False, summary=msg, error=f"No passing checks: {names}"),
+                        [],
+                    )
                 return (
                     StepResult(
                         success=True,
@@ -363,6 +381,13 @@ class MonitorCIStep(BaseStep):
         if failed:
             names = ", ".join(c.name for c in failed)
             return StepResult(success=False, summary=f"CI failed: {names}", error=f"Failed checks: {names}")
+        if not any(c.is_passed for c in checks) and any(c.conclusion == CheckConclusion.CANCELLED for c in checks):
+            names = ", ".join(c.name for c in checks)
+            return StepResult(
+                success=False,
+                summary=f"CI checks completed without any passing: {names}",
+                error=f"No passing checks: {names}",
+            )
         return StepResult(success=True, summary=f"CI already passed (resumed after interruption, {len(checks)} checks)")
 
     @staticmethod

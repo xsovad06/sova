@@ -5265,6 +5265,67 @@ class TestMonitorCIStep:
         mock_sleep.assert_awaited_once()
         assert mock_checks.call_count == 2
 
+    async def test_all_cancelled_checks_do_not_report_success(self) -> None:
+        """A fully cancelled check set on the bound SHA (the normal consequence
+        of a superseding push cancelling the polled commit's runs) must not
+        read as 'CI passed': CANCELLED is completed but neither passed nor
+        failed, so a naive 'all completed and nothing failed' check reports a
+        false green (#1175 CodeRabbit review: finding 3)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.git.operations import CheckConclusion
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 30
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        cancelled_check = MagicMock(
+            is_completed=True, is_passed=False, is_failed=False, conclusion=CheckConclusion.CANCELLED
+        )
+        cancelled_check.name = "CI"
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                return_value=[cancelled_check],
+            ),
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+
+    async def test_all_skipped_checks_with_no_passing_check_still_pass(self) -> None:
+        """An all-SKIPPED (or all-NEUTRAL) set is a deliberate non-blocking
+        outcome, not a failure: the 'nothing passed' guard added for the
+        CANCELLED case must be scoped to CANCELLED specifically, or it
+        regresses every project whose CI skips every job for e.g. a docs-only
+        PR via path filters (#1175 CodeRabbit review round 4, finding 1)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.git.operations import CheckConclusion
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        skipped_a = MagicMock(is_completed=True, is_passed=False, is_failed=False, conclusion=CheckConclusion.SKIPPED)
+        skipped_a.name = "Tests"
+        skipped_b = MagicMock(is_completed=True, is_passed=False, is_failed=False, conclusion=CheckConclusion.SKIPPED)
+        skipped_b.name = "Lint"
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                return_value=[skipped_a, skipped_b],
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "2 CI checks passed" in result.summary
+
 
 # ---------------------------------------------------------------------------
 class TestCheckExistingCI:
