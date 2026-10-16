@@ -17,6 +17,7 @@ from sova.git.operations import (
     DivergenceStatus,
     PRInfo,
     PRStatus,
+    UnknownCommitError,
     assign_pr,
     check_branch_divergence,
     commit,
@@ -1641,6 +1642,78 @@ class TestGetCIChecksForSha:
             patch("sova.git.pr._MAX_CHECK_RUN_PAGES", 2),
         ):
             mock_run.side_effect = [_shell_ok(stdout="{}"), _shell_ok(stdout=full_page), _shell_ok(stdout=full_page)]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks is None
+
+    async def test_raises_unknown_commit_error_when_both_endpoints_confirm(self) -> None:
+        """A SHA GitHub has no record of at all (404/422 on BOTH check-runs
+        and commit-status) must be distinguished from a transient fetch
+        failure, since retrying it can never succeed. Corroboration from
+        both endpoints is required: either endpoint alone succeeding proves
+        the commit exists (#1175 CodeRabbit review: finding 2)."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_fail(stderr="gh: No commit found for SHA: abc123 (HTTP 422)"),
+                _shell_fail(stderr="gh: Not Found (HTTP 404)"),
+            ]
+
+            with pytest.raises(UnknownCommitError):
+                await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+    async def test_does_not_raise_when_only_check_runs_endpoint_reports_404(self) -> None:
+        """A 404/422 on check-runs alone, with status succeeding, proves the
+        commit exists: that is a Checks API hiccup, not a missing commit, so
+        it must return None and be retried like any other transient failure
+        (#1175 CodeRabbit review: finding 2)."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_fail(stderr="gh: No commit found for SHA: abc123 (HTTP 422)"),
+                _shell_ok(stdout="{}"),
+            ]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks is None
+
+    async def test_does_not_raise_when_only_one_failure_carries_404_signature(self) -> None:
+        """Both calls failing is not enough on its own: the 404/422 'no such
+        commit' signature must be confirmed on BOTH endpoints, not just one,
+        or a mixed pair (one 404, one unrelated transient error such as a
+        network reset) is misclassified as 'commit does not exist' instead of
+        a retryable failure. This is the corroboration contract the
+        function's own docstring and the UnknownCommitError class docstring
+        already promise (#1175 CodeRabbit review round 4, finding 3)."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_fail(stderr="gh: Not Found (HTTP 404)"),
+                _shell_fail(stderr="dial tcp: connection reset by peer"),
+            ]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks is None
+
+    async def test_does_not_raise_when_only_status_endpoint_reports_404(self) -> None:
+        """A 404 on the commit-status endpoint alone, with check-runs
+        succeeding, proves the commit exists and must not be classified as
+        unknown (#1175 CodeRabbit review: finding 2)."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(stdout="{}"),
+                _shell_fail(stderr="gh: Not Found (HTTP 404)"),
+            ]
+
+            checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
+
+            assert checks is None
+
+    async def test_transient_failure_still_returns_none_not_raise(self) -> None:
+        """A generic fetch failure (no 404/422/"no commit found" signature)
+        must stay the pre-existing None contract so callers keep retrying."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [_shell_fail(stderr="network error"), _shell_ok(stdout="{}")]
 
             checks = await get_ci_checks_for_sha("abc123", repo="user/repo")
 

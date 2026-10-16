@@ -18,6 +18,7 @@ from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.operations import (
     CICheck,
+    UnknownCommitError,
     get_ci_checks,
     get_ci_checks_for_sha,
     get_ci_failure_logs,
@@ -140,15 +141,31 @@ class MonitorCIStep(BaseStep):
         A SHA GitHub hasn't registered checks for yet is treated as pending:
         once the grace period elapses, an empty SHA-scoped result only
         passes the step after the PR-level lookup confirms the PR genuinely
-        has no CI configured, since the empty SHA-scoped result is itself
-        ambiguous between "no CI" and "not registered yet". Falls back to
-        the PR-level lookup only when the local HEAD SHA cannot be resolved.
+        has no CI configured (through the same ``ci.exclude_checks``
+        filter), since the empty SHA-scoped result is itself ambiguous
+        between "no CI" and "not registered yet"; a PR-level fetch failure
+        during that cross-check is never read as "confirmed no CI", so an
+        outage there falls closed to continued polling rather than a silent
+        pass. A SHA GitHub has no record of at all (both the check-runs and
+        commit-status endpoints independently return 404/422; either one
+        succeeding proves the commit exists) fails immediately unless the
+        PR's own head SHA still matches *expected_sha*, in which case that is
+        stronger evidence of a transient GitHub-side inconsistency than of a
+        failed push, so polling continues instead. If the PR head moves to a
+        different commit entirely (another actor pushed after this
+        pipeline's push), the step rebinds to the new head, resets the
+        no-checks grace clock (the freshly bound head has its own
+        registration window), and keeps polling rather than failing the run
+        over a benign event. Falls back to the PR-level lookup only when the
+        local HEAD SHA cannot be resolved.
+        Elapsed time is measured from a real monotonic clock, not by
+        counting polls, so extra API round trips per iteration never drift
+        the loop past ``max_wait``.
         """
         poll_interval = ctx.config.ci.poll_interval
         max_wait = ctx.config.ci.max_wait
         grace_period = ctx.config.ci.no_checks_grace_period
         start_time = time.monotonic()
-        grace_start = start_time
         elapsed = 0
 
         if not expected_sha:
@@ -161,11 +178,32 @@ class MonitorCIStep(BaseStep):
 
         while elapsed < max_wait:
             if expected_sha:
-                checks = await get_ci_checks_for_sha(
-                    expected_sha,
-                    repo=ctx.repo,
-                    github_user=ctx.config.github_user,
-                )
+                try:
+                    checks = await get_ci_checks_for_sha(
+                        expected_sha,
+                        repo=ctx.repo,
+                        github_user=ctx.config.github_user,
+                    )
+                except UnknownCommitError as exc:
+                    head_sha = await get_pr_head_sha(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+                    if head_sha == expected_sha:
+                        log.warning(
+                            "step.monitor_ci.unknown_commit_but_pr_confirms",
+                            pr=ctx.pr_number,
+                            sha=sha_short,
+                        )
+                        self._write_heartbeat(
+                            ctx,
+                            f"CI poll: {elapsed}s/{max_wait}s elapsed, GitHub reports unknown commit "
+                            f"{sha_short} but the PR head still matches it (retrying)",
+                        )
+                        await asyncio.sleep(poll_interval)
+                        elapsed = int(time.monotonic() - start_time)
+                        continue
+                    log.error("step.monitor_ci.unknown_commit", pr=ctx.pr_number, sha=sha_short)
+                    msg = f"Polled commit {sha_short} is not on the remote; push may have failed"
+                    self._write_heartbeat(ctx, msg)
+                    return (StepResult(success=False, summary=msg, error=str(exc)), [])
             else:
                 checks = await get_ci_checks(
                     ctx.pr_number,
@@ -189,7 +227,7 @@ class MonitorCIStep(BaseStep):
                     log.info("step.monitor_ci.excluded_checks", skipped=skipped, patterns=exclude)
 
             if not checks:
-                if time.monotonic() - grace_start >= grace_period:
+                if elapsed >= grace_period:
                     if expected_sha and not await self._pr_confirms_no_checks(ctx):
                         log.info(
                             "step.monitor_ci.sha_checks_not_registered",
@@ -241,7 +279,6 @@ class MonitorCIStep(BaseStep):
                         )
                         expected_sha = new_head
                         sha_short = new_head[:8]
-                        grace_start = time.monotonic()
                         elapsed = int(time.monotonic() - start_time)
                         continue
 
@@ -285,11 +322,15 @@ class MonitorCIStep(BaseStep):
         """On resume, check CI once. Return a result if CI already completed, else None to continue polling."""
         expected_sha = await self._get_local_head_sha(ctx)
         if expected_sha:
-            checks = await get_ci_checks_for_sha(
-                expected_sha,
-                repo=ctx.repo,
-                github_user=ctx.config.github_user,
-            )
+            try:
+                checks = await get_ci_checks_for_sha(
+                    expected_sha,
+                    repo=ctx.repo,
+                    github_user=ctx.config.github_user,
+                )
+            except UnknownCommitError:
+                log.warning("step.monitor_ci.resume_unknown_commit", pr=ctx.pr_number, sha=expected_sha[:8])
+                return None
         else:
             log.warning("step.monitor_ci.head_sha_unresolved", pr=ctx.pr_number)
             checks = await get_ci_checks(

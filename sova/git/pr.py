@@ -916,6 +916,30 @@ _COMMIT_STATUS_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] 
 _MAX_CHECK_RUN_PAGES = 50  # 5000 check runs; a hard stop against a pathological total_count
 
 
+class UnknownCommitError(RuntimeError):
+    """Raised when GitHub has no record of the requested commit SHA at all.
+
+    Distinguishes a permanently unresolvable SHA (never pushed, or the push
+    silently failed) from a transient fetch failure: :func:`get_ci_checks_for_sha`
+    signals the latter by returning ``None`` instead, which callers retry.
+    Retrying a SHA GitHub will never recognize can only burn the full
+    polling budget, so callers should treat this as terminal. Only raised
+    when *both* the check-runs and commit-status endpoints fail with a
+    404/422 "no such commit" response: either endpoint alone succeeding
+    proves the commit exists, so a single endpoint's 404 (a Checks/Status
+    API hiccup, or an endpoint-specific permission quirk) returns ``None``
+    instead and is retried like any other transient failure.
+    """
+
+
+def _is_unknown_commit_error(result: ShellResult) -> bool:
+    """Detect a 404/422 "no such commit" response from ``gh api``."""
+    if result.success:
+        return False
+    stderr = result.stderr or ""
+    return "HTTP 404" in stderr or "HTTP 422" in stderr or "No commit found" in stderr
+
+
 def _has_more_pages(items: list[dict], total_count: int | None) -> bool:
     """Whether a full (len % 100 == 0) page suggests another page remains."""
     return bool(items) and len(items) % 100 == 0 and (total_count is None or len(items) < total_count)
@@ -928,10 +952,13 @@ async def get_ci_checks_for_sha(sha: str, *, repo: str, github_user: str = "") -
     the PR currently reports, this binds the lookup to *sha* via GitHub's
     REST check-runs and commit-status endpoints, so a poll right after a
     force-push can never see a prior commit's stale (and possibly green)
-    check results. Returns ``None`` on fetch failures (network, auth, CLI
-    errors) so callers can distinguish "no checks reported yet" (``[]``)
-    from "unable to query GitHub" (``None``); a SHA GitHub hasn't registered
-    checks for yet also returns ``[]``, which callers must treat as pending.
+    check results. Returns ``None`` on transient fetch failures (network,
+    auth, CLI errors) so callers can distinguish "no checks reported yet"
+    (``[]``) from "unable to query GitHub" (``None``); a SHA GitHub hasn't
+    registered checks for yet also returns ``[]``, which callers must treat
+    as pending. Raises :class:`UnknownCommitError` when GitHub reports the
+    SHA itself does not exist (404/422), since that can never resolve on
+    retry and callers should fail terminally rather than keep polling.
 
     GitHub caps ``per_page`` at 100, so a SHA with more than 100 check runs
     or commit statuses needs follow-up pages fetched here, or a later
@@ -967,6 +994,15 @@ async def get_ci_checks_for_sha(sha: str, *, repo: str, github_user: str = "") -
     _track_gh_rate_limit(status_result, github_user)
 
     if not check_runs_result.success or not status_result.success:
+        if (
+            not check_runs_result.success
+            and not status_result.success
+            and _is_unknown_commit_error(check_runs_result)
+            and _is_unknown_commit_error(status_result)
+        ):
+            stderr = (check_runs_result.stderr or status_result.stderr)[:200]
+            log.warning("git.ci_checks_for_sha.unknown_commit", sha=sha[:8], stderr=stderr)
+            raise UnknownCommitError(f"GitHub has no record of commit {sha}")
         log.warning(
             "git.ci_checks_for_sha.failed",
             sha=sha[:8],

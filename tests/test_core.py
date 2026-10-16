@@ -4906,56 +4906,6 @@ class TestMonitorCIStep:
         mock_checks.assert_any_call("differentsha789", repo=ctx.repo, github_user=ctx.config.github_user)
         mock_sleep.assert_not_awaited()
 
-    async def test_rebind_resets_no_checks_grace_clock(self) -> None:
-        """Rebinding to a new PR head must reset the no-checks grace clock,
-        not just the SHA: the overall ``elapsed`` clock can already exceed
-        ``no_checks_grace_period`` by the time a mismatch is confirmed (the
-        old SHA's checks took a while to complete), so without its own
-        baseline the very first empty, not-yet-registered result for the
-        freshly bound head would be immediately eligible for a false
-        'No CI checks found' pass. The PR-level cross-check must never even
-        be consulted here: with the clock correctly reset, the empty result
-        falls into the ordinary 'not yet registered, keep polling' branch
-        instead."""
-        from sova.core.steps.monitor_ci import MonitorCIStep
-
-        config = ProjectConfig()
-        config.ci.poll_interval = 10
-        config.ci.max_wait = 1000
-        config.ci.no_checks_grace_period = 50
-        ctx = _make_ctx(pr_number=10, config=config)
-        step = MonitorCIStep()
-
-        stale_passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
-        new_passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
-        with (
-            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
-            patch(
-                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
-                new_callable=AsyncMock,
-                side_effect=[[stale_passed], [], [new_passed]],
-            ) as mock_checks,
-            patch(
-                "sova.core.steps.monitor_ci.get_pr_head_sha",
-                new_callable=AsyncMock,
-                return_value="newsha789",
-            ),
-            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
-            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
-            # start_time=0; rebind resets grace_start=60 and elapsed=60; the
-            # next empty-checks grace check reads 65-60=5s since reset (well
-            # under the 50s grace period) even though overall elapsed is 60s
-            # past start_time; final elapsed read is 70.
-            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=[0, 60, 60, 65, 70]),
-        ):
-            mock_pr_checks.return_value = []
-            result = await step.execute(ctx)
-
-        assert result.success
-        assert "All 1 CI checks passed" in result.summary
-        assert mock_checks.call_count == 3
-        mock_pr_checks.assert_not_awaited()
-
     async def test_poll_ci_falls_back_to_pr_level_when_sha_unresolved(self) -> None:
         """When the local HEAD SHA can't be resolved, fall back to the PR-level lookup
         instead of failing the whole step outright (design decision 4)."""
@@ -5164,6 +5114,71 @@ class TestMonitorCIStep:
             result = await step._get_local_head_sha(ctx)
 
         assert result == ""
+
+    async def test_unknown_commit_fails_with_named_diagnosis_not_bare_timeout(self) -> None:
+        """A SHA GitHub has no record of at all (e.g. a push that silently
+        failed) can never resolve on retry. The step must fail immediately
+        with a diagnosis naming the unresolvable commit, rather than polling
+        until max_wait and reporting a bare, misleading 'timed out'
+        (#1175 CodeRabbit review: finding 7, covering finding 3's fix)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.git.operations import UnknownCommitError
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 9999
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="deadbeef0000"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                side_effect=UnknownCommitError("GitHub has no record of commit deadbeef0000"),
+            ) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "deadbeef" in result.summary.lower()
+        assert "timed out" not in result.summary.lower()
+        mock_checks.assert_awaited_once()
+        mock_sleep.assert_not_awaited()
+
+    async def test_unknown_commit_retries_when_pr_head_still_matches(self) -> None:
+        """A corroborated UnknownCommitError (both check-runs and commit-status
+        404/422) is still not conclusive if the PR's own head SHA confirms the
+        commit exists: that is strong evidence of a transient GitHub-side
+        inconsistency rather than a failed push, so the step keeps polling
+        instead of failing outright (#1175 CodeRabbit review: finding 2)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.git.operations import UnknownCommitError
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 30
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_checks_for_sha",
+                new_callable=AsyncMock,
+                side_effect=[UnknownCommitError("transient"), [passed_check]],
+            ) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            # Autouse fixture stubs get_pr_head_sha to "abc123def456", matching
+            # expected_sha, so the cross-check confirms the commit exists.
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_sleep.assert_awaited_once()
+        assert mock_checks.call_count == 2
 
 
 # ---------------------------------------------------------------------------

@@ -88,6 +88,9 @@ from sova.git.pr import (
     PRStatus as PRStatus,
 )
 from sova.git.pr import (
+    UnknownCommitError as UnknownCommitError,
+)
+from sova.git.pr import (
     assign_pr as assign_pr,
 )
 from sova.git.pr import (
