@@ -148,10 +148,11 @@ class MonitorCIStep(BaseStep):
         outage there falls closed to continued polling rather than a silent
         pass. A SHA GitHub has no record of at all (both the check-runs and
         commit-status endpoints independently return 404/422; either one
-        succeeding proves the commit exists) fails immediately unless the
-        PR's own head SHA still matches *expected_sha*, in which case that is
-        stronger evidence of a transient GitHub-side inconsistency than of a
-        failed push, so polling continues instead. If the PR head moves to a
+        succeeding proves the commit exists) fails only when the PR's own
+        head SHA is confirmed to be a different commit; a head that still
+        matches *expected_sha*, or one that could not be read at all
+        (transient gh/network failure), is not corroboration of a failed
+        push, so polling continues instead. If the PR head moves to a
         different commit entirely (another actor pushed after this
         pipeline's push), the step rebinds to the new head, resets the
         no-checks grace clock (the freshly bound head has its own
@@ -166,6 +167,7 @@ class MonitorCIStep(BaseStep):
         max_wait = ctx.config.ci.max_wait
         grace_period = ctx.config.ci.no_checks_grace_period
         start_time = time.monotonic()
+        grace_start = start_time
         elapsed = 0
 
         if not expected_sha:
@@ -186,16 +188,22 @@ class MonitorCIStep(BaseStep):
                     )
                 except UnknownCommitError as exc:
                     head_sha = await get_pr_head_sha(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
-                    if head_sha == expected_sha:
+                    if not head_sha or head_sha == expected_sha:
+                        # An unreadable head (transient gh/network failure) is "no
+                        # corroboration either way", not "confirmed bad push": fail
+                        # open and keep polling, mirroring _find_pr_head_mismatch.
+                        reason = "the PR head could not be verified" if not head_sha else "the PR head still matches it"
                         log.warning(
-                            "step.monitor_ci.unknown_commit_but_pr_confirms",
+                            "step.monitor_ci.unknown_commit_head_unverifiable"
+                            if not head_sha
+                            else "step.monitor_ci.unknown_commit_but_pr_confirms",
                             pr=ctx.pr_number,
                             sha=sha_short,
                         )
                         self._write_heartbeat(
                             ctx,
                             f"CI poll: {elapsed}s/{max_wait}s elapsed, GitHub reports unknown commit "
-                            f"{sha_short} but the PR head still matches it (retrying)",
+                            f"{sha_short} but {reason} (retrying)",
                         )
                         await asyncio.sleep(poll_interval)
                         elapsed = int(time.monotonic() - start_time)
@@ -227,7 +235,7 @@ class MonitorCIStep(BaseStep):
                     log.info("step.monitor_ci.excluded_checks", skipped=skipped, patterns=exclude)
 
             if not checks:
-                if elapsed >= grace_period:
+                if time.monotonic() - grace_start >= grace_period:
                     if expected_sha and not await self._pr_confirms_no_checks(ctx):
                         log.info(
                             "step.monitor_ci.sha_checks_not_registered",
@@ -279,6 +287,7 @@ class MonitorCIStep(BaseStep):
                         )
                         expected_sha = new_head
                         sha_short = new_head[:8]
+                        grace_start = time.monotonic()
                         elapsed = int(time.monotonic() - start_time)
                         continue
 
