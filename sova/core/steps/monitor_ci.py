@@ -16,7 +16,13 @@ from typing import Any
 from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.git.operations import CICheck, get_ci_checks, get_ci_checks_for_sha, get_ci_failure_logs
+from sova.git.operations import (
+    CICheck,
+    get_ci_checks,
+    get_ci_checks_for_sha,
+    get_ci_failure_logs,
+    get_pr_head_sha,
+)
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import format_fix_llm_failure
 from sova.utils.logging import get_logger
@@ -142,6 +148,7 @@ class MonitorCIStep(BaseStep):
         max_wait = ctx.config.ci.max_wait
         grace_period = ctx.config.ci.no_checks_grace_period
         start_time = time.monotonic()
+        grace_start = start_time
         elapsed = 0
 
         if not expected_sha:
@@ -182,7 +189,7 @@ class MonitorCIStep(BaseStep):
                     log.info("step.monitor_ci.excluded_checks", skipped=skipped, patterns=exclude)
 
             if not checks:
-                if elapsed >= grace_period:
+                if time.monotonic() - grace_start >= grace_period:
                     if expected_sha and not await self._pr_confirms_no_checks(ctx):
                         log.info(
                             "step.monitor_ci.sha_checks_not_registered",
@@ -217,6 +224,27 @@ class MonitorCIStep(BaseStep):
 
             all_completed = all(c.is_completed for c in checks)
             if all_completed:
+                if expected_sha:
+                    new_head = await self._find_pr_head_mismatch(ctx, expected_sha)
+                    if new_head:
+                        log.warning(
+                            "step.monitor_ci.head_mismatch",
+                            pr=ctx.pr_number,
+                            elapsed=elapsed,
+                            old_sha=sha_short,
+                            new_sha=new_head[:8],
+                        )
+                        self._write_heartbeat(
+                            ctx,
+                            f"CI poll: PR head moved from {sha_short} to {new_head[:8]}; "
+                            f"rebinding and continuing to poll the new head",
+                        )
+                        expected_sha = new_head
+                        sha_short = new_head[:8]
+                        grace_start = time.monotonic()
+                        elapsed = int(time.monotonic() - start_time)
+                        continue
+
                 failed = [c for c in checks if c.is_failed]
                 if failed:
                     names = ", ".join(c.name for c in failed)
@@ -278,6 +306,9 @@ class MonitorCIStep(BaseStep):
             return None
         if not all(c.is_completed for c in checks):
             return None
+        if expected_sha and await self._find_pr_head_mismatch(ctx, expected_sha):
+            log.warning("step.monitor_ci.resume_head_mismatch", pr=ctx.pr_number)
+            return None
         failed = [c for c in checks if c.is_failed]
         if failed:
             names = ", ".join(c.name for c in failed)
@@ -289,6 +320,22 @@ class MonitorCIStep(BaseStep):
         """Write a progress line so the watchdog's no-output detector works."""
         if ctx.output_writer is not None:
             ctx.output_writer.write_line(message)
+
+    @staticmethod
+    async def _find_pr_head_mismatch(ctx: ExecutionContext, expected_sha: str) -> str | None:
+        """Return the PR's current head SHA if it no longer matches *expected_sha*.
+
+        Fails open (returns None, i.e. "no mismatch") when the head SHA can't
+        be fetched: a transient gh/network failure must not block a result
+        forever. Only a confirmed mismatch (another actor updated the PR to a
+        different commit after this pipeline's push) returns the new SHA, so
+        the caller can fail fast instead of polling a stale commit forever.
+        """
+        head_sha = await get_pr_head_sha(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+        if not head_sha:
+            log.warning("step.monitor_ci.head_sha_check_failed", pr=ctx.pr_number)
+            return None
+        return None if head_sha == expected_sha else head_sha
 
     @staticmethod
     async def _pr_confirms_no_checks(ctx: ExecutionContext) -> bool:
