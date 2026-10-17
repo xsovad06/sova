@@ -120,7 +120,11 @@ class _ConnectionManager:
                     message = format_status_update(statuses)
                 except Exception:  # noqa: BLE001 (a status fetch failure must not tear down the WebSocket)
                     log.warning("Failed to fetch agent statuses for WebSocket broadcast", exc_info=True)
-                    message = {"type": "status_update", "runs": []}
+                    # A distinct type, not {"type": "status_update", "runs": []}: the
+                    # client cannot otherwise tell a transient fetch failure apart
+                    # from "no runs are active", and would wrongly prune all of its
+                    # per-run tracking state on every outage.
+                    message = {"type": "status_unavailable"}
                 await self._broadcast(message, project_dir)
                 await asyncio.sleep(_STATUS_BROADCAST_INTERVAL)
         except asyncio.CancelledError:

@@ -16236,7 +16236,7 @@ class TestWebSocketAgentStatus:
             assert d2["type"] == "status_update"
 
     def test_websocket_error_handling(self) -> None:
-        """When get_all_agent_statuses raises, endpoint sends empty runs and does not crash."""
+        """When get_all_agent_statuses raises, endpoint sends a distinct status_unavailable message, not empty runs."""
         from unittest.mock import AsyncMock, patch
 
         from starlette.testclient import TestClient
@@ -16252,8 +16252,8 @@ class TestWebSocketAgentStatus:
             client.websocket_connect("/api/ws/agents/status") as ws,
         ):
             data = ws.receive_json()
-            assert data["type"] == "status_update"
-            assert data["runs"] == []
+            assert data["type"] == "status_unavailable"
+            assert "runs" not in data
 
     def test_websocket_multi_project_isolation(self) -> None:
         """ConnectionManager groups connections by project_dir for isolation."""

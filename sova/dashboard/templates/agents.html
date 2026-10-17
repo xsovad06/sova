@@ -2625,6 +2625,12 @@ function _scheduleAgentsRefresh() {
 }
 
 function _handleAgentStatusMessage(msg) {
+  if (msg.type === 'status_unavailable') {
+    // The producer's status fetch failed server-side (e.g. a transient DB
+    // hiccup); treated as "no update this tick", not "no active runs", so
+    // none of the per-run tracking state below is pruned on it.
+    return;
+  }
   if (msg.type === 'agent_finished') {
     // A dashboard-managed agent exited and the server dropped its cached
     // task, PR, and verdict state: refresh both views now. This covers
