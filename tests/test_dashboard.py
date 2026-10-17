@@ -546,18 +546,22 @@ class TestDashboardHealth:
             assert "bg-accent-green" in section, f"{status} should use green (running) color, not blue"
 
     async def test_ws_notifications_cover_all_terminal_states(self, client: AsyncClient) -> None:
-        """Verify WebSocket notification handler fires for all terminal states except paused."""
+        """Verify the agent_finished notification handler fires for all terminal states except
+        paused (#1051: get_all_agent_statuses() only ever selects non-terminal TaskRuns, so a
+        terminal-state transition can only be observed from the agent_finished payload, not from
+        a status_update broadcast).
+        """
         resp = await client.get("/agents")
         html = resp.text
         # Should use _STATUS_TERMINAL lookup instead of hardcoded done/failed check
-        assert "_STATUS_TERMINAL[curr]" in html, "Notification check should use _STATUS_TERMINAL lookup"
+        assert "_STATUS_TERMINAL[msg.status]" in html, "Notification check should use _STATUS_TERMINAL lookup"
         # Should exclude paused (user-initiated, not worth notifying)
         assert "!== 'paused'" in html or '!== "paused"' in html
 
     async def test_agents_page_has_ws_notification_tracking(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
         html = resp.text
-        assert "_wsPreviousStatuses" in html
+        assert "msg.status" in html
         assert "sendBrowserNotification" in html
 
     async def test_supervisor_page_loads(self, client: AsyncClient) -> None:
@@ -4351,6 +4355,37 @@ class TestAgentsAPI:
         assert "slots_available" in data
         assert isinstance(data["agents"], list)
         assert data["agents"] == []
+
+    async def test_agents_active_zero_cost_same_precision_running_and_completed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A zero-cost running agent and a zero-cost completed agent must serialize cost_usd
+        with the same precision. Before #1051's shared _format_cost_usd() helper, the running
+        branch's pool-tracked-float fallback produced "0" (via Decimal(str(0))) while the
+        completed branch produced the same "0", but either could drift independently of the
+        DB-column branch's "0.000000" (a Numeric(10,6) read via decimal_to_json()) since all
+        three were serialized by hand at each call site.
+        """
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, CompletedAgent, ProjectAgents
+
+        mock_process = MagicMock()
+        mock_process.pid = 88888
+        agent = AgentState(run_id=8001, issue="800", role="developer", process=mock_process, last_result_cost=0.0)
+
+        pa = ProjectAgents()
+        pa.agents[8001] = agent
+        pa.recently_completed.append(
+            CompletedAgent(run_id=8002, issue="801", role="developer", status="done", cost=0.0)
+        )
+
+        monkeypatch.setattr(agent_lifecycle, "_get_project_agents", lambda slug=None: pa)
+
+        result = await agent_lifecycle.get_all_agents()
+        assert result["agents"][0]["cost_usd"] == "0.000000"
+        assert result["completed"][0]["cost_usd"] == "0.000000"
 
     async def test_agents_interrupted_empty(self, client: AsyncClient) -> None:
         resp = await client.get("/api/agents/interrupted")
@@ -8246,7 +8281,11 @@ class TestWaitAndFinalizeGraphBroadcast:
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        mock_ws_manager.broadcast_event.assert_awaited_once_with("agent_finished", Path("/tmp/test-project"))
+        mock_ws_manager.broadcast_event.assert_awaited_once_with(
+            "agent_finished",
+            Path("/tmp/test-project"),
+            extra={"run_id": 43, "status": "done", "issue": "508", "pr_number": None, "role": "developer"},
+        )
 
     async def test_broadcasts_even_when_auto_handoff_raises(self) -> None:
         from pathlib import Path
@@ -8313,7 +8352,7 @@ class TestWaitAndFinalizeGraphBroadcast:
 
         seen_running: list[bool] = []
 
-        async def _record(_event: str, _project_dir: Path) -> None:
+        async def _record(_event: str, _project_dir: Path, extra: dict | None = None) -> None:
             seen_running.append(45 in pa.agents)
 
         mock_ws_manager = MagicMock()
@@ -8461,7 +8500,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch.object(agent_finalize, "_invalidate_work_item_caches"),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
         ):
-            await agent_finalize._announce_agent_finished(agent, status_changed=True)
+            await agent_finalize._announce_agent_finished(agent, status_changed=True, status="done")
 
         mock_ws_manager.broadcast_event.assert_awaited_once()
 
@@ -8494,14 +8533,14 @@ class TestAgentsPageRefreshWiring:
 
     def test_status_update_change_schedules_refresh(self) -> None:
         html = self._template()
-        start = html.index("msg.type === 'status_update'")
+        start = html.index("msg.type === 'status_update' && Array.isArray(msg.runs)")
         handler = html[start : html.index("_wsLastRunStatuses = runStatuses;", start)]
         assert "_scheduleWorkItemsRefresh()" in handler
 
     def test_status_update_first_snapshot_schedules_refresh(self) -> None:
         """The first snapshot (_wsLastRunStatuses still null) must also refresh (#1152)."""
         html = self._template()
-        start = html.index("msg.type === 'status_update'")
+        start = html.index("msg.type === 'status_update' && Array.isArray(msg.runs)")
         condition_start = html.index("if (", start)
         condition = html[condition_start : html.index(") {", condition_start)]
         assert "_wsLastRunStatuses === null" in condition
@@ -8512,7 +8551,7 @@ class TestAgentsPageRefreshWiring:
         with what the Tasks list already reported (#1162 review).
         """
         html = self._template()
-        start = html.index("msg.type === 'status_update'")
+        start = html.index("msg.type === 'status_update' && Array.isArray(msg.runs)")
         block_start = html.index("if (_wsLastRunStatuses === null) {", start)
         block_end = html.index("} else if (runStatuses !== _wsLastRunStatuses) {", block_start)
         block = html[block_start:block_end]
@@ -16236,7 +16275,7 @@ class TestWebSocketAgentStatus:
             assert d2["type"] == "status_update"
 
     def test_websocket_error_handling(self) -> None:
-        """When get_all_agent_statuses raises, endpoint sends empty runs and does not crash."""
+        """When get_all_agent_statuses raises, endpoint sends a distinct status_unavailable message, not empty runs."""
         from unittest.mock import AsyncMock, patch
 
         from starlette.testclient import TestClient
@@ -16252,8 +16291,8 @@ class TestWebSocketAgentStatus:
             client.websocket_connect("/api/ws/agents/status") as ws,
         ):
             data = ws.receive_json()
-            assert data["type"] == "status_update"
-            assert data["runs"] == []
+            assert data["type"] == "status_unavailable"
+            assert "runs" not in data
 
     def test_websocket_multi_project_isolation(self) -> None:
         """ConnectionManager groups connections by project_dir for isolation."""
@@ -16300,6 +16339,53 @@ class TestWebSocketAgentStatus:
 
         mgr.disconnect(ws_b, dir_b)
         assert len(mgr._groups.get(dir_b, [])) == 0
+
+    async def test_agent_finished_reaches_subscriber_despite_unresolved_project_dir(self) -> None:
+        """ws_agent_status() registers under get_project_dir() or get_default_project_dir()
+        (resolved), but a broadcaster can reach the same project through a different,
+        unresolved-but-equivalent form (e.g. AgentState.project_dir's default_factory=Path.cwd,
+        or any caller that never called .resolve()). Before _normalize_project_key(), the two
+        sides landed in different _ConnectionManager groups and broadcast_event() silently
+        dropped agent_finished (and graph_invalidated) for every subscriber (#1051 review,
+        verified empirically against a real single-project deployment).
+        """
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.routers.agents import _ConnectionManager
+        from sova.dashboard.services.agent_finalize import _announce_agent_finished
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mgr = _ConnectionManager()
+        resolved_dir = Path("/tmp/sova-test-project-1051-ws").resolve()
+        unresolved_equivalent = resolved_dir / "sub" / ".."
+        assert unresolved_equivalent != resolved_dir
+        assert unresolved_equivalent.resolve() == resolved_dir
+
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        dummy_task = MagicMock()
+        dummy_task.done.return_value = False
+        with patch("asyncio.create_task", return_value=dummy_task):
+            mgr.connect(ws, resolved_dir)
+
+        mock_process = MagicMock()
+        agent = AgentState(
+            run_id=9001,
+            issue="900",
+            role="developer",
+            process=mock_process,
+            project_dir=unresolved_equivalent,
+        )
+
+        with patch("sova.dashboard.routers.agents._ws_manager", mgr):
+            await _announce_agent_finished(agent, status_changed=True, status="done")
+
+        sent = [c.args[0] for c in ws.send_json.await_args_list]
+        assert sent[0]["type"] == "agent_finished"
+        assert sent[0]["run_id"] == 9001
+        assert sent[0]["status"] == "done"
+        assert sent[1] == {"type": "graph_invalidated"}
 
 
 # ---------------------------------------------------------------------------

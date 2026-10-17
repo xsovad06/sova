@@ -258,6 +258,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A tool-using step must never silently degrade to a text-only LLM call
 - An unassigned ticket's suitability lives in a local record, never a label its owner's account cannot speak for
 - A dependency applied once at router level, self-exempting safe methods, covers a mutating route by construction; a per-route opt-in is exactly how most of them went unguarded
+- A status broadcast producer that only selects non-terminal rows can never carry a terminal transition for the client to act on
 
 ## Cross-References (domain-specific details)
 

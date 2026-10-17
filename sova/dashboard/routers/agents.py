@@ -35,6 +35,18 @@ log = get_logger(component="dashboard.agents")
 _STATUS_BROADCAST_INTERVAL = 2  # seconds
 
 
+def _normalize_project_key(project_dir: Path | None) -> Path | None:
+    """Resolve a project_dir to the canonical form used as a _ConnectionManager group key.
+
+    A broadcaster and a websocket subscriber can reach the same project through
+    different unresolved forms (an AgentState built from a caller-supplied path vs.
+    the single-project default set via set_project_dir()). Keying on the resolved
+    path ensures both land in the same group instead of silently landing in two
+    (one of which has no subscribers, so broadcast_event() drops the message).
+    """
+    return project_dir.resolve() if project_dir is not None else None
+
+
 class _ConnectionManager:
     """Track active WebSocket connections per project and run a single producer per group.
 
@@ -54,6 +66,7 @@ class _ConnectionManager:
         return [ws for conns in self._groups.values() for ws in conns]
 
     def connect(self, ws: WebSocket, project_dir: Path | None = None) -> None:
+        project_dir = _normalize_project_key(project_dir)
         group = self._groups.setdefault(project_dir, [])
         group.append(ws)
         task = self._producer_tasks.get(project_dir)
@@ -61,6 +74,7 @@ class _ConnectionManager:
             self._producer_tasks[project_dir] = asyncio.create_task(self._produce_loop(project_dir))
 
     def disconnect(self, ws: WebSocket, project_dir: Path | None = None) -> None:
+        project_dir = _normalize_project_key(project_dir)
         group = self._groups.get(project_dir, [])
         try:
             group.remove(ws)
@@ -79,14 +93,21 @@ class _ConnectionManager:
         self._producer_tasks.clear()
         self._groups.clear()
 
-    async def broadcast_event(self, event_type: str, project_dir: Path | None) -> None:
+    async def broadcast_event(self, event_type: str, project_dir: Path | None, extra: dict | None = None) -> None:
         """Send a one-shot event to all subscribers for a project.
 
-        No-op when no connections exist for the project directory.
+        No-op when no connections exist for the project directory. *extra* merges
+        additional fields onto the ``{"type": event_type}`` payload (e.g. the
+        terminal status of an ``agent_finished`` run, which ``get_all_agent_statuses()``
+        can never report since it only selects non-terminal TaskRuns).
         """
+        project_dir = _normalize_project_key(project_dir)
         if not self._groups.get(project_dir):
             return
-        await self._broadcast({"type": event_type}, project_dir)
+        payload = {"type": event_type}
+        if extra:
+            payload.update(extra)
+        await self._broadcast(payload, project_dir)
 
     async def _broadcast(self, data: dict, project_dir: Path | None) -> None:
         sockets = list(self._groups.get(project_dir, []))
@@ -120,7 +141,11 @@ class _ConnectionManager:
                     message = format_status_update(statuses)
                 except Exception:  # noqa: BLE001 (a status fetch failure must not tear down the WebSocket)
                     log.warning("Failed to fetch agent statuses for WebSocket broadcast", exc_info=True)
-                    message = {"type": "status_update", "runs": []}
+                    # A distinct type, not {"type": "status_update", "runs": []}: the
+                    # client cannot otherwise tell a transient fetch failure apart
+                    # from "no runs are active", and would wrongly prune all of its
+                    # per-run tracking state on every outage.
+                    message = {"type": "status_unavailable"}
                 await self._broadcast(message, project_dir)
                 await asyncio.sleep(_STATUS_BROADCAST_INTERVAL)
         except asyncio.CancelledError:
@@ -633,11 +658,16 @@ async def ws_agent_status(websocket: WebSocket) -> None:
     client count.
     """
     from sova.dashboard.project_context import get_project_dir
+    from sova.dashboard.services.agent_pool import get_default_project_dir
 
     await websocket.accept()
-    # Capture project_dir at connection time so the producer loop
-    # uses the correct scope even in multi-project mode.
-    project_dir = get_project_dir()
+    # Capture project_dir at connection time so the producer loop uses the
+    # correct scope even in multi-project mode. get_project_dir() is a
+    # per-request contextvar that ProjectContextMiddleware only ever sets for
+    # HTTP requests under /p/; it is never set for a websocket scope, so a
+    # single-project deployment falls back to the default project dir rather
+    # than registering under None while broadcasters key on the real path.
+    project_dir = get_project_dir() or get_default_project_dir()
     _ws_manager.connect(websocket, project_dir)
     try:
         # Keep connection alive: wait for client messages or disconnect.

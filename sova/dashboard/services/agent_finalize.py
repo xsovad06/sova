@@ -19,6 +19,7 @@ from sova.dashboard.services.agent_context import (
 from sova.dashboard.services.agent_db import (
     _downgrade_to_failed,
     _finalize_task_run,
+    _get_task_run_status,
     _validate_command_outcome,
     _validate_pipeline_outcome,
 )
@@ -413,7 +414,7 @@ def _invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None
         log.debug("finalize.verdict_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
 
 
-async def _announce_agent_finished(agent: AgentState, *, status_changed: bool) -> None:
+async def _announce_agent_finished(agent: AgentState, *, status_changed: bool, status: str) -> None:
     """Invalidate stale caches and tell connected dashboards that an agent exited.
 
     ``agent_finished`` is sent on every exit, including when the run had already
@@ -422,12 +423,29 @@ async def _announce_agent_finished(agent: AgentState, *, status_changed: bool) -
     ``status_changed`` is False and the Tasks list still needs to refresh.
     ``graph_invalidated`` keeps its narrower contract: only a status this
     finalization actually transitioned.
+
+    The ``agent_finished`` payload carries ``status``/``run_id``/``issue``/
+    ``pr_number``/``role`` so the client can fire a terminal-state browser
+    notification from this event: the periodic ``status_update`` broadcast is
+    built from ``get_all_agent_statuses()``, which only ever selects
+    non-terminal ``TaskRun`` rows, so a finished run never appears there with
+    its terminal status for the client to observe.
     """
     _invalidate_work_item_caches(agent.project_dir, agent.pr_number)
     try:
         from sova.dashboard.routers.agents import _ws_manager
 
-        await _ws_manager.broadcast_event("agent_finished", agent.project_dir)
+        await _ws_manager.broadcast_event(
+            "agent_finished",
+            agent.project_dir,
+            extra={
+                "run_id": agent.run_id,
+                "status": status,
+                "issue": agent.issue,
+                "pr_number": agent.pr_number,
+                "role": agent.role,
+            },
+        )
         if status_changed:
             await _ws_manager.broadcast_event("graph_invalidated", agent.project_dir)
     except Exception:  # noqa: BLE001 (best-effort UI notification must not crash finalization)
@@ -566,8 +584,14 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         )
 
     # After the pop, so a client refetching on these events no longer sees the
-    # agent as running.
-    await _announce_agent_finished(agent, status_changed=status_changed)
+    # agent as running. The broadcast status comes from the DB, not the local
+    # exit-code-derived variable: a deliberate stop, an external signal, or a
+    # run that was already terminal before this finalize call (rejected,
+    # paused, awaiting_approval) all diverge from "done"/"failed" above.
+    announced_status = await _get_task_run_status(run_id, agent.project_dir)
+    if announced_status is None:
+        announced_status = status
+    await _announce_agent_finished(agent, status_changed=status_changed, status=announced_status)
 
     # Finalize lifecycle phase (only for issue-based runs)
     if agent.issue:
