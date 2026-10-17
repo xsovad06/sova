@@ -594,40 +594,44 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
         log.warning("rollback.failed", run_id=run_id, exc_info=True)
 
 
-async def get_interrupted_runs(limit: int = 5) -> list[dict]:
-    """Get recently interrupted task runs."""
-    from sova.dashboard.services import run_service
-    from sova.db.session import get_session
-
-    try:
-        async with await get_session() as session:
-            async with session.begin():
-                return await run_service.list_runs(session, status="interrupted", limit=limit)
-    except (OSError, RuntimeError, SQLAlchemyError):
-        log.debug("interrupted_runs.query_failed", exc_info=True)
-        return []
+# Window matching the banner's own copy ("interrupted when the dashboard was
+# restarted"): bounds both queries so an old interrupted run cannot pin the
+# banner open forever. Dismiss still only clears the ids currently displayed
+# (at most `limit`), so a `total` above `limit` needs repeated clicks to clear.
+_INTERRUPTED_RUN_WINDOW = timedelta(hours=24)
 
 
-async def count_interrupted_runs() -> int:
-    """Count all interrupted task runs, independent of the banner's display `limit`.
+async def get_interrupted_runs_and_total(limit: int = 5) -> tuple[list[dict], int]:
+    """Get task runs interrupted within `_INTERRUPTED_RUN_WINDOW`, plus the total count.
 
-    Lets the banner distinguish "these are all of them" from "there are more
-    than the five shown", since `get_interrupted_runs()` is capped.
+    The total (independent of `limit`) lets the banner distinguish "these are
+    all of them" from "there are more than the five shown". Both queries run
+    in one session since every poll of the banner needs both.
     """
     from sqlalchemy import func, select
 
+    from sova.dashboard.services import run_service
     from sova.db.models import TaskRun
     from sova.db.session import get_session
 
+    cutoff = datetime.now(timezone.utc) - _INTERRUPTED_RUN_WINDOW
     try:
         async with await get_session() as session:
             async with session.begin():
-                stmt = select(func.count()).select_from(TaskRun).where(TaskRun.status == "interrupted")
-                result = await session.execute(stmt)
-                return result.scalar_one()
+                runs = await run_service.list_runs(session, status="interrupted", limit=limit, since_ended=cutoff)
+                count_stmt = (
+                    select(func.count())
+                    .select_from(TaskRun)
+                    .where(
+                        TaskRun.status == "interrupted",
+                        func.coalesce(TaskRun.ended_at, TaskRun.started_at) >= cutoff,
+                    )
+                )
+                total = (await session.execute(count_stmt)).scalar_one()
+                return runs, total
     except (OSError, RuntimeError, SQLAlchemyError):
-        log.debug("count_interrupted_runs.failed", exc_info=True)
-        return 0
+        log.debug("interrupted_runs.query_failed", exc_info=True)
+        return [], 0
 
 
 async def dismiss_interrupted_runs(run_ids: list[int], *, preserve_diagnostic: bool = False) -> int:
@@ -636,13 +640,13 @@ async def dismiss_interrupted_runs(run_ids: list[int], *, preserve_diagnostic: b
     swallowed failure is never reported as a no-op success).
 
     Scoped to `run_ids` (the runs actually shown in the banner) rather than
-    every interrupted run, since `get_interrupted_runs()` caps its result at
-    `limit` and a run the user never saw must not be dismissed.
+    every interrupted run, since `get_interrupted_runs_and_total()` caps its
+    result at `limit` and a run the user never saw must not be dismissed.
 
     `preserve_diagnostic=True` leaves `error_message` untouched: used when the
     dismissal is a side effect of relaunching the run rather than an explicit
-    user dismissal, so the original interruption cause is not overwritten
-    with "Dismissed by user".
+    user dismissal, so the original interruption cause (used by
+    get_failure_taxonomy()) is not overwritten with "Dismissed by user".
     """
     from sqlalchemy import update
 

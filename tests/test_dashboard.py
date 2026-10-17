@@ -1016,15 +1016,27 @@ class TestAgentsInterruptedAPI:
 
     async def test_interrupted_runs_reports_total(self, client: AsyncClient, session: AsyncSession) -> None:
         """The `total` count must reflect all interrupted runs, not just the capped display limit."""
+        now = datetime.now(timezone.utc)
         async with session.begin():
             for i in range(7):
-                session.add(TaskRun(issue_number=str(100 + i), role="developer", status="interrupted"))
+                session.add(
+                    TaskRun(
+                        issue_number=str(100 + i),
+                        role="developer",
+                        status="interrupted",
+                        started_at=now - timedelta(minutes=7 - i),
+                    )
+                )
 
         resp = await client.get("/api/agents/interrupted")
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] == 7
-        assert len(data["interrupted"]) <= 7
+        assert len(data["interrupted"]) == 5
+        # The returned rows are the most recent ones: those are what the
+        # displayed ids (and thus the scoped dismiss action) can act on.
+        shown_issues = {run["issue_number"] for run in data["interrupted"]}
+        assert shown_issues == {str(100 + i) for i in range(2, 7)}
 
 
 # ---------------------------------------------------------------------------

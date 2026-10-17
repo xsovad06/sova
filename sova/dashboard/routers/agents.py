@@ -367,10 +367,9 @@ async def get_active_agents() -> dict:
 @router.get("/agents/interrupted")
 async def interrupted_runs() -> dict:
     """Get recently interrupted runs (from dashboard crash/restart)."""
-    from sova.dashboard.services.agent_recovery import count_interrupted_runs, get_interrupted_runs
+    from sova.dashboard.services.agent_recovery import get_interrupted_runs_and_total
 
-    runs = await get_interrupted_runs()
-    total = await count_interrupted_runs()
+    runs, total = await get_interrupted_runs_and_total()
     return {"interrupted": runs, "total": total}
 
 
