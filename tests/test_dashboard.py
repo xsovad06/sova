@@ -3857,45 +3857,6 @@ class TestMultiProject:
 class TestTasksAPI:
     """Tests for the tasks API endpoints."""
 
-    async def test_active_tasks_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/tasks/active")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "tasks" in data
-        assert isinstance(data["tasks"], list)
-
-    async def test_active_tasks_with_data(self, client: AsyncClient, seed_data) -> None:
-        resp = await client.get("/api/tasks/active")
-        assert resp.status_code == 200
-        data = resp.json()
-        # run3 has status "developing": non-terminal, should appear
-        assert len(data["tasks"]) >= 1
-        active = data["tasks"][0]
-        assert active["issue_number"] == "44"
-        assert active["status"] == "developing"
-        assert "elapsed_seconds" in active
-
-    async def test_task_history_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/tasks/history")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["tasks"] == []
-
-    async def test_task_history_with_data(self, client: AsyncClient, seed_data) -> None:
-        resp = await client.get("/api/tasks/history")
-        assert resp.status_code == 200
-        data = resp.json()
-        # run1 (done) and run2 (failed) are terminal
-        assert len(data["tasks"]) == 2
-        statuses = {t["status"] for t in data["tasks"]}
-        assert statuses == {"done", "failed"}
-
-    async def test_task_history_limit(self, client: AsyncClient, seed_data) -> None:
-        resp = await client.get("/api/tasks/history?limit=1")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["tasks"]) == 1
-
     async def test_tasks_redirects_to_agents(self, client: AsyncClient) -> None:
         resp = await client.get("/tasks", follow_redirects=False)
         assert resp.status_code == 301

@@ -1554,7 +1554,6 @@ function renderAgentCard(agent) {
       '</div>' +
     '</div>' +
     '<div class="mb-3" data-pipeline-container>' + pipeline + '</div>' +
-    '<div id="handoff-inline-' + agent.run_id + '"></div>' +
     '<div class="flex items-center gap-2 mt-3">' +
       '<button id="log-btn-' + agent.run_id + '" onclick="event.stopPropagation(); viewLogs(' + agent.run_id + ', \'' + escapeHtml(agent.status) + '\')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" aria-label="View agent output" data-tooltip="View agent output">' +
         (activeLogRunId === agent.run_id ? 'Viewing Logs' : 'View Logs') +
@@ -1906,9 +1905,6 @@ async function stopAgent(runId) {
 // Handoff inline
 
 async function executeHandoffAction(actionId, issue) {
-  document.querySelectorAll('[id^="handoff-inline-"]').forEach(function(el) {
-    el.innerHTML = '';
-  });
   lastAgentFingerprint = null;
 
   try {
