@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import shlex
 import time
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -298,7 +299,7 @@ async def get_all_agents(slug: str | None = None) -> dict:
                 "step_index": progress["step_index"],
                 "total_steps": progress["total_steps"],
                 "elapsed_seconds": round(elapsed),
-                "cost_usd": db.get("cost_usd", agent.last_result_cost or 0.0),
+                "cost_usd": db.get("cost_usd", decimal_to_json(Decimal(str(agent.last_result_cost or 0)))),
                 "output_lines": len(agent.output_lines),
                 "pr_number": db.get("pr_number"),
                 "cpu_percent": cpu_pct,
@@ -315,7 +316,7 @@ async def get_all_agents(slug: str | None = None) -> dict:
                 "issue": ca.issue,
                 "role": ca.role,
                 "status": ca.status,
-                "cost_usd": ca.cost,
+                "cost_usd": decimal_to_json(Decimal(str(ca.cost or 0))),
                 "completed_seconds_ago": round(now - ca.completed_at),
                 "pr_number": db.get("pr_number"),
             }
