@@ -20,10 +20,15 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import ProjectSetting
+from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY
 
 logger = logging.getLogger(__name__)
 
 _DB_FILENAME = "sova.db"
+
+# Internal bookkeeping rows stored in project_settings that are not user-facing
+# configuration and must never surface in the config dict returned to callers.
+_INTERNAL_SETTING_KEYS = frozenset({_ORPHAN_SWEEP_MARKER_KEY})
 
 
 async def load_config_from_db(session: AsyncSession) -> dict[str, Any] | None:
@@ -102,6 +107,8 @@ def _rows_to_nested(rows: Any) -> dict[str, Any] | None:
     """Build a nested dict from key/JSON-value rows. Returns None when nothing is usable."""
     nested: dict[str, Any] = {}
     for row in rows:
+        if row.key in _INTERNAL_SETTING_KEYS:
+            continue
         try:
             value = json.loads(row.value)
         except (json.JSONDecodeError, TypeError):

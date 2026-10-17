@@ -148,9 +148,9 @@ async def configure_project(req: ConfigureRequest) -> dict:
     config_dict = setup_service.generate_config_dict(toml_cfg)
 
     from sova.config.db_loader import save_config_to_db
-    from sova.db.session import get_session, init_db
+    from sova.db.session import get_session, init_db_for_project
 
-    await init_db(project)
+    await init_db_for_project(project)
     async with await get_session(project_dir=project) as session:
         async with session.begin():
             await save_config_to_db(session, config_dict)

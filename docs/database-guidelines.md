@@ -190,27 +190,95 @@ cancelled before landing, the rows must be kept.
 ### Engine disposal after migrations
 
 `_run_migrations()` returns `bool`: `True` if DDL was executed (Alembic ran at least one
-migration), `False` if the DB was already at the head revision (fast path). `init_db()` only
-calls `engine.dispose()` and `_backup_db()` when `True`. For no-op restarts (DB already at
-head), neither disposal nor backup runs, saving one connection round-trip (~300 ms).
+migration), `False` if the DB was already at the head revision (fast path). For a file-backed
+SQLite engine, `init_db()`/`init_db_for_project()` now dispose the engine once `_run_migrations()`
+returns, regardless of that return value, before calling `_enable_sqlite_wal()`: see "SQLite
+foreign keys" below for why this can no longer be conditioned on DDL having run. `init_db()` also
+disposes whatever engine the module-level `_engine` previously pointed at before replacing it,
+but only when that previous engine is no longer reachable through `_engines` (i.e. a second call
+for the *same* project/url, which overwrites that dict entry in place) **and** the url is
+file-backed (`_get_db_path_from_url(url) is not None`). An in-memory SQLite engine's connection
+pool *is* the database (see `tests/conftest.py`'s `close_db()` warning), not just a reclaimable
+cache of connections to one, so disposing it destroys data rather than freeing a pool; a
+file-backed engine's pool is safe to reclaim this way because the data lives in the file, not the
+pool. A second call for a *different* project/url leaves the previous engine's `_engines` entry
+untouched, so it is not disposed either way: disposing it anyway would pull the pool out from
+under any other caller still holding that factory via `get_session(project_dir=...)` or
+`get_session_factory()`. Prefer `init_db_for_project()` for anything scoped to one project; it
+only ever adds a new entry to `_engines`, never replaces the process-global
+`_engine`/`_session_factory` another caller's bare `get_session()` depends on
+(`sova/dashboard/routers/setup.py`'s `/api/setup/configure` route is the example this fixed: it
+used to call `init_db()` and silently redirect every other request's default-path
+`get_session()` onto the just-configured project for the rest of the process). `init_db()`'s
+whole body (engine creation, migrations, WAL/pragma setup) runs under the same per-url
+`_get_init_lock()` guard `init_db_for_project()` uses, so two concurrent callers resolving to the
+same url (e.g. two requests both hitting `get_session()` right after startup) are serialized
+rather than each creating an engine and racing to dispose the other's mid-migration.
 
 ### Migration conventions
 
 1. **Use `batch_alter_table`** for all SQLite DDL (env.py has `render_as_batch=True`)
-2. **Idempotent checks**: use `_column_exists()`, `_table_exists()`, `_index_exists()` helpers (defined in migrations 006, 008)
+2. **Idempotent checks**: use `_column_exists()`, `_table_exists()`, `_index_exists()` helpers (defined in migrations 006, 008). A `drop_constraint()`/`create_foreign_key()` pair needs the same care: `Base.metadata` has no `naming_convention`, so a table built by `create_all()` (the pre-#1205 self-healing fallback's own path) gives a FK no name at all, not Alembic's generated one. Reflect the actual constraint first (`sa.inspect(op.get_bind()).get_foreign_keys(table)`), skip if it already matches the desired `ondelete`, and when dropping an unnamed one pass `naming_convention=` to `batch_alter_table()` so Alembic can assign it a deterministic name to drop by, rather than assuming the constraint carries whatever name a fresh migration-built chain would give it (migration 040 fixed exactly this)
 3. **Sequential numbering**: `001` onward (not Alembic UUIDs)
-4. **Pre-migration backup**: `_backup_db()` copies `.db` to `.db.bak`, only when DDL ran
-5. **Self-healing fallback**: if Alembic fails, drops corrupted `alembic_version`, runs `create_all` + stamps at head
+4. **Pre-migration backup**: `_backup_db()` writes a WAL-consistent copy (`sqlite3.Connection.backup()`, not a byte-level file copy) immediately before DDL executes, inside `_run_migrations()` itself, not after. Only runs when DDL is actually about to run, and only for a non-empty database file. Rotates any existing `.db.bak` to `.db.bak.1` first, so at least two generations survive a crash mid-write
+5. **Narrowed fallback**: Alembic failing on a database that already has tables (pre-Alembic with real data, or behind head) re-raises instead of being swallowed, so `init_db()` fails loudly. `create_all` + stamp only runs for a genuinely fresh database (no tables, no `alembic_version`) in the first place
+6. **Cross-process serialization**: `init_db()`/`init_db_for_project()` wrap both `_run_migrations()` and `_enable_sqlite_wal()` (WAL mode, pragmas, orphan cleanup, now run strictly *after* migrations, see "SQLite foreign keys" below) in a `flock()`-based lock file (`<db>.migrate.lock`, i.e. `sova.db.migrate.lock` beside the database: appended to the filename, not substituted for its suffix, so it cannot collide with a sibling SQLite file sharing the same stem), since the CLI, the dashboard/scheduler server, and every `sova run` subprocess are separate processes that can otherwise race the same `.claude/sova.db` with nothing stronger than SQLite's busy timeout between them. Released automatically if the holding process crashes. A hung (not crashed) holder is bounded too: acquisition polls with a non-blocking `flock()`, logs a warning naming the lock path after 5s of contention, and gives up with a clear error after 120s rather than hanging forever. The in-process guard (`_get_init_lock()`, an `asyncio.Lock`) is keyed per database url, not global, so `init_db_for_project()` calls for two different projects never queue behind each other even while one holds the cross-process flock for tens of seconds
 
 ### The five alembic_version cases
 
 Handled in `_run_migrations()` (`sova/db/session.py`):
 
-1. **Fresh DB** (no tables): run all migrations from scratch
-2. **Pre-Alembic DB** (tables exist, no `alembic_version`): stamp at current head
+1. **Fresh DB** (no tables): run all migrations from scratch; if this fails, fall back to `create_all` + stamp (the only case where that fallback is safe)
+2. **Pre-Alembic DB** (tables exist, no `alembic_version`): stamp at current head; a failure here re-raises rather than falling back, since real data already exists
 3. **Already at head** (version == `_get_alembic_head()`): verify the schema via `_find_missing_columns()`, logging an error naming any ORM column the database lacks, then return `False`; skip upgrade, dispose, and backup. The check compares names only, so it stays cheap enough for the startup path. It reports rather than repairs, because a column with no migration behind it cannot be recreated from the revision history
-4. **Behind head** (version < head): upgrade to head; dispose pool; backup DB
-5. **Empty/corrupted `alembic_version`**: `DROP TABLE` then treat as case 1
+4. **Behind head** (version < head): back up, then upgrade to head; dispose pool. A failure during upgrade re-raises instead of falling back to `create_all` + stamp, since that would silently mask a partially-applied migration as fully applied
+5. **Empty/corrupted `alembic_version`**: a missing row, or a row whose `version_num` is `NULL`/empty/whitespace-only, is dropped (`DROP TABLE alembic_version`) and treated as case 1; a version string that fails to resolve to a real revision (rather than a blank one) is case 2 or 4 depending on whether other tables exist, and re-raises on failure like they do. `has_tables` (used both to pick stamp-vs-upgrade and to decide whether a later failure may fall back to `create_all`) always excludes `alembic_version` itself from the table count, so a database whose only table is a corrupted `alembic_version` is correctly treated as "no tables at all", not as "real data present"
+
+### `sova db status` / `sova db backup`
+
+`sova db status` prints the current revision, the head revision, whether they match, and any
+`_find_missing_columns()` drift; a database with no `alembic_version` table at all prints a
+plain "not initialized" message instead of raising. `sova db backup` calls the same
+`_backup_db()` used internally before DDL, writing a WAL-consistent copy and printing the path
+(or exiting non-zero when there is nothing to back up: no file yet, or an empty one). Against a
+non-SQLite deployment (`SOVA_DATABASE_URL` pointing at Postgres) it instead prints an explicit
+"backup is only supported for SQLite" message rather than the misleading "nothing to back up"
+one, since the database is neither missing nor empty, backup for that backend is simply
+unsupported. `_run_migrations()` logs the backup path it wrote (`_log.info`) whenever one is
+taken, so the restore target is visible in the logs next to any migration failure that follows.
+Both commands resolve their url via `_get_database_url(resolved_dir, create_dirs=False)`: the
+default (`create_dirs=True`) path every other caller uses creates `.claude/` as a side effect of
+just computing the path, which would leave a stray `.claude/` directory behind on a directory
+that is not a SOVA project at all, just because a read-only diagnostic command was pointed at it.
+`status` additionally checks the file exists before creating an engine against it, so it never
+even opens a connection to a path with no database file.
+
+### SQLite foreign keys
+
+`_register_sqlite_pragmas()`'s connect listener sets `PRAGMA foreign_keys=ON`, so
+`ondelete="CASCADE"`/`ondelete="SET NULL"` columns (e.g. `MemoryEdge.source_id`/`target_id`,
+`TaskRun.workflow_definition_id`) actually cascade/null out on SQLite the way they always have on
+Postgres. `_enable_sqlite_wal()` (which calls `_register_sqlite_pragmas()`) must run only *after*
+`_run_migrations()` has finished on the same engine, never before: Alembic's SQLite batch mode
+(required for any `ALTER`/`DROP COLUMN`, used 8+ times already on `task_runs` alone) does
+`CREATE tmp` / `INSERT` / `DROP TABLE <orig>` / `RENAME`, and with `foreign_keys=ON` that `DROP`
+of a table other populated tables reference raises `IntegrityError`. `init_db()`/
+`init_db_for_project()` therefore call `_run_migrations()` first, then unconditionally dispose the
+engine (evicting any connection migrations opened before the pragma listener existed, so it is
+never reused pragma-less for the rest of the engine's lifetime), then call `_enable_sqlite_wal()`.
+That dispose is why engine disposal (see above) can no longer be conditioned on whether DDL
+actually ran. `_enable_sqlite_wal()` then runs a `_cleanup_orphaned_memory_edges()` sweep, since a
+database created before the pragma was enabled could already hold `memory_edges` rows whose
+`memories` row is gone. The sweep is genuinely one-time rather than a per-startup table scan: once
+it has run (orphans found and removed, or none found), it writes a `project_settings` marker row
+(`db.orphan_edges_swept`), and every later call returns immediately on seeing that row, since
+`ondelete="CASCADE"` with the pragma now active means no new orphan can ever accumulate again. It
+takes its own `_backup_db()` snapshot, under its own suffix (`.db.bak.pre-orphan-cleanup`, never
+the pre-migration `.db.bak`/`.db.bak.1` slots `_run_migrations()` uses), immediately before the
+`DELETE` when an orphan is actually found, since that delete is otherwise the one destructive
+write this module performs outside of migrations with no restore point of its own; using a
+separate suffix means this sweep's backup can never demote (or be demoted by) the pre-migration
+restore point `_run_migrations()` took moments earlier in the same startup.
 
 ## Multi-Project DB Support
 

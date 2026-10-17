@@ -14,6 +14,7 @@ from sova.cli.commands.assess import app as assess_app
 from sova.cli.commands.briefing import briefing
 from sova.cli.commands.commands import app as commands_app
 from sova.cli.commands.config import config_app
+from sova.cli.commands.db import app as db_app
 from sova.cli.commands.doctor import doctor
 from sova.cli.commands.harden import harden
 from sova.cli.commands.mcp import app as mcp_app
@@ -84,6 +85,9 @@ app.add_typer(supervisor_app)
 
 # Assess (subcommand group)
 app.add_typer(assess_app)
+
+# Database (subcommand group)
+app.add_typer(db_app)
 
 console = Console(stderr=True)
 
