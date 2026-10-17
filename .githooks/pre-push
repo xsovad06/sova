@@ -66,7 +66,7 @@ run_ruff format --check sova/ tests/
 echo ""
 echo "[4/7] Command frontmatter..."
 fm_errors=0
-for f in commands/*.md; do
+for f in sova/commands/data/commands/*.md; do
   name=$(basename "$f")
   # Single awk pass: check first line and extract required fields
   result=$(awk '

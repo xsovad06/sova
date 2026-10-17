@@ -17,14 +17,15 @@ from pathlib import Path
 import pytest
 
 from sova.agents.codex import CodexAdapter
+from sova.commands.catalog import get_canonical_dir, get_skills_dir
 from sova.commands.manifest import MANIFEST_FILENAME, file_hash
 from sova.commands.self_render import PLACEHOLDER_RE, repo_root, self_config, used_placeholders
 from sova.commands.skill_render import SKILL_NAME_PREFIX, render_codex_skills, render_self_skills
 from sova.commands.templates import build_variables
 
 _ROOT = repo_root()
-_STANDALONE_SKILLS_DIR = _ROOT / "skills"
-_COMMANDS_DIR = _ROOT / "commands"
+_STANDALONE_SKILLS_DIR = get_skills_dir()
+_COMMANDS_DIR = get_canonical_dir()
 # Resolved via the adapter, not a hand-pinned literal, so this guard and
 # render_self_skills() can't silently diverge the next time CodexAdapter's
 # skills_dir() moves (it already has once: .codex/skills -> .agents/skills).
@@ -97,7 +98,7 @@ def _expected_managed_names() -> set[str]:
 def rendered_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Render canonical commands + skills once into an isolated directory."""
     target = tmp_path_factory.mktemp("rendered-skills")
-    render_self_skills(root=_ROOT, target_dir=target)
+    render_self_skills(target_dir=target)
     return target
 
 

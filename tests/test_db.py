@@ -2869,3 +2869,108 @@ class TestFindMissingColumns:
 
         assert result is False
         mock_logger.error.assert_not_called()
+
+
+class TestInspectSchema:
+    """inspect_schema() is the read-only view shared by `sova db status` and `sova doctor`.
+
+    Each test clears SOVA_DATABASE_URL (the autouse fixture pins it to an in-memory
+    database) so the project directory under test decides which database is read.
+    """
+
+    @staticmethod
+    async def _migrated_project(project_dir):
+        """Build ``<project>/.claude/sova.db`` by replaying the real migration chain."""
+        db_path = project_dir / ".claude" / "sova.db"
+        db_path.parent.mkdir(parents=True)
+        engine = await _migrated_engine(db_path)
+        await engine.dispose()
+        return db_path
+
+    async def test_no_file_for_a_fresh_project_and_creates_nothing(self, tmp_path, monkeypatch) -> None:
+        from sova.db.session import inspect_schema
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        result = await inspect_schema(tmp_path)
+
+        assert result.state == "no_file"
+        assert not (tmp_path / ".claude").exists()
+
+    async def test_no_tables_for_an_empty_database_file(self, tmp_path, monkeypatch) -> None:
+        from sova.db.session import inspect_schema
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / "sova.db").touch()
+
+        result = await inspect_schema(tmp_path)
+
+        assert result.state == "no_tables"
+
+    async def test_ready_and_at_head_after_the_migration_chain(self, tmp_path, monkeypatch) -> None:
+        from sova.db.session import inspect_schema
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        await self._migrated_project(tmp_path)
+
+        result = await inspect_schema(tmp_path)
+
+        assert result.state == "ready"
+        assert result.legacy is False
+        assert result.head is not None
+        assert result.current == result.head
+        assert result.at_head is True
+        assert result.missing == ()
+
+    async def test_behind_head_reports_the_stamped_revision(self, tmp_path, monkeypatch) -> None:
+        import sqlite3
+
+        from sova.db.session import inspect_schema
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        db_path = await self._migrated_project(tmp_path)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("UPDATE alembic_version SET version_num = '0001_stale'")
+
+        result = await inspect_schema(tmp_path)
+
+        assert result.state == "ready"
+        assert result.current == "0001_stale"
+        assert result.head not in (None, "0001_stale")
+        assert result.at_head is False
+
+    async def test_legacy_database_without_alembic_version(self, tmp_path, monkeypatch) -> None:
+        """Application tables with no alembic_version are unversioned, not empty."""
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.models import Base
+        from sova.db.session import inspect_schema
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        db_path = tmp_path / ".claude" / "sova.db"
+        db_path.parent.mkdir()
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", connect_args={"check_same_thread": False})
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        result = await inspect_schema(tmp_path)
+
+        assert result.state == "ready"
+        assert result.legacy is True
+        assert result.current is None
+        assert result.at_head is False
+
+    async def test_missing_columns_are_reported_even_at_head(self, tmp_path, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        from sova.db.session import inspect_schema
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        await self._migrated_project(tmp_path)
+
+        with patch("sova.db.session._find_missing_columns", return_value=["task_runs.bogus_column"]):
+            result = await inspect_schema(tmp_path)
+
+        assert result.at_head is True
+        assert result.missing == ("task_runs.bogus_column",)

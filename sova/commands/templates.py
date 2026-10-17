@@ -55,7 +55,7 @@ def dedash_prose(text: str) -> str:
 
     Fenced code blocks are left untouched, mirroring the invariant's own exemption for them: a
     real shell ``--`` flag or example inside a fence must not be rewritten. Shared by every
-    renderer that derives distributable text from canonical ``commands/*.md`` bodies (today:
+    renderer that derives distributable text from canonical ``sova/commands/data/commands/*.md`` bodies (today:
     ``sova.commands.marketplace_export``, ``sova.commands.skill_render``), since those bodies
     predate the invariant and still use `` -- `` themselves.
     """

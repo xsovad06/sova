@@ -128,14 +128,15 @@ def load_persona(name: str, personas_dir: Path | None = None) -> str:
     Args:
         name: Persona name (e.g., "django", "python").
         personas_dir: Directory containing persona .md files.
-            Defaults to the repo's ``personas/`` directory.
+            Defaults to SOVA's packaged ``personas/`` directory.
 
     Returns:
         File content as string, or empty string if not found.
     """
     if personas_dir is None:
-        # Default: repo root / personas/
-        personas_dir = Path(__file__).resolve().parent.parent.parent / "personas"
+        from sova.commands.catalog import get_personas_dir
+
+        personas_dir = get_personas_dir()
 
     path = personas_dir / f"{name}.md"
     if not path.is_file():

@@ -27,10 +27,12 @@ from pathlib import Path
 
 import pytest
 
+from sova.commands.catalog import get_canonical_dir
+
 REPO_ROOT = Path(__file__).parent.parent
 
 HEALTH_SOVA = REPO_ROOT / ".claude" / "commands" / "health-audit.md"
-HEALTH_DIST = REPO_ROOT / "commands" / "health-audit.md"
+HEALTH_DIST = get_canonical_dir() / "health-audit.md"
 
 HEALTH_FIXTURES = ["health_sova_text", "health_dist_text"]
 HEALTH_NORM_FIXTURES = ["health_sova_norm", "health_dist_norm"]

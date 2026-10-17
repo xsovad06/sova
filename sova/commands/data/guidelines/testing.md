@@ -45,7 +45,7 @@ def _shell_result(stdout="", stderr="", returncode=0):
 ```python
 mock_run.side_effect = [
     _shell_result(stdout='{"labels": []}'),  # first call
-    _shell_result(),                          # second call
+    _shell_result(),  # second call
 ]
 ```
 

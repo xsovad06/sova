@@ -1,6 +1,6 @@
-"""Export SOVA's canonical commands/ directory to the plugins/sova/ marketplace package.
+"""Export SOVA's canonical sova/commands/data/commands/ directory to the plugins/sova/ marketplace package.
 
-SOVA's `commands/` directory (28+ files) is the single source of truth for its
+SOVA's `sova/commands/data/commands/` directory (28+ files) is the single source of truth for its
 distributable workflow commands. `plugins/sova/` is a subset of those commands,
 repackaged in the format the Claude AI Helpers Marketplace
 (https://github.com/openshift-eng/ai-helpers) expects (`## Name` / `## Synopsis` /
@@ -20,11 +20,11 @@ import re
 import tomllib
 from pathlib import Path
 
-from sova.commands.catalog import parse_frontmatter
+from sova.commands.catalog import get_canonical_dir, parse_frontmatter
 from sova.commands.templates import dedash_prose, workflow_reference_re
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_COMMANDS_DIR = _REPO_ROOT / "commands"
+_COMMANDS_DIR = get_canonical_dir()
 _PLUGIN_DIR = _REPO_ROOT / "plugins" / "sova"
 _PLUGIN_COMMANDS_DIR = _PLUGIN_DIR / "commands"
 _PLUGIN_JSON_PATH = _PLUGIN_DIR / ".claude-plugin" / "plugin.json"
@@ -211,7 +211,7 @@ def _as_str_list(value: object) -> list[str]:
 
 
 def render_command(name: str) -> str:
-    """Mechanically transform a canonical commands/{name}.md into marketplace format."""
+    """Mechanically transform a canonical sova/commands/data/commands/{name}.md into marketplace format."""
     source = _COMMANDS_DIR / f"{name}.md"
     parsed = parse_frontmatter(source.read_text(encoding="utf-8"))
     if parsed is None:
@@ -313,7 +313,8 @@ def export() -> dict[str, str]:
     source_hashes: dict[str, str] = {}
     for name in SELECTED_COMMANDS:
         source_path = _COMMANDS_DIR / f"{name}.md"
-        source_hashes[f"commands/{name}.md"] = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        rel_key = str(source_path.relative_to(_REPO_ROOT))
+        source_hashes[rel_key] = hashlib.sha256(source_path.read_bytes()).hexdigest()
         rendered = render_command(name)
         (_PLUGIN_COMMANDS_DIR / f"{name}.md").write_text(rendered, encoding="utf-8")
 

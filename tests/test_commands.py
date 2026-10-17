@@ -1443,14 +1443,16 @@ class TestGuidelines:
         assert result.installed == 0
 
     def test_get_guidelines_dir(self) -> None:
-        """get_guidelines_dir() returns the repo's guidelines/ directory."""
+        """get_guidelines_dir() returns SOVA's packaged guidelines/ directory."""
         from sova.commands.catalog import get_guidelines_dir
 
         guidelines_dir = get_guidelines_dir()
         assert guidelines_dir.name == "guidelines"
         assert guidelines_dir.is_dir()
-        # guidelines/ lives at repo root, alongside the sova/ package
-        assert (guidelines_dir.parent / "sova").is_dir()
+        # guidelines/ is packaged data under sova/commands/data/, so it
+        # resolves correctly from both an editable checkout and a wheel install.
+        assert guidelines_dir.parent.name == "data"
+        assert (guidelines_dir / "testing.md").is_file()
 
     def test_build_variables_includes_project_name(self) -> None:
         """build_variables() includes project_name derived from github_repo."""

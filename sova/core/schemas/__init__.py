@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from pathlib import Path
+from importlib.resources import files
 from typing import Any
 
-SCHEMAS_DIR = Path(__file__).parent
+SCHEMAS_DIR = files(__package__)
 
 
 def load_schema(filename: str) -> dict[str, Any]:
     """Load a JSON Schema from the schemas directory."""
     path = SCHEMAS_DIR / filename
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         return json.load(f)
 
 

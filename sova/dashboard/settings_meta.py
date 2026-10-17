@@ -1111,6 +1111,7 @@ _REGISTRY: list[SettingMeta] = [
         "Maximum size of log file before rotation (default 10 MB)",
         "server",
         "number",
+        requires_restart=True,
     ),
     SettingMeta(
         "server.log_backup_count",
@@ -1118,6 +1119,7 @@ _REGISTRY: list[SettingMeta] = [
         "Number of rotated log files to keep (default 5)",
         "server",
         "number",
+        requires_restart=True,
     ),
     # External Reviews
     SettingMeta(

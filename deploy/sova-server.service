@@ -1,3 +1,8 @@
+# This is a systemd USER unit (installed under ~/.config/systemd/user/, run
+# via `systemctl --user`), not a system unit: it relies on the %h specifier
+# and the implicit "runs as the invoking user" semantics a system unit does
+# not have. A system-level deployment would need an explicit absolute
+# User=/Group= and absolute paths throughout, which is out of scope here.
 [Unit]
 Description=SOVA Server (Dashboard + Scheduler)
 Documentation=https://github.com/xsovad06/sova
@@ -5,21 +10,23 @@ After=network.target
 
 [Service]
 Type=simple
-User=%i
-# Set the home directory for ~/.claude resolution
+# Set the home directory for ~/.config/sova and ~/.claude resolution
 Environment=HOME=%h
 # Set the project directory as an environment variable
 # NOTE: This is a reference template. The 'sova server install-service' command
 # generates the actual service file with proper paths substituted.
 Environment=SOVA_PROJECT_DIR=/path/to/your/project
-# Uncomment for PostgreSQL team deployments:
-# Environment=SOVA_DATABASE_URL=postgresql://user:pass@localhost:5432/sova
 
 # Validate project directory exists before starting
 ExecStartPre=/bin/test -d ${SOVA_PROJECT_DIR}
 # Bind to localhost only for security (use reverse proxy for external access)
-ExecStart=sova server start --host 127.0.0.1 --port 8111 --project ${SOVA_PROJECT_DIR}
-ExecStop=sova server stop --project ${SOVA_PROJECT_DIR}
+# ExecStart=/ExecStop= need an absolute path to the binary: systemd searches a
+# bare command name only in a fixed system list (/usr/local/bin, /usr/bin, ...)
+# that does not include %h/.local/bin, where 'pip install --user' puts sova.
+# Substitute the output of 'command -v sova'; 'sova server install-service'
+# resolves it for you.
+ExecStart=%h/.local/bin/sova server start --host 127.0.0.1 --port 8111 --project ${SOVA_PROJECT_DIR}
+ExecStop=%h/.local/bin/sova server stop --project ${SOVA_PROJECT_DIR}
 
 # Use journald for log rotation
 StandardOutput=journal
@@ -30,9 +37,18 @@ RestartSec=10
 
 # Security hardening
 NoNewPrivileges=true
+PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.config/sova %h/.claude
+# The whole project directory must be listed, not just its .claude/: agents
+# commit from linked worktrees, so git writes ${SOVA_PROJECT_DIR}/.git as well
+# as ${SOVA_PROJECT_DIR}/.claude, and ProtectSystem=strict makes everything
+# else on the filesystem read-only. %h/.claude stays listed too, since the
+# spawned coding-agent CLI keeps its own state there and
+# knowledge.shared_knowledge_dir defaults under it. ReadWritePaths does not
+# expand ${SOVA_PROJECT_DIR}, so substitute the real path when adapting this
+# reference template by hand; 'sova server install-service' does it for you.
+ReadWritePaths=%h/.config/sova %h/.claude /path/to/your/project
 
 [Install]
 WantedBy=default.target

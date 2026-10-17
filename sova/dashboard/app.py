@@ -611,10 +611,15 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        from sova.utils.logging import setup_logging
+        from sova.utils.logging import rotation_kwargs, setup_logging
+
+        cfg = _load_config_or_fail(resolved)
 
         log_file = resolved / ".claude" / "sova.log"
-        setup_logging(log_file=log_file)
+        setup_logging(
+            log_file=log_file,
+            **rotation_kwargs(cfg.server.log_max_bytes, cfg.server.log_backup_count),
+        )
 
         # Initialize the global LLM provider from project config.
         # NOTE: in multi_project mode this uses the first resolved dir's config.
@@ -622,7 +627,6 @@ def create_app(
         from sova.ipc.runtime import reload_runtime
         from sova.llm.client import reload_provider_async
 
-        cfg = _load_config_or_fail(resolved)
         await reload_provider_async(cfg, resolved)
         reload_runtime(cfg)
 

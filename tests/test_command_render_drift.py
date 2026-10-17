@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from sova.commands.catalog import get_canonical_dir
 from sova.commands.manifest import MANIFEST_FILENAME, file_hash
 from sova.commands.self_render import (
     PLACEHOLDER_RE,
@@ -32,7 +33,7 @@ from sova.commands.self_render import (
 )
 
 _ROOT = repo_root()
-_CANONICAL_DIR = _ROOT / "commands"
+_CANONICAL_DIR = get_canonical_dir()
 _RENDERED_DIR = _ROOT / ".claude/commands"
 
 _RERUN = "Run `make commands-render` and commit the result."
@@ -53,7 +54,7 @@ def rendered_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     repeat the whole render once per parametrized command.
     """
     target = tmp_path_factory.mktemp("rendered")
-    render_self(root=_ROOT, target_dir=target)
+    render_self(target_dir=target)
     return target
 
 

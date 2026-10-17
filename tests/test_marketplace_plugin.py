@@ -166,7 +166,7 @@ class TestNoDrift:
         checked_in = (_COMMANDS_DIR / f"{name}.md").read_text(encoding="utf-8")
         regenerated = marketplace_export.render_command(name)
         assert checked_in == regenerated, (
-            f"plugins/sova/commands/{name}.md is out of sync with commands/{name}.md. "
+            f"plugins/sova/commands/{name}.md is out of sync with sova/commands/data/commands/{name}.md. "
             "Run `make marketplace` and commit the result."
         )
 

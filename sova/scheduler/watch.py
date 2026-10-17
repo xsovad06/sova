@@ -71,6 +71,11 @@ class WatchLoop:
         self._scan_count = 0
         self._error_count = 0
         self._last_scan_at: datetime | None = None
+        # True while a cycle is executing a task. process_task() runs a whole
+        # pipeline inline, so _last_scan_at can legitimately sit still for
+        # hours; health() exposes this so a consumer can tell "busy" from
+        # "wedged" instead of reading a frozen timestamp as a stall.
+        self._processing = False
 
     @property
     def is_running(self) -> bool:
@@ -168,7 +173,11 @@ class WatchLoop:
                         log.info("watch.picked", task_id=task.id, title=task.title)
 
                         if await self.check_veto(task):
-                            await self.process_task(task)
+                            self._processing = True
+                            try:
+                                await self.process_task(task)
+                            finally:
+                                self._processing = False
 
                         interval = self._config.watch.interval_active
                     else:
@@ -201,4 +210,5 @@ class WatchLoop:
             "scans_total": self._scan_count,
             "errors_total": self._error_count,
             "last_scan_at": self._last_scan_at.isoformat() if self._last_scan_at else None,
+            "processing": self._processing,
         }

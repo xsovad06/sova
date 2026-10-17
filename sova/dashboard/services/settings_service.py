@@ -669,11 +669,23 @@ def list_invariants(project_dir: Path | None = None) -> list[dict]:
 
 
 def list_personas(project_dir: Path | None = None) -> list[dict]:
-    """List available personas for the project."""
+    """List available personas for the project.
+
+    A project-local ``personas/`` directory wins, so a project can override
+    the shipped set. Otherwise fall back to SOVA's own packaged personas,
+    which is what ``sova.knowledge.personas.load_persona()`` actually reads
+    when no directory is passed: without this fallback the settings page
+    reports no personas at all for a project that never created the
+    directory, including SOVA's own checkout.
+    """
+    from sova.commands.catalog import get_personas_dir
+
     if project_dir is None:
         project_dir = Path.cwd()
 
     personas_dir = project_dir / "personas"
+    if not personas_dir.is_dir():
+        personas_dir = get_personas_dir()
     if not personas_dir.is_dir():
         return []
 

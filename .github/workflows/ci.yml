@@ -129,7 +129,7 @@ jobs:
       - name: Check YAML frontmatter in all commands
         run: |
           errors=0
-          for f in commands/*.md; do
+          for f in sova/commands/data/commands/*.md; do
             name=$(basename "$f")
             # Check file starts with ---
             if ! head -1 "$f" | grep -q '^---$'; then
@@ -151,7 +151,7 @@ jobs:
             echo "Found $errors frontmatter errors"
             exit 1
           fi
-          echo "All $(find commands -name '*.md' | wc -l | tr -d ' ') commands have valid frontmatter"
+          echo "All $(find sova/commands/data/commands -name '*.md' | wc -l | tr -d ' ') commands have valid frontmatter"
 
   python-lint:
     name: Python Lint
@@ -297,13 +297,74 @@ jobs:
           python-version: "3.12"
           cache: 'pip'
 
-      - name: Install package
+      - name: Build wheel
         if: needs.changes.outputs.code != 'false'
-        run: pip install .
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel
+
+      - name: Install wheel into an isolated venv
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          # A dedicated venv, not the runner's own Python, so this installs and
+          # tests the actual built wheel rather than silently reusing an
+          # editable dev install (or its egg-link) already on sys.path.
+          python -m venv /tmp/sova-wheel-venv
+          /tmp/sova-wheel-venv/bin/pip install --upgrade pip
+          /tmp/sova-wheel-venv/bin/pip install dist/*.whl
+          echo "/tmp/sova-wheel-venv/bin" >> "$GITHUB_PATH"
 
       - name: Verify CLI entrypoint
         if: needs.changes.outputs.code != 'false'
-        run: sova --help
+        run: |
+          sova --version
+          sova --help
+
+      - name: Verify packaged resources ship in the wheel
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          # Resolved from outside the checkout: `python -c` puts the current
+          # directory on sys.path, so running this from the repo root would
+          # import the source tree instead of the wheel and every assertion
+          # below would pass no matter what the wheel actually contains.
+          site_packages=$(cd /tmp && python -c "import sova, pathlib; print(pathlib.Path(sova.__file__).parent)")
+          case "$site_packages" in
+            "${GITHUB_WORKSPACE:?}"*)
+              echo "Resolved the checkout, not the wheel: $site_packages" >&2
+              exit 1
+              ;;
+          esac
+          # Compare each resource tree in BOTH directions. A one-sided
+          # `test -d`/`test -f` spot check passes while the wheel ships a
+          # single command and omits the other 27, or ships empty guideline,
+          # skill and persona directories. A file the source tree has and the
+          # wheel lacks means `[tool.setuptools.package-data]` is missing a
+          # glob; a file only the wheel has is a stale artifact of an earlier
+          # build that `python -m build` did not clean.
+          status=0
+          for root in commands/data core/schemas dashboard/static dashboard/templates; do
+            slug=${root//\//-}
+            src="/tmp/resources-src-$slug.txt"
+            whl="/tmp/resources-wheel-$slug.txt"
+            git -C "$GITHUB_WORKSPACE" ls-files "sova/$root" \
+              | sed "s|^sova/$root/||" | LC_ALL=C sort >"$src"
+            if [ ! -s "$src" ]; then
+              echo "No tracked files under sova/$root: this check is comparing nothing" >&2
+              exit 1
+            fi
+            if [ ! -d "$site_packages/$root" ]; then
+              echo "Wheel is missing sova/$root entirely" >&2
+              status=1
+              continue
+            fi
+            find "$site_packages/$root" -type f -not -path '*/__pycache__/*' -print \
+              | sed "s|^$site_packages/$root/||" | LC_ALL=C sort >"$whl"
+            if ! diff -u "$src" "$whl"; then
+              echo "sova/$root differs between the source tree and the wheel (see diff above)" >&2
+              status=1
+            fi
+          done
+          exit "$status"
 
       - name: Install into a test repo
         if: needs.changes.outputs.code != 'false'
@@ -317,6 +378,23 @@ jobs:
           test -d "$tmp/test-project/.claude/commands"
           test -d "$tmp/test-project/.claude/agent-memory"
           test -f "$tmp/test-project/.claude/sova.db"
+
+          # Every packaged command must land in the project, and the project
+          # must gain nothing the wheel does not carry. A `-gt 0` count passes
+          # when 27 of 28 commands silently fail to render. No canonical
+          # command declares a `runtimes:` filter today, so the two sets are
+          # expected to match exactly; adding such a filter means updating
+          # this comparison in the same change.
+          site_packages=$(cd /tmp && python -c "import sova, pathlib; print(pathlib.Path(sova.__file__).parent)")
+          find "$site_packages/commands/data/commands" -maxdepth 1 -name '*.md' \
+            -printf '%f\n' | LC_ALL=C sort >/tmp/commands-packaged.txt
+          find "$tmp/test-project/.claude/commands" -maxdepth 1 -name '*.md' \
+            -printf '%f\n' | LC_ALL=C sort >/tmp/commands-installed.txt
+          if ! diff -u /tmp/commands-packaged.txt /tmp/commands-installed.txt; then
+            echo "Installed commands do not match the packaged set (see diff above)" >&2
+            exit 1
+          fi
+
           # Config is now DB-backed; verify project_settings table has rows
           count=$(sqlite3 "$tmp/test-project/.claude/sova.db" "SELECT COUNT(*) FROM project_settings;")
           test "$count" -gt 0

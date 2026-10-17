@@ -37,12 +37,14 @@ sova/
     ipc/                           # Agent process control, handoff protocol, notifications
     knowledge/                     # Memory CRUD, tier loading, persona detection, extraction
     commands/                      # Command distribution (catalog, templates, manifest)
+      data/commands/               # 28 standardized commands (markdown with frontmatter)
+      data/personas/               # Framework-specific guidance (Django, FastAPI, Odoo)
+      data/guidelines/             # Distributable guideline templates
+      data/skills/                 # Distributable skill templates
     config/                        # Pydantic Settings v2 + TOML config + project registry
     db/                            # SQLAlchemy 2.0 async ORM (10 models), Alembic migrations
     utils/                         # Logging, shell, formatting
-  commands/                        # 27 standardized commands (markdown with frontmatter)
   invariants/                      # Pluggable pre-push constraint checks (bash)
-  personas/                        # Framework-specific guidance (Django, FastAPI, Odoo)
   knowledge/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/
@@ -204,10 +206,10 @@ Users can also create custom personas or override detection.
 
 ## Command System
 
-**Status: DONE** (27 standardized commands)
+**Status: DONE** (28 standardized commands)
 
 The command library is unified and portable across projects:
-- 27 standardized commands in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
+- 28 standardized commands in `sova/commands/data/commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
 - Agent-specific wrappers (develop-full) compose the general commands, not duplicate them
 - Commands reference CLAUDE.md/AGENTS.md for project conventions, portable across projects
 - Each project tracks all commands in git (not gitignored) so the agent always has them in worktrees and fresh clones
