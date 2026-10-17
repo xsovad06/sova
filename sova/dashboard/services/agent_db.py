@@ -17,7 +17,7 @@ from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.ipc.control import normalize_signal_exit
-from sova.utils.formatting import decimal_to_json
+from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import SOVA_VERDICT_MARKER_RE
 
@@ -1063,7 +1063,7 @@ async def _fetch_run_states(run_ids: list[int]) -> dict[int, dict]:
             r.id: {
                 "current_step": r.current_step or "agent",
                 "status": r.status,
-                "cost_usd": decimal_to_json(r.total_cost_usd),
+                "cost_usd": format_cost_usd(r.total_cost_usd),
                 "pr_number": r.pr_number,
             }
             for r in runs

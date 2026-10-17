@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import shlex
 import time
-from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -186,7 +185,7 @@ from sova.ipc.runtime import (
 )
 from sova.llm.backends import TIER_NAMES
 from sova.llm.client import RUN_MODEL_OVERRIDE_ENV
-from sova.utils.formatting import decimal_to_json
+from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
@@ -299,7 +298,7 @@ async def get_all_agents(slug: str | None = None) -> dict:
                 "step_index": progress["step_index"],
                 "total_steps": progress["total_steps"],
                 "elapsed_seconds": round(elapsed),
-                "cost_usd": db.get("cost_usd", decimal_to_json(Decimal(str(agent.last_result_cost or 0)))),
+                "cost_usd": db.get("cost_usd", format_cost_usd(agent.last_result_cost)),
                 "output_lines": len(agent.output_lines),
                 "pr_number": db.get("pr_number"),
                 "cpu_percent": cpu_pct,
@@ -316,7 +315,7 @@ async def get_all_agents(slug: str | None = None) -> dict:
                 "issue": ca.issue,
                 "role": ca.role,
                 "status": ca.status,
-                "cost_usd": decimal_to_json(Decimal(str(ca.cost or 0))),
+                "cost_usd": format_cost_usd(ca.cost),
                 "completed_seconds_ago": round(now - ca.completed_at),
                 "pr_number": db.get("pr_number"),
             }
@@ -382,7 +381,7 @@ async def get_unified_agents(slug: str | None = None) -> dict:
                     "step_index": progress["step_index"],
                     "total_steps": progress["total_steps"],
                     "elapsed_seconds": round(elapsed),
-                    "cost_usd": decimal_to_json(run.total_cost_usd),
+                    "cost_usd": format_cost_usd(run.total_cost_usd),
                     "output_lines": 0,
                     "source": "external",
                     "pr_number": run.pr_number,

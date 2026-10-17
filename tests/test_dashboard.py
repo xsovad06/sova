@@ -4356,6 +4356,37 @@ class TestAgentsAPI:
         assert isinstance(data["agents"], list)
         assert data["agents"] == []
 
+    async def test_agents_active_zero_cost_same_precision_running_and_completed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A zero-cost running agent and a zero-cost completed agent must serialize cost_usd
+        with the same precision. Before #1051's shared _format_cost_usd() helper, the running
+        branch's pool-tracked-float fallback produced "0" (via Decimal(str(0))) while the
+        completed branch produced the same "0", but either could drift independently of the
+        DB-column branch's "0.000000" (a Numeric(10,6) read via decimal_to_json()) since all
+        three were serialized by hand at each call site.
+        """
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, CompletedAgent, ProjectAgents
+
+        mock_process = MagicMock()
+        mock_process.pid = 88888
+        agent = AgentState(run_id=8001, issue="800", role="developer", process=mock_process, last_result_cost=0.0)
+
+        pa = ProjectAgents()
+        pa.agents[8001] = agent
+        pa.recently_completed.append(
+            CompletedAgent(run_id=8002, issue="801", role="developer", status="done", cost=0.0)
+        )
+
+        monkeypatch.setattr(agent_lifecycle, "_get_project_agents", lambda slug=None: pa)
+
+        result = await agent_lifecycle.get_all_agents()
+        assert result["agents"][0]["cost_usd"] == "0.000000"
+        assert result["completed"][0]["cost_usd"] == "0.000000"
+
     async def test_agents_interrupted_empty(self, client: AsyncClient) -> None:
         resp = await client.get("/api/agents/interrupted")
         assert resp.status_code == 200

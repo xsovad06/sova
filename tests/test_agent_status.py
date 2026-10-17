@@ -818,6 +818,40 @@ def test_decimal_to_json_none_defaults_to_zero_string():
 
 
 @pytest.mark.asyncio
+async def test_rest_and_ws_parity_db_backed_run_with_null_cost(session: AsyncSession, monkeypatch):
+    """A DB row with total_cost_usd=None (e.g. a pre-migration row SQLite backfilled as
+    NULL regardless of the model's Python-side default) must still serialize cost_usd at
+    the same precision as every other branch, through both get_agent_status() (the single-run
+    path used by the WebSocket producer) and get_all_agent_statuses() (the REST/WS list path).
+    decimal_to_json(None) alone would answer "0.00", silently disagreeing with the "0.000000"
+    every other source produces; format_cost_usd() must be used at every cost site instead.
+    """
+    from sova.dashboard.services.agent_status import get_agent_status, get_all_agent_statuses
+
+    monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {})
+
+    run = TaskRun(
+        issue_number="73",
+        role="developer",
+        status="running",
+        current_step="develop",
+        started_at=NOW - timedelta(minutes=1),
+    )
+    run.total_cost_usd = None
+    session.add(run)
+    await session.commit()
+
+    single = await get_agent_status(run.id)
+    assert single is not None
+    assert single.cost_usd == "0.000000"
+
+    all_statuses = await get_all_agent_statuses()
+    matching = [s for s in all_statuses if s.run_id == run.id]
+    assert len(matching) == 1
+    assert matching[0].cost_usd == "0.000000"
+
+
+@pytest.mark.asyncio
 async def test_rest_parity_dashboard_pool_resource_sample(session: AsyncSession, monkeypatch):
     """A run tracked in the in-memory dashboard pool reports its latest resource sample."""
     from sova.dashboard.services.agent_status import get_agent_status
@@ -1070,6 +1104,89 @@ async def test_get_unified_agents_is_strict_subset_of_agent_status(session: Asyn
         if key == "elapsed_seconds":
             # Each side computes elapsed independently against "now" at a
             # slightly different instant; equal to within a second is enough.
+            assert abs(value - status_dict[key]) <= 1, key
+            continue
+        assert value == status_dict[key], key
+        assert type(value) is type(status_dict[key]), key
+
+
+@pytest.mark.asyncio
+async def test_get_unified_agents_dashboard_pool_branch_is_strict_subset_of_agent_status(
+    session: AsyncSession, monkeypatch
+):
+    """Same mechanical parity check as test_get_unified_agents_is_strict_subset_of_agent_status,
+    but for the dashboard-pool branch (get_all_agents), which the other test cannot reach: patching
+    list_all_pools to {} there forces get_unified_agents() down its external/CLI branch, which reads
+    the same TaskRun columns AgentStatus does. The dashboard-pool branch is the common case and the
+    only one with genuinely independent sources for the same field names: elapsed_seconds is
+    time.monotonic()-based (AgentState.started_at) here vs AgentStatus's wall-clock TaskRun.started_at
+    delta, pid is agent.process.pid vs TaskRun.pid, output_lines is len(agent.output_lines) vs
+    _compute_live_fields's own read of that deque, and status/current_step come from
+    _fetch_run_states's DB row vs AgentStatus's own independent read of the same row. Drift between
+    either pair of sources can land here with the other parity test still green.
+    """
+    import time
+    from collections import deque
+    from dataclasses import asdict
+
+    from sova.dashboard.services.agent_lifecycle import get_unified_agents
+    from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+    from sova.dashboard.services.agent_status import get_agent_status
+
+    project_dir = Path("/tmp/sova-test-project-1051-pool")
+    fake_pid = 54322
+    elapsed_s = 240
+
+    # Both sides' elapsed clocks must be seeded from the same instant, taken fresh here rather
+    # than from the module-level NOW (captured at import time, which can be well behind "now" by
+    # the time this test actually runs in a large suite): one side is wall-clock
+    # (TaskRun.started_at), the other time.monotonic() (AgentState.started_at).
+    wall_now = datetime.now(timezone.utc)
+
+    run = TaskRun(
+        issue_number="111",
+        role="developer",
+        status="running",
+        current_step="develop",
+        pid=fake_pid,
+        pr_number=13,
+        total_cost_usd=Decimal("3.250000"),
+        started_at=wall_now - timedelta(seconds=elapsed_s),
+    )
+    session.add(run)
+    await session.commit()
+
+    agent_state = AgentState(
+        run_id=run.id,
+        issue="111",
+        role="developer",
+        process=SimpleNamespace(pid=fake_pid),
+        output_lines=deque(["a", "b", "c"], maxlen=5000),
+        started_at=time.monotonic() - elapsed_s,
+        resource_collector=SimpleNamespace(samples=[SimpleNamespace(cpu_percent=22.5, memory_rss_bytes=209715200)]),
+        project_dir=project_dir,
+    )
+    pa = ProjectAgents(project_dir=project_dir, max_concurrent=2)
+    pa.agents[run.id] = agent_state
+
+    monkeypatch.setattr("sova.dashboard.services.agent_lifecycle._get_project_agents", lambda slug=None: pa)
+    monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {"fake": pa})
+
+    unified = await get_unified_agents()
+    matches = [a for a in unified["agents"] if a["run_id"] == run.id]
+    assert len(matches) == 1
+    agent_dict = matches[0]
+    assert agent_dict["source"] == "dashboard"
+
+    status = await get_agent_status(run.id, project_dir=project_dir)
+    assert status is not None
+    status_dict = asdict(status)
+
+    assert set(agent_dict) <= set(status_dict)
+    for key, value in agent_dict.items():
+        if key == "elapsed_seconds":
+            # One side is time.monotonic()-based, the other wall-clock: equal
+            # to within a second is enough.
             assert abs(value - status_dict[key]) <= 1, key
             continue
         assert value == status_dict[key], key

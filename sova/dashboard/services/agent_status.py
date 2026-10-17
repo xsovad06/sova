@@ -17,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.core.state import STEP_DONE_STATUSES
 from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
-from sova.utils.formatting import decimal_to_json
+from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -44,7 +44,7 @@ class AgentStatus:
     ``get_unified_agents()`` (the ``/agents/active`` REST shape): each is
     populated with the same value and the same normalization (e.g.
     ``current_step`` defaulting to ``"agent"`` rather than ``None``, and
-    ``cost_usd`` always the ``decimal_to_json()`` string form) so the
+    ``cost_usd`` always the ``format_cost_usd()`` string form) so the
     WebSocket broadcast and the REST poll never disagree on what a field
     means.
     """
@@ -148,7 +148,7 @@ async def get_agent_status(
             issue=task_run.issue_number,
             pid=task_run.pid,
             elapsed_seconds=_compute_elapsed_seconds(task_run, now),
-            cost_usd=decimal_to_json(task_run.total_cost_usd),
+            cost_usd=format_cost_usd(task_run.total_cost_usd),
             pr_number=task_run.pr_number,
             completed_steps=completed,
             error_message=task_run.error_message,
@@ -246,7 +246,7 @@ async def get_all_agent_statuses(
                         issue=run.issue_number,
                         pid=run.pid,
                         elapsed_seconds=_compute_elapsed_seconds(run, now),
-                        cost_usd=decimal_to_json(run.total_cost_usd),
+                        cost_usd=format_cost_usd(run.total_cost_usd),
                         pr_number=run.pr_number,
                         completed_steps=completed,
                         error_message=run.error_message,
