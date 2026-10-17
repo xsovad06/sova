@@ -6,6 +6,11 @@ SHELL := /bin/bash
 RUFF := $(or $(shell command -v ruff 2>/dev/null),$(shell python3 -m site --user-base 2>/dev/null)/bin/ruff)
 PYTEST := $(or $(shell command -v pytest 2>/dev/null),$(shell python3 -m site --user-base 2>/dev/null)/bin/pytest)
 
+# Worker count for test-py's pytest-xdist run. Override with `make test-py PYTEST_WORKERS=4`,
+# or set the pytest-xdist-native PYTEST_XDIST_AUTO_NUM_WORKERS env var. Defaults to 2 to keep
+# `make check` under the 600s CI timeout on resource-constrained machines (issue #1156).
+PYTEST_WORKERS ?= $(or $(PYTEST_XDIST_AUTO_NUM_WORKERS),2)
+
 # ── Main targets ──────────────────────────────────────────────
 
 help: ## Show this help
@@ -33,7 +38,7 @@ test-bash: lint-bash ## Validate bash scripts (shellcheck + --help)
 	done
 
 test-py: ## Run pytest suite (excludes runtime/stress/chaos/evaluation)
-	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos and not evaluation" -n auto
+	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos and not evaluation" -n $(PYTEST_WORKERS)
 
 test-runtime: ## Run runtime, stress, and chaos tests (manual)
 	$(PYTEST) tests/ -v -m "runtime or stress or chaos" --timeout=120
