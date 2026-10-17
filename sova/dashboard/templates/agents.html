@@ -1422,9 +1422,14 @@ function agentFingerprint(data) {
   // otherwise-unchanged status/current_step/pr_number/source is never
   // re-rendered once it crosses _STUCK_THRESHOLD_S, so renderStatusBadge()
   // never runs again and the stuck class never appears while polling.
+  // step_index/total_steps are included too, so this fingerprint reads the
+  // same field set as the WebSocket path's own change-detection snapshot
+  // (see the status_update handler below): a pipeline renumbering that
+  // changes step_index/total_steps without changing current_step would
+  // otherwise go undetected here while still triggering a re-render there.
   var running = data.agents.map(function(a) {
     var stuckBucket = (a.elapsed_seconds != null && a.elapsed_seconds > _STUCK_THRESHOLD_S) ? '1' : '0';
-    return a.run_id + ':' + a.status + ':' + a.current_step + ':' + (a.pr_number || '') + ':' + (a.source || '') + ':' + stuckBucket;
+    return a.run_id + ':' + a.status + ':' + a.current_step + ':' + a.step_index + '/' + a.total_steps + ':' + (a.pr_number || '') + ':' + (a.source || '') + ':' + stuckBucket;
   });
   var completed = data.completed.map(function(a) {
     return a.run_id + ':' + a.status + ':' + (a.pr_number || '');
@@ -1530,7 +1535,7 @@ function renderAgentCard(agent) {
         '<span class="text-accent-green" data-field="mem">' + (agent.memory_rss_bytes != null ? (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB' : '— MB') + '</span>' +
         '<span class="text-gray-500" data-field="elapsed">' + liveElapsed(agent.elapsed_seconds) + '</span>' +
         '<span class="text-gray-600" data-field="step-elapsed" data-tooltip="Time in current step">' +
-          (stepElapsedSec != null ? 'Step: ' + liveElapsed(stepElapsedSec) : '') +
+          (stepElapsedSec != null ? 'Step: ' + liveElapsed(stepElapsedSec) : 'Step: —') +
         '</span>' +
         '<span class="text-accent-green" data-field="cost">' + cost + '</span>' +
       '</div>' +
@@ -2580,10 +2585,29 @@ loadHistory();
 var _statusChannel = null;
 var _wsLastRunIds = null;
 var _wsLastRunStatuses = null;
-var _wsPreviousStatuses = {};
 var _stepStartTimes = {};
 var _workItemsRefreshTimer = null;
 var _agentsRefreshTimer = null;
+
+// Matches the pollIntervalMs passed to createSovaStatusChannel below, and
+// doubles as the repeating fallback cadence once a sustained outage is
+// detected (_wsUnavailablePollInterval).
+var _WS_FALLBACK_POLL_MS = 2000;
+
+// Consecutive status_unavailable messages: the socket itself can stay open
+// and "healthy" (createSovaStatusChannel resets its reconnect backoff on any
+// parsed message, this one included) while the server-side status fetch
+// keeps failing, so a sustained outage must be surfaced and must fall back
+// to REST polling rather than leaving the grid frozen with no refresher at
+// all.
+var _wsUnavailableStreak = 0;
+var _WS_UNAVAILABLE_STREAK_THRESHOLD = 3;
+var _wsUnavailableIndicatorShown = false;
+// A real repeating interval, not a one-shot debounced refresh: the socket's
+// own reconnect backoff resets on every status_unavailable message (it
+// parsed successfully) and stopFallback() runs on it too, so nothing else
+// refreshes the grid for the rest of a sustained outage without this.
+var _wsUnavailablePollInterval = null;
 
 // Client-side baseline for "time in current step": the WebSocket's
 // status_update carries an authoritative time_in_step_ms (gated on
@@ -2627,9 +2651,43 @@ function _scheduleAgentsRefresh() {
 function _handleAgentStatusMessage(msg) {
   if (msg.type === 'status_unavailable') {
     // The producer's status fetch failed server-side (e.g. a transient DB
-    // hiccup); treated as "no update this tick", not "no active runs", so
-    // none of the per-run tracking state below is pruned on it.
+    // hiccup); a single miss is "no update this tick", not "no active runs",
+    // so none of the per-run tracking state below is pruned on it. But a
+    // *sustained* run of misses means status_update stops carrying any data
+    // while the socket itself stays open and looks healthy (its reconnect
+    // backoff resets on any parsed message, this one included), so without
+    // this counter the grid would freeze silently: no polling fallback, no
+    // reconnect, nothing but the cosmetic cpu/mem/cost/elapsed tickers.
+    // After a few consecutive misses, surface that and start a REAL repeating
+    // fallback poll (not a one-shot debounced refresh: every later
+    // status_unavailable past the threshold would otherwise be swallowed by
+    // the indicator-shown guard) that keeps running for the rest of the
+    // outage. The fallback still degrades current_step to "agent" per
+    // _fetch_run_states's own DB-outage fallback, but a stale-looking card
+    // beats a frozen one.
+    _wsUnavailableStreak++;
+    if (_wsUnavailableStreak >= _WS_UNAVAILABLE_STREAK_THRESHOLD) {
+      if (!_wsUnavailableIndicatorShown) {
+        _wsUnavailableIndicatorShown = true;
+        showToast('Real-time agent status unavailable: falling back to periodic refresh', 'warning');
+      }
+      if (!_wsUnavailablePollInterval) {
+        _wsUnavailablePollInterval = setInterval(function() {
+          loadAgents();
+          loadWorkItems();
+        }, _WS_FALLBACK_POLL_MS);
+      }
+    }
     return;
+  }
+  if (msg.type === 'status_update') {
+    // Only a status_update (the signal the producer actually recovered) ends
+    // the outage: an agent_finished arriving mid-outage must not reset the
+    // streak or it would postpone detection every time an agent happens to
+    // exit during one.
+    _wsUnavailableStreak = 0;
+    _wsUnavailableIndicatorShown = false;
+    if (_wsUnavailablePollInterval) { clearInterval(_wsUnavailablePollInterval); _wsUnavailablePollInterval = null; }
   }
   if (msg.type === 'agent_finished') {
     // A dashboard-managed agent exited and the server dropped its cached
@@ -2641,6 +2699,18 @@ function _handleAgentStatusMessage(msg) {
     // status_update branch below is what eventually catches the change,
     // and only once the server's own queue/PR caches have expired on
     // their TTL, since nothing invalidates them for an external run.
+    //
+    // This is also the only place a terminal-state browser notification can
+    // fire from: get_all_agent_statuses() (the status_update producer) only
+    // ever selects non-terminal TaskRuns, so a finished run's terminal
+    // status never appears in a status_update broadcast for the client to
+    // observe a transition into.
+    if (msg.status && _STATUS_TERMINAL[msg.status] && msg.status !== 'paused') {
+      var ref = msg.issue ? '#' + msg.issue : (msg.pr_number ? 'PR #' + msg.pr_number : 'Run ' + msg.run_id);
+      var _notifTitles = { done: 'Agent completed', failed: 'Agent failed', interrupted: 'Agent interrupted', rejected: 'Agent rejected', stopped: 'Agent stopped' };
+      var title = _notifTitles[msg.status] || 'Agent ' + msg.status;
+      sendBrowserNotification('SOVA: ' + title, ref + ' (' + (msg.role || 'agent') + ')');
+    }
     _scheduleAgentsRefresh();
     _scheduleWorkItemsRefresh();
     return;
@@ -2668,31 +2738,47 @@ function _handleAgentStatusMessage(msg) {
       _scheduleWorkItemsRefresh();
     }
     _wsLastRunStatuses = runStatuses;
-    // Fire browser notifications on terminal state transitions
+    // Terminal-state browser notifications fire from the agent_finished event
+    // instead (above): get_all_agent_statuses() only ever selects non-terminal
+    // TaskRuns, so msg.runs here never carries a terminal status to transition
+    // into.
     var _activeRunIds = {};
-    msg.runs.forEach(function(run) {
-      _activeRunIds[run.run_id] = 1;
-      var prev = _wsPreviousStatuses[run.run_id];
-      var curr = run.status;
-      if (prev && prev !== curr && _STATUS_TERMINAL[curr] && curr !== 'paused') {
-        var ref = run.issue ? '#' + run.issue : (run.pr_number ? 'PR #' + run.pr_number : 'Run ' + run.run_id);
-        var _notifTitles = { done: 'Agent completed', failed: 'Agent failed', interrupted: 'Agent interrupted', rejected: 'Agent rejected', stopped: 'Agent stopped' };
-        var title = _notifTitles[curr] || 'Agent ' + curr;
-        sendBrowserNotification('SOVA: ' + title, ref + ' (' + (run.role || 'agent') + ')');
-      }
-      _wsPreviousStatuses[run.run_id] = curr;
-    });
+    msg.runs.forEach(function(run) { _activeRunIds[run.run_id] = 1; });
     // Prune entries for runs no longer reported by the server
-    Object.keys(_wsPreviousStatuses).forEach(function(id) {
-      if (!_activeRunIds[id]) delete _wsPreviousStatuses[id];
-    });
     Object.keys(_stepStartTimes).forEach(function(id) {
       if (!_activeRunIds[id]) delete _stepStartTimes[id];
     });
 
+    // Resync the client-side "time in current step" baseline
+    // (_stepElapsedSeconds, used by renderAgentCard for the REST
+    // initial/polling-fallback render) to the authoritative time_in_step_ms,
+    // for every run, before either render path below reads it. Doing this up
+    // here rather than inside the per-card patch loop means a step
+    // transition that triggers the full loadAgents() rebuild just below
+    // still lands on the correct baseline on the same tick, instead of a
+    // freshly rendered card showing a blank "Step:" field until the next
+    // broadcast up to 2s later.
+    //
+    // Stuck detection uses run.elapsed_seconds, consistently with the REST
+    // path and with renderStatusBadge's own _STUCK_THRESHOLD_S semantics.
+    // time_in_step_ms is a separate, distinctly-labeled "time in current
+    // step" baseline and must never feed stuck detection. Gated on
+    // time_in_step_known: a run with no in-progress StepExecution (e.g. a
+    // command-role run, or the window before its first step row exists) has
+    // time_in_step_ms fall back to run-elapsed, which would duplicate the
+    // adjacent "elapsed" field under this separate label.
+    msg.runs.forEach(function(run) {
+      var stepSec = (run.time_in_step_known && run.time_in_step_ms != null) ? Math.floor(run.time_in_step_ms / 1000) : null;
+      if (stepSec != null) {
+        _stepStartTimes[run.run_id] = { step: run.current_step, startedAtMs: Date.now() - run.time_in_step_ms };
+      } else {
+        delete _stepStartTimes[run.run_id];
+      }
+    });
+
     // Build a snapshot of display-relevant fields to detect any change
     var snapshot = msg.runs.map(function(r) {
-      return r.run_id + ':' + r.status + ':' + (r.current_step || '') + ':' + r.step_index + ':' + (r.is_stuck ? '1' : '0');
+      return r.run_id + ':' + r.status + ':' + (r.current_step || '') + ':' + r.step_index + '/' + r.total_steps + ':' + (r.is_stuck ? '1' : '0');
     }).sort().join(',');
     if (_wsLastRunIds !== null && snapshot !== _wsLastRunIds) {
       _wsLastRunIds = snapshot;
@@ -2704,24 +2790,6 @@ function _handleAgentStatusMessage(msg) {
     msg.runs.forEach(function(run) {
       var card = document.getElementById('agent-card-' + run.run_id);
       if (!card) return;
-
-      // Stuck detection uses run.elapsed_seconds, consistently with the REST
-      // path and with renderStatusBadge's own _STUCK_THRESHOLD_S semantics.
-      // Resync the client-side baseline (_stepElapsedSeconds, used by the
-      // REST initial/polling-fallback render) to the authoritative
-      // time_in_step_ms too, so a later full card rebuild from a REST poll
-      // (e.g. after the WebSocket drops) keeps ticking from the correct
-      // start. Gated on time_in_step_known: a run with no in-progress
-      // StepExecution (e.g. a command-role run, or the window before its
-      // first step row exists) has time_in_step_ms fall back to run-elapsed,
-      // which would duplicate the adjacent "elapsed" field under this
-      // separate "time in current step" label, never the stuck computation.
-      var stepSec = (run.time_in_step_known && run.time_in_step_ms != null) ? Math.floor(run.time_in_step_ms / 1000) : null;
-      if (stepSec != null) {
-        _stepStartTimes[run.run_id] = { step: run.current_step, startedAtMs: Date.now() - run.time_in_step_ms };
-      } else {
-        delete _stepStartTimes[run.run_id];
-      }
 
       // Re-render status badge with current values
       var badgeEl = card.querySelector('.sova-status-badge');
@@ -2742,10 +2810,14 @@ function _handleAgentStatusMessage(msg) {
         elapsedEl.innerHTML = run.elapsed_seconds != null ? liveElapsed(run.elapsed_seconds) : '';
       }
 
-      // Update the separate "time in current step" display
+      // Update the separate "time in current step" display. Reads back
+      // through _stepElapsedSeconds/_stepStartTimes (resynced above) rather
+      // than a local variable, since that resync now runs in its own loop
+      // ahead of the possible loadAgents() early return.
       var stepElapsedEl = card.querySelector('[data-field="step-elapsed"]');
       if (stepElapsedEl) {
-        stepElapsedEl.innerHTML = stepSec != null ? ('Step: ' + liveElapsed(stepSec)) : '';
+        var liveStepSec = run.current_step ? _stepElapsedSeconds(run.run_id, run.current_step) : null;
+        stepElapsedEl.innerHTML = liveStepSec != null ? ('Step: ' + liveElapsed(liveStepSec)) : 'Step: —';
       }
     });
   }
@@ -2757,7 +2829,13 @@ function _startAgentStatusChannel() {
     wsPath: apiUrl('/ws/agents/status'),
     onMessage: _handleAgentStatusMessage,
     onFallbackPoll: loadAgents,
-    pollIntervalMs: 2000,
+    pollIntervalMs: _WS_FALLBACK_POLL_MS,
+    // The server's own push cadence is _STATUS_BROADCAST_INTERVAL (2s,
+    // sova/dashboard/routers/agents.py), but each tick also runs
+    // get_all_agent_statuses(), an unbounded per-run DB fetch. 20s is
+    // generous enough to absorb that without misdiagnosing a slow-but-alive
+    // server as a dead socket; see createSovaStatusChannel's staleAfterMs doc.
+    staleAfterMs: 20000,
     auxiliaryPollFn: _refreshCardMetrics,
     auxiliaryPollIntervalMs: 5000
   });
@@ -2797,6 +2875,7 @@ window.addEventListener('beforeunload', function() {
   if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); }
   if (_workItemsPollInterval) { clearInterval(_workItemsPollInterval); }
   if (_memPressureInterval) { clearInterval(_memPressureInterval); }
+  if (_wsUnavailablePollInterval) { clearInterval(_wsUnavailablePollInterval); }
 });
 
 var _prPollInterval = setInterval(loadPrTracker, 30000);
@@ -3228,6 +3307,9 @@ if (_agentView === 'kanban') {
 document.addEventListener('visibilitychange', function() {
   if (document.hidden) {
     if (_statusChannel) { _statusChannel.stop(); _statusChannel = null; }
+    if (_wsUnavailablePollInterval) { clearInterval(_wsUnavailablePollInterval); _wsUnavailablePollInterval = null; }
+    _wsUnavailableStreak = 0;
+    _wsUnavailableIndicatorShown = false;
     if (_prPollInterval) { clearInterval(_prPollInterval); _prPollInterval = null; }
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
     if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); _crQuotaPollInterval = null; }

@@ -1687,8 +1687,16 @@ function renderRunsTable(runs, targetId) {
  * each reimplementing (and subtly disagreeing on) its own.
  *
  * The reconnect/backoff counter resets on a successfully parsed message, not
- * merely on the socket opening: an open TCP connection that never actually
- * delivers data (a dead proxy, a half-open socket) must not look healthy.
+ * merely on the socket opening, so a connection that flaps (closes and
+ * reopens) repeatedly does not accumulate an ever-growing backoff delay from
+ * stale earlier attempts. That reset alone does not prove the connection is
+ * live: a socket that stays open but stops delivering anything (a dead
+ * proxy, a half-open socket after a laptop sleep/network switch, a server
+ * hung awaiting a locked DB) never fires onclose on its own, so nothing
+ * would otherwise trigger a reconnect. A separate liveness watchdog covers
+ * that case: it tracks the time of the last message (or connect) and forces
+ * the socket closed once it goes quiet longer than staleAfterMs, which
+ * routes into the normal onclose -> fallback/reconnect path.
  * Once MAX_RECONNECT_ATTEMPTS is exhausted, the channel does not give up:
  * the polling fallback also retries the WebSocket on a slow, indefinitely
  * repeating interval (MAX_RECONNECT_DELAY_MS), so a channel left in fallback
@@ -1700,6 +1708,17 @@ function renderRunsTable(runs, targetId) {
  *   onMessage(msg)         called with the parsed JSON message on every WS push
  *   onFallbackPoll()       called on an interval while no WS connection is open
  *   pollIntervalMs         fallback polling cadence (default 2000)
+ *   staleAfterMs           liveness watchdog threshold: close and reconnect a
+ *                          socket that has delivered nothing for this long
+ *                          (default max(20000, 10x pollIntervalMs); sized off
+ *                          a generous worst case, not off pollIntervalMs
+ *                          alone, since the producer's actual inter-message
+ *                          gap is its own broadcast interval PLUS however
+ *                          long its server-side status fetch takes, which is
+ *                          unbounded and independent of the client's poll
+ *                          cadence. A caller that knows its server's real
+ *                          broadcast interval should pass staleAfterMs
+ *                          explicitly rather than rely on this default.
  *   auxiliaryPollFn()      optional: a second, independent interval started and
  *                          stopped alongside this channel's own lifecycle,
  *                          regardless of WS/fallback state
@@ -1712,6 +1731,7 @@ function createSovaStatusChannel(options) {
   var pollIntervalMs = options.pollIntervalMs || 2000;
   var auxiliaryPollFn = options.auxiliaryPollFn || null;
   var auxiliaryPollIntervalMs = options.auxiliaryPollIntervalMs || 5000;
+  var staleAfterMs = options.staleAfterMs || Math.max(20000, pollIntervalMs * 10);
 
   var RECONNECT_BASE_MS = 1000;
   var MAX_RECONNECT_DELAY_MS = 16000;
@@ -1724,7 +1744,19 @@ function createSovaStatusChannel(options) {
   var fallbackRetryInterval = null;
   var reconnectTimer = null;
   var auxiliaryInterval = null;
+  var watchdogInterval = null;
+  var lastMessageAt = null;
   var stopped = false;
+
+  function startWatchdog() {
+    if (watchdogInterval) return;
+    watchdogInterval = setInterval(function() {
+      if (ws !== null && lastMessageAt !== null && (Date.now() - lastMessageAt) > staleAfterMs) {
+        console.warn('SovaStatusChannel: socket stale, forcing reconnect');
+        ws.close();
+      }
+    }, staleAfterMs);
+  }
 
   function startFallback() {
     if (!pollInterval) {
@@ -1758,8 +1790,10 @@ function createSovaStatusChannel(options) {
       return;
     }
     ws = socket;
+    lastMessageAt = Date.now();
 
     socket.onmessage = function(event) {
+      lastMessageAt = Date.now();
       reconnectDelay = RECONNECT_BASE_MS;
       reconnectAttempts = 0;
       stopFallback();
@@ -1796,6 +1830,7 @@ function createSovaStatusChannel(options) {
   }
 
   connect();
+  startWatchdog();
   if (auxiliaryPollFn) {
     auxiliaryInterval = setInterval(auxiliaryPollFn, auxiliaryPollIntervalMs);
   }
@@ -1805,6 +1840,7 @@ function createSovaStatusChannel(options) {
       stopped = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (auxiliaryInterval) { clearInterval(auxiliaryInterval); auxiliaryInterval = null; }
+      if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
       stopFallback();
       if (ws) { ws.close(); ws = null; }
     }

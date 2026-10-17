@@ -391,6 +391,28 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
         return False
 
 
+async def _get_task_run_status(run_id: int, project_dir: Path) -> str | None:
+    """Read the TaskRun's current status, the authoritative outcome for a terminal-state broadcast.
+
+    ``_finalize_task_run``'s exit-code-derived status only matches the row it
+    wrote when this call actually transitioned it: on the already-terminal
+    early return, or after a later downgrade (``_downgrade_to_failed``), the
+    locally computed status diverges from what the DB holds. Returns None
+    (rather than raising) so a caller can fall back to its own best-effort
+    value instead of losing the notification entirely.
+    """
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            task_run = await session.get(TaskRun, run_id)
+            return task_run.status if task_run is not None else None
+    except (SQLAlchemyError, OSError):
+        log.debug("task_run.status_read_failed", run_id=run_id, exc_info=True)
+        return None
+
+
 async def _finalize_orphaned_steps(session: object, run_id: int) -> None:
     """Mark any StepExecution records still in 'running' as 'interrupted'.
 
