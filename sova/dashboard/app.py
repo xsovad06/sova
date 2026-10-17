@@ -45,7 +45,6 @@ from sova.dashboard.routers import (
     agents,
     auth,
     briefing,
-    control,
     costs,
     dependencies,
     dependency_health,
@@ -111,6 +110,10 @@ class UninstallRequest(BaseModel):
 BASE = Path(__file__).parent
 
 _AGENTS_URL = "/agents"
+# Agents page "filter-status" dropdown: sourced from the same terminal-status
+# set the history endpoint filters on, so the UI can never offer a value that
+# the backend query would silently return zero rows for (or hide one it does).
+_STATUS_OPTIONS = [(status, status.replace("_", " ").capitalize()) for status in sorted(_TERMINAL)]
 _SWEEP_INTERVAL = 5  # seconds
 _RECOVERY_INTERVAL = 300  # 5 minutes
 # Probe cadence. With the tracker's decisive-probe rule this is also the
@@ -1143,7 +1146,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/agents")
     async def project_agents(request: Request, slug: str) -> Response:
-        return _with_csrf_cookie(request, _project_page(request, templates, slug, "agents.html", "agents"))
+        return _with_csrf_cookie(
+            request,
+            _project_page(request, templates, slug, "agents.html", "agents", status_options=_STATUS_OPTIONS),
+        )
 
     @app.get("/p/{slug}/work")
     async def project_work_redirect(slug: str) -> RedirectResponse:
@@ -1326,7 +1332,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/agents")
     async def agents_page(request: Request) -> Response:
-        return _with_csrf_cookie(request, templates.TemplateResponse(request, "agents.html", {"page": "agents"}))
+        return _with_csrf_cookie(
+            request,
+            templates.TemplateResponse(request, "agents.html", {"page": "agents", "status_options": _STATUS_OPTIONS}),
+        )
 
     @app.get("/work")
     async def work_redirect() -> RedirectResponse:
@@ -1484,7 +1493,6 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(runs.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(costs.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(briefing.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(control.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(handoff.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(memory.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(models.router, prefix=prefix, dependencies=csrf_dep)

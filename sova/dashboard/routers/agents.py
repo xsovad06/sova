@@ -204,6 +204,11 @@ class CreateIssuesRequest(BaseModel):
     tasks: list[PlannedTaskRequest] = Field(max_length=50)
 
 
+class DismissInterruptedRequest(BaseModel):
+    run_ids: list[int] = Field(min_length=1, max_length=100)
+    superseded_by_relaunch: bool = False
+
+
 @router.post("/agents/planner/create-issues")
 async def create_planner_issues(req: CreateIssuesRequest) -> dict:
     """Create GitHub issues from planner-proposed tasks."""
@@ -337,18 +342,20 @@ async def get_active_agents() -> dict:
 @router.get("/agents/interrupted")
 async def interrupted_runs() -> dict:
     """Get recently interrupted runs (from dashboard crash/restart)."""
-    from sova.dashboard.services.agent_recovery import get_interrupted_runs
+    from sova.dashboard.services.agent_recovery import get_interrupted_runs_and_total
 
-    runs = await get_interrupted_runs()
-    return {"interrupted": runs}
+    runs, total = await get_interrupted_runs_and_total()
+    return {"interrupted": runs, "total": total}
 
 
 @router.post("/agents/interrupted/dismiss")
-async def dismiss_interrupted() -> dict:
-    """Mark all interrupted runs as failed so they no longer show in the banner."""
+async def dismiss_interrupted(req: DismissInterruptedRequest) -> dict:
+    """Mark the given interrupted runs as failed so they no longer show in the banner."""
     from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
 
-    count = await dismiss_interrupted_runs()
+    count = await dismiss_interrupted_runs(req.run_ids, preserve_diagnostic=req.superseded_by_relaunch)
+    if count < 0:
+        raise HTTPException(status_code=503, detail="Failed to dismiss interrupted runs")
     return {"dismissed": count}
 
 

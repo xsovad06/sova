@@ -158,9 +158,7 @@ FastAPI web UI with Catppuccin dark theme, Tailwind CSS, and SVG icon system.
 - **Style Guide**: design system reference with live component examples
 
 ### API
-15 routers under `/api`: overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work, roles.
-
-21 backend services covering run management, cost aggregation, agent lifecycle, handoff processing, batch operations, and more.
+32 routers under `/api` and 48 backend services covering run management, cost aggregation, agent lifecycle, handoff processing, batch operations, and more. See AGENTS.md's Project Structure for the full per-module list.
 
 ## Task Source Abstraction
 

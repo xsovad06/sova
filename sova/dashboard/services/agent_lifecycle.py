@@ -252,15 +252,6 @@ def llm_model_override_role_error(role: str | None) -> str | None:
 # Status queries
 
 
-def get_status(slug: str | None = None) -> dict:
-    """Get legacy single-agent status (backward compat for /api/control/status)."""
-    pa = _get_project_agents(slug)
-    if not pa.agents:
-        return {"status": "idle", "running": False, "pid": None}
-    first = next(iter(pa.agents.values()))
-    return {"status": "running", "running": True, "pid": first.process.pid}
-
-
 async def get_all_agents(slug: str | None = None) -> dict:
     """Get status of all running + recently completed agents."""
     pa = _get_project_agents(slug)

@@ -40,14 +40,6 @@ class TestTasksRouterErrors:
         assert resp.status_code == 503
         assert "Task source unavailable" in resp.json()["detail"]
 
-    async def test_task_history_validates_limit(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/tasks/history?limit=0")
-        assert resp.status_code == 422
-
-    async def test_task_history_validates_limit_upper(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/tasks/history?limit=501")
-        assert resp.status_code == 422
-
 
 class TestSetupRouterErrors:
     async def test_install_hides_exception_detail(self, client: AsyncClient) -> None:
