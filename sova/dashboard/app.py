@@ -45,7 +45,6 @@ from sova.dashboard.routers import (
     agents,
     auth,
     briefing,
-    control,
     costs,
     dependencies,
     dependency_health,
@@ -1484,7 +1483,6 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(runs.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(costs.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(briefing.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(control.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(handoff.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(memory.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(models.router, prefix=prefix, dependencies=csrf_dep)

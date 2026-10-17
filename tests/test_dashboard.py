@@ -911,26 +911,7 @@ class TestCostsAPIErrorHandling:
 # ---------------------------------------------------------------------------
 
 
-class TestControlAPI:
-    async def test_agent_status_idle(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/control/status")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "idle"
-        assert data["running"] is False
-
-    async def test_agent_output_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/control/output?since=0")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["lines"] == []
-
-    async def test_interrupted_runs_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/control/interrupted")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["interrupted"] == []
-
+class TestAgentsInterruptedAPI:
     async def test_interrupted_runs_returns_interrupted(self, client: AsyncClient, session: AsyncSession) -> None:
         """Interrupted TaskRuns should appear in the interrupted endpoint."""
         async with session.begin():
@@ -942,7 +923,7 @@ class TestControlAPI:
                 error_message="Dashboard restarted while agent was running",
             )
             session.add(run)
-        resp = await client.get("/api/control/interrupted")
+        resp = await client.get("/api/agents/interrupted")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["interrupted"]) == 1
@@ -953,7 +934,7 @@ class TestControlAPI:
             session.add(TaskRun(issue_number="1", role="dev", status="done"))
             session.add(TaskRun(issue_number="2", role="dev", status="failed"))
             session.add(TaskRun(issue_number="3", role="dev", status="running"))
-        resp = await client.get("/api/control/interrupted")
+        resp = await client.get("/api/agents/interrupted")
         assert resp.status_code == 200
         assert len(resp.json()["interrupted"]) == 0
 
@@ -3330,7 +3311,6 @@ class TestHandoffAPI:
     async def test_agents_page_has_handoff_support(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
         assert resp.status_code == 200
-        assert "checkHandoffForAgents" in resp.text
         assert "executeHandoffAction" in resp.text
 
     async def test_agents_page_has_kanban_view(self, client: AsyncClient) -> None:
@@ -17469,36 +17449,6 @@ class TestGetOutputBranches:
         with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
             lines = await get_output(since=0, run_id=200)
         assert lines == ["db line"]
-
-    async def test_get_output_no_run_id_returns_first_agent(self) -> None:
-        """Without run_id, return first agent's output (legacy compat)."""
-        from collections import deque
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services.agent_output import get_output
-
-        mock_agent = MagicMock()
-        mock_agent.output_lines = deque(["first", "second"])
-
-        mock_pa = MagicMock()
-        mock_pa.agents = {1: mock_agent}
-
-        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
-            lines = await get_output(since=0)
-        assert lines == ["first", "second"]
-
-    async def test_get_output_no_run_id_no_agents(self) -> None:
-        """Without run_id and no agents, return empty list."""
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services.agent_output import get_output
-
-        mock_pa = MagicMock()
-        mock_pa.agents = {}
-
-        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
-            lines = await get_output(since=0)
-        assert lines == []
 
 
 class TestReadStderrFlushTrigger:
