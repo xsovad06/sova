@@ -2581,6 +2581,9 @@ function _connectAgentWs() {
     _wsReconnectAttempts = 0;
     // Stop polling if it was running as fallback
     if (agentPollInterval) { clearInterval(agentPollInterval); agentPollInterval = null; }
+    // A reconnect can follow a gap long enough for a run to have been
+    // interrupted and dropped from the banner's stale local state.
+    checkInterrupted();
   };
 
   _agentWs.onmessage = function(event) {
@@ -2634,6 +2637,10 @@ function _connectAgentWs() {
             var _notifTitles = { done: 'Agent completed', failed: 'Agent failed', interrupted: 'Agent interrupted', rejected: 'Agent rejected', stopped: 'Agent stopped' };
             var title = _notifTitles[curr] || 'Agent ' + curr;
             sendBrowserNotification('SOVA: ' + title, ref + ' (' + (run.role || 'agent') + ')');
+            // A run transitioning into interrupted (e.g. the server's
+            // periodic liveness sweep marking it so) must show up in the
+            // banner without waiting for a page reload or the next poll tick.
+            if (curr === 'interrupted') checkInterrupted();
           }
           _wsPreviousStatuses[run.run_id] = curr;
         });
@@ -3181,6 +3188,7 @@ document.addEventListener('visibilitychange', function() {
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
     if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); _crQuotaPollInterval = null; }
     if (_memPressureInterval) { clearInterval(_memPressureInterval); _memPressureInterval = null; }
+    if (_interruptedPollInterval) { clearInterval(_interruptedPollInterval); _interruptedPollInterval = null; }
     if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
     if (logPollInterval) { clearTimeout(logPollInterval); logPollInterval = null; }
   } else {
@@ -3203,6 +3211,8 @@ document.addEventListener('visibilitychange', function() {
     _crQuotaPollInterval = setInterval(_syncCrQuota, 300000);
     checkMemoryPressure();
     _memPressureInterval = setInterval(checkMemoryPressure, 5000);
+    checkInterrupted();
+    _interruptedPollInterval = setInterval(checkInterrupted, 30000);
     if (activeLogRunId !== null) {
       _logBackoffMs = _LOG_BACKOFF_BASE;
       _connectLogSSE(activeLogRunId);
@@ -3268,10 +3278,13 @@ var _crQuotaPollInterval = setInterval(_syncCrQuota, 300000);
 
 // Interrupted Runs Banner
 
+var _interruptedRunIds = [];
+
 async function checkInterrupted() {
   try {
     var data = await fetchAPI(apiUrl('/agents/interrupted'));
     var runs = data.interrupted || [];
+    _interruptedRunIds = runs.map(function(run) { return run.id; });
     var banner = document.getElementById('interrupted-banner');
     if (runs.length === 0) {
       banner.classList.add('hidden');
@@ -3304,15 +3317,24 @@ async function checkInterrupted() {
 }
 
 async function dismissInterrupted() {
-  var banner = document.getElementById('interrupted-banner');
-  banner.classList.add('hidden');
-  banner.innerHTML = '';
+  var ids = _interruptedRunIds;
+  if (ids.length === 0) return;
   try {
-    await fetch(apiUrl('/agents/interrupted/dismiss'), { method: 'POST' });
-  } catch (e) { /* best-effort: banner already hidden locally */ }
+    var resp = await fetch(apiUrl('/agents/interrupted/dismiss'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_ids: ids })
+    });
+    if (!resp.ok) { console.warn('dismissInterrupted failed:', resp.status); }
+  } catch (e) { console.warn('dismissInterrupted failed:', e); }
+  // Re-fetch the real state rather than assuming success: a non-OK response,
+  // or an OK response with "dismissed" short of ids.length (e.g. a DB error
+  // mid-update), must leave the still-interrupted runs visible.
+  await checkInterrupted();
 }
 
 checkInterrupted();
+var _interruptedPollInterval = setInterval(checkInterrupted, 30000);
 
 // Memory Pressure Banner
 

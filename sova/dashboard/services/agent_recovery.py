@@ -608,19 +608,27 @@ async def get_interrupted_runs(limit: int = 5) -> list[dict]:
         return []
 
 
-async def dismiss_interrupted_runs() -> int:
-    """Mark all interrupted runs as failed. Returns count of dismissed runs."""
+async def dismiss_interrupted_runs(run_ids: list[int]) -> int:
+    """Mark the given interrupted runs as failed. Returns count of dismissed runs.
+
+    Scoped to `run_ids` (the runs actually shown in the banner) rather than
+    every interrupted run, since `get_interrupted_runs()` caps its result at
+    `limit` and a run the user never saw must not be dismissed.
+    """
     from sqlalchemy import update
 
     from sova.db.models import TaskRun
     from sova.db.session import get_session
+
+    if not run_ids:
+        return 0
 
     try:
         async with await get_session() as session:
             async with session.begin():
                 stmt = (
                     update(TaskRun)
-                    .where(TaskRun.status == "interrupted")
+                    .where(TaskRun.status == "interrupted", TaskRun.id.in_(run_ids))
                     .values(status="failed", error_message="Dismissed by user")
                 )
                 result = await session.execute(stmt)

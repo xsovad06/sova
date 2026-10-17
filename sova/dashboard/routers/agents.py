@@ -204,6 +204,10 @@ class CreateIssuesRequest(BaseModel):
     tasks: list[PlannedTaskRequest] = Field(max_length=50)
 
 
+class DismissInterruptedRequest(BaseModel):
+    run_ids: list[int] = Field(default_factory=list)
+
+
 @router.post("/agents/planner/create-issues")
 async def create_planner_issues(req: CreateIssuesRequest) -> dict:
     """Create GitHub issues from planner-proposed tasks."""
@@ -344,11 +348,11 @@ async def interrupted_runs() -> dict:
 
 
 @router.post("/agents/interrupted/dismiss")
-async def dismiss_interrupted() -> dict:
-    """Mark all interrupted runs as failed so they no longer show in the banner."""
+async def dismiss_interrupted(req: DismissInterruptedRequest) -> dict:
+    """Mark the given interrupted runs as failed so they no longer show in the banner."""
     from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
 
-    count = await dismiss_interrupted_runs()
+    count = await dismiss_interrupted_runs(req.run_ids)
     return {"dismissed": count}
 
 
