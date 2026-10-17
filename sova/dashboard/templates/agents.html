@@ -1404,7 +1404,6 @@ function runCommandWithMergeBlockers(command, args, blockers) {
 }
 
 var logCursor = 0;
-var agentPollInterval = null;
 var logPollInterval = null;
 var _logEventSource = null;
 var _logBackoffMs = 1000;
@@ -1415,11 +1414,20 @@ var lastAgentFingerprint = null;
 var _lastActiveAgents = [];
 
 function agentFingerprint(data) {
+  // cost_usd is deliberately excluded: it changes on nearly every poll while
+  // a run is active, which would force a full grid re-render every tick and
+  // defeat the point of only re-rendering on an actual state change. The
+  // cost display itself still refreshes via _refreshCardMetrics(). The stuck
+  // bucket below must still change on its own: without it, a card with
+  // otherwise-unchanged status/current_step/pr_number/source is never
+  // re-rendered once it crosses _STUCK_THRESHOLD_S, so renderStatusBadge()
+  // never runs again and the stuck class never appears while polling.
   var running = data.agents.map(function(a) {
-    return a.run_id + ':' + a.status + ':' + a.current_step + ':' + (a.cost_usd || 0) + ':' + (a.pr_number || '') + ':' + (a.source || '');
+    var stuckBucket = (a.elapsed_seconds != null && a.elapsed_seconds > _STUCK_THRESHOLD_S) ? '1' : '0';
+    return a.run_id + ':' + a.status + ':' + a.current_step + ':' + (a.pr_number || '') + ':' + (a.source || '') + ':' + stuckBucket;
   });
   var completed = data.completed.map(function(a) {
-    return a.run_id + ':' + a.status + ':' + (a.cost_usd || 0) + ':' + (a.pr_number || '');
+    return a.run_id + ':' + a.status + ':' + (a.pr_number || '');
   });
   return data.slots_available + '|' + running.join(',') + '|' + completed.join(',');
 }
@@ -1428,6 +1436,15 @@ async function loadAgents() {
   try {
     var data = await fetchAPI(apiUrl('/agents/active'));
     _lastActiveAgents = data.agents;
+
+    // Mirrors the WS path's pruning of _stepStartTimes (see
+    // _handleAgentStatusMessage) so a polling-only session (no WS messages
+    // at all) doesn't accumulate an entry per run for the life of the page.
+    var _loadedRunIds = {};
+    data.agents.forEach(function(a) { _loadedRunIds[a.run_id] = 1; });
+    Object.keys(_stepStartTimes).forEach(function(id) {
+      if (!_loadedRunIds[id]) delete _stepStartTimes[id];
+    });
 
     var fp = agentFingerprint(data);
     var changed = fp !== lastAgentFingerprint;
@@ -1491,6 +1508,14 @@ function renderAgentCard(agent) {
   var issueLabel = hasRef ? issueOrPrLink(agent.issue, agent.pr_number) : escapeHtml(formatRole(agent.role, agent.pipeline_variant));
   var prBadge = (agent.issue && agent.pr_number) ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
+  // Stuck detection uses run-level elapsed_seconds, consistently with the WS
+  // path and with renderStatusBadge's own _STUCK_THRESHOLD_S semantics (5
+  // minutes of run elapsed time, not time-in-step). time_in_step_ms/its
+  // client-side approximation is a separate, distinctly-labeled "time in
+  // current step" display field below and must never feed the stuck
+  // computation.
+  var stepElapsedSec = agent.current_step ? _stepElapsedSeconds(agent.run_id, agent.current_step) : null;
+
   return '<div id="agent-card-' + agent.run_id + '" class="bg-surface-card rounded-lg border ' + colors.border + ' p-4 transition-all">' +
     '<div class="flex items-center justify-between mb-3 cursor-pointer hover:opacity-80" onclick="window.location=\'' + detailUrl + '\'">' +
       '<div class="flex items-center gap-2">' +
@@ -1501,9 +1526,12 @@ function renderAgentCard(agent) {
         renderStatusBadge(agent.status, agent.current_step, agent.step_index, agent.total_steps, agent.elapsed_seconds) +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
-        (agent.cpu_percent != null ? '<span class="text-accent" data-field="cpu">CPU ' + agent.cpu_percent.toFixed(1) + '%</span>' : '') +
-        (agent.memory_rss_bytes != null ? '<span class="text-accent-green" data-field="mem">' + (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB</span>' : '') +
+        '<span class="text-accent" data-field="cpu">' + (agent.cpu_percent != null ? 'CPU ' + agent.cpu_percent.toFixed(1) + '%' : 'CPU —') + '</span>' +
+        '<span class="text-accent-green" data-field="mem">' + (agent.memory_rss_bytes != null ? (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB' : '— MB') + '</span>' +
         '<span class="text-gray-500" data-field="elapsed">' + liveElapsed(agent.elapsed_seconds) + '</span>' +
+        '<span class="text-gray-600" data-field="step-elapsed" data-tooltip="Time in current step">' +
+          (stepElapsedSec != null ? 'Step: ' + liveElapsed(stepElapsedSec) : '') +
+        '</span>' +
         '<span class="text-accent-green" data-field="cost">' + cost + '</span>' +
       '</div>' +
     '</div>' +
@@ -1524,7 +1552,11 @@ function renderCompletedCard(agent) {
   var colors = roleColor(agent.role);
   var borderColor = agent.status === 'done' ? 'border-accent-green/40' : 'border-accent-red/40';
   var cost = agent.cost_usd ? '$' + parseFloat(agent.cost_usd).toFixed(4) : '$0.00';
-  var agoText = agent.completed_seconds_ago + 's ago';
+  // liveElapsed, not a static string: with no data-field for _refreshCardMetrics
+  // to patch, a static "Ns ago" froze the moment an active run's cost churn
+  // stopped forcing the whole grid to re-render on every tick. The shared 1s
+  // .sova-status-elapsed ticker (see the <script> block above) drives it instead.
+  var agoText = liveElapsed(agent.completed_seconds_ago) + ' ago';
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
   var detailUrl = prefix + '/work/' + agent.run_id;
 
@@ -2543,17 +2575,32 @@ loadPrTracker();
 checkMemoryPressure();
 loadHistory();
 
-// WebSocket for real-time agent status with polling fallback
-var _agentWs = null;
-var _wsReconnectDelay = 1000;
-var _wsMaxReconnectDelay = 16000;
-var _wsReconnectAttempts = 0;
-var _wsMaxReconnectAttempts = 10;
+// Real-time agent status: WebSocket with polling fallback, via the shared
+// SovaStatusChannel helper (app.js).
+var _statusChannel = null;
 var _wsLastRunIds = null;
 var _wsLastRunStatuses = null;
 var _wsPreviousStatuses = {};
+var _stepStartTimes = {};
 var _workItemsRefreshTimer = null;
 var _agentsRefreshTimer = null;
+
+// Client-side baseline for "time in current step": the WebSocket's
+// status_update carries an authoritative time_in_step_ms (gated on
+// time_in_step_known, see _handleAgentStatusMessage), but the REST
+// /agents/active payload (get_unified_agents(), consumed by loadAgents() and
+// the polling fallback) does not carry it at all. _stepStartTimes is only
+// ever populated from that authoritative WS value, never fabricated here:
+// a run this browser session has not yet received one for (e.g. right after
+// a page load, before the first WebSocket message arrives) reports null
+// rather than a fabricated "Step: 0s". The shared elapsed-timer interval
+// (the `.sova-status-elapsed` ticker, see the <script> block above) does the
+// ticking once a baseline exists.
+function _stepElapsedSeconds(runId, step) {
+  var entry = _stepStartTimes[runId];
+  if (!entry || entry.step !== step) return null;
+  return Math.max(0, Math.round((Date.now() - entry.startedAtMs) / 1000));
+}
 
 // Refetch the Tasks list shortly after an agent changes state, instead of
 // waiting for the 30 s poll. Debounced so a burst of WebSocket messages (or an
@@ -2577,146 +2624,139 @@ function _scheduleAgentsRefresh() {
   }, 300);
 }
 
-function _connectAgentWs() {
-  if (_wsReconnectAttempts > _wsMaxReconnectAttempts) {
-    console.warn('WebSocket max reconnect attempts reached, falling back to polling');
-    _startPollingFallback();
+function _handleAgentStatusMessage(msg) {
+  if (msg.type === 'agent_finished') {
+    // A dashboard-managed agent exited and the server dropped its cached
+    // task, PR, and verdict state: refresh both views now. This covers
+    // supervisor-spawned runs too, since those go through the same
+    // dashboard agent pool (agent_lifecycle.start_agent()/start_command())
+    // and so emit this event like any other. A genuine CLI `sova run`
+    // started outside the dashboard does not: for that case the
+    // status_update branch below is what eventually catches the change,
+    // and only once the server's own queue/PR caches have expired on
+    // their TTL, since nothing invalidates them for an external run.
+    _scheduleAgentsRefresh();
+    _scheduleWorkItemsRefresh();
     return;
   }
-  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  var wsUrl = proto + '//' + location.host + apiUrl('/ws/agents/status');
-  _agentWs = new WebSocket(wsUrl);
-
-  _agentWs.onopen = function() {
-    _wsReconnectDelay = 1000;
-    _wsReconnectAttempts = 0;
-    // Stop polling if it was running as fallback
-    if (agentPollInterval) { clearInterval(agentPollInterval); agentPollInterval = null; }
-  };
-
-  _agentWs.onmessage = function(event) {
-    try {
-      var msg = JSON.parse(event.data);
-      if (msg.type === 'agent_finished') {
-        // A dashboard-managed agent exited and the server dropped its cached
-        // task, PR, and verdict state: refresh both views now. This covers
-        // supervisor-spawned runs too, since those go through the same
-        // dashboard agent pool (agent_lifecycle.start_agent()/start_command())
-        // and so emit this event like any other. A genuine CLI `sova run`
-        // started outside the dashboard does not: for that case the
-        // status_update branch below is what eventually catches the change,
-        // and only once the server's own queue/PR caches have expired on
-        // their TTL, since nothing invalidates them for an external run.
-        _scheduleAgentsRefresh();
+  if (msg.type === 'status_update' && Array.isArray(msg.runs)) {
+    // Any run changing status, starting, or leaving the active set can
+    // change a task's state.
+    var runStatuses = msg.runs.map(function(r) { return r.run_id + ':' + r.status; }).sort().join(',');
+    if (_wsLastRunStatuses === null) {
+      // First snapshot since connect: the Tasks list may have loaded
+      // before this connection opened, so it can carry a run's changed
+      // status the page hasn't seen yet. But the far more common case is
+      // the normal page-load sequence, where loadWorkItems() already ran
+      // moments ago and reports the exact same active runs: only
+      // refresh here if the two actually disagree.
+      var activeRunIds = msg.runs
+        .filter(function(r) { return !_STATUS_TERMINAL[r.status]; })
+        .map(function(r) { return r.run_id; })
+        .sort()
+        .join(',');
+      if (activeRunIds !== _lastLoadedRunIds) {
         _scheduleWorkItemsRefresh();
-        return;
       }
-      if (msg.type === 'status_update' && Array.isArray(msg.runs)) {
-        // Any run changing status, starting, or leaving the active set can
-        // change a task's state.
-        var runStatuses = msg.runs.map(function(r) { return r.run_id + ':' + r.status; }).sort().join(',');
-        if (_wsLastRunStatuses === null) {
-          // First snapshot since connect: the Tasks list may have loaded
-          // before this connection opened, so it can carry a run's changed
-          // status the page hasn't seen yet. But the far more common case is
-          // the normal page-load sequence, where loadWorkItems() already ran
-          // moments ago and reports the exact same active runs: only
-          // refresh here if the two actually disagree.
-          var activeRunIds = msg.runs
-            .filter(function(r) { return !_STATUS_TERMINAL[r.status]; })
-            .map(function(r) { return r.run_id; })
-            .sort()
-            .join(',');
-          if (activeRunIds !== _lastLoadedRunIds) {
-            _scheduleWorkItemsRefresh();
-          }
-        } else if (runStatuses !== _wsLastRunStatuses) {
-          _scheduleWorkItemsRefresh();
-        }
-        _wsLastRunStatuses = runStatuses;
-        // Fire browser notifications on terminal state transitions
-        var _activeRunIds = {};
-        msg.runs.forEach(function(run) {
-          _activeRunIds[run.run_id] = 1;
-          var prev = _wsPreviousStatuses[run.run_id];
-          var curr = run.status;
-          if (prev && prev !== curr && _STATUS_TERMINAL[curr] && curr !== 'paused') {
-            var ref = run.issue ? '#' + run.issue : (run.pr_number ? 'PR #' + run.pr_number : 'Run ' + run.run_id);
-            var _notifTitles = { done: 'Agent completed', failed: 'Agent failed', interrupted: 'Agent interrupted', rejected: 'Agent rejected', stopped: 'Agent stopped' };
-            var title = _notifTitles[curr] || 'Agent ' + curr;
-            sendBrowserNotification('SOVA: ' + title, ref + ' (' + (run.role || 'agent') + ')');
-          }
-          _wsPreviousStatuses[run.run_id] = curr;
-        });
-        // Prune entries for runs no longer reported by the server
-        Object.keys(_wsPreviousStatuses).forEach(function(id) {
-          if (!_activeRunIds[id]) delete _wsPreviousStatuses[id];
-        });
-
-        // Build a snapshot of display-relevant fields to detect any change
-        var snapshot = msg.runs.map(function(r) {
-          return r.run_id + ':' + r.status + ':' + (r.current_step || '') + ':' + r.step_index + ':' + (r.is_stuck ? '1' : '0');
-        }).sort().join(',');
-        if (_wsLastRunIds !== null && snapshot !== _wsLastRunIds) {
-          _wsLastRunIds = snapshot;
-          loadAgents();
-          return;
-        }
-        _wsLastRunIds = snapshot;
-        // Apply all display-relevant field deltas inline
-        msg.runs.forEach(function(run) {
-          var card = document.getElementById('agent-card-' + run.run_id);
-          if (!card) return;
-
-          // Re-render status badge with current values
-          var badgeEl = card.querySelector('.sova-status-badge');
-          if (badgeEl) {
-            var elapsedSec = run.time_in_step_ms != null ? run.time_in_step_ms / 1000 : null;
-            var newBadge = renderStatusBadge(run.status, run.current_step, run.step_index, run.total_steps, elapsedSec);
-            badgeEl.outerHTML = newBadge;
-          }
-
-          // Update step pipeline
-          var pipelineEl = card.querySelector('[data-pipeline-container]');
-          if (pipelineEl) {
-            pipelineEl.innerHTML = renderStepPipeline(run.current_step, run.role, false, run.pipeline_variant);
-          }
-
-          // Update elapsed time display with live ticker
-          var elapsedEl = card.querySelector('[data-field="elapsed"]');
-          if (elapsedEl) {
-            var elSec = run.time_in_step_ms != null ? Math.floor(run.time_in_step_ms / 1000) : null;
-            elapsedEl.innerHTML = elSec != null ? liveElapsed(elSec) : '';
-          }
-        });
+    } else if (runStatuses !== _wsLastRunStatuses) {
+      _scheduleWorkItemsRefresh();
+    }
+    _wsLastRunStatuses = runStatuses;
+    // Fire browser notifications on terminal state transitions
+    var _activeRunIds = {};
+    msg.runs.forEach(function(run) {
+      _activeRunIds[run.run_id] = 1;
+      var prev = _wsPreviousStatuses[run.run_id];
+      var curr = run.status;
+      if (prev && prev !== curr && _STATUS_TERMINAL[curr] && curr !== 'paused') {
+        var ref = run.issue ? '#' + run.issue : (run.pr_number ? 'PR #' + run.pr_number : 'Run ' + run.run_id);
+        var _notifTitles = { done: 'Agent completed', failed: 'Agent failed', interrupted: 'Agent interrupted', rejected: 'Agent rejected', stopped: 'Agent stopped' };
+        var title = _notifTitles[curr] || 'Agent ' + curr;
+        sendBrowserNotification('SOVA: ' + title, ref + ' (' + (run.role || 'agent') + ')');
       }
-    } catch (e) {
-      console.warn('WebSocket message parse error:', e);
+      _wsPreviousStatuses[run.run_id] = curr;
+    });
+    // Prune entries for runs no longer reported by the server
+    Object.keys(_wsPreviousStatuses).forEach(function(id) {
+      if (!_activeRunIds[id]) delete _wsPreviousStatuses[id];
+    });
+    Object.keys(_stepStartTimes).forEach(function(id) {
+      if (!_activeRunIds[id]) delete _stepStartTimes[id];
+    });
+
+    // Build a snapshot of display-relevant fields to detect any change
+    var snapshot = msg.runs.map(function(r) {
+      return r.run_id + ':' + r.status + ':' + (r.current_step || '') + ':' + r.step_index + ':' + (r.is_stuck ? '1' : '0');
+    }).sort().join(',');
+    if (_wsLastRunIds !== null && snapshot !== _wsLastRunIds) {
+      _wsLastRunIds = snapshot;
+      loadAgents();
+      return;
     }
-  };
+    _wsLastRunIds = snapshot;
+    // Apply all display-relevant field deltas inline
+    msg.runs.forEach(function(run) {
+      var card = document.getElementById('agent-card-' + run.run_id);
+      if (!card) return;
 
-  _agentWs.onclose = function() {
-    _agentWs = null;
-    _startPollingFallback();
-    _wsReconnectAttempts++;
-    if (_wsReconnectAttempts <= _wsMaxReconnectAttempts) {
-      setTimeout(_connectAgentWs, _wsReconnectDelay);
-      _wsReconnectDelay = Math.min(_wsReconnectDelay * 2, _wsMaxReconnectDelay);
-    }
-  };
+      // Stuck detection uses run.elapsed_seconds, consistently with the REST
+      // path and with renderStatusBadge's own _STUCK_THRESHOLD_S semantics.
+      // Resync the client-side baseline (_stepElapsedSeconds, used by the
+      // REST initial/polling-fallback render) to the authoritative
+      // time_in_step_ms too, so a later full card rebuild from a REST poll
+      // (e.g. after the WebSocket drops) keeps ticking from the correct
+      // start. Gated on time_in_step_known: a run with no in-progress
+      // StepExecution (e.g. a command-role run, or the window before its
+      // first step row exists) has time_in_step_ms fall back to run-elapsed,
+      // which would duplicate the adjacent "elapsed" field under this
+      // separate "time in current step" label, never the stuck computation.
+      var stepSec = (run.time_in_step_known && run.time_in_step_ms != null) ? Math.floor(run.time_in_step_ms / 1000) : null;
+      if (stepSec != null) {
+        _stepStartTimes[run.run_id] = { step: run.current_step, startedAtMs: Date.now() - run.time_in_step_ms };
+      } else {
+        delete _stepStartTimes[run.run_id];
+      }
 
-  _agentWs.onerror = function() {
-    if (_agentWs) _agentWs.close();
-  };
-}
+      // Re-render status badge with current values
+      var badgeEl = card.querySelector('.sova-status-badge');
+      if (badgeEl) {
+        var newBadge = renderStatusBadge(run.status, run.current_step, run.step_index, run.total_steps, run.elapsed_seconds);
+        badgeEl.outerHTML = newBadge;
+      }
 
-function _startPollingFallback() {
-  if (!agentPollInterval) {
-    agentPollInterval = setInterval(loadAgents, 2000);
+      // Update step pipeline
+      var pipelineEl = card.querySelector('[data-pipeline-container]');
+      if (pipelineEl) {
+        pipelineEl.innerHTML = renderStepPipeline(run.current_step, run.role, false, run.pipeline_variant);
+      }
+
+      // Update the run-elapsed display with a live ticker
+      var elapsedEl = card.querySelector('[data-field="elapsed"]');
+      if (elapsedEl) {
+        elapsedEl.innerHTML = run.elapsed_seconds != null ? liveElapsed(run.elapsed_seconds) : '';
+      }
+
+      // Update the separate "time in current step" display
+      var stepElapsedEl = card.querySelector('[data-field="step-elapsed"]');
+      if (stepElapsedEl) {
+        stepElapsedEl.innerHTML = stepSec != null ? ('Step: ' + liveElapsed(stepSec)) : '';
+      }
+    });
   }
 }
 
-var _metricsInterval = null;
+function _startAgentStatusChannel() {
+  if (_statusChannel) { _statusChannel.stop(); _statusChannel = null; }
+  _statusChannel = createSovaStatusChannel({
+    wsPath: apiUrl('/ws/agents/status'),
+    onMessage: _handleAgentStatusMessage,
+    onFallbackPoll: loadAgents,
+    pollIntervalMs: 2000,
+    auxiliaryPollFn: _refreshCardMetrics,
+    auxiliaryPollIntervalMs: 5000
+  });
+}
+
 function _refreshCardMetrics() {
   if (!document.querySelector('[id^="agent-card-"]')) return;
   var cached = window._sovaActiveAgents;
@@ -2726,12 +2766,12 @@ function _refreshCardMetrics() {
     var card = document.getElementById('agent-card-' + agent.run_id);
     if (!card) return;
     var cpuEl = card.querySelector('[data-field="cpu"]');
-    if (cpuEl && agent.cpu_percent != null) {
-      cpuEl.textContent = 'CPU ' + agent.cpu_percent.toFixed(1) + '%';
+    if (cpuEl) {
+      cpuEl.textContent = agent.cpu_percent != null ? 'CPU ' + agent.cpu_percent.toFixed(1) + '%' : 'CPU —';
     }
     var memEl = card.querySelector('[data-field="mem"]');
-    if (memEl && agent.memory_rss_bytes != null) {
-      memEl.textContent = (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB';
+    if (memEl) {
+      memEl.textContent = agent.memory_rss_bytes != null ? (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB' : '— MB';
     }
     var costEl = card.querySelector('[data-field="cost"]');
     if (costEl) {
@@ -2739,18 +2779,14 @@ function _refreshCardMetrics() {
     }
   });
 }
-_metricsInterval = setInterval(_refreshCardMetrics, 5000);
-
 loadWorkItems();
 var _workItemsPollInterval = setInterval(loadWorkItems, 30000);
 
-_connectAgentWs();
+_startAgentStatusChannel();
 
 // Clean up on page navigation
 window.addEventListener('beforeunload', function() {
-  if (_agentWs) { _agentWs.close(); _agentWs = null; }
-  if (agentPollInterval) { clearInterval(agentPollInterval); }
-  if (_metricsInterval) { clearInterval(_metricsInterval); }
+  if (_statusChannel) { _statusChannel.stop(); _statusChannel = null; }
   if (_prPollInterval) { clearInterval(_prPollInterval); }
   if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); }
   if (_workItemsPollInterval) { clearInterval(_workItemsPollInterval); }
@@ -3185,9 +3221,7 @@ if (_agentView === 'kanban') {
 // Pause polling when tab is hidden, full refresh when it returns
 document.addEventListener('visibilitychange', function() {
   if (document.hidden) {
-    if (_agentWs) { _agentWs.close(); _agentWs = null; }
-    if (agentPollInterval) { clearInterval(agentPollInterval); agentPollInterval = null; }
-    if (_metricsInterval) { clearInterval(_metricsInterval); _metricsInterval = null; }
+    if (_statusChannel) { _statusChannel.stop(); _statusChannel = null; }
     if (_prPollInterval) { clearInterval(_prPollInterval); _prPollInterval = null; }
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
     if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); _crQuotaPollInterval = null; }
@@ -3195,13 +3229,10 @@ document.addEventListener('visibilitychange', function() {
     if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
     if (logPollInterval) { clearTimeout(logPollInterval); logPollInterval = null; }
   } else {
-    _wsReconnectAttempts = 0;
-    _wsReconnectDelay = 1000;
     _wsLastRunIds = null;
-    _connectAgentWs();
+    _startAgentStatusChannel();
     loadAgents();
     _refreshCardMetrics();
-    _metricsInterval = setInterval(_refreshCardMetrics, 5000);
     loadTaskCards();
     loadPrTracker();
     loadHistory();
