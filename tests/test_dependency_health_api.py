@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from sova.dashboard.services import dependency_health_service as svc
 from sova.db.session import close_db, init_db
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +55,7 @@ class TestDependencyHealthRouter:
     async def test_snapshot_endpoint(self, app) -> None:
         with patch.object(svc, "get_snapshot", new=AsyncMock(return_value=_fake_snapshot())):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/dependency-health/snapshot")
         assert resp.status_code == 200
         data = resp.json()
@@ -64,6 +66,7 @@ class TestDependencyHealthRouter:
     async def test_snapshot_disabled(self, app) -> None:
         with patch.object(svc, "get_snapshot", new=AsyncMock(return_value=_fake_snapshot(enabled=False))):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/dependency-health/snapshot")
         assert resp.status_code == 200
         assert resp.json()["enabled"] is False
@@ -71,6 +74,7 @@ class TestDependencyHealthRouter:
     async def test_packages_endpoint(self, app) -> None:
         with patch.object(svc, "get_snapshot", new=AsyncMock(return_value=_fake_snapshot())):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/dependency-health/packages")
         assert resp.status_code == 200
         data = resp.json()
@@ -80,6 +84,7 @@ class TestDependencyHealthRouter:
     async def test_package_detail_found(self, app) -> None:
         with patch.object(svc, "get_snapshot", new=AsyncMock(return_value=_fake_snapshot())):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/dependency-health/packages/requests")
         assert resp.status_code == 200
         assert resp.json()["name"] == "requests"
@@ -87,6 +92,7 @@ class TestDependencyHealthRouter:
     async def test_package_detail_not_found(self, app) -> None:
         with patch.object(svc, "get_snapshot", new=AsyncMock(return_value=_fake_snapshot())):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/dependency-health/packages/nonexistent")
         assert resp.status_code == 404
 
@@ -107,6 +113,7 @@ class TestDependencyHealthRouter:
         )
         with patch.object(svc, "get_snapshot", new=AsyncMock(return_value=snapshot)):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/dependency-health/packages/@scope/pkg")
         assert resp.status_code == 200
         assert resp.json()["name"] == "@scope/pkg"
@@ -115,6 +122,7 @@ class TestDependencyHealthRouter:
         mock_get_snapshot = AsyncMock(return_value=_fake_snapshot())
         with patch.object(svc, "get_snapshot", new=mock_get_snapshot):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/dependency-health/refresh")
         assert resp.status_code == 200
         assert mock_get_snapshot.call_args.kwargs["force_refresh"] is True
@@ -122,6 +130,7 @@ class TestDependencyHealthRouter:
     async def test_snapshot_error_returns_500(self, app) -> None:
         with patch.object(svc, "get_snapshot", new=AsyncMock(side_effect=RuntimeError("boom"))):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/dependency-health/snapshot")
         assert resp.status_code == 500
 
@@ -131,6 +140,7 @@ class TestDependencyHealthRouter:
             patch("sova.dashboard.routers.dependency_health.get_default_project_dir", return_value=None),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/dependency-health/snapshot")
         assert resp.status_code == 400
         assert resp.json()["detail"] == "No project selected"
@@ -139,6 +149,7 @@ class TestDependencyHealthRouter:
 class TestDependencyHealthPage:
     async def test_page_route_renders(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/dependency-health")
         assert resp.status_code == 200
         assert b"Dependency Health" in resp.content
@@ -153,6 +164,7 @@ class TestDependencyHealthPage:
         slug = register_project(project_dir)
         try:
             async with AsyncClient(transport=ASGITransport(app=multi_app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get(f"/p/{slug}/dependency-health")
             assert resp.status_code == 200
             assert b"Dependency Health" in resp.content

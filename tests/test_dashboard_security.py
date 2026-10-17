@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sova.dashboard.security import (
     CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME,
+    build_allowed_hosts,
     build_allowed_origins,
     is_loopback_host,
     is_wildcard_host,
@@ -106,10 +107,32 @@ class TestBuildAllowedOrigins:
         assert "http://127.0.0.1:9999" in origins
 
 
-def _request(headers: dict[str, str]) -> Request:
+class TestBuildAllowedHosts:
+    def test_loopback_bind_accepts_all_loopback_spellings(self) -> None:
+        hosts = build_allowed_hosts("127.0.0.1")
+        assert "127.0.0.1" in hosts
+        assert "localhost" in hosts
+        assert "::1" in hosts
+
+    def test_non_loopback_bind_only_accepts_configured_host(self) -> None:
+        assert build_allowed_hosts("192.168.1.5") == ["192.168.1.5"]
+
+    def test_bracketed_ipv6_is_stripped_to_bare_form(self) -> None:
+        """TrustedHostMiddleware matches the bare Host header, never bracketed."""
+        hosts = build_allowed_hosts("[::1]")
+        assert "::1" in hosts
+        assert "[::1]" not in hosts
+
+    def test_loopback_bind_includes_the_configured_host_itself(self) -> None:
+        hosts = build_allowed_hosts("127.0.0.2")
+        assert "127.0.0.2" in hosts
+        assert "127.0.0.1" in hosts
+
+
+def _request(headers: dict[str, str], method: str = "POST") -> Request:
     """Build a bare Request carrying only the headers under test."""
     raw = [(key.lower().encode(), value.encode()) for key, value in headers.items()]
-    return Request({"type": "http", "method": "POST", "path": "/", "headers": raw})
+    return Request({"type": "http", "method": method, "path": "/", "headers": raw})
 
 
 class TestValidateOrigin:
@@ -154,6 +177,10 @@ def guarded_app() -> FastAPI:
 
     @test_app.post("/guarded", dependencies=[Depends(require_same_origin_csrf)])
     def guarded() -> dict:
+        return {"ok": True}
+
+    @test_app.get("/guarded-read", dependencies=[Depends(require_same_origin_csrf)])
+    def guarded_read() -> dict:
         return {"ok": True}
 
     @test_app.get("/issue-cookie")
@@ -246,3 +273,17 @@ class TestRequireSameOriginCsrf:
         set_cookie = client.get("/issue-cookie").headers["set-cookie"]
         assert "HttpOnly" not in set_cookie
         assert "SameSite=strict" in set_cookie
+
+    def test_get_request_bypasses_the_guard_entirely(self, guarded_app: FastAPI) -> None:
+        """A GET is a no-op for the guard (#1204): this is what makes it safe to
+        register once at router level, covering every route it carries, since a
+        router mixes mutating and read-only routes."""
+        client = TestClient(guarded_app)
+        response = client.get("/guarded-read")
+        assert response.status_code == 200
+
+    def test_get_request_bypasses_even_when_fail_closed(self, guarded_app: FastAPI) -> None:
+        guarded_app.state.csrf_fail_closed = True
+        client = TestClient(guarded_app)
+        response = client.get("/guarded-read")
+        assert response.status_code == 200

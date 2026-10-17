@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import func, select
 
 from sova.a2a.agent_card import generate_role_card
@@ -13,7 +14,9 @@ from sova.a2a.task_mapping import sova_status_to_a2a, task_run_to_a2a_task
 from sova.config.context import get_project_dir
 from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
+from sova.dashboard.services import mcp_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
+from sova.dashboard.services.mcp_service import validate_mcp_token
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 
@@ -103,20 +106,60 @@ async def get_a2a_task(request: Request, task_id: str):
         return task_run_to_a2a_task(run)
 
 
-@router.post("/tasks/{task_id}/cancel")
-async def cancel_a2a_task(request: Request, task_id: str):
-    """Cancel a running SOVA task."""
+def _validate_a2a_cancel_auth(
+    task_id: str,
+    authorization: Annotated[str | None, Header()] = None,
+) -> int:
+    """Gate the one mutating A2A route with the same run-scoped HMAC token MCP uses.
+
+    Every other A2A route is a read, unauthenticated by design (see the module's
+    read-only task/card endpoints above). Cancellation is the exception, so it
+    reuses `mcp_service`'s existing generate/validate pair rather than a new
+    scheme: a caller must hold a token minted for the exact run_id `task_id`
+    encodes, the same bearer-token shape agents already present to `/mcp`.
+
+    Raises:
+        HTTPException: 404 if A2A is disabled or the task ID is malformed,
+            401 if the token is missing or invalid, 403 if it is valid but
+            scoped to a different run.
+    """
     _require_a2a_enabled()
 
     run_id = _parse_run_id(task_id)
     if run_id is None:
         raise HTTPException(status_code=404, detail=f"Invalid task ID: {task_id}")
 
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+
+    project_dir = get_project_dir() or get_default_project_dir()
+    secret = mcp_service.get_or_generate_secret(project_dir)
+    token = authorization[7:]
+
+    try:
+        token_run_id = validate_mcp_token(token, secret)
+    except ValueError as e:
+        log.warning("a2a.cancel_auth_failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=401, detail=str(e)) from e
+
+    if token_run_id != run_id:
+        raise HTTPException(status_code=403, detail=f"Token does not authorize task {task_id}")
+
+    return run_id
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_a2a_task(
+    request: Request,
+    task_id: str,
+    authenticated_run_id: Annotated[int, Depends(_validate_a2a_cancel_auth)],
+) -> dict[str, Any]:
+    """Cancel a running SOVA task."""
     from sova.core.state import TASK_RUN_TERMINAL
     from sova.dashboard.services import control_service
 
     async with await get_session() as session, session.begin():
-        run = await session.get(TaskRun, run_id)
+        run = await session.get(TaskRun, authenticated_run_id)
         if run is None:
             raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
         if run.status in TASK_RUN_TERMINAL:
@@ -125,9 +168,9 @@ async def cancel_a2a_task(request: Request, task_id: str):
         run.status = "rejected"
 
     try:
-        await control_service.stop_agent(run_id=run_id)
+        await control_service.stop_agent(run_id=authenticated_run_id)
     except Exception:  # noqa: BLE001 (the run is already marked rejected; stop failure is reported only)
-        log.warning("stop_agent failed after marking run %d rejected", run_id, exc_info=True)
+        log.warning("stop_agent failed after marking run %d rejected", authenticated_run_id, exc_info=True)
     return {"id": task_id, "status": {"state": "canceled", "message": "Task canceled"}}
 
 

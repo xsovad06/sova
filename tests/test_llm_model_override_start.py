@@ -23,6 +23,7 @@ from sova.dashboard.services import agent_lifecycle
 from sova.dashboard.services.control_service import ProjectAgents, start_agent
 from sova.ipc.runtime import RUN_RUNTIME_MODEL_OVERRIDE_ENV, _inject_agent_marker
 from sova.llm.client import RUN_MODEL_OVERRIDE_ENV
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 _DISCOVERY = {
     "layer": "llm",
@@ -43,6 +44,7 @@ async def client() -> AsyncIterator[AsyncClient]:
     app = create_app(multi_project=False)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        ac.headers.update(_csrf_request_headers(ac))
         yield ac
 
 

@@ -1395,6 +1395,226 @@ async def test_init_db_skips_dispose_when_no_ddl(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# DB file mode: secrets at rest (#1204)
+# ---------------------------------------------------------------------------
+
+
+async def test_init_db_sets_restrictive_file_mode(tmp_path) -> None:
+    """A freshly created SQLite file is chmod 0600: it holds secrets
+    (provider API keys, Jira/webhook tokens) in project_settings, so
+    group/world access must be denied regardless of the process umask."""
+    import os
+    import stat
+    from unittest.mock import AsyncMock, patch
+
+    from sova.db.session import close_db, init_db
+
+    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    try:
+        with patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=False):
+            await init_db(project_dir=tmp_path)
+
+        db_path = tmp_path / ".claude" / "sova.db"
+        assert db_path.exists()
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+    finally:
+        if saved is not None:
+            os.environ["SOVA_DATABASE_URL"] = saved
+        await close_db()
+
+
+def test_ensure_db_file_secured_before_open_creates_missing_file_restrictive(tmp_path) -> None:
+    """A missing SQLite file is pre-created at 0600 before any engine opens
+    it, so SQLite's own file creation (which honors the process umask) never
+    gets a chance to leave it briefly permissive."""
+    import stat
+
+    from sova.db.session import _ensure_db_file_secured_before_open
+
+    db_path = tmp_path / "nested" / "sova.db"
+
+    _ensure_db_file_secured_before_open(db_path)
+
+    assert db_path.exists()
+    assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+
+def test_ensure_db_file_secured_before_open_secures_existing_file(tmp_path) -> None:
+    """An existing, permissive file is chmod'd immediately rather than left
+    exposed until the post-migration _secure_db_file() call."""
+    import os
+    import stat
+
+    from sova.db.session import _ensure_db_file_secured_before_open
+
+    db_path = tmp_path / "sova.db"
+    db_path.write_bytes(b"data")
+    os.chmod(db_path, 0o644)
+
+    _ensure_db_file_secured_before_open(db_path)
+
+    assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+
+async def test_init_db_secures_new_file_before_engine_opens(tmp_path) -> None:
+    """The database file must already be restrictive by the time the engine
+    connects, not only after migrations finish: the earlier ordering left a
+    new file at the umask-derived mode for the full migration window."""
+    import os
+    import stat
+    from unittest.mock import AsyncMock, patch
+
+    from sova.db.session import close_db, init_db
+
+    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    observed_mode = {}
+
+    def _spy_create_engine(url, **kwargs):
+        from sqlalchemy.ext.asyncio import create_async_engine as real_create_async_engine
+
+        db_path = tmp_path / ".claude" / "sova.db"
+        if db_path.exists():
+            observed_mode["mode"] = stat.S_IMODE(db_path.stat().st_mode)
+        return real_create_async_engine(url, **kwargs)
+
+    try:
+        with (
+            patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=False),
+            patch("sova.db.session.create_async_engine", side_effect=_spy_create_engine),
+        ):
+            await init_db(project_dir=tmp_path)
+
+        assert observed_mode.get("mode") == 0o600
+    finally:
+        if saved is not None:
+            os.environ["SOVA_DATABASE_URL"] = saved
+        await close_db()
+
+
+def test_backup_db_sets_restrictive_file_mode(tmp_path) -> None:
+    """_backup_db's .db.bak copy gets the same 0600 mode as the original:
+    a backup of a secrets-bearing file is itself secrets-bearing."""
+    import os
+    import stat
+
+    from sova.db.session import _backup_db
+
+    db_path = tmp_path / "sova.db"
+    db_path.write_bytes(b"not empty")
+    os.chmod(db_path, 0o644)
+
+    backup = _backup_db(f"sqlite+aiosqlite:///{db_path}")
+
+    assert backup is not None
+    assert backup.exists()
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+
+def test_backup_db_destination_restrictive_before_copy_runs(tmp_path) -> None:
+    """The backup destination is created at 0600 before any content is
+    copied into it, not chmod'd only after the copy finishes: a copy
+    mid-flight under a permissive, umask-derived mode would otherwise expose
+    the secrets being copied for the duration of the write."""
+    import os
+    import shutil
+    import stat
+    from unittest.mock import patch
+
+    from sova.db.session import _backup_db
+
+    db_path = tmp_path / "sova.db"
+    db_path.write_bytes(b"not empty")
+    os.chmod(db_path, 0o644)
+
+    observed_mode = {}
+    real_copyfile = shutil.copyfile
+
+    def _spy_copyfile(src, dst):
+        observed_mode["mode"] = stat.S_IMODE(os.stat(dst).st_mode)
+        return real_copyfile(src, dst)
+
+    with patch("sova.db.session.shutil.copyfile", side_effect=_spy_copyfile):
+        backup = _backup_db(f"sqlite+aiosqlite:///{db_path}")
+
+    assert backup is not None
+    assert observed_mode.get("mode") == 0o600
+
+
+def test_backup_db_chmods_preexisting_permissive_backup_before_copy(tmp_path) -> None:
+    """A stale backup file left over from before this ordering fix (created
+    at a permissive, umask-derived mode by an older `shutil.copy2`-based
+    version) is chmod'd before being overwritten, not just after: `O_CREAT |
+    O_TRUNC` does not change the mode of a file that already exists."""
+    import os
+    import shutil
+    import stat
+    from unittest.mock import patch
+
+    from sova.db.session import _backup_db
+
+    db_path = tmp_path / "sova.db"
+    db_path.write_bytes(b"not empty")
+    os.chmod(db_path, 0o644)
+
+    backup_path = tmp_path / "sova.db.bak"
+    backup_path.write_bytes(b"stale")
+    os.chmod(backup_path, 0o644)
+
+    observed_mode = {}
+    real_copyfile = shutil.copyfile
+
+    def _spy_copyfile(src, dst):
+        observed_mode["mode"] = stat.S_IMODE(os.stat(dst).st_mode)
+        return real_copyfile(src, dst)
+
+    with patch("sova.db.session.shutil.copyfile", side_effect=_spy_copyfile):
+        backup = _backup_db(f"sqlite+aiosqlite:///{db_path}")
+
+    assert backup is not None
+    assert observed_mode.get("mode") == 0o600
+
+
+def test_secure_db_file_secures_wal_and_shm_sidecars(tmp_path) -> None:
+    """An active WAL/SHM sidecar is secured alongside the main file.
+
+    SQLite creates the `-wal`/`-shm` sidecars with the main file's permissions
+    at the time it first opened it, so a main file secured after the fact
+    (e.g. an upgrade from an older, more permissive SOVA version) would
+    otherwise leave a stale, world-readable sidecar holding committed rows.
+    """
+    import os
+    import stat
+
+    from sova.db.session import _secure_db_file
+
+    db_path = tmp_path / "sova.db"
+    wal_path = tmp_path / "sova.db-wal"
+    shm_path = tmp_path / "sova.db-shm"
+    for p in (db_path, wal_path, shm_path):
+        p.write_bytes(b"data")
+        os.chmod(p, 0o644)
+
+    _secure_db_file(db_path)
+
+    for p in (db_path, wal_path, shm_path):
+        assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+
+def test_secure_db_file_propagates_chmod_failure(tmp_path) -> None:
+    """A chmod failure must abort the caller, not leave a permissive file in
+    place while the caller proceeds as though it were secured."""
+    from unittest.mock import patch
+
+    from sova.db.session import _secure_db_file
+
+    db_path = tmp_path / "sova.db"
+    db_path.write_bytes(b"data")
+
+    with patch("sova.db.session.os.chmod", side_effect=OSError("denied")), pytest.raises(OSError):
+        _secure_db_file(db_path)
+
+
+# ---------------------------------------------------------------------------
 # _resolve_issue_worktree: empty / all-hyphens wt_id guard
 # ---------------------------------------------------------------------------
 

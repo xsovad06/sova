@@ -499,6 +499,17 @@ class TestCommit:
                 with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
                     await commit("chore: update", cwd=Path("/repo"))
 
+    async def test_warns_on_staged_mcp_json(self) -> None:
+        """.mcp.json can hold a plaintext MCP sidecar token (see
+        sova/cli/commands/project.py); an autonomous commit must never include it."""
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout=".mcp.json\napp.py\n")
+
+                with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
+                    await commit("chore: update", cwd=Path("/repo"))
+
     async def test_no_error_on_clean_staged_files(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()

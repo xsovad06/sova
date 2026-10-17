@@ -16,6 +16,7 @@ from sova.core.state import PhaseStatus
 from sova.dashboard.services import lifecycle_service
 from sova.db.models import IssueLifecycle, LifecyclePhaseRecord, TaskRun
 from sova.db.session import close_db, get_session, init_db
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 
 @pytest.fixture(autouse=True)
@@ -1059,6 +1060,7 @@ def app(tmp_path):
 class TestLifecycleRouter:
     async def test_list_active_empty(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/api/lifecycle/active")
             assert resp.status_code == 200
             data = resp.json()
@@ -1066,6 +1068,7 @@ class TestLifecycleRouter:
 
     async def test_get_by_issue_not_found(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/api/lifecycle/issue/999")
             assert resp.status_code == 404
             assert "detail" in resp.json()
@@ -1077,6 +1080,7 @@ class TestLifecycleRouter:
             side_effect=ValueError("Bad config"),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/lifecycle/issue/999")
                 assert resp.status_code == 404
                 # Falls through to build_lifecycle_view with empty github_repo/user
@@ -1089,6 +1093,7 @@ class TestLifecycleRouter:
             await lifecycle_service.start_phase(session, lc.id, "development")
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/api/lifecycle/issue/42")
             assert resp.status_code == 200
             data = resp.json()
@@ -1097,6 +1102,7 @@ class TestLifecycleRouter:
 
     async def test_get_lifecycle_not_found(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/api/lifecycle/99999")
             assert resp.status_code == 404
             assert resp.json()["detail"] == "Lifecycle not found"
@@ -1106,12 +1112,14 @@ class TestLifecycleRouter:
             lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/bogus/start")
             assert resp.status_code == 400
             assert "detail" in resp.json()
 
     async def test_start_phase_failed(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post("/api/lifecycle/99999/phase/development/start")
             assert resp.status_code == 404
 
@@ -1120,12 +1128,14 @@ class TestLifecycleRouter:
             lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/bogus/skip")
             assert resp.status_code == 400
             assert "detail" in resp.json()
 
     async def test_skip_phase_failed(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post("/api/lifecycle/99999/phase/development/skip")
             assert resp.status_code == 400
 
@@ -1134,6 +1144,7 @@ class TestLifecycleRouter:
             lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/bogus/restart")
             assert resp.status_code == 400
             assert "detail" in resp.json()
@@ -1143,6 +1154,7 @@ class TestLifecycleRouter:
             lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/development/restart")
             assert resp.status_code == 400
             assert resp.json()["detail"] == "No failed or stopped phase to restart"
@@ -1155,6 +1167,7 @@ class TestLifecycleRouter:
             await lifecycle_service.fail_phase(session, lc.id, "development", "CI failed")
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/development/restart")
             assert resp.status_code == 200
             data = resp.json()
@@ -1163,6 +1176,7 @@ class TestLifecycleRouter:
 
     async def test_force_advance_failed(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post(
                 "/api/lifecycle/99999/advance",
                 json={"to_phase": "integrate"},
@@ -1171,11 +1185,13 @@ class TestLifecycleRouter:
 
     async def test_abandon_failed(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post("/api/lifecycle/99999/abandon")
             assert resp.status_code == 400
 
     async def test_lifecycle_page_renders(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/lifecycle/42")
             assert resp.status_code == 200
             assert "Issue " in resp.text and "#42" in resp.text
@@ -1186,6 +1202,7 @@ class TestLifecycleRouter:
             lc_id = lc.id
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             # Get lifecycle
             resp = await client.get(f"/api/lifecycle/{lc_id}")
             assert resp.status_code == 200

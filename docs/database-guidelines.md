@@ -152,6 +152,20 @@ This prevents instant `SQLITE_BUSY` failures when the old and new uvicorn worker
 overlap during a `--reload` restart. `PRAGMA busy_timeout` is redundant with `connect_args`
 timeout: only the latter is needed since it applies to all pooled connections.
 
+### Extracting a filesystem path from a SQLite URL
+
+`_get_db_path_from_url()` (`sova/db/session.py`) is the sole place that turns a SQLite
+connection string into a `Path`, and every caller (`init_db()`, `init_db_for_project()`,
+`_backup_db()`) relies on it returning `None` for anything that is not a real file on disk.
+Two forms are not real files and must resolve to `None`: an in-memory URL
+(`sqlite+aiosqlite:///:memory:`, or a query-string form like `?mode=memory`), and a query
+string appended to an otherwise-real path (`sqlite+aiosqlite:///path/to.db?uri=true`), which
+must have the query stripped before `Path()` construction rather than be included verbatim.
+Treating either as a real file risks creating a stray `:memory:` file on disk, or chmod'ing
+and backing up the wrong (query-suffixed) path. This has recurred across two independent
+PRs (#1239, #1240) hitting the same gap from different angles; when adding a new caller of
+this helper, do not re-derive the path from the URL by hand.
+
 ### Cancellation and the write lock
 
 SQLite holds the write lock of an abandoned connection until the owning process exits. A

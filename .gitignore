@@ -56,5 +56,8 @@ htmlcov/
 .env
 .env.*
 
+# MCP server config: may hold a plaintext sidecar token (see sova/cli/commands/project.py)
+.mcp.json
+
 # Health audit (transient work artifact, auto-deleted when all issues resolved)
 docs/HEALTH-AUDIT.md

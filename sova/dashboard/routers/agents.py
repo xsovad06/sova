@@ -25,6 +25,11 @@ from sova.llm.backends import TIER_NAMES
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["agents"])
+# require_same_origin_csrf (applied to `router` at include_router() time in app.py)
+# expects an HTTP Request, not a WebSocket connection: FastAPI cannot satisfy that
+# dependency for a websocket route, so the one here lives on its own router that
+# app.py registers without the CSRF dependency.
+ws_router = APIRouter(tags=["agents"])
 log = get_logger(component="dashboard.agents")
 
 _STATUS_BROADCAST_INTERVAL = 2  # seconds
@@ -596,14 +601,28 @@ async def get_issue_pr_status(issue_number: str) -> dict:
 
 @router.post("/agents/command")
 async def run_command(req: RunCommandRequest) -> dict:
-    """Execute a Claude Code command (e.g. /integrate-pr, /address-pr)."""
+    """Execute a Claude Code command (e.g. /integrate-pr, /address-pr).
+
+    `req.command` names a file resolved relative to the project's own and SOVA's
+    own commands directories, so an unvalidated value is a path-traversal and
+    prompt-injection vector (`_resolve_command_prompt` falls back to sending a
+    bare `/{command}` to the headless, tool-using agent for anything it cannot
+    find). Rejecting anything outside the known catalog closes both at once.
+    """
+    from sova.dashboard.project_context import get_project_dir
+    from sova.dashboard.services.agent_context import known_command_names
+
+    project_dir = get_project_dir() or Path.cwd()
+    if req.command not in known_command_names(project_dir):
+        raise HTTPException(status_code=400, detail=f"Unknown command: {req.command}")
+
     result = await control_service.start_command(req.command, req.args or {})
     if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
         raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Command failed")
     return result
 
 
-@router.websocket("/ws/agents/status")
+@ws_router.websocket("/ws/agents/status")
 async def ws_agent_status(websocket: WebSocket) -> None:
     """Push real-time agent status updates over WebSocket.
 

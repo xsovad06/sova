@@ -12,6 +12,7 @@ from sqlalchemy.exc import OperationalError
 from sova.dashboard.services.supervisor_service import get_decision_counts, get_planner_health, get_recent_decisions
 from sova.db.models import SupervisorDecision
 from sova.db.session import get_session
+from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 # Every test in this module runs against the shared per-worker in-memory DB
 # (see ``tests/conftest.py:reset_db_rows``).
@@ -155,6 +156,7 @@ class TestSupervisorRouter:
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value.github_repo = ""
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/ci-budget")
                 assert resp.status_code == 200
                 data = resp.json()
@@ -176,6 +178,7 @@ class TestSupervisorRouter:
             mock_cfg.return_value.supervisor.ci_block_minutes = 50
             with patch("sova.supervisor.ci_budget.get_ci_budget_tracker", return_value=mock_tracker):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.get("/api/supervisor/ci-budget")
                     assert resp.status_code == 200
                     data = resp.json()
@@ -200,6 +203,7 @@ class TestSupervisorRouter:
             mock_cfg.return_value.supervisor.ci_block_minutes = 50
             with patch("sova.supervisor.ci_budget.get_ci_budget_tracker", return_value=mock_tracker):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.get("/api/supervisor/ci-budget")
                     data = resp.json()
                     assert data["warn"] is True
@@ -214,6 +218,7 @@ class TestSupervisorRouter:
                 side_effect=RuntimeError("connection failed"),
             ):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.get("/api/supervisor/ci-budget")
                     assert resp.status_code == 200
                     data = resp.json()
@@ -238,6 +243,7 @@ class TestSupervisorRouter:
             mock_cfg.return_value.supervisor.ci_block_minutes = 50
             with patch("sova.supervisor.ci_budget.get_ci_budget_tracker", return_value=mock_tracker):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.get("/api/supervisor/ci-budget")
                     assert resp.status_code == 200
                     data = resp.json()
@@ -247,6 +253,7 @@ class TestSupervisorRouter:
 
     async def test_get_status_no_daemon(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/api/supervisor/status")
             assert resp.status_code == 200
             data = resp.json()
@@ -255,17 +262,20 @@ class TestSupervisorRouter:
 
     async def test_get_decisions_empty(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/api/supervisor/decisions")
             assert resp.status_code == 200
             assert resp.json()["decisions"] == []
 
     async def test_poll_without_daemon_returns_404(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post("/api/supervisor/poll")
             assert resp.status_code == 404
 
     async def test_supervisor_page_loads(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/supervisor")
             assert resp.status_code == 200
             assert "Supervisor" in resp.text
@@ -289,6 +299,7 @@ class TestSupervisorRouter:
         try:
             with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.get("/api/supervisor/status")
                     assert resp.status_code == 200
                     data = resp.json()
@@ -310,6 +321,7 @@ class TestSupervisorRouter:
         try:
             with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.post("/api/supervisor/poll")
                     assert resp.status_code == 202
                     assert resp.json()["status"] == "accepted"
@@ -319,6 +331,7 @@ class TestSupervisorRouter:
     async def test_stop_supervisor_no_project_no_daemon_returns_404(self, app) -> None:
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/stop")
         assert resp.status_code == 404
 
@@ -326,6 +339,7 @@ class TestSupervisorRouter:
         project_dir = Path.cwd().resolve()
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/stop")
         assert resp.status_code == 404
 
@@ -341,6 +355,7 @@ class TestSupervisorRouter:
         try:
             with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.post("/api/supervisor/stop")
             assert resp.status_code == 200
             data = resp.json()
@@ -352,6 +367,7 @@ class TestSupervisorRouter:
 
     async def test_get_counts_empty(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/api/supervisor/counts")
             assert resp.status_code == 200
             assert "counts" in resp.json()
@@ -361,6 +377,7 @@ class TestSupervisorRouter:
         mock_cfg.github_repo = "test/repo"
         with patch("sova.config.loader.load_config", return_value=mock_cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/counts")
                 assert resp.status_code == 200
                 counts = resp.json()["counts"]
@@ -369,6 +386,7 @@ class TestSupervisorRouter:
 
     async def test_get_planner_health_empty(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.get("/api/supervisor/planner-health")
             assert resp.status_code == 200
             data = resp.json()
@@ -380,6 +398,7 @@ class TestSupervisorRouter:
         mock_cfg.github_repo = "test/repo"
         with patch("sova.config.loader.load_config", return_value=mock_cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/planner-health")
                 assert resp.status_code == 200
                 data = resp.json()
@@ -391,6 +410,7 @@ class TestSupervisorRouter:
         mock_cfg.github_repo = "test/repo"
         with patch("sova.config.loader.load_config", return_value=mock_cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/decisions?component=progression&limit=10")
                 assert resp.status_code == 200
                 data = resp.json()["decisions"]
@@ -406,6 +426,7 @@ class TestSupervisorRouter:
             patch("sova.config.loader.load_config", return_value=mock_cfg),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/start")
                 assert resp.status_code == 409
 
@@ -428,6 +449,7 @@ class TestSupervisorRouter:
         try:
             with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.post("/api/supervisor/start")
                     assert resp.status_code == 200
                     data = resp.json()
@@ -462,6 +484,7 @@ class TestSupervisorRouter:
                 patch("sova.supervisor.daemon.SupervisorDaemon", return_value=mock_daemon),
             ):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.post("/api/supervisor/start")
                     assert resp.status_code == 200
                     data = resp.json()
@@ -484,6 +507,7 @@ class TestSupervisorRouter:
                 patch("sova.config.loader.load_config", return_value=mock_cfg) as mock_load,
             ):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.post("/api/supervisor/start")
             assert resp.status_code == 409
             mock_load.assert_called_once_with(Path.cwd().resolve())
@@ -500,6 +524,7 @@ class TestSupervisorRouter:
         try:
             with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.get("/api/supervisor/status")
                     assert resp.status_code == 200
                     assert resp.json()["running"] is True
@@ -521,6 +546,7 @@ class TestSupervisorRouter:
                 patch("sova.config.loader.load_config", return_value=mock_cfg) as mock_load,
             ):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.post("/api/supervisor/start")
             assert resp.status_code == 409
             mock_load.assert_called_once_with(Path("/registered/project"))
@@ -541,6 +567,7 @@ class TestSupervisorRouter:
                 patch("sova.config.loader.load_config", return_value=mock_cfg) as mock_load,
             ):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.post("/api/supervisor/start")
             assert resp.status_code == 409
             mock_load.assert_called_once_with(Path.cwd().resolve())
@@ -551,6 +578,7 @@ class TestSupervisorRouter:
         """GET /supervisor/decisions falls back to project_slug=None when load_config raises."""
         with patch("sova.config.loader.load_config", side_effect=Exception("no config")):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/decisions")
                 assert resp.status_code == 200
                 assert resp.json()["decisions"] == []
@@ -559,6 +587,7 @@ class TestSupervisorRouter:
         """GET /supervisor/counts falls back to project_slug=None when load_config raises."""
         with patch("sova.config.loader.load_config", side_effect=Exception("no config")):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/counts")
                 assert resp.status_code == 200
                 assert "counts" in resp.json()
@@ -588,6 +617,7 @@ class TestSupervisorPlan:
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/plan")
         assert resp.status_code == 200
         assert resp.json()["pending"] == []
@@ -615,6 +645,7 @@ class TestSupervisorPlan:
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/plan")
         assert resp.status_code == 200
         data = resp.json()
@@ -637,6 +668,7 @@ class TestSupervisorPlan:
 
         with patch("sova.config.loader.load_config", side_effect=FileNotFoundError("Config load failed")):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/plan")
         assert resp.status_code == 200
         data = resp.json()
@@ -654,6 +686,7 @@ class TestSupervisorPlan:
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/plan/approve", json={})
         assert resp.status_code == 200
         data = resp.json()
@@ -677,6 +710,7 @@ class TestSupervisorPlan:
         with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/plan/approve", json={})
         assert resp.status_code == 200
         # Plan should be cleared after approval
@@ -700,6 +734,7 @@ class TestSupervisorPlan:
         with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/plan/approve", json={"issue_numbers": [42]})
         assert resp.status_code == 200
         # Issue 43 should remain in the plan (not approved)
@@ -726,6 +761,7 @@ class TestSupervisorPlan:
         with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/plan/approve", json={})
         assert resp.status_code == 200
         data = resp.json()
@@ -748,6 +784,7 @@ class TestSupervisorPlan:
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/plan/skip/42")
         assert resp.status_code == 200
         remaining = get_pending_plan("test/repo")
@@ -758,6 +795,7 @@ class TestSupervisorPlan:
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/plan/skip/999")
         assert resp.status_code == 404
 
@@ -767,6 +805,7 @@ class TestSupervisorPlan:
 
         with patch("sova.config.loader.load_config", side_effect=Exception("Config load failed")):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 with pytest.raises(Exception, match="Config load failed"):
                     await client.post("/api/supervisor/plan/approve", json={})
 
@@ -776,6 +815,7 @@ class TestSupervisorPlan:
 
         with patch("sova.config.loader.load_config", side_effect=Exception("Config load failed")):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 with pytest.raises(Exception, match="Config load failed"):
                     await client.post("/api/supervisor/plan/skip/42")
 
@@ -1041,24 +1081,28 @@ class TestTaskQueueRouter:
     async def test_get_queue_empty(self, app, project_dir) -> None:
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/queue")
         assert resp.status_code == 200
         assert resp.json()["queue"] == []
 
     async def test_add_to_queue(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
         assert resp.status_code == 201
         assert resp.json()["queue"] == [42]
 
     async def test_add_duplicate_returns_409(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             await client.post("/api/supervisor/queue", json={"issue_number": 42})
             resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
         assert resp.status_code == 409
 
     async def test_set_queue_with_reorder(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             await client.post("/api/supervisor/queue", json={"issue_number": 10})
             await client.post("/api/supervisor/queue", json={"issue_number": 20})
             resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [20, 10]})
@@ -1067,12 +1111,14 @@ class TestTaskQueueRouter:
 
     async def test_set_queue_deduplicates(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [5, 5, 10, 5]})
         assert resp.status_code == 200
         assert resp.json()["queue"] == [5, 10]
 
     async def test_remove_from_queue(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             await client.post("/api/supervisor/queue", json={"issue_number": 42})
             await client.post("/api/supervisor/queue", json={"issue_number": 43})
             resp = await client.delete("/api/supervisor/queue/42")
@@ -1081,11 +1127,13 @@ class TestTaskQueueRouter:
 
     async def test_remove_nonexistent_returns_404(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.delete("/api/supervisor/queue/999")
         assert resp.status_code == 404
 
     async def test_clear_queue(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             await client.post("/api/supervisor/queue", json={"issue_number": 42})
             resp = await client.delete("/api/supervisor/queue")
         assert resp.status_code == 200
@@ -1098,6 +1146,7 @@ class TestTaskQueueRouter:
 
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 await client.post("/api/supervisor/queue", json={"issue_number": 42})
 
         async with await get_session(project_dir=project_dir) as session:
@@ -1110,6 +1159,7 @@ class TestTaskQueueRouter:
 
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 results = await asyncio.gather(
                     client.post("/api/supervisor/queue", json={"issue_number": 10}),
                     client.post("/api/supervisor/queue", json={"issue_number": 20}),
@@ -1120,6 +1170,7 @@ class TestTaskQueueRouter:
 
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/queue")
         queue = resp.json()["queue"]
         assert len(queue) == len(set(queue)), f"Duplicate entries in queue: {queue}"
@@ -1168,6 +1219,7 @@ class TestTaskQueueDaemonNotify:
             self._registered_daemon(project_dir) as mock_daemon,
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
         assert resp.status_code == 201
         mock_daemon.reload_config.assert_called_once()
@@ -1180,6 +1232,7 @@ class TestTaskQueueDaemonNotify:
             self._registered_daemon(project_dir) as mock_daemon,
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [1, 2]})
         assert resp.status_code == 200
         mock_daemon.reload_config.assert_called_once()
@@ -1187,10 +1240,12 @@ class TestTaskQueueDaemonNotify:
     async def test_remove_from_queue_notifies_daemon(self, app, project_dir) -> None:
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 await client.post("/api/supervisor/queue", json={"issue_number": 42})
 
             with self._registered_daemon(project_dir) as mock_daemon:
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.delete("/api/supervisor/queue/42")
         assert resp.status_code == 200
         mock_daemon.reload_config.assert_called_once()
@@ -1201,6 +1256,7 @@ class TestTaskQueueDaemonNotify:
             self._registered_daemon(project_dir) as mock_daemon,
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.delete("/api/supervisor/queue")
         assert resp.status_code == 200
         mock_daemon.reload_config.assert_called_once()
@@ -1209,6 +1265,7 @@ class TestTaskQueueDaemonNotify:
         """No daemon registered (supervisor disabled): endpoint still returns 200/201."""
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
         assert resp.status_code == 201
 
@@ -1220,6 +1277,7 @@ class TestTaskQueueDaemonNotify:
         ):
             mock_daemon.reload_config.side_effect = RuntimeError("boom")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
         assert resp.status_code == 201
         assert resp.json()["queue"] == [42]
@@ -1239,6 +1297,7 @@ class TestTaskQueueDaemonNotify:
         try:
             with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
                     resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
             assert resp.status_code == 201
             mock_daemon_a.reload_config.assert_called_once()
@@ -1319,6 +1378,7 @@ class TestTaskQueueValidation:
                 app = create_app(project_dir=tmp_path)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post("/api/supervisor/queue", json={"issue_number": 0})
         assert resp.status_code == 422
 
@@ -1343,18 +1403,21 @@ class TestTaskQueueErrorPaths:
     async def test_negative_issue_number_rejected(self, app, project_dir) -> None:
         """POST /queue with negative issue_number returns 422."""
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.post("/api/supervisor/queue", json={"issue_number": -5})
         assert resp.status_code == 422
 
     async def test_set_queue_negative_rejected(self, app) -> None:
         """PUT /queue with negative issue_numbers returns 422."""
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [1, -2, 3]})
         assert resp.status_code == 422
 
     async def test_set_queue_zero_rejected(self, app) -> None:
         """PUT /queue with zero issue_numbers returns 422."""
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
             resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [0]})
         assert resp.status_code == 422
 
@@ -1365,6 +1428,7 @@ class TestTaskQueueErrorPaths:
             patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [42]})
         assert resp.status_code == 503
 
@@ -1375,6 +1439,7 @@ class TestTaskQueueErrorPaths:
             patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
         assert resp.status_code == 503
 
@@ -1382,6 +1447,7 @@ class TestTaskQueueErrorPaths:
         """DELETE /queue/{issue_number} returns 503 when DB save fails."""
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 await client.post("/api/supervisor/queue", json={"issue_number": 42})
 
         with (
@@ -1389,6 +1455,7 @@ class TestTaskQueueErrorPaths:
             patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.delete("/api/supervisor/queue/42")
         assert resp.status_code == 503
 
@@ -1399,6 +1466,7 @@ class TestTaskQueueErrorPaths:
             patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.delete("/api/supervisor/queue")
         assert resp.status_code == 503
 
@@ -1479,6 +1547,7 @@ class TestSupervisorPersonaEndpoints:
         ):
             mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/persona")
         assert resp.status_code == 200
         assert resp.json()["content"] == "Test persona"
@@ -1486,6 +1555,7 @@ class TestSupervisorPersonaEndpoints:
     async def test_get_persona_error_returns_500(self, app) -> None:
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/persona")
         assert resp.status_code == 500
         assert "Failed to fetch" in resp.json()["detail"]
@@ -1493,6 +1563,7 @@ class TestSupervisorPersonaEndpoints:
     async def test_open_persona_config_error_returns_500(self, app) -> None:
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 500
         assert "Failed to load project configuration" in resp.json()["detail"]
@@ -1505,6 +1576,7 @@ class TestSupervisorPersonaEndpoints:
         ):
             mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 400
         assert "No editor command" in resp.json()["detail"]
@@ -1518,6 +1590,7 @@ class TestSupervisorPersonaEndpoints:
         ):
             mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 400
         assert "not found" in resp.json()["detail"]
@@ -1531,6 +1604,7 @@ class TestSupervisorPersonaEndpoints:
         ):
             mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 500
         assert "Failed to open editor" in resp.json()["detail"]
@@ -1544,6 +1618,7 @@ class TestSupervisorPersonaEndpoints:
         ):
             mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 200
         assert resp.json()["status"] == "spawned"

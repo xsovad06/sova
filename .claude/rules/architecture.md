@@ -119,6 +119,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Cancellation must never abandon a DB transaction
 - A model column with no migration is invisible until every query on that table fails
 - A log line that parses as JSON is not necessarily a JSON object
+- An unbounded dependency upper bound (`<1.0`) lets CI silently install a release that was never tested against
 - Python for SOVA
 - Role-based agents
 - Gate checks between steps
@@ -256,6 +257,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Codex skills are mechanically rendered from `commands/*.md`, not hand-authored, and every command-derived `.agents/skills/` entry is name-prefixed rather than directory-separated; a standalone, distributed skill from `skills/` installs under its own bare name there instead
 - A tool-using step must never silently degrade to a text-only LLM call
 - An unassigned ticket's suitability lives in a local record, never a label its owner's account cannot speak for
+- A dependency applied once at router level, self-exempting safe methods, covers a mutating route by construction; a per-route opt-in is exactly how most of them went unguarded
 
 ## Cross-References (domain-specific details)
 

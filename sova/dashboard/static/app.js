@@ -66,6 +66,32 @@ function jsonCsrfHeaders() {
   return Object.assign({'Content-Type': 'application/json'}, csrfHeaders());
 }
 
+/* Router-level CSRF enforcement (#1204) means every mutating route is guarded
+   now, not just the handful that used to opt in individually, so every
+   mutating fetch() in the dashboard needs the X-CSRF-Token header. Patching
+   fetch() once here covers every existing call site (and any added later)
+   without requiring each one to call csrfHeaders() itself. A call that
+   already set the header explicitly is left alone. */
+(function patchFetchForCsrf() {
+  var MUTATING_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
+  var originalFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    init = init || {};
+    var inputMethod = (typeof Request !== 'undefined' && input instanceof Request) ? input.method : null;
+    var method = (init.method || inputMethod || 'GET').toUpperCase();
+    if (MUTATING_METHODS.indexOf(method) !== -1) {
+      var inputHeaders = (typeof Request !== 'undefined' && input instanceof Request) ? input.headers : {};
+      var headers = new Headers(init.headers || inputHeaders);
+      if (!headers.has('X-CSRF-Token')) {
+        var csrf = csrfHeaders();
+        if (csrf['X-CSRF-Token']) headers.set('X-CSRF-Token', csrf['X-CSRF-Token']);
+      }
+      init = Object.assign({}, init, {headers: headers});
+    }
+    return originalFetch(input, init);
+  };
+})();
+
 function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

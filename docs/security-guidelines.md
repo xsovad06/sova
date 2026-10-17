@@ -43,6 +43,10 @@ Codex spawns also scrub `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` (via `extra_s
 
 `WorktreeConfig.copy_files` defaults to `[".env", ".env.local"]`. These are copied into new worktrees so agents can authenticate. Ensure `.gitignore` covers these patterns.
 
+### SQLite DB File Mode
+
+`.claude/sova.db` stores `project_settings`, which is where every secret without a `RESOLVED_SECRET_KEYS` keyring entry (Jira token, SMTP credentials, webhook secrets, MCP token secret, telemetry hub token) lives in plaintext. `sova/db/session.py:_secure_db_file()` chmods the file to `0600` once per creation (`init_db()`, `init_db_for_project()`) and once per `.db.bak` backup copy (`_backup_db()`), rather than on every `get_session()` call, so group/world access is denied regardless of the process umask without adding a syscall to every DB access.
+
 | Do | Do Not |
 |----|--------|
 | Use `resolve_gh_env()` for subprocess auth | Set `GH_TOKEN` globally in your shell |
@@ -75,8 +79,11 @@ cmd_parts.extend(["--role", shlex.quote(role)])
 _SUSPICIOUS_PATHS = frozenset({
     ".venv", ".env", ".env.local", "credentials.json",
     ".secrets", "node_modules", ".DS_Store", "__pycache__",
+    ".mcp.json",
 })
 ```
+
+`.mcp.json` (project root, outside `.claude/`) can hold a plaintext MCP sidecar token (see `sova/cli/commands/project.py`'s Atlassian sidecar config), so it needs the same guard as `.env`. It is also gitignored in this repo's own `.gitignore` for the same reason; `sova/utils/mcp_config.py` already writes it with mode 0600.
 
 Uses `Path(f).parts` for component matching so nested paths like `src/.env` are caught. Bad files are unstaged with `git reset HEAD` and a `RuntimeError` is raised.
 
@@ -112,6 +119,14 @@ Prevents shell metacharacters, path traversal sequences, and spaces in branch na
 ### MCP Path Traversal
 
 `sova/mcp/tools.py:_validate_project_dir()` resolves symlinks via `Path.resolve()` and validates against an allowed root when the MCP server is bound to a startup project.
+
+### MCP JSON-RPC Argument Whitelisting
+
+`sova/dashboard/routers/mcp.py:_filter_tool_arguments()` strips any client-supplied JSON-RPC argument the target tool function's own signature does not declare, and always strips `project_dir` even when declared: every `mcp_service` tool scopes its DB/session calls by `project_dir`, so forwarding a client-supplied value verbatim would let a token valid for one run redirect a query at an arbitrary other project. The allowlist is built per tool from `inspect.signature()` rather than one global "safe keys" list, so a tool with a legitimately different optional parameter is never broken by a list sized for another tool.
+
+### Dashboard Command Name Validation
+
+`POST /api/agents/command`'s `command` field names a file resolved relative to the project's own and SOVA's own `.claude/commands/`/`commands/` directories (`sova/dashboard/services/agent_context.py:_resolve_command_prompt()`); an unvalidated value is both a path-traversal vector (building a filesystem path from it) and a prompt-injection vector (its fallback sends a bare `/{command}` to the headless, tool-using agent for anything it cannot resolve to a real file). `known_command_names()` mirrors `_resolve_command_prompt()`'s own lookup order via `sova.commands.catalog.discover()`, and the router rejects (`400`) any `command` not in that set.
 
 ### Multi-Project Slug Validation
 
@@ -180,7 +195,7 @@ degradation call sites (skip optional steps, stop retrying, skip hooks) read.
 - Per-run and per-issue budget caps
 - Step timeouts (default 1800s)
 - Suspicious file guard catches credential commits even from autonomous agents
-- Dashboard binds to `127.0.0.1` only (no remote access)
+- Dashboard binds to `127.0.0.1` by default; a non-loopback `--host` is supported but then relies on the CSRF guard's fail-closed behavior and `TrustedHostMiddleware` rather than being unreachable outright (see "Dashboard Security Model" below)
 
 ## Prompt Injection Mitigation
 
@@ -193,10 +208,15 @@ When adding LLM-facing code:
 ## Dashboard Security Model
 
 - Single-user, loopback-only deployment model: no user accounts, sessions, or login page. Binds to `127.0.0.1:8111` by default; access to the machine implies access to the dashboard.
-- No CORS middleware (not needed for localhost); instead, state-changing endpoints depend on `sova.dashboard.security.require_same_origin_csrf`, which checks the request's Origin/Referer against the dashboard's own scheme+host+port and a double-submit CSRF cookie/header pair. This defends against a different threat than CORS: any web page the browser visits (not just the dashboard's own origin) can otherwise issue cross-origin `fetch()` calls at the local port, and DNS rebinding makes same-origin policy alone incomplete (a rebound page's `Origin` header still reflects where it was loaded from, which the guard checks against).
+- No CORS middleware (not needed for localhost); instead, `sova.dashboard.security.require_same_origin_csrf` checks the request's Origin/Referer against the dashboard's own scheme+host+port and a double-submit CSRF cookie/header pair. This defends against a different threat than CORS: any web page the browser visits (not just the dashboard's own origin) can otherwise issue cross-origin `fetch()` calls at the local port, and DNS rebinding makes same-origin policy alone incomplete (a rebound page's `Origin` header still reflects where it was loaded from, which the guard checks against).
+- The guard is a no-op for safe methods (GET/HEAD/OPTIONS) and is registered once, at router level, in `sova/dashboard/app.py:_register_api_routers()`: every router it installs gets the dependency, so a mutating route is covered by construction rather than by a per-route `Depends()` a new route can simply omit (issue #1204; the per-route pattern is exactly how most routes went unguarded before this). `mcp.router` (`/mcp`) is the sole exemption, since its own bearer-token scheme already authenticates every call; `/api/telemetry/ingest` is exempt structurally (registered by a separate call that never passes through `_register_api_routers()`). `issue_csrf_cookie()` is called from every page route, not a handful, so any page's own JS can call a guarded endpoint.
+- `TrustedHostMiddleware` validates the `Host` header against the same loopback-aware host set the CSRF guard derives (`sova.dashboard.security.build_allowed_hosts`). A wildcard bind (`0.0.0.0`, `::`) has no single derivable host, so it allows `"*"` there and relies on the CSRF guard's fail-closed behavior for the real protection.
+- A `Content-Security-Policy` plus `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: strict-origin-when-cross-origin` are set on every response (`sova/dashboard/app.py`'s `security_headers` middleware). The CSP allows `'unsafe-inline'` for scripts/styles: dashboard templates use inline `<script>` blocks and `onclick` handlers extensively, and tightening that to a nonce/hash scheme is a template-by-template rewrite, not done here. The CDN hosts allowed (`cdn.jsdelivr.net`, `cdnjs.cloudflare.com`) match `invariants/cdn-integrity.sh`'s pinned set.
 - When bound to a non-loopback host (`--host 0.0.0.0` or similar), the guard fails closed on every dependent route unless `dashboard.csrf_secret` is configured; the server logs a warning at startup in that case.
 - `dashboard.csrf_secret` is an opt-in switch, not a credential: only its presence is checked, never its value. Neither the origin check nor the double-submit pair authenticates a caller; both stop a *browser* driven cross-origin request, while a direct client (curl) can set all of them itself. A non-loopback bind stays reachable by anyone who can reach the port, so treat it as unauthenticated until the auth router adds real token validation (see `sova/dashboard/services/mcp_service.py` for the HMAC precedent).
+- The A2A protocol's one mutating route (`POST /a2a/tasks/{task_id}/cancel`) is outside the CSRF guard (A2A is a non-browser, agent-to-agent surface) but is not unauthenticated: it reuses `mcp_service`'s run-scoped HMAC generate/validate pair, the same bearer-token shape an agent already presents to `/mcp`, scoped to the exact run_id the task ID encodes.
 - Read-only status endpoints do not need the guard, provided they leak no secret material.
+- Known limitation, not addressed by issue #1204: `dashboard.rate_limit_per_minute` (`sova/dashboard/app.py`) applies one shared `{rate}/minute` bucket across every route via `slowapi`'s `default_limits`, keyed by remote address. A caller exhausting that bucket on one endpoint throttles itself on all others too. Listed as a [P3] finding without its own acceptance criterion; left as a known gap here rather than changed.
 - See `.claude/rules/architecture.md` for the guard's implementation details.
 
 ## Contributor Checklist

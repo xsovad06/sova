@@ -61,11 +61,71 @@ def _get_database_url(project_dir: Path | None = None) -> str:
 
 
 def _get_db_path_from_url(url: str) -> Path | None:
-    """Extract the file path from a SQLite URL, or None for non-SQLite."""
+    """Extract the file path from a SQLite URL, or None for non-SQLite or in-memory."""
     if not url.startswith("sqlite"):
         return None
     path_str = url.split("///", 1)[-1] if "///" in url else None
-    return Path(path_str) if path_str else None
+    if path_str:
+        path_str = path_str.split("?", 1)[0]
+    if not path_str or path_str == ":memory:":
+        return None
+    return Path(path_str)
+
+
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
+
+
+def _secure_db_file(db_path: Path) -> None:
+    """Restrict a SQLite database file, and any active WAL/SHM sidecar, to
+    owner read/write only.
+
+    The file holds secrets (provider API keys, Jira/webhook tokens, etc. in
+    `project_settings`), so group/world access must be denied regardless of
+    the process umask. Called once per file creation (startup, and once per
+    backup copy), mirroring the existing one-time `mkdir(parents=True,
+    exist_ok=True)` pattern in `_get_database_url`, never on every
+    `get_session()` call.
+
+    A WAL-mode database under an open connection keeps committed rows in a
+    `-wal` sidecar (and a `-shm` index) rather than the main file, created
+    with the main file's permissions at the time SQLite first opened it; a
+    main file secured after the fact leaves a stale, more permissive sidecar
+    behind, so both are chmod'd here alongside the main path. A chmod failure
+    is propagated rather than logged-and-ignored: silently continuing past it
+    would leave a secrets-bearing file at its prior, possibly world-readable
+    permissions while callers proceed as though it were secured.
+    """
+    paths = (db_path, *(db_path.with_name(db_path.name + suffix) for suffix in _SQLITE_SIDECAR_SUFFIXES))
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            _log.exception("db.chmod_failed path=%s", path)
+            raise
+
+
+def _ensure_db_file_secured_before_open(db_path: Path) -> None:
+    """Secure a SQLite database file before any engine connects to it.
+
+    SQLite creates a new file honoring the process umask (typically world- or
+    group-readable), and the file sits at that permissive mode for however
+    long migrations take to run before the post-migration `_secure_db_file()`
+    call. For an existing file, chmod it now rather than after connecting.
+    For a missing one, pre-create it at 0600 so SQLite's own open() reuses
+    that file instead of creating a new, more permissive one, closing the
+    exposure window instead of merely narrowing it. A concurrent creator
+    racing this process is handled the same as an existing file.
+    """
+    if db_path.exists():
+        _secure_db_file(db_path)
+        return
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(db_path, os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        _secure_db_file(db_path)
 
 
 def _backup_db(url: str) -> Path | None:
@@ -74,7 +134,18 @@ def _backup_db(url: str) -> Path | None:
     if db_path is None or not db_path.exists() or db_path.stat().st_size == 0:
         return None
     backup = db_path.with_suffix(".db.bak")
-    shutil.copy2(db_path, backup)
+    # Secure the destination before any content is written into it (bypassing
+    # shutil.copy2's umask-based mode, which would leave a new file briefly
+    # permissive mid-copy), so its contents are never exposed, not even during
+    # the copy itself. An existing backup from before this ordering fix needs
+    # an explicit chmod: O_CREAT|O_TRUNC does not change the mode of a file
+    # that already exists.
+    try:
+        os.close(os.open(backup, os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        os.chmod(backup, 0o600)
+    shutil.copyfile(db_path, backup)
+    _secure_db_file(backup)
     return backup
 
 
@@ -274,19 +345,22 @@ async def init_db(project_dir: Path | None = None, *, run_migrations: bool = Tru
     url = _get_database_url(project_dir)
     connect_args: dict = {}
 
+    db_path = _get_db_path_from_url(url)
     if url.startswith("sqlite"):
         # check_same_thread: aiosqlite runs in its own thread, not the caller's.
         # timeout: busy-wait up to 30 s when another connection holds the write
         # lock. Without this, concurrent access raises "database is locked" after
         # 5 s (the sqlite3 default) and crashes the request.
         connect_args = {"check_same_thread": False, "timeout": 30}
+        if db_path is not None:
+            _ensure_db_file_secured_before_open(db_path)
 
     _engine = create_async_engine(url, connect_args=connect_args)
     _session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
     _engines[url] = (_engine, _session_factory)
 
     if run_migrations:
-        is_sqlite_file = _get_db_path_from_url(url) is not None
+        is_sqlite_file = db_path is not None
         if is_sqlite_file:
             await _enable_sqlite_wal(_engine)
 
@@ -298,6 +372,9 @@ async def init_db(project_dir: Path | None = None, *, run_migrations: bool = Tru
             # (~300 ms) on every restart when the DB is already at head.
             _backup_db(url)
             await _engine.dispose()
+
+        if db_path is not None and db_path.exists():
+            _secure_db_file(db_path)
     else:
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -314,12 +391,15 @@ async def init_db_for_project(project_dir: Path) -> None:
             return
 
         connect_args: dict = {}
+        db_path = _get_db_path_from_url(url)
         if url.startswith("sqlite"):
             connect_args = {"check_same_thread": False, "timeout": 30}
+            if db_path is not None:
+                _ensure_db_file_secured_before_open(db_path)
 
         engine = create_async_engine(url, connect_args=connect_args)
 
-        is_sqlite_file = _get_db_path_from_url(url) is not None
+        is_sqlite_file = db_path is not None
         if is_sqlite_file:
             await _enable_sqlite_wal(engine)
 
@@ -327,6 +407,9 @@ async def init_db_for_project(project_dir: Path) -> None:
         if is_sqlite_file and ddl_executed:
             _backup_db(url)
             await engine.dispose()
+
+        if is_sqlite_file and db_path is not None and db_path.exists():
+            _secure_db_file(db_path)
 
         factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         _engines[url] = (engine, factory)

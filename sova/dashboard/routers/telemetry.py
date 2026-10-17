@@ -6,6 +6,7 @@ import hmac
 import os
 import time
 from collections import defaultdict, deque
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
 
@@ -38,7 +39,7 @@ class TelemetryIngestRequest(BaseModel):
     duration_ms: int = 0
     step_outcomes: dict | None = None
     error_message: str | None = None
-    run_at: str
+    run_at: datetime
 
 
 def _check_auth(authorization: str | None) -> None:
@@ -101,8 +102,6 @@ async def ingest_telemetry(
     _check_auth(authorization)
     _check_rate_limit(body.machine_id)
 
-    from datetime import datetime
-
     from sqlalchemy.exc import IntegrityError
 
     from sova.db.models import TelemetryEvent
@@ -121,7 +120,7 @@ async def ingest_telemetry(
         duration_ms=body.duration_ms,
         step_outcomes=body.step_outcomes,
         error_message=body.error_message,
-        run_at=datetime.fromisoformat(body.run_at),
+        run_at=body.run_at,
     )
 
     async with await get_session() as session:
