@@ -3402,6 +3402,22 @@ class TestHandoffAPI:
         for status in TASK_RUN_TERMINAL:
             assert f'<option value="{status}">' in resp.text
 
+    async def test_agents_page_status_filter_wired_into_history_query(self, client: AsyncClient) -> None:
+        """Source-level check that loadHistory() actually appends both filters to
+        /work/history, since the markup/function-name assertions above don't catch a
+        refactor that leaves the dropdown rendered but inert (no JS test harness here;
+        same pattern as tests/test_llm_suggestion_service.py).
+        """
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        idx = resp.text.find("async function loadHistory()")
+        assert idx != -1, "loadHistory() not found in agents.html"
+        body = resp.text[idx : idx + 800]
+        assert "getElementById('filter-status')" in body
+        assert "getElementById('filter-role')" in body
+        assert "&role=" in body
+        assert "&status=" in body
+
     async def test_agents_page_has_kanban_view(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
         assert resp.status_code == 200
