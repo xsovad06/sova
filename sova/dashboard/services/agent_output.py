@@ -18,40 +18,31 @@ if TYPE_CHECKING:
 log = get_logger(component="dashboard.output")
 
 
-async def get_output(since: int = 0, slug: str | None = None, *, run_id: int | None = None) -> list[str]:
-    """Get output lines since the given cursor.
+async def get_output(since: int = 0, slug: str | None = None, *, run_id: int) -> list[str]:
+    """Get output lines since the given cursor for a specific agent run.
 
-    If *run_id* is specified, returns output for that specific agent.
     Falls back to the DB-persisted output when the agent is not in memory,
     then to a legacy log file for pre-migration runs.
-    Otherwise returns output for the first (legacy single-agent compat).
     """
     from sova.dashboard.services.agent_pool import _get_project_agents
     from sova.dashboard.services.output_service import read_lines, read_lines_from_file
 
     pa = _get_project_agents(slug)
 
-    if run_id is not None:
-        agent = pa.agents.get(run_id)
-        if agent is not None:
-            lines = list(agent.output_lines)
-            return lines[since:]
-        lines, total = await read_lines(pa.project_dir, run_id, since)
-        if lines or total > 0:
-            return lines
-        file_output_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.stdout"
-        lines, _total = read_lines_from_file(file_output_path, since)
-        if lines:
-            return lines
-        legacy_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.log"
-        lines, _total = read_lines_from_file(legacy_path, since)
+    agent = pa.agents.get(run_id)
+    if agent is not None:
+        lines = list(agent.output_lines)
+        return lines[since:]
+    lines, total = await read_lines(pa.project_dir, run_id, since)
+    if lines or total > 0:
         return lines
-
-    if not pa.agents:
-        return []
-    first = next(iter(pa.agents.values()))
-    lines = list(first.output_lines)
-    return lines[since:]
+    file_output_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.stdout"
+    lines, _total = read_lines_from_file(file_output_path, since)
+    if lines:
+        return lines
+    legacy_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.log"
+    lines, _total = read_lines_from_file(legacy_path, since)
+    return lines
 
 
 async def _buffer_line(agent: AgentState, text: str) -> None:
