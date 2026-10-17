@@ -186,13 +186,9 @@
       </select>
       <select id="filter-status" onchange="historyPage=0; loadHistory()" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
         <option value="">All statuses</option>
-        <option value="done">Done</option>
-        <option value="failed">Failed</option>
-        <option value="rejected">Rejected</option>
-        <option value="interrupted">Interrupted</option>
-        <option value="stopped">Stopped</option>
-        <option value="paused">Paused</option>
-        <option value="awaiting_approval">Awaiting approval</option>
+        {% for value, label in status_options %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
       </select>
       <div id="history-pager" class="hidden flex items-center gap-2 ml-auto text-xs text-gray-500">
         <button type="button" onclick="historyPrev()" id="history-prev" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>&lt; Prev</button>
@@ -3410,18 +3406,25 @@ async function checkInterrupted() {
     var rowsHtml = runs.map(function(run) {
       var started = run.started_at ? new Date(run.started_at).toLocaleString() : '';
       var roleLabel = run.role && run.role !== 'auto' ? ' (' + escapeHtml(run.role) + ')' : '';
+      var rerunHtml = run.issue_number
+        ? '<button type="button" class="rerun-btn text-xs px-3 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors" ' +
+          'aria-label="Restart interrupted run" data-issue="' + escapeHtml(String(run.issue_number)) + '" ' +
+          'data-role="' + escapeHtml(run.role || '') + '" data-pr="' + escapeHtml(String(run.pr_number || '')) + '">Restart</button>'
+        : '';
       return '<div class="flex items-center justify-between bg-surface rounded px-3 py-2 border border-gray-700/30">' +
         '<span class="text-sm text-gray-300">' + issueOrPrLink(run.issue_number, run.pr_number) + roleLabel +
           ' <span class="text-xs text-gray-500">' + escapeHtml(started) + '</span></span>' +
-        '<button type="button" class="rerun-btn text-xs px-3 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors" ' +
-          'aria-label="Restart interrupted run" data-issue="' + escapeHtml(String(run.issue_number || '')) + '" ' +
-          'data-role="' + escapeHtml(run.role || '') + '" data-pr="' + escapeHtml(String(run.pr_number || '')) + '">Restart</button>' +
+        rerunHtml +
       '</div>';
     }).join('');
 
+    var totalHint = data.total && data.total > runs.length
+      ? ' <span class="text-xs text-gray-600">(showing ' + runs.length + ' of ' + data.total + ')</span>'
+      : '';
+
     banner.innerHTML = '<div class="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg p-4">' +
       '<div class="flex items-center justify-between mb-2">' +
-        '<h3 class="text-sm font-medium text-accent-yellow">Interrupted Runs</h3>' +
+        '<h3 class="text-sm font-medium text-accent-yellow">Interrupted Runs' + totalHint + '</h3>' +
         '<button type="button" onclick="dismissInterrupted()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Dismiss</button>' +
       '</div>' +
       '<p class="text-xs text-gray-500 mb-3">These agent runs were interrupted when the dashboard was restarted.</p>' +
@@ -3440,8 +3443,17 @@ async function dismissInterrupted() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ run_ids: ids })
     });
-    if (!resp.ok) { console.warn('dismissInterrupted failed:', resp.status); }
-  } catch (e) { console.warn('dismissInterrupted failed:', e); }
+    if (!resp.ok) {
+      showToast('Failed to dismiss interrupted runs', 'error');
+    } else {
+      var result = await resp.json();
+      if ((result.dismissed || 0) < ids.length) {
+        showToast('Failed to dismiss interrupted runs', 'error');
+      }
+    }
+  } catch (e) {
+    showToast('Failed to dismiss interrupted runs', 'error');
+  }
   // Re-fetch the real state rather than assuming success: a non-OK response,
   // or an OK response with "dismissed" short of ids.length (e.g. a DB error
   // mid-update), must leave the still-interrupted runs visible.

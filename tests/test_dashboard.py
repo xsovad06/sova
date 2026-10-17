@@ -993,6 +993,39 @@ class TestAgentsInterruptedAPI:
         assert len(remaining) == 1
         assert remaining[0]["issue_number"] == "74"
 
+    async def test_dismiss_interrupted_empty_run_ids_rejected(self, client: AsyncClient) -> None:
+        """An empty run_ids list must be a validation error, not a silent no-op success."""
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": []})
+        assert resp.status_code == 422
+
+    async def test_dismiss_interrupted_missing_run_ids_rejected(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/agents/interrupted/dismiss", json={})
+        assert resp.status_code == 422
+
+    async def test_dismiss_interrupted_ignores_non_interrupted_run(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Dismissing a run id that isn't actually interrupted must not mark it failed."""
+        run = TaskRun(issue_number="80", role="developer", status="done")
+        async with session.begin():
+            session.add(run)
+
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": [run.id]})
+        assert resp.status_code == 200
+        assert resp.json()["dismissed"] == 0
+
+    async def test_interrupted_runs_reports_total(self, client: AsyncClient, session: AsyncSession) -> None:
+        """The `total` count must reflect all interrupted runs, not just the capped display limit."""
+        async with session.begin():
+            for i in range(7):
+                session.add(TaskRun(issue_number=str(100 + i), role="developer", status="interrupted"))
+
+        resp = await client.get("/api/agents/interrupted")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 7
+        assert len(data["interrupted"]) <= 7
+
 
 # ---------------------------------------------------------------------------
 # Control Service: recovery and normalization
@@ -3352,6 +3385,22 @@ class TestHandoffAPI:
         resp = await client.get("/agents")
         assert resp.status_code == 200
         assert "executeHandoffAction" in resp.text
+
+    async def test_agents_page_has_interrupted_banner(self, client: AsyncClient) -> None:
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        assert 'id="interrupted-banner"' in resp.text
+        assert "checkInterrupted" in resp.text
+        assert "dismissInterrupted" in resp.text
+
+    async def test_agents_page_has_status_filter(self, client: AsyncClient) -> None:
+        from sova.core.state import TASK_RUN_TERMINAL
+
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        assert 'id="filter-status"' in resp.text
+        for status in TASK_RUN_TERMINAL:
+            assert f'<option value="{status}">' in resp.text
 
     async def test_agents_page_has_kanban_view(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
