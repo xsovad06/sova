@@ -993,6 +993,45 @@ class TestAgentsInterruptedAPI:
         assert resp.status_code == 200
         assert resp.json()["dismissed"] == 0
 
+    async def test_dismiss_interrupted_superseded_by_relaunch_keeps_error_message(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        """A relaunch-triggered dismiss preserves the original interruption diagnostic."""
+        run = TaskRun(
+            issue_number="80",
+            role="developer",
+            status="interrupted",
+            error_message="Stale run recovered on startup (was 'developing')",
+        )
+        async with session.begin():
+            session.add(run)
+
+        resp = await client.post(
+            "/api/agents/interrupted/dismiss",
+            json={"run_ids": [run.id], "superseded_by_relaunch": True},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["dismissed"] == 1
+
+        await session.refresh(run)
+        assert run.status == "failed"
+        assert run.error_message == "Stale run recovered on startup (was 'developing')"
+
+    async def test_dismiss_interrupted_db_error_returns_503(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A swallowed DB error must not be reported as a 200 no-op success."""
+
+        async def _fail(*a, **kw):
+            return -1
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery.dismiss_interrupted_runs",
+            _fail,
+        )
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": [1]})
+        assert resp.status_code == 503
+
     async def test_interrupted_runs_reports_total(self, client: AsyncClient, session: AsyncSession) -> None:
         """The `total` count must reflect all interrupted runs, not just the capped display limit."""
         now = datetime.now(timezone.utc)
@@ -3408,6 +3447,17 @@ class TestHandoffAPI:
         assert "getElementById('filter-role')" in body
         assert "&role=" in body
         assert "&status=" in body
+
+    async def test_agents_page_history_rerun_button_carries_run_id(self, client: AsyncClient) -> None:
+        """The history re-run button must thread data-run-id through so the delegated
+        click handler can auto-dismiss the originating interrupted run, matching the
+        banner's own re-run button (source-level check, same pattern as above)."""
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        idx = resp.text.find("function renderHistoryTable")
+        assert idx != -1, "renderHistoryTable() not found in agents.html"
+        body = resp.text[idx : idx + 2000]
+        assert "data-run-id=" in body
 
     async def test_agents_page_has_kanban_view(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
