@@ -961,18 +961,37 @@ class TestAgentsInterruptedAPI:
 
     async def test_dismiss_interrupted_marks_as_failed(self, client: AsyncClient, session: AsyncSession) -> None:
         """Dismissing interrupted runs should change their status to failed."""
+        run1 = TaskRun(issue_number="73", role="developer", status="interrupted", pid=99999)
+        run2 = TaskRun(issue_number="73", role="developer", status="interrupted", pid=99998)
         async with session.begin():
-            session.add(TaskRun(issue_number="73", role="developer", status="interrupted", pid=99999))
-            session.add(TaskRun(issue_number="73", role="developer", status="interrupted", pid=99998))
+            session.add(run1)
+            session.add(run2)
             session.add(TaskRun(issue_number="42", role="auto", status="done"))
 
-        resp = await client.post("/api/agents/interrupted/dismiss")
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": [run1.id, run2.id]})
         assert resp.status_code == 200
         data = resp.json()
         assert data["dismissed"] == 2
 
         resp2 = await client.get("/api/agents/interrupted")
         assert resp2.json()["interrupted"] == []
+
+    async def test_dismiss_interrupted_scoped_to_given_ids(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Dismissal must not touch an interrupted run outside the banner's displayed ids."""
+        run1 = TaskRun(issue_number="73", role="developer", status="interrupted", pid=99999)
+        run2 = TaskRun(issue_number="74", role="developer", status="interrupted", pid=99998)
+        async with session.begin():
+            session.add(run1)
+            session.add(run2)
+
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": [run1.id]})
+        assert resp.status_code == 200
+        assert resp.json()["dismissed"] == 1
+
+        resp2 = await client.get("/api/agents/interrupted")
+        remaining = resp2.json()["interrupted"]
+        assert len(remaining) == 1
+        assert remaining[0]["issue_number"] == "74"
 
 
 # ---------------------------------------------------------------------------
