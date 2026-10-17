@@ -608,12 +608,41 @@ async def get_interrupted_runs(limit: int = 5) -> list[dict]:
         return []
 
 
-async def dismiss_interrupted_runs(run_ids: list[int]) -> int:
-    """Mark the given interrupted runs as failed. Returns count of dismissed runs.
+async def count_interrupted_runs() -> int:
+    """Count all interrupted task runs, independent of the banner's display `limit`.
+
+    Lets the banner distinguish "these are all of them" from "there are more
+    than the five shown", since `get_interrupted_runs()` is capped.
+    """
+    from sqlalchemy import func, select
+
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    try:
+        async with await get_session() as session:
+            async with session.begin():
+                stmt = select(func.count()).select_from(TaskRun).where(TaskRun.status == "interrupted")
+                result = await session.execute(stmt)
+                return result.scalar_one()
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.debug("count_interrupted_runs.failed", exc_info=True)
+        return 0
+
+
+async def dismiss_interrupted_runs(run_ids: list[int], *, preserve_diagnostic: bool = False) -> int:
+    """Mark the given interrupted runs as failed. Returns count of dismissed runs, or
+    -1 on a database error (distinct from the legitimate "0 matched" case, so a
+    swallowed failure is never reported as a no-op success).
 
     Scoped to `run_ids` (the runs actually shown in the banner) rather than
     every interrupted run, since `get_interrupted_runs()` caps its result at
     `limit` and a run the user never saw must not be dismissed.
+
+    `preserve_diagnostic=True` leaves `error_message` untouched: used when the
+    dismissal is a side effect of relaunching the run rather than an explicit
+    user dismissal, so the original interruption cause is not overwritten
+    with "Dismissed by user".
     """
     from sqlalchemy import update
 
@@ -623,19 +652,19 @@ async def dismiss_interrupted_runs(run_ids: list[int]) -> int:
     if not run_ids:
         return 0
 
+    values: dict[str, str] = {"status": "failed"}
+    if not preserve_diagnostic:
+        values["error_message"] = "Dismissed by user"
+
     try:
         async with await get_session() as session:
             async with session.begin():
-                stmt = (
-                    update(TaskRun)
-                    .where(TaskRun.status == "interrupted", TaskRun.id.in_(run_ids))
-                    .values(status="failed", error_message="Dismissed by user")
-                )
+                stmt = update(TaskRun).where(TaskRun.status == "interrupted", TaskRun.id.in_(run_ids)).values(**values)
                 result = await session.execute(stmt)
                 return result.rowcount
     except (OSError, RuntimeError, SQLAlchemyError):
-        log.debug("dismiss_interrupted.failed", exc_info=True)
-        return 0
+        log.warning("dismiss_interrupted.failed", exc_info=True)
+        return -1
 
 
 def _summarize_ci_checks(checks: list | None) -> str:
