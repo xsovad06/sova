@@ -71,24 +71,54 @@ function jsonCsrfHeaders() {
    mutating fetch() in the dashboard needs the X-CSRF-Token header. Patching
    fetch() once here covers every existing call site (and any added later)
    without requiring each one to call csrfHeaders() itself. A call that
-   already set the header explicitly is left alone. */
+   already set the header explicitly is left alone.
+
+   A rejected pair means the page itself is stale (opened before a dashboard
+   restart or deploy, so it has no cookie), and only a reload fixes it. Callers
+   show the 403 detail verbatim, so the wrapper rewrites that one detail into a
+   reload hint and keeps one sticky toast with a Reload button on screen (never
+   an automatic reload, which would discard an open form). The detail string
+   must match CSRF_REJECTED_DETAIL in sova/dashboard/security.py. */
+var CSRF_REJECTED_DETAIL = 'Missing or invalid CSRF token';
+var STALE_PAGE_DETAIL = 'This page is out of date (the dashboard was restarted or updated). Reload the page and try again.';
+var _stalePageToast = null;
+
+function _notifyStalePage() {
+  if (_stalePageToast && _stalePageToast.isConnected) return;
+  _stalePageToast = showToast(STALE_PAGE_DETAIL, 'warning', 0, {
+    label: 'Reload',
+    onClick: function () { window.location.reload(); },
+  });
+}
+
+function _rewriteCsrfRejection(res) {
+  if (res.status !== 403) return res;
+  return res.clone().json().then(function (body) {
+    if (!body || body.detail !== CSRF_REJECTED_DETAIL) return res;
+    _notifyStalePage();
+    return new Response(JSON.stringify({detail: STALE_PAGE_DETAIL}), {
+      status: res.status,
+      statusText: res.statusText,
+      headers: {'Content-Type': 'application/json'},
+    });
+  }, function () { return res; });
+}
+
 (function patchFetchForCsrf() {
   var MUTATING_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
   var originalFetch = window.fetch.bind(window);
   window.fetch = function (input, init) {
     init = init || {};
-    var inputMethod = (typeof Request !== 'undefined' && input instanceof Request) ? input.method : null;
-    var method = (init.method || inputMethod || 'GET').toUpperCase();
-    if (MUTATING_METHODS.indexOf(method) !== -1) {
-      var inputHeaders = (typeof Request !== 'undefined' && input instanceof Request) ? input.headers : {};
-      var headers = new Headers(init.headers || inputHeaders);
-      if (!headers.has('X-CSRF-Token')) {
-        var csrf = csrfHeaders();
-        if (csrf['X-CSRF-Token']) headers.set('X-CSRF-Token', csrf['X-CSRF-Token']);
-      }
-      init = Object.assign({}, init, {headers: headers});
+    var request = (typeof Request !== 'undefined' && input instanceof Request) ? input : null;
+    var method = (init.method || (request && request.method) || 'GET').toUpperCase();
+    if (MUTATING_METHODS.indexOf(method) === -1) return originalFetch(input, init);
+    var headers = new Headers(init.headers || (request ? request.headers : {}));
+    if (!headers.has('X-CSRF-Token')) {
+      var csrf = csrfHeaders();
+      if (csrf['X-CSRF-Token']) headers.set('X-CSRF-Token', csrf['X-CSRF-Token']);
     }
-    return originalFetch(input, init);
+    init = Object.assign({}, init, {headers: headers});
+    return originalFetch(input, init).then(_rewriteCsrfRejection);
   };
 })();
 
@@ -368,7 +398,10 @@ function _ensureToastContainer() {
   document.body.appendChild(_toastContainer);
 }
 
-function showToast(message, type, duration) {
+/* duration: milliseconds before auto-dismiss (default 6000); 0 keeps the toast
+   until the user dismisses it. action: optional {label, onClick} rendered as a
+   button beside the dismiss control. Returns the toast element. */
+function showToast(message, type, duration, action) {
   _ensureToastContainer();
 
   while (_toastContainer.children.length >= MAX_TOASTS) {
@@ -389,6 +422,14 @@ function showToast(message, type, duration) {
     '</div>' +
     '<button onclick="this.parentElement.remove()" class="text-gray-500 hover:text-gray-300 text-sm shrink-0 ml-2" aria-label="Dismiss">&times;</button>';
 
+  if (action) {
+    var actionBtn = document.createElement('button');
+    actionBtn.className = 'sova-btn sova-btn-warning shrink-0 ml-2';
+    actionBtn.textContent = action.label;
+    actionBtn.addEventListener('click', action.onClick);
+    toast.insertBefore(actionBtn, toast.lastChild);
+  }
+
   _toastContainer.appendChild(toast);
 
   requestAnimationFrame(function() {
@@ -397,12 +438,14 @@ function showToast(message, type, duration) {
     });
   });
 
+  if (duration === 0) return toast;
   setTimeout(function() {
     toast.classList.remove('sova-toast-visible');
     setTimeout(function() {
       if (toast.parentElement) toast.remove();
     }, 300);
-  }, duration || 6000);
+  }, duration !== undefined && duration !== null ? duration : 6000);
+  return toast;
 }
 
 /* ============================================================

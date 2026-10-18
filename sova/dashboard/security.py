@@ -44,6 +44,10 @@ from fastapi import HTTPException, Request, Response
 
 CSRF_COOKIE_NAME = "sova_csrf"
 CSRF_HEADER_NAME = "x-csrf-token"
+# The 403 detail for a missing or mismatched double-submit pair. `static/app.js`
+# matches this exact string to tell the user their page is stale (no cookie, or
+# JS from before a deploy) and must be reloaded, so changing it here breaks that.
+CSRF_REJECTED_DETAIL = "Missing or invalid CSRF token"
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _SCHEMES = ("http", "https")
@@ -208,4 +212,4 @@ def require_same_origin_csrf(request: Request) -> None:
     cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
     header_token = request.headers.get(CSRF_HEADER_NAME)
     if not cookie_token or not header_token or not hmac.compare_digest(cookie_token, header_token):
-        raise HTTPException(status_code=403, detail="Missing or invalid CSRF token")
+        raise HTTPException(status_code=403, detail=CSRF_REJECTED_DETAIL)
