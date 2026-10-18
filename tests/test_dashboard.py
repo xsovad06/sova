@@ -430,10 +430,27 @@ class TestDashboardHealth:
         resp = await client.get("/static/app.js")
         assert resp.status_code == 200
 
-    async def test_static_cache_header_on_success(self, client: AsyncClient) -> None:
-        resp = await client.get("/static/style.css")
+    @pytest.mark.parametrize("asset", ["/static/style.css", "/static/app.js"])
+    async def test_static_assets_revalidate_on_every_use(self, client: AsyncClient, asset: str) -> None:
+        """A cached asset must never outlive a deploy: `max-age` let a fresh page pair with pre-deploy JS.
+
+        The page GET issues the CSRF cookie, but the `fetch()` patch that echoes it lives in app.js.
+        With `max-age=3600` a browser reused the old app.js (no patch) for up to an hour after a
+        restart, so every mutating call failed with "Missing or invalid CSRF token".
+        """
+        resp = await client.get(asset)
         assert resp.status_code == 200
-        assert resp.headers.get("cache-control") == "public, max-age=3600"
+        assert resp.headers.get("cache-control") == "no-cache"
+        assert "max-age" not in resp.headers["cache-control"]
+
+    async def test_static_asset_revalidation_is_a_cheap_304(self, client: AsyncClient) -> None:
+        """`no-cache` costs one conditional request per asset, answered without a body when unchanged."""
+        first = await client.get("/static/app.js")
+        etag = first.headers["etag"]
+        resp = await client.get("/static/app.js", headers={"if-none-match": etag})
+        assert resp.status_code == 304
+        assert resp.content == b""
+        assert resp.headers.get("cache-control") == "no-cache"
 
     async def test_static_cache_header_absent_on_404(self, client: AsyncClient) -> None:
         resp = await client.get("/static/nonexistent-file.xyz")
