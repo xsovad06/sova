@@ -65,3 +65,18 @@ def decimal_to_json(value: Decimal | None) -> str:
     if value is None:
         return "0.00"
     return str(value)
+
+
+_COST_USD_QUANTUM = Decimal("0.000001")
+
+
+def format_cost_usd(value: Decimal | float | int | None) -> str:
+    """Serialize a cost value to the 6-decimal-place precision a ``Numeric(10,6)``
+    ``TaskRun.total_cost_usd`` column produces, so every cost serialization site
+    (pool-tracked float, cached DB string, Decimal column, or NULL) agrees on a
+    zero cost's string form ("0.000000", never ``decimal_to_json``'s bare-None
+    "0.00"). Use this instead of calling ``decimal_to_json`` directly on a cost
+    field.
+    """
+    decimal_value = value if isinstance(value, Decimal) else Decimal(str(value or 0))
+    return decimal_to_json(decimal_value.quantize(_COST_USD_QUANTUM))

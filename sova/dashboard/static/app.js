@@ -1716,3 +1716,176 @@ function renderRunsTable(runs, targetId) {
         '</tr>';
     }).join('') + '</tbody></table>';
 }
+
+/* ============================================================
+   SOVA STATUS CHANNEL (WebSocket + polling fallback)
+   ============================================================ */
+
+/**
+ * createSovaStatusChannel(options) -> { stop: function() }
+ *
+ * Shared real-time status helper: owns a WebSocket connection, a single
+ * reconnect policy, and the fallback-to-polling path, so every page wiring
+ * up a status feed shares the exact same connection semantics instead of
+ * each reimplementing (and subtly disagreeing on) its own.
+ *
+ * The reconnect/backoff counter resets on a successfully parsed message, not
+ * merely on the socket opening, so a connection that flaps (closes and
+ * reopens) repeatedly does not accumulate an ever-growing backoff delay from
+ * stale earlier attempts. That reset alone does not prove the connection is
+ * live: a socket that stays open but stops delivering anything (a dead
+ * proxy, a half-open socket after a laptop sleep/network switch, a server
+ * hung awaiting a locked DB) never fires onclose on its own, so nothing
+ * would otherwise trigger a reconnect. A separate liveness watchdog covers
+ * that case: it tracks the time of the last message (or connect) and forces
+ * the socket closed once it goes quiet longer than staleAfterMs, which
+ * routes into the normal onclose -> fallback/reconnect path.
+ * Once MAX_RECONNECT_ATTEMPTS is exhausted, the channel does not give up:
+ * the polling fallback also retries the WebSocket on a slow, indefinitely
+ * repeating interval (MAX_RECONNECT_DELAY_MS), so a channel left in fallback
+ * for hours still recovers once the server comes back, without accumulating
+ * a runaway backoff delay.
+ *
+ * options:
+ *   wsPath                API-relative WebSocket path, e.g. apiUrl('/ws/agents/status')
+ *   onMessage(msg)         called with the parsed JSON message on every WS push
+ *   onFallbackPoll()       called on an interval while no WS connection is open
+ *   pollIntervalMs         fallback polling cadence (default 2000)
+ *   staleAfterMs           liveness watchdog threshold: close and reconnect a
+ *                          socket that has delivered nothing for this long
+ *                          (default max(20000, 10x pollIntervalMs); sized off
+ *                          a generous worst case, not off pollIntervalMs
+ *                          alone, since the producer's actual inter-message
+ *                          gap is its own broadcast interval PLUS however
+ *                          long its server-side status fetch takes, which is
+ *                          unbounded and independent of the client's poll
+ *                          cadence. A caller that knows its server's real
+ *                          broadcast interval should pass staleAfterMs
+ *                          explicitly rather than rely on this default.
+ *   auxiliaryPollFn()      optional: a second, independent interval started and
+ *                          stopped alongside this channel's own lifecycle,
+ *                          regardless of WS/fallback state
+ *   auxiliaryPollIntervalMs  cadence for auxiliaryPollFn (default 5000)
+ */
+function createSovaStatusChannel(options) {
+  var wsPath = options.wsPath;
+  var onMessage = options.onMessage;
+  var onFallbackPoll = options.onFallbackPoll;
+  var pollIntervalMs = options.pollIntervalMs || 2000;
+  var auxiliaryPollFn = options.auxiliaryPollFn || null;
+  var auxiliaryPollIntervalMs = options.auxiliaryPollIntervalMs || 5000;
+  var staleAfterMs = options.staleAfterMs || Math.max(20000, pollIntervalMs * 10);
+
+  var RECONNECT_BASE_MS = 1000;
+  var MAX_RECONNECT_DELAY_MS = 16000;
+  var MAX_RECONNECT_ATTEMPTS = 10;
+
+  var ws = null;
+  var reconnectDelay = RECONNECT_BASE_MS;
+  var reconnectAttempts = 0;
+  var pollInterval = null;
+  var fallbackRetryInterval = null;
+  var reconnectTimer = null;
+  var auxiliaryInterval = null;
+  var watchdogInterval = null;
+  var lastMessageAt = null;
+  var stopped = false;
+
+  function startWatchdog() {
+    if (watchdogInterval) return;
+    watchdogInterval = setInterval(function() {
+      if (ws !== null && lastMessageAt !== null && (Date.now() - lastMessageAt) > staleAfterMs) {
+        console.warn('SovaStatusChannel: socket stale, forcing reconnect');
+        ws.close();
+      }
+    }, staleAfterMs);
+  }
+
+  function startFallback() {
+    if (!pollInterval) {
+      pollInterval = setInterval(onFallbackPoll, pollIntervalMs);
+    }
+    if (!fallbackRetryInterval) {
+      fallbackRetryInterval = setInterval(function() {
+        if (ws === null) connect();
+      }, MAX_RECONNECT_DELAY_MS);
+    }
+  }
+
+  function stopFallback() {
+    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+    if (fallbackRetryInterval) { clearInterval(fallbackRetryInterval); fallbackRetryInterval = null; }
+  }
+
+  function connect() {
+    // Guards against a race between the exponential-backoff retry
+    // (reconnectTimer) and the indefinite fallback retry (fallbackRetryInterval)
+    // both firing close together and opening two live sockets.
+    if (stopped || ws !== null) return;
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = proto + '//' + location.host + wsPath;
+    var socket;
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch (e) {
+      console.warn('SovaStatusChannel: connect failed:', e);
+      startFallback();
+      return;
+    }
+    ws = socket;
+    lastMessageAt = Date.now();
+
+    socket.onmessage = function(event) {
+      lastMessageAt = Date.now();
+      reconnectDelay = RECONNECT_BASE_MS;
+      reconnectAttempts = 0;
+      stopFallback();
+      var msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch (e) {
+        console.warn('SovaStatusChannel: message parse error:', e);
+        return;
+      }
+      try {
+        onMessage(msg);
+      } catch (e) {
+        console.error('SovaStatusChannel: message handler error:', e);
+      }
+    };
+
+    socket.onclose = function() {
+      if (ws !== socket) return;
+      ws = null;
+      startFallback();
+      reconnectAttempts++;
+      if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+        reconnectTimer = setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
+      }
+      // Beyond MAX_RECONNECT_ATTEMPTS, fallbackRetryInterval (started above)
+      // keeps retrying at MAX_RECONNECT_DELAY_MS instead of stopping.
+    };
+
+    socket.onerror = function() {
+      if (ws === socket) socket.close();
+    };
+  }
+
+  connect();
+  startWatchdog();
+  if (auxiliaryPollFn) {
+    auxiliaryInterval = setInterval(auxiliaryPollFn, auxiliaryPollIntervalMs);
+  }
+
+  return {
+    stop: function() {
+      stopped = true;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (auxiliaryInterval) { clearInterval(auxiliaryInterval); auxiliaryInterval = null; }
+      if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
+      stopFallback();
+      if (ws) { ws.close(); ws = null; }
+    }
+  };
+}
