@@ -2694,3 +2694,61 @@ class TestSymlinkedEntriesAreNeverWrittenThrough:
         install_commands(canonical_dir, target_dir, ProjectConfig(lint_cmd="ruff check ."))
 
         assert "ruff check ." in (target_dir / "develop.md").read_text(encoding="utf-8")
+
+
+class TestCommandShellSnippets:
+    """Shell snippets in the shipped commands must be valid `gh` invocations."""
+
+    @staticmethod
+    def _jq_arg_offender_lines(text: str) -> list[int]:
+        """1-indexed lines where `--jq` is followed later by `--arg`.
+
+        Shell continuation lines (trailing `\\`) are joined before matching,
+        so a `--jq \\` / `--arg ...` split across two physical lines is still
+        caught; the offending line number reported is where the snippet starts.
+        `--arg` need not be adjacent to `--jq`: a jq expression (or other
+        flags) between them, e.g. `--jq '.[].databaseId' --arg sha ...`,
+        is still an invalid `gh` invocation and must still be caught.
+        """
+        import re
+
+        lines = text.splitlines()
+        offenders = []
+        i = 0
+        while i < len(lines):
+            start_lineno = i + 1
+            joined = lines[i]
+            while joined.rstrip().endswith("\\") and i + 1 < len(lines):
+                i += 1
+                joined = joined.rstrip()[:-1] + " " + lines[i]
+            if re.search(r"--jq\b.*--arg\b", joined):
+                offenders.append(start_lineno)
+            i += 1
+        return offenders
+
+    def test_no_command_passes_arguments_to_gh_jq(self) -> None:
+        """`gh`'s `--jq` takes one expression and has no `--arg`.
+
+        `gh run list ... --jq --arg sha "$HEAD_SHA" '<expr>'` fails with
+        `unknown command "sha"` before listing anything, which left `/pr`'s
+        CI wait unable to find the run it was waiting for. Filter with the
+        command's own flag (`gh run list --commit`) or pipe to a real `jq`.
+        """
+        from sova.commands.catalog import get_canonical_dir
+
+        offenders = [
+            f"{path.name}:{lineno}"
+            for path in sorted(get_canonical_dir().glob("*.md"))
+            for lineno in self._jq_arg_offender_lines(path.read_text(encoding="utf-8"))
+        ]
+        assert offenders == []
+
+    def test_continuation_split_invocation_is_detected(self) -> None:
+        """A `--jq` / `--arg` split across a shell continuation must still be caught."""
+        text = "gh run list --jq \\\n  --arg sha \"$HEAD_SHA\" '.[]'\n"
+        assert self._jq_arg_offender_lines(text) == [1]
+
+    def test_arg_after_jq_expression_is_detected(self) -> None:
+        """`--arg` following a jq expression (not immediately after `--jq`) is still invalid."""
+        text = "gh run list --json databaseId --jq '.[].databaseId' --arg sha \"$HEAD_SHA\"\n"
+        assert self._jq_arg_offender_lines(text) == [1]

@@ -205,21 +205,27 @@ These phases run after the PR is created/updated. They enable autonomous operati
     If the project has a `/verify-local` command AND changes affect UI (templates, CSS, JS, views, but not test-only or migration-only), follow the `/verify-local` procedure. If verification reveals issues, fix them, commit the fix (amend into the relevant commit or add a new commit), and push (`git push --force-with-lease`) before proceeding to step 15: otherwise CI runs against the old commit and step 17 reviews a diff that doesn't contain the fix. Skip if no `/verify-local` command exists.
 
 15. **Wait for CI pipeline**:
-    Capture the commit CI must validate, then poll until a run for that exact
-    commit appears and completes: `--limit 1` alone can return an unrelated
-    or stale run (another workflow, or the new run not yet registered):
+    Wait for every required check on the PR, not just one matched workflow
+    run: `gh run list` only sees runs it triggered directly, so a check that
+    arrives as a mirrored commit status (e.g. SonarCloud, which posts via
+    `.github/workflows/sonarcloud.yml` after CI's coverage artifact lands)
+    or from any other separate workflow can still be pending, or can later
+    fail, after the one run `gh run list` matched already passed. `gh pr
+    checks --required` is scoped to the PR's current head by GitHub itself,
+    so it needs no SHA matching and cannot return a stale or unrelated run:
     ```bash
-    HEAD_SHA=$(git rev-parse HEAD)
-    gh run list --branch $(git branch --show-current) --json databaseId,status,conclusion,headSha,workflowName --jq --arg sha "$HEAD_SHA" '[.[] | select(.headSha == $sha)]'
+    PR_NUM=$(gh pr view --json number --jq .number) || { echo "Unable to resolve the PR number" >&2; exit 1; }
+    gh pr checks "$PR_NUM" --required --json name,bucket,link
     ```
-    If `gh run watch` is available, use it against the matched run's `databaseId`. Otherwise poll every 30 seconds until a run matching `$HEAD_SHA` appears and completes. Max wait: 30 minutes (a full test suite routinely runs longer than 15).
+    Poll every 30 seconds until every required check's `bucket` is `pass`, `fail`, `cancel`, or `skipping` (none left `pending`). Max wait: 30 minutes (a full test suite routinely runs longer than 15).
 
-    **Run each wait as a synchronous foreground command**, never as a background task: in headless mode nothing resumes you when a background task finishes, and ending a turn without a tool call ends the run. The Bash tool caps a single call at 10 minutes (600000 ms) and defaults to 2, so pass an explicit `timeout` of at least 540000 ms on every wait call, and keep each call to at most 16 polls of 30 seconds (8 minutes). A `gh run watch` call gets the same timeout. When a call ends with the run still pending, start another call the same way, until the run completes or the 30 minute total is used up. Re-assign `HEAD_SHA` at the top of each call, since each one is a fresh shell.
+    **Run each wait as a synchronous foreground command**, never as a background task: in headless mode nothing resumes you when a background task finishes, and ending a turn without a tool call ends the run. The Bash tool caps a single call at 10 minutes (600000 ms) and defaults to 2, so pass an explicit `timeout` of at least 540000 ms on every poll call, and keep each call to at most 16 polls of 30 seconds (8 minutes). When a call ends with any required check still pending, start another call the same way, until every required check completes or the 30 minute total is used up. Re-resolve `PR_NUM` at the top of each call, since each one is a fresh shell.
 
 16. **Handle CI result**:
-    - **CI passes**: continue to step 17.
-    - **CI fails**: fetch logs (`gh run view <run_id> --log-failed`), analyze, fix, amend to the relevant commit, re-run step 9's checks, force push (`--force-with-lease`), go back to step 15 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
-    - **CI still pending after max wait**: report current status and the PR URL. Suggest the user check back later.
+    - **All required checks have bucket `pass` or `skipping`**: continue to step 17 (a `skipping` required check, e.g. a path-filtered workflow, is treated as satisfied).
+    - **Any required check fails**: fetch logs for each failing check (`gh run view <run_id> --log-failed` when `link` points at a GitHub Actions run, otherwise open `link`), analyze, fix, amend to the relevant commit, re-run step 9's checks, force push (`--force-with-lease`), go back to step 15 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
+    - **Any required check is canceled**: treat as a non-success state, not a pass. Report it and re-run step 15 to trigger it again (e.g. re-push or `gh run rerun`) before continuing; do not proceed to step 17 with a canceled required check.
+    - **Any required check still pending after max wait**: report the current statuses and the PR URL. Suggest the user check back later.
 
 17. **Self-review the PR diff**:
     Review the actual diff that will be merged, as a senior engineer would:
