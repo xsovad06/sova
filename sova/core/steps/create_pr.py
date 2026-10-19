@@ -39,6 +39,67 @@ _CONVENTIONAL_RE = re.compile(
     r":\s*",
 )
 
+# Valid conventional-commit scopes, kept in sync with invariants/commit-format.sh
+# (VALID_SCOPES) and AGENTS.md. A top-level sova/<dir> maps to its scope name.
+_VALID_SCOPES = frozenset(
+    {
+        "dashboard",
+        "commands",
+        "personas",
+        "invariants",
+        "knowledge",
+        "cli",
+        "docs",
+        "scheduler",
+        "ipc",
+        "adapters",
+        "roles",
+        "core",
+        "config",
+        "supervisor",
+        "mcp",
+        "monitoring",
+        "db",
+        "awareness",
+        "oversight",
+    }
+)
+_DEFAULT_SCOPE = "core"
+
+
+def _infer_scope(changed_files: list[str] | None) -> str:
+    """Infer a conventional-commit scope from the PR's changed paths.
+
+    Maps each top-level ``sova/<dir>/`` path to ``<dir>`` when it names a valid
+    scope and returns the most frequently touched one. Falls back to
+    ``_DEFAULT_SCOPE`` ("core") for mixed, non-``sova``, or empty changes, so the
+    title always carries a scope that ``invariants/commit-format.sh`` accepts.
+    A single path outside ``sova/<valid-scope>/`` makes the whole change
+    "mixed" and falls back too, even when other paths are validly scoped:
+    a PR touching both ``sova/dashboard/app.py`` and ``README.md`` is not a
+    pure dashboard change. Ties resolve to the first scope seen, which keeps
+    the result deterministic.
+    """
+    if not changed_files:
+        return _DEFAULT_SCOPE
+
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for path in changed_files:
+        parts = path.strip().split("/")
+        if len(parts) < 3 or parts[0] != "sova" or parts[1] not in _VALID_SCOPES:
+            return _DEFAULT_SCOPE
+        scope = parts[1]
+        if scope not in counts:
+            order.append(scope)
+        counts[scope] = counts.get(scope, 0) + 1
+
+    if not counts:
+        return _DEFAULT_SCOPE
+    # Most-touched scope wins; ties break to the first one seen (order index).
+    return max(order, key=lambda s: (counts[s], -order.index(s)))
+
+
 _PR_BODY_PROMPT_BASE = """\
 Generate a pull request description for the changes below. Output ONLY the \
 markdown body (no fences, no commentary, no preamble). Start directly with \
@@ -109,11 +170,19 @@ def _build_pr_title(
     task_title: str,
     issue_number: str | None,
     task_source: TaskSourceConfig | None = None,
+    changed_files: list[str] | None = None,
 ) -> str:
     """Build a PR title from the task title, avoiding double conventional prefixes.
 
     For JIRA projects, prepends ``[PROJECT_KEY-NUMBER]`` so JIRA's GitHub
     integration auto-links the PR to the ticket.
+
+    For GitHub projects, the scope is inferred from *changed_files* (see
+    :func:`_infer_scope`) so the title is a valid ``type(scope): ...`` that
+    ``invariants/commit-format.sh`` accepts. The issue number is deliberately
+    not in the title: it is linked via ``Closes #N`` in the body, and a
+    ``feat(#N): ...`` title parses to an invalid scope that trips the
+    ``/integrate-pr`` silent-revert gate.
     """
     match = _CONVENTIONAL_RE.match(task_title)
     if match:
@@ -127,9 +196,8 @@ def _build_pr_title(
         jira_key = f"[{task_source.jira_issue_key(issue_number)}]"
         return f"{jira_key} {commit_type}: {description}"
 
-    if issue_number:
-        return f"{commit_type}(#{issue_number}): {description}"
-    return f"{commit_type}: {description}"
+    scope = _infer_scope(changed_files)
+    return f"{commit_type}({scope}): {description}"
 
 
 def _jira_ticket_link(task_source: TaskSourceConfig, issue_number: str) -> str:
@@ -249,10 +317,12 @@ class CreatePRStep(BaseStep):
             return adopted
 
         task_title = await self._resolve_task_title(ctx)
+        changed_files = await self._resolve_changed_files(ctx)
         title = _build_pr_title(
             task_title,
             ctx.issue_number if ctx.has_issue else None,
             task_source=ctx.config.task_source,
+            changed_files=changed_files,
         )
         body = await self._generate_pr_body(ctx, task_title)
 
@@ -274,6 +344,32 @@ class CreatePRStep(BaseStep):
             except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                 log.warning("step.create_pr.title_fallback_failed", issue=ctx.issue_number, exc_info=True)
         return _title_from_branch(ctx.branch_name)
+
+    @staticmethod
+    async def _resolve_changed_files(ctx: ExecutionContext) -> list[str]:
+        """Return the paths changed by this branch since it diverged from its base, for scope inference.
+
+        Uses the merge-base (three-dot) diff rather than a direct comparison
+        against the base branch's current tip, so a base branch that has
+        advanced since this branch diverged does not pull base-only changes
+        into the PR's own changed-path list.
+
+        Only the GitHub title path infers a scope; JIRA titles use a bracketed
+        ticket key instead, so this skips the git call there. Fails open to an
+        empty list (``_build_pr_title`` then falls back to the default scope)
+        rather than letting a git failure abort PR creation.
+        """
+        if ctx.config.task_source.is_jira:
+            return []
+        try:
+            result = await run("git", "diff", f"{ctx.base_branch}...HEAD", "--name-only", cwd=ctx.working_dir)
+        except OSError:
+            log.warning("step.create_pr.changed_files_failed", branch=ctx.branch_name, exc_info=True)
+            return []
+        if not result.success:
+            log.warning("step.create_pr.changed_files_failed", branch=ctx.branch_name)
+            return []
+        return [line for line in result.stdout.splitlines() if line.strip()]
 
     async def _create_pr_immediate(self, ctx: ExecutionContext, title: str, body: str) -> StepResult:
         """Create PR directly (no throttle)."""
