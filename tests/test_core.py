@@ -2845,6 +2845,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat: add widget\n"),
             MagicMock(success=True, stdout=" src/app.py | 10 ++++\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -2878,6 +2879,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -2904,6 +2906,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -2933,6 +2936,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -2959,6 +2963,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat: add widget\n"),
             MagicMock(success=True, stdout=" src/app.py | 10 ++++\n 1 file changed, 10 insertions(+)\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py b/src/app.py\n+widget code\n"),
@@ -2996,6 +3001,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -3029,6 +3035,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -3087,6 +3094,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -3117,6 +3125,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -3249,15 +3258,20 @@ class TestCreatePRStepJira:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_github_pr_title_unchanged(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
-        """GitHub-backed projects should NOT get a JIRA prefix."""
+    async def test_github_pr_title_uses_inferred_scope_not_issue_number(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
+        """GitHub titles use a valid conventional scope, never feat(#N): (no JIRA prefix)."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            # _resolve_changed_files: git diff --name-only (runs before body generation)
+            MagicMock(success=True, stdout="sova/dashboard/app.py\nsova/dashboard/routers/x.py\n"),
+            # _generate_pr_body: log, diff --stat, diff
             MagicMock(success=True, stdout="abc123 feat\n"),
-            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
-            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+            MagicMock(success=True, stdout=" sova/dashboard/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/sova/dashboard/app.py\n+change\n"),
         ]
         mock_invoke.return_value = LLMResult(
             text="## Summary\n- stuff\n\nCloses #42", model="sonnet", cost_usd=Decimal("0.01")
@@ -3271,8 +3285,9 @@ class TestCreatePRStepJira:
         await step.execute(ctx)
 
         title_arg = mock_create_pr.call_args.kwargs["title"]
-        assert "[" not in title_arg
-        assert "feat(#42)" in title_arg
+        assert "[" not in title_arg  # no JIRA prefix
+        assert "#42" not in title_arg  # issue number is linked in the body, not the title
+        assert title_arg.startswith("feat(dashboard): ")  # scope inferred from changed paths
 
 
 class TestCreatePRStepJiraPrompt:
@@ -3369,6 +3384,7 @@ class TestCreatePRStepDiffContent:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat: add widget\n"),
             MagicMock(success=True, stdout=" src/app.py | 10 ++++\n 1 file changed, 10 insertions(+)\n"),
             MagicMock(
@@ -3402,6 +3418,7 @@ class TestCreatePRStepDiffContent:
 
         large_diff = "diff --git a/src/file.py b/src/file.py\n" + ("+" + "x" * 100 + "\n") * 200
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat: add widget\n"),
             MagicMock(success=True, stdout=" src/file.py | 200 ++++\n"),
             MagicMock(success=True, stdout=large_diff),
@@ -3430,6 +3447,7 @@ class TestCreatePRStepDiffContent:
 
         long_body = "x" * 1000
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -7506,6 +7524,7 @@ class TestCreatePRStepIssueless:
             patch("sova.core.steps.create_pr.git_ops.create_pr", new_callable=AsyncMock, return_value=pr_info),
         ):
             mock_run.side_effect = [
+                MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
                 MagicMock(success=True, stdout="abc123 feat: plan\n"),
                 MagicMock(success=True, stdout=" plan.py | 3 +++\n"),
                 MagicMock(success=True, stdout="diff --git a/plan.py\n+planning\n"),

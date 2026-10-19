@@ -100,6 +100,7 @@ class TestCreatePRStepLLMFailureFallback:
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat: add widget\n"),
             MagicMock(success=True, stdout=" src/app.py | 10 ++++\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -140,6 +141,7 @@ class TestCreatePRStepTaskTitleFallback:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -177,6 +179,7 @@ class TestCreatePRStepGitCommandFailures:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=False, stdout=""),  # git log fails
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -203,6 +206,7 @@ class TestCreatePRStepGitCommandFailures:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=False, stdout=""),  # git diff --stat fails
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -230,6 +234,7 @@ class TestCreatePRStepGitCommandFailures:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=False, stdout=""),  # git diff (content) fails
@@ -259,6 +264,7 @@ class TestCreatePRStepSideEffectFailures:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -290,6 +296,7 @@ class TestCreatePRStepSideEffectFailures:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -424,6 +431,177 @@ class TestCreatePRStepJiraTitleBuilding:
         assert title == "[PROJ-42] fix: broken login"
 
 
+class TestInferScope:
+    """Test scope inference from changed paths for GitHub PR titles."""
+
+    def test_single_scope(self) -> None:
+        from sova.core.steps.create_pr import _infer_scope
+
+        assert _infer_scope(["sova/dashboard/app.py", "sova/dashboard/routers/x.py"]) == "dashboard"
+
+    def test_dominant_scope_wins(self) -> None:
+        from sova.core.steps.create_pr import _infer_scope
+
+        files = ["sova/core/a.py", "sova/core/b.py", "sova/cli/c.py"]
+        assert _infer_scope(files) == "core"
+
+    def test_tie_breaks_to_first_seen(self) -> None:
+        from sova.core.steps.create_pr import _infer_scope
+
+        assert _infer_scope(["sova/cli/a.py", "sova/db/b.py"]) == "cli"
+
+    def test_empty_falls_back_to_core(self) -> None:
+        from sova.core.steps.create_pr import _infer_scope
+
+        assert _infer_scope([]) == "core"
+        assert _infer_scope(None) == "core"
+
+    def test_non_sova_paths_fall_back_to_core(self) -> None:
+        from sova.core.steps.create_pr import _infer_scope
+
+        assert _infer_scope(["tests/test_x.py", "docs/guide.md", "README.md"]) == "core"
+
+    def test_unknown_sova_dir_falls_back_to_core(self) -> None:
+        from sova.core.steps.create_pr import _infer_scope
+
+        # sova/notascope/ is not in VALID_SCOPES
+        assert _infer_scope(["sova/notascope/x.py"]) == "core"
+
+    def test_top_level_sova_file_falls_back_to_core(self) -> None:
+        from sova.core.steps.create_pr import _infer_scope
+
+        # sova/__init__.py has only 2 parts: no scope segment
+        assert _infer_scope(["sova/__init__.py"]) == "core"
+
+    def test_mixed_sova_and_non_sova_paths_fall_back_to_core(self) -> None:
+        from sova.core.steps.create_pr import _infer_scope
+
+        # A non-sova path (README.md) makes this a mixed change even though
+        # the other path is validly scoped, so it must not return "dashboard".
+        assert _infer_scope(["sova/dashboard/app.py", "README.md"]) == "core"
+
+
+class TestGithubTitleScope:
+    """Test GitHub PR title building uses an inferred scope, not the issue number."""
+
+    def test_github_title_infers_scope(self) -> None:
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title("Add widget support", "1245", changed_files=["sova/dashboard/app.py"])
+        assert title == "feat(dashboard): Add widget support"
+
+    def test_github_title_no_issue_number_in_title(self) -> None:
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title("Fix the thing", "99", changed_files=["sova/cli/app.py"])
+        assert "#99" not in title
+        assert title == "feat(cli): Fix the thing"
+
+    def test_github_title_preserves_existing_type(self) -> None:
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title("fix: broken login", "42", changed_files=["sova/core/auth.py"])
+        assert title == "fix(core): broken login"
+
+    def test_github_title_defaults_to_core_without_files(self) -> None:
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title("Do a thing", "42")
+        assert title == "feat(core): Do a thing"
+
+
+class TestResolveChangedFiles:
+    """Test CreatePRStep._resolve_changed_files, the scope-inference input."""
+
+    @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
+    async def test_jira_skips_the_git_call(self, mock_run) -> None:
+        """JIRA titles don't infer a scope, so no git diff should be run."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        ts = TaskSourceConfig(type="jira", jira_project_key="RHCLOUD", jira_base_url="https://issues.redhat.com")
+        ctx = _make_ctx(config=ProjectConfig(task_source=ts))
+        result = await CreatePRStep._resolve_changed_files(ctx)
+
+        assert result == []
+        mock_run.assert_not_called()
+
+    @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
+    async def test_github_returns_changed_paths(self, mock_run) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.return_value = MagicMock(success=True, stdout="sova/cli/a.py\nsova/db/b.py\n")
+        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        result = await CreatePRStep._resolve_changed_files(ctx)
+
+        assert result == ["sova/cli/a.py", "sova/db/b.py"]
+
+    @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
+    async def test_uses_merge_base_diff_not_base_tip(self, mock_run) -> None:
+        """Must diff against the merge base (three-dot), not the base branch's current
+        tip (two-dot): otherwise base-only commits landed after this branch diverged
+        would be attributed to this PR's scope inference."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.return_value = MagicMock(success=True, stdout="sova/cli/a.py\n")
+        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        await CreatePRStep._resolve_changed_files(ctx)
+
+        mock_run.assert_called_once_with("git", "diff", "main...HEAD", "--name-only", cwd=ctx.working_dir)
+
+    @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
+    async def test_git_failure_fails_open_to_empty_list(self, mock_run) -> None:
+        """A failed git diff must not abort PR creation; scope inference falls back to core."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.return_value = MagicMock(success=False, returncode=128, stdout="", stderr="fatal: bad revision")
+        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        result = await CreatePRStep._resolve_changed_files(ctx)
+
+        assert result == []
+
+    @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
+    async def test_missing_git_binary_fails_open_to_empty_list(self, mock_run) -> None:
+        """A missing `git` binary raises FileNotFoundError from the subprocess call, not a
+        failed ShellResult; this must also fail open rather than aborting PR creation."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.side_effect = FileNotFoundError("git")
+        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        result = await CreatePRStep._resolve_changed_files(ctx)
+
+        assert result == []
+
+    @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
+    async def test_blank_lines_are_filtered_out(self, mock_run) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.return_value = MagicMock(success=True, stdout="sova/cli/a.py\n\n\n")
+        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        result = await CreatePRStep._resolve_changed_files(ctx)
+
+        assert result == ["sova/cli/a.py"]
+
+
+class TestValidScopesNoDrift:
+    """_VALID_SCOPES must stay in sync with invariants/commit-format.sh."""
+
+    def test_valid_scopes_match_invariant(self) -> None:
+        import re
+
+        from sova.core.steps.create_pr import _VALID_SCOPES
+
+        root = Path(__file__).resolve().parent.parent
+        shell = (root / "invariants" / "commit-format.sh").read_text(encoding="utf-8")
+        match = re.search(r'VALID_SCOPES="([^"]+)"', shell)
+        assert match, "could not find VALID_SCOPES in invariants/commit-format.sh"
+        shell_scopes = set(match.group(1).split("|"))
+        assert set(_VALID_SCOPES) == shell_scopes, (
+            "create_pr._VALID_SCOPES has drifted from invariants/commit-format.sh; "
+            f"only in python: {set(_VALID_SCOPES) - shell_scopes}; "
+            f"only in shell: {shell_scopes - set(_VALID_SCOPES)}"
+        )
+
+
 class TestCreatePRStepDiffTruncation:
     """Test diff content truncation logic."""
 
@@ -438,6 +616,7 @@ class TestCreatePRStepDiffTruncation:
 
         large_diff = "+" + ("x" * 9000)  # 9001 chars
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout=large_diff),
@@ -499,6 +678,7 @@ class TestCreatePRStepCodeRabbitTrigger:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -531,6 +711,7 @@ class TestCreatePRStepCodeRabbitTrigger:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -558,6 +739,7 @@ class TestCreatePRStepCodeRabbitTrigger:
         from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # git diff --name-only (scope inference)
             MagicMock(success=True, stdout="abc123 feat\n"),
             MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),

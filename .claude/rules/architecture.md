@@ -259,6 +259,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - An unassigned ticket's suitability lives in a local record, never a label its owner's account cannot speak for
 - A dependency applied once at router level, self-exempting safe methods, covers a mutating route by construction; a per-route opt-in is exactly how most of them went unguarded
 - A status broadcast producer that only selects non-terminal rows can never carry a terminal transition for the client to act on
+- A generated PR title's scope must come from the same source as a commit message's scope, or only one of them stays valid when the format rule changes: an issue number is not a scope
 
 ## Cross-References (domain-specific details)
 
