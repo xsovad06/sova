@@ -133,9 +133,11 @@ class TestParseDependencies:
 
     def test_spec_template_uses_code_dependencies_heading(self) -> None:
         """Spec templates must use '## Code Dependencies' to avoid collision."""
+        from sova.commands.catalog import get_canonical_dir
+
         repo_root = Path(__file__).resolve().parent.parent
         for template_path in [
-            repo_root / "commands" / "spec.md",
+            get_canonical_dir() / "spec.md",
             repo_root / ".claude" / "commands" / "spec.md",
         ]:
             content = template_path.read_text(encoding="utf-8")

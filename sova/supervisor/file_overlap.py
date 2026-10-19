@@ -24,8 +24,8 @@ log = get_logger(component="supervisor.file_overlap")
 _AREA_LABEL_DIRS: dict[str, list[str]] = {
     "agent": ["sova/core/", "sova/roles/"],
     "dashboard": ["sova/dashboard/"],
-    "commands": ["commands/", ".claude/commands/"],
-    "personas": ["personas/"],
+    "commands": ["sova/commands/data/commands/", ".claude/commands/"],
+    "personas": ["sova/commands/data/personas/"],
     "invariants": ["invariants/"],
     "knowledge": ["sova/knowledge/", "knowledge/"],
     "docs": ["docs/"],

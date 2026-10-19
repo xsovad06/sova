@@ -76,7 +76,7 @@ async def _run_workflow(
     from sova.db.session import init_db
     from sova.git.worktree import get_primary_worktree_root
     from sova.roles.dispatcher import dispatch
-    from sova.utils.logging import setup_logging
+    from sova.utils.logging import rotation_kwargs, setup_logging
 
     # When called from inside a linked git worktree (e.g. a dashboard-spawned
     # agent running in .claude/worktrees/<id>), Path.cwd() is the worktree
@@ -85,7 +85,13 @@ async def _run_workflow(
     resolved_dir = project_dir or await get_primary_worktree_root()
     config = load_config(resolved_dir)
 
-    setup_logging(log_file=resolved_dir / ".claude" / "sova.log")
+    # Same rotation settings as the server: both open their own handler on this
+    # one shared file, so limits resolved differently here would leave the two
+    # disagreeing about when to roll it.
+    setup_logging(
+        log_file=resolved_dir / ".claude" / "sova.log",
+        **rotation_kwargs(config.server.log_max_bytes, config.server.log_backup_count),
+    )
     await init_db(resolved_dir)
 
     adapter = create_adapter(config)

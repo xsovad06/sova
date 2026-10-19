@@ -51,6 +51,8 @@ from pathlib import Path
 
 import pytest
 
+from sova.commands.catalog import get_canonical_dir
+
 REPO_ROOT = Path(__file__).parent.parent
 
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
@@ -61,11 +63,11 @@ SONAR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sonarcloud.yml"
 _NO_PR = {"number": "", "head": "", "base": ""}
 DETECTOR = REPO_ROOT / ".github" / "scripts" / "detect-code-changes.sh"
 INTEGRATE_SOVA = REPO_ROOT / ".claude" / "commands" / "integrate-pr.md"
-INTEGRATE_DIST = REPO_ROOT / "commands" / "integrate-pr.md"
+INTEGRATE_DIST = get_canonical_dir() / "integrate-pr.md"
 ADDRESS_SOVA = REPO_ROOT / ".claude" / "commands" / "address-pr.md"
-ADDRESS_DIST = REPO_ROOT / "commands" / "address-pr.md"
+ADDRESS_DIST = get_canonical_dir() / "address-pr.md"
 INGEST_SOVA = REPO_ROOT / ".claude" / "commands" / "ingest-review.md"
-INGEST_DIST = REPO_ROOT / "commands" / "ingest-review.md"
+INGEST_DIST = get_canonical_dir() / "ingest-review.md"
 
 _JOB_KEY_RE = re.compile(r"^ {2}[A-Za-z0-9_-]+:")
 
@@ -1493,7 +1495,7 @@ class TestAddressPRCapturesEarly:
         from sova.commands.distribution import install_commands
         from sova.commands.self_render import self_config
 
-        install_commands(REPO_ROOT / "commands", tmp_path, self_config())
+        install_commands(get_canonical_dir(), tmp_path, self_config())
         rendered_dist = (tmp_path / "address-pr.md").read_text()
         assert address_sova_text == rendered_dist
 

@@ -8,7 +8,6 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 
-import sova
 from sova.cli.commands.admin import cleanup, costs, status
 from sova.cli.commands.assess import app as assess_app
 from sova.cli.commands.briefing import briefing
@@ -111,7 +110,11 @@ def _init_llm_provider() -> None:
 
 def version_callback(value: bool) -> None:
     if value:
-        typer.echo(f"sova {sova.__version__}")
+        from sova.utils.version import get_git_sha, get_version
+
+        git_sha = get_git_sha()
+        suffix = f" ({git_sha})" if git_sha else ""
+        typer.echo(f"sova {get_version()}{suffix}")
         raise typer.Exit()
 
 

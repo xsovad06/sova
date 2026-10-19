@@ -53,6 +53,7 @@ async def _doctor(project: Path | None) -> None:
     checks.append(await _check_git_hooks(project_dir))
     checks.extend(_check_sova_config(project_dir))
     checks.extend(_check_install_completeness(project_dir))
+    checks.extend(await _check_database_schema(project_dir))
     checks.extend(await _check_llm_provider(project_dir))
     checks.extend(_check_keyring_secrets(project_dir))
     checks.extend(await _check_ollama(project_dir))
@@ -504,6 +505,42 @@ def _check_install_completeness(project_dir: Path) -> list[_Check]:
         detail = f"missing {', '.join(missing)}, run: sova install --update"
         checks.append(("agent permissions", False, detail, False))
 
+    return checks
+
+
+async def _check_database_schema(project_dir: Path) -> list[_Check]:
+    """Compare the project database's alembic revision with the migration head.
+
+    Warning-level, never required: ``init_db()`` migrates a database that is
+    behind on the next server start, so drift here is worth surfacing but does
+    not stop SOVA from working. A project with no database file yields no row,
+    since the "database" check in ``_check_install_completeness`` already reports
+    that and a schema comparison against nothing would only duplicate it.
+    """
+    _LABEL = "database schema"
+    checks: list[_Check] = []
+    try:
+        from sova.db.session import inspect_schema
+
+        inspection = await inspect_schema(project_dir)
+        if inspection.state == "no_tables":
+            checks.append((_LABEL, False, "database has no tables, run: sova init-db", False))
+        elif inspection.state == "ready":
+            problems: list[str] = []
+            if inspection.legacy:
+                problems.append("unversioned (no alembic_version table)")
+            elif inspection.head is None:
+                problems.append(f"at {inspection.current}, migration head unknown")
+            elif not inspection.at_head:
+                problems.append(f"at {inspection.current}, head is {inspection.head}")
+            if inspection.missing:
+                problems.append(f"{len(inspection.missing)} ORM column(s) missing: {', '.join(inspection.missing[:3])}")
+            if problems:
+                checks.append((_LABEL, False, f"{'; '.join(problems)}, run: sova init-db", False))
+            else:
+                checks.append((_LABEL, True, f"at head ({inspection.head})", False))
+    except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
+        checks.append((_LABEL, False, f"could not inspect: {str(exc)[:60]}", False))
     return checks
 
 

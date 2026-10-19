@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from sova.adapters.jira import JiraAdapter, _build_adf_doc
+from sova.commands.catalog import get_skills_dir
 from sova.commands.distribution import _collect_skills
 from sova.commands.templates import build_variables, render_command
 from sova.config.models import ProjectConfig
@@ -27,7 +28,7 @@ from sova.roles.triage import _LLM_LEAK_PATTERNS, compute_quality_score
 from sova.supervisor.dependency_graph import parse_dependencies
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_SKILLS_DIR = _REPO_ROOT / "skills"
+_SKILLS_DIR = get_skills_dir()
 _DISTRIBUTABLE = _SKILLS_DIR / "issue-template" / "SKILL.md"
 _SOVA_LOCAL = _REPO_ROOT / ".claude" / "skills" / "issue-template" / "SKILL.md"
 

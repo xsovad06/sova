@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 
 from sova.utils.logging import get_logger
@@ -53,19 +54,38 @@ def discover(commands_dir: Path) -> list[CommandEntry]:
     return entries
 
 
+def _packaged_data_dir(name: str) -> Path:
+    """Resolve a canonical resource directory packaged under ``sova/commands/data/``.
+
+    Uses ``importlib.resources`` rather than a repo-root-relative ``Path(__file__)``
+    walk so this resolves correctly both in an editable checkout and in a wheel
+    install, where ``commands/``, ``guidelines/``, ``skills/`` and ``personas/``
+    ship inside the installed package (under ``sova/commands/data/``) rather
+    than next to it. ``files()`` returns
+    a real ``pathlib.Path`` for both cases since neither pip nor setuptools
+    produces a zipped install for this project.
+    """
+    return files("sova.commands") / "data" / name
+
+
 def get_canonical_dir() -> Path:
-    """Return the path to the canonical commands directory in the SOVA repo."""
-    return Path(__file__).resolve().parent.parent.parent / "commands"
+    """Return the path to the canonical commands directory packaged with SOVA."""
+    return _packaged_data_dir("commands")
 
 
 def get_guidelines_dir() -> Path:
-    """Return the path to the guidelines directory in the SOVA repo."""
-    return Path(__file__).resolve().parent.parent.parent / "guidelines"
+    """Return the path to the guidelines directory packaged with SOVA."""
+    return _packaged_data_dir("guidelines")
 
 
 def get_skills_dir() -> Path:
-    """Return the path to the distributable skills directory in the SOVA repo."""
-    return Path(__file__).resolve().parent.parent.parent / "skills"
+    """Return the path to the distributable skills directory packaged with SOVA."""
+    return _packaged_data_dir("skills")
+
+
+def get_personas_dir() -> Path:
+    """Return the path to the personas directory packaged with SOVA."""
+    return _packaged_data_dir("personas")
 
 
 def classify(commands: list[CommandEntry]) -> dict[str, list[CommandEntry]]:

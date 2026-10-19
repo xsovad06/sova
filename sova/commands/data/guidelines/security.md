@@ -23,10 +23,18 @@ All subprocess calls should use `asyncio.create_subprocess_exec(*args)` or equiv
 Before committing, check staged files against a blocklist of paths that should never be committed:
 
 ```python
-_SUSPICIOUS_PATHS = frozenset({
-    ".venv", ".env", ".env.local", "credentials.json",
-    ".secrets", "node_modules", ".DS_Store", "__pycache__",
-})
+_SUSPICIOUS_PATHS = frozenset(
+    {
+        ".venv",
+        ".env",
+        ".env.local",
+        "credentials.json",
+        ".secrets",
+        "node_modules",
+        ".DS_Store",
+        "__pycache__",
+    }
+)
 ```
 
 Use `Path(f).parts` for component matching so nested paths (e.g., `src/.env`) are caught. Unstage bad files with `git reset HEAD` before the commit proceeds.

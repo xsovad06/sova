@@ -23,6 +23,7 @@ Same applies to `ProcessLookupError` (child of `OSError`).
 
 ```python
 from your_project.utils.logging import get_logger
+
 log = get_logger(component="module.name")
 ```
 

@@ -14,8 +14,9 @@ import os
 import sqlite3
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Literal
 
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -248,6 +249,68 @@ def _find_missing_columns(sync_conn) -> list[str]:
         live_columns = {c["name"] for c in inspector.get_columns(table_name)}
         missing.extend(f"{table_name}.{c.name}" for c in table.columns if c.name not in live_columns)
     return sorted(missing)
+
+
+@dataclass(frozen=True)
+class SchemaInspection:
+    """Read-only snapshot of one project database's migration state.
+
+    ``state`` separates "nothing to inspect" from "inspected": ``no_file`` is a
+    project whose database file does not exist yet, ``no_tables`` is a file with
+    no tables in it. Only ``ready`` carries meaningful ``current``/``head``/
+    ``missing`` values, so a caller never reads the defaults of the other two as
+    "at head with no drift".
+    """
+
+    state: Literal["no_file", "no_tables", "ready"]
+    legacy: bool = False
+    current: str | None = None
+    head: str | None = None
+    missing: tuple[str, ...] = ()
+
+    @property
+    def at_head(self) -> bool:
+        return self.current is not None and self.head is not None and self.current == self.head
+
+
+async def inspect_schema(project_dir: Path) -> SchemaInspection:
+    """Report where a project's database sits relative to the migration head.
+
+    Strictly read-only: it never creates the project's ``.claude/`` directory,
+    runs a migration, or stamps a revision, so ``sova db status`` and ``sova
+    doctor`` can both call it against any path. A database that cannot be read
+    raises; each caller decides whether that is fatal for itself.
+    """
+    from alembic.config import Config
+
+    url = _get_database_url(project_dir, create_dirs=False)
+    db_path = _get_db_path_from_url(url)
+    if db_path is not None and not db_path.exists():
+        return SchemaInspection(state="no_file")
+
+    connect_args = {"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {}
+    engine = create_async_engine(url, connect_args=connect_args)
+    try:
+        async with engine.connect() as conn:
+            table_names = await conn.run_sync(lambda c: inspect(c).get_table_names())
+        if not table_names:
+            return SchemaInspection(state="no_tables")
+
+        legacy = "alembic_version" not in table_names
+        current: str | None = None
+        if not legacy:
+            async with engine.connect() as conn:
+                row = (await conn.execute(text("SELECT version_num FROM alembic_version"))).fetchone()
+            current = row[0] if row else None
+
+        head = _get_alembic_head(Config(str(Path(__file__).parent / "alembic.ini")))
+
+        async with engine.connect() as conn:
+            missing = await conn.run_sync(_find_missing_columns)
+    finally:
+        await engine.dispose()
+
+    return SchemaInspection(state="ready", legacy=legacy, current=current, head=head, missing=tuple(missing))
 
 
 async def _run_migrations(engine) -> bool:

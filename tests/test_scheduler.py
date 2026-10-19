@@ -5,13 +5,21 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, WatchConfig
+
+if TYPE_CHECKING:
+    from click.testing import Result
+
+    from sova.scheduler.server import SOVAServer
 
 # Every test in this module runs against the shared per-worker in-memory DB
 # (see ``tests/conftest.py:reset_db_rows``).
@@ -49,6 +57,63 @@ def _mock_adapter(
         state=default_state,
     )
     return adapter
+
+
+def _server_with_watch_health(**health: object) -> SOVAServer:
+    """A SOVAServer whose watch loop reports the given ``health()`` payload."""
+    from sova.scheduler.server import SOVAServer
+
+    server = SOVAServer(config=_make_config(watch=WatchConfig(interval_idle=60)))
+    server._watch_loop = MagicMock()
+    server._watch_loop.health.return_value = health
+    return server
+
+
+def _scan_age_iso(seconds_ago: float) -> str:
+    """An ISO-8601 UTC timestamp ``seconds_ago`` seconds in the past."""
+    return (datetime.now(UTC) - timedelta(seconds=seconds_ago)).isoformat()
+
+
+def _invoke_install_service(
+    service_type: str,
+    *,
+    home_dir: Path,
+    project_dir: Path,
+    sova_bin: str = "/usr/bin/sova",
+    private_tmp_roots: tuple[Path, ...] = (),
+) -> Result:
+    """Run ``install-service`` with ``$HOME`` and the resolved sova binary stubbed out.
+
+    ``private_tmp_roots`` defaults to empty (the PrivateTmp=true /tmp guard never
+    fires): pytest's own ``tmp_path`` fixture lives under the host's real /tmp on
+    Linux, which would otherwise make every systemd test here collide with that
+    guard. Only the tests exercising the guard itself pass the real roots.
+    """
+    from typer.testing import CliRunner
+
+    from sova.cli.commands.server import app
+
+    with (
+        patch("pathlib.Path.home", return_value=home_dir),
+        patch("shutil.which", return_value=sova_bin),
+        # _DEFAULT_PID_DIR is a module-level constant bound at import time from the
+        # real Path.home(), so the patch above alone does not redirect it: the
+        # newsyslog config generator falls back to it whenever project_dir has no
+        # .claude/, and without this it would create a directory under the real
+        # developer/CI home instead of the test's sandbox.
+        patch("sova.scheduler.server._DEFAULT_PID_DIR", home_dir / ".config" / "sova"),
+        patch("sova.cli.commands.server._PRIVATE_TMP_ROOTS", private_tmp_roots),
+    ):
+        return CliRunner().invoke(app, ["install-service", "--type", service_type, "--project", str(project_dir)])
+
+
+def _cli_output(result: Result) -> str:
+    """Combined stdout and stderr of a CliRunner result.
+
+    Rich writes errors to either stream depending on the runner's configuration,
+    so every assertion on an install-service message has to look at both.
+    """
+    return result.stdout + (result.stderr or "")
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +278,7 @@ class TestWatchLoop:
         assert health["scans_total"] == 0
         assert health["errors_total"] == 0
         assert health["last_scan_at"] is None
+        assert health["processing"] is False
 
     async def test_health_tracks_scan_count(self) -> None:
         from sova.scheduler.watch import WatchLoop
@@ -242,6 +308,31 @@ class TestWatchLoop:
 
         health = loop.health()
         assert health["errors_total"] == 1
+
+    async def test_health_reports_processing_during_a_cycle(self) -> None:
+        """health()["processing"] is True while run() is inside process_task()."""
+        from sova.scheduler.watch import WatchLoop
+
+        tasks = [_make_task("1", state=TaskState.TRIAGED)]
+        adapter = _mock_adapter(tasks=tasks)
+        config = _make_config(watch=WatchConfig(veto_seconds=1))
+        loop = WatchLoop(config=config, adapter=adapter)
+
+        seen: list[bool] = []
+
+        async def _observe(task: object) -> bool:
+            seen.append(loop.health()["processing"])
+            loop.stop()
+            return True
+
+        with (
+            patch.object(loop, "check_veto", AsyncMock(return_value=True)),
+            patch.object(loop, "process_task", side_effect=_observe),
+        ):
+            await loop.run()
+
+        assert seen == [True]
+        assert loop.health()["processing"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1235,6 +1326,76 @@ class TestSOVAServerEdgeCases:
             assert "uptime_s" in data
             assert "scheduler_running" in data
             assert "agents_active" in data
+            assert "version" in data
+            assert "git_sha" in data
+
+    def test_health_status_ok_when_scheduler_never_started(self) -> None:
+        """No watch loop at all (never started, or disabled) is "ok", not "degraded"."""
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config())
+        assert server._compute_health_status() == "ok"
+
+    def test_health_status_ok_when_no_scan_yet(self) -> None:
+        """A freshly started loop with no completed scan is "ok", not "degraded"."""
+        server = _server_with_watch_health(last_scan_at=None)
+        assert server._compute_health_status() == "ok"
+
+    def test_health_status_degraded_when_never_scanned_past_threshold(self) -> None:
+        """scan() failing on every attempt since startup (e.g. a persistent
+        AdapterError) never sets last_scan_at; "ok" must not hold forever."""
+        server = _server_with_watch_health(last_scan_at=None)
+        server._start_time = time.monotonic() - 6000
+        assert server._compute_health_status() == "degraded"
+
+    def test_health_status_ok_when_scan_is_fresh(self) -> None:
+        server = _server_with_watch_health(last_scan_at=_scan_age_iso(0))
+        assert server._compute_health_status() == "ok"
+
+    def test_health_status_degraded_when_scan_is_stale(self) -> None:
+        server = _server_with_watch_health(last_scan_at=_scan_age_iso(600))
+        assert server._compute_health_status() == "degraded"
+
+    def test_health_status_ok_while_processing_a_task(self) -> None:
+        """A loop mid-pipeline is busy, not wedged: process_task() runs inline for hours."""
+        server = _server_with_watch_health(last_scan_at=_scan_age_iso(6000), processing=True)
+        assert server._compute_health_status() == "ok"
+
+    def test_health_status_ok_when_last_scan_at_is_not_a_timestamp(self) -> None:
+        """An unparseable or non-string last_scan_at must not escape as a 500."""
+        for bad in ("not-a-timestamp", 1234567890):
+            server = _server_with_watch_health(last_scan_at=bad)
+            assert server._compute_health_status() == "ok"
+
+    def test_run_disables_uvicorn_access_log(self, tmp_path: Path) -> None:
+        """An access-log line per dashboard poll is exactly the unbounded growth this fixes."""
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config(), project_dir=tmp_path)
+
+        with (
+            patch.object(SOVAServer, "create_app", return_value=MagicMock()),
+            patch("uvicorn.run") as mock_run,
+        ):
+            server.run()
+
+        assert mock_run.call_args.kwargs["access_log"] is False
+
+    def test_run_warms_git_sha_before_serving(self, tmp_path: Path) -> None:
+        """/api/health reads get_git_sha() from an async handler; its subprocess must not run there."""
+        from sova.scheduler.server import SOVAServer
+        from sova.utils.version import get_git_sha
+
+        get_git_sha.cache_clear()
+        server = SOVAServer(config=_make_config(), project_dir=tmp_path)
+
+        with (
+            patch.object(SOVAServer, "create_app", return_value=MagicMock()),
+            patch("uvicorn.run"),
+        ):
+            server.run()
+
+        assert get_git_sha.cache_info().currsize == 1
 
     async def test_scheduler_status_reports_config(self) -> None:
         import httpx
@@ -1661,28 +1822,19 @@ class TestServerCLICommands:
 
     def test_install_service_systemd(self, tmp_path: Path) -> None:
         """install-service --type systemd renders and installs the service unit."""
-        from typer.testing import CliRunner
-
-        from sova.cli.commands.server import app
-
-        runner = CliRunner()
         target_dir = tmp_path / ".config" / "systemd" / "user"
 
-        with (
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch("shutil.which", return_value="/usr/bin/sova"),
-        ):
-            result = runner.invoke(app, ["install-service", "--type", "systemd", "--project", str(tmp_path)])
+        result = _invoke_install_service("systemd", home_dir=tmp_path, project_dir=tmp_path)
 
-            assert result.exit_code == 0
-            service_file = target_dir / "sova-server.service"
-            assert service_file.exists()
+        assert result.exit_code == 0
+        service_file = target_dir / "sova-server.service"
+        assert service_file.exists()
 
-            content = service_file.read_text()
-            assert "ExecStart=/usr/bin/sova server start" in content
-            assert f"SOVA_PROJECT_DIR={tmp_path}" in content
-            assert "StandardOutput=journal" in content
-            assert "Environment=HOME=%h" in content
+        content = service_file.read_text()
+        assert "ExecStart=/usr/bin/sova server start" in content
+        assert f"SOVA_PROJECT_DIR={tmp_path}" in content
+        assert "StandardOutput=journal" in content
+        assert "Environment=HOME=%h" in content
 
     def test_install_service_launchd(self, tmp_path: Path) -> None:
         """install-service --type launchd renders and installs the plist."""
@@ -1710,6 +1862,174 @@ class TestServerCLICommands:
             assert f"{tmp_path}/Library/Logs/sova/sova-server.err" in content
             assert "<key>SOVA_PROJECT_DIR</key>" in content
 
+    def test_install_service_systemd_readwrite_paths_cover_project_outside_home(self, tmp_path: Path) -> None:
+        """ReadWritePaths must cover the whole project dir (git writes outside .claude/) plus %h/.claude."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        project_dir = tmp_path / "elsewhere" / "myproject"
+        project_dir.mkdir(parents=True)
+
+        result = _invoke_install_service("systemd", home_dir=home_dir, project_dir=project_dir)
+
+        assert result.exit_code == 0
+        content = (home_dir / ".config" / "systemd" / "user" / "sova-server.service").read_text()
+        assert f"ReadWritePaths=%h/.config/sova %h/.claude {project_dir}" in content
+        assert "PrivateTmp=true" in content
+        assert "User=%i" not in content
+
+    def test_install_service_fails_when_project_dir_missing(self, tmp_path: Path) -> None:
+        """A nonexistent project directory fails loudly instead of rendering a dead ReadWritePaths entry."""
+        missing_project = tmp_path / "does-not-exist"
+
+        result = _invoke_install_service("systemd", home_dir=tmp_path, project_dir=missing_project)
+
+        assert result.exit_code == 1
+        assert "does not exist" in _cli_output(result).lower()
+        assert not (tmp_path / ".config" / "systemd" / "user" / "sova-server.service").exists()
+
+    def test_install_service_systemd_refuses_a_project_path_with_whitespace(self, tmp_path: Path) -> None:
+        """systemd splits Environment=/ExecStart=/ReadWritePaths= on whitespace."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        project_dir = tmp_path / "My Projects" / "app"
+        project_dir.mkdir(parents=True)
+
+        result = _invoke_install_service("systemd", home_dir=home_dir, project_dir=project_dir)
+
+        assert result.exit_code == 1
+        assert "whitespace" in _cli_output(result).lower()
+        assert not (home_dir / ".config" / "systemd" / "user" / "sova-server.service").exists()
+
+    def test_install_service_launchd_accepts_a_project_path_with_whitespace(self, tmp_path: Path) -> None:
+        """The plist puts every path in its own XML <string>, so it has no such limit."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        project_dir = tmp_path / "My Projects" / "app"
+        project_dir.mkdir(parents=True)
+
+        result = _invoke_install_service("launchd", home_dir=home_dir, project_dir=project_dir)
+
+        assert result.exit_code == 0
+        content = (home_dir / "Library" / "LaunchAgents" / "com.sova.server.plist").read_text()
+        assert f"<string>{project_dir}</string>" in content
+
+    def test_install_service_launchd_generates_newsyslog_conf(self, tmp_path: Path) -> None:
+        """launchd install also generates a real newsyslog.d config and prints a copy command."""
+        (tmp_path / ".claude").mkdir()
+
+        result = _invoke_install_service("launchd", home_dir=tmp_path, project_dir=tmp_path)
+
+        assert result.exit_code == 0
+        newsyslog_file = tmp_path / ".config" / "sova" / "sova-server.newsyslog.conf"
+        assert newsyslog_file.exists()
+        content = newsyslog_file.read_text()
+        assert f"{tmp_path}/Library/Logs/sova/sova-server.log" in content
+        assert f"{tmp_path}/Library/Logs/sova/sova-server.err" in content
+        # [pid_file] [sig_num] makes newsyslog signal the server after rotation
+        # instead of doing nothing, so launchd's KeepAlive can restart it and
+        # reopen the log paths (newsyslog.conf(5)).
+        pid_path = tmp_path / ".claude" / "sova-server.pid"
+        log_lines = [line for line in content.splitlines() if line.startswith(f"{tmp_path}/Library")]
+        assert len(log_lines) == 2
+        for line in log_lines:
+            fields = line.split()
+            assert fields[-3] == "J"
+            assert fields[-2] == str(pid_path)
+            assert fields[-1] == str(signal.SIGUSR2.value)
+
+        output = _cli_output(result)
+        assert "sudo cp" in output
+        assert "/etc/newsyslog.d/sova-server.conf" in output
+
+    def test_install_service_systemd_refuses_a_sova_binary_path_with_whitespace(self, tmp_path: Path) -> None:
+        """ExecStart=/ExecStop= interpolate the binary path and split on whitespace too."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        result = _invoke_install_service(
+            "systemd", home_dir=home_dir, project_dir=project_dir, sova_bin="/opt/My Tools/bin/sova"
+        )
+
+        assert result.exit_code == 1
+        assert "sova binary path contains whitespace" in _cli_output(result).lower()
+        assert not (home_dir / ".config" / "systemd" / "user" / "sova-server.service").exists()
+
+    def test_install_service_systemd_refuses_a_project_path_under_tmp(self, tmp_path: Path) -> None:
+        """PrivateTmp=true gives the unit its own /tmp, so a project living there is unreachable.
+
+        Uses a simulated tmp root (patched via private_tmp_roots) rather than the
+        real /tmp: pytest's own tmp_path fixture lives under the host's real /tmp
+        on Linux, which would make this indistinguishable from an unrelated path.
+        """
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        simulated_tmp = tmp_path / "simulated-tmp"
+        project_dir = simulated_tmp / "project"
+        project_dir.mkdir(parents=True)
+
+        result = _invoke_install_service(
+            "systemd", home_dir=home_dir, project_dir=project_dir, private_tmp_roots=(simulated_tmp.resolve(),)
+        )
+
+        output = _cli_output(result).lower()
+        assert result.exit_code == 1
+        assert "project path is under /tmp" in output
+        assert "privatetmp" in output
+        assert not (home_dir / ".config" / "systemd" / "user" / "sova-server.service").exists()
+
+    def test_install_service_systemd_refuses_a_sova_binary_path_under_tmp(self, tmp_path: Path) -> None:
+        """Same PrivateTmp=true isolation applies to the sova binary, not just the project path."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        simulated_tmp = tmp_path / "simulated-tmp"
+        simulated_tmp.mkdir()
+
+        result = _invoke_install_service(
+            "systemd",
+            home_dir=home_dir,
+            project_dir=project_dir,
+            sova_bin=str(simulated_tmp / "sova-bin" / "sova"),
+            private_tmp_roots=(simulated_tmp.resolve(),),
+        )
+
+        output = _cli_output(result).lower()
+        assert result.exit_code == 1
+        assert "sova binary path is under /tmp" in output
+        assert not (home_dir / ".config" / "systemd" / "user" / "sova-server.service").exists()
+
+    def test_install_service_launchd_accepts_a_project_path_under_tmp(self, tmp_path: Path) -> None:
+        """The launchd plist has no PrivateTmp=true, so /tmp is unaffected there."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        simulated_tmp = tmp_path / "simulated-tmp"
+        project_dir = simulated_tmp / "project"
+        project_dir.mkdir(parents=True)
+
+        result = _invoke_install_service(
+            "launchd", home_dir=home_dir, project_dir=project_dir, private_tmp_roots=(simulated_tmp.resolve(),)
+        )
+
+        assert result.exit_code == 0
+
+    def test_install_service_launchd_skips_newsyslog_for_a_log_path_with_whitespace(self, tmp_path: Path) -> None:
+        """newsyslog.conf has no quoting, so a space can only yield an entry it ignores."""
+        home_dir = tmp_path / "My Home"
+        home_dir.mkdir()
+
+        result = _invoke_install_service("launchd", home_dir=home_dir, project_dir=tmp_path)
+
+        # The service itself still installs; only the optional rotation helper is skipped.
+        assert result.exit_code == 0
+        assert (home_dir / "Library" / "LaunchAgents" / "com.sova.server.plist").is_file()
+        assert not (home_dir / ".config" / "sova" / "sova-server.newsyslog.conf").exists()
+        output = _cli_output(result).lower()
+        assert "whitespace" in output
+        assert "sudo cp" not in output
+
     def test_install_service_refuses_overwrite_without_force(self, tmp_path: Path) -> None:
         """install-service refuses to overwrite existing file without --force."""
         from typer.testing import CliRunner
@@ -1725,6 +2045,7 @@ class TestServerCLICommands:
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
             patch("shutil.which", return_value="/usr/bin/sova"),
+            patch("sova.cli.commands.server._PRIVATE_TMP_ROOTS", ()),
         ):
             result = runner.invoke(app, ["install-service", "--type", "systemd", "--project", str(tmp_path)])
 
@@ -1748,6 +2069,7 @@ class TestServerCLICommands:
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
             patch("shutil.which", return_value="/usr/bin/sova"),
+            patch("sova.cli.commands.server._PRIVATE_TMP_ROOTS", ()),
         ):
             result = runner.invoke(app, ["install-service", "--type", "systemd", "--project", str(tmp_path), "--force"])
 

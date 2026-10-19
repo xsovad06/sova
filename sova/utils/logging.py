@@ -20,6 +20,36 @@ _NAME_TO_LEVEL: dict[str, int] = {
 _log_file_handle: object | None = None
 
 
+def rotation_kwargs(max_bytes: int, backup_count: int) -> dict[str, int]:
+    """Build ``setup_logging()``'s rotation kwargs from configured values.
+
+    ``ServerConfig`` already defaults these to ``10_485_760`` and ``5``, so a
+    non-positive value only ever arrives as an explicit operator setting, and
+    neither one can be honoured: ``RotatingFileHandler(maxBytes=0)`` never
+    rolls over at all, and a negative ``maxBytes`` rolls over on every single
+    record. Both are dropped so ``setup_logging()``'s own matching default
+    applies, which keeps the file bounded (the point of configuring it).
+    Overriding an explicit operator value is logged rather than done in
+    silence, so "I set 0 and it still rotates" is answerable from the log.
+
+    Every process that writes a project's ``.claude/sova.log`` resolves its
+    rotation through this one helper, since the server and each ``sova run``
+    subprocess opens its own handler on that shared file, and two handlers
+    disagreeing about when to roll it is how a configured limit stops
+    meaning anything.
+    """
+    kwargs: dict[str, int] = {}
+    if max_bytes > 0:
+        kwargs["max_bytes"] = max_bytes
+    else:
+        get_logger(component="utils.logging").warning("logging.rotation_max_bytes_ignored", configured=max_bytes)
+    if backup_count > 0:
+        kwargs["backup_count"] = backup_count
+    else:
+        get_logger(component="utils.logging").warning("logging.rotation_backup_count_ignored", configured=backup_count)
+    return kwargs
+
+
 def setup_logging(
     *,
     json_output: bool = False,

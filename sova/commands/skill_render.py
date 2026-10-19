@@ -1,6 +1,6 @@
-"""Render SOVA's canonical commands/*.md into Codex-native SKILL.md packages.
+"""Render SOVA's canonical sova/commands/data/commands/*.md into Codex-native SKILL.md packages.
 
-SOVA's ``commands/`` directory is the single source of truth for its
+SOVA's ``sova/commands/data/commands/`` directory is the single source of truth for its
 distributable workflow commands; Claude Code reaches them as flat
 ``.claude/commands/*.md`` files (see ``sova.commands.self_render``). Codex has
 no slash-command concept (``CodexAdapter.commands_dir()`` returns ``None``),
@@ -26,7 +26,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Union
 
-from sova.commands.catalog import CommandEntry, discover, get_canonical_dir, parse_frontmatter
+from sova.commands.catalog import CommandEntry, discover, get_canonical_dir, get_skills_dir, parse_frontmatter
 from sova.commands.distribution import InstallResult, install_skills
 from sova.commands.manifest import Manifest, file_hash, read_manifest
 from sova.commands.self_render import repo_root, self_config
@@ -301,27 +301,29 @@ def _apply_substitutions(
     return "\n".join(lines)
 
 
-def _assert_fully_rendered(command_name: str, text: str, *, label: str = "body") -> None:
+def _assert_fully_rendered(source: str, text: str, *, label: str = "body") -> None:
     """Fail loudly on any idiom the substitution lists above didn't cover, rather than shipping it verbatim.
 
     Applied to both the rendered body and the rendered frontmatter
     description (``label`` only changes the error message), since the
     description is what Codex actually reads to decide whether to activate
     the skill: an idiom that leaks there is just as much a shipped defect.
+
+    ``source`` is the path of the file an author has to edit to fix the
+    failure, passed in by the caller rather than rebuilt from a name here:
+    the two call paths read from different trees (canonical commands and
+    standalone skills), so composing one hardcoded prefix with a name
+    produced a path that did not exist for either of them.
     """
     if "$ARGUMENTS" in text:
-        raise SkillRenderError(f"commands/{command_name}.md: unrendered $ARGUMENTS reached the Codex skill {label}")
+        raise SkillRenderError(f"{source}: unrendered $ARGUMENTS reached the Codex skill {label}")
     deferred = _known_deferred_placeholders()
     leftover = sorted({name for name in _PLACEHOLDER_RE.findall(text) if name not in deferred})
     if leftover:
-        raise SkillRenderError(
-            f"commands/{command_name}.md: unrendered placeholder(s) {leftover} reached the Codex skill {label}"
-        )
+        raise SkillRenderError(f"{source}: unrendered placeholder(s) {leftover} reached the Codex skill {label}")
     tool_tokens = sorted(set(_CLAUDE_ONLY_TOOL_TOKEN_RE.findall(text)))
     if tool_tokens:
-        raise SkillRenderError(
-            f"commands/{command_name}.md: Claude-only tool token(s) {tool_tokens} reached the Codex skill {label}"
-        )
+        raise SkillRenderError(f"{source}: Claude-only tool token(s) {tool_tokens} reached the Codex skill {label}")
     # Cross-references are rewritten in prose only: a `/foo` inside a fence is a
     # shell command or path and is left verbatim by design, so checking the whole
     # body here would fire on text the renderer deliberately did not touch.
@@ -331,14 +333,11 @@ def _assert_fully_rendered(command_name: str, text: str, *, label: str = "body")
         prose_outside_code_spans
     )
     if residual:
-        raise SkillRenderError(
-            f"commands/{command_name}.md: unrendered command reference(s) {residual} reached the Codex skill {label}"
-        )
+        raise SkillRenderError(f"{source}: unrendered command reference(s) {residual} reached the Codex skill {label}")
     residual_workflow = _RESIDUAL_WORKFLOW_REFERENCE_RE.findall(prose)
     if residual_workflow:
         raise SkillRenderError(
-            f"commands/{command_name}.md: unrendered workflow reference(s) {residual_workflow} reached the "
-            f"Codex skill {label}"
+            f"{source}: unrendered workflow reference(s) {residual_workflow} reached the Codex skill {label}"
         )
 
 
@@ -402,7 +401,7 @@ def render_codex_skill(entry: CommandEntry, skill_names: list[str]) -> str:
     cross_references = _cross_reference_substitutions(skill_names)
     prose_substitutions = _CODEX_SUBSTITUTIONS + cross_references + _workflow_reference_substitutions(skill_names)
     body = dedash_prose(_apply_substitutions(body, prose_substitutions, _CODEX_FENCE_SUBSTITUTIONS)).strip("\n")
-    _assert_fully_rendered(entry.name, body, label="body")
+    _assert_fully_rendered(str(entry.path), body, label="body")
 
     # The description gets the same substitution pass as the body (not just
     # cross-references): several canonical descriptions name another command
@@ -413,7 +412,7 @@ def render_codex_skill(entry: CommandEntry, skill_names: list[str]) -> str:
     # whether to activate the skill at all, so a leaked idiom there is just
     # as much a shipped defect.
     description = dedash_prose(_apply_substitutions(entry.description, prose_substitutions, []))
-    _assert_fully_rendered(entry.name, description, label="description")
+    _assert_fully_rendered(str(entry.path), description, label="description")
 
     frontmatter = "\n".join(
         [
@@ -574,12 +573,12 @@ def materialize_combined_skill_sources(
     combined scratch tree with no ``name_prefix`` of its own. A standalone
     skill under ``standalone_skills_dir`` is always written out bare, with
     its frontmatter ``name:`` left untouched, regardless of ``name_prefix``:
-    distributed project skills (``skills/issue-template``, ``skills/
-    design-taste``, etc.) are a different artifact class from a
+    distributed project skills (``sova/commands/data/skills/issue-template``,
+    ``sova/commands/data/skills/design-taste``, etc.) are a different artifact class from a
     command-derived one and keep their own namespace, so the two rendering
     pipelines never write to the same path (issue #1136). A standalone
     directory whose name already starts with ``name_prefix`` (e.g. a
-    hypothetical ``skills/sova-foo/``) is rejected outright, before the
+    hypothetical ``sova/commands/data/skills/sova-foo/``) is rejected outright, before the
     ordinary collision check below even runs: that reserved namespace is for
     command-derived output only, never a standalone skill borrowing it.
     ``existing_target_dir`` below is checked unconditionally (not gated on
@@ -615,7 +614,7 @@ def materialize_combined_skill_sources(
     (absent from that directory's manifest, or present but marked
     unmanaged) is skipped entirely rather than installed over it: this
     repo's own ``.agents/skills/testing-patterns/`` is the SOVA-specific,
-    hand-maintained version of what ``skills/testing-patterns/SKILL.md``
+    hand-maintained version of what ``sova/commands/data/skills/testing-patterns/SKILL.md``
     renders generically, and installing both left two skills declaring
     overlapping "writing or modifying test files" auto-activation triggers
     in the same discovery directory, with the thinner generic one just as
@@ -674,12 +673,12 @@ def materialize_combined_skill_sources(
                 rendered_body = dedash_prose(
                     _apply_substitutions(body, prose_substitutions, _CODEX_FENCE_SUBSTITUTIONS)
                 ).rstrip("\n")
-                _assert_fully_rendered(f"skills/{skill_dir.name}", rendered_body, label="body")
+                _assert_fully_rendered(str(skill_file), rendered_body, label="body")
                 frontmatter_raw = content[: len(content) - len(body)]
                 description = fields.get("description")
                 if isinstance(description, str):
                     rendered_description = dedash_prose(_apply_substitutions(description, prose_substitutions, []))
-                    _assert_fully_rendered(f"skills/{skill_dir.name}", rendered_description, label="description")
+                    _assert_fully_rendered(str(skill_file), rendered_description, label="description")
                     frontmatter_raw = _rewrite_frontmatter_description(frontmatter_raw, rendered_description)
                 content = f"{frontmatter_raw}{rendered_body}\n"
             content = _strip_claude_only_frontmatter_keys(content)
@@ -749,9 +748,11 @@ def render_self_skills(root: Path | None = None, target_dir: Path | None = None)
     """
     from sova.agents.codex import CodexAdapter
 
+    # An explicit root is a synthetic repo layout (tests), not SOVA's own
+    # packaged canonical commands/skills.
     base = root if root is not None else repo_root()
-    commands_dir = base / "commands"
-    standalone_dir = base / "skills"
+    commands_dir = root / "commands" if root is not None else get_canonical_dir()
+    standalone_dir = root / "skills" if root is not None else get_skills_dir()
     adapter = CodexAdapter()
     # The real, checked-in skills directory, used only to detect a standalone
     # skill colliding with pre-existing hand-authored content there (see

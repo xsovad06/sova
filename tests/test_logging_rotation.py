@@ -147,3 +147,75 @@ class TestLogRotation:
         # Default values from ServerConfig
         assert handler.maxBytes == 10_485_760  # 10 MB
         assert handler.backupCount == 5
+
+
+class TestRotationKwargs:
+    """rotation_kwargs() is the one place a configured rotation limit is translated."""
+
+    def test_forwards_configured_values(self) -> None:
+        from sova.utils.logging import rotation_kwargs
+
+        assert rotation_kwargs(1024, 2) == {"max_bytes": 1024, "backup_count": 2}
+
+    def test_omits_zero_so_setup_logging_defaults_apply(self) -> None:
+        """maxBytes=0 never rolls over, so 0 must mean "use the default", not "never rotate"."""
+        from sova.utils.logging import rotation_kwargs
+
+        assert rotation_kwargs(0, 0) == {}
+        assert rotation_kwargs(1024, 0) == {"max_bytes": 1024}
+        assert rotation_kwargs(0, 2) == {"backup_count": 2}
+
+    def test_omits_negative_values(self) -> None:
+        """maxBytes=-1 would roll over on every record, so a negative is dropped too."""
+        from sova.utils.logging import rotation_kwargs
+
+        assert rotation_kwargs(-1, -1) == {}
+        assert rotation_kwargs(-1, 2) == {"backup_count": 2}
+        assert rotation_kwargs(1024, -1) == {"max_bytes": 1024}
+
+    def test_server_config_defaults_forward_documented_values(self) -> None:
+        """The values every writer gets when a project never configures rotation."""
+        from sova.config.models import ProjectConfig
+        from sova.utils.logging import rotation_kwargs
+
+        cfg = ProjectConfig()
+        assert rotation_kwargs(cfg.server.log_max_bytes, cfg.server.log_backup_count) == {
+            "max_bytes": 10_485_760,
+            "backup_count": 5,
+        }
+
+
+class TestConfiguredRotationReachesEveryWriter:
+    """`sova run` shares .claude/sova.log with the server, so it honours the same config.
+
+    Both call ``rotation_kwargs()`` with the same two ``server.*`` values
+    (``TestRotationKwargs`` above covers the translation itself); this asserts
+    the `sova run` side actually reaches ``setup_logging()`` with them.
+    """
+
+    async def test_run_workflow_passes_configured_rotation(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.cli.commands.run import _run_workflow
+        from sova.config.models import ProjectConfig
+        from sova.roles.base import RoleResult
+
+        cfg = ProjectConfig(server={"log_max_bytes": 4096, "log_backup_count": 9})
+        role = MagicMock()
+        role.name = "researcher"
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.db.session.init_db", new=AsyncMock()),
+            patch("sova.utils.logging.setup_logging") as mock_setup,
+            patch(
+                "sova.roles.dispatcher.dispatch",
+                new=AsyncMock(return_value=(role, RoleResult(success=True, summary="done"))),
+            ),
+            patch("sova.cli.commands.run._install_sigterm_handler"),
+        ):
+            await _run_workflow("1", project_dir=tmp_path, role_name="researcher", force=False)
+
+        assert mock_setup.call_args.kwargs["max_bytes"] == 4096
+        assert mock_setup.call_args.kwargs["backup_count"] == 9

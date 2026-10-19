@@ -1,7 +1,7 @@
-"""Render the canonical ``commands/`` templates into this repo's ``.claude/commands/``.
+"""Render the canonical ``sova/commands/data/commands/`` templates into this repo's ``.claude/commands/``.
 
 This repository is both the canonical source of the distributable slash commands
-and a sync target for them. ``commands/*.md`` carry ``{{ var }}`` placeholders
+and a sync target for them. ``sova/commands/data/commands/*.md`` carry ``{{ var }}`` placeholders
 that :func:`~sova.commands.templates.render_command` substitutes at install
 time, while ``.claude/commands/`` holds the rendered copy Claude Code actually
 loads. Claude Code has no templating of its own, so an unrendered
@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from sova.commands.catalog import get_canonical_dir
 from sova.commands.distribution import InstallResult, install_commands
 from sova.config.models import ProjectConfig
 from sova.utils.logging import get_logger
@@ -35,7 +36,7 @@ from sova.utils.logging import get_logger
 log = get_logger(component="commands.self_render")
 
 # Template variable values for this repository. Every ``{{ var }}`` placeholder
-# used anywhere in ``commands/`` must have a value here, or
+# used anywhere in ``sova/commands/data/commands/`` must have a value here, or
 # ``test_every_used_placeholder_is_pinned`` fails rather than letting an
 # unsubstituted placeholder ship to agents. A pinned value no command uses yet is
 # harmless: ``build_variables()`` passes the whole set to ``render_command()``,
@@ -78,8 +79,8 @@ def self_config() -> ProjectConfig:
 def used_placeholders(directory: Path, pattern: str = "*.md") -> set[str]:
     """Return every placeholder name appearing in templates matching *pattern* under *directory*.
 
-    ``pattern`` defaults to the flat ``commands/*.md`` shape; callers scanning
-    the standalone ``skills/*/SKILL.md`` tree pass ``"*/SKILL.md"``.
+    ``pattern`` defaults to the flat ``sova/commands/data/commands/*.md`` shape; callers scanning
+    the standalone ``sova/commands/data/skills/*/SKILL.md`` tree pass ``"*/SKILL.md"``.
     """
     names: set[str] = set()
     for path in sorted(directory.glob(pattern)):
@@ -96,8 +97,10 @@ def render_self(root: Path | None = None, target_dir: Path | None = None) -> Ins
     living alongside them are left on disk and stay absent from the manifest,
     which is what marks them unmanaged and keeps a later sync from touching them.
     """
+    # An explicit root is a synthetic repo layout (tests), not SOVA's own
+    # packaged canonical commands.
     base = root if root is not None else repo_root()
-    canonical = base / CANONICAL_SUBDIR
+    canonical = root / CANONICAL_SUBDIR if root is not None else get_canonical_dir()
     target = target_dir if target_dir is not None else base / RENDERED_SUBDIR
 
     result = install_commands(canonical, target, self_config())
@@ -107,8 +110,7 @@ def render_self(root: Path | None = None, target_dir: Path | None = None) -> Ins
 
 def main() -> None:
     """Entry point for ``make commands-render``."""
-    root = repo_root()
-    result = render_self(root)
+    result = render_self()
     print(f"Rendered {result.installed} commands into {RENDERED_SUBDIR}/")
 
 

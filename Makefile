@@ -79,13 +79,13 @@ css-watch: ## Watch and rebuild Tailwind CSS on template changes
 
 # ── Marketplace ───────────────────────────────────────────────
 
-marketplace: ## Regenerate plugins/sova/ from commands/ (run after editing a published command)
+marketplace: ## Regenerate plugins/sova/ from sova/commands/data/commands/ (run after editing a published command)
 	python3 -m sova.commands.marketplace_export
 
-commands-render: ## Regenerate .claude/commands/ from commands/ (run after editing a managed command)
+commands-render: ## Regenerate .claude/commands/ from sova/commands/data/commands/ (run after editing a managed command)
 	python3 -m sova.commands.self_render
 
-skills-render: ## Regenerate .agents/skills/ from commands/ and skills/ (run after editing a managed command or skill)
+skills-render: ## Regenerate .agents/skills/ from sova/commands/data/commands/ and sova/commands/data/skills/ (run after editing a managed command or skill)
 	python3 -m sova.commands.skill_render
 
 # ── Setup ─────────────────────────────────────────────────────

@@ -14,6 +14,7 @@ import socket
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from fastapi import FastAPI
 
 from sova.config.models import ProjectConfig
 from sova.utils.logging import get_logger
+from sova.utils.version import get_git_sha, get_version
 
 log = get_logger(component="scheduler.server")
 
@@ -36,6 +38,12 @@ _POLL_INTERVAL_SECONDS = 0.3
 
 # Timeout for the port-listening probe used as a fallback liveness signal.
 _PORT_PROBE_TIMEOUT_SECONDS = 1.0
+
+# /api/health reports "degraded" once the watch loop's last completed scan is
+# older than this multiple of the idle poll interval (the longest interval
+# the loop is expected to ever sleep between scans). Three, not one, so a
+# single slow or retried cycle is not reported as a stall.
+_STALE_SCAN_MULTIPLIER = 3
 
 
 async def query_digest_stats(
@@ -297,11 +305,55 @@ class SOVAServer:
         uptime = time.monotonic() - self._start_time
         agents_active = self._count_active_agents()
         return {
-            "status": "ok",
+            "status": self._compute_health_status(),
             "uptime_s": round(uptime, 1),
             "scheduler_running": self._running,
             "agents_active": agents_active,
+            "version": get_version(),
+            "git_sha": get_git_sha(),
         }
+
+    def _compute_health_status(self) -> str:
+        """Report "degraded" once the watch loop's last scan has gone stale.
+
+        A loop that is mid-task reports "ok". ``WatchLoop.run()`` awaits
+        ``process_task()`` inline, and a developer pipeline routinely runs far
+        longer than ``watch.interval_idle``, so a frozen ``last_scan_at``
+        during a run means busy, not wedged.
+
+        A loop that has never completed a scan reports "ok" only within the
+        same staleness window applied below, counted from this process's own
+        start time: a loop that just started, or is disabled/not running in
+        this process, hasn't had a chance to scan yet. Past that window with
+        still no ``last_scan_at``, "ok" would hide a loop whose ``scan()``
+        has been failing (e.g. on a persistent ``AdapterError``) on every
+        attempt since startup and never getting far enough to record one.
+
+        An unusable ``last_scan_at`` reports "ok" too: both ``ValueError``
+        (an unparseable string) and ``TypeError`` (a non-string value, or a
+        naive timestamp reaching the subtraction) are caught, so a health
+        probe never turns into a 500.
+        """
+        if not self._watch_loop:
+            return "ok"
+
+        health = self._watch_loop.health()
+        if health.get("processing"):
+            return "ok"
+
+        staleness_threshold = self._config.watch.interval_idle * _STALE_SCAN_MULTIPLIER
+        last_scan_at = health.get("last_scan_at")
+        if not last_scan_at:
+            uptime = time.monotonic() - self._start_time
+            return "degraded" if uptime > staleness_threshold else "ok"
+
+        try:
+            scanned_at = datetime.fromisoformat(last_scan_at)
+            age_seconds = (datetime.now(UTC) - scanned_at).total_seconds()
+        except (TypeError, ValueError):
+            return "ok"
+
+        return "degraded" if age_seconds > staleness_threshold else "ok"
 
     def _start_scheduler(self) -> None:
         """Start the watch loop as a background asyncio task."""
@@ -360,8 +412,20 @@ class SOVAServer:
         app = self.create_app()
         self._write_pid_file()
 
+        # Populate get_git_sha()'s cache here, in sync context, before the event
+        # loop exists: /api/health reads it from an async handler, and the probe
+        # is a blocking subprocess.run() with a 2s timeout. Warmed once up front
+        # it never runs on the loop; skipped, the first health request (often a
+        # liveness probe) would be the one that pays for it.
+        get_git_sha()
+
         try:
-            uvicorn.run(app, host=self.host, port=self.port, log_level="info")
+            # access_log=False: this process runs indefinitely as a service, and the
+            # dashboard's own JS polling plus /api/scheduler/* and /api/health probes
+            # would otherwise write an access-log line per poll forever, growing
+            # journald/log files unbounded. Application logs (setup_logging's rotating
+            # file handler) are unaffected.
+            uvicorn.run(app, host=self.host, port=self.port, log_level="info", access_log=False)
         finally:
             self._remove_pid_file()
 

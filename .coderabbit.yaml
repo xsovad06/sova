@@ -18,14 +18,14 @@ reviews:
     - "sova/**"
     - "tests/**"
     - "invariants/**"
-    - "commands/**"
+    - "sova/commands/data/commands/**"
     - ".github/**"
     - "!.claude/**"
     - "!docs/**"
     - "!assets/**"
     - "!deploy/**"
     - "!templates/**"
-    - "!personas/**"
+    - "!sova/commands/data/personas/**"
     - "!knowledge/**"
 
   path_instructions:

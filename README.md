@@ -29,7 +29,7 @@ SOVA is a standalone application that turns GitHub Issues into merged pull reque
 - **Handoff System**: per-issue handoff files eliminate race conditions in parallel agent runs; dashboard renders action buttons for human decisions
 - **27 Standardized Commands**: develop, test, review, PR, ship, debug, and more. Works on any project
 - **4-Tier Knowledge System**: layered memory with cross-project learning ([details](knowledge/KNOWLEDGE.md))
-- **Persona Auto-Detection**: detects your tech stack and loads relevant guidance (see [`personas/`](personas/))
+- **Persona Auto-Detection**: detects your tech stack and loads relevant guidance (see [`sova/commands/data/personas/`](sova/commands/data/personas/))
 - **Pluggable Task Sources**: GitHub Issues and Jira Cloud supported, Linear planned
 
 ## Architecture Overview
@@ -329,11 +329,26 @@ launchctl start com.sova.server
 launchctl list | grep sova
 ```
 
+The systemd unit is a user unit (`systemctl --user`) and lists the resolved project
+directory in `ReadWritePaths`, since agents write `{project}/.git` as well as
+`{project}/.claude`. A project path containing whitespace is refused: systemd splits
+those directives on whitespace, so adapt `deploy/sova-server.service` by hand instead.
+
+On macOS, `install-service --type launchd` also writes
+`~/.config/sova/sova-server.newsyslog.conf` and prints a `sudo cp` command for it:
+launchd never rotates its own `StandardOutPath`/`StandardErrorPath`, and newsyslog is
+what does. It holds those descriptors open for the life of the process, so each entry
+sends SIGUSR2 to the server's PID after rotation and launchd's `KeepAlive` restarts it,
+reopening both paths fresh (`launchctl kickstart -k "gui/$(id -u)/com.sova.server"`
+remains the manual fallback). SOVA's own `.claude/sova.log` is rotated in-process and
+needs none of this.
+
 **Health monitoring**: The server exposes health and digest endpoints for external monitoring:
+- `GET /api/health`: `status` (`ok` or `degraded`), uptime, scheduler state, active agent count, package version and git SHA. `degraded` means the watch loop's last completed scan is older than three times `watch.interval_idle` while no task is in flight.
 - `GET /api/scheduler/health`: uptime, scan count, error count, agent slots, DB status
 - `GET /api/scheduler/digest?hours=24`: tasks completed/failed, cost summary
 
-**Log rotation**: When `log_file` is configured, logs rotate automatically (10 MB max, 5 backups by default). Configure via:
+**Log rotation**: The server and every `sova run` write `.claude/sova.log`, each through its own rotating handler built from the same two settings (10 MB max, 5 backups by default), so they agree on when to roll it. The server reads them at startup, so a change takes effect on the next restart. Configure via:
 
 ```toml
 [server]

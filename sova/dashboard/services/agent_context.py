@@ -9,6 +9,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from sova.commands.catalog import get_canonical_dir
 from sova.git.worktree import ensure_worktree_usable, find_worktree_by_branch
 from sova.utils.logging import get_logger
 from sova.utils.shell import run as run_shell
@@ -16,6 +17,10 @@ from sova.utils.shell import run as run_shell
 log = get_logger(component="dashboard.control.context")
 
 _CLAUDE_DIR = ".claude"
+
+# Repo root of this SOVA checkout (sova/dashboard/services/ -> three levels up).
+# Only meaningful for an editable install; a wheel install has no `.claude/` there.
+_SOVA_ROOT = Path(__file__).resolve().parents[3]
 
 
 async def _resolve_branch_name(pr_number: int | None, project_dir: Path) -> str:
@@ -236,7 +241,8 @@ def known_command_names(project_dir: Path) -> frozenset[str]:
     """Collect command names `_resolve_command_prompt` can actually resolve.
 
     Mirrors its lookup order exactly (project's own `.claude/commands/`, then
-    the SOVA root's `.claude/commands/`, then its `commands/`) and its exact
+    the SOVA root's `.claude/commands/`, then SOVA's packaged canonical
+    commands directory) and its exact
     match criterion, file existence by filename stem (`target_cmd.is_file()`),
     so a validator built from this set never rejects a command
     `_resolve_command_prompt` would have found, and never accepts one it would
@@ -247,19 +253,40 @@ def known_command_names(project_dir: Path) -> frozenset[str]:
     `_resolve_command_prompt`'s and would reject a real, resolvable command
     file that happens to lack one (e.g. `agent-resume.md`, `request-review.md`).
     """
-    from sova.commands.catalog import get_canonical_dir
-
-    sova_root = get_canonical_dir().parent
     dirs = (
         project_dir / _CLAUDE_DIR / "commands",
-        sova_root / _CLAUDE_DIR / "commands",
-        sova_root / "commands",
+        _SOVA_ROOT / _CLAUDE_DIR / "commands",
+        get_canonical_dir(),
     )
     names: set[str] = set()
     for d in dirs:
         if d.is_dir():
             names.update(p.stem for p in d.glob("*.md") if p.is_file())
     return frozenset(names)
+
+
+def _render_canonical_template(content: str, project_dir: Path) -> str:
+    """Substitute `{{ var }}` placeholders in a packaged canonical command.
+
+    `.claude/commands/` holds rendered artifacts, but the packaged canonical
+    tree holds the templates those are rendered from, so reading one straight
+    into a prompt hands the agent literal `{{ arguments }}`, `{{ test_cmd }}`
+    and friends. `{{ arguments }}` renders to `$ARGUMENTS`, which the caller
+    then replaces with the real arguments, so this has to run first.
+
+    An unloadable config still beats leaking the placeholders: fall back to
+    `ProjectConfig()`'s defaults rather than returning the raw template.
+    """
+    from sova.commands.templates import build_variables, render_command
+    from sova.config.loader import load_config
+    from sova.config.models import ProjectConfig
+
+    try:
+        cfg = load_config(project_dir)
+    except (OSError, ValueError, KeyError, RuntimeError):
+        log.debug("command.canonical_config_load_failed", project_dir=str(project_dir), exc_info=True)
+        cfg = ProjectConfig()
+    return render_command(content, build_variables(cfg))
 
 
 def _resolve_command_prompt(command: str, args: dict | None, project_dir: Path) -> str:
@@ -275,14 +302,17 @@ def _resolve_command_prompt(command: str, args: dict | None, project_dir: Path) 
             prompt += " " + arg_str
         return prompt
 
-    sova_root = Path(__file__).resolve().parent.parent.parent.parent
-    sova_cmd = sova_root / _CLAUDE_DIR / "commands" / f"{command}.md"
+    sova_cmd = _SOVA_ROOT / _CLAUDE_DIR / "commands" / f"{command}.md"
+    is_canonical_template = False
     if not sova_cmd.is_file():
-        sova_cmd = sova_root / "commands" / f"{command}.md"
+        sova_cmd = get_canonical_dir() / f"{command}.md"
+        is_canonical_template = True
 
     if sova_cmd.is_file():
         content = sova_cmd.read_text(encoding="utf-8")
         content = _strip_frontmatter(content)
+        if is_canonical_template:
+            content = _render_canonical_template(content, project_dir)
         content = content.replace("$ARGUMENTS", arg_str)
         log.info("command.resolved_from_sova", command=command, source=str(sova_cmd))
         return content

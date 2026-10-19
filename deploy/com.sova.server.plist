@@ -29,9 +29,6 @@
     <dict>
         <key>SOVA_PROJECT_DIR</key>
         <string>/path/to/your/project</string>
-        <!-- Uncomment for PostgreSQL team deployments -->
-        <!-- <key>SOVA_DATABASE_URL</key> -->
-        <!-- <string>postgresql://user:pass@localhost:5432/sova</string> -->
     </dict>
 
     <key>RunAtLoad</key>
@@ -45,6 +42,8 @@
 
     <!-- Use persistent log directory instead of /tmp -->
     <!-- Note: ~ expansion works in launchd, but absolute paths are more explicit -->
+    <!-- launchd does not rotate these files itself; see com.sova.server.newsyslog.conf
+         in this same directory for a newsyslog.d template that does. -->
     <key>StandardOutPath</key>
     <string>~/Library/Logs/sova/sova-server.log</string>
 

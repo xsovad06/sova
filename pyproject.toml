@@ -85,7 +85,9 @@ include = ["sova*"]
 
 [tool.setuptools.package-data]
 "sova.db" = ["alembic.ini", "migrations/*.mako"]
-"sova.dashboard" = ["templates/*.html", "static/*"]
+"sova.dashboard" = ["templates/*.html", "static/**/*"]
+"sova.core.schemas" = ["*.json"]
+"sova.commands" = ["data/commands/*.md", "data/guidelines/*.md", "data/personas/*.md", "data/skills/**/*"]
 
 [tool.ruff]
 target-version = "py312"

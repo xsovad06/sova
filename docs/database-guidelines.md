@@ -238,7 +238,14 @@ Handled in `_run_migrations()` (`sova/db/session.py`):
 
 `sova db status` prints the current revision, the head revision, whether they match, and any
 `_find_missing_columns()` drift; a database with no `alembic_version` table at all prints a
-plain "not initialized" message instead of raising. `sova db backup` calls the same
+plain "not initialized" message instead of raising. Both read the database through
+`inspect_schema()` (`sova/db/session.py`), which returns a `SchemaInspection` (`state` of
+`no_file`, `no_tables` or `ready`, plus the revision, head and drift fields only meaningful when
+`ready`) and never creates, migrates or stamps anything. `sova doctor` reuses it for its
+`database schema` row, a warning (never a required failure, since `init_db()` migrates a database
+that is behind on the next server start) naming an unversioned database, a revision behind head,
+or missing ORM columns; a project with no database file gets no row, because the `database` check
+already reports that. `sova db backup` calls the same
 `_backup_db()` used internally before DDL, writing a WAL-consistent copy and printing the path
 (or exiting non-zero when there is nothing to back up: no file yet, or an empty one). Against a
 non-SQLite deployment (`SOVA_DATABASE_URL` pointing at Postgres) it instead prints an explicit
@@ -283,6 +290,10 @@ restore point `_run_migrations()` took moments earlier in the same startup.
 ## Multi-Project DB Support
 
 `init_db_for_project()` caches per-project engines in `_engines: dict[str, tuple]` keyed by URL. `get_session(project_dir=...)` routes to the correct engine. Each project gets its own `.claude/sova.db` file.
+
+### PostgreSQL: one database per project, never shared
+
+`SOVA_DATABASE_URL` points the whole process at a single database, and the tables are not consistently scoped to a project. Some carry an indexed `project_slug` that is written and filtered (`TaskAssessmentRecord`, `OversightFinding`, `TelemetryEvent`, `PRCreationQueue`); `TaskRun` declares the column and its index but nothing writes it, so it stays at its `""` default and every `select(TaskRun)` runs unscoped; `CostRecord` has no such column at all. So two projects pointed at the same Postgres database would silently mix each other's runs, costs, and memory rows, and the liveness sweep would mark another machine's runs interrupted. Give each project its own database (or at minimum its own schema with a dedicated role), never a shared one. The `deploy/sova-server.service` and `deploy/com.sova.server.plist` reference templates deliberately omit a `SOVA_DATABASE_URL` example for this reason: a copy-pasted shared connection string across multiple deployed instances is exactly the failure mode this note exists to prevent. Populating and filtering `project_slug` across every query is tracked separately and out of scope for a single-project deployment.
 
 ## Test Fixtures
 

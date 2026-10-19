@@ -126,7 +126,7 @@ Prevents shell metacharacters, path traversal sequences, and spaces in branch na
 
 ### Dashboard Command Name Validation
 
-`POST /api/agents/command`'s `command` field names a file resolved relative to the project's own and SOVA's own `.claude/commands/`/`commands/` directories (`sova/dashboard/services/agent_context.py:_resolve_command_prompt()`); an unvalidated value is both a path-traversal vector (building a filesystem path from it) and a prompt-injection vector (its fallback sends a bare `/{command}` to the headless, tool-using agent for anything it cannot resolve to a real file). `known_command_names()` mirrors `_resolve_command_prompt()`'s own lookup order via `sova.commands.catalog.discover()`, and the router rejects (`400`) any `command` not in that set.
+`POST /api/agents/command`'s `command` field names a file resolved relative to the project's own and SOVA's own `.claude/commands/`/`sova/commands/data/commands/` directories (`sova/dashboard/services/agent_context.py:_resolve_command_prompt()`); an unvalidated value is both a path-traversal vector (building a filesystem path from it) and a prompt-injection vector (its fallback sends a bare `/{command}` to the headless, tool-using agent for anything it cannot resolve to a real file). `known_command_names()` mirrors `_resolve_command_prompt()`'s own lookup order via `sova.commands.catalog.discover()`, and the router rejects (`400`) any `command` not in that set.
 
 ### Multi-Project Slug Validation
 

@@ -10147,8 +10147,14 @@ class TestRunWorkflowOutcome:
         # `.name` attribute, so it's assigned separately here.
         role = MagicMock()
         role.name = "researcher"
+        # A real ProjectConfig, not a bare MagicMock: _run_workflow reads numeric
+        # settings off it (server.log_max_bytes/log_backup_count feed
+        # rotation_kwargs()), and a MagicMock attribute would be silently truthy
+        # rather than a usable value.
+        from sova.config.models import ProjectConfig
+
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),
@@ -10332,8 +10338,11 @@ class TestRunWorkflowCancellation:
         async def fake_shutdown(ctx, task_run_id):
             shutdown_calls.append(task_run_id)
 
+        from sova.config.models import ProjectConfig
+
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            # A real config, not a MagicMock: see TestRunWorkflowOutcome._patch_run_deps.
+            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),
