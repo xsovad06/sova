@@ -932,26 +932,7 @@ class TestCostsAPIErrorHandling:
 # ---------------------------------------------------------------------------
 
 
-class TestControlAPI:
-    async def test_agent_status_idle(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/control/status")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "idle"
-        assert data["running"] is False
-
-    async def test_agent_output_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/control/output?since=0")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["lines"] == []
-
-    async def test_interrupted_runs_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/control/interrupted")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["interrupted"] == []
-
+class TestAgentsInterruptedAPI:
     async def test_interrupted_runs_returns_interrupted(self, client: AsyncClient, session: AsyncSession) -> None:
         """Interrupted TaskRuns should appear in the interrupted endpoint."""
         async with session.begin():
@@ -963,7 +944,7 @@ class TestControlAPI:
                 error_message="Dashboard restarted while agent was running",
             )
             session.add(run)
-        resp = await client.get("/api/control/interrupted")
+        resp = await client.get("/api/agents/interrupted")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["interrupted"]) == 1
@@ -974,24 +955,127 @@ class TestControlAPI:
             session.add(TaskRun(issue_number="1", role="dev", status="done"))
             session.add(TaskRun(issue_number="2", role="dev", status="failed"))
             session.add(TaskRun(issue_number="3", role="dev", status="running"))
-        resp = await client.get("/api/control/interrupted")
+        resp = await client.get("/api/agents/interrupted")
         assert resp.status_code == 200
         assert len(resp.json()["interrupted"]) == 0
 
     async def test_dismiss_interrupted_marks_as_failed(self, client: AsyncClient, session: AsyncSession) -> None:
         """Dismissing interrupted runs should change their status to failed."""
+        run1 = TaskRun(issue_number="73", role="developer", status="interrupted", pid=99999)
+        run2 = TaskRun(issue_number="73", role="developer", status="interrupted", pid=99998)
         async with session.begin():
-            session.add(TaskRun(issue_number="73", role="developer", status="interrupted", pid=99999))
-            session.add(TaskRun(issue_number="73", role="developer", status="interrupted", pid=99998))
+            session.add(run1)
+            session.add(run2)
             session.add(TaskRun(issue_number="42", role="auto", status="done"))
 
-        resp = await client.post("/api/agents/interrupted/dismiss")
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": [run1.id, run2.id]})
         assert resp.status_code == 200
         data = resp.json()
         assert data["dismissed"] == 2
 
         resp2 = await client.get("/api/agents/interrupted")
         assert resp2.json()["interrupted"] == []
+
+    async def test_dismiss_interrupted_scoped_to_given_ids(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Dismissal must not touch an interrupted run outside the banner's displayed ids."""
+        run1 = TaskRun(issue_number="73", role="developer", status="interrupted", pid=99999)
+        run2 = TaskRun(issue_number="74", role="developer", status="interrupted", pid=99998)
+        async with session.begin():
+            session.add(run1)
+            session.add(run2)
+
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": [run1.id]})
+        assert resp.status_code == 200
+        assert resp.json()["dismissed"] == 1
+
+        resp2 = await client.get("/api/agents/interrupted")
+        remaining = resp2.json()["interrupted"]
+        assert len(remaining) == 1
+        assert remaining[0]["issue_number"] == "74"
+
+    async def test_dismiss_interrupted_empty_run_ids_rejected(self, client: AsyncClient) -> None:
+        """An empty run_ids list must be a validation error, not a silent no-op success."""
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": []})
+        assert resp.status_code == 422
+
+    async def test_dismiss_interrupted_missing_run_ids_rejected(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/agents/interrupted/dismiss", json={})
+        assert resp.status_code == 422
+
+    async def test_dismiss_interrupted_ignores_non_interrupted_run(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Dismissing a run id that isn't actually interrupted must not mark it failed."""
+        run = TaskRun(issue_number="80", role="developer", status="done")
+        async with session.begin():
+            session.add(run)
+
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": [run.id]})
+        assert resp.status_code == 200
+        assert resp.json()["dismissed"] == 0
+
+    async def test_dismiss_interrupted_superseded_by_relaunch_keeps_error_message(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        """A relaunch-triggered dismiss preserves the original interruption diagnostic."""
+        run = TaskRun(
+            issue_number="80",
+            role="developer",
+            status="interrupted",
+            error_message="Stale run recovered on startup (was 'developing')",
+        )
+        async with session.begin():
+            session.add(run)
+
+        resp = await client.post(
+            "/api/agents/interrupted/dismiss",
+            json={"run_ids": [run.id], "superseded_by_relaunch": True},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["dismissed"] == 1
+
+        await session.refresh(run)
+        assert run.status == "failed"
+        assert run.error_message == "Stale run recovered on startup (was 'developing')"
+
+    async def test_dismiss_interrupted_db_error_returns_503(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A swallowed DB error must not be reported as a 200 no-op success."""
+
+        async def _fail(*a, **kw):
+            return -1
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery.dismiss_interrupted_runs",
+            _fail,
+        )
+        resp = await client.post("/api/agents/interrupted/dismiss", json={"run_ids": [1]})
+        assert resp.status_code == 503
+
+    async def test_interrupted_runs_reports_total(self, client: AsyncClient, session: AsyncSession) -> None:
+        """The `total` count must reflect all interrupted runs, not just the capped display limit."""
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            for i in range(7):
+                session.add(
+                    TaskRun(
+                        issue_number=str(100 + i),
+                        role="developer",
+                        status="interrupted",
+                        started_at=now - timedelta(minutes=7 - i),
+                    )
+                )
+
+        resp = await client.get("/api/agents/interrupted")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 7
+        assert len(data["interrupted"]) == 5
+        # The returned rows are the most recent ones: those are what the
+        # displayed ids (and thus the scoped dismiss action) can act on.
+        shown_issues = {run["issue_number"] for run in data["interrupted"]}
+        assert shown_issues == {str(100 + i) for i in range(2, 7)}
 
 
 # ---------------------------------------------------------------------------
@@ -3351,8 +3435,50 @@ class TestHandoffAPI:
     async def test_agents_page_has_handoff_support(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
         assert resp.status_code == 200
-        assert "checkHandoffForAgents" in resp.text
         assert "executeHandoffAction" in resp.text
+
+    async def test_agents_page_has_interrupted_banner(self, client: AsyncClient) -> None:
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        assert 'id="interrupted-banner"' in resp.text
+        assert "checkInterrupted" in resp.text
+        assert "dismissInterrupted" in resp.text
+
+    async def test_agents_page_has_status_filter(self, client: AsyncClient) -> None:
+        from sova.core.state import TASK_RUN_TERMINAL
+
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        assert 'id="filter-status"' in resp.text
+        for status in TASK_RUN_TERMINAL:
+            assert f'<option value="{status}">' in resp.text
+
+    async def test_agents_page_status_filter_wired_into_history_query(self, client: AsyncClient) -> None:
+        """Source-level check that loadHistory() actually appends both filters to
+        /work/history, since the markup/function-name assertions above don't catch a
+        refactor that leaves the dropdown rendered but inert (no JS test harness here;
+        same pattern as tests/test_llm_suggestion_service.py).
+        """
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        idx = resp.text.find("async function loadHistory()")
+        assert idx != -1, "loadHistory() not found in agents.html"
+        body = resp.text[idx : idx + 800]
+        assert "getElementById('filter-status')" in body
+        assert "getElementById('filter-role')" in body
+        assert "&role=" in body
+        assert "&status=" in body
+
+    async def test_agents_page_history_rerun_button_carries_run_id(self, client: AsyncClient) -> None:
+        """The history re-run button must thread data-run-id through so the delegated
+        click handler can auto-dismiss the originating interrupted run, matching the
+        banner's own re-run button (source-level check, same pattern as above)."""
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        idx = resp.text.find("function renderHistoryTable")
+        assert idx != -1, "renderHistoryTable() not found in agents.html"
+        body = resp.text[idx : idx + 2000]
+        assert "data-run-id=" in body
 
     async def test_agents_page_has_kanban_view(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
@@ -3857,45 +3983,6 @@ class TestMultiProject:
 
 class TestTasksAPI:
     """Tests for the tasks API endpoints."""
-
-    async def test_active_tasks_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/tasks/active")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "tasks" in data
-        assert isinstance(data["tasks"], list)
-
-    async def test_active_tasks_with_data(self, client: AsyncClient, seed_data) -> None:
-        resp = await client.get("/api/tasks/active")
-        assert resp.status_code == 200
-        data = resp.json()
-        # run3 has status "developing": non-terminal, should appear
-        assert len(data["tasks"]) >= 1
-        active = data["tasks"][0]
-        assert active["issue_number"] == "44"
-        assert active["status"] == "developing"
-        assert "elapsed_seconds" in active
-
-    async def test_task_history_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/tasks/history")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["tasks"] == []
-
-    async def test_task_history_with_data(self, client: AsyncClient, seed_data) -> None:
-        resp = await client.get("/api/tasks/history")
-        assert resp.status_code == 200
-        data = resp.json()
-        # run1 (done) and run2 (failed) are terminal
-        assert len(data["tasks"]) == 2
-        statuses = {t["status"] for t in data["tasks"]}
-        assert statuses == {"done", "failed"}
-
-    async def test_task_history_limit(self, client: AsyncClient, seed_data) -> None:
-        resp = await client.get("/api/tasks/history?limit=1")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["tasks"]) == 1
 
     async def test_tasks_redirects_to_agents(self, client: AsyncClient) -> None:
         resp = await client.get("/tasks", follow_redirects=False)
@@ -17572,36 +17659,6 @@ class TestGetOutputBranches:
         with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
             lines = await get_output(since=0, run_id=200)
         assert lines == ["db line"]
-
-    async def test_get_output_no_run_id_returns_first_agent(self) -> None:
-        """Without run_id, return first agent's output (legacy compat)."""
-        from collections import deque
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services.agent_output import get_output
-
-        mock_agent = MagicMock()
-        mock_agent.output_lines = deque(["first", "second"])
-
-        mock_pa = MagicMock()
-        mock_pa.agents = {1: mock_agent}
-
-        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
-            lines = await get_output(since=0)
-        assert lines == ["first", "second"]
-
-    async def test_get_output_no_run_id_no_agents(self) -> None:
-        """Without run_id and no agents, return empty list."""
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services.agent_output import get_output
-
-        mock_pa = MagicMock()
-        mock_pa.agents = {}
-
-        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
-            lines = await get_output(since=0)
-        assert lines == []
 
 
 class TestReadStderrFlushTrigger:

@@ -59,9 +59,6 @@ from sova.dashboard.services.agent_lifecycle import (
     get_all_agents as get_all_agents,
 )
 from sova.dashboard.services.agent_lifecycle import (
-    get_status as get_status,
-)
-from sova.dashboard.services.agent_lifecycle import (
     get_step_progress as get_step_progress,
 )
 from sova.dashboard.services.agent_lifecycle import (

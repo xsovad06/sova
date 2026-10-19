@@ -14,12 +14,11 @@ API contract patterns, request/response models, and integration conventions used
 | agents | Agent lifecycle control |
 | runs | Legacy redirect to agents |
 | costs | Cost tracking and budgets |
-| control | Legacy agent control (redirects) |
 | handoff | Handoff file read/execute/clear |
 | lifecycle | Issue lifecycle phase tracking |
 | memory | Memory CRUD and search |
 | logs | Run log file access |
-| tasks | Task/issue listing |
+| tasks | Open issues from the task source |
 | queue | Batch operations and queue management |
 | settings | Project settings CRUD |
 | setup | Setup wizard state |

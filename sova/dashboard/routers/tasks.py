@@ -1,14 +1,12 @@
-"""Tasks router: active tasks and task history."""
+"""Tasks router: open issues from the task source."""
 
 from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 
 from sova.dashboard.project_context import get_project_dir
-from sova.dashboard.services.task_service import get_active_tasks, get_task_history
-from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.tasks")
@@ -51,21 +49,3 @@ async def list_issues() -> dict:
     except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
         log.warning("Failed to fetch issues from task source", exc_info=True)
         raise HTTPException(status_code=503, detail="Task source unavailable") from exc
-
-
-@router.get("/tasks/active")
-async def active_tasks() -> dict:
-    """Get currently active (non-terminal) tasks."""
-    project_dir = get_project_dir()
-    async with await get_session(project_dir) as session:
-        tasks = await get_active_tasks(session)
-    return {"tasks": tasks}
-
-
-@router.get("/tasks/history")
-async def task_history(limit: int = Query(default=50, ge=1, le=500)) -> dict:
-    """Get completed/failed task history."""
-    project_dir = get_project_dir()
-    async with await get_session(project_dir) as session:
-        result = await get_task_history(session, limit=limit)
-    return {"tasks": result["tasks"]}

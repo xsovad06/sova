@@ -346,11 +346,21 @@ async def list_runs(
     *,
     limit: int = 50,
     status: str | None = None,
+    since_ended: datetime | None = None,
 ) -> list[dict]:
-    """List task runs, most recent first. Unified replacement for run_service.list_runs."""
-    stmt = select(TaskRun).options(selectinload(TaskRun.resource_summary)).order_by(TaskRun.started_at.desc())
+    """List task runs, most recent first. Unified replacement for run_service.list_runs.
+
+    `since_ended` bounds `coalesce(ended_at, started_at)`, for callers that care about
+    when a run finished (e.g. became interrupted) rather than when it started. Ordering
+    switches to that same column in that case, so the window and the "most recent"
+    sort never disagree on which runs are newest.
+    """
+    order_col = func.coalesce(TaskRun.ended_at, TaskRun.started_at) if since_ended is not None else TaskRun.started_at
+    stmt = select(TaskRun).options(selectinload(TaskRun.resource_summary)).order_by(order_col.desc())
     if status:
         stmt = stmt.where(TaskRun.status == status)
+    if since_ended is not None:
+        stmt = stmt.where(func.coalesce(TaskRun.ended_at, TaskRun.started_at) >= since_ended)
     stmt = stmt.limit(min(limit, 200))
 
     result = await session.execute(stmt)

@@ -1749,6 +1749,10 @@ function renderRunsTable(runs, targetId) {
  * options:
  *   wsPath                API-relative WebSocket path, e.g. apiUrl('/ws/agents/status')
  *   onMessage(msg)         called with the parsed JSON message on every WS push
+ *   onOpen()               optional: called every time the socket (re)connects, before
+ *                          any message has arrived. For state that can go stale during
+ *                          a gap the socket itself cannot narrate (e.g. a run reaching a
+ *                          terminal status the periodic push never carries).
  *   onFallbackPoll()       called on an interval while no WS connection is open
  *   pollIntervalMs         fallback polling cadence (default 2000)
  *   staleAfterMs           liveness watchdog threshold: close and reconnect a
@@ -1770,6 +1774,7 @@ function renderRunsTable(runs, targetId) {
 function createSovaStatusChannel(options) {
   var wsPath = options.wsPath;
   var onMessage = options.onMessage;
+  var onOpen = options.onOpen || null;
   var onFallbackPoll = options.onFallbackPoll;
   var pollIntervalMs = options.pollIntervalMs || 2000;
   var auxiliaryPollFn = options.auxiliaryPollFn || null;
@@ -1834,6 +1839,16 @@ function createSovaStatusChannel(options) {
     }
     ws = socket;
     lastMessageAt = Date.now();
+
+    socket.onopen = function() {
+      if (onOpen) {
+        try {
+          onOpen();
+        } catch (e) {
+          console.error('SovaStatusChannel: onOpen handler error:', e);
+        }
+      }
+    };
 
     socket.onmessage = function(event) {
       lastMessageAt = Date.now();

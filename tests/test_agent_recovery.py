@@ -1273,41 +1273,179 @@ class TestGetManagedRunIds:
         assert loaded_ok is False
 
 
-class TestGetInterruptedRuns:
+class TestGetInterruptedRunsAndTotal:
     async def test_returns_interrupted_runs(self) -> None:
-        from sova.dashboard.services.agent_recovery import get_interrupted_runs
+        from sova.dashboard.services.agent_recovery import get_interrupted_runs_and_total
 
         session = await get_session()
         async with session.begin():
             session.add(TaskRun(issue_number="80", role="developer", status="interrupted"))
             session.add(TaskRun(issue_number="81", role="developer", status="done"))
 
-        runs = await get_interrupted_runs()
+        runs, total = await get_interrupted_runs_and_total()
         assert len(runs) == 1
         assert runs[0]["issue_number"] == "80"
+        assert total == 1
 
-    async def test_respects_limit(self) -> None:
-        from sova.dashboard.services.agent_recovery import get_interrupted_runs
+    async def test_respects_limit_but_total_counts_all(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_interrupted_runs_and_total
 
         session = await get_session()
         async with session.begin():
             for i in range(3):
                 session.add(TaskRun(issue_number=str(90 + i), role="developer", status="interrupted"))
 
-        runs = await get_interrupted_runs(limit=2)
+        runs, total = await get_interrupted_runs_and_total(limit=2)
         assert len(runs) == 2
+        assert total == 3
 
-    async def test_returns_empty_list_on_exception(self, monkeypatch) -> None:
+    async def test_excludes_runs_outside_recency_window(self) -> None:
+        """A run interrupted long ago must not keep the banner permanently stuck."""
+        from sova.dashboard.services.agent_recovery import get_interrupted_runs_and_total
+
+        stale = datetime.now(timezone.utc) - timedelta(days=30)
+        session = await get_session()
+        async with session.begin():
+            session.add(TaskRun(issue_number="80", role="developer", status="interrupted", started_at=stale))
+            session.add(TaskRun(issue_number="81", role="developer", status="interrupted"))
+
+        runs, total = await get_interrupted_runs_and_total()
+        assert len(runs) == 1
+        assert runs[0]["issue_number"] == "81"
+        assert total == 1
+
+    async def test_includes_run_ended_recently_even_if_started_long_ago(self) -> None:
+        """Recovery can mark a long-running run interrupted; the window keys on when
+        it ended (recovery time), not when it started, or the banner never shows it."""
+        from sova.dashboard.services.agent_recovery import get_interrupted_runs_and_total
+
+        old_start = datetime.now(timezone.utc) - timedelta(hours=30)
+        recent_end = datetime.now(timezone.utc)
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="80",
+                    role="developer",
+                    status="interrupted",
+                    started_at=old_start,
+                    ended_at=recent_end,
+                )
+            )
+
+        runs, total = await get_interrupted_runs_and_total()
+        assert len(runs) == 1
+        assert runs[0]["issue_number"] == "80"
+        assert total == 1
+
+    async def test_returns_empty_on_exception(self, monkeypatch) -> None:
         from sova.dashboard.services import run_service
-        from sova.dashboard.services.agent_recovery import get_interrupted_runs
+        from sova.dashboard.services.agent_recovery import get_interrupted_runs_and_total
 
         async def _boom(*a, **kw):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(run_service, "list_runs", _boom)
 
-        runs = await get_interrupted_runs()
+        runs, total = await get_interrupted_runs_and_total()
         assert runs == []
+        assert total == 0
+
+    async def test_orders_by_recency_window_key_not_started_at(self) -> None:
+        """A run that started earlier but was interrupted most recently must sort
+        first: the window and total both key on coalesce(ended_at, started_at), so
+        the list order must use the same column or the newest interruption can be
+        the row `limit` cuts off."""
+        from sova.dashboard.services.agent_recovery import get_interrupted_runs_and_total
+
+        now = datetime.now(timezone.utc)
+        session = await get_session()
+        async with session.begin():
+            # Started 20h ago, interrupted 5 minutes ago.
+            session.add(
+                TaskRun(
+                    issue_number="80",
+                    role="developer",
+                    status="interrupted",
+                    started_at=now - timedelta(hours=20),
+                    ended_at=now - timedelta(minutes=5),
+                )
+            )
+            # Started more recently, but interrupted earlier.
+            session.add(
+                TaskRun(
+                    issue_number="81",
+                    role="developer",
+                    status="interrupted",
+                    started_at=now - timedelta(hours=2),
+                    ended_at=now - timedelta(hours=1, minutes=30),
+                )
+            )
+
+        runs, total = await get_interrupted_runs_and_total(limit=1)
+        assert total == 2
+        assert len(runs) == 1
+        assert runs[0]["issue_number"] == "80"
+
+
+class TestDismissInterruptedRuns:
+    async def test_preserve_diagnostic_keeps_original_error_message(self) -> None:
+        """A relaunch-triggered dismiss must not overwrite the interruption cause
+        get_failure_taxonomy() classifies on."""
+        from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="80",
+                role="developer",
+                status="interrupted",
+                error_message="Stale run recovered on startup (was 'developing')",
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        count = await dismiss_interrupted_runs([run_id], preserve_diagnostic=True)
+        assert count == 1
+
+        session2 = await get_session()
+        async with session2.begin():
+            refreshed = await session2.get(TaskRun, run_id)
+            assert refreshed.status == "failed"
+            assert refreshed.error_message == "Stale run recovered on startup (was 'developing')"
+
+    async def test_default_overwrites_error_message(self) -> None:
+        from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="80", role="developer", status="interrupted", error_message="original")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        count = await dismiss_interrupted_runs([run_id])
+        assert count == 1
+
+        session2 = await get_session()
+        async with session2.begin():
+            refreshed = await session2.get(TaskRun, run_id)
+            assert refreshed.error_message == "Dismissed by user"
+
+    async def test_returns_negative_one_on_exception(self, monkeypatch) -> None:
+        """0 is a legitimate 'nothing matched' result, so a swallowed DB error must
+        use a sentinel outside that range rather than looking like a no-op success."""
+        from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
+        from sova.db import session as session_module
+
+        async def _boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(session_module, "get_session", _boom)
+
+        count = await dismiss_interrupted_runs([1])
+        assert count == -1
 
 
 class TestInterpretReviews:
