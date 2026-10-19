@@ -939,6 +939,131 @@ class TestSonarCloudWorkflowGate:
         assert outputs["__rc"] != "0"
         assert "id" not in outputs
 
+    def _run_with_logging_gh(
+        self,
+        script: str,
+        tmp_path: Path,
+        env: dict[str, str],
+        *,
+        fail_statuses: bool = False,
+    ) -> tuple[int, list[str]]:
+        """Run a step script against a stub `gh` that records every call.
+
+        With `fail_statuses`, every commit-status POST fails while check-run
+        calls still succeed, which is the case where the two could disagree.
+        """
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        log = tmp_path / "gh_calls"
+        log.write_text("")
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "$*" >> "{log}"\n'
+            f'if [ "{int(fail_statuses)}" = "1" ] && [[ "$*" == *"/statuses/"* ]]; then exit 1; fi\n'
+            "echo 999\n"
+        )
+        gh.chmod(0o755)
+        sleep_stub = bin_dir / "sleep"
+        sleep_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+        sleep_stub.chmod(0o755)
+        out_file = tmp_path / "github_output"
+        out_file.write_text("")
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "REPO": "xsovad06/sova",
+                "HEAD_SHA": "deadbeef",
+                "DETAILS_URL": "https://example.invalid",
+                "EXTERNAL_ID": "1",
+                "GITHUB_OUTPUT": str(out_file),
+                **env,
+            },
+        )
+        return result.returncode, log.read_text().splitlines()
+
+    _REPORTER_ENV = {
+        "CHECK_ID": "999",
+        "JOB_STATUS": "success",
+        "CI_CONCLUSION": "success",
+        "ARTIFACT_OUTCOME": "success",
+        "COVERAGE_PRESENT": "true",
+        "BASELINE_SHA": "",
+        "BASELINE_VERDICT": "",
+        "TOKEN_AVAILABLE": "true",
+        "PR_GUARD_RESOLVABLE": "true",
+        "SCAN_OUTCOME": "success",
+    }
+
+    def test_job_may_write_commit_statuses(self, sonar_text: str) -> None:
+        assert "statuses: write" in sonar_text
+
+    def test_pending_step_posts_a_pending_status_without_failing_on_it(self, sonar_text: str, tmp_path: Path) -> None:
+        """A re-scan must not coast on an older green status, and the pending
+        status is best effort: the check run alone still gates if it fails.
+        """
+        script = _step_script(sonar_text, "Create pending check run")
+        rc, calls = self._run_with_logging_gh(script, tmp_path, {})
+        assert rc == 0
+        status_calls = [c for c in calls if "/statuses/deadbeef" in c]
+        assert len(status_calls) == 1
+        assert "state=pending" in status_calls[0]
+        assert "context=SonarCloud Analysis" in status_calls[0]
+
+        rc, _ = self._run_with_logging_gh(script, tmp_path, {}, fail_statuses=True)
+        assert rc == 0
+
+    @pytest.mark.parametrize(
+        ("label", "overrides", "conclusion", "state"),
+        [
+            ("quality gate passed", {}, "success", "success"),
+            ("quality gate failed", {"SCAN_OUTCOME": "failure"}, "failure", "failure"),
+            ("no SONAR_TOKEN stays non-blocking", {"TOKEN_AVAILABLE": "false"}, "neutral", "success"),
+            ("superseded run still blocks", {"JOB_STATUS": "cancelled"}, "cancelled", "error"),
+            ("CI failed", {"CI_CONCLUSION": "failure"}, "failure", "failure"),
+        ],
+    )
+    def test_reporter_mirrors_the_verdict_as_a_commit_status(
+        self, sonar_text: str, tmp_path: Path, label: str, overrides: dict[str, str], conclusion: str, state: str
+    ) -> None:
+        """A check run created with GITHUB_TOKEN lands in the oldest Actions
+        check suite, which a later run of that workflow on the same commit
+        (a PR body edit, a reopen) supersedes, hiding the check from the
+        ruleset. The commit status carries the same verdict with no suite.
+        """
+        script = _step_script(sonar_text, "Report check result")
+        rc, calls = self._run_with_logging_gh(script, tmp_path, {**self._REPORTER_ENV, **overrides})
+        assert rc == 0, label
+        status_calls = [c for c in calls if "/statuses/deadbeef" in c]
+        assert len(status_calls) == 1, label
+        assert f"state={state}" in status_calls[0], label
+        assert "context=SonarCloud Analysis" in status_calls[0], label
+        patch_calls = [c for c in calls if "check-runs/999 -X PATCH" in c]
+        assert len(patch_calls) == 1, label
+        assert f"conclusion={conclusion}" in patch_calls[0], label
+
+    def test_status_failure_still_completes_the_check_then_fails_the_job(self, sonar_text: str, tmp_path: Path) -> None:
+        """The check run must never be left in_progress because the status
+        post failed, and the job must still surface that failure.
+        """
+        script = _step_script(sonar_text, "Report check result")
+        rc, calls = self._run_with_logging_gh(script, tmp_path, dict(self._REPORTER_ENV), fail_statuses=True)
+        assert rc != 0
+        assert len([c for c in calls if "/statuses/deadbeef" in c]) == 3
+        assert len([c for c in calls if "check-runs/999 -X PATCH" in c]) == 1
+
+    def test_status_is_posted_when_the_pending_check_was_never_created(self, sonar_text: str, tmp_path: Path) -> None:
+        script = _step_script(sonar_text, "Report check result")
+        rc, calls = self._run_with_logging_gh(script, tmp_path, {**self._REPORTER_ENV, "CHECK_ID": ""})
+        assert rc == 0
+        assert len([c for c in calls if "/statuses/deadbeef" in c]) == 1
+        assert len([c for c in calls if "check-runs -X POST" in c]) == 1
+
     def test_one_terminal_step_reports_every_outcome(self, sonar_text: str) -> None:
         """A single always() reporter, not one step per outcome.
 

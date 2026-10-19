@@ -29,6 +29,18 @@ name: SonarCloud
 # workflow_run.head_sha, so it reports on the commit branch protection
 # actually evaluates. The job is named something else on purpose so that
 # automatic check cannot shadow this one (see the job's own comment).
+#
+# The same verdict is also posted as a "SonarCloud Analysis" commit status,
+# because a check run created with GITHUB_TOKEN cannot pick its check suite.
+# GitHub files it under the oldest GitHub Actions suite on the commit (PR
+# Quality Gate's or Fork PR Safety Gate's, whichever won the race), and a later
+# run of that same workflow on the same commit supersedes the suite: a PR body
+# edit re-fires PR Quality Gate, a reopen re-fires both. A superseded suite's
+# checks drop out of the PR page and out of ruleset evaluation, so the required
+# check reads "Expected: waiting for status" with a green verdict hidden
+# underneath (PR #1248). A commit status belongs to the commit rather than to a
+# suite, so nothing can supersede it, and it is attributed to the GitHub
+# Actions app that posts it, the same source the ruleset pins.
 on:
   workflow_run:
     workflows: ["CI"]
@@ -67,6 +79,7 @@ jobs:
       pull-requests: read
       actions: read
       checks: write
+      statuses: write
     steps:
       # FIRST step in the job, before anything that can fail. The terminal
       # reporter below is gated on this step's output, so any step that ran
@@ -109,6 +122,18 @@ jobs:
             exit 1
           fi
           echo "id=${id}" >> "$GITHUB_OUTPUT"
+          # Pending status alongside the pending check, so a re-scan of a commit
+          # that already carries a green status cannot pass on that stale verdict
+          # while it runs. Best effort: the reporter posts the final status with
+          # its own retries, and a missing status leaves the check run gating
+          # exactly as it did before statuses were added.
+          if ! gh api "repos/${REPO}/statuses/${HEAD_SHA}" -X POST \
+            -f state=pending \
+            -f context="SonarCloud Analysis" \
+            -f description="SonarCloud analysis in progress" \
+            -f target_url="${DETAILS_URL}" >/dev/null; then
+            echo "::warning::could not post the pending commit status"
+          fi
 
       # workflow_run.pull_requests is empty for fork PRs (a documented GitHub
       # limitation), so the PR is resolved from the head commit instead, via
@@ -551,6 +576,37 @@ jobs:
             title="SonarCloud Analysis"
             summary="SonarCloud scan failed, or the quality gate did not pass."
           fi
+          # The commit status that a superseded check suite cannot hide (see the
+          # header comment). Statuses have no neutral or cancelled state:
+          # neutral (no SONAR_TOKEN) satisfied the required check before and
+          # still does, while cancelled and anything unexpected map to error,
+          # which blocks just as the check run's own conclusion does. Posted
+          # before the check run, and a failure here still completes the check
+          # run below before failing the job, so the two never disagree about
+          # whether the scan finished.
+          case "$conclusion" in
+            success | neutral) state=success ;;
+            failure) state=failure ;;
+            *) state=error ;;
+          esac
+          status_rc=1
+          for attempt in 1 2 3; do
+            if gh api "repos/${REPO}/statuses/${HEAD_SHA}" -X POST \
+              -f state="${state}" \
+              -f context="SonarCloud Analysis" \
+              -f description="${summary:0:140}" \
+              -f target_url="${DETAILS_URL}" >/dev/null; then
+              status_rc=0
+              break
+            fi
+            echo "::warning::attempt ${attempt} to report the commit status failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 5))
+            fi
+          done
+          if [ "$status_rc" != "0" ]; then
+            echo "::error::could not report the commit status after 3 attempts"
+          fi
           # Retried for the same reason as the pending check's own creation:
           # a transient failure here leaves the required check `in_progress`
           # forever, blocking the PR just as hard as never creating it.
@@ -561,7 +617,7 @@ jobs:
                 -f conclusion="${conclusion}" \
                 -f "output[title]=${title}" \
                 -f "output[summary]=${summary}"; then
-                exit 0
+                exit "$status_rc"
               fi
               echo "::warning::attempt ${attempt} to report the check result failed"
               if [ "$attempt" -lt 3 ]; then
@@ -585,7 +641,7 @@ jobs:
               -f details_url="${DETAILS_URL}" \
               -f "output[title]=${title}" \
               -f "output[summary]=${summary}"; then
-              exit 0
+              exit "$status_rc"
             fi
             echo "::warning::attempt ${attempt} to create the completed check run failed"
             if [ "$attempt" -lt 3 ]; then
