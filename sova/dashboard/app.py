@@ -991,9 +991,17 @@ def create_app(
 
     @app.middleware("http")
     async def static_cache_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        """Make the browser revalidate every static asset instead of reusing it blind.
+
+        `no-cache` still caches, but checks the ETag first (a bodiless 304 when unchanged).
+        A `max-age` window let a page served after a restart run the JS cached from
+        before it: the page carried a fresh CSRF cookie while the stale app.js lacked
+        the code that echoes it, so every mutating call was rejected. On a loopback
+        dashboard one conditional request per asset is cheaper than that failure.
+        """
         response = await call_next(request)
         if request.url.path.startswith("/static/") and response.status_code < 400:
-            response.headers["Cache-Control"] = "public, max-age=3600"
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @app.middleware("http")
