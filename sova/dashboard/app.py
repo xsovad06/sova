@@ -51,6 +51,7 @@ from sova.dashboard.routers import (
     feed,
     fleet_insights,
     handoff,
+    health,
     lifecycle,
     logs,
     mcp,
@@ -1506,6 +1507,7 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(costs.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(briefing.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(handoff.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(health.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(memory.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(models.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(logs.router, prefix=prefix, dependencies=csrf_dep)

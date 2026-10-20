@@ -279,6 +279,15 @@ async function loadConfig() {
       '</div>' +
     '</div>';
 
+    html += '<div class="sova-card">' +
+      '<div class="sova-card-header">' +
+        '<h3 class="text-sm font-medium text-gray-400">Health Checks</h3>' +
+      '</div>' +
+      '<div class="sova-card-body" id="health-checks-status">' +
+        '<p class="text-gray-500 text-sm">Running checks...</p>' +
+      '</div>' +
+    '</div>';
+
     container.innerHTML = html;
 
     // Inject LLM-specific tools and toggle the API key row before measuring
@@ -302,12 +311,13 @@ async function loadConfig() {
       if (toggle) toggle.setAttribute('aria-expanded', 'true');
     });
 
-    // Load invariants, personas, installation status, and labels into their containers
+    // Load invariants, personas, installation status, labels, and health checks into their containers
     loadInvariants();
     loadPersonas();
     loadPersonaPreview();
     loadInstallationStatus();
     loadLabelsStatus();
+    loadHealthChecks();
 
     // If the URL has a #groupId hash, open that group and scroll to it
     var hash = window.location.hash.replace('#', '');
@@ -1540,6 +1550,37 @@ async function loadLabelsStatus() {
     container.innerHTML = '<p class="text-gray-500 text-xs">Failed to check label status</p>';
   } finally {
     _labelsLoading = false;
+  }
+}
+
+function _healthCheckBadge(check) {
+  if (check.passed) return { label: 'OK', badgeClass: 'bg-accent-green/20 text-accent-green' };
+  if (check.required) return { label: 'FAIL', badgeClass: 'bg-accent-red/20 text-accent-red' };
+  return { label: 'WARN', badgeClass: 'bg-accent-yellow/20 text-accent-yellow' };
+}
+
+async function loadHealthChecks() {
+  var container = document.getElementById('health-checks-status');
+  if (!container) return;
+  try {
+    var data = await fetchAPI(apiUrl('/health/checks'));
+    var items = data.checks || [];
+
+    var rows = items.map(function(check) {
+      var badge = _healthCheckBadge(check);
+      return '<div class="flex items-start justify-between gap-3 text-xs py-1.5 border-b border-gray-700/20 last:border-b-0">' +
+        '<div class="min-w-0">' +
+          '<span class="text-gray-300 font-medium">' + escapeHtml(check.name) + '</span>' +
+          (check.detail ? '<div class="text-gray-500 mt-0.5">' + escapeHtml(check.detail) + '</div>' : '') +
+        '</div>' +
+        '<span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ' + badge.badgeClass + '">' + badge.label + '</span>' +
+      '</div>';
+    }).join('');
+
+    container.innerHTML = rows || '<p class="text-gray-500 text-sm">No checks reported</p>';
+  } catch (e) {
+    console.error('Failed to load health checks:', e);
+    container.innerHTML = '<p class="text-gray-500 text-xs">Failed to run health checks</p>';
   }
 }
 
