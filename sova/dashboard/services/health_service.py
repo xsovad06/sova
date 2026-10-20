@@ -51,7 +51,7 @@ async def get_health_checks(project_dir: Path) -> dict:
 
         try:
             checks = await run_all_checks(project_dir)
-        except Exception as exc:  # noqa: BLE001 (HTTP/UI boundary: a batch failure is one failed row, not a 500)
+        except Exception as exc:  # noqa: BLE001 (HTTP/UI boundary; a batch failure is one failed row, not a 500)
             log.warning("health.run_all_checks_failed", exc_info=True)
             checks = [DiagnosticCheck("health checks", False, str(exc)[:80], False)]
 

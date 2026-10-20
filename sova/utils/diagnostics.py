@@ -26,6 +26,20 @@ if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
 
 _EMPTY = "(empty)"
+_CLAUDE_DIR = ".claude"
+
+# Check-row labels that a check function and run_all_checks()'s _guarded()
+# call both have to name: the label _guarded() reports a crashed check under
+# has to be the same row the check itself would have produced, or a failure
+# shows up as an unfamiliar extra row instead of the check that broke.
+_LABEL_GIT_IDENTITY = "git identity"
+_LABEL_GH_CLI = "gh CLI"
+_LABEL_CLAUDE_CLI = "claude CLI"
+_LABEL_GIT_HOOKS = "git hooks"
+_LABEL_LLM_PROVIDER = "llm provider"
+_LABEL_AGENT_RUNTIME = "agent runtime"
+_LABEL_DATABASE_SCHEMA = "database schema"
+_LABEL_AWARENESS_PROVIDERS = "awareness providers"
 
 # Bounds each awareness provider health check so a single hung provider
 # (e.g. a stalled Gmail or Calendar network call) can't block the caller
@@ -64,12 +78,12 @@ async def _check_git_identity(project_dir: Path) -> list[DiagnosticCheck]:
     identity = await check_git_identity(cwd=project_dir)
     checks: list[DiagnosticCheck] = []
     if identity.valid:
-        checks.append(DiagnosticCheck("git identity", True, f"{identity.name} <{identity.email}>", True))
+        checks.append(DiagnosticCheck(_LABEL_GIT_IDENTITY, True, f"{identity.name} <{identity.email}>", True))
     else:
         missing = ", ".join(identity.missing_fields)
         checks.append(
             DiagnosticCheck(
-                "git identity",
+                _LABEL_GIT_IDENTITY,
                 False,
                 f"missing {missing}. Set with: git config user.name / user.email",
                 True,
@@ -83,13 +97,13 @@ async def _check_gh_cli() -> list[DiagnosticCheck]:
     checks: list[DiagnosticCheck] = []
     gh_path = shutil.which("gh")
     if not gh_path:
-        checks.append(DiagnosticCheck("gh CLI", False, "not found. Install: https://cli.github.com/", True))
+        checks.append(DiagnosticCheck(_LABEL_GH_CLI, False, "not found. Install: https://cli.github.com/", True))
         checks.append(DiagnosticCheck("gh authenticated", False, "gh CLI not installed", True))
         return checks
 
     result = await run("gh", "--version")
     version_line = result.stdout.strip().split("\n")[0] if result.success and result.stdout else "error"
-    checks.append(DiagnosticCheck("gh CLI", result.success, version_line, True))
+    checks.append(DiagnosticCheck(_LABEL_GH_CLI, result.success, version_line, True))
 
     auth_result = await run("gh", "auth", "status")
     auth_ok = auth_result.success
@@ -114,10 +128,10 @@ async def _check_claude_cli() -> list[DiagnosticCheck]:
     if claude_path:
         result = await run("claude", "--version")
         version = result.stdout.strip().split("\n")[0] if result.success and result.stdout else "error"
-        return [DiagnosticCheck("claude CLI", result.success, version, True)]
+        return [DiagnosticCheck(_LABEL_CLAUDE_CLI, result.success, version, True)]
     return [
         DiagnosticCheck(
-            "claude CLI",
+            _LABEL_CLAUDE_CLI,
             False,
             "not found, install: https://docs.anthropic.com/en/docs/claude-code",
             True,
@@ -148,7 +162,7 @@ async def _check_git_hooks(project_dir: Path) -> DiagnosticCheck:
     """
     githooks_dir = project_dir / ".githooks"
     if not githooks_dir.is_dir():
-        return DiagnosticCheck("git hooks", True, "no .githooks/ directory (not applicable)", False)
+        return DiagnosticCheck(_LABEL_GIT_HOOKS, True, "no .githooks/ directory (not applicable)", False)
 
     hooks_result = await run("git", "config", "--get", "core.hooksPath", cwd=str(project_dir))
     hooks_path = hooks_result.stdout.strip() if hooks_result.success else ""
@@ -159,7 +173,7 @@ async def _check_git_hooks(project_dir: Path) -> DiagnosticCheck:
         hooks_detail = f"set to '{hooks_path}' (expected '.githooks'), run: git config core.hooksPath .githooks"
     else:
         hooks_detail = "not set, run: git config core.hooksPath .githooks"
-    return DiagnosticCheck("git hooks", hooks_ok, hooks_detail, True)
+    return DiagnosticCheck(_LABEL_GIT_HOOKS, hooks_ok, hooks_detail, True)
 
 
 def _check_sova_config(project_dir: Path) -> list[DiagnosticCheck]:
@@ -246,13 +260,13 @@ async def _check_llm_provider(project_dir: Path) -> list[DiagnosticCheck]:
             # pydantic.ValidationError also inherits ValueError in v2 but
             # load_config() is called outside this inner try, so it won't
             # be caught here.
-            checks.append(DiagnosticCheck("llm provider", False, str(exc), True))
+            checks.append(DiagnosticCheck(_LABEL_LLM_PROVIDER, False, str(exc), True))
             return checks
 
         available, detail = await provider.check_available()
-        checks.append(DiagnosticCheck("llm provider", available, f"{provider_type}: {detail}", True))
+        checks.append(DiagnosticCheck(_LABEL_LLM_PROVIDER, available, f"{provider_type}: {detail}", True))
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
-        checks.append(DiagnosticCheck("llm provider", False, str(exc)[:80], False))
+        checks.append(DiagnosticCheck(_LABEL_LLM_PROVIDER, False, str(exc)[:80], False))
     return checks
 
 
@@ -359,7 +373,6 @@ async def _check_ollama(project_dir: Path) -> list[DiagnosticCheck]:
 
 async def _check_agent_runtime(project_dir: Path) -> list[DiagnosticCheck]:
     """Check configured agent runtime availability."""
-    _LABEL = "agent runtime"
     checks: list[DiagnosticCheck] = []
     try:
         from sova.config.loader import load_config
@@ -370,11 +383,11 @@ async def _check_agent_runtime(project_dir: Path) -> list[DiagnosticCheck]:
         try:
             runtime = create_runtime(runtime_type, codex=cfg.codex)
         except ValueError as exc:
-            checks.append(DiagnosticCheck(_LABEL, False, str(exc), True))
+            checks.append(DiagnosticCheck(_LABEL_AGENT_RUNTIME, False, str(exc), True))
             return checks
 
         available, detail = await runtime.check_available()
-        checks.append(DiagnosticCheck(_LABEL, available, f"{runtime_type}: {detail}", True))
+        checks.append(DiagnosticCheck(_LABEL_AGENT_RUNTIME, available, f"{runtime_type}: {detail}", True))
 
         # agent.max_budget is gt=0-validated (always positive), so every
         # pipeline step's dispatch_command()/dispatch_prompt() call passes a
@@ -394,7 +407,7 @@ async def _check_agent_runtime(project_dir: Path) -> list[DiagnosticCheck]:
                 )
             )
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
-        checks.append(DiagnosticCheck(_LABEL, False, str(exc)[:80], False))
+        checks.append(DiagnosticCheck(_LABEL_AGENT_RUNTIME, False, str(exc)[:80], False))
     return checks
 
 
@@ -417,7 +430,7 @@ async def _check_awareness_providers(project_dir: Path) -> list[DiagnosticCheck]
             return checks
 
         if not cfg.awareness.providers:
-            checks.append(DiagnosticCheck("awareness providers", True, "no providers configured", False))
+            checks.append(DiagnosticCheck(_LABEL_AWARENESS_PROVIDERS, True, "no providers configured", False))
             return checks
 
         providers = create_providers(cfg.awareness)
@@ -448,7 +461,7 @@ async def _check_awareness_providers(project_dir: Path) -> list[DiagnosticCheck]
             ok, detail = result
             checks.append(DiagnosticCheck(f"awareness: {provider.name}", ok, detail, False))
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
-        checks.append(DiagnosticCheck("awareness providers", False, str(exc)[:80], False))
+        checks.append(DiagnosticCheck(_LABEL_AWARENESS_PROVIDERS, False, str(exc)[:80], False))
     return checks
 
 
@@ -457,8 +470,9 @@ def _check_install_completeness(project_dir: Path) -> list[DiagnosticCheck]:
     from sova.utils.permissions import check_agent_permissions
 
     checks: list[DiagnosticCheck] = []
+    claude_dir = project_dir / _CLAUDE_DIR
 
-    commands_dir = project_dir / ".claude" / "commands"
+    commands_dir = claude_dir / "commands"
     if commands_dir.is_dir():
         cmd_count = len(list(commands_dir.glob("*.md")))
         checks.append(DiagnosticCheck("commands installed", cmd_count > 0, f"{cmd_count} commands", cmd_count == 0))
@@ -467,7 +481,7 @@ def _check_install_completeness(project_dir: Path) -> list[DiagnosticCheck]:
             DiagnosticCheck("commands installed", False, ".claude/commands/ missing, run: sova install", True)
         )
 
-    memory_dir = project_dir / ".claude" / "agent-memory"
+    memory_dir = claude_dir / "agent-memory"
     checks.append(
         DiagnosticCheck(
             "agent memory",
@@ -477,13 +491,12 @@ def _check_install_completeness(project_dir: Path) -> list[DiagnosticCheck]:
         )
     )
 
-    db_path = project_dir / ".claude" / "sova.db"
+    db_path = claude_dir / "sova.db"
     checks.append(
         DiagnosticCheck("database", db_path.is_file(), str(db_path) if db_path.is_file() else "missing", True)
     )
 
     # Agent permissions (warning-level: agents now use bypassPermissions by default)
-    claude_dir = project_dir / ".claude"
     has_all, missing = check_agent_permissions(claude_dir)
     if has_all:
         checks.append(DiagnosticCheck("agent permissions", True, "configured", False))
@@ -503,14 +516,15 @@ async def _check_database_schema(project_dir: Path) -> list[DiagnosticCheck]:
     since the "database" check in ``_check_install_completeness`` already reports
     that and a schema comparison against nothing would only duplicate it.
     """
-    _LABEL = "database schema"
     checks: list[DiagnosticCheck] = []
     try:
         from sova.db.session import inspect_schema
 
         inspection = await inspect_schema(project_dir)
         if inspection.state == "no_tables":
-            checks.append(DiagnosticCheck(_LABEL, False, "database has no tables, run: sova init-db", False))
+            checks.append(
+                DiagnosticCheck(_LABEL_DATABASE_SCHEMA, False, "database has no tables, run: sova init-db", False)
+            )
         elif inspection.state == "ready":
             problems: list[str] = []
             if inspection.legacy:
@@ -522,11 +536,13 @@ async def _check_database_schema(project_dir: Path) -> list[DiagnosticCheck]:
             if inspection.missing:
                 problems.append(f"{len(inspection.missing)} ORM column(s) missing: {', '.join(inspection.missing[:3])}")
             if problems:
-                checks.append(DiagnosticCheck(_LABEL, False, f"{'; '.join(problems)}, run: sova init-db", False))
+                checks.append(
+                    DiagnosticCheck(_LABEL_DATABASE_SCHEMA, False, f"{'; '.join(problems)}, run: sova init-db", False)
+                )
             else:
-                checks.append(DiagnosticCheck(_LABEL, True, f"at head ({inspection.head})", False))
+                checks.append(DiagnosticCheck(_LABEL_DATABASE_SCHEMA, True, f"at head ({inspection.head})", False))
     except Exception as exc:  # noqa: BLE001 (diagnostic check reports any failure as a failed check row)
-        checks.append(DiagnosticCheck(_LABEL, False, f"could not inspect: {str(exc)[:60]}", False))
+        checks.append(DiagnosticCheck(_LABEL_DATABASE_SCHEMA, False, f"could not inspect: {str(exc)[:60]}", False))
     return checks
 
 
@@ -548,7 +564,7 @@ async def _guarded(label: str, check: Callable[..., Any], *args: Any) -> list[Di
         result = check(*args)
         if inspect.isawaitable(result):
             result = await result
-    except Exception as exc:  # noqa: BLE001 (backstop: one broken check is one failed row, not a lost report)
+    except Exception as exc:  # noqa: BLE001 (backstop; one broken check is one failed row, not a lost report)
         return [DiagnosticCheck(label, False, f"check failed: {str(exc)[:80]}", False)]
     return result if isinstance(result, list) else [result]
 
@@ -564,20 +580,20 @@ async def run_all_checks(project_dir: Path) -> list[DiagnosticCheck]:
 
     checks.extend(await _guarded("Python >= 3.12", _check_python_version))
     checks.extend(await _guarded("git", _check_git))
-    checks.extend(await _guarded("gh CLI", _check_gh_cli))
-    checks.extend(await _guarded("claude CLI", _check_claude_cli))
+    checks.extend(await _guarded(_LABEL_GH_CLI, _check_gh_cli))
+    checks.extend(await _guarded(_LABEL_CLAUDE_CLI, _check_claude_cli))
     checks.extend(await _guarded("terminal-notifier", _check_terminal_notifier))
     checks.extend(await _guarded("rtk", _check_rtk))
 
-    checks.extend(await _guarded("git identity", _check_git_identity, project_dir))
-    checks.extend(await _guarded("git hooks", _check_git_hooks, project_dir))
+    checks.extend(await _guarded(_LABEL_GIT_IDENTITY, _check_git_identity, project_dir))
+    checks.extend(await _guarded(_LABEL_GIT_HOOKS, _check_git_hooks, project_dir))
     checks.extend(await _guarded("config", _check_sova_config, project_dir))
     checks.extend(await _guarded("install completeness", _check_install_completeness, project_dir))
-    checks.extend(await _guarded("database schema", _check_database_schema, project_dir))
-    checks.extend(await _guarded("llm provider", _check_llm_provider, project_dir))
+    checks.extend(await _guarded(_LABEL_DATABASE_SCHEMA, _check_database_schema, project_dir))
+    checks.extend(await _guarded(_LABEL_LLM_PROVIDER, _check_llm_provider, project_dir))
     checks.extend(await _guarded("keyring secrets", _check_keyring_secrets, project_dir))
     checks.extend(await _guarded("ollama", _check_ollama, project_dir))
-    checks.extend(await _guarded("agent runtime", _check_agent_runtime, project_dir))
-    checks.extend(await _guarded("awareness providers", _check_awareness_providers, project_dir))
+    checks.extend(await _guarded(_LABEL_AGENT_RUNTIME, _check_agent_runtime, project_dir))
+    checks.extend(await _guarded(_LABEL_AWARENESS_PROVIDERS, _check_awareness_providers, project_dir))
 
     return checks
