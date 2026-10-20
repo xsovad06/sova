@@ -3949,6 +3949,19 @@ class TestHumanInvolvementGate:
         assert result.gate == "human_involvement"
         assert "type: epic" in result.detail
 
+    async def test_epic_label_blocks_post_development_candidate_too(self) -> None:
+        """Unlike the local-record fallback, the `type: epic` label block is
+        deliberately unscoped by `candidate` (mirroring `agent:human-only`):
+        an issue that acquires the label after a PR exists stays blocked for
+        every pipeline stage, including address-review/integrate, until the
+        label is removed. Pinned so a future change narrowing this must be
+        a deliberate, visible decision rather than an accidental regression.
+        """
+        result = await check_human_involvement_gate(1, ["type: epic"], candidate="spawn_integrate")
+        assert result is not None
+        assert result.gate == "human_involvement"
+        assert "type: epic" in result.detail
+
     async def test_ready_label_passes(self) -> None:
         result = await check_human_involvement_gate(1, ["agent:ready"])
         assert result is None

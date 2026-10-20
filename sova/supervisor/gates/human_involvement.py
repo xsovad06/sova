@@ -71,7 +71,7 @@ def _is_past_pre_development(labels: list[str]) -> bool:
 
 
 async def check_human_involvement_gate(
-    issue: int,
+    issue: int | str,
     labels: list[str],
     *,
     session_factory: async_sessionmaker | None = None,
@@ -83,7 +83,15 @@ async def check_human_involvement_gate(
     human-only is a hard block (defense-in-depth alongside state-based HUMAN_ONLY).
     interactive-recommended blocks autonomous scheduling; manual dashboard starts
     bypass the progression engine entirely. An epic is a tracking container that
-    no role should ever be spawned on.
+    no role should ever be spawned on; like human-only, this block is
+    deliberately unscoped by `candidate` (it applies to every pipeline stage,
+    including address-review/integrate), so an issue that acquires `type: epic`
+    after a PR already exists stays blocked until the label is removed.
+
+    `issue` accepts a Jira-style string id (e.g. `"RHCLOUD-42"`) as well as a
+    GitHub-style int, matching `Task.id`'s `str` type; only the numeric-only
+    GitHub case ever reaches a `DependencyGraph`, and this gate never builds
+    one (`consider_dependencies=False` below).
 
     Classification runs with `consider_dependencies=False`, never the caller's
     real dependency graph: `blocked` outranks `interactive` in the classifier's

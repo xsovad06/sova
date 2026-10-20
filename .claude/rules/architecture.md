@@ -263,6 +263,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - The three suitability labels are mutually exclusive, so every producer applies them through one helper, and a config pattern match is never re-litigated by the model
 - One shared suitability classifier, and the two ways routing a decision through it can weaken it
 - The dependency-gate's open-dependency walk is now the same function the classifier calls, not a parallel reimplementation
+- A typo'd log level must never crash the caller, and an epic's block stays deliberately unscoped by pipeline candidate
 
 ## Cross-References (domain-specific details)
 

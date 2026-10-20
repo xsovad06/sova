@@ -19,6 +19,11 @@ import structlog
 _MAX_ENTRIES = 2000
 _DEFAULT_TTL_SECONDS = 3600.0
 
+# A typo'd level (or a non-stdlib-compatible one) must never crash the
+# caller: a logging helper raising out of a log call is worse than logging
+# at the wrong level. Unrecognised values fall back to "warning".
+_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
+
 _seen: OrderedDict[str, float] = OrderedDict()
 
 
@@ -43,12 +48,20 @@ def log_once(
     if last is not None and now - last < ttl_seconds:
         return
 
+    emit = getattr(log, level, None) if level in _LEVELS else None
+    if emit is None:
+        log.warning("log_dedup.invalid_level", dedup_event=event, requested_level=level)
+        emit = log.warning
+
+    # Recorded after the emit target is resolved so that any future failure in
+    # resolution leaves the key unset rather than silently swallowing the
+    # first occurrence.
     _seen[dedup_key] = now
     _seen.move_to_end(dedup_key)
     while len(_seen) > _MAX_ENTRIES:
         _seen.popitem(last=False)
 
-    getattr(log, level)(event, **fields)
+    emit(event, **fields)
 
 
 def warn_once(
