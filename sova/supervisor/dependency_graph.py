@@ -300,12 +300,24 @@ class DependencyGraph:
         the spec service falls back to the contextvar-based project directory.
 
         Each node carries both ``is_human_only``/``is_interactive_recommended``
-        (label-only, legacy) and ``suitability`` (the full classifier verdict,
-        where ``blocked`` outranks ``interactive`` and ``human``). The two can
+        (label-only, legacy) and ``suitability`` (the classifier verdict, where
+        ``blocked`` outranks ``interactive`` and ``human``). The two can
         disagree: an interactive-recommended issue with an open dependency has
         ``is_interactive_recommended=True`` but ``suitability.mode="blocked"``.
-        ``suitability`` is authoritative; the legacy booleans are not a cheap
-        proxy for it.
+
+        ``suitability.mode``/``reasons``/``blocked_by`` reflect labels and
+        dependency state alone: `assess_suitability()` never looks at
+        ``task.state`` (state exclusion is this method's own
+        ``_EXCLUDED_FROM_READY`` filter, applied separately in
+        ``get_ready_tasks()``) or at the local ``task_assessments`` record
+        (only `queue_maintenance` resolves that fallback; building this graph
+        has no DB access), so a DONE or IN_PROGRESS node can still carry
+        ``mode="autonomous"``. ``suitability.eligible`` folds in the one of
+        those two gaps this module can answer on its own: it is
+        ``mode in AGENT_ELIGIBLE_MODES and task.state not in
+        _EXCLUDED_FROM_READY``, matching ``get_ready_tasks()``'s own combined
+        filter. A consumer deciding whether an issue is schedulable should
+        read ``suitability.eligible``, never the bare ``mode``.
 
         Recomputes validate(), get_ready_tasks(), and get_parallel_groups()
         on every call.  Avoid calling repeatedly on the same graph instance;
@@ -370,6 +382,10 @@ class DependencyGraph:
             task_is_interactive = is_interactive_recommended(task.labels)
             suitability = assess_suitability(task, self)
             suitabilities[tid] = suitability
+            suitability_payload = asdict(suitability)
+            suitability_payload["eligible"] = (
+                suitability.mode in AGENT_ELIGIBLE_MODES and task.state not in _EXCLUDED_FROM_READY
+            )
             node: dict = {
                 "id": tid,
                 "title": task.title,
@@ -382,7 +398,7 @@ class DependencyGraph:
                 "is_epic": is_epic(task.labels),
                 "is_human_only": task_is_human_only,
                 "is_interactive_recommended": task_is_interactive and not task_is_human_only,
-                "suitability": asdict(suitability),
+                "suitability": suitability_payload,
             }
             if pr_info:
                 node["pr_number"] = pr_info.get("pr_number")

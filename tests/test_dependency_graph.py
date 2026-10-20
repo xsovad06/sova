@@ -23,6 +23,7 @@ from sova.supervisor.dependency_graph import (
     is_ready,
     parse_dependencies,
 )
+from sova.supervisor.suitability import Suitability, SuitabilityMode
 
 
 @pytest.fixture(autouse=True)
@@ -1703,6 +1704,7 @@ class TestIsReady:
     def test_prefix_is_not_a_match(self) -> None:
         assert is_ready(["agent:ready-for-review"]) is False
 
+
 class TestLocalAssessmentApplies:
     """Shared predicate: `check_human_involvement_gate()` and `queue_maintenance`
     must agree on when a local `task_assessments` record still applies."""
@@ -1791,7 +1793,7 @@ class TestNodeSuitabilityField:
     def test_every_node_has_a_suitability_object(self) -> None:
         graph = DependencyGraph([_task(1), _task(2)])
         for node in graph.to_dict()["nodes"]:
-            assert set(node["suitability"]) == {"mode", "reasons", "blocked_by"}
+            assert set(node["suitability"]) == {"mode", "reasons", "blocked_by", "eligible"}
 
     def test_unlabelled_node_is_unclassified(self) -> None:
         node = DependencyGraph([_task(1)]).to_dict()["nodes"][0]
@@ -1826,9 +1828,9 @@ class TestNodeSuitabilityField:
         full precedence chain, where `blocked` outranks `interactive`. An
         interactive-recommended issue with an open dependency therefore shows
         `is_interactive_recommended=True` (label present) alongside
-        `suitability.mode="blocked"` (the authoritative verdict): a consumer
-        must read `suitability`, not the legacy booleans, to know whether the
-        issue is actually schedulable.
+        `suitability.mode="blocked"` (the verdict): a consumer must read
+        `suitability.eligible`, not the legacy booleans or the bare mode, to
+        know whether the issue is actually schedulable.
         """
         blocker = Task(id="1", title="blocker", state=TaskState.BACKLOG)
         blocked = Task(
@@ -1841,3 +1843,41 @@ class TestNodeSuitabilityField:
         nodes = {n["id"]: n for n in DependencyGraph([blocker, blocked]).to_dict()["nodes"]}
         assert nodes[2]["is_interactive_recommended"] is True
         assert nodes[2]["suitability"]["mode"] == "blocked"
+        assert nodes[2]["suitability"]["eligible"] is False
+
+    def test_done_node_with_ready_label_is_not_eligible(self) -> None:
+        """`assess_suitability` never looks at `task.state`, so a DONE node
+        with `agent:ready` still classifies `mode="autonomous"`; `eligible`
+        is where state exclusion is folded in for this payload.
+        """
+        task = Task(id="1", title="done", labels=["agent:ready"], state=TaskState.DONE)
+        node = DependencyGraph([task]).to_dict()["nodes"][0]
+        assert node["suitability"]["mode"] == "autonomous"
+        assert node["suitability"]["eligible"] is False
+
+    def test_unclassified_backlog_node_is_eligible(self) -> None:
+        task = Task(id="1", title="x", state=TaskState.BACKLOG)
+        node = DependencyGraph([task]).to_dict()["nodes"][0]
+        assert node["suitability"]["mode"] == "unclassified"
+        assert node["suitability"]["eligible"] is True
+
+
+class TestGetReadyTasksPrecomputedSuitabilities:
+    """`get_ready_tasks(suitabilities=...)` must actually use the precomputed map."""
+
+    def test_precomputed_entry_is_honoured_over_recomputing(self) -> None:
+        """A deliberately wrong precomputed verdict must be trusted, proving
+        the map is read rather than ignored."""
+        task = _task(1, state=TaskState.BACKLOG)
+        graph = DependencyGraph([task])
+        wrong = Suitability(mode=SuitabilityMode.HUMAN, reasons=[{"source": "label", "value": "x"}])
+        assert graph.get_ready_tasks({1: wrong}) == []
+
+    def test_partial_map_falls_back_per_id_instead_of_crashing(self) -> None:
+        """An id missing from the map must be classified fresh, not looked up
+        with `[]` and crash with `KeyError`."""
+        task1 = _task(1, state=TaskState.BACKLOG)
+        task2 = _task(2, labels=["agent:human-only"], state=TaskState.BACKLOG)
+        graph = DependencyGraph([task1, task2])
+        ready = graph.get_ready_tasks({1: Suitability(mode=SuitabilityMode.AUTONOMOUS)})
+        assert ready == [1]

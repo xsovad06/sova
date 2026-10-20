@@ -14,7 +14,7 @@ SOVA has four main components:
 - `core/state.py`: 19-state TaskStatus StrEnum with transition validation
 - `core/context.py`: ExecutionContext dataclass threading state through steps
 - `core/output.py`: OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
-- `core/steps/`: 28 BaseStep implementations with execute/validate_output/verify_output/can_skip. Four pipeline variants:
+- `core/steps/`: 29 BaseStep implementations with execute/validate_output/verify_output/can_skip. Four pipeline variants:
   - **Developer pipeline** (17 steps): sync -> assess -> create_worktree -> capture_baseline -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> wait_for_external_reviews -> address_external_findings -> monitor_ci -> confidence_score -> extract_memory -> handoff_to_reviewer
   - **Address-review pipeline** (10 steps): ensure_worktree -> rebase -> address_review -> rearrange_commits -> validate -> push -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_reviewer (re-review of the new head; `handoff_to_user` remains in `STEP_REGISTRY` for projects that configure a manual stop via `[pipelines] address_review`)
   - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory
@@ -264,6 +264,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - One shared suitability classifier, and the two ways routing a decision through it can weaken it
 - A caller-side local-assessment fallback must honour the same scoping rule everywhere it is read
 - Readiness re-checking must cover entries already in the queue, not just new candidates, and the local-assessment lookup must be batched and capacity-gated like the graph build
+- A node's bare `suitability.mode` is not "is this issue schedulable," because `assess_suitability()` never looks at task state or the local-assessment record
 - The dependency-gate's open-dependency walk is now the same function the classifier calls, not a parallel reimplementation
 - A typo'd log level must never crash the caller, and an epic's block stays deliberately unscoped by pipeline candidate
 
