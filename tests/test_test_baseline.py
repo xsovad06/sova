@@ -384,6 +384,22 @@ class TestCaptureBaselineStep:
         ctx = _make_ctx(completed_steps=frozenset({"capture_baseline"}))
         assert await CaptureBaselineStep().can_skip(ctx)
 
+    async def test_clears_stale_check_cache_marker(self, tmp_path: Path) -> None:
+        from sova.core.steps.capture_baseline import CaptureBaselineStep
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        ctx = _make_ctx(worktree_dir=worktree)
+
+        with (
+            patch("sova.core.steps.capture_baseline.run_test_suite", new_callable=AsyncMock) as mock_run,
+            patch("sova.core.steps.capture_baseline.clear_marker") as mock_clear,
+        ):
+            mock_run.return_value = BaselineSnapshot(mode="exit_code", exit_code=0, tests=[])
+            await CaptureBaselineStep().execute(ctx)
+
+        mock_clear.assert_called_once_with(worktree)
+
 
 # ValidateStep regression checking
 

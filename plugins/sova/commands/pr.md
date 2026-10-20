@@ -147,7 +147,11 @@ Create a pull request for the current branch using the project's standard PR tem
    ```
 
 8. **Run preflight CI checks locally** before pushing:
-   Run `the project's CI-equivalent check command (see its Makefile, package.json scripts, or CI config)`. It is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them). This must pass before any push. Fix any failures before proceeding.
+   Run the full checks:
+   ```bash
+   the project's CI-equivalent check command (see its Makefile, package.json scripts, or CI config)
+   ```
+   It is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them). This must pass before any push. Fix any failures before proceeding.
 
    If the project has pre-push invariant scripts (`invariants/*.sh`), run every one against the base (`for s in invariants/*.sh; do bash "$s" . "$BASE" || echo "FAIL: $s"; done`, with `BASE` resolved as in step 1) and fix every failure: the pre-push hook runs the same scripts, and a push it blocks is fixed by correcting the reported problem, never by `--no-verify`.
 

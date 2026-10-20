@@ -131,7 +131,12 @@ class TestPluginCommands:
     @pytest.mark.parametrize("path", _command_files(), ids=lambda p: p.stem)
     def test_no_hard_sova_dependencies(self, path: Path) -> None:
         content = path.read_text(encoding="utf-8")
-        for forbidden in ("sova.toml", "sova install", "SOVA pipeline"):
+        # "sova checks": the pipeline-scoped full-check reuse cache (issue
+        # #1158). Its canonical `if sova checks should-skip ...` block renders
+        # as a plausible-looking bash script calling a CLI a standalone plugin
+        # user does not have, so _SUBSTITUTIONS collapses it back to the plain
+        # check command.
+        for forbidden in ("sova.toml", "sova install", "sova checks", "SOVA pipeline"):
             assert forbidden not in content, f"{path} references SOVA-specific setup: {forbidden!r}"
 
     @pytest.mark.parametrize("path", _command_files(), ids=lambda p: p.stem)

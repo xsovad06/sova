@@ -34,6 +34,7 @@ raises ``BillingError`` instead of spawning an uncapped agent.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 import weakref
@@ -42,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.commands.catalog import parse_frontmatter
+from sova.core.check_cache import PIPELINE_STAGE_ENV_KEY
 from sova.ipc.runtime import AgentRuntime, get_runtime, resolve_runtime_model_pin
 from sova.llm import client
 from sova.llm.cli_output_parsing import extract_claude_cli_failure_detail
@@ -528,9 +530,16 @@ async def _run_agent_process(
     discarded), leaving the dashboard run log silent until the whole step
     finishes.
     """
+    # Marks the spawned agent as an autonomous pipeline dispatch, distinct
+    # from a human's own interactive session or the dashboard's one-off
+    # start_command() spawn (neither goes through this module). Lets a
+    # command's full-check instruction (develop.md, review.md, pr.md) reuse
+    # an identical check an earlier call site in this cycle already ran; see
+    # sova.core.check_cache.should_skip().
     proc = await runtime.spawn(
         prompt,
         cwd,
+        env={**os.environ, PIPELINE_STAGE_ENV_KEY: "1"},
         model=model,
         fallback_model=fallback_model,
         max_budget_usd=max_budget_usd,

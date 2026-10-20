@@ -10,6 +10,7 @@ Non-fatal: a failed capture does not block the pipeline.
 
 from __future__ import annotations
 
+from sova.core.check_cache import clear_marker
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.test_baseline import baseline_path, run_test_suite, save_baseline
@@ -29,6 +30,10 @@ class CaptureBaselineStep(BaseStep):
         if ctx.worktree_dir is None:
             log.warning("step.capture_baseline.no_worktree")
             return StepResult(success=True, summary="No worktree, skipping baseline capture")
+
+        # Belt-and-suspenders alongside WorktreeStep's own clear: a reused
+        # worktree must not carry a stale check-cache marker into this cycle.
+        clear_marker(ctx.worktree_dir)
 
         test_cmd = ctx.config.test_cmd
         if not test_cmd or not test_cmd.strip():

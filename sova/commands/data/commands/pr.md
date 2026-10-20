@@ -133,7 +133,15 @@ Create a pull request for the current branch using the project's standard PR tem
    ```
 
 8. **Run preflight CI checks locally** before pushing:
-   Run `{{ check_cmd }}`. It is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them). This must pass before any push. Fix any failures before proceeding.
+   Run the full checks, skipping only when an identical check already passed earlier in this autonomous pipeline cycle for this exact worktree state (a no-op outside the autonomous pipeline: `sova checks should-skip` only ever reports a skip there):
+   ```bash
+   if sova checks should-skip "{{ check_cmd }}"; then
+     echo "Full check already passed for this worktree state earlier in the pipeline cycle; skipping re-run."
+   else
+     {{ check_cmd }} && { sova checks record "{{ check_cmd }}" --passed || true; }
+   fi
+   ```
+   It is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them). This must pass before any push. Fix any failures before proceeding.
 
    If the project has pre-push invariant scripts (`invariants/*.sh`), run every one against the base (`for s in invariants/*.sh; do bash "$s" . "$BASE" || echo "FAIL: $s"; done`, with `BASE` resolved as in step 1) and fix every failure: the pre-push hook runs the same scripts, and a push it blocks is fixed by correcting the reported problem, never by `--no-verify`.
 
