@@ -579,7 +579,7 @@ async def get_auth_status(project_dir: Path) -> dict:
     CLI auth probe isn't re-run on every widget poll. A ``create_provider``
     ``ValueError`` (unknown/misconfigured provider type) is a routine
     misconfigured state, reported here rather than raised, mirroring
-    ``sova/cli/commands/doctor.py:_check_llm_provider``. Any other exception
+    ``sova/utils/diagnostics.py:_check_llm_provider``. Any other exception
     (e.g. config load failure) propagates so the router can turn it into a
     503 (a genuine service failure, not a status to report).
     """

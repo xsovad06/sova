@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -19811,3 +19811,114 @@ class TestWorkItemReasonChainPayload:
         item = self._build(pr_data=None, running=None, handoff=None)
         assert item["reason_chain"] == []
         assert item["matched_reason"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Health service / API (#1119)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _clear_health_cache():
+    from sova.dashboard.services.health_service import _health_checks_cache
+
+    _health_checks_cache.clear()
+    yield
+    _health_checks_cache.clear()
+
+
+@pytest.mark.usefixtures("_clear_health_cache")
+class TestHealthService:
+    async def test_returns_serialized_checks(self, tmp_path: Path) -> None:
+        from sova.dashboard.services import health_service
+        from sova.utils.diagnostics import DiagnosticCheck
+
+        checks = [
+            DiagnosticCheck("git", True, "git version 2.43.0", True),
+            DiagnosticCheck("rtk", False, "not found", False),
+        ]
+        with patch.object(health_service, "run_all_checks", new=AsyncMock(return_value=checks)):
+            result = await health_service.get_health_checks(tmp_path)
+
+        assert result["cached"] is False
+        assert result["checks"] == [
+            {"name": "git", "passed": True, "detail": "git version 2.43.0", "required": True},
+            {"name": "rtk", "passed": False, "detail": "not found", "required": False},
+        ]
+        assert "checked_at" in result
+
+    async def test_a_raising_batch_becomes_one_failed_row_not_an_exception(self, tmp_path: Path) -> None:
+        """A failure anywhere in run_all_checks() must not 500 the caller or
+        blank the panel: it is reported as a single failed check row."""
+        from sova.dashboard.services import health_service
+
+        with patch.object(health_service, "run_all_checks", new=AsyncMock(side_effect=RuntimeError("boom"))):
+            result = await health_service.get_health_checks(tmp_path)
+
+        assert len(result["checks"]) == 1
+        assert result["checks"][0]["passed"] is False
+        assert "boom" in result["checks"][0]["detail"]
+
+    async def test_cache_hit_returns_cached_true(self, tmp_path: Path) -> None:
+        from sova.dashboard.services import health_service
+        from sova.utils.diagnostics import DiagnosticCheck
+
+        mock_run = AsyncMock(return_value=[DiagnosticCheck("git", True, "ok", True)])
+        with patch.object(health_service, "run_all_checks", new=mock_run):
+            first = await health_service.get_health_checks(tmp_path)
+            second = await health_service.get_health_checks(tmp_path)
+
+        assert first["cached"] is False
+        assert second["cached"] is True
+        assert second["checked_at"] == first["checked_at"]
+        assert mock_run.call_count == 1
+
+    async def test_concurrent_uncached_requests_share_one_probe(self, tmp_path: Path) -> None:
+        """Single-flight lock: two concurrent calls racing a cold cache must
+        not each run run_all_checks(), mirroring setup_service's auth-status cache."""
+        from sova.dashboard.services import health_service
+        from sova.utils.diagnostics import DiagnosticCheck
+
+        probe_count = 0
+
+        async def _slow_checks(project_dir: Path):
+            nonlocal probe_count
+            probe_count += 1
+            await asyncio.sleep(0.05)
+            return [DiagnosticCheck("git", True, "ok", True)]
+
+        with patch.object(health_service, "run_all_checks", new=_slow_checks):
+            first, second = await asyncio.gather(
+                health_service.get_health_checks(tmp_path),
+                health_service.get_health_checks(tmp_path),
+            )
+
+        assert probe_count == 1
+        assert first["checks"] == second["checks"]
+
+
+@pytest.mark.usefixtures("_clear_health_cache")
+class TestHealthChecksAPI:
+    async def test_checks_endpoint_returns_serialized_results(self, client: AsyncClient) -> None:
+        from sova.dashboard.services import health_service
+        from sova.utils.diagnostics import DiagnosticCheck
+
+        checks = [DiagnosticCheck("git", True, "git version 2.43.0", True)]
+        with patch.object(health_service, "run_all_checks", new=AsyncMock(return_value=checks)):
+            resp = await client.get("/api/health/checks")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["checks"] == [{"name": "git", "passed": True, "detail": "git version 2.43.0", "required": True}]
+        assert data["cached"] is False
+
+    async def test_checks_endpoint_never_500s_on_internal_failure(self, client: AsyncClient) -> None:
+        from sova.dashboard.services import health_service
+
+        with patch.object(health_service, "run_all_checks", new=AsyncMock(side_effect=RuntimeError("boom"))):
+            resp = await client.get("/api/health/checks")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["checks"]) == 1
+        assert data["checks"][0]["passed"] is False

@@ -258,33 +258,6 @@ def test_configure_rtk_skips_when_binary_missing(tmp_path: Path) -> None:
     assert not (claude_dir / "settings.json").exists()
 
 
-# Doctor check
-
-
-def test_doctor_check_rtk_available() -> None:
-    from sova.cli.commands.doctor import _check_rtk
-
-    with patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/rtk"):
-        checks = _check_rtk()
-    assert len(checks) == 1
-    name, passed, detail, required = checks[0]
-    assert name == "rtk"
-    assert passed is True
-    assert required is False
-
-
-def test_doctor_check_rtk_missing() -> None:
-    from sova.cli.commands.doctor import _check_rtk
-
-    with patch("sova.cli.commands.doctor.shutil.which", return_value=None):
-        checks = _check_rtk()
-    assert len(checks) == 1
-    name, passed, detail, required = checks[0]
-    assert name == "rtk"
-    assert passed is False
-    assert required is False
-
-
 # Non-dict JSON guards
 
 

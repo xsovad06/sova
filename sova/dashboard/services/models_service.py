@@ -265,7 +265,7 @@ async def _resolve_llm_models(
         # whose optional SDK extra (litellm, anthropic) isn't installed,
         # is a routine reportable state, mirroring
         # setup_service.get_auth_status() and
-        # doctor.py:_check_llm_provider, not a genuine service failure.
+        # diagnostics.py:_check_llm_provider, not a genuine service failure.
         # The refresh allowance is deliberately not spent here (see
         # below): no refresh happened, so a retry should not be
         # throttled.
