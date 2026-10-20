@@ -14,6 +14,7 @@ from sova.supervisor.gates import BlockReason
 from sova.supervisor.queue_maintenance import (
     _discover_ready,
     _prune_done,
+    _prune_unsuitable,
     apply_planner_queue_changes,
     maintain_queue,
 )
@@ -93,6 +94,100 @@ class TestPruneDone:
         task_map = {30: TaskState.RESEARCHED, 10: TaskState.TRIAGED, 20: TaskState.IN_PROGRESS}
         result = _prune_done([30, 10, 20], task_map)
         assert result == [30, 10, 20]
+
+
+class TestPruneUnsuitable:
+    """Already-queued entries must be re-checked, not just new candidates (issue #1227 follow-up)."""
+
+    def test_epic_entry_queued_before_the_label_was_added_is_pruned(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["type: epic"])}
+
+        result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={})
+        assert result == []
+
+    def test_interactive_recommended_entry_is_pruned(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        task_objects = {
+            10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["agent:interactive-recommended"])
+        }
+
+        result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={})
+        assert result == []
+
+    def test_suitable_entry_is_kept(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=[])}
+
+        result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={})
+        assert result == [10]
+
+    def test_in_progress_entry_is_never_pruned_even_if_now_unsuitable(self) -> None:
+        """An issue an agent is already developing must not be pulled out of
+        the queue because its suitability drifted mid-flight."""
+        task_map = {10: TaskState.IN_PROGRESS}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.IN_PROGRESS, labels=["type: epic"])}
+
+        result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={})
+        assert result == [10]
+
+    def test_missing_task_object_fails_open(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        result = _prune_unsuitable([10], task_map, task_objects={}, graph=None, local_assessments={})
+        assert result == [10]
+
+    def test_local_human_only_record_prunes_entry(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=[])}
+
+        result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={10: "human_only"})
+        assert result == []
+
+    def test_pipeline_state_label_supersedes_local_record_and_is_kept(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["agent:researched"])}
+
+        result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={10: "human_only"})
+        assert result == [10]
+
+    def test_dependency_blocked_entry_is_not_pruned_even_with_graph_data(self) -> None:
+        """Dependency blocking is `check_dependency_gate`'s job to withhold and
+        report; evicting a queued entry for it would discard a deliberately
+        queued, dependency-waiting issue and lose the gate's visible BlockReason."""
+        task_map = {20: TaskState.RESEARCHED}
+        blocker = Task(id="10", title="blocker", state=TaskState.TRIAGED)
+        blocked = Task(id="20", title="blocked", body="## Dependencies\n- #10\n", state=TaskState.RESEARCHED)
+        graph = DependencyGraph([blocker, blocked])
+
+        result = _prune_unsuitable([20], task_map, {20: blocked}, graph, local_assessments={})
+        assert result == [20]
+
+    def test_backlog_epic_entry_is_pruned(self) -> None:
+        """Epics are tracking containers that rarely reach RESEARCHED, so the
+        re-check must not be scoped to that one state."""
+        task_map = {10: TaskState.BACKLOG}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.BACKLOG, labels=["type: epic"])}
+
+        result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={})
+        assert result == []
+
+    def test_triaged_interactive_recommended_entry_is_pruned(self) -> None:
+        task_map = {10: TaskState.TRIAGED}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.TRIAGED, labels=["agent:interactive-recommended"])}
+
+        result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={})
+        assert result == []
+
+    def test_in_review_and_on_qa_entries_are_never_pruned(self) -> None:
+        """Every agent-in-flight state, not just IN_PROGRESS, must be exempt."""
+        task_map = {10: TaskState.IN_REVIEW, 20: TaskState.ON_QA}
+        task_objects = {
+            10: Task(id="10", title="x", state=TaskState.IN_REVIEW, labels=["type: epic"]),
+            20: Task(id="20", title="y", state=TaskState.ON_QA, labels=["type: epic"]),
+        }
+
+        result = _prune_unsuitable([10, 20], task_map, task_objects, graph=None, local_assessments={})
+        assert result == [10, 20]
 
 
 class TestDiscoverReady:
@@ -242,7 +337,12 @@ class TestDiscoverReady:
         assert graph.get_ready_tasks() == []
 
     def test_local_human_only_record_excludes_candidate(self) -> None:
-        """The local `task_assessments` fallback must apply here too, not just in the gate."""
+        """The local `task_assessments` fallback must apply here too, not just in the gate.
+
+        `labels=[]` here stands for a tracker (e.g. Jira) whose RESEARCHED
+        state is not itself label-derived, so no pipeline-state label is
+        present to supersede the local record.
+        """
         task_map = {10: TaskState.RESEARCHED}
         task_objects = {10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=[])}
 
@@ -259,6 +359,21 @@ class TestDiscoverReady:
             [], task_map, max_queue_size=10, task_objects=task_objects, local_assessments={10: "ready"}
         )
         assert result == ()
+
+    def test_pipeline_state_label_supersedes_local_human_only_record(self) -> None:
+        """On GitHub, `TaskState.RESEARCHED` is derived solely from `agent:researched`,
+        so every real RESEARCHED candidate here carries that label. A local
+        record must not exclude it, or the queue disagrees with
+        `check_human_involvement_gate()` (which treats `agent:researched` as
+        past pre-development and never consults the record for this candidate).
+        """
+        task_map = {10: TaskState.RESEARCHED}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["agent:researched"])}
+
+        result = _discover_ready(
+            [], task_map, max_queue_size=10, task_objects=task_objects, local_assessments={10: "human_only"}
+        )
+        assert result == (10,)
 
 
 class TestMaintainQueueDependencyData:
@@ -439,6 +554,25 @@ class TestMaintainQueueCostControlGates:
 
         mock_build.assert_not_called()
 
+    async def test_session_factory_not_called_when_queue_already_at_capacity(
+        self, adapter: AsyncMock, tmp_path: Path
+    ) -> None:
+        """Mirrors `test_graph_not_built_when_queue_already_at_capacity`: resolving
+        local suitability records must be gated on there being something to
+        resolve them for, just like building the dependency graph."""
+        cfg = SupervisorConfig(enabled=True, task_queue=[10, 20], max_queue_size=2)
+        adapter.list_tasks.return_value = [
+            Task(id="10", title="x", state=TaskState.IN_PROGRESS),
+            Task(id="20", title="y", state=TaskState.IN_PROGRESS),
+            Task(id="30", title="z", state=TaskState.RESEARCHED),
+        ]
+
+        def exploding_factory():
+            raise AssertionError("session_factory must not be called when there is nothing to resolve")
+
+        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+            await maintain_queue(adapter, cfg, tmp_path, session_factory=exploding_factory, project_slug="test/repo")
+
 
 class TestMaintainQueueLocalAssessment:
     """`maintain_queue` must honour the local `task_assessments` fallback end to end."""
@@ -454,6 +588,9 @@ class TestMaintainQueueLocalAssessment:
     async def test_local_human_only_record_excludes_candidate_from_queue(
         self, adapter: AsyncMock, session_factory, tmp_path: Path
     ) -> None:
+        """`labels=[]` stands for a tracker whose RESEARCHED state is not
+        itself label-derived (see `test_pipeline_state_label_does_not_exclude_...`
+        for the GitHub-realistic case where a pipeline-state label is present)."""
         from sova.knowledge.assessments import set_assessment
 
         async with session_factory() as session:
@@ -483,6 +620,103 @@ class TestMaintainQueueLocalAssessment:
             )
 
         assert result.added == (40,)
+
+    async def test_pipeline_state_label_does_not_exclude_candidate_despite_local_record(
+        self, adapter: AsyncMock, session_factory, tmp_path: Path
+    ) -> None:
+        """On GitHub, `TaskState.RESEARCHED` is derived solely from `agent:researched`:
+        every real candidate here carries that label, which must supersede a
+        stale local `human_only` record the same way it does for
+        `check_human_involvement_gate()`, or the queue permanently withholds
+        an issue the gate would happily let through.
+        """
+        from sova.knowledge.assessments import set_assessment
+
+        async with session_factory() as session:
+            await set_assessment(
+                session, issue_number="40", project_slug="test/repo", suitability="human_only", reasoning="test"
+            )
+
+        cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
+        adapter.list_tasks.return_value = [
+            Task(id="40", title="x", state=TaskState.RESEARCHED, labels=["agent:researched"])
+        ]
+
+        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+            result = await maintain_queue(
+                adapter, cfg, tmp_path, session_factory=session_factory, project_slug="test/repo"
+            )
+
+        assert result.added == (40,)
+
+    async def test_capacity_freed_by_prune_still_resolves_discovery_local_assessment(
+        self, adapter: AsyncMock, session_factory, tmp_path: Path
+    ) -> None:
+        """Capacity for discovery is measured before `_prune_unsuitable` runs,
+        but a prune in the same pass can free a slot: a newly promoted
+        candidate must still get its local-assessment record resolved, or an
+        issue with a stored `human_only` record is queued anyway and only
+        blocked by the gate on the next poll."""
+        from sova.knowledge.assessments import set_assessment
+
+        async with session_factory() as session:
+            await set_assessment(
+                session, issue_number="20", project_slug="test/repo", suitability="human_only", reasoning="test"
+            )
+
+        cfg = SupervisorConfig(enabled=True, task_queue=[10], max_queue_size=1)
+        adapter.list_tasks.return_value = [
+            Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["type: epic"]),
+            Task(id="20", title="y", state=TaskState.RESEARCHED, labels=[]),
+        ]
+
+        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+            result = await maintain_queue(
+                adapter, cfg, tmp_path, session_factory=session_factory, project_slug="test/repo"
+            )
+
+        assert 10 in result.removed
+        assert result.added == ()
+
+
+class TestMaintainQueuePrunesPreExistingUnsuitable:
+    """An already-queued entry that drifted unsuitable must be pruned, not just excluded at discovery time."""
+
+    async def test_pre_existing_epic_entry_is_pruned(self, adapter: AsyncMock, tmp_path: Path) -> None:
+        cfg = SupervisorConfig(enabled=True, task_queue=[10], max_queue_size=10)
+        adapter.list_tasks.return_value = [Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["type: epic"])]
+
+        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+            result = await maintain_queue(adapter, cfg, tmp_path)
+
+        assert 10 in result.removed
+        assert 10 not in result.current
+
+    async def test_pre_existing_interactive_recommended_entry_is_pruned(
+        self, adapter: AsyncMock, tmp_path: Path
+    ) -> None:
+        cfg = SupervisorConfig(enabled=True, task_queue=[10], max_queue_size=10)
+        adapter.list_tasks.return_value = [
+            Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["agent:interactive-recommended"])
+        ]
+
+        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+            result = await maintain_queue(adapter, cfg, tmp_path)
+
+        assert 10 in result.removed
+        assert 10 not in result.current
+
+    async def test_in_progress_entry_is_not_pruned_for_suitability(self, adapter: AsyncMock, tmp_path: Path) -> None:
+        """An issue already picked up by an agent must stay queued regardless
+        of its current suitability verdict."""
+        cfg = SupervisorConfig(enabled=True, task_queue=[10], max_queue_size=10)
+        adapter.list_tasks.return_value = [Task(id="10", title="x", state=TaskState.IN_PROGRESS, labels=["type: epic"])]
+
+        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+            result = await maintain_queue(adapter, cfg, tmp_path)
+
+        assert 10 in result.current
+        assert 10 not in result.removed
 
 
 class TestMaintainQueue:

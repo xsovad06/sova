@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sova.adapters.base import Task
 from sova.knowledge.assessments import get_latest_assessment
 from sova.supervisor.gates import BlockReason
-from sova.supervisor.labels import is_epic, is_human_only, is_interactive_recommended, is_ready
+from sova.supervisor.labels import local_assessment_applies
 from sova.supervisor.suitability import SuitabilityMode, assess_suitability
 from sova.utils.logging import get_logger
 
@@ -18,15 +18,6 @@ log = get_logger(component="supervisor.gates.human_involvement")
 # any repair/reset action, a local record (which nothing ever clears) must
 # never be able to block finishing work a human already started.
 _PRE_DEVELOPMENT_CANDIDATES = frozenset({"spawn_triage", "spawn_researcher", "spawn_developer"})
-
-# Any of these pipeline-state labels mean the issue has moved past the point
-# where a local suitability record applies, mirroring how a tracker label is
-# stripped by `set_state()` on every real transition. Checked alongside
-# `agent:ready` so the local-record fallback self-clears instead of needing
-# `sova assess clear` to be remembered.
-_PAST_PRE_DEVELOPMENT_LABELS = frozenset(
-    {"agent:triaged", "agent:researched", "agent:in-progress", "agent:in-review", "agent:on-qa"}
-)
 
 
 # The modes this gate ever blocks on. `blocked` is deliberately absent:
@@ -63,11 +54,6 @@ _BLOCKS: dict[tuple[SuitabilityMode, bool], tuple[str, str]] = {
         "(manual start only; clear with `sova assess clear {issue}`)",
     ),
 }
-
-
-def _is_past_pre_development(labels: list[str]) -> bool:
-    normalized = {label.lower().strip() for label in labels}
-    return bool(normalized & _PAST_PRE_DEVELOPMENT_LABELS)
 
 
 async def check_human_involvement_gate(
@@ -122,16 +108,10 @@ async def check_human_involvement_gate(
     # Guarded by the same labels `assess_suitability()` would use to decide
     # the verdict without ever consulting the local record: when one of them
     # is already present, the DB lookup's result can never change the
-    # outcome, so skip the session open and query entirely.
-    if (
-        session_factory is not None
-        and candidate in _PRE_DEVELOPMENT_CANDIDATES
-        and not is_ready(labels)
-        and not _is_past_pre_development(labels)
-        and not is_human_only(labels)
-        and not is_interactive_recommended(labels)
-        and not is_epic(labels)
-    ):
+    # outcome, so skip the session open and query entirely. `local_assessment_applies()`
+    # is the same shared predicate `queue_maintenance` uses, so the two
+    # consumers cannot apply a stale local record under different conditions.
+    if session_factory is not None and candidate in _PRE_DEVELOPMENT_CANDIDATES and local_assessment_applies(labels):
         try:
             async with session_factory() as session:
                 record = await get_latest_assessment(session, issue_number=str(issue), project_slug=project_slug)

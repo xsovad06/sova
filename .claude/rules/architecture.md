@@ -262,6 +262,8 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A generated PR title's scope must come from the same source as a commit message's scope, or only one of them stays valid when the format rule changes: an issue number is not a scope
 - The three suitability labels are mutually exclusive, so every producer applies them through one helper, and a config pattern match is never re-litigated by the model
 - One shared suitability classifier, and the two ways routing a decision through it can weaken it
+- A caller-side local-assessment fallback must honour the same scoping rule everywhere it is read
+- Readiness re-checking must cover entries already in the queue, not just new candidates, and the local-assessment lookup must be batched and capacity-gated like the graph build
 - The dependency-gate's open-dependency walk is now the same function the classifier calls, not a parallel reimplementation
 - A typo'd log level must never crash the caller, and an epic's block stays deliberately unscoped by pipeline candidate
 

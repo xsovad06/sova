@@ -1703,6 +1703,49 @@ class TestIsReady:
     def test_prefix_is_not_a_match(self) -> None:
         assert is_ready(["agent:ready-for-review"]) is False
 
+class TestLocalAssessmentApplies:
+    """Shared predicate: `check_human_involvement_gate()` and `queue_maintenance`
+    must agree on when a local `task_assessments` record still applies."""
+
+    def test_no_labels_applies(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies([]) is True
+
+    def test_ready_label_does_not_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["agent:ready"]) is False
+
+    def test_human_only_label_does_not_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["agent:human-only"]) is False
+
+    def test_interactive_recommended_label_does_not_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["agent:interactive-recommended"]) is False
+
+    def test_epic_label_does_not_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["type: epic"]) is False
+
+    @pytest.mark.parametrize(
+        "label",
+        ["agent:triaged", "agent:researched", "agent:in-progress", "agent:in-review", "agent:on-qa"],
+    )
+    def test_pipeline_state_label_does_not_apply(self, label: str) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies([label]) is False
+
+    def test_unrelated_labels_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["area: dashboard", "priority: high"]) is True
+
 
 # ---------------------------------------------------------------------------
 # to_dict: is_human_only / is_interactive_recommended fields
