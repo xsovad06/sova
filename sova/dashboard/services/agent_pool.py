@@ -50,8 +50,20 @@ class AgentState:
     last_result_cost: float | None = None
     pr_number: int | None = None
     pre_run_sha: str | None = None
+    # Local HEAD of the resolved worktree at spawn time, captured only for a
+    # non-PR command run (no pr_number, so pre_run_sha is never set from a PR
+    # headRefOid). Lets `_check_pr_diff_guard()` reach a baseline for a
+    # command like `rearrange-commits` invoked without a PR number, where
+    # pre_run_sha would otherwise be permanently None.
+    pre_run_head_sha: str | None = None
     prompt: str | None = None
     project_dir: Path = field(default_factory=Path.cwd)
+    # The worktree/directory the process actually runs in, resolved at spawn
+    # time via `_resolve_issue_worktree()`. For a PR-based command this is
+    # never `project_dir` (PR-based spawns abort if the two resolve equal),
+    # so a git-diff guard must use this, not `project_dir`, to inspect the
+    # PR's own branch rather than the primary checkout.
+    worktree_path: Path | None = None
     resource_collector: ResourceCollector | None = None
     resource_writer: ResourceWriter | None = None
     resource_flush_task: asyncio.Task | None = None
