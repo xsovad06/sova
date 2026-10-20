@@ -10,6 +10,7 @@ from sova.db.session import close_db, get_session, init_db
 from sova.knowledge.assessments import (
     clear_assessment,
     get_latest_assessment,
+    get_latest_assessments,
     resolve_suitability,
     set_assessment,
     shorthand_for,
@@ -95,3 +96,40 @@ class TestSetGetClear:
         async with await get_session() as session:
             count = await clear_assessment(session, issue_number="99", project_slug="owner/repo")
         assert count == 0
+
+
+class TestGetLatestAssessmentsBatch:
+    """Batched reader for `queue_maintenance`: one query instead of one per candidate."""
+
+    async def test_empty_input_returns_empty_without_querying(self) -> None:
+        async with await get_session() as session:
+            result = await get_latest_assessments(session, issue_numbers=[], project_slug="owner/repo")
+        assert result == {}
+
+    async def test_returns_latest_row_per_issue(self) -> None:
+        async with await get_session() as session:
+            await set_assessment(
+                session, issue_number="1", project_slug="owner/repo", suitability="human_only", reasoning="r1"
+            )
+            await set_assessment(
+                session, issue_number="1", project_slug="owner/repo", suitability="ready", reasoning="r2"
+            )
+            await set_assessment(
+                session,
+                issue_number="2",
+                project_slug="owner/repo",
+                suitability="interactive_recommended",
+                reasoning="r3",
+            )
+            result = await get_latest_assessments(session, issue_numbers=["1", "2", "3"], project_slug="owner/repo")
+        assert set(result) == {"1", "2"}
+        assert result["1"].suitability == "ready"
+        assert result["2"].suitability == "interactive_recommended"
+
+    async def test_scoped_to_project_slug(self) -> None:
+        async with await get_session() as session:
+            await set_assessment(
+                session, issue_number="1", project_slug="other/repo", suitability="human_only", reasoning="r1"
+            )
+            result = await get_latest_assessments(session, issue_numbers=["1"], project_slug="owner/repo")
+        assert result == {}
