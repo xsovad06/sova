@@ -201,6 +201,51 @@ class TestAssessTasksBatch:
         assert len(results) == 1
         mock_assess.assert_called_once()
 
+    async def test_batch_failure_preserves_short_circuited_interactive_verdict(self) -> None:
+        """A Batch-API failure must not hand a sticky interactive/human_only task back to the LLM.
+
+        Before the fix, invoke_batch() raising fell back to
+        _sequential_fallback(tasks, ctx) with the FULL task list, discarding
+        the heuristic short-circuit and letting the LLM re-decide (and
+        potentially erase) an already-resolved agent:interactive-recommended
+        verdict.
+        """
+        role = TriageRole()
+        ctx = _make_ctx()
+        normal_task = _make_task("1")
+        interactive_task = Task(
+            id="2",
+            title="Investigate flaky suite",
+            body="Needs investigation in staging.",
+            state=TaskState.BACKLOG,
+            labels=["agent:interactive-recommended"],
+            url="https://github.com/test/repo/issues/2",
+        )
+        tasks = [normal_task, interactive_task]
+
+        mock_assess = AsyncMock(
+            return_value=TaskAssessment(
+                suitability="ready",
+                confidence=0.8,
+                reasoning="LLM verdict",
+                estimated_complexity="moderate",
+                suggested_role="researcher",
+            )
+        )
+
+        with (
+            patch("sova.llm.client.invoke_batch", new_callable=AsyncMock, side_effect=RuntimeError("API down")),
+            patch("sova.llm.client.resolve_model", return_value=None),
+            patch.object(role, "assess_task_with_llm", mock_assess),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 2
+        result_by_id = {t.id: a for t, a in results}
+        assert result_by_id["2"].suitability == "interactive"
+        # Only the normal task should ever have reached the LLM fallback.
+        mock_assess.assert_called_once_with(normal_task, ctx)
+
     @pytest.mark.asyncio
     async def test_cost_recorded_for_successful_results(self) -> None:
         role = TriageRole()
@@ -256,6 +301,40 @@ class TestAssessTasksBatch:
         assert len(results) == 2
         assert results[0][1].suitability == "human_only"
         assert results[1][1].suitability == "ready"
+
+    @pytest.mark.asyncio
+    async def test_interactive_patterns_filter_before_batch(self) -> None:
+        role = TriageRole()
+        ctx = _make_ctx()
+        ctx.config.triage.skip_title_prefixes = []
+        ctx.config.triage.interactive_title_prefixes = ["[Spike]"]
+
+        tasks = [
+            _make_task("1", title="[Spike] Explore caching"),
+            _make_task("2", title="Normal task"),
+        ]
+
+        batch_results = [
+            BatchResult(
+                request=BatchRequest(custom_id="2", prompt="p"),
+                result=_llm_result(_assessment_json(suitability="ready")),
+            ),
+        ]
+
+        with (
+            patch("sova.llm.client.invoke_batch", new_callable=AsyncMock, return_value=batch_results) as mock_batch,
+            patch("sova.llm.client.resolve_model", return_value=None),
+            patch("sova.llm.cost.record_cost", new_callable=AsyncMock),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 2
+        assert results[0][1].suitability == "interactive"
+        assert results[1][1].suitability == "ready"
+        # The interactive ticket must not be sent to the model at all, or the
+        # LLM verdict would override the operator's config pattern.
+        submitted = [r.custom_id for r in mock_batch.call_args[0][0]]
+        assert submitted == ["2"]
 
     @pytest.mark.asyncio
     async def test_missing_result_gets_heuristic_fallback(self) -> None:
