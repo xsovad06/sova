@@ -1,12 +1,14 @@
-"""Human involvement gate: blocks human-only and interactive-recommended issues."""
+"""Human involvement gate: blocks epic, human-only and interactive-recommended issues."""
 
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from sova.adapters.base import Task
 from sova.knowledge.assessments import get_latest_assessment
-from sova.supervisor.dependency_graph import is_human_only, is_interactive_recommended, is_ready
 from sova.supervisor.gates import BlockReason
+from sova.supervisor.labels import is_epic, is_human_only, is_interactive_recommended, is_ready
+from sova.supervisor.suitability import SuitabilityMode, assess_suitability
 from sova.utils.logging import get_logger
 
 log = get_logger(component="supervisor.gates.human_involvement")
@@ -27,6 +29,42 @@ _PAST_PRE_DEVELOPMENT_LABELS = frozenset(
 )
 
 
+# The modes this gate ever blocks on. `blocked` is deliberately absent:
+# dependency blocking is `check_dependency_gate`'s job and is config-gated by
+# `supervisor.respect_dependencies`, so honouring it here would bypass that
+# switch. `autonomous`/`unclassified` never block. Kept explicit (rather than
+# inferred from `_BLOCKS`' keys) so a mode that becomes blocking in the future
+# cannot silently fall through `_BLOCKS.get()`'s `None` default into "allow".
+_BLOCKING_MODES: frozenset[SuitabilityMode] = frozenset(
+    {SuitabilityMode.EPIC, SuitabilityMode.HUMAN, SuitabilityMode.INTERACTIVE}
+)
+
+# (suitability mode, came from the local record) -> (log event, detail template).
+_BLOCKS: dict[tuple[SuitabilityMode, bool], tuple[str, str]] = {
+    (SuitabilityMode.EPIC, False): (
+        "human_involvement_gate.blocked_epic",
+        "Issue #{issue} is labeled type: epic (tracking container, not agent work)",
+    ),
+    (SuitabilityMode.HUMAN, False): (
+        "human_involvement_gate.blocked_human_only",
+        "Issue #{issue} is labeled agent:human-only",
+    ),
+    (SuitabilityMode.HUMAN, True): (
+        "human_involvement_gate.blocked_human_only_local",
+        "Issue #{issue} has a local human-only suitability assessment (clear with `sova assess clear {issue}`)",
+    ),
+    (SuitabilityMode.INTERACTIVE, False): (
+        "human_involvement_gate.blocked_interactive_recommended",
+        "Issue #{issue} is labeled agent:interactive-recommended (manual start only)",
+    ),
+    (SuitabilityMode.INTERACTIVE, True): (
+        "human_involvement_gate.blocked_interactive_recommended_local",
+        "Issue #{issue} has a local interactive-recommended suitability assessment "
+        "(manual start only; clear with `sova assess clear {issue}`)",
+    ),
+}
+
+
 def _is_past_pre_development(labels: list[str]) -> bool:
     normalized = {label.lower().strip() for label in labels}
     return bool(normalized & _PAST_PRE_DEVELOPMENT_LABELS)
@@ -40,11 +78,19 @@ async def check_human_involvement_gate(
     project_slug: str = "",
     candidate: str = "",
 ) -> BlockReason | None:
-    """Block issues labeled agent:human-only or agent:interactive-recommended.
+    """Block issues classified `epic`, `human` or `interactive` by `assess_suitability`.
 
     human-only is a hard block (defense-in-depth alongside state-based HUMAN_ONLY).
     interactive-recommended blocks autonomous scheduling; manual dashboard starts
-    bypass the progression engine entirely.
+    bypass the progression engine entirely. An epic is a tracking container that
+    no role should ever be spawned on.
+
+    Classification runs with `consider_dependencies=False`, never the caller's
+    real dependency graph: `blocked` outranks `interactive` in the classifier's
+    precedence, so feeding a real graph in would silently downgrade an
+    interactive-recommended issue that also has an open dependency to `blocked`
+    and stop this gate blocking it at all. Dependency blocking is
+    `check_dependency_gate`'s job, and is config-gated separately.
 
     When neither suitability label is present, falls back to the local
     `task_assessments` record (`sova assess set`), used for unassigned tickets
@@ -62,51 +108,50 @@ async def check_human_involvement_gate(
     `agent:in-progress`, `agent:in-review`, `agent:on-qa`) short-circuits the
     fallback the same way `agent:ready` does, as additional defense in depth.
     """
-    if is_human_only(labels):
-        log.info("human_involvement_gate.blocked_human_only", issue=issue)
-        return BlockReason(
-            gate="human_involvement",
-            detail=f"Issue #{issue} is labeled agent:human-only",
-        )
-    if is_interactive_recommended(labels):
-        log.info("human_involvement_gate.blocked_interactive_recommended", issue=issue)
-        return BlockReason(
-            gate="human_involvement",
-            detail=f"Issue #{issue} is labeled agent:interactive-recommended (manual start only)",
-        )
+    task = Task(id=str(issue), title="", labels=labels)
 
+    local_assessment: str | None = None
+    # Guarded by the same labels `assess_suitability()` would use to decide
+    # the verdict without ever consulting the local record: when one of them
+    # is already present, the DB lookup's result can never change the
+    # outcome, so skip the session open and query entirely.
     if (
-        session_factory is None
-        or candidate not in _PRE_DEVELOPMENT_CANDIDATES
-        or is_ready(labels)
-        or _is_past_pre_development(labels)
+        session_factory is not None
+        and candidate in _PRE_DEVELOPMENT_CANDIDATES
+        and not is_ready(labels)
+        and not _is_past_pre_development(labels)
+        and not is_human_only(labels)
+        and not is_interactive_recommended(labels)
+        and not is_epic(labels)
     ):
-        return None
+        try:
+            async with session_factory() as session:
+                record = await get_latest_assessment(session, issue_number=str(issue), project_slug=project_slug)
+            local_assessment = record.suitability if record is not None else None
+        # An unreadable local record must fail open on this layer only: a
+        # label-based block must still apply regardless of local store health.
+        except Exception:  # noqa: BLE001 (unreadable local store must fail open, not block)
+            log.warning("human_involvement_gate.local_lookup_failed", issue=issue, exc_info=True)
 
-    try:
-        async with session_factory() as session:
-            record = await get_latest_assessment(session, issue_number=str(issue), project_slug=project_slug)
-        suitability = record.suitability if record is not None else None
-    # An unreadable local record must fail open, not block.
-    except Exception:  # noqa: BLE001 (unreadable local store must fail open, not block)
-        log.warning("human_involvement_gate.local_lookup_failed", issue=issue, exc_info=True)
-        return None
+    suitability = assess_suitability(task, consider_dependencies=False, local_assessment=local_assessment)
+    from_local = any(reason.get("source") == "local_assessment" for reason in suitability.reasons)
 
-    if suitability == "human_only":
-        log.info("human_involvement_gate.blocked_human_only_local", issue=issue)
+    block = _BLOCKS.get((suitability.mode, from_local))
+    if block is None:
+        if suitability.mode not in _BLOCKING_MODES:
+            return None
+        log.warning(
+            "human_involvement_gate.unmapped_blocking_mode",
+            issue=issue,
+            mode=suitability.mode.value,
+            from_local=from_local,
+            reasons=suitability.reasons,
+        )
         return BlockReason(
             gate="human_involvement",
-            detail=(
-                f"Issue #{issue} has a local human-only suitability assessment (clear with `sova assess clear {issue}`)"
-            ),
+            detail=f"Issue #{issue} classified as {suitability.mode.value} with no mapped block message "
+            f"(reasons: {suitability.reasons})",
         )
-    if suitability == "interactive_recommended":
-        log.info("human_involvement_gate.blocked_interactive_recommended_local", issue=issue)
-        return BlockReason(
-            gate="human_involvement",
-            detail=(
-                f"Issue #{issue} has a local interactive-recommended suitability assessment "
-                f"(manual start only; clear with `sova assess clear {issue}`)"
-            ),
-        )
-    return None
+    event, detail = block
+    log.info(event, issue=issue)
+    return BlockReason(gate="human_involvement", detail=detail.format(issue=issue))
