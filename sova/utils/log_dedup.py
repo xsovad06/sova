@@ -22,18 +22,19 @@ _DEFAULT_TTL_SECONDS = 3600.0
 _seen: OrderedDict[str, float] = OrderedDict()
 
 
-def warn_once(
+def log_once(
     log: structlog.stdlib.BoundLogger,
     event: str,
     key: str,
     *,
+    level: str = "warning",
     ttl_seconds: float = _DEFAULT_TTL_SECONDS,
     **fields: Any,
 ) -> None:
-    """Log ``event`` at warning level at most once per (event, key) within ttl_seconds.
+    """Log ``event`` at ``level`` at most once per (event, key) within ttl_seconds.
 
     A repeat for the same key inside the window is silently dropped. Intended
-    for warnings driven by external input that gets re-scanned every poll
+    for log lines driven by external input that gets re-scanned every poll
     cycle without the underlying content changing.
     """
     dedup_key = f"{event}:{key}"
@@ -47,7 +48,19 @@ def warn_once(
     while len(_seen) > _MAX_ENTRIES:
         _seen.popitem(last=False)
 
-    log.warning(event, **fields)
+    getattr(log, level)(event, **fields)
+
+
+def warn_once(
+    log: structlog.stdlib.BoundLogger,
+    event: str,
+    key: str,
+    *,
+    ttl_seconds: float = _DEFAULT_TTL_SECONDS,
+    **fields: Any,
+) -> None:
+    """``log_once`` at warning level. Kept as the common-case shorthand."""
+    log_once(log, event, key, level="warning", ttl_seconds=ttl_seconds, **fields)
 
 
 def reset() -> None:

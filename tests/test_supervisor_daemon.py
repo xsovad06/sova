@@ -575,13 +575,21 @@ class TestSupervisorDaemon:
 
         with patch(
             "sova.supervisor.queue_maintenance.maintain_queue", new_callable=AsyncMock, return_value=mock_result
-        ):
+        ) as mock_maintain:
             result = await daemon._poll_queue_maintenance(adapter, daemon._config)
 
         assert result["changed"] is True
         assert result["removed"] == [10]
         assert result["added"] == [30]
         assert result["queue_size"] == 2
+        mock_maintain.assert_called_once_with(
+            adapter,
+            daemon._config.supervisor,
+            daemon._project_dir,
+            daemon._config.network_guard,
+            session_factory=daemon._session_factory,
+            project_slug=daemon._config.github_repo,
+        )
 
     async def test_poll_queue_maintenance_error(self, daemon: SupervisorDaemon) -> None:
         """_poll_queue_maintenance returns error dict on exception."""

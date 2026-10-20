@@ -8,13 +8,25 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sova.adapters.base import AdapterError, Task, TaskState
-from sova.config.models import SupervisorConfig
+from sova.config.models import NetworkGuardConfig, SupervisorConfig
+from sova.supervisor.dependency_graph import DependencyGraph, invalidate_graph_cache
+from sova.supervisor.gates import BlockReason
 from sova.supervisor.queue_maintenance import (
     _discover_ready,
     _prune_done,
     apply_planner_queue_changes,
     maintain_queue,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_graph_cache():
+    """`build_dependency_graph` caches per repo for 180s; the fake adapters all
+    share one repo name, so without this a graph built by one test answers for
+    the next."""
+    invalidate_graph_cache()
+    yield
+    invalidate_graph_cache()
 
 
 @pytest.fixture
@@ -180,6 +192,297 @@ class TestDiscoverReady:
         task_map = {10: TaskState.RESEARCHED}
         result = _discover_ready([], task_map, max_queue_size=10, task_objects=None)
         assert result == (10,)
+
+    def test_skips_epic_and_interactive_issues(self) -> None:
+        task_map = dict.fromkeys((10, 20, 30), TaskState.RESEARCHED)
+        task_objects = _make_task_objects(
+            task_map,
+            labels_map={10: ["type: epic"], 20: ["agent:interactive-recommended"], 30: []},
+        )
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects=task_objects)
+        assert result == (30,)
+
+    def test_skips_issue_with_open_dependency(self) -> None:
+        task_map = {20: TaskState.RESEARCHED}
+        blocker = Task(id="10", title="blocker", state=TaskState.IN_PROGRESS)
+        blocked = Task(id="20", title="blocked", body="## Dependencies\n- #10\n", state=TaskState.RESEARCHED)
+        graph = DependencyGraph([blocker, blocked])
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects={20: blocked}, graph=graph)
+        assert result == ()
+
+    def test_done_dependency_does_not_withhold_the_issue(self) -> None:
+        """A dependency closed *because it is done* must not read as unresolvable."""
+        task_map = {20: TaskState.RESEARCHED}
+        blocker = Task(id="10", title="blocker", state=TaskState.DONE)
+        blocked = Task(id="20", title="blocked", body="## Dependencies\n- #10\n", state=TaskState.RESEARCHED)
+        graph = DependencyGraph([blocker, blocked])
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects={20: blocked}, graph=graph)
+        assert result == (20,)
+
+    def test_unavailable_graph_does_not_withhold_the_issue(self) -> None:
+        """A failed graph build must fail open, not silently stop the queue filling."""
+        task_map = {20: TaskState.RESEARCHED}
+        blocked = Task(id="20", title="blocked", body="## Dependencies\n- #10\n", state=TaskState.RESEARCHED)
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects={20: blocked}, graph=None)
+        assert result == (20,)
+
+    def test_unresolved_dependency_ref_fails_closed_like_get_ready_tasks(self) -> None:
+        """A dependency id the graph never resolved must withhold the issue here too.
+
+        `DependencyGraph.get_ready_tasks()` fails closed on an unresolvable
+        reference; `_discover_ready` must agree, or the dashboard renders a
+        `blocked` node for an issue the queue auto-fill just queued.
+        """
+        blocked = Task(id="20", title="blocked", body="## Dependencies\n- #999\n", state=TaskState.RESEARCHED)
+        graph = DependencyGraph([blocked])
+        task_map = {20: TaskState.RESEARCHED}
+
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects={20: blocked}, graph=graph)
+        assert result == ()
+        assert graph.get_ready_tasks() == []
+
+    def test_local_human_only_record_excludes_candidate(self) -> None:
+        """The local `task_assessments` fallback must apply here too, not just in the gate."""
+        task_map = {10: TaskState.RESEARCHED}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=[])}
+
+        result = _discover_ready(
+            [], task_map, max_queue_size=10, task_objects=task_objects, local_assessments={10: "human_only"}
+        )
+        assert result == ()
+
+    def test_label_wins_over_conflicting_local_ready_record(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        task_objects = {10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["agent:human-only"])}
+
+        result = _discover_ready(
+            [], task_map, max_queue_size=10, task_objects=task_objects, local_assessments={10: "ready"}
+        )
+        assert result == ()
+
+
+class TestMaintainQueueDependencyData:
+    """`maintain_queue` must resolve dependencies against open *and* closed issues."""
+
+    @staticmethod
+    def _adapter_with_closed_dependency() -> AsyncMock:
+        """An adapter whose default (open-only) listing hides the DONE dependency.
+
+        ``get_task`` has to be configured explicitly: ``build_dependency_graph``
+        drops a DONE issue that is in no active milestone and lists no
+        dependencies of its own, so #10 is re-fetched individually. Left as a
+        bare ``AsyncMock``, that call returns a mock whose ``body`` is not a
+        string, ``build_dependency_graph`` raises ``TypeError``, and the test
+        would pass through the graph-unavailable fail-open branch instead of
+        the closed-dependency resolution it is meant to cover.
+        """
+        blocked = Task(
+            id="20",
+            title="blocked",
+            body="## Dependencies\n- #10\n",
+            state=TaskState.RESEARCHED,
+        )
+        done_dep = Task(id="10", title="dep", state=TaskState.DONE)
+
+        async def _list_tasks(filters=None):
+            if filters is not None and filters.state == "all":
+                return [done_dep, blocked]
+            return [blocked]
+
+        async def _get_task(task_id):
+            return done_dep if str(task_id) == "10" else None
+
+        mock = AsyncMock()
+        mock.repo = "test/repo"
+        mock.list_tasks.side_effect = _list_tasks
+        mock.get_task.side_effect = _get_task
+        return mock
+
+    async def test_done_dependency_does_not_withhold_discovery(self, tmp_path: Path) -> None:
+        adapter = self._adapter_with_closed_dependency()
+        config = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
+        seen: dict[str, DependencyGraph | None] = {}
+        real_discover = _discover_ready
+
+        def _spy(*args, **kwargs):
+            seen["graph"] = kwargs.get("graph", args[4] if len(args) > 4 else None)
+            return real_discover(*args, **kwargs)
+
+        with (
+            patch("sova.supervisor.queue_maintenance._discover_ready", side_effect=_spy),
+            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+        ):
+            result = await maintain_queue(adapter, config, tmp_path)
+
+        assert result.added == (20,)
+        # Pin the path taken: the graph must have been built and must carry the
+        # closed dependency, otherwise this asserts the same fail-open branch as
+        # the next test rather than the behaviour it names.
+        graph = seen["graph"]
+        assert graph is not None
+        dep = graph.get_task(10)
+        assert dep is not None
+        assert dep.state is TaskState.DONE
+
+    async def test_graph_build_failure_falls_back_to_labels_only(self, tmp_path: Path) -> None:
+        adapter = self._adapter_with_closed_dependency()
+        config = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
+
+        with (
+            patch(
+                "sova.supervisor.queue_maintenance.build_dependency_graph",
+                new_callable=AsyncMock,
+                side_effect=AdapterError("rate limited"),
+            ),
+            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+        ):
+            result = await maintain_queue(adapter, config, tmp_path)
+
+        assert result.added == (20,)
+
+
+class TestMaintainQueueRespectDependencies:
+    """`supervisor.respect_dependencies=False` must bypass dependency blocking here too.
+
+    `check_dependency_gate` already honours this switch; the queue auto-fill
+    is an *exclusive* filter, so bypassing it there but not here would still
+    permanently withhold a dependency-blocked issue regardless of the switch.
+    """
+
+    async def test_disabled_keeps_dependency_blocked_issue_discovered(self, tmp_path: Path) -> None:
+        blocker = Task(id="10", title="blocker", state=TaskState.IN_PROGRESS)
+        blocked = Task(id="20", title="blocked", body="## Dependencies\n- #10\n", state=TaskState.RESEARCHED)
+        adapter = AsyncMock()
+        adapter.repo = "test/repo"
+        adapter.list_tasks.return_value = [blocker, blocked]
+        config = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10, respect_dependencies=False)
+
+        with (
+            patch("sova.supervisor.queue_maintenance.build_dependency_graph", new_callable=AsyncMock) as mock_build,
+            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+        ):
+            result = await maintain_queue(adapter, config, tmp_path)
+
+        mock_build.assert_not_called()
+        assert result.added == (20,)
+
+    async def test_enabled_still_withholds_dependency_blocked_issue(self, tmp_path: Path) -> None:
+        """Default behavior (respect_dependencies=True) is unchanged."""
+        blocker = Task(id="10", title="blocker", state=TaskState.IN_PROGRESS)
+        blocked = Task(id="20", title="blocked", body="## Dependencies\n- #10\n", state=TaskState.RESEARCHED)
+        adapter = AsyncMock()
+        adapter.repo = "test/repo"
+        adapter.list_tasks.return_value = [blocker, blocked]
+        config = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10, respect_dependencies=True)
+
+        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+            result = await maintain_queue(adapter, config, tmp_path)
+
+        assert result.added == ()
+
+
+class TestMaintainQueueCostControlGates:
+    """Rate-limit/connectivity short-circuits and the lazy dependency-graph build guard."""
+
+    async def test_rate_limited_skips_entire_pass(
+        self, adapter: AsyncMock, config: SupervisorConfig, tmp_path: Path
+    ) -> None:
+        with patch(
+            "sova.supervisor.queue_maintenance.check_github_rate_limit_gate",
+            return_value=BlockReason(gate="rate_limit", detail="cooling down"),
+        ):
+            result = await maintain_queue(adapter, config, tmp_path)
+
+        adapter.list_tasks.assert_not_called()
+        assert result.current == result.previous == tuple(config.task_queue)
+        assert result.changed is False
+
+    async def test_network_unreachable_skips_entire_pass(
+        self, adapter: AsyncMock, config: SupervisorConfig, tmp_path: Path
+    ) -> None:
+        guard = NetworkGuardConfig(enabled=True, block_spawns=True)
+
+        with patch(
+            "sova.supervisor.queue_maintenance.check_connectivity_gate",
+            return_value=BlockReason(gate="connectivity", detail="network down"),
+        ):
+            result = await maintain_queue(adapter, config, tmp_path, guard)
+
+        adapter.list_tasks.assert_not_called()
+        assert result.changed is False
+
+    async def test_graph_not_built_when_queue_already_at_capacity(self, adapter: AsyncMock, tmp_path: Path) -> None:
+        cfg = SupervisorConfig(enabled=True, task_queue=[10, 20], max_queue_size=2)
+        adapter.list_tasks.return_value = [
+            Task(id="10", title="x", state=TaskState.IN_PROGRESS),
+            Task(id="20", title="y", state=TaskState.IN_PROGRESS),
+            Task(id="30", title="z", state=TaskState.RESEARCHED),
+        ]
+
+        with (
+            patch("sova.supervisor.queue_maintenance.build_dependency_graph", new_callable=AsyncMock) as mock_build,
+            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+        ):
+            await maintain_queue(adapter, cfg, tmp_path)
+
+        mock_build.assert_not_called()
+
+    async def test_graph_not_built_when_no_researched_candidates(self, adapter: AsyncMock, tmp_path: Path) -> None:
+        cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
+        adapter.list_tasks.return_value = [Task(id="10", title="x", state=TaskState.IN_PROGRESS)]
+
+        with (
+            patch("sova.supervisor.queue_maintenance.build_dependency_graph", new_callable=AsyncMock) as mock_build,
+            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+        ):
+            await maintain_queue(adapter, cfg, tmp_path)
+
+        mock_build.assert_not_called()
+
+
+class TestMaintainQueueLocalAssessment:
+    """`maintain_queue` must honour the local `task_assessments` fallback end to end."""
+
+    @pytest.fixture
+    async def session_factory(self, tmp_path: Path):
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        await init_db(tmp_path, run_migrations=False)
+        yield await get_session_factory(tmp_path)
+        await close_db()
+
+    async def test_local_human_only_record_excludes_candidate_from_queue(
+        self, adapter: AsyncMock, session_factory, tmp_path: Path
+    ) -> None:
+        from sova.knowledge.assessments import set_assessment
+
+        async with session_factory() as session:
+            await set_assessment(
+                session, issue_number="40", project_slug="test/repo", suitability="human_only", reasoning="test"
+            )
+
+        cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
+        adapter.list_tasks.return_value = [Task(id="40", title="x", state=TaskState.RESEARCHED, labels=[])]
+
+        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+            result = await maintain_queue(
+                adapter, cfg, tmp_path, session_factory=session_factory, project_slug="test/repo"
+            )
+
+        assert result.added == ()
+
+    async def test_no_local_record_still_discovers_the_candidate(
+        self, adapter: AsyncMock, session_factory, tmp_path: Path
+    ) -> None:
+        cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
+        adapter.list_tasks.return_value = [Task(id="40", title="x", state=TaskState.RESEARCHED, labels=[])]
+
+        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+            result = await maintain_queue(
+                adapter, cfg, tmp_path, session_factory=session_factory, project_slug="test/repo"
+            )
+
+        assert result.added == (40,)
 
 
 class TestMaintainQueue:
