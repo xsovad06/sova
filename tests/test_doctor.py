@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from typer import Exit
 
-from sova.cli.commands.doctor import _doctor, _render_results
+from sova.cli.commands.doctor import _doctor, _render_results, doctor
 from sova.utils.diagnostics import DiagnosticCheck
 
 
@@ -32,6 +32,18 @@ def test_doctor_runs_all_checks_and_renders(tmp_path: Path) -> None:
 
     mock_run.assert_called_once_with(tmp_path.resolve())
     assert rendered == [checks]
+
+
+def test_doctor_command_defaults_to_the_current_directory(tmp_path: Path) -> None:
+    """The sync Typer entrypoint resolves `--project` (None means cwd) and drives _doctor()."""
+    with (
+        patch("sova.cli.commands.doctor.run_all_checks", new_callable=AsyncMock, return_value=[]) as mock_run,
+        patch("sova.cli.commands.doctor._render_results"),
+        patch("sova.cli.commands.doctor.Path.cwd", return_value=tmp_path),
+    ):
+        doctor(project=None)
+
+    mock_run.assert_called_once_with(tmp_path.resolve())
 
 
 def test_render_results_all_pass() -> None:

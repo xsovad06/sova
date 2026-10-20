@@ -25,13 +25,16 @@ from sova.utils.diagnostics import (
     _check_git_identity,
     _check_github_config,
     _check_install_completeness,
+    _check_jira_config,
     _check_keyring_secrets,
+    _check_llm_provider,
     _check_ollama,
     _check_python_version,
     _check_rtk,
     _check_sova_config,
     _check_terminal_notifier,
     _extract_auth_detail,
+    _validate_sova_config,
 )
 from sova.utils.shell import GitIdentityResult, ShellResult
 
@@ -972,3 +975,292 @@ async def test_a_raising_check_does_not_swallow_cancellation(tmp_path: Path) -> 
     with patch.object(mod, "_check_rtk", side_effect=asyncio.CancelledError):
         with pytest.raises(asyncio.CancelledError):
             await mod.run_all_checks(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Config discovery and validation
+# ---------------------------------------------------------------------------
+
+
+class TestSovaConfigCheck:
+    """`_check_sova_config` reports where config came from, then validates it."""
+
+    def test_config_source_is_the_database_when_db_config_loads(self, tmp_path: Path) -> None:
+        with patch("sova.config.db_loader._try_load_from_db", return_value=MagicMock()):
+            with patch("sova.utils.diagnostics._validate_sova_config", return_value=[]):
+                checks = _check_sova_config(tmp_path)
+
+        config_rows = [c for c in checks if c.name == "config"]
+        assert len(config_rows) == 1
+        assert config_rows[0].passed is True
+        assert config_rows[0].detail == "database"
+        # No sova.toml on disk, so no legacy row.
+        assert not any(c.name == "legacy sova.toml" for c in checks)
+
+    def test_config_source_is_the_toml_path_when_only_a_toml_exists(self, tmp_path: Path) -> None:
+        (tmp_path / "sova.toml").write_text("[task_source]\ntype = 'github'\n")
+
+        with patch("sova.config.db_loader._try_load_from_db", return_value=None):
+            with patch("sova.utils.diagnostics._validate_sova_config", return_value=[]):
+                checks = _check_sova_config(tmp_path)
+
+        config_rows = [c for c in checks if c.name == "config"]
+        assert config_rows[0].passed is True
+        assert config_rows[0].detail == str(tmp_path / "sova.toml")
+
+    def test_a_toml_alongside_db_config_reports_a_legacy_row(self, tmp_path: Path) -> None:
+        """Both present is actionable: the DB wins and the toml is silently ignored."""
+        (tmp_path / "sova.toml").write_text("[task_source]\ntype = 'github'\n")
+
+        with patch("sova.config.db_loader._try_load_from_db", return_value=MagicMock()):
+            with patch("sova.utils.diagnostics._validate_sova_config", return_value=[]):
+                checks = _check_sova_config(tmp_path)
+
+        legacy = [c for c in checks if c.name == "legacy sova.toml"]
+        assert len(legacy) == 1
+        assert legacy[0].passed is False
+        assert legacy[0].required is False
+        assert "DB takes priority" in legacy[0].detail
+
+    def test_missing_config_names_both_places_it_looked(self, tmp_path: Path) -> None:
+        with patch("sova.config.db_loader._try_load_from_db", return_value=None):
+            checks = _check_sova_config(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0].passed is False
+        assert "not found (checked DB and" in checks[0].detail
+        assert str(tmp_path / "sova.toml") in checks[0].detail
+
+    def test_validation_rows_are_appended_once_config_is_found(self, tmp_path: Path) -> None:
+        sentinel = DiagnosticCheck("task_source.type", True, "github", False)
+        with patch("sova.config.db_loader._try_load_from_db", return_value=MagicMock()):
+            with patch("sova.utils.diagnostics._validate_sova_config", return_value=[sentinel]) as mock_validate:
+                checks = _check_sova_config(tmp_path)
+
+        mock_validate.assert_called_once_with(tmp_path)
+        assert sentinel in checks
+
+
+class TestValidateSovaConfig:
+    """`_validate_sova_config` dispatches on task_source.type and never raises."""
+
+    def test_github_task_source_adds_the_github_rows(self, tmp_path: Path) -> None:
+        cfg = MagicMock()
+        cfg.task_source.type = "github"
+        cfg.github_repo = "owner/repo"
+        cfg.github_user = "someone"
+
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            checks = _validate_sova_config(tmp_path)
+
+        names = [c.name for c in checks]
+        assert names == ["task_source.type", "github_repo configured", "github_user configured"]
+        assert all(c.passed for c in checks)
+
+    def test_jira_task_source_adds_the_jira_rows(self, tmp_path: Path) -> None:
+        cfg = MagicMock()
+        cfg.task_source.type = "jira"
+        cfg.task_source.jira_base_url = "https://example.atlassian.net"
+        cfg.task_source.jira_email = "someone@example.com"
+        cfg.task_source.jira_api_token = "token"
+        cfg.task_source.jira_project_key = "PROJ"
+
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            checks = _validate_sova_config(tmp_path)
+
+        names = [c.name for c in checks]
+        assert names == [
+            "task_source.type",
+            "jira_base_url",
+            "jira_email",
+            "jira_api_token",
+            "jira_project_key",
+        ]
+        assert all(c.passed for c in checks)
+
+    def test_an_unknown_task_source_adds_no_provider_rows(self, tmp_path: Path) -> None:
+        cfg = MagicMock()
+        cfg.task_source.type = "manual"
+
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            checks = _validate_sova_config(tmp_path)
+
+        assert [c.name for c in checks] == ["task_source.type"]
+
+    def test_a_load_failure_becomes_one_failed_row(self, tmp_path: Path) -> None:
+        with patch("sova.config.loader.load_config", side_effect=ValueError("bad toml")):
+            checks = _validate_sova_config(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0].name == "config valid"
+        assert checks[0].passed is False
+        assert checks[0].required is False
+        assert "bad toml" in checks[0].detail
+
+
+class TestJiraConfigCheck:
+    """`_check_jira_config` reports presence, and never echoes the API token."""
+
+    def test_unset_jira_fields_fail_and_render_as_empty(self) -> None:
+        cfg = MagicMock()
+        cfg.task_source.jira_base_url = ""
+        cfg.task_source.jira_email = ""
+        cfg.task_source.jira_api_token = ""
+        cfg.task_source.jira_project_key = ""
+
+        checks = _check_jira_config(cfg)
+
+        assert len(checks) == 4
+        assert not any(c.passed for c in checks)
+        assert all(c.detail == "(empty)" for c in checks)
+
+    def test_a_set_token_is_reported_without_its_value(self) -> None:
+        cfg = MagicMock()
+        cfg.task_source.jira_base_url = "https://example.atlassian.net"
+        cfg.task_source.jira_email = "someone@example.com"
+        cfg.task_source.jira_api_token = "super-secret-token"
+        cfg.task_source.jira_project_key = "PROJ"
+
+        checks = _check_jira_config(cfg)
+        token_row = next(c for c in checks if c.name == "jira_api_token")
+
+        assert token_row.passed is True
+        assert token_row.detail == "(set)"
+        assert "super-secret-token" not in token_row.detail
+
+
+# ---------------------------------------------------------------------------
+# LLM provider
+# ---------------------------------------------------------------------------
+
+
+class TestLLMProviderCheck:
+    """`_check_llm_provider` probes the configured provider and never raises."""
+
+    async def test_a_reachable_provider_passes_and_names_the_provider_type(self, tmp_path: Path) -> None:
+        cfg = MagicMock()
+        cfg.llm.provider = "anthropic-api"
+        provider = MagicMock()
+        provider.check_available = AsyncMock(return_value=(True, "authenticated"))
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            checks = await _check_llm_provider(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0].name == "llm provider"
+        assert checks[0].passed is True
+        assert checks[0].required is True
+        assert checks[0].detail == "anthropic-api: authenticated"
+
+    async def test_an_unreachable_provider_fails_but_stays_required(self, tmp_path: Path) -> None:
+        cfg = MagicMock()
+        cfg.llm.provider = "claude-code"
+        provider = MagicMock()
+        provider.check_available = AsyncMock(return_value=(False, "not authenticated, run: claude login"))
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            checks = await _check_llm_provider(tmp_path)
+
+        assert checks[0].passed is False
+        assert checks[0].required is True
+        assert "claude login" in checks[0].detail
+
+    async def test_an_unknown_provider_type_reports_the_value_error_as_required(self, tmp_path: Path) -> None:
+        """create_provider raises ValueError for an unknown llm.provider value."""
+        cfg = MagicMock()
+        cfg.llm.provider = "nonsuch"
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.llm.provider.create_provider", side_effect=ValueError("unknown provider: nonsuch")),
+        ):
+            checks = await _check_llm_provider(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0].passed is False
+        # A misconfigured provider is required: SOVA cannot run without one.
+        assert checks[0].required is True
+        assert checks[0].detail == "unknown provider: nonsuch"
+
+    async def test_a_probe_that_raises_becomes_one_optional_failed_row(self, tmp_path: Path) -> None:
+        """An arbitrary provider error must not abort the whole report."""
+        cfg = MagicMock()
+        cfg.llm.provider = "litellm"
+        provider = MagicMock()
+        provider.check_available = AsyncMock(side_effect=RuntimeError("socket hung up"))
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.llm.provider.create_provider", return_value=provider),
+        ):
+            checks = await _check_llm_provider(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0].passed is False
+        # Optional on the error path, so a broken probe never fails `sova doctor`.
+        assert checks[0].required is False
+        assert "socket hung up" in checks[0].detail
+
+    async def test_an_unloadable_config_becomes_one_optional_failed_row(self, tmp_path: Path) -> None:
+        with patch("sova.config.loader.load_config", side_effect=OSError("config unreadable")):
+            checks = await _check_llm_provider(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0].name == "llm provider"
+        assert checks[0].passed is False
+        assert checks[0].required is False
+        assert "config unreadable" in checks[0].detail
+
+
+# ---------------------------------------------------------------------------
+# Remaining per-check branches
+# ---------------------------------------------------------------------------
+
+
+class TestRemainingCheckBranches:
+    """Branches the happy-path tests above don't reach."""
+
+    def test_extract_auth_detail_authenticated_with_no_recognizable_line(self) -> None:
+        """`gh auth status` succeeded, so the row passes even with nothing to quote."""
+        result = ShellResult(returncode=0, stdout="unexpected output\n", stderr="")
+        assert _extract_auth_detail(result, auth_ok=True) == ""
+
+    async def test_git_hooks_set_to_the_wrong_path_reports_the_configured_value(self, tmp_path: Path) -> None:
+        (tmp_path / ".githooks").mkdir()
+
+        with patch("sova.utils.diagnostics.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=".git/hooks\n")
+            check = await _check_git_hooks(tmp_path)
+
+        assert check.passed is False
+        assert check.required is True
+        assert "set to '.git/hooks'" in check.detail
+        assert "expected '.githooks'" in check.detail
+
+    async def test_git_hooks_unset_with_githooks_present_is_a_required_failure(self, tmp_path: Path) -> None:
+        """Invariants are silently bypassed when core.hooksPath is unset."""
+        (tmp_path / ".githooks").mkdir()
+
+        with patch("sova.utils.diagnostics.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=False, stdout="")
+            check = await _check_git_hooks(tmp_path)
+
+        assert check.passed is False
+        assert check.required is True
+        assert check.detail == "not set, run: git config core.hooksPath .githooks"
+
+    async def test_an_unloadable_config_becomes_one_failed_ollama_row(self, tmp_path: Path) -> None:
+        with patch("sova.config.loader.load_config", side_effect=OSError("config unreadable")):
+            checks = await _check_ollama(tmp_path)
+
+        assert len(checks) == 1
+        assert checks[0].name == "ollama"
+        assert checks[0].passed is False
+        assert checks[0].required is False
+        assert "config unreadable" in checks[0].detail
