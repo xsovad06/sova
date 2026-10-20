@@ -70,14 +70,18 @@ Check CLAUDE.md, AGENTS.md or the Makefile for build steps like these, and run e
 
 ### Step 6: Verify
 
-Run the full CI-equivalent checks:
+Run the full CI-equivalent checks, skipping only when an identical check already passed earlier in this autonomous pipeline cycle for this exact worktree state (a no-op outside the autonomous pipeline: `sova checks should-skip` only ever reports a skip there):
 ```bash
-make check
+if sova checks should-skip "make check"; then
+  echo "Full check already passed for this worktree state earlier in the pipeline cycle; skipping re-run."
+else
+  make check && { sova checks record "make check" --passed || true; }
+fi
 ```
 
 That command is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them).
 
-If any check fails, fix and re-run (up to 3 attempts).
+If any check fails, fix and re-run the whole block above (up to 3 attempts). The chained `sova checks record` inside it is the only thing that records a pass, and it is harmless if the installed `sova` has no `checks` subcommand yet. Never run `sova checks record ... --passed` as a separate step: a fix loop usually re-runs only the failing tests or the linter, so recording outside the chain would claim a full-check pass for a worktree state the full check never verified, and a later call site would skip its own run on the strength of it.
 
 ### Step 7: Self-Check
 

@@ -159,7 +159,15 @@ git diff  # review your own fixes
 
 ## 7. Run CI Checks Locally
 
-Run the full CI-equivalent checks: `make check`. That command is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them). If any check fails, fix the issue and loop back to Step 6.
+Run the full CI-equivalent checks, skipping only when an identical check already passed earlier in this autonomous pipeline cycle for this exact worktree state (a no-op outside the autonomous pipeline: `sova checks should-skip` only ever reports a skip there):
+```bash
+if sova checks should-skip "make check"; then
+  echo "Full check already passed for this worktree state earlier in the pipeline cycle; skipping re-run."
+else
+  make check && { sova checks record "make check" --passed || true; }
+fi
+```
+That command is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them). If any check fails, fix the issue and loop back to Step 6.
 
 If the project has pre-push invariant scripts (`invariants/*.sh`), run every one against the base too; they are what the pre-push hook and CI enforce, and a lint-plus-test target usually leaves them out:
 

@@ -61,6 +61,42 @@ _EXAMPLES = {
 # standalone marketplace user) and SOVA-specific config file references are replaced with
 # generic, project-agnostic wording.
 _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
+    # The pipeline-scoped full-check reuse cache (`sova checks should-skip` /
+    # `sova checks record`, see sova.core.check_cache) is SOVA infrastructure:
+    # the `sova` CLI does not exist in a project that installed only this
+    # plugin, so the conditional block collapses back to a plain "run the
+    # check command" instruction. Must precede the {{ check_cmd }} entry
+    # below, which would otherwise substitute the prose placeholder into
+    # these patterns' own shell strings first. Rendering the block verbatim
+    # would leave a syntactically plausible bash script invoking a missing
+    # CLI with that prose as a quoted argument, which an agent following the
+    # "execute fenced bash blocks literally" contract would try to run.
+    (
+        re.compile(
+            r"(?P<indent>[ \t]*)if sova checks should-skip \"\{\{\s*check_cmd\s*\}\}\"; then\n"
+            r"[ \t]*echo \"[^\"\n]*\"\n"
+            r"[ \t]*else\n"
+            r"[ \t]*\{\{\s*check_cmd\s*\}\} && \{ sova checks record \"\{\{\s*check_cmd\s*\}\}\" --passed "
+            r"\|\| true; \}\n"
+            r"[ \t]*fi\n"
+        ),
+        "\\g<indent>{{ check_cmd }}\n",
+    ),
+    (
+        re.compile(
+            r", skipping only when an identical check already passed earlier in this autonomous pipeline "
+            r"cycle for this exact worktree state \(a no-op outside the autonomous pipeline: "
+            r"`sova checks should-skip` only ever reports a skip there\)"
+        ),
+        "",
+    ),
+    # The fix-loop sentence that follows that block explains why a pass is
+    # recorded only from inside the chain; with the chain itself collapsed
+    # away above, the explanation has nothing left to refer to.
+    (
+        re.compile(r"fix and re-run the whole block above \(up to 3 attempts\)\.[^\n]*\n"),
+        "fix and re-run (up to 3 attempts).\n",
+    ),
     # {{ arguments }} is the provider-neutral counterpart to Claude's own
     # $ARGUMENTS token (see sova.commands.templates.build_variables()). A
     # standalone marketplace user runs these as real Claude Code slash

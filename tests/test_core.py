@@ -1887,6 +1887,26 @@ class TestWorktreeStep:
         assert result.success
         assert ctx.worktree_dir == Path("/tmp/test/.claude/worktrees/42")
 
+    async def test_clears_stale_check_cache_marker(self) -> None:
+        """A worktree reused across cycles (same path, different issue/branch) must
+        not inherit a check-cache marker whose hash happens to coincidentally match
+        the new cycle's content."""
+        from sova.core.steps.create_worktree import WorktreeStep
+
+        ctx = _make_ctx(issue_number="42", branch_name="feat/test")
+        step = WorktreeStep()
+
+        with (
+            patch("sova.core.steps.create_worktree.worktree") as mock_wt,
+            patch("sova.core.steps.create_worktree.clear_marker") as mock_clear,
+        ):
+            mock_info = MagicMock()
+            mock_info.path = Path("/tmp/test/.claude/worktrees/42")
+            mock_wt.create_worktree = AsyncMock(return_value=mock_info)
+            await step.execute(ctx)
+
+        mock_clear.assert_called_once_with(Path("/tmp/test/.claude/worktrees/42"))
+
 
 class TestEnsureWorktreeStep:
     async def test_skips_when_worktree_exists(self) -> None:

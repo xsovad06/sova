@@ -11,6 +11,7 @@ from rich.console import Console
 from sova.cli.commands.admin import cleanup, costs, status
 from sova.cli.commands.assess import app as assess_app
 from sova.cli.commands.briefing import briefing
+from sova.cli.commands.checks import app as checks_app
 from sova.cli.commands.commands import app as commands_app
 from sova.cli.commands.config import config_app
 from sova.cli.commands.db import app as db_app
@@ -87,6 +88,9 @@ app.add_typer(assess_app)
 
 # Database (subcommand group)
 app.add_typer(db_app)
+
+# Checks cache (subcommand group)
+app.add_typer(checks_app)
 
 console = Console(stderr=True)
 

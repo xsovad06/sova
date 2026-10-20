@@ -250,6 +250,25 @@ class TestDispatchToolStep:
         assert spawn_call["fallback_model"] == "sonnet"
         assert spawn_call["max_budget_usd"] == Decimal("5")
 
+    async def test_spawn_env_marks_pipeline_dispatch(self, tmp_path: Path, monkeypatch) -> None:
+        """A command's own full-check instruction (develop.md, review.md, pr.md) tells
+        a reused check apart from a fresh one via SOVA_PIPELINE_STAGE in its own shell
+        env, so the spawned agent process must inherit it from every dispatch_command()
+        call, regardless of what the parent process's own environment already has."""
+        monkeypatch.delenv("SOVA_PIPELINE_STAGE", raising=False)
+        _write_command(tmp_path, "develop", "Do the thing for issue")
+        step = _ToolStep()
+        process = _StubProcess(stdout=["__RESULT__"])
+        runtime = _StubRuntime(process)
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight("routed-model", 30.0),
+        ):
+            await dispatch_command(step, "/develop", args="42", cwd=tmp_path)
+
+        spawn_call = runtime.spawn_calls[0]
+        assert spawn_call["env"]["SOVA_PIPELINE_STAGE"] == "1"
+
     async def test_multiple_terminal_results_accumulate_usage(self, tmp_path: Path) -> None:
         """A thread that runs several turns (today only Codex) reports each turn's own
         token usage, not a thread-cumulative total, so two terminal 'result' events in

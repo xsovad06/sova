@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 
+from sova.core.check_cache import clear_marker
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import worktree
@@ -48,6 +49,10 @@ class WorktreeStep(BaseStep):
                 copy_files=ctx.config.worktree.copy_files,
             )
             ctx.worktree_dir = info.path
+            # A reused worktree (same path, different issue/branch across
+            # cycles) must not inherit a stale marker whose hash happens to
+            # coincidentally match the new cycle's content.
+            clear_marker(info.path)
             return StepResult(success=True, summary=f"Created worktree at {info.path}")
         except RuntimeError as exc:
             return StepResult(success=False, summary="Failed to create worktree", error=str(exc))

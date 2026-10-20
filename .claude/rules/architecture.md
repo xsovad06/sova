@@ -6,7 +6,7 @@ SOVA has four main components:
 
 ### 1. CLI (`sova/cli/`)
 - Python CLI built with Typer, entry point `sova` (via pyproject.toml)
-- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `uninstall`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`, `init-db`, `migrate-config`, `config` (show, `config get`, `config set`), `mcp`, `supervisor`, `briefing`, `assess` (`assess set`, `assess get`, `assess clear`), `db` (`db status`, `db backup`)
+- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `uninstall`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`, `init-db`, `migrate-config`, `config` (show, `config get`, `config set`), `mcp`, `supervisor`, `briefing`, `assess` (`assess set`, `assess get`, `assess clear`), `db` (`db status`, `db backup`), `checks` (`checks should-skip`, `checks record`)
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
@@ -268,6 +268,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - The dependency-gate's open-dependency walk is now the same function the classifier calls, not a parallel reimplementation
 - A typo'd log level must never crash the caller, and an epic's block stays deliberately unscoped by pipeline candidate
 - A git-diff-level guard must run in the PR's own worktree on the PR's own branch ref, diff the base from the pre-run fork point, and confirm blob content before flagging a revert; a dependency pin diff line with no name capture must be paired by its enclosing lockfile key, not index, name, or raw adjacency; a deleted file is not a confirmed revert; and a downgrade check must diff what this run introduced, not the PR's whole history
+- A full check's reuse marker must exclude itself from the worktree-state hash it is keyed to, or writing it invalidates it
 
 ## Cross-References (domain-specific details)
 
