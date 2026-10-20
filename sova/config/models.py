@@ -457,6 +457,8 @@ class TriageConfig(BaseSettings):
     labels: dict[str, str] = Field(default_factory=dict)
     skip_title_prefixes: list[str] = Field(default_factory=list)
     skip_labels: list[str] = Field(default_factory=list)
+    interactive_title_prefixes: list[str] = Field(default_factory=list)
+    interactive_labels: list[str] = Field(default_factory=list)
 
     # Quality gate
     min_quality_score: int = Field(4, ge=0, le=8)

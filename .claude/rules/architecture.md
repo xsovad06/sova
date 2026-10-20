@@ -260,6 +260,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A dependency applied once at router level, self-exempting safe methods, covers a mutating route by construction; a per-route opt-in is exactly how most of them went unguarded
 - A status broadcast producer that only selects non-terminal rows can never carry a terminal transition for the client to act on
 - A generated PR title's scope must come from the same source as a commit message's scope, or only one of them stays valid when the format rule changes: an issue number is not a scope
+- The three suitability labels are mutually exclusive, so every producer applies them through one helper, and a config pattern match is never re-litigated by the model
 
 ## Cross-References (domain-specific details)
 

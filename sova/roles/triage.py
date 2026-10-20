@@ -17,12 +17,13 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from sova.adapters.base import Task, TaskState
+from sova.adapters.base import Task, TaskAdapter, TaskState
 from sova.config.models import TriageConfig
 from sova.core.context import ExecutionContext
 from sova.core.schema_validation import ValidationError, validate_step_output
 from sova.core.schemas import get_triage_schema
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
+from sova.supervisor.dependency_graph import is_human_only, is_interactive_recommended
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -195,12 +196,17 @@ Evaluate on these dimensions:
 3. Is the scope bounded? (single feature vs epic)
 4. Does it require domain knowledge the agent lacks?
 5. Are there external dependencies or environment requirements?
+6. Does it need another repo, a tool an autonomous agent cannot reach (an ephemeral environment,
+   stage/prod, VPN, a cloud console, log search), investigation/spike work, a human decision
+   or conversation, or UI work whose acceptance depends on visual verification in a browser?
+   If so, suitability is "interactive" rather than "human_only": the issue is useful content
+   for an agent-assisted interactive session, just not a fully autonomous run.
 
 ## Output Format
 
 Respond with a JSON object (no markdown fencing):
 {{
-    "suitability": "ready" | "needs_spec" | "needs_research" | "human_only",
+    "suitability": "ready" | "needs_spec" | "needs_research" | "human_only" | "interactive",
     "confidence": 0.0-1.0,
     "reasoning": "one paragraph explanation",
     "missing_context": ["list", "of", "missing", "items"],
@@ -239,14 +245,21 @@ The issue should have these sections:
 - ## References (related issues, code paths, docs)
 
 ### Assessment Criteria
-Note: if enrichment succeeds (quality score meets threshold), the heuristic suitability
-will be used instead. Your assessment is used only if enrichment fails or is insufficient.
+Note: if you assess suitability as "interactive" or "human_only", that verdict is used
+regardless of enrichment outcome. Otherwise, if enrichment succeeds (quality score meets
+threshold), the heuristic suitability is used instead; your assessment is used only if
+enrichment fails or is insufficient.
 Evaluate on these dimensions:
 1. Is the description specific enough? (acceptance criteria, steps, expected behavior)
 2. Does it reference specific files, functions, or components?
 3. Is the scope bounded? (single feature vs epic)
 4. Does it require domain knowledge the agent lacks?
 5. Are there external dependencies or environment requirements?
+6. Does it need another repo, a tool an autonomous agent cannot reach (an ephemeral environment,
+   stage/prod, VPN, a cloud console, log search), investigation/spike work, a human decision
+   or conversation, or UI work whose acceptance depends on visual verification in a browser?
+   If so, suitability is "interactive" rather than "human_only": the issue is useful content
+   for an agent-assisted interactive session, just not a fully autonomous run.
 
 ### Output Format
 
@@ -255,7 +268,7 @@ Respond with a JSON object (no markdown fencing) containing two top-level keys:
 {{
     "enriched_body": "the complete rewritten issue body in markdown, preserving all existing details and context",
     "assessment": {{
-        "suitability": "ready" | "needs_spec" | "needs_research" | "human_only",
+        "suitability": "ready" | "needs_spec" | "needs_research" | "human_only" | "interactive",
         "confidence": 0.0-1.0,
         "reasoning": "one paragraph explanation",
         "missing_context": ["list", "of", "missing", "items"],
@@ -269,6 +282,14 @@ IMPORTANT: Output ONLY the JSON object. No markdown fencing, no preamble, no pos
 """
 
 
+# A config title-prefix/label match, or an existing suitability label already
+# on the issue (the "sticky" checks in heuristic_assess()), are both
+# deterministic verdicts, so these two outcomes short-circuit the batch LLM
+# call: sending the ticket anyway would only let the model override what the
+# operator (or a prior triage/`/find-task` run) already decided.
+_LLM_SHORT_CIRCUIT_SUITABILITIES = frozenset({"human_only", "interactive"})
+
+
 class TriageRole(AgentRole):
     name = "triage"
     description = "Assess issues for agent suitability and classify them"
@@ -280,8 +301,21 @@ class TriageRole(AgentRole):
         "needs_spec": "agent:needs-spec",
         "needs_research": "agent:needs-research",
         "human_only": "agent:human-only",
+        "interactive": "agent:interactive-recommended",
     }
     SUITABILITY_LABELS = _DEFAULT_LABELS
+
+    # ready/interactive/human_only are mutually exclusive outcomes of the same
+    # pickability question; needs_spec/needs_research are not part of this set
+    # and are left untouched when one of these three is applied.
+    _EXCLUSIVE_SUITABILITY_KEYS: tuple[str, ...] = ("ready", "interactive", "human_only")
+
+    # Conservatism ranking among the exclusive keys above, least to most
+    # blocking. Used to decide which stale labels an opted-out outcome may
+    # still clear: it may remove a less conservative stale label (that label
+    # is simply wrong now) but never a more conservative one (an unlabelled
+    # outcome is never the authority for erasing a stronger block).
+    _CONSERVATISM_RANK: dict[str, int] = {"ready": 0, "interactive": 1, "human_only": 2}
 
     def resolve_label(self, suitability: str, triage_cfg: TriageConfig) -> str | None:
         """Resolve the label for a suitability outcome, respecting config overrides.
@@ -293,34 +327,162 @@ class TriageRole(AgentRole):
             return label if label else None
         return self._DEFAULT_LABELS.get(suitability)
 
-    def heuristic_assess(self, task: Task, triage_cfg: TriageConfig) -> TaskAssessment:
-        """Config-aware heuristic assessment with skip pattern support.
+    async def apply_suitability_label(
+        self,
+        adapter: TaskAdapter,
+        task_id: str,
+        suitability: str,
+        triage_cfg: TriageConfig,
+        known_labels: list[str] | None = None,
+    ) -> None:
+        """Apply the label for `suitability`, then strip the other stale ready/interactive/human_only labels.
 
-        Checks title prefixes and labels against configured skip patterns
-        before falling back to content-based heuristics.
+        Re-triage can change the outcome between these three mutually exclusive
+        labels; without stripping, a previous run's label survives alongside
+        the new one, leaving the issue with contradictory suitability labels.
+
+        The new label is added before the stale ones are removed: if `add_label`
+        raises, the issue keeps its previous (more conservative) label instead of
+        being left with no suitability label at all. A failed removal is logged and
+        swallowed, since the duplicate it leaves behind is corrected by the next
+        retriage.
+
+        `known_labels` lets a caller that just fetched the task pass its labels
+        straight through instead of paying for another tracker round trip. Pass
+        None (the default) when a round trip (an LLM call, a quality-gate
+        enrichment) separates the caller's own snapshot from this call: the
+        quality gate alone can take tens of seconds, and a label change made
+        during that window would otherwise be invisible.
+
+        Regardless of whether `suitability` resolves to a label, stale labels
+        for outcomes strictly more conservative than `suitability` (ranked
+        `ready`/`needs_spec`/`needs_research` < `interactive` < `human_only`)
+        are never stripped: a verdict can only ever clear a label at or below
+        its own conservatism. This is what makes `interactive` and
+        `human_only` sticky across re-triage (an outcome weaker than the
+        existing block is never the authority for erasing a stronger one),
+        and it applies whether `suitability` resolved to a real label or was
+        opted out of labelling entirely via an empty-string `triage.labels`
+        override.
+        """
+        label = self.resolve_label(suitability, triage_cfg)
+        if label:
+            await adapter.add_label(task_id, label)
+        elif suitability not in self._EXCLUSIVE_SUITABILITY_KEYS:
+            return
+
+        if known_labels is not None:
+            current_lower = {lbl.lower() for lbl in known_labels}
+        else:
+            try:
+                current_task = await adapter.get_task(task_id)
+            except Exception:  # noqa: BLE001 (a refetch failure must not block the already-applied label)
+                log.warning("triage.refetch_labels_failed", task_id=task_id, exc_info=True)
+                return
+            current_lower = {lbl.lower() for lbl in current_task.labels}
+
+        suitability_rank = self._CONSERVATISM_RANK.get(suitability, 0)
+        for key in self._EXCLUSIVE_SUITABILITY_KEYS:
+            if key == suitability:
+                continue
+            if self._CONSERVATISM_RANK[key] > suitability_rank:
+                continue
+            stale_label = self.resolve_label(key, triage_cfg)
+            if not stale_label or stale_label.lower() not in current_lower:
+                continue
+            if label and stale_label.lower() == label.lower():
+                continue
+            try:
+                await adapter.remove_label(task_id, stale_label)
+            except Exception:  # noqa: BLE001 (a leftover stale label is corrected by the next retriage)
+                log.warning("triage.remove_stale_label_failed", task_id=task_id, label=stale_label, exc_info=True)
+
+    @staticmethod
+    def _match_pattern(task: Task, title_prefixes: list[str], labels: list[str]) -> str | None:
+        """Describe the first title-prefix or label match, or None when nothing matches.
+
+        Matching is case-insensitive on both sides. A prefix match names the
+        configured prefix; a label match names the label as it appears on the
+        issue, so the reasoning text quotes the ticket's own casing.
         """
         title_lower = task.title.lower()
-        for prefix in triage_cfg.skip_title_prefixes:
+        for prefix in title_prefixes:
             if title_lower.startswith(prefix.lower()):
+                return f"Title prefix '{prefix}'"
+
+        label_set = {lbl.lower() for lbl in labels}
+        for label in task.labels:
+            if label.lower() in label_set:
+                return f"Label '{label}'"
+        return None
+
+    def heuristic_assess(self, task: Task, triage_cfg: TriageConfig) -> TaskAssessment:
+        """Config-aware heuristic assessment with skip and interactive pattern support.
+
+        Checks the issue's own human-only label first (resolved through
+        `triage.labels`, so a renamed label is still honoured, plus the
+        hardcoded `agent:human-only` helper as defence in depth for a
+        partially-overridden map): a human's hard block must never lose to a
+        config pattern match (e.g. an `interactive_title_prefixes` entry),
+        since human_only is the more conservative of the two outcomes. Then
+        checks title prefixes and labels against the configured skip
+        patterns, then the interactive patterns. An issue already carrying
+        the resolved interactive label is preserved as `interactive` rather
+        than falling through to the content heuristic, since that label is a
+        human/`/find-task` signal the content heuristic cannot see and would
+        otherwise be silently downgraded to `ready` on the next re-triage.
+        """
+        label_lower = {lbl.lower() for lbl in task.labels}
+        human_label = self.resolve_label("human_only", triage_cfg)
+        if (human_label and human_label.lower() in label_lower) or is_human_only(task.labels):
+            # Matches what _heuristic_assess() returns for its own hardcoded
+            # 'agent:human-only' check, but built directly here so a renamed
+            # label (which _heuristic_assess() cannot see) is honoured too.
+            return TaskAssessment(
+                suitability="human_only",
+                confidence=0.95,
+                reasoning="Issue is labeled as human-only.",
+                estimated_complexity="moderate",
+                suggested_role="triage",
+            )
+
+        # (title prefixes, labels, suitability, pattern name, reasoning consequence)
+        patterns = (
+            (
+                triage_cfg.skip_title_prefixes,
+                triage_cfg.skip_labels,
+                "human_only",
+                "skip",
+                "not suitable for agent work",
+            ),
+            (
+                triage_cfg.interactive_title_prefixes,
+                triage_cfg.interactive_labels,
+                "interactive",
+                "interactive",
+                "recommended for an interactive session",
+            ),
+        )
+        for prefixes, labels, suitability, pattern_name, consequence in patterns:
+            match = self._match_pattern(task, prefixes, labels)
+            if match:
                 return TaskAssessment(
-                    suitability="human_only",
+                    suitability=suitability,  # type: ignore[arg-type]
                     confidence=0.9,
-                    reasoning=f"Title prefix '{prefix}' matches skip pattern; not suitable for agent work.",
+                    reasoning=f"{match} matches {pattern_name} pattern; {consequence}.",
                     estimated_complexity="moderate",
                     suggested_role="triage",
                 )
 
-        if triage_cfg.skip_labels:
-            skip_set = {s.lower() for s in triage_cfg.skip_labels}
-            matched = [lbl for lbl in task.labels if lbl.lower() in skip_set]
-            if matched:
-                return TaskAssessment(
-                    suitability="human_only",
-                    confidence=0.9,
-                    reasoning=f"Label '{matched[0]}' matches skip pattern; not suitable for agent work.",
-                    estimated_complexity="moderate",
-                    suggested_role="triage",
-                )
+        interactive_label = self.resolve_label("interactive", triage_cfg)
+        if (interactive_label and interactive_label.lower() in label_lower) or is_interactive_recommended(task.labels):
+            return TaskAssessment(
+                suitability="interactive",
+                confidence=0.95,
+                reasoning="Issue is labeled as interactive-recommended.",
+                estimated_complexity="moderate",
+                suggested_role="triage",
+            )
 
         return self._heuristic_assess(task)
 
@@ -447,16 +609,16 @@ class TriageRole(AgentRole):
 
         batch_requests: list[BatchRequest] = []
         heuristic_results: list[tuple[int, Task, TaskAssessment]] = []
+        llm_bound: list[tuple[int, Task]] = []
 
         triage_cfg = ctx.config.triage
         for i, task in enumerate(tasks):
-            if not task.body or not task.body.strip():
-                heuristic_results.append((i, task, self._heuristic_assess(task)))
+            assessment = self.heuristic_assess(task, triage_cfg)
+            has_body = bool(task.body and task.body.strip())
+            if not has_body or assessment.suitability in _LLM_SHORT_CIRCUIT_SUITABILITIES:
+                heuristic_results.append((i, task, assessment))
                 continue
-            skip_assessment = self.heuristic_assess(task, triage_cfg)
-            if skip_assessment.suitability == "human_only":
-                heuristic_results.append((i, task, skip_assessment))
-                continue
+            llm_bound.append((i, task))
             prompt = _ASSESSMENT_PROMPT.format(
                 issue_id=task.id,
                 title=task.title,
@@ -486,7 +648,16 @@ class TriageRole(AgentRole):
             )
         except Exception as exc:  # noqa: BLE001 (batch API falls back to sequential invocation on any failure)
             log.warning("triage.batch_fallback", error=str(exc), exc_info=True)
-            return await self._sequential_fallback(tasks, ctx)
+            # Only the LLM-bound subset falls back; heuristic_results was
+            # already short-circuited out of the batch for a deterministic
+            # reason (a config pattern or a sticky existing label), and
+            # handing those tasks to the LLM here would let it override that
+            # verdict, including erasing a human_only/interactive label.
+            fallback_results = await self._sequential_fallback([t for _, t in llm_bound], ctx)
+            llm_fallback_results = [(idx, t, a) for (idx, _), (t, a) in zip(llm_bound, fallback_results)]
+            all_fallback_results = heuristic_results + llm_fallback_results
+            all_fallback_results.sort(key=lambda x: x[0])
+            return [(t, a) for _, t, a in all_fallback_results]
 
         task_by_id = {str(t.id): t for t in tasks}
         llm_results: list[tuple[int, Task, TaskAssessment]] = []
@@ -520,13 +691,13 @@ class TriageRole(AgentRole):
                     llm_results.append((idx, task, assessment))
                     continue
 
-            llm_results.append((idx, task, self._heuristic_assess(task)))
+            llm_results.append((idx, task, self.heuristic_assess(task, triage_cfg)))
 
         covered_indices = {i for i, _, _ in heuristic_results} | {i for i, _, _ in llm_results}
         for i, task in enumerate(tasks):
             if i not in covered_indices:
                 log.warning("triage.batch_missing_result", issue=task.id)
-                llm_results.append((i, task, self._heuristic_assess(task)))
+                llm_results.append((i, task, self.heuristic_assess(task, triage_cfg)))
 
         all_results = heuristic_results + llm_results
         all_results.sort(key=lambda x: x[0])
@@ -537,9 +708,21 @@ class TriageRole(AgentRole):
         tasks: list[Task],
         ctx: ExecutionContext,
     ) -> list[tuple[Task, TaskAssessment]]:
-        """Fall back to sequential LLM assessment for each task."""
+        """Fall back to sequential LLM assessment for each task.
+
+        Re-checks the same deterministic short-circuit `assess_tasks_batch()`
+        applies before ever handing a task to the LLM here, as defense in
+        depth for any caller that passes in a task the LLM must not
+        re-litigate (a config pattern match, or an existing human_only/
+        interactive label).
+        """
+        triage_cfg = ctx.config.triage
         results: list[tuple[Task, TaskAssessment]] = []
         for task in tasks:
+            pre = self.heuristic_assess(task, triage_cfg)
+            if pre.suitability in _LLM_SHORT_CIRCUIT_SUITABILITIES:
+                results.append((task, pre))
+                continue
             assessment = await self.assess_task_with_llm(task, ctx)
             results.append((task, assessment))
         return results
@@ -789,22 +972,45 @@ class TriageRole(AgentRole):
             )
 
         # Only apply the quality gate for issues that heuristics would mark "ready"
-        if assessment.suitability == "ready" and not quality.meets_threshold(triage_cfg.min_quality_score):
-            assessment = await self._apply_quality_gate(ctx, task, quality, triage_cfg, assessment)
+        effective_body = task.body
+        quality_gate_ran = assessment.suitability == "ready" and not quality.meets_threshold(
+            triage_cfg.min_quality_score
+        )
+        if quality_gate_ran:
+            assessment, enriched_body, quality = await self._apply_quality_gate(
+                ctx, task, quality, triage_cfg, assessment
+            )
+            if enriched_body is not None:
+                effective_body = enriched_body
 
-        if triage_cfg.auto_label:
-            label = self.resolve_label(assessment.suitability, triage_cfg)
-            if label:
-                await ctx.adapter.add_label(ctx.issue_number, label)
-
+        # The enrichment write (post_comment/edit_body) happens before the
+        # label write: apply_suitability_label() deliberately propagates an
+        # add_label failure (see test_apply_suitability_label_add_failure_
+        # preserves_previous_label), and when _apply_quality_gate() deferred
+        # its own write to avoid writing the enriched body twice, that
+        # failure must not be the thing that discards a successful, paid
+        # enrichment. Labels are the cheaper side effect to lose: a dropped
+        # label is corrected by the next re-triage, a dropped enrichment is
+        # an LLM call paid for and thrown away.
         suggested_assignee = await self._resolve_assignee_suggestion(ctx, task, assessment)
 
-        assessment_section = self._build_assessment_comment(task, assessment, quality, suggested_assignee)
+        assessment_section = self._build_assessment_comment(
+            task, assessment, quality, suggested_assignee, body=effective_body
+        )
         if triage_cfg.mode == "comment":
             await ctx.adapter.post_comment(ctx.issue_number, assessment_section)
         elif triage_cfg.write_body:
-            updated_body = (task.body or "").rstrip() + "\n\n" + assessment_section
+            updated_body = (effective_body or "").rstrip() + "\n\n" + assessment_section
             await ctx.adapter.edit_body(ctx.issue_number, updated_body)
+
+        if triage_cfg.auto_label:
+            # known_labels=task.labels (skipping the refetch) is only safe when
+            # no LLM round trip separated this snapshot from the write: the
+            # quality gate is the one that can take tens of seconds.
+            known_labels = None if quality_gate_ran else task.labels
+            await self.apply_suitability_label(
+                ctx.adapter, ctx.issue_number, assessment.suitability, triage_cfg, known_labels=known_labels
+            )
 
         if triage_cfg.write_transition:
             await ctx.adapter.transition_state(ctx.issue_number, TaskState.TRIAGED)
@@ -823,9 +1029,27 @@ class TriageRole(AgentRole):
         quality: QualityScore,
         triage_cfg: TriageConfig,
         original_assessment: TaskAssessment,
-    ) -> TaskAssessment:
-        """Apply quality gate: attempt enrichment, re-score, or downgrade to needs_spec."""
+    ) -> tuple[TaskAssessment, str | None, QualityScore]:
+        """Apply quality gate: attempt enrichment, re-score, or downgrade to needs_spec.
+
+        Returns the resulting assessment, and, when enrichment wrote a new
+        body, that body plus the `QualityScore` re-scored against it (the
+        original `quality` otherwise): callers must build any further body
+        edit (e.g. the assessment-comment append in `execute()`), and any
+        quality figure they report, on top of this pair rather than the
+        stale pre-enrichment snapshot, or the enrichment is overwritten, and
+        its score misreported, in the same run that produced it.
+
+        When `execute()` is going to append the assessment section itself
+        (`triage_cfg.mode != "comment" and triage_cfg.write_body`), the
+        enrichment write here is skipped: that append already writes the
+        enriched body, and writing it twice in a row is a redundant tracker
+        call. For `mode == "comment"` or `write_body == False`, `execute()`
+        never writes the body itself, so this is the only write that
+        persists the enrichment and it must happen here.
+        """
         llm_assessment: TaskAssessment | None = None
+        defer_write = triage_cfg.mode != "comment" and triage_cfg.write_body
 
         if triage_cfg.auto_enrich:
             result = await self._assess_and_enrich(ctx, task, quality)
@@ -840,8 +1064,16 @@ class TriageRole(AgentRole):
                             old_score=quality.total,
                             new_score=new_quality.total,
                         )
-                        await ctx.adapter.edit_body(ctx.issue_number, result.enriched_body)
-                        return original_assessment
+                        if not defer_write:
+                            await ctx.adapter.edit_body(ctx.issue_number, result.enriched_body)
+                        # A non-ready verdict here means the LLM identified the issue as
+                        # needing a human or an interactive session, not just a better-written
+                        # body; enrichment fixing the body's structure does not change that,
+                        # so this wins ahead of the enrichment-success path, but the body it
+                        # wrote is kept either way.
+                        if llm_assessment.suitability in ("interactive", "human_only"):
+                            return llm_assessment, result.enriched_body, new_quality
+                        return original_assessment, result.enriched_body, new_quality
                     log.info(
                         "triage.enrichment_insufficient",
                         issue=ctx.issue_number,
@@ -849,6 +1081,11 @@ class TriageRole(AgentRole):
                         new_score=new_quality.total,
                         threshold=triage_cfg.min_quality_score,
                     )
+                # A non-ready verdict here means the LLM identified the issue as needing
+                # a human or an interactive session, not just a better-written body; this
+                # wins ahead of the needs_spec downgrade below.
+                if llm_assessment.suitability in ("interactive", "human_only"):
+                    return llm_assessment, None, quality
 
         missing = []
         if not quality.has_acceptance_criteria:
@@ -860,23 +1097,31 @@ class TriageRole(AgentRole):
         log.info("triage.quality_gate_blocked", issue=ctx.issue_number, score=quality.total)
 
         if llm_assessment:
-            return TaskAssessment(
-                suitability="needs_spec",
-                confidence=llm_assessment.confidence,
-                reasoning=llm_assessment.reasoning,
-                missing_context=llm_assessment.missing_context or missing,
-                estimated_complexity=llm_assessment.estimated_complexity,
-                suggested_role="triage",
+            return (
+                TaskAssessment(
+                    suitability="needs_spec",
+                    confidence=llm_assessment.confidence,
+                    reasoning=llm_assessment.reasoning,
+                    missing_context=llm_assessment.missing_context or missing,
+                    estimated_complexity=llm_assessment.estimated_complexity,
+                    suggested_role="triage",
+                ),
+                None,
+                quality,
             )
 
-        return TaskAssessment(
-            suitability="needs_spec",
-            confidence=0.9,
-            reasoning=f"Issue body quality score {quality.total}/8 is below threshold "
-            f"{triage_cfg.min_quality_score}; needs specification work.",
-            missing_context=missing,
-            estimated_complexity=original_assessment.estimated_complexity,
-            suggested_role="triage",
+        return (
+            TaskAssessment(
+                suitability="needs_spec",
+                confidence=0.9,
+                reasoning=f"Issue body quality score {quality.total}/8 is below threshold "
+                f"{triage_cfg.min_quality_score}; needs specification work.",
+                missing_context=missing,
+                estimated_complexity=original_assessment.estimated_complexity,
+                suggested_role="triage",
+            ),
+            None,
+            quality,
         )
 
     async def _assess_and_enrich(
@@ -956,12 +1201,19 @@ class TriageRole(AgentRole):
 
         Returns the candidate (for display in the assessment comment) regardless of
         whether it was confirmed. Only a confirmed candidate is actually assigned.
+
+        The assignment call is best-effort, like the rest of this LDAP path:
+        a failed `assign_to_user` is logged and swallowed rather than raised,
+        so it can never abort the caller's still-pending enrichment write.
         """
         if assessment.suitability != "ready" or not ctx.config.ldap.enabled:
             return None
         candidate, confirmed = await self._suggest_assignee(ctx, task)
         if candidate and confirmed:
-            await ctx.adapter.assign_to_user(ctx.issue_number, candidate.uid)
+            try:
+                await ctx.adapter.assign_to_user(ctx.issue_number, candidate.uid)
+            except Exception:  # noqa: BLE001 (best-effort assignment; must not block the enrichment write)
+                log.warning("triage.assign_to_user_failed", issue=ctx.issue_number, exc_info=True)
         return candidate
 
     async def _suggest_assignee(self, ctx: ExecutionContext, task: Task) -> tuple[Person | None, bool]:
@@ -1035,9 +1287,16 @@ class TriageRole(AgentRole):
         assessment: TaskAssessment,
         quality: QualityScore | None = None,
         suggested_assignee: Person | None = None,
+        body: str | None = None,
     ) -> str:
-        """Build a triage assessment section to append to the issue body."""
-        has_body = bool(task.body and task.body.strip())
+        """Build a triage assessment section to append to the issue body.
+
+        `body` defaults to `task.body`; pass the post-enrichment body
+        explicitly so "Has description" reflects what was actually written,
+        not a stale pre-enrichment snapshot.
+        """
+        effective_body = body if body is not None else task.body
+        has_body = bool(effective_body and effective_body.strip())
         missing = ", ".join(assessment.missing_context) if assessment.missing_context else "none"
         parts = [
             "## Triage Assessment\n",

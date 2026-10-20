@@ -171,6 +171,245 @@ class TestTriageRole:
         updated_body = adapter.edit_body.call_args[0][1]
         assert "triage" in updated_body.lower() or "assessment" in updated_body.lower()
 
+    async def test_execute_strips_stale_ready_label_on_retriage_to_interactive(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="[Spike] Investigate flaky test",
+            body="Some description",
+            state=TaskState.BACKLOG,
+            labels=["agent:ready"],
+        )
+        config = ProjectConfig()
+        config.triage.interactive_title_prefixes = ["[Spike]"]
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        role = TriageRole()
+
+        result = await role.execute(ctx)
+
+        assert result.success
+        adapter.remove_label.assert_awaited_once_with("42", "agent:ready")
+        adapter.add_label.assert_awaited_once_with("42", "agent:interactive-recommended")
+
+    async def test_execute_does_not_remove_label_when_nothing_stale(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        role = TriageRole()
+
+        await role.execute(ctx)
+
+        adapter.remove_label.assert_not_awaited()
+
+
+class TestTriageRoleHeuristicAssess:
+    def test_interactive_title_prefix_match(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(id="1", title="[Spike] Explore caching options", body="", state=TaskState.BACKLOG)
+        triage_cfg = TriageConfig(interactive_title_prefixes=["[Spike]"])
+
+        assessment = role.heuristic_assess(task, triage_cfg)
+
+        assert assessment.suitability == "interactive"
+
+    def test_interactive_label_match_case_insensitive(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(id="1", title="Investigate prod issue", body="x" * 500, labels=["Investigation"])
+        triage_cfg = TriageConfig(interactive_labels=["investigation"])
+
+        assessment = role.heuristic_assess(task, triage_cfg)
+
+        assert assessment.suitability == "interactive"
+
+    def test_empty_interactive_labels_does_not_match_everything(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(
+            id="1",
+            title="Fix bug",
+            body="Acceptance criteria:\n- [ ] done\n`code.py`",
+            labels=["investigation"],
+        )
+        triage_cfg = TriageConfig()
+
+        assessment = role.heuristic_assess(task, triage_cfg)
+
+        assert assessment.suitability != "interactive"
+
+    def test_human_only_takes_precedence_over_interactive(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(id="1", title="[Spike][QE] Explore flaky suite", body="", state=TaskState.BACKLOG)
+        triage_cfg = TriageConfig(
+            skip_title_prefixes=["[Spike][QE]"],
+            interactive_title_prefixes=["[Spike]"],
+        )
+
+        assessment = role.heuristic_assess(task, triage_cfg)
+
+        assert assessment.suitability == "human_only"
+
+    def test_actual_human_only_label_takes_precedence_over_interactive_pattern(self) -> None:
+        """The issue's own agent:human-only label must beat a config interactive match.
+
+        Only the configured skip_title_prefixes/skip_labels lists were checked
+        ahead of interactive patterns; the issue's own label was only checked in
+        the content-heuristic fallback, so it never got a chance to win here.
+        """
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(
+            id="1",
+            title="[Spike] Investigate prod latency",
+            body="",
+            state=TaskState.BACKLOG,
+            labels=["agent:human-only"],
+        )
+        triage_cfg = TriageConfig(interactive_title_prefixes=["[Spike]"])
+
+        assessment = role.heuristic_assess(task, triage_cfg)
+
+        assert assessment.suitability == "human_only"
+
+    async def test_renamed_human_only_label_takes_precedence_over_interactive_pattern(self) -> None:
+        """An overridden human_only label name must still beat an interactive pattern match.
+
+        The precedence check hardcoded the literal 'agent:human-only', so a
+        project that renamed the label via triage.labels was unprotected: the
+        interactive pattern won and apply_suitability_label() then removed the
+        human's hard block label.
+        """
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(
+            id="1",
+            title="[Spike] Investigate prod latency",
+            body="",
+            state=TaskState.BACKLOG,
+            labels=["needs-human"],
+        )
+        triage_cfg = TriageConfig(
+            labels={"human_only": "needs-human"},
+            interactive_title_prefixes=["[Spike]"],
+        )
+
+        assessment = role.heuristic_assess(task, triage_cfg)
+
+        assert assessment.suitability == "human_only"
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = task
+        await role.apply_suitability_label(adapter, "1", assessment.suitability, triage_cfg)
+        adapter.remove_label.assert_not_awaited()
+
+    def test_existing_interactive_label_is_preserved_on_retriage(self) -> None:
+        """A prior interactive verdict must not be silently downgraded to ready on re-triage.
+
+        The content heuristic has no way to recompute "interactive" on its
+        own, so a ticket a human or /find-task marked interactive must win
+        over whatever the content heuristic would otherwise conclude.
+        """
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(
+            id="1",
+            title="Investigate prod latency",
+            body="Acceptance criteria:\n- [ ] done\n`code.py`",
+            state=TaskState.BACKLOG,
+            labels=["agent:interactive-recommended"],
+        )
+        triage_cfg = TriageConfig()
+
+        assessment = role.heuristic_assess(task, triage_cfg)
+
+        assert assessment.suitability == "interactive"
+
+    def test_resolve_label_interactive_default(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        assert role.resolve_label("interactive", TriageConfig()) == "agent:interactive-recommended"
+
+    def test_spike_prefix_is_interactive_when_configured(self) -> None:
+        """interactive_title_prefixes defaults to empty, like skip_title_prefixes; [Spike] is opt-in."""
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(id="1", title="[Spike] Explore caching options", body="", state=TaskState.BACKLOG)
+
+        assert role.heuristic_assess(task, TriageConfig()).suitability != "interactive"
+
+        assessment = role.heuristic_assess(task, TriageConfig(interactive_title_prefixes=["[Spike]"]))
+
+        assert assessment.suitability == "interactive"
+
+    def test_interactive_assessment_round_trips_through_schema(self) -> None:
+        import jsonschema
+
+        from sova.core.schemas import get_triage_schema
+        from sova.roles.triage import TriageRole
+
+        data = {
+            "suitability": "interactive",
+            "confidence": 0.85,
+            "reasoning": "Needs a staging environment the agent cannot reach.",
+            "missing_context": [],
+            "estimated_complexity": "moderate",
+            "suggested_role": "developer",
+        }
+
+        # The schema gates assess_task_with_llm()'s retry loop: an enum that
+        # omits "interactive" would discard a correct LLM verdict silently.
+        jsonschema.validate(data, get_triage_schema())
+        assert TriageRole._assessment_from_dict(data).suitability == "interactive"
+
+    async def test_quality_gate_leaves_interactive_alone(self) -> None:
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        # A body with no acceptance criteria always fails the quality gate, so a
+        # "ready" verdict here would be downgraded to needs_spec.
+        triage_cfg = TriageConfig(
+            mode="full", min_quality_score=4, auto_enrich=False, interactive_title_prefixes=["[Spike]"]
+        )
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="[Spike] Explore caching options",
+            body="Update `sova/handler.py`.\n\nExpected behavior: returns 200.\n",
+            state=TaskState.BACKLOG,
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        result = await TriageRole().execute(ctx)
+
+        assert result.success
+        assert "interactive" in result.summary
+        assert "needs_spec" not in result.summary
+        adapter.add_label.assert_awaited_once_with("42", "agent:interactive-recommended")
+
 
 class TestTriageRoleLdapAssigneeSuggestion:
     def _ready_task(self, **kwargs: object) -> Task:
@@ -2994,7 +3233,7 @@ class TestTaskAssessment:
         assert a.sub_tasks == []
 
     def test_all_suitability_values(self) -> None:
-        for val in ("ready", "needs_spec", "needs_research", "human_only"):
+        for val in ("ready", "needs_spec", "needs_research", "human_only", "interactive"):
             a = TaskAssessment(suitability=val, confidence=0.5, reasoning="test")
             assert a.suitability == val
 
@@ -3334,6 +3573,7 @@ class TestTriageLabelApplication:
             "needs_spec": "agent:needs-spec",
             "needs_research": "agent:needs-research",
             "human_only": "agent:human-only",
+            "interactive": "agent:interactive-recommended",
         }
         assert role.SUITABILITY_LABELS == expected
 
@@ -3368,6 +3608,133 @@ class TestTriageLabelApplication:
         role = TriageRole()
         cfg = TriageConfig()
         assert role.resolve_label("unknown_value", cfg) is None
+
+    async def test_apply_suitability_label_add_failure_preserves_previous_label(self) -> None:
+        """A failed add_label must not strand the issue with no suitability label.
+
+        The new label is added before the stale ones are removed, so a
+        transient add failure leaves the previous, more conservative label
+        (here agent:human-only) untouched instead of removing it first.
+        """
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.add_label.side_effect = RuntimeError("gh rate limited")
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="", state=TaskState.BACKLOG, labels=["agent:human-only"]
+        )
+        role = TriageRole()
+
+        with pytest.raises(RuntimeError):
+            await role.apply_suitability_label(adapter, "42", "ready", TriageConfig())
+
+        adapter.remove_label.assert_not_awaited()
+
+    async def test_apply_suitability_label_with_custom_labels_override(self) -> None:
+        """A triage.labels override is both the label added and the label stripped."""
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="", state=TaskState.BACKLOG, labels=["ready-custom"]
+        )
+        cfg = TriageConfig(labels={"interactive": "needs-human", "ready": "ready-custom"})
+        role = TriageRole()
+
+        await role.apply_suitability_label(adapter, "42", "interactive", cfg)
+
+        adapter.add_label.assert_awaited_once_with("42", "needs-human")
+        adapter.remove_label.assert_awaited_once_with("42", "ready-custom")
+
+    async def test_apply_suitability_label_ready_never_strips_human_only(self) -> None:
+        """A resolved `ready` verdict must never erase a stale `agent:human-only` block.
+
+        Round-4 finding: the conservatism guard only applied on the opted-out
+        branch, so a verdict that resolved to a real label (not opted out)
+        stripped every other exclusive label unconditionally, including one
+        strictly more conservative than itself.
+        """
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="", state=TaskState.BACKLOG, labels=["agent:human-only"]
+        )
+        role = TriageRole()
+
+        await role.apply_suitability_label(adapter, "42", "ready", TriageConfig())
+
+        adapter.add_label.assert_awaited_once_with("42", "agent:ready")
+        adapter.remove_label.assert_not_awaited()
+
+    async def test_apply_suitability_label_needs_spec_never_strips_human_only(self) -> None:
+        """A non-exclusive `needs_spec` verdict must also never erase `agent:human-only`.
+
+        `needs_spec` is not one of the three mutually exclusive keys, so it
+        has no entry in `_CONSERVATISM_RANK`; it must default to rank 0
+        (same as `ready`), not bypass the guard entirely.
+        """
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="", state=TaskState.BACKLOG, labels=["agent:human-only"]
+        )
+        role = TriageRole()
+
+        await role.apply_suitability_label(adapter, "42", "needs_spec", TriageConfig())
+
+        adapter.add_label.assert_awaited_once_with("42", "agent:needs-spec")
+        adapter.remove_label.assert_not_awaited()
+
+    async def test_apply_suitability_label_opted_out_outcome_strips_nothing(self) -> None:
+        """An outcome the operator opted out of labelling must not erase another label.
+
+        `triage.labels = {"interactive": ""}` means "don't label interactive
+        outcomes at all" per resolve_label()'s docstring; it must not also
+        mean "and remove whatever suitability label is already there."
+        """
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="", state=TaskState.BACKLOG, labels=["agent:human-only"]
+        )
+        cfg = TriageConfig(labels={"interactive": ""})
+        role = TriageRole()
+
+        await role.apply_suitability_label(adapter, "42", "interactive", cfg)
+
+        adapter.add_label.assert_not_awaited()
+        adapter.remove_label.assert_not_awaited()
+
+    async def test_apply_suitability_label_opted_out_outcome_strips_less_conservative_stale_label(self) -> None:
+        """An opted-out outcome must still clear a less conservative stale label.
+
+        `triage.labels = {"interactive": ""}` means "don't label interactive
+        outcomes", not "an interactive verdict can never correct a stale
+        agent:ready". Only a *more* conservative stale label (human_only) is
+        protected from an opted-out outcome.
+        """
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="", state=TaskState.BACKLOG, labels=["agent:ready"]
+        )
+        cfg = TriageConfig(labels={"interactive": ""})
+        role = TriageRole()
+
+        await role.apply_suitability_label(adapter, "42", "interactive", cfg)
+
+        adapter.add_label.assert_not_awaited()
+        adapter.remove_label.assert_awaited_once_with("42", "agent:ready")
 
 
 class TestTriageExecuteConfig:
@@ -3987,6 +4354,67 @@ class TestQualityGateIntegration:
         first_edit_body = edit_calls[0][0][1] if edit_calls[0][0] else edit_calls[0][1].get("body", "")
         assert "## Objective" in first_edit_body
 
+    async def test_enrichment_write_survives_add_label_failure(self) -> None:
+        """A failed add_label must not discard a successful, deferred enrichment write.
+
+        Round-4 finding: `defer_write` skips the quality gate's own
+        `edit_body()` so `execute()`'s later append is the only write, but
+        `apply_suitability_label()` ran before that append and deliberately
+        propagates an `add_label` failure, so a transient `gh` error (rate
+        limit) discarded the whole enrichment. The enrichment write must now
+        happen before the label write.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        adapter.add_label.side_effect = RuntimeError("gh rate limited")
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        enriched = (
+            "## Objective\nUpdate the handler.\n\n"
+            "## Detailed Description\nUpdate `sova/handler.py` to work.\n\n"
+            "## Acceptance Criteria\n- [ ] It works\n- [ ] Tests pass\n\n"
+            "## Files / Modules to Change\n- `sova/handler.py`\n\n"
+            "## Out of Scope / Constraints\n- No new deps\n\n"
+            "## References\n- #42\n"
+        )
+        llm_response = json.dumps(
+            {
+                "enriched_body": enriched,
+                "assessment": {
+                    "suitability": "ready",
+                    "confidence": 0.9,
+                    "reasoning": "Well-structured issue",
+                    "estimated_complexity": "moderate",
+                },
+            }
+        )
+        mock_result = LLMResult(text=llm_response, cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            with pytest.raises(RuntimeError):
+                await role.execute(ctx)
+
+        edit_calls = adapter.edit_body.call_args_list
+        assert len(edit_calls) == 1
+        written_body = edit_calls[0][0][1] if edit_calls[0][0] else edit_calls[0][1].get("body", "")
+        assert "## Objective" in written_body
+
     async def test_enrichment_failure_falls_back_to_needs_spec(self) -> None:
         from unittest.mock import AsyncMock, patch
 
@@ -4076,11 +4504,88 @@ class TestAssessAndEnrich:
         # Quality gate authority: enrichment succeeded, so original "ready" assessment is returned
         assert "ready" in result.summary or "triaged" in result.summary.lower()
         edit_calls = [c for c in adapter.edit_body.call_args_list]
-        assert len(edit_calls) >= 1
+        # mode="full" with write_body=True means execute()'s own append is the
+        # only write: the quality gate must not write the enriched body a
+        # second time ahead of it.
+        assert len(edit_calls) == 1
         first_edit_body = edit_calls[0][0][1] if edit_calls[0][0] else edit_calls[0][1].get("body", "")
         assert "## Objective" in first_edit_body
+        # The assessment-comment append must build on the enriched body, not
+        # the stale pre-enrichment snapshot, or the enrichment is reverted in
+        # the same run that produced it.
+        last_edit_body = edit_calls[-1][0][1] if edit_calls[-1][0] else edit_calls[-1][1].get("body", "")
+        assert "## Objective" in last_edit_body
+        assert "## Acceptance Criteria" in last_edit_body
+        # The appended section must score the body it is actually attached
+        # to (post-enrichment, 8/8), not the stale pre-enrichment score (2/8).
+        assert "**Quality score**: 8/8" in last_edit_body
+        assert "**Quality score**: 2/8" not in last_edit_body
+        assert "quality 8/8" in result.summary
         mock_record.assert_called_once()
         assert mock_record.call_args[1]["phase"] == "triage_assess_enrich"
+
+    async def test_combined_call_honors_llm_interactive_verdict_even_on_enrichment_success(self) -> None:
+        """An LLM "interactive"/"human_only" verdict wins even when enrichment succeeds.
+
+        Fixing the body's structure does not make a ticket that needs a human
+        or an interactive session autonomous, so the heuristic "ready" verdict
+        must not silently override it.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        enriched = (
+            "## Objective\nUpdate the handler.\n\n"
+            "## Detailed Description\nUpdate `sova/handler.py` to work.\n\n"
+            "## Acceptance Criteria\n- [ ] It works\n- [ ] Tests pass\n\n"
+            "## Files / Modules to Change\n- `sova/handler.py`\n\n"
+            "## Out of Scope / Constraints\n- Needs a staging environment the agent cannot reach\n\n"
+            "## References\n- #42\n"
+        )
+        llm_response = json.dumps(
+            {
+                "enriched_body": enriched,
+                "assessment": {
+                    "suitability": "interactive",
+                    "confidence": 0.85,
+                    "reasoning": "Needs a staging environment the agent cannot reach.",
+                    "estimated_complexity": "moderate",
+                },
+            }
+        )
+        mock_result = LLMResult(text=llm_response, cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "interactive" in result.summary
+        adapter.add_label.assert_awaited_once_with("42", "agent:interactive-recommended")
+        # The enrichment side effect must land even though the suitability
+        # verdict is interactive: the rewritten body is not thrown away.
+        edit_calls = adapter.edit_body.call_args_list
+        assert len(edit_calls) == 1
+        first_edit_body = edit_calls[0][0][1] if edit_calls[0][0] else edit_calls[0][1].get("body", "")
+        assert "## Objective" in first_edit_body
+        last_edit_body = edit_calls[-1][0][1] if edit_calls[-1][0] else edit_calls[-1][1].get("body", "")
+        assert "## Objective" in last_edit_body
 
     async def test_combined_call_uses_llm_assessment_on_enrichment_failure(self) -> None:
         """When enriched_body is too short, LLM assessment is used for the needs_spec downgrade."""
@@ -4866,6 +5371,81 @@ class TestAssessTasksBatch:
 
         assert len(results) == 1
         assert results[0][1].suitability == "human_only"
+        mock_batch.assert_not_called()
+
+    async def test_batch_bodyless_interactive_label_not_overridden(self) -> None:
+        """A bodyless issue already labelled interactive must stay interactive.
+
+        Round-4 finding: the empty-body branch called the private,
+        config-blind `_heuristic_assess()` directly, bypassing the config-
+        aware `heuristic_assess()` and its sticky interactive-label check, so
+        a bodyless `agent:interactive-recommended` issue was reclassified
+        `needs_spec` and that label was then stripped by
+        `apply_suitability_label()`.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(
+                id="10",
+                title="Needs a human",
+                body="",
+                state=TaskState.BACKLOG,
+                labels=["agent:interactive-recommended"],
+            ),
+        ]
+        role = TriageRole()
+
+        mock_batch = AsyncMock(return_value=[])
+        with (
+            patch("sova.llm.client.invoke_batch", mock_batch),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "batch")),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 1
+        assert results[0][1].suitability == "interactive"
+        mock_batch.assert_not_called()
+
+    async def test_batch_bodyless_spike_title_classified_interactive(self) -> None:
+        """A bodyless `[Spike]` issue must resolve to `interactive`, not `needs_spec`.
+
+        Covers the other round-4 repro: `interactive_title_prefixes` is a
+        config pattern match, which the config-blind empty-body branch could
+        not see.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", interactive_title_prefixes=["[Spike]"])
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        tasks = [
+            Task(id="11", title="[Spike] Explore caching", body="", state=TaskState.BACKLOG),
+        ]
+        role = TriageRole()
+
+        mock_batch = AsyncMock(return_value=[])
+        with (
+            patch("sova.llm.client.invoke_batch", mock_batch),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "batch")),
+        ):
+            results = await role.assess_tasks_batch(tasks, ctx)
+
+        assert len(results) == 1
+        assert results[0][1].suitability == "interactive"
         mock_batch.assert_not_called()
 
 

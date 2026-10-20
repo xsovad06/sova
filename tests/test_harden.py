@@ -353,3 +353,30 @@ class TestHardenCommand:
         adapter.edit_body.assert_called_once()
         # Should not add triage label
         adapter.add_label.assert_not_called()
+
+
+class TestRetriageTask:
+    """Tests for _retriage_task, the harden re-triage helper."""
+
+    async def test_does_not_pass_known_labels(self) -> None:
+        """A re-triage snapshot taken before the 300s LLM call must be refetched.
+
+        Round-4 finding: passing `known_labels=task.labels` here violates
+        `apply_suitability_label()`'s own documented contract (no known_labels
+        across an LLM round trip), making a label change made during the
+        enrichment call invisible to the stale-label strip.
+        """
+        from sova.cli.commands.harden import _retriage_task
+        from sova.config.models import ProjectConfig
+
+        task = Task(id="42", title="Test", body="old body", state=TaskState.BACKLOG, labels=["agent:ready"])
+        adapter = AsyncMock()
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="old body", state=TaskState.BACKLOG, labels=["agent:human-only"]
+        )
+        config = ProjectConfig(github_repo="owner/repo")
+
+        await _retriage_task(task, "## Objective\nEnriched.\n", config, adapter, skip_triage=False)
+
+        adapter.get_task.assert_awaited_once_with("42")
+        adapter.remove_label.assert_not_awaited()

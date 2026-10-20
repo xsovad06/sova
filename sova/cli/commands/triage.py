@@ -160,9 +160,9 @@ async def _apply_triage_actions(
         )
 
     if triage_cfg.auto_label:
-        label_name = role.resolve_label(assessment.suitability, triage_cfg)
-        if label_name:
-            await adapter.add_label(task.id, label_name)
+        await role.apply_suitability_label(
+            adapter, task.id, assessment.suitability, triage_cfg, known_labels=task.labels
+        )
 
     assessment_section = role._build_assessment_comment(task, assessment, quality)
     if triage_cfg.mode == "comment":
@@ -193,6 +193,7 @@ def _render_triage_results(results: list) -> None:
             "needs_spec": "yellow",
             "needs_research": "blue",
             "human_only": "red",
+            "interactive": "magenta",
         }.get(assessment.suitability, "white")
 
         table.add_row(

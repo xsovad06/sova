@@ -241,6 +241,7 @@ class TestBatchTriage:
         mock_assessment.suitability = "ready"
         mock_role.heuristic_assess = MagicMock(return_value=mock_assessment)
         mock_role.SUITABILITY_LABELS = {"ready": "agent:ready"}
+        mock_role.apply_suitability_label = AsyncMock()
         mock_role.allowed_input_states = frozenset({TaskState.BACKLOG})
         mock_role._build_assessment_comment.return_value = "Assessment comment"
 
@@ -258,7 +259,7 @@ class TestBatchTriage:
         assert job.status == "done"
         assert all(r.status == "done" for r in job.results)
         assert mock_role.heuristic_assess.call_count == 2
-        assert adapter.add_label.call_count == 2
+        assert mock_role.apply_suitability_label.await_count == 2
         assert adapter.transition_state.call_count == 2
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
@@ -306,6 +307,7 @@ class TestBatchTriage:
         mock_assessment.suitability = "ready"
         mock_role.heuristic_assess = MagicMock(return_value=mock_assessment)
         mock_role.SUITABILITY_LABELS = {"ready": "agent:ready"}
+        mock_role.apply_suitability_label = AsyncMock()
         mock_role.allowed_input_states = frozenset({TaskState.BACKLOG})
         mock_role._build_assessment_comment.return_value = "Assessment"
 
@@ -386,6 +388,249 @@ class TestBatchHarden:
         assert job.results[0].status == "skipped"
         mock_invoke.assert_not_called()
 
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_retriage_applies_suitability_label(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        """Re-triage after hardening labels the issue and strips the stale exclusive label."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        tasks = [
+            Task(
+                id="1",
+                title="[Spike] Explore caching",
+                body="Body",
+                state=TaskState.BACKLOG,
+                labels=["type:task", "agent:ready"],
+            ),
+        ]
+        adapter = _mock_adapter(tasks)
+        mock_create_adapter.return_value = adapter
+        config = _mock_config()
+        config.triage.interactive_title_prefixes = ["[Spike]"]
+        mock_config.return_value = config
+        mock_invoke.return_value = LLMResult(text="## Objective\nEnriched content", model="claude")
+
+        job = BatchJob(
+            batch_id="h3",
+            action="harden",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=False)
+
+        assert job.results[0].status == "done"
+        assert job.results[0].detail == "Hardened, re-triaged: interactive"
+        adapter.remove_label.assert_awaited_once_with("1", "agent:ready")
+        adapter.add_label.assert_awaited_once_with("1", "agent:interactive-recommended")
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_retriage_without_auto_label_touches_no_labels(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        """auto_label=False still records the verdict but writes no label."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        tasks = [Task(id="1", title="[Spike] Explore caching", body="Body", state=TaskState.BACKLOG)]
+        adapter = _mock_adapter(tasks)
+        mock_create_adapter.return_value = adapter
+        config = _mock_config()
+        config.triage.auto_label = False
+        config.triage.interactive_title_prefixes = ["[Spike]"]
+        mock_config.return_value = config
+        mock_invoke.return_value = LLMResult(text="Enriched content", model="claude")
+
+        job = BatchJob(
+            batch_id="h4",
+            action="harden",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=False)
+
+        assert job.results[0].detail == "Hardened, re-triaged: interactive"
+        adapter.add_label.assert_not_awaited()
+        adapter.remove_label.assert_not_awaited()
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_retriage_failure_keeps_item_done(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        """A label write failure is best-effort: hardening already succeeded."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        tasks = [Task(id="1", title="Fix bug", body="Body", state=TaskState.BACKLOG)]
+        adapter = _mock_adapter(tasks)
+        adapter.add_label.side_effect = RuntimeError("label API down")
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+        mock_invoke.return_value = LLMResult(text="Enriched content", model="claude")
+
+        job = BatchJob(
+            batch_id="h5",
+            action="harden",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=False)
+
+        assert job.results[0].status == "done"
+        assert job.results[0].detail == "Hardened, re-triage failed"
+        adapter.edit_body.assert_awaited_once()
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_empty_llm_result_marks_failed(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        tasks = [Task(id="1", title="First", body="Body", state=TaskState.BACKLOG)]
+        adapter = _mock_adapter(tasks)
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+        mock_invoke.return_value = LLMResult(text="   \n  ", model="claude")
+
+        job = BatchJob(
+            batch_id="h6",
+            action="harden",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=False)
+
+        assert job.results[0].status == "failed"
+        assert job.results[0].detail == "LLM returned empty result"
+        adapter.edit_body.assert_not_awaited()
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_item_error_lands_in_result_row(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        """One failing issue is recorded and does not abort the batch."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        tasks = [
+            Task(id="1", title="First", body="Body", state=TaskState.BACKLOG),
+            Task(id="2", title="Second", body="Body", state=TaskState.BACKLOG),
+        ]
+        adapter = _mock_adapter(tasks)
+
+        async def _get_task(task_id: str) -> Task:
+            if task_id == "1":
+                raise RuntimeError("issue fetch exploded")
+            return tasks[1]
+
+        adapter.get_task.side_effect = _get_task
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+        mock_invoke.return_value = LLMResult(text="Enriched content", model="claude")
+
+        job = BatchJob(
+            batch_id="h7",
+            action="harden",
+            results=[BatchItemResult(issue_id="1"), BatchItemResult(issue_id="2")],
+        )
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=True)
+
+        assert job.status == "done"
+        assert job.results[0].status == "failed"
+        assert job.results[0].detail == "issue fetch exploded"
+        assert job.results[1].status == "done"
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_cancel_skips_remaining(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+
+        adapter = _mock_adapter([Task(id="1", title="First", body="Body", state=TaskState.BACKLOG)])
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+
+        job = BatchJob(
+            batch_id="h8",
+            action="harden",
+            results=[BatchItemResult(issue_id="1")],
+        )
+        job.cancelled = True
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=True)
+
+        assert job.status == "cancelled"
+        assert job.results[0].status == "skipped"
+        assert job.results[0].detail == "Cancelled"
+        mock_invoke.assert_not_called()
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_list_tasks_failure_is_fail_open(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        """A broken backlog listing only costs the cross-issue context, not the batch."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        adapter = _mock_adapter([Task(id="1", title="First", body="Body", state=TaskState.BACKLOG)])
+        adapter.list_tasks.side_effect = RuntimeError("tracker unreachable")
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+        mock_invoke.return_value = LLMResult(text="Enriched content", model="claude")
+
+        job = BatchJob(
+            batch_id="h9",
+            action="harden",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=True)
+
+        assert job.results[0].status == "done"
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    async def test_harden_fatal_setup_failure_marks_pending_failed(self, mock_config, mock_init_db) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+
+        mock_config.side_effect = RuntimeError("config broken")
+
+        job = BatchJob(
+            batch_id="h10",
+            action="harden",
+            results=[BatchItemResult(issue_id="1"), BatchItemResult(issue_id="2")],
+        )
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=True)
+
+        assert job.status == "done"
+        assert all(r.status == "failed" for r in job.results)
+        assert all("Batch setup failed" in (r.detail or "") for r in job.results)
+
 
 class TestBatchConcurrency:
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
@@ -427,6 +672,7 @@ class TestBatchConcurrency:
         mock_role = mock_role_cls.return_value
         mock_role.heuristic_assess = MagicMock(return_value=mock_assessment)
         mock_role.SUITABILITY_LABELS = {"ready": "agent:ready"}
+        mock_role.apply_suitability_label = AsyncMock()
         mock_role.allowed_input_states = frozenset({TaskState.BACKLOG})
         mock_role._build_assessment_comment.return_value = "Assessment"
 
