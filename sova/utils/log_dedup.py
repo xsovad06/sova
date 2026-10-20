@@ -19,7 +19,49 @@ import structlog
 _MAX_ENTRIES = 2000
 _DEFAULT_TTL_SECONDS = 3600.0
 
+# A typo'd level (or a non-stdlib-compatible one) must never crash the
+# caller: a logging helper raising out of a log call is worse than logging
+# at the wrong level. Unrecognised values fall back to "warning".
+_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
+
 _seen: OrderedDict[str, float] = OrderedDict()
+
+
+def log_once(
+    log: structlog.stdlib.BoundLogger,
+    event: str,
+    key: str,
+    *,
+    level: str = "warning",
+    ttl_seconds: float = _DEFAULT_TTL_SECONDS,
+    **fields: Any,
+) -> None:
+    """Log ``event`` at ``level`` at most once per (event, key) within ttl_seconds.
+
+    A repeat for the same key inside the window is silently dropped. Intended
+    for log lines driven by external input that gets re-scanned every poll
+    cycle without the underlying content changing.
+    """
+    dedup_key = f"{event}:{key}"
+    now = time.monotonic()
+    last = _seen.get(dedup_key)
+    if last is not None and now - last < ttl_seconds:
+        return
+
+    emit = getattr(log, level, None) if level in _LEVELS else None
+    if emit is None:
+        log.warning("log_dedup.invalid_level", dedup_event=event, requested_level=level)
+        emit = log.warning
+
+    # Recorded after the emit target is resolved so that any future failure in
+    # resolution leaves the key unset rather than silently swallowing the
+    # first occurrence.
+    _seen[dedup_key] = now
+    _seen.move_to_end(dedup_key)
+    while len(_seen) > _MAX_ENTRIES:
+        _seen.popitem(last=False)
+
+    emit(event, **fields)
 
 
 def warn_once(
@@ -30,24 +72,8 @@ def warn_once(
     ttl_seconds: float = _DEFAULT_TTL_SECONDS,
     **fields: Any,
 ) -> None:
-    """Log ``event`` at warning level at most once per (event, key) within ttl_seconds.
-
-    A repeat for the same key inside the window is silently dropped. Intended
-    for warnings driven by external input that gets re-scanned every poll
-    cycle without the underlying content changing.
-    """
-    dedup_key = f"{event}:{key}"
-    now = time.monotonic()
-    last = _seen.get(dedup_key)
-    if last is not None and now - last < ttl_seconds:
-        return
-
-    _seen[dedup_key] = now
-    _seen.move_to_end(dedup_key)
-    while len(_seen) > _MAX_ENTRIES:
-        _seen.popitem(last=False)
-
-    log.warning(event, **fields)
+    """``log_once`` at warning level. Kept as the common-case shorthand."""
+    log_once(log, event, key, level="warning", ttl_seconds=ttl_seconds, **fields)
 
 
 def reset() -> None:

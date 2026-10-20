@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -12,16 +13,17 @@ from httpx import ASGITransport, AsyncClient
 from sova.adapters.base import Task, TaskState
 from sova.supervisor.dependency_graph import (
     DependencyGraph,
-    _extract_priority,
     _get_spec_meta,
     _graph_cache,
     build_dependency_graph,
+    extract_priority,
     invalidate_graph_cache,
     is_human_only,
     is_interactive_recommended,
     is_ready,
     parse_dependencies,
 )
+from sova.supervisor.suitability import Suitability, SuitabilityMode
 
 
 @pytest.fixture(autouse=True)
@@ -1562,31 +1564,31 @@ class TestEnrichWithQueuePosition:
 
 class TestExtractPriority:
     def test_no_labels_returns_empty(self) -> None:
-        assert _extract_priority([]) == ""
+        assert extract_priority([]) == ""
 
     def test_critical(self) -> None:
-        assert _extract_priority(["priority: critical"]) == "critical"
+        assert extract_priority(["priority: critical"]) == "critical"
 
     def test_high(self) -> None:
-        assert _extract_priority(["priority: high"]) == "high"
+        assert extract_priority(["priority: high"]) == "high"
 
     def test_medium(self) -> None:
-        assert _extract_priority(["priority: medium"]) == "medium"
+        assert extract_priority(["priority: medium"]) == "medium"
 
     def test_low(self) -> None:
-        assert _extract_priority(["priority: low"]) == "low"
+        assert extract_priority(["priority: low"]) == "low"
 
     def test_unrelated_labels_ignored(self) -> None:
-        assert _extract_priority(["area: dashboard", "type: feature"]) == ""
+        assert extract_priority(["area: dashboard", "type: feature"]) == ""
 
     def test_priority_among_other_labels(self) -> None:
-        assert _extract_priority(["area: dashboard", "priority: high", "type: feature"]) == "high"
+        assert extract_priority(["area: dashboard", "priority: high", "type: feature"]) == "high"
 
     def test_case_insensitive(self) -> None:
-        assert _extract_priority(["Priority: High"]) == "high"
+        assert extract_priority(["Priority: High"]) == "high"
 
     def test_unknown_priority_value_ignored(self) -> None:
-        assert _extract_priority(["priority: urgent"]) == ""
+        assert extract_priority(["priority: urgent"]) == ""
 
 
 class TestNodePriorityField:
@@ -1703,6 +1705,50 @@ class TestIsReady:
         assert is_ready(["agent:ready-for-review"]) is False
 
 
+class TestLocalAssessmentApplies:
+    """Shared predicate: `check_human_involvement_gate()` and `queue_maintenance`
+    must agree on when a local `task_assessments` record still applies."""
+
+    def test_no_labels_applies(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies([]) is True
+
+    def test_ready_label_does_not_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["agent:ready"]) is False
+
+    def test_human_only_label_does_not_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["agent:human-only"]) is False
+
+    def test_interactive_recommended_label_does_not_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["agent:interactive-recommended"]) is False
+
+    def test_epic_label_does_not_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["type: epic"]) is False
+
+    @pytest.mark.parametrize(
+        "label",
+        ["agent:triaged", "agent:researched", "agent:in-progress", "agent:in-review", "agent:on-qa"],
+    )
+    def test_pipeline_state_label_does_not_apply(self, label: str) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies([label]) is False
+
+    def test_unrelated_labels_apply(self) -> None:
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["area: dashboard", "priority: high"]) is True
+
+
 # ---------------------------------------------------------------------------
 # to_dict: is_human_only / is_interactive_recommended fields
 # ---------------------------------------------------------------------------
@@ -1739,3 +1785,99 @@ class TestToDictHumanInvolvementFlags:
         assert node["is_epic"] is True
         assert node["is_human_only"] is True
         assert node["priority"] == "high"
+
+
+class TestNodeSuitabilityField:
+    """Every graph node carries the shared classifier's verdict (issue #1227)."""
+
+    def test_every_node_has_a_suitability_object(self) -> None:
+        graph = DependencyGraph([_task(1), _task(2)])
+        for node in graph.to_dict()["nodes"]:
+            assert set(node["suitability"]) == {"mode", "reasons", "blocked_by", "eligible"}
+
+    def test_unlabelled_node_is_unclassified(self) -> None:
+        node = DependencyGraph([_task(1)]).to_dict()["nodes"][0]
+        assert node["suitability"]["mode"] == "unclassified"
+        assert node["suitability"]["blocked_by"] == []
+
+    def test_epic_node_mode(self) -> None:
+        task = Task(id="1", title="epic", labels=["type: epic"])
+        assert DependencyGraph([task]).to_dict()["nodes"][0]["suitability"]["mode"] == "epic"
+
+    def test_blocked_node_lists_the_open_dependency(self) -> None:
+        blocker = Task(id="1", title="blocker", state=TaskState.BACKLOG)
+        blocked = Task(id="2", title="blocked", body="## Dependencies\n- #1\n", state=TaskState.BACKLOG)
+        nodes = {n["id"]: n for n in DependencyGraph([blocker, blocked]).to_dict()["nodes"]}
+        assert nodes[2]["suitability"]["mode"] == "blocked"
+        assert nodes[2]["suitability"]["blocked_by"] == [1]
+
+    def test_mode_serializes_as_a_plain_json_string(self) -> None:
+        task = Task(id="1", title="ready", labels=["agent:ready"])
+        payload = json.loads(json.dumps(DependencyGraph([task]).to_dict()))
+        assert payload["nodes"][0]["suitability"]["mode"] == "autonomous"
+
+    def test_human_only_label_and_mode_agree(self) -> None:
+        task = Task(id="1", title="x", labels=["agent:human-only", "agent:interactive-recommended"])
+        node = DependencyGraph([task]).to_dict()["nodes"][0]
+        assert node["suitability"]["mode"] == "human"
+        assert node["is_human_only"] is True
+        assert node["is_interactive_recommended"] is False
+
+    def test_interactive_label_and_blocked_mode_disagree_by_design(self) -> None:
+        """The legacy booleans are label-only; `suitability` alone applies the
+        full precedence chain, where `blocked` outranks `interactive`. An
+        interactive-recommended issue with an open dependency therefore shows
+        `is_interactive_recommended=True` (label present) alongside
+        `suitability.mode="blocked"` (the verdict): a consumer must read
+        `suitability.eligible`, not the legacy booleans or the bare mode, to
+        know whether the issue is actually schedulable.
+        """
+        blocker = Task(id="1", title="blocker", state=TaskState.BACKLOG)
+        blocked = Task(
+            id="2",
+            title="blocked",
+            labels=["agent:interactive-recommended"],
+            body="## Dependencies\n- #1\n",
+            state=TaskState.BACKLOG,
+        )
+        nodes = {n["id"]: n for n in DependencyGraph([blocker, blocked]).to_dict()["nodes"]}
+        assert nodes[2]["is_interactive_recommended"] is True
+        assert nodes[2]["suitability"]["mode"] == "blocked"
+        assert nodes[2]["suitability"]["eligible"] is False
+
+    def test_done_node_with_ready_label_is_not_eligible(self) -> None:
+        """`assess_suitability` never looks at `task.state`, so a DONE node
+        with `agent:ready` still classifies `mode="autonomous"`; `eligible`
+        is where state exclusion is folded in for this payload.
+        """
+        task = Task(id="1", title="done", labels=["agent:ready"], state=TaskState.DONE)
+        node = DependencyGraph([task]).to_dict()["nodes"][0]
+        assert node["suitability"]["mode"] == "autonomous"
+        assert node["suitability"]["eligible"] is False
+
+    def test_unclassified_backlog_node_is_eligible(self) -> None:
+        task = Task(id="1", title="x", state=TaskState.BACKLOG)
+        node = DependencyGraph([task]).to_dict()["nodes"][0]
+        assert node["suitability"]["mode"] == "unclassified"
+        assert node["suitability"]["eligible"] is True
+
+
+class TestGetReadyTasksPrecomputedSuitabilities:
+    """`get_ready_tasks(suitabilities=...)` must actually use the precomputed map."""
+
+    def test_precomputed_entry_is_honoured_over_recomputing(self) -> None:
+        """A deliberately wrong precomputed verdict must be trusted, proving
+        the map is read rather than ignored."""
+        task = _task(1, state=TaskState.BACKLOG)
+        graph = DependencyGraph([task])
+        wrong = Suitability(mode=SuitabilityMode.HUMAN, reasons=[{"source": "label", "value": "x"}])
+        assert graph.get_ready_tasks({1: wrong}) == []
+
+    def test_partial_map_falls_back_per_id_instead_of_crashing(self) -> None:
+        """An id missing from the map must be classified fresh, not looked up
+        with `[]` and crash with `KeyError`."""
+        task1 = _task(1, state=TaskState.BACKLOG)
+        task2 = _task(2, labels=["agent:human-only"], state=TaskState.BACKLOG)
+        graph = DependencyGraph([task1, task2])
+        ready = graph.get_ready_tasks({1: Suitability(mode=SuitabilityMode.AUTONOMOUS)})
+        assert ready == [1]

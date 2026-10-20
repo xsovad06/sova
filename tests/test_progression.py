@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -3942,6 +3943,72 @@ class TestHumanInvolvementGate:
         assert result is not None
         assert result.gate == "human_involvement"
 
+    async def test_epic_label_blocks(self) -> None:
+        result = await check_human_involvement_gate(1, ["type: epic"])
+        assert result is not None
+        assert result.gate == "human_involvement"
+        assert "type: epic" in result.detail
+
+    async def test_epic_label_blocks_post_development_candidate_too(self) -> None:
+        """Unlike the local-record fallback, the `type: epic` label block is
+        deliberately unscoped by `candidate` (mirroring `agent:human-only`):
+        an issue that acquires the label after a PR exists stays blocked for
+        every pipeline stage, including address-review/integrate, until the
+        label is removed. Pinned so a future change narrowing this must be
+        a deliberate, visible decision rather than an accidental regression.
+        """
+        result = await check_human_involvement_gate(1, ["type: epic"], candidate="spawn_integrate")
+        assert result is not None
+        assert result.gate == "human_involvement"
+        assert "type: epic" in result.detail
+
+    async def test_ready_label_passes(self) -> None:
+        result = await check_human_involvement_gate(1, ["agent:ready"])
+        assert result is None
+
+    async def test_gate_takes_no_dependency_graph(self) -> None:
+        """The gate must classify on labels alone, never against a real graph.
+
+        The classifier ranks `blocked` above `interactive`, and this gate does not
+        act on `blocked` (that is `check_dependency_gate`'s job, config-gated by
+        `respect_dependencies`). Handing it a graph would therefore silently
+        downgrade an interactive-recommended issue that also has an open
+        dependency to `blocked` and stop the gate blocking it at all.
+        """
+        assert "graph" not in inspect.signature(check_human_involvement_gate).parameters
+
+    async def test_non_numeric_issue_id_does_not_crash(self) -> None:
+        """A Jira-style id must not raise: the gate skips dependency resolution
+        entirely (`consider_dependencies=False`), so it never builds a
+        `DependencyGraph`, which would otherwise crash on a non-numeric id."""
+        result = await check_human_involvement_gate("RHCLOUD-42", ["agent:human-only"])
+        assert result is not None
+        assert result.gate == "human_involvement"
+
+    async def test_unmapped_blocking_mode_blocks_instead_of_silently_allowing(self) -> None:
+        """A blocking mode absent from `_BLOCKS` must still block, not fall through.
+
+        `_BLOCKS.get()` returning `None` is overloaded to mean "this mode does
+        not block"; without an explicit `_BLOCKING_MODES` check a future
+        blocking mode with no mapped entry would silently allow the spawn.
+        """
+        from unittest.mock import patch
+
+        from sova.supervisor.gates.human_involvement import _BLOCKING_MODES
+        from sova.supervisor.suitability import Suitability, SuitabilityMode
+
+        assert SuitabilityMode.EPIC in _BLOCKING_MODES
+
+        with patch(
+            "sova.supervisor.gates.human_involvement.assess_suitability",
+            return_value=Suitability(mode=SuitabilityMode.EPIC, reasons=[{"source": "label", "value": "x"}]),
+        ):
+            with patch("sova.supervisor.gates.human_involvement._BLOCKS", {}):
+                result = await check_human_involvement_gate(1, ["type: epic"])
+
+        assert result is not None
+        assert result.gate == "human_involvement"
+
 
 class TestHumanInvolvementGateLocalRecord:
     """The `task_assessments` fallback consulted when no suitability label exists."""
@@ -3979,6 +4046,27 @@ class TestHumanInvolvementGateLocalRecord:
         assert result.gate == "human_involvement"
         assert "human-only" in result.detail
         assert "sova assess clear 1" in result.detail
+
+    @pytest.mark.parametrize(
+        "label",
+        ["agent:human-only", "agent:interactive-recommended", "type: epic"],
+    )
+    async def test_blocking_label_skips_local_lookup_entirely(self, label: str) -> None:
+        """A label that already decides the verdict must never open a DB session.
+
+        Previously the local-record query ran unconditionally before the
+        label check, paying for a session open plus a SELECT whose result the
+        classifier discards once the label-based mode wins.
+        """
+
+        def exploding_factory():
+            raise AssertionError("session_factory must not be called when a blocking label is present")
+
+        result = await check_human_involvement_gate(
+            1, [label], session_factory=exploding_factory, project_slug="owner/repo", candidate="spawn_triage"
+        )
+        assert result is not None
+        assert result.gate == "human_involvement"
 
     async def test_local_interactive_recommended_blocks_when_no_label(self, session_factory) -> None:
         await self._record(session_factory, "interactive_recommended")

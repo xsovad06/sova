@@ -15,17 +15,26 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task, TaskState
-from sova.supervisor.dependency_graph import is_human_only
+from sova.knowledge.assessments import get_latest_assessments
+from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph, extract_priority
+from sova.supervisor.gates.connectivity import check_connectivity_gate
+from sova.supervisor.gates.rate_limit import check_github_rate_limit_gate
+from sova.supervisor.labels import local_assessment_applies
+from sova.supervisor.suitability import AGENT_ELIGIBLE_MODES, assess_suitability
+from sova.utils.log_dedup import log_once
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
     from sova.adapters.base import TaskAdapter
-    from sova.config.models import SupervisorConfig
+    from sova.config.models import NetworkGuardConfig, SupervisorConfig
 
 log = get_logger(component="supervisor.queue_maintenance")
 
 _DONE_STATES = frozenset({TaskState.DONE, TaskState.HUMAN_ONLY})
 _READY_STATES = frozenset({TaskState.RESEARCHED})
+_AGENT_IN_FLIGHT_STATES = frozenset({TaskState.IN_PROGRESS, TaskState.IN_REVIEW, TaskState.ON_QA})
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +52,10 @@ async def maintain_queue(
     adapter: TaskAdapter,
     config: SupervisorConfig,
     project_dir: Path,
+    network_guard: NetworkGuardConfig | None = None,
+    *,
+    session_factory: async_sessionmaker | None = None,
+    project_slug: str = "",
 ) -> QueueMaintenanceResult:
     """Run deterministic queue maintenance: prune done, discover ready, persist.
 
@@ -54,8 +67,46 @@ async def maintain_queue(
     the API succeeds but returns an empty result due to query filter issues
     or transient backend problems). Rate limit and network errors are caught
     separately via the AdapterError exception path above.
+
+    Runs the same rate-limit and connectivity gates `ProgressionEngine.evaluate_all()`
+    checks before its own `build_dependency_graph()` call, in the same order
+    (connectivity first: with the network down every API call below fails, so
+    checking it first costs one in-memory read rather than a wasted round
+    trip once rate-limit state is also stale). Both run before any adapter
+    call. `network_guard` is optional (omitted by most tests, logged at
+    debug when absent) since an unset guard never blocks.
+
+    `session_factory`/`project_slug`, when given, resolve each RESEARCHED
+    candidate's local `task_assessments` fallback (see
+    `check_human_involvement_gate()`), the same way that gate receives them,
+    rather than deriving a factory from `project_dir` here: a project_dir
+    passed in tests rarely points at a real initialized database. Only
+    resolved for ids where `local_assessment_applies()` says a label hasn't
+    already decided the verdict (the same predicate the gate uses), and in a
+    single batched query (`get_latest_assessments()`) rather than one per id.
+
+    Re-checks suitability for already-queued entries too, not just new
+    candidates (see `_prune_unsuitable`): an entry that drifts unsuitable
+    after being queued (a label added, a local record written) must not sit
+    there forever, re-blocked by the gate on every poll cycle while occupying
+    a slot `_discover_ready` can no longer fill. A dependency-blocked entry is
+    deliberately exempt: that is `check_dependency_gate`'s job to withhold and
+    report, not this re-check's job to evict.
     """
     previous = tuple(config.task_queue)
+
+    if network_guard is not None:
+        connectivity_block = check_connectivity_gate(network_guard)
+        if connectivity_block is not None:
+            log.info("queue_maintenance.skipped_network_unreachable", detail=connectivity_block.detail)
+            return QueueMaintenanceResult(previous=previous, current=previous)
+    else:
+        log.debug("queue_maintenance.network_guard_not_configured")
+
+    rate_limit_block = check_github_rate_limit_gate(adapter.github_user)
+    if rate_limit_block is not None:
+        log.info("queue_maintenance.skipped_rate_limited", detail=rate_limit_block.detail)
+        return QueueMaintenanceResult(previous=previous, current=previous)
 
     try:
         tasks = await adapter.list_tasks()
@@ -83,11 +134,71 @@ async def maintain_queue(
 
     pruned = _prune_done(list(previous), task_map)
     pruned_set = set(pruned)
-    removed = tuple(i for i in previous if i not in pruned_set)
+    removed_done = tuple(i for i in previous if i not in pruned_set)
 
-    added_issues = _discover_ready(pruned, task_map, config.max_queue_size, task_objects)
+    candidate_ids = _ready_candidate_ids(pruned, task_map)
+    remaining = _remaining_capacity(config.max_queue_size, len(pruned))
 
-    current = pruned + list(added_issues)
+    # Already-queued issues `_prune_unsuitable` will re-check (every state
+    # except `_AGENT_IN_FLIGHT_STATES`, mirroring its own scope): these must be
+    # re-checked too, not just newly discovered candidates, so capacity freed
+    # by pruning an entry that drifted unsuitable is available this same cycle
+    # rather than the next one. Not scoped to RESEARCHED: an epic or
+    # interactive-recommended entry typically sits in BACKLOG/TRIAGED, where
+    # it would otherwise never be re-checked.
+    prune_recheck_ids = [i for i in pruned if task_map.get(i) not in _AGENT_IN_FLIGHT_STATES]
+
+    # The dependency graph has to come from `build_dependency_graph()`, not from
+    # `tasks` above: `adapter.list_tasks()` defaults to open issues only, so a
+    # dependency that is closed *because it is done* would be absent and
+    # `assess_suitability` would fail closed on it, permanently withholding every
+    # issue that has ever listed a dependency. `build_dependency_graph()` fetches
+    # `state="all"` and resolves out-of-page references individually, and is cached
+    # per repo for 180s, so the supervisor's own later build in this same poll
+    # cycle reuses this one rather than paying for a second fetch.
+    #
+    # Built lazily: skipped outright when dependency gating is disabled
+    # (`supervisor.respect_dependencies=False`; this is the exclusive-filter
+    # counterpart to that switch gating `check_dependency_gate`, so it must
+    # honour the same config or the switch stops doing what it says), or when
+    # there is no discovery candidate to classify against it. `_prune_unsuitable`
+    # never considers dependencies (see its own docstring), so a re-check-only
+    # pass never needs the graph.
+    graph: DependencyGraph | None = None
+    if config.respect_dependencies and remaining != 0 and candidate_ids:
+        try:
+            graph = await build_dependency_graph(adapter)
+        except Exception:  # noqa: BLE001 (fail-open: graph build spans adapter and GitHub API calls)
+            log.warning("queue_maintenance.graph_build_failed", exc_info=True)
+            graph = None
+
+    # Local assessments are resolved for the union of discovery candidates
+    # (only when there is capacity to add them, including capacity a prune
+    # could free this same cycle) and already-queued entries `_prune_unsuitable`
+    # will re-check (always, since pruning is not capacity-gated), and only for
+    # ids whose labels don't already decide the verdict (`local_assessment_applies`):
+    # a candidate carrying a pipeline-state label like `agent:researched` can
+    # never have its local record applied, so querying for it is wasted work.
+    discovery_ids = candidate_ids if (remaining != 0 or prune_recheck_ids) else []
+    assessment_ids = sorted(
+        {
+            issue_id
+            for issue_id in {*discovery_ids, *prune_recheck_ids}
+            if issue_id in task_objects and local_assessment_applies(task_objects[issue_id].labels)
+        }
+    )
+    local_assessments = await _resolve_local_assessments(session_factory, project_slug, assessment_ids)
+
+    suitable_queue = _prune_unsuitable(pruned, task_map, task_objects, graph, local_assessments)
+    suitable_set = set(suitable_queue)
+    pruned_unsuitable = tuple(i for i in pruned if i not in suitable_set)
+    removed = removed_done + pruned_unsuitable
+
+    added_issues = _discover_ready(
+        suitable_queue, task_map, config.max_queue_size, task_objects, graph, local_assessments
+    )
+
+    current = suitable_queue + list(added_issues)
     changed = tuple(current) != previous
 
     if changed:
@@ -136,14 +247,116 @@ def _prune_done(queue: list[int], task_map: dict[int, TaskState]) -> list[int]:
 _PRIORITY_RANK: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
-def _extract_priority(labels: list[str]) -> str:
-    for label in labels:
-        lower = label.lower().strip()
-        if lower.startswith("priority:"):
-            value = lower[len("priority:") :].strip()
-            if value in _PRIORITY_RANK:
-                return value
-    return ""
+def _remaining_capacity(max_queue_size: int, current_queue_len: int) -> int | None:
+    """Slots left in the queue, or None when `max_queue_size` is unlimited (<=0)."""
+    if max_queue_size > 0:
+        return max(0, max_queue_size - current_queue_len)
+    return None
+
+
+def _ready_candidate_ids(queue: list[int], task_map: dict[int, TaskState]) -> list[int]:
+    """RESEARCHED issue ids outside `queue`.
+
+    Used (alongside already-queued RESEARCHED entries) to decide whether
+    building the dependency graph, and resolving local suitability records,
+    are worth their cost at all.
+    """
+    existing = set(queue)
+    return [issue_id for issue_id, state in task_map.items() if state in _READY_STATES and issue_id not in existing]
+
+
+async def _resolve_local_assessments(
+    session_factory: async_sessionmaker | None,
+    project_slug: str,
+    candidate_ids: list[int],
+) -> dict[int, str]:
+    """Fetch the latest local `task_assessments` record for each id in `candidate_ids`, if any.
+
+    Without this, the queue auto-fill disagreed with `check_human_involvement_gate()`:
+    an issue with a local `human_only`/`interactive_recommended` record (set via
+    `sova assess set`, used for tickets that never receive a tracker label) would
+    be classified `unclassified` here, get queued, and then be blocked forever by
+    the gate, permanently occupying a queue slot. `maintain_queue()` only ever
+    passes ids where `local_assessment_applies()` is True, so this never fetches
+    a record no caller can use.
+
+    One batched query (`get_latest_assessments()`) rather than one per id: this
+    runs on every supervisor poll cycle (every ~2 minutes), and a backlog of
+    tens of RESEARCHED issues previously meant tens of round trips to fetch at
+    most a handful of rows.
+
+    No `session_factory` (passed by the caller, mirroring the gate's own
+    parameter rather than deriving one from `project_dir` here) means no local
+    fallback data is available, same as the gate's own "no factory" case.
+    Fails open on a store read error too, matching the gate's own
+    local-record fallback: an unreadable local store must not withhold an
+    issue that was never gated on it.
+    """
+    if not candidate_ids or session_factory is None:
+        return {}
+    try:
+        async with session_factory() as session:
+            records = await get_latest_assessments(
+                session, issue_numbers=[str(issue_id) for issue_id in candidate_ids], project_slug=project_slug
+            )
+        return {int(issue_number): record.suitability for issue_number, record in records.items()}
+    except Exception:  # noqa: BLE001 (fail open on local-store read failure, matching the gate)
+        log.warning("queue_maintenance.local_assessment_lookup_failed", exc_info=True)
+        return {}
+
+
+def _prune_unsuitable(
+    queue: list[int],
+    task_map: dict[int, TaskState],
+    task_objects: dict[int, Task],
+    graph: DependencyGraph | None,
+    local_assessments: dict[int, str],
+) -> list[int]:
+    """Remove already-queued issues `assess_suitability` would no longer admit.
+
+    Scoped to skip issues in `_AGENT_IN_FLIGHT_STATES`: an issue an agent is
+    already developing must never be pulled out of the queue just because its
+    suitability drifted mid-flight. Every other state (including BACKLOG and
+    TRIAGED, where an epic or interactive-recommended entry typically sits,
+    since epics rarely reach RESEARCHED) is re-checked, or an issue that gains
+    `type: epic`/`agent:interactive-recommended` or a local human_only/interactive
+    record after being queued would sit there forever, re-blocked by the
+    human-involvement gate on every poll cycle while still occupying a
+    `max_queue_size` slot `_discover_ready` can no longer fill.
+
+    `task_objects`/`graph`/`local_assessments` missing data for a given id
+    fails open exactly like `_discover_ready`: no task object means no
+    suitability data at all, so the id is kept.
+    """
+    result: list[int] = []
+    for issue_id in queue:
+        if task_map.get(issue_id) in _AGENT_IN_FLIGHT_STATES:
+            result.append(issue_id)
+            continue
+        task = task_objects.get(issue_id)
+        if task is None:
+            result.append(issue_id)
+            continue
+        local_assessment = local_assessments.get(issue_id)
+        if local_assessment is not None and not local_assessment_applies(task.labels):
+            local_assessment = None
+        # Dependency blocking of an already-queued entry is check_dependency_gate's job;
+        # pruning it here would discard a deliberately queued, dependency-waiting issue.
+        suitability = assess_suitability(task, local_assessment=local_assessment, consider_dependencies=False)
+        if suitability.mode not in AGENT_ELIGIBLE_MODES:
+            log_once(
+                log,
+                "queue_maintenance.pruned_unsuitable",
+                key=f"{issue_id}:{suitability.mode.value}",
+                level="info",
+                issue=issue_id,
+                mode=suitability.mode.value,
+                reasons=suitability.reasons,
+                blocked_by=suitability.blocked_by,
+            )
+            continue
+        result.append(issue_id)
+    return result
 
 
 def _discover_ready(
@@ -151,31 +364,80 @@ def _discover_ready(
     task_map: dict[int, TaskState],
     max_queue_size: int,
     task_objects: dict[int, Task] | None = None,
+    graph: DependencyGraph | None = None,
+    local_assessments: dict[int, str] | None = None,
 ) -> tuple[int, ...]:
     """Find issues in RESEARCHED state not already in the queue.
 
     Sorts by priority (critical > high > medium > low > unlabelled),
     then by issue number (lowest first) as a tie-breaker.
+
+    Issues classified `epic`, `human`, `interactive`, or `blocked` by
+    `assess_suitability` are excluded; only `autonomous`/`unclassified` issues
+    qualify. Every exclusion is logged (deduped per issue/mode) with its
+    mode/reasons so a dropped issue is never silently missing from the queue.
+    Without `task_objects`, no suitability data is available at all, so an
+    issue is included on state alone (unchanged from prior behavior). Without
+    `graph` (its build failed, or was skipped because
+    `supervisor.respect_dependencies` is False), or for an issue the graph
+    does not contain, labels are still honoured but dependencies are not: a
+    missing graph must not fail closed and silently stop the queue filling.
+    `local_assessments`, when given, maps issue id to its latest local
+    `task_assessments` record, consulted only when no suitability label is
+    present (mirrors `check_human_involvement_gate()`'s own fallback) and
+    discarded per issue when `local_assessment_applies(task.labels)` is False
+    (a pipeline-state label like `agent:researched` means a human has moved
+    the issue past the point where a stale local record should still apply,
+    exactly as it does for the gate): this check runs here too, not only in
+    the caller, so a precomputed map containing an inapplicable record for a
+    given issue is still handled correctly.
+
+    An unresolvable dependency reference (the graph contains the issue but
+    not its blocker) fails closed here exactly as it does in
+    `DependencyGraph.get_ready_tasks()`, so the two consumers agree on every
+    issue rather than the queue silently re-admitting one the graph API still
+    reports as `blocked`.
     """
     existing = set(current_queue)
-    if max_queue_size > 0:
-        capacity = max(0, max_queue_size - len(current_queue))
-    else:
-        capacity = None
+    capacity = _remaining_capacity(max_queue_size, len(current_queue))
 
     if capacity == 0:
         return ()
 
+    local_assessments = local_assessments or {}
     candidates: list[int] = []
     for issue_id, state in task_map.items():
-        if state in _READY_STATES and issue_id not in existing:
-            if task_objects and issue_id in task_objects and is_human_only(task_objects[issue_id].labels):
+        if state not in _READY_STATES or issue_id in existing:
+            continue
+        task = task_objects.get(issue_id) if task_objects else None
+        if task is not None:
+            local_assessment = local_assessments.get(issue_id)
+            if local_assessment is not None and not local_assessment_applies(task.labels):
+                local_assessment = None
+            has_graph_data = graph is not None and graph.has_task(issue_id)
+            suitability = assess_suitability(
+                task,
+                graph,
+                local_assessment=local_assessment,
+                consider_dependencies=has_graph_data,
+            )
+            if suitability.mode not in AGENT_ELIGIBLE_MODES:
+                log_once(
+                    log,
+                    "queue_maintenance.skipped_unsuitable",
+                    key=f"{issue_id}:{suitability.mode.value}",
+                    level="info",
+                    issue=issue_id,
+                    mode=suitability.mode.value,
+                    reasons=suitability.reasons,
+                    blocked_by=suitability.blocked_by,
+                )
                 continue
-            candidates.append(issue_id)
+        candidates.append(issue_id)
 
     def _sort_key(issue_id: int) -> tuple[int, int]:
         if task_objects and issue_id in task_objects:
-            pri = _extract_priority(task_objects[issue_id].labels)
+            pri = extract_priority(task_objects[issue_id].labels)
         else:
             pri = ""
         rank = _PRIORITY_RANK.get(pri, len(_PRIORITY_RANK))

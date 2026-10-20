@@ -6,10 +6,21 @@ import asyncio
 import re
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from sova.adapters.base import Task, TaskAdapter, TaskState
+
+# is_ready: used by callers importing it from here rather than from its
+# canonical home in sova.supervisor.labels (kept for backward compatibility).
+from sova.supervisor.labels import (  # noqa: F401
+    extract_priority,
+    is_epic,
+    is_human_only,
+    is_interactive_recommended,
+    is_ready,
+)
+from sova.supervisor.suitability import AGENT_ELIGIBLE_MODES, Suitability, assess_suitability
 from sova.utils.log_dedup import warn_once
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
@@ -20,49 +31,6 @@ _GRAPH_CACHE_TTL = 180.0  # 3 minutes
 _graph_cache: dict[str, tuple[float, DependencyGraph]] = {}  # repo -> (monotonic_ts, graph)
 
 _DEP_PATTERN = re.compile(r"#(\d+)")
-
-_VALID_PRIORITIES: frozenset[str] = frozenset({"critical", "high", "medium", "low"})
-
-
-def _extract_priority(labels: list[str]) -> str:
-    """Return the priority level from a list of labels, or '' if none found.
-
-    Recognises labels of the form 'priority: <level>' (case-insensitive).
-    Only the four canonical levels (critical/high/medium/low) are returned;
-    unknown values are ignored so stale or mis-spelled labels don't surface.
-    """
-    for label in labels:
-        lower = label.lower().strip()
-        if lower.startswith("priority:"):
-            value = lower[len("priority:") :].strip()
-            if value in _VALID_PRIORITIES:
-                return value
-    return ""
-
-
-def is_epic(labels: list[str]) -> bool:
-    """Return True if labels include 'type: epic' (case-insensitive).
-
-    Epics are tracking containers that group related work. They should not be
-    assigned to agents (excluded from ready tasks) and render with visual
-    distinction in the dependency graph.
-    """
-    return any(label.lower().strip() == "type: epic" for label in labels)
-
-
-def is_human_only(labels: list[str]) -> bool:
-    """Return True if labels include 'agent:human-only' (case-insensitive)."""
-    return any(label.lower().strip() == "agent:human-only" for label in labels)
-
-
-def is_interactive_recommended(labels: list[str]) -> bool:
-    """Return True if labels include 'agent:interactive-recommended' (case-insensitive)."""
-    return any(label.lower().strip() == "agent:interactive-recommended" for label in labels)
-
-
-def is_ready(labels: list[str]) -> bool:
-    """Return True if labels include 'agent:ready' (case-insensitive)."""
-    return any(label.lower().strip() == "agent:ready" for label in labels)
 
 
 # States that should be excluded from "ready to work on": either already
@@ -208,41 +176,27 @@ class DependencyGraph:
             missing_refs=sorted(missing),
         )
 
-    def _are_dependencies_satisfied(self, task_id: int, all_ids: set[int]) -> bool:
-        """Check if all non-epic dependencies of a task are known and DONE.
-
-        Epic dependencies are skipped: epics are tracking containers,
-        not real blockers.
-        """
-        deps = self._deps.get(task_id, set())
-        if not deps:
-            return True
-        for dep in deps:
-            if dep not in all_ids:
-                return False
-            dep_task = self._tasks[dep]
-            if is_epic(dep_task.labels):
-                continue
-            if dep_task.state != TaskState.DONE:
-                return False
-        return True
-
-    def get_ready_tasks(self) -> list[int]:
-        """Issues whose non-epic dependencies are all DONE (ready to work on).
+    def get_ready_tasks(self, suitabilities: dict[int, Suitability] | None = None) -> list[int]:
+        """Issues classified `autonomous` or `unclassified` by `assess_suitability`.
 
         Missing deps are treated as blocking (fail-closed).
-        Issues already in progress, in review, done, or human-only are excluded.
-        Epics (type: epic label) are also excluded as they are tracking containers.
-        """
-        all_ids = set(self._tasks.keys())
-        ready: list[int] = []
+        Issues already in progress, in review, done, or human-only are excluded
+        by state; epics, human-only/interactive-recommended labels, and open
+        non-epic dependencies are excluded via the suitability classifier.
 
+        *suitabilities*, when given, is a precomputed `{issue_id: Suitability}`
+        map (`to_dict()` passes its own per-node classification through here
+        rather than re-running `assess_suitability()` a second time per node).
+        A missing entry for a given node falls back to computing it fresh, so
+        a partial map is safe to pass: it is treated as "not precomputed" for
+        the ids it omits rather than raising `KeyError`.
+        """
+        ready: list[int] = []
         for tid, task in sorted(self._tasks.items()):
             if task.state in _EXCLUDED_FROM_READY:
                 continue
-            if is_epic(task.labels):
-                continue
-            if self._are_dependencies_satisfied(tid, all_ids):
+            suitability = (suitabilities or {}).get(tid) or assess_suitability(task, self)
+            if suitability.mode in AGENT_ELIGIBLE_MODES:
                 ready.append(tid)
 
         return ready
@@ -345,6 +299,26 @@ class DependencyGraph:
         be enriched with spec metadata and spec-aware action buttons.  When None,
         the spec service falls back to the contextvar-based project directory.
 
+        Each node carries both ``is_human_only``/``is_interactive_recommended``
+        (label-only, legacy) and ``suitability`` (the classifier verdict, where
+        ``blocked`` outranks ``interactive`` and ``human``). The two can
+        disagree: an interactive-recommended issue with an open dependency has
+        ``is_interactive_recommended=True`` but ``suitability.mode="blocked"``.
+
+        ``suitability.mode``/``reasons``/``blocked_by`` reflect labels and
+        dependency state alone: `assess_suitability()` never looks at
+        ``task.state`` (state exclusion is this method's own
+        ``_EXCLUDED_FROM_READY`` filter, applied separately in
+        ``get_ready_tasks()``) or at the local ``task_assessments`` record
+        (only `queue_maintenance` resolves that fallback; building this graph
+        has no DB access), so a DONE or IN_PROGRESS node can still carry
+        ``mode="autonomous"``. ``suitability.eligible`` folds in the one of
+        those two gaps this module can answer on its own: it is
+        ``mode in AGENT_ELIGIBLE_MODES and task.state not in
+        _EXCLUDED_FROM_READY``, matching ``get_ready_tasks()``'s own combined
+        filter. A consumer deciding whether an issue is schedulable should
+        read ``suitability.eligible``, never the bare ``mode``.
+
         Recomputes validate(), get_ready_tasks(), and get_parallel_groups()
         on every call.  Avoid calling repeatedly on the same graph instance;
         cache the result if multiple reads are needed.
@@ -354,6 +328,7 @@ class DependencyGraph:
         effective_handoff_map = handoff_map or {}
         effective_last_run_map = last_run_map or {}
         nodes = []
+        suitabilities: dict[int, Suitability] = {}
         for tid, task in sorted(self._tasks.items()):
             body = task.body or ""
             # Skip section headers (#...) and list/dep items (-...) so the excerpt
@@ -405,6 +380,12 @@ class DependencyGraph:
 
             task_is_human_only = is_human_only(task.labels)
             task_is_interactive = is_interactive_recommended(task.labels)
+            suitability = assess_suitability(task, self)
+            suitabilities[tid] = suitability
+            suitability_payload = asdict(suitability)
+            suitability_payload["eligible"] = (
+                suitability.mode in AGENT_ELIGIBLE_MODES and task.state not in _EXCLUDED_FROM_READY
+            )
             node: dict = {
                 "id": tid,
                 "title": task.title,
@@ -413,10 +394,11 @@ class DependencyGraph:
                 "dependencies": sorted(self._deps.get(tid, set())),
                 "body_excerpt": excerpt,
                 "available_actions": actions,
-                "priority": _extract_priority(task.labels),
+                "priority": extract_priority(task.labels),
                 "is_epic": is_epic(task.labels),
                 "is_human_only": task_is_human_only,
                 "is_interactive_recommended": task_is_interactive and not task_is_human_only,
+                "suitability": suitability_payload,
             }
             if pr_info:
                 node["pr_number"] = pr_info.get("pr_number")
@@ -443,7 +425,7 @@ class DependencyGraph:
             nodes.append(node)
 
         validation = self.validate()
-        ready = self.get_ready_tasks()
+        ready = self.get_ready_tasks(suitabilities)
         groups = self.get_parallel_groups()
 
         return {

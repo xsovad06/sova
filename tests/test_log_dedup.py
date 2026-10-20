@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import structlog
+from structlog.testing import capture_logs
+
 from sova.utils import log_dedup
-from sova.utils.log_dedup import warn_once
+from sova.utils.log_dedup import log_once, warn_once
 
 
 class TestWarnOnce:
@@ -65,3 +68,50 @@ class TestWarnOnce:
             log.warning.assert_called_once()
         finally:
             log_dedup.reset()
+
+
+class TestLogOnce:
+    def test_default_level_is_warning(self) -> None:
+        log = MagicMock()
+        log_once(log, "some.event", "key1", detail="x")
+        log.warning.assert_called_once_with("some.event", detail="x")
+        log.info.assert_not_called()
+
+    def test_info_level_routes_to_info_not_warning(self) -> None:
+        log = MagicMock()
+        log_once(log, "some.event", "key1", level="info", detail="x")
+        log.info.assert_called_once_with("some.event", detail="x")
+        log.warning.assert_not_called()
+
+    def test_repeat_within_ttl_is_suppressed_regardless_of_level(self) -> None:
+        log = MagicMock()
+        log_once(log, "some.event", "key1", level="info")
+        log_once(log, "some.event", "key1", level="info")
+        log.info.assert_called_once()
+
+    def test_invalid_level_falls_back_to_warning_instead_of_crashing(self) -> None:
+        """A typo'd level must never raise `TypeError` out of a log call.
+
+        `MagicMock` accepts any call signature, so it would not catch a
+        collision between the positional `event` arg and a same-named kwarg
+        on a real structlog `BoundLogger`.
+        """
+        log_dedup.reset()
+        log = structlog.get_logger(component="log-once-probe")
+        with capture_logs() as entries:
+            log_once(log, "some.event", "key1", level="critcal", detail="x")
+
+        events = {entry["event"]: entry for entry in entries}
+        assert "log_dedup.invalid_level" in events
+        assert events["log_dedup.invalid_level"]["dedup_event"] == "some.event"
+        assert events["log_dedup.invalid_level"]["requested_level"] == "critcal"
+        assert "some.event" in events
+        assert events["some.event"]["detail"] == "x"
+
+    def test_invalid_level_still_records_the_dedup_entry(self) -> None:
+        log_dedup.reset()
+        log = structlog.get_logger(component="log-once-probe")
+        log_once(log, "some.event", "key1", level="bogus")
+        with capture_logs() as entries:
+            log_once(log, "some.event", "key1", level="bogus")
+        assert entries == []

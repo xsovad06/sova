@@ -59,7 +59,7 @@ sova/
     dashboard/services/mcp_service.py  # MCP token generation/validation and tool handlers
     awareness/                     # Awareness subsystem (AwarenessProvider ABC, AwarenessItem, ItemCategory, provider registry, BriefingService aggregation engine, rendering models, rendering/cli_renderer.py Rich terminal output)
     oversight/                     # Oversight agent: background daemon, operations persona (user-maintained LLM guidance)
-    supervisor/                    # Supervisor-level services (TaskProgressionEngine, CodeRabbit quota, task dependency graph)
+    supervisor/                    # Supervisor-level services (TaskProgressionEngine, CodeRabbit quota, task dependency graph, suitability classifier)
       gates/                       # Gate check functions (one per module): rate_limit, connectivity, memory_pressure, dependency, human_involvement, quota, ci_budget, slots, budget, already_running, repeated_failure, ownership, file_conflict, review_completed
     commands/                      # Command + guideline distribution (catalog, templates, manifest, distribution)
       data/commands/               # 28 canonical commands (markdown with category frontmatter); packaged here (not repo-root) so a wheel install ships them, resolved via sova.commands.catalog.get_canonical_dir()

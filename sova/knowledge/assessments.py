@@ -9,7 +9,7 @@ always takes precedence over this record when both exist.
 
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import TaskAssessmentRecord
@@ -93,6 +93,39 @@ async def get_latest_assessment(
     )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def get_latest_assessments(
+    session: AsyncSession,
+    *,
+    issue_numbers: list[str],
+    project_slug: str,
+) -> dict[str, TaskAssessmentRecord]:
+    """Return the latest assessment row per issue number, for every id in `issue_numbers` that has one.
+
+    Two queries instead of one `get_latest_assessment()` call per issue, and
+    bounded to exactly one row per issue: `task_assessments` is append-only, so
+    `id` is monotonic and `max(id)` per `issue_number` is always the latest
+    row, the same row `get_latest_assessment()`'s `assessed_at desc, id desc`
+    tiebreak would pick. Selecting every historical row and reducing in
+    Python (the first-draft approach) materializes unbounded history per poll
+    cycle on a project where `/find-task` has retriaged the same backlog many
+    times, which defeats the point of batching.
+    """
+    if not issue_numbers:
+        return {}
+    latest_ids = (
+        select(func.max(TaskAssessmentRecord.id))
+        .where(
+            TaskAssessmentRecord.issue_number.in_(issue_numbers),
+            TaskAssessmentRecord.project_slug == project_slug,
+        )
+        .group_by(TaskAssessmentRecord.issue_number)
+        .scalar_subquery()
+    )
+    stmt = select(TaskAssessmentRecord).where(TaskAssessmentRecord.id.in_(latest_ids))
+    result = await session.execute(stmt)
+    return {record.issue_number: record for record in result.scalars()}
 
 
 async def clear_assessment(

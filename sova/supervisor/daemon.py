@@ -382,7 +382,14 @@ class SupervisorDaemon:
         try:
             from sova.supervisor.queue_maintenance import maintain_queue
 
-            result = await maintain_queue(adapter, cfg.supervisor, self._project_dir)
+            result = await maintain_queue(
+                adapter,
+                cfg.supervisor,
+                self._project_dir,
+                cfg.network_guard,
+                session_factory=self._session_factory,
+                project_slug=cfg.github_repo,
+            )
             return {
                 "changed": result.changed,
                 "removed": list(result.removed),
