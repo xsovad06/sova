@@ -731,6 +731,7 @@ async def start_agent(
             pre_run_sha=pre_run_sha,
             prompt=" ".join(cmd_parts),
             project_dir=project_dir,
+            worktree_path=cwd,
             stream_parser=stream_parser,
             stream_reader_drain_timeout=stream_reader_drain_timeout,
             runtime_name=runtime.name if effective_role not in _DIRECT_SPAWN_ROLES else None,
@@ -819,7 +820,7 @@ async def start_command(
     slug: str | None = None,
 ) -> dict:
     """Start a Claude Code command (e.g. /agent-resume, /integrate-pr)."""
-    from sova.dashboard.services.agent_db import _capture_pr_head_sha
+    from sova.dashboard.services.agent_db import _capture_pr_head_sha, _capture_worktree_head_sha
     from sova.dashboard.services.agent_output import _read_output, _read_stderr
 
     pa = _get_project_agents(slug)
@@ -863,6 +864,10 @@ async def start_command(
         if pr_number and cwd.resolve() == project_dir.resolve():
             log.error("command.worktree_isolation_failed", pr=pr_number, command=command)
             return {"error": f"Cannot start PR-based command: worktree isolation failed for PR {pr_number}"}
+
+        pre_run_head_sha = None
+        if pre_run_sha is None:
+            pre_run_head_sha = await _capture_worktree_head_sha(cwd)
 
         prompt = _resolve_command_prompt(command, args, project_dir)
 
@@ -937,8 +942,10 @@ async def start_command(
             output_writer=writer,
             pr_number=pr_number,
             pre_run_sha=pre_run_sha,
+            pre_run_head_sha=pre_run_head_sha,
             prompt=prompt,
             project_dir=project_dir,
+            worktree_path=cwd,
             stream_parser=stream_parser,
             stream_reader_drain_timeout=stream_reader_drain_timeout,
             runtime_name=runtime.name,

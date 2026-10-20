@@ -9850,6 +9850,31 @@ class TestCommandOutcomeValidation:
         result = await _validate_command_outcome(1, agent)
         assert result.failure_reason is None
 
+    async def test_rearrange_commits_dispatches_to_diff_guard(self) -> None:
+        """rearrange-commits never pushes on its own, so unlike address-pr it has no push
+
+        tier to confirm first: _COMMAND_VALIDATORS must route it straight to
+        _check_pr_diff_guard rather than leaving it unguarded like an unknown command.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import OutcomeValidation, _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:rearrange-commits"
+
+        with patch(
+            "sova.dashboard.services.agent_db._check_pr_diff_guard",
+            new_callable=AsyncMock,
+            return_value=OutcomeValidation("rearrange-commits possible silent revert: shared.py"),
+        ) as mock_guard:
+            result = await _validate_command_outcome(1, agent)
+
+        mock_guard.assert_awaited_once_with(agent)
+        assert result.failure_reason is not None
+        assert "silent revert" in result.failure_reason
+
     async def test_address_pr_fails_without_push_evidence(self) -> None:
         from unittest.mock import MagicMock
 
@@ -11876,6 +11901,65 @@ class TestCapturePrHeadSha:
         assert sha is None
 
 
+class TestCaptureWorktreeHeadSha:
+    """Unit tests for _capture_worktree_head_sha."""
+
+    async def test_returns_sha_on_success(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _capture_worktree_head_sha
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = True
+            result.stdout = "abc123def456\n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        sha = await _capture_worktree_head_sha(tmp_path)
+        assert sha == "abc123def456"
+
+    async def test_returns_none_on_failure(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _capture_worktree_head_sha
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = False
+            result.stdout = ""
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        sha = await _capture_worktree_head_sha(tmp_path)
+        assert sha is None
+
+    async def test_returns_none_on_exception(self, tmp_path: Path, monkeypatch) -> None:
+        from sova.dashboard.services.agent_db import _capture_worktree_head_sha
+
+        async def mock_run(*args, **kwargs):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        sha = await _capture_worktree_head_sha(tmp_path)
+        assert sha is None
+
+    async def test_returns_none_on_empty_stdout(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _capture_worktree_head_sha
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = True
+            result.stdout = "   \n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        sha = await _capture_worktree_head_sha(tmp_path)
+        assert sha is None
+
+
 class TestCheckPrPushedViaSha:
     """Unit tests for _check_pr_pushed_via_sha."""
 
@@ -12084,7 +12168,7 @@ class TestValidateAddressPrWithSha:
     async def test_sha_check_short_circuits_on_push_detected(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_db import _VALID, _validate_address_pr
         from sova.dashboard.services.agent_pool import AgentState
 
         agent = MagicMock(spec=AgentState)
@@ -12107,6 +12191,11 @@ class TestValidateAddressPrWithSha:
                 "sova.dashboard.services.agent_db._check_pr_branch_pushed",
                 new_callable=AsyncMock,
             ) as branch_mock,
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_diff_guard",
+                new_callable=AsyncMock,
+                return_value=_VALID,
+            ),
         ):
             result = await _validate_address_pr(1, agent)
         assert result.failure_reason is None
@@ -12116,7 +12205,7 @@ class TestValidateAddressPrWithSha:
     async def test_falls_through_to_branch_check_when_sha_inconclusive(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_db import _VALID, _validate_address_pr
         from sova.dashboard.services.agent_pool import AgentState
 
         agent = MagicMock(spec=AgentState)
@@ -12139,6 +12228,11 @@ class TestValidateAddressPrWithSha:
                 "sova.dashboard.services.agent_db._check_pr_branch_pushed",
                 new_callable=AsyncMock,
                 return_value=(True, False),
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_diff_guard",
+                new_callable=AsyncMock,
+                return_value=_VALID,
             ),
         ):
             result = await _validate_address_pr(1, agent)
@@ -12214,7 +12308,7 @@ class TestValidateAddressPrWithSha:
         """Two distinct keyword matches is sufficient evidence."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_db import _VALID, _validate_address_pr
         from sova.dashboard.services.agent_pool import AgentState
 
         agent = MagicMock(spec=AgentState)
@@ -12237,6 +12331,11 @@ class TestValidateAddressPrWithSha:
                 "sova.dashboard.services.agent_db._check_pr_branch_pushed",
                 new_callable=AsyncMock,
                 return_value=(None, False),
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_diff_guard",
+                new_callable=AsyncMock,
+                return_value=_VALID,
             ),
         ):
             result = await _validate_address_pr(1, agent)
@@ -12350,6 +12449,579 @@ class TestValidateAddressPrWithSha:
 
         assert result.network_blocked is False
         assert "without pushing" in result.failure_reason
+
+
+class TestCheckPrDiffGuard:
+    """Tests that _check_pr_diff_guard wires sova.core.pr_diff_guard into address-pr validation."""
+
+    async def test_no_baseline_returns_valid(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = None
+        agent.pre_run_head_sha = None
+        agent.project_dir = tmp_path
+
+        result = await _check_pr_diff_guard(agent)
+        assert result.failure_reason is None
+
+    async def test_uses_worktree_path_and_pr_branch_ref_not_project_dir_or_head(self, tmp_path: Path) -> None:
+        """A PR-based command run never executes in project_dir (agent_lifecycle.py aborts first
+
+        if worktree isolation fails), so the guard must inspect agent.worktree_path on the PR's
+        own branch ref, never project_dir's HEAD (which, for this repo, stays parked on main).
+        """
+        from unittest.mock import AsyncMock, MagicMock, call, patch
+
+        from sova.core.pr_diff_guard import GuardResult
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = tmp_path / "worktree-42"
+        agent.issue = None
+        agent.role = "command:address-pr"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", False),
+            ) as mock_fetch,
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(ok=True, pre_merge_base="pre_base_sha", post_merge_base="base_sha"),
+            ) as mock_revert,
+            patch(
+                "sova.core.pr_diff_guard.check_pin_downgrades",
+                new_callable=AsyncMock,
+                return_value=([], False),
+            ) as mock_pins,
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is None
+        mock_fetch.assert_awaited_once_with(
+            42, agent.worktree_path, "headRefName,baseRefName", "[.headRefName, .baseRefName] | @tsv"
+        )
+        mock_revert.assert_awaited_once_with(agent.worktree_path, "main", "aaa111", head_ref="feat/issue-42")
+        assert mock_pins.await_args_list == [
+            call(agent.worktree_path, "pre_base_sha", "aaa111"),
+            call(agent.worktree_path, "base_sha", "feat/issue-42"),
+        ]
+
+    async def test_uses_pr_base_ref_name_not_config_default(self, tmp_path: Path) -> None:
+        """The guard must diff against the PR's own base branch, not the project-wide
+
+        default: for a stacked PR (based on another branch) or a release branch, using
+        cfg.base_branch instead would attribute everything the real base contributed to
+        "the base changed it since the fork", manufacturing or masking candidates.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.pre_run_head_sha = None
+        agent.project_dir = tmp_path
+        agent.worktree_path = tmp_path / "worktree-42"
+        agent.issue = None
+        agent.role = "command:address-pr"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42\trelease/1.0", False),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(ok=True, pre_merge_base="pre_base_sha", post_merge_base="base_sha"),
+            ) as mock_revert,
+            patch(
+                "sova.core.pr_diff_guard.check_pin_downgrades",
+                new_callable=AsyncMock,
+                return_value=([], False),
+            ),
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is None
+        mock_revert.assert_awaited_once_with(agent.worktree_path, "release/1.0", "aaa111", head_ref="feat/issue-42")
+
+    async def test_skips_pin_check_when_revert_merge_bases_unresolvable(self, tmp_path: Path) -> None:
+        """When check_silent_revert() itself skipped (ok=True, no fork points resolved, e.g.
+
+        the baseline SHA is not present locally), running the pin check against that same
+        unresolvable baseline would just rediscover "cannot verify" as a false
+        network_blocked outcome, cancelling the skip. The pin check must not run at all.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.pre_run_head_sha = None
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = None
+        agent.role = "command:address-pr"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", False),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(ok=True),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_pin_downgrades",
+                new_callable=AsyncMock,
+            ) as mock_pins,
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is None
+        mock_pins.assert_not_awaited()
+
+    async def test_falls_back_to_pre_run_head_sha_when_no_pr_baseline(self, tmp_path: Path) -> None:
+        """A non-PR command run (e.g. rearrange-commits invoked without a PR number) never
+
+        gets pre_run_sha, since that is only ever captured from a PR's headRefOid; the
+        guard must still reach a baseline via pre_run_head_sha, the worktree's local HEAD
+        captured at spawn time, or the rearrange-commits validator can never fire.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = None
+        agent.pre_run_sha = None
+        agent.pre_run_head_sha = "local111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = tmp_path / "worktree"
+        agent.issue = None
+        agent.role = "command:rearrange-commits"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(ok=True),
+            ) as mock_revert,
+            patch(
+                "sova.core.pr_diff_guard.check_pin_downgrades",
+                new_callable=AsyncMock,
+                return_value=([], False),
+            ),
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is None
+        mock_revert.assert_awaited_once_with(agent.worktree_path, "main", "local111", head_ref="HEAD")
+
+    async def test_falls_back_to_project_dir_when_no_worktree_path(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = None
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = None
+        agent.role = "command:address-pr"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(ok=True),
+            ) as mock_revert,
+            patch(
+                "sova.core.pr_diff_guard.check_pin_downgrades",
+                new_callable=AsyncMock,
+                return_value=([], False),
+            ),
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is None
+        mock_revert.assert_awaited_once_with(tmp_path, "main", "aaa111", head_ref="HEAD")
+
+    async def test_silent_revert_detected_fails(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = None
+        agent.role = "command:address-pr"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", False),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(
+                    ok=False,
+                    reason="possible silent revert: shared.py",
+                    files=frozenset({"shared.py"}),
+                ),
+            ),
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is not None
+        assert "possible silent revert" in result.failure_reason
+        assert result.network_blocked is False
+
+    async def test_inconclusive_revert_check_is_network_blocked_not_failed(self, tmp_path: Path) -> None:
+        """An unresolvable merge-base/diff is 'could not verify', never 'verified bad' (see
+
+        architecture.md "A network outage is a first-class condition"): it must not consume
+        the address-review budget or report a false revert, so it is surfaced via
+        network_blocked rather than a bare failure_reason.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = None
+        agent.role = "command:address-pr"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", False),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(
+                    ok=False,
+                    reason="could not fetch origin/main to verify the diff",
+                    inconclusive=True,
+                ),
+            ),
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is not None
+        assert result.network_blocked is True
+
+    async def test_branch_name_fetch_network_blocked_is_network_blocked_not_failed(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = None
+        agent.role = "command:address-pr"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=(None, True),
+            ),
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is not None
+        assert result.network_blocked is True
+
+    async def test_clean_diff_returns_valid(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = None
+        agent.role = "command:address-pr"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", False),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(ok=True),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_pin_downgrades",
+                new_callable=AsyncMock,
+                return_value=([], False),
+            ),
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is None
+
+    async def test_guard_exception_does_not_fail_run(self, tmp_path: Path) -> None:
+        """A guard crash must not block an otherwise-valid push (additive, not a new failure mode)."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = None
+        agent.role = "command:address-pr"
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is None
+
+    async def test_pin_downgrade_fails_when_not_exempted(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult, PinDowngrade
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = None
+        agent.role = "command:address-pr"
+        agent.prompt = "Fix the flaky test"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", False),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(ok=True, pre_merge_base="pre_base_sha", post_merge_base="base_sha"),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_pin_downgrades",
+                new_callable=AsyncMock,
+                side_effect=[
+                    ([], False),
+                    (
+                        [
+                            PinDowngrade(
+                                file="requirements.txt",
+                                package="requests",
+                                from_version="2.31.0",
+                                to_version="2.20.0",
+                            )
+                        ],
+                        False,
+                    ),
+                ],
+            ),
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is not None
+        assert "downgrade" in result.failure_reason
+        assert "requests" in result.failure_reason
+
+    async def test_pin_downgrade_exempted_when_file_named_in_prompt(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult, PinDowngrade
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = None
+        agent.role = "command:address-pr"
+        agent.prompt = "Pin requests back down in requirements.txt to fix the regression"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", False),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(ok=True, pre_merge_base="pre_base_sha", post_merge_base="base_sha"),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_pin_downgrades",
+                new_callable=AsyncMock,
+                side_effect=[
+                    ([], False),
+                    (
+                        [
+                            PinDowngrade(
+                                file="requirements.txt",
+                                package="requests",
+                                from_version="2.31.0",
+                                to_version="2.20.0",
+                            )
+                        ],
+                        False,
+                    ),
+                ],
+            ),
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is None
+
+    async def test_pin_downgrade_exempted_when_file_named_in_issue_body(self, tmp_path: Path) -> None:
+        """The realistic prompt is just "/address-pr pr=42" once the command is installed under
+
+        .claude/commands/ (agent_context.py::_resolve_command_prompt), which can never name a
+        file; the exemption must still work when the issue body (not the prompt) names it.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.core.pr_diff_guard import GuardResult, PinDowngrade
+        from sova.dashboard.services.agent_db import _check_pr_diff_guard
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+        agent.worktree_path = None
+        agent.issue = "99"
+        agent.role = "command:address-pr"
+        agent.prompt = "/address-pr pr=42"
+
+        mock_task = MagicMock()
+        mock_task.body = "Please pin requests back down in requirements.txt to fix the regression"
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_db._fetch_pr_fields",
+                new_callable=AsyncMock,
+                return_value=("feat/issue-42", False),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_silent_revert",
+                new_callable=AsyncMock,
+                return_value=GuardResult(ok=True, pre_merge_base="pre_base_sha", post_merge_base="base_sha"),
+            ),
+            patch(
+                "sova.core.pr_diff_guard.check_pin_downgrades",
+                new_callable=AsyncMock,
+                side_effect=[
+                    ([], False),
+                    (
+                        [
+                            PinDowngrade(
+                                file="requirements.txt",
+                                package="requests",
+                                from_version="2.31.0",
+                                to_version="2.20.0",
+                            )
+                        ],
+                        False,
+                    ),
+                ],
+            ),
+            patch("sova.core.spec_utils.read_spec", return_value=None),
+            patch("sova.adapters.create_adapter") as mock_create_adapter,
+        ):
+            mock_cfg.return_value.base_branch = "main"
+            mock_create_adapter.return_value.get_task = AsyncMock(return_value=mock_task)
+            result = await _check_pr_diff_guard(agent)
+
+        assert result.failure_reason is None
 
 
 class TestPipelineBypassDiagnosticLogging:

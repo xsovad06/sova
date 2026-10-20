@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -20,6 +20,9 @@ from sova.ipc.control import normalize_signal_exit
 from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import SOVA_VERDICT_MARKER_RE
+
+if TYPE_CHECKING:
+    from sova.core.pr_diff_guard import PinDowngrade
 
 try:
     import psutil
@@ -514,6 +517,27 @@ async def _capture_pr_head_sha(pr_number: int, project_dir: Path) -> str | None:
     return sha
 
 
+async def _capture_worktree_head_sha(worktree_dir: Path) -> str | None:
+    """Capture the resolved worktree's local HEAD before a non-PR command run starts.
+
+    Used only when there is no PR number to capture a ``headRefOid`` from
+    (see ``_capture_pr_head_sha``), so a command like ``rearrange-commits``
+    invoked without a PR number still has a baseline for
+    ``_check_pr_diff_guard()``. Returns None on any error.
+    """
+    from sova.utils.shell import run as run_shell
+
+    try:
+        result = await run_shell("git", "rev-parse", "HEAD", cwd=worktree_dir, timeout=10)
+    except (RuntimeError, OSError):
+        log.debug("capture_worktree_head_sha.failed", worktree_dir=str(worktree_dir), exc_info=True)
+        return None
+    if not result.success:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
 async def _check_pr_pushed_via_sha(agent: AgentState) -> tuple[bool | None, bool]:
     """Compare the PR's current headRefOid against the pre-run snapshot.
 
@@ -573,6 +597,182 @@ class OutcomeValidation(NamedTuple):
 _VALID = OutcomeValidation(None)
 
 
+def _is_pin_downgrade_exempted(downgrade: PinDowngrade, exemption_text: str) -> bool:
+    """Check if a pin downgrade was explicitly named in the operator's own intent.
+
+    Requires both the file and the package name as a case-insensitive
+    substring match against ``exemption_text``: the file name alone is too
+    common in dependency-adjacent prose (``pyproject.toml`` or
+    ``requirements.txt`` appears in almost any Python dependency spec, even
+    one that only adds a package) to mean "this specific package's downgrade
+    was intended". No structured exemptions config is introduced, keeping
+    the check dependency-free; the nameless lockfile fallback
+    (``<lockfile entry>``, used only when no enclosing package key could be
+    resolved from the diff) is exempted on the file name alone, since there
+    is no real package name to match.
+    """
+    if not exemption_text:
+        return False
+    lowered = exemption_text.lower()
+    if downgrade.file.lower() not in lowered:
+        return False
+    if downgrade.package == "<lockfile entry>":
+        return True
+    return downgrade.package.lower() in lowered
+
+
+async def _resolve_pin_downgrade_exemption_text(agent: AgentState) -> str:
+    """Build the text an operator-approved pin downgrade is expected to be named in.
+
+    For a project with the command installed under ``.claude/commands/``,
+    ``agent.prompt`` is just e.g. ``"/address-pr pr=123"`` (see
+    `agent_context.py::_resolve_command_prompt`), which can never name a
+    dependency file, so the prompt alone cannot express intent. The issue's
+    spec document and tracker body carry the operator's actual request, so
+    both are checked too; each lookup is independently best-effort (a missing
+    spec, an unassigned issue, or an adapter failure must not block the
+    outcome check), and the prompt is always included as a fallback.
+    """
+    parts: list[str] = []
+    if agent.prompt:
+        parts.append(agent.prompt)
+
+    if agent.issue:
+        try:
+            from sova.core.spec_utils import read_spec
+
+            spec = read_spec(agent.issue, agent.project_dir)
+            if spec and spec.get("raw_content"):
+                parts.append(spec["raw_content"])
+        except Exception:  # noqa: BLE001 (exemption lookup must not block the outcome check)
+            log.debug("pin_downgrade_exemption.spec_read_failed", issue=agent.issue, exc_info=True)
+
+        try:
+            from sova.adapters import create_adapter
+            from sova.config.loader import load_config
+
+            cfg = load_config(agent.project_dir)
+            adapter = create_adapter(cfg)
+            task = await adapter.get_task(agent.issue)
+            if task.body:
+                parts.append(task.body)
+        except Exception:  # noqa: BLE001 (exemption lookup must not block the outcome check)
+            log.debug("pin_downgrade_exemption.issue_fetch_failed", issue=agent.issue, exc_info=True)
+
+    return "\n".join(parts)
+
+
+async def _check_pr_diff_guard(agent: AgentState) -> OutcomeValidation:
+    """Run the pure git-diff silent-revert and pin-downgrade guards against a pushed squash-capable command.
+
+    A squash-capable command rewrites history, which can silently discard a
+    sibling PR's change that landed on the base since the fork point, or
+    quietly downgrade a dependency pin while resolving a rebase conflict (see
+    `sova/core/pr_diff_guard.py`). Skips (returns valid) when there is no
+    recorded pre-run baseline: a missing baseline means "cannot verify", not
+    "verified bad", and this check is additive on top of the push tiers above.
+    Shared by both ``address-pr`` and ``rearrange-commits``, so messages use
+    the agent's own command name rather than hardcoding one.
+
+    Runs against ``agent.worktree_path``, preferring it over
+    ``agent.project_dir``: a PR-based command run always has a worktree set
+    (both `start_agent()` and `start_command()` populate it from the resolved
+    ``cwd``, and a PR-based run aborts if that equals ``project_dir``), so
+    resolving ``HEAD`` against ``project_dir`` instead would check out a
+    different checkout entirely (typically parked on the base branch); the
+    fallback exists only for a run that has no worktree at all.
+
+    Falls back to ``agent.pre_run_head_sha`` (the worktree's local HEAD at
+    spawn time, set only when there is no ``pr_number``) when
+    ``agent.pre_run_sha`` is unset: a non-PR command run (e.g. an operator
+    hand-posting ``rearrange-commits`` without a PR number) never gets a
+    ``pre_run_sha``, since that field is only ever captured from a PR's
+    ``headRefOid``, which would otherwise leave this guard permanently
+    unreachable for that path.
+    """
+    baseline_sha = agent.pre_run_sha if agent.pre_run_sha is not None else agent.pre_run_head_sha
+    if baseline_sha is None:
+        return _VALID
+
+    from sova.config.loader import load_config
+    from sova.core.pr_diff_guard import check_pin_downgrades, check_silent_revert
+
+    repo_dir = agent.worktree_path or agent.project_dir
+    cmd_name = _strip_command_prefix(agent.role) or "address-pr"
+
+    try:
+        cfg = load_config(agent.project_dir)
+
+        head_ref = "HEAD"
+        base_branch = cfg.base_branch
+        if agent.pr_number:
+            fields, network_blocked = await _fetch_pr_fields(
+                agent.pr_number, repo_dir, "headRefName,baseRefName", "[.headRefName, .baseRefName] | @tsv"
+            )
+            if fields:
+                parts = fields.split("\t")
+                branch = parts[0] if parts else ""
+                pr_base = parts[1] if len(parts) > 1 else ""
+                if branch:
+                    head_ref = branch
+                if pr_base:
+                    base_branch = pr_base
+            elif network_blocked:
+                return OutcomeValidation(
+                    f"{cmd_name} could not fetch PR #{agent.pr_number} branch info to verify the diff",
+                    network_blocked=True,
+                )
+
+        revert_result = await check_silent_revert(repo_dir, base_branch, baseline_sha, head_ref=head_ref)
+        if not revert_result.ok:
+            return OutcomeValidation(f"{cmd_name} {revert_result.reason}", network_blocked=revert_result.inconclusive)
+
+        if revert_result.pre_merge_base is None or revert_result.post_merge_base is None:
+            # check_silent_revert() itself could not resolve a usable fork
+            # point (e.g. baseline_sha is not present locally) and already
+            # skipped with ok=True for exactly that "cannot verify" reason.
+            # Diffing pin downgrades against that same unresolvable SHA would
+            # just rediscover the same failure as a false network_blocked
+            # outcome, cancelling the skip this branch exists to provide.
+            return _VALID
+
+        # Both sides diffed from their own fork point, never from the
+        # pre-run SHA on the post-run side: a rebase pulls in whatever the
+        # base advanced by, and attributing that span to the agent would
+        # flag a pin the base itself moved. The pre-run side establishes
+        # which downgrades already existed (and were presumably already
+        # reviewed) before this run started, so only a downgrade absent from
+        # that set is "introduced" by this run.
+        pre_run_downgrades, pre_inconclusive = await check_pin_downgrades(
+            repo_dir, revert_result.pre_merge_base, baseline_sha
+        )
+        post_run_downgrades, post_inconclusive = await check_pin_downgrades(
+            repo_dir, revert_result.post_merge_base, head_ref
+        )
+        if pre_inconclusive or post_inconclusive:
+            return OutcomeValidation(
+                f"{cmd_name} outcome unverified: could not diff dependency pin changes",
+                network_blocked=True,
+            )
+
+        pre_keys = {(d.file, d.package) for d in pre_run_downgrades}
+        downgrades = [d for d in post_run_downgrades if (d.file, d.package) not in pre_keys]
+    except Exception:  # noqa: BLE001 (a guard failure must not block an otherwise-valid push)
+        log.debug("check_pr_diff_guard.failed", pr_number=agent.pr_number, exc_info=True)
+        return _VALID
+
+    if not downgrades:
+        return _VALID
+
+    exemption_text = await _resolve_pin_downgrade_exemption_text(agent)
+    unexempted = [d for d in downgrades if not _is_pin_downgrade_exempted(d, exemption_text)]
+    if unexempted:
+        detail = ", ".join(f"{d.package} {d.from_version}->{d.to_version} in {d.file}" for d in unexempted)
+        return OutcomeValidation(f"{cmd_name} introduced a dependency pin downgrade: {detail}")
+
+    return _VALID
+
+
 async def _validate_address_pr(run_id: int, agent: AgentState) -> OutcomeValidation:
     """Check that address-pr actually committed and pushed changes.
 
@@ -587,6 +787,9 @@ async def _validate_address_pr(run_id: int, agent: AgentState) -> OutcomeValidat
     1 and 2 both need GitHub, so during an outage both go inconclusive and the
     fallback used to report that the agent "completed without pushing changes".
     A network-blocked verification is reported as such instead.
+
+    A confirmed push also runs the silent-revert diff guard
+    (`_check_pr_diff_guard`) before the outcome is accepted as valid.
     """
     if agent.pr_number is None:
         return OutcomeValidation("address-pr run has no associated PR number")
@@ -599,12 +802,12 @@ async def _validate_address_pr(run_id: int, agent: AgentState) -> OutcomeValidat
     # Tier 1: SHA comparison (most reliable)
     sha_pushed, sha_blocked = await _check_pr_pushed_via_sha(agent)
     if sha_pushed is True:
-        return _VALID
+        return await _check_pr_diff_guard(agent)
 
     # Tier 2: branch ref check
     pushed, branch_blocked = await _check_pr_branch_pushed(agent)
     if pushed is True:
-        return _VALID
+        return await _check_pr_diff_guard(agent)
     if pushed is False:
         return OutcomeValidation("address-pr completed without pushing changes")
 
@@ -612,7 +815,7 @@ async def _validate_address_pr(run_id: int, agent: AgentState) -> OutcomeValidat
     lowered = [line.lower() for line in lines]
     matched_keywords = {kw for kw in _PUSH_KEYWORDS if any(kw in line for line in lowered)}
     if len(matched_keywords) >= 2:
-        return _VALID
+        return await _check_pr_diff_guard(agent)
 
     if sha_blocked or branch_blocked:
         return OutcomeValidation(
@@ -826,10 +1029,24 @@ async def _validate_merge_command(run_id: int, agent: AgentState) -> OutcomeVali
     return OutcomeValidation(f"{cmd_name} exited without merging PR #{agent.pr_number} (state={pr_status.state})")
 
 
+async def _validate_rearrange_commits(run_id: int, agent: AgentState) -> OutcomeValidation:  # noqa: ARG001 (run_id kept for _COMMAND_VALIDATORS' shared signature)
+    """Check that rearrange-commits did not silently revert a sibling PR's change.
+
+    Unlike address-pr, this command never pushes on its own (pushing is left
+    to a later `/pr` or pipeline step), so there is no "confirm the push
+    happened" tier to gate on first: the squash-capable rewrite it performs
+    (soft-reset to the fork point, then recommit) is exactly the risk
+    `_check_pr_diff_guard` exists to catch, so it runs directly against the
+    local branch.
+    """
+    return await _check_pr_diff_guard(agent)
+
+
 _COMMAND_VALIDATORS = {
     "address-pr": _validate_address_pr,
     "review-pr": _validate_review_pr,
     "integrate-pr": _validate_merge_command,
+    "rearrange-commits": _validate_rearrange_commits,
 }
 
 _PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})

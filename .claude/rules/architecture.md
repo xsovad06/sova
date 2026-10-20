@@ -267,6 +267,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A node's bare `suitability.mode` is not "is this issue schedulable," because `assess_suitability()` never looks at task state or the local-assessment record
 - The dependency-gate's open-dependency walk is now the same function the classifier calls, not a parallel reimplementation
 - A typo'd log level must never crash the caller, and an epic's block stays deliberately unscoped by pipeline candidate
+- A git-diff-level guard must run in the PR's own worktree on the PR's own branch ref, diff the base from the pre-run fork point, and confirm blob content before flagging a revert; a dependency pin diff line with no name capture must be paired by its enclosing lockfile key, not index, name, or raw adjacency; a deleted file is not a confirmed revert; and a downgrade check must diff what this run introduced, not the PR's whole history
 
 ## Cross-References (domain-specific details)
 
