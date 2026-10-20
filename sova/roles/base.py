@@ -21,7 +21,7 @@ from sova.core.steps.base import BaseStep
 class TaskAssessment(BaseModel):
     """Assessment of a task's suitability for agent processing."""
 
-    suitability: Literal["ready", "needs_spec", "needs_research", "human_only"]
+    suitability: Literal["ready", "needs_spec", "needs_research", "human_only", "interactive"]
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
     missing_context: list[str] = Field(default_factory=list)

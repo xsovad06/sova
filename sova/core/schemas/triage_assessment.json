@@ -6,7 +6,7 @@
   "properties": {
     "suitability": {
       "type": "string",
-      "enum": ["ready", "needs_spec", "needs_research", "human_only"]
+      "enum": ["ready", "needs_spec", "needs_research", "human_only", "interactive"]
     },
     "confidence": {
       "type": "number",

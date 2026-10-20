@@ -224,9 +224,9 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
                         return
 
                     if triage_cfg.auto_label:
-                        label_name = role.resolve_label(assessment.suitability, triage_cfg)
-                        if label_name:
-                            await adapter.add_label(task.id, label_name)
+                        await role.apply_suitability_label(
+                            adapter, task.id, assessment.suitability, triage_cfg, known_labels=task.labels
+                        )
 
                     assessment_section = role._build_assessment_comment(task, assessment)
                     if triage_cfg.mode == "comment":
@@ -350,9 +350,10 @@ async def _run_batch_harden(
                             triage_cfg = config.triage
                             assessment = role.heuristic_assess(enriched_task, triage_cfg)
                             if triage_cfg.auto_label:
-                                label = role.resolve_label(assessment.suitability, triage_cfg)
-                                if label:
-                                    await adapter.add_label(task.id, label)
+                                # No known_labels: `task` was snapshotted before the
+                                # 300s LLM call above, so a label change made during
+                                # that window must come from a fresh refetch.
+                                await role.apply_suitability_label(adapter, task.id, assessment.suitability, triage_cfg)
                             triage_detail = f", re-triaged: {assessment.suitability}"
                         except Exception:  # noqa: BLE001 (re-triage is a best-effort extra; hardening already succeeded)
                             log.warning("batch.harden.retriage_failed", issue=item.issue_id, exc_info=True)

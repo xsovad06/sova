@@ -23,7 +23,7 @@ Triage this project's open tickets (Jira or GitHub, whichever `task_source.type`
 sova config get task_source.type
 ```
 
-Read every other setting through `sova config get` as well (never assume a default): `task_source.jira_project_key`, `task_source.jira_jql_filter`, `task_source.labels`, `task_source.milestone`, `triage.skip_title_prefixes`, `triage.skip_labels`.
+Read every other setting through `sova config get` as well (never assume a default): `task_source.jira_project_key`, `task_source.jira_jql_filter`, `task_source.labels`, `task_source.milestone`, `triage.skip_title_prefixes`, `triage.skip_labels`, `triage.interactive_title_prefixes`, `triage.interactive_labels`.
 
 ### 2. Build the Ticket Pool
 
@@ -89,7 +89,7 @@ Reporter and blockers are retrieved, never inferred:
 ### 5. Classify Into One Mode
 
 - **AUTO**: change confined to this repo, verifiable by this repo's own tests and lint, acceptance criteria present, no unanswered question, blocker data successfully retrieved, and every blocker closed with its code already merged.
-- **INTERACTIVE**: needs another repo (app-interface, a `*-actions` repo, IQE), needs a tool an autonomous agent cannot reach (bonfire or an ephemeral environment, stage or prod, `oc`, VPN, AWS, Splunk, quay), is an investigation or spike, or needs a human decision or conversation.
+- **INTERACTIVE**: needs another repo (app-interface, a `*-actions` repo, IQE), needs a tool an autonomous agent cannot reach (bonfire or an ephemeral environment, stage or prod, `oc`, VPN, AWS, Splunk, quay), is an investigation or spike, or needs a human decision or conversation. A title or label matching `triage.interactive_title_prefixes`/`triage.interactive_labels` is also INTERACTIVE, unless it also matches `triage.skip_title_prefixes`/`triage.skip_labels`, in which case BLOCKED wins (mirroring `sova triage`'s human_only-over-interactive precedence).
 - **BLOCKED**: an open blocker, a lead's hold comment, or the current user's own unanswered question.
 - **CLOSE**: the fix is already on the base branch.
 

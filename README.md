@@ -376,7 +376,7 @@ Run `sova --help` for the full list.
 
 SOVA uses a **role-based architecture** with four specialized agent types:
 
-1. **Triage**: assesses issues for agent suitability, applies labels (`agent:ready`, `agent:needs-spec`, `agent:human-only`)
+1. **Triage**: assesses issues for agent suitability, applies labels (`agent:ready`, `agent:needs-spec`, `agent:needs-research`, `agent:interactive-recommended`, `agent:human-only`). `triage.interactive_title_prefixes` and `triage.interactive_labels` are empty by default; set `triage.interactive_title_prefixes = ["[Spike]"]` to classify such titles as `interactive`. `agent:interactive-recommended` blocks autonomous scheduling until a human starts the run.
 2. **Researcher**: investigates the codebase and writes an implementation spec
 3. **Developer**: implements the solution using TDD, creates a PR, monitors CI
 4. **Reviewer**: reviews the PR, posts findings, triggers a fix cycle if needed

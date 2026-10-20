@@ -160,9 +160,11 @@ async def _retriage_task(
         assessment = role.heuristic_assess(enriched_task, triage_cfg)
         verdict = assessment.suitability
         if triage_cfg.auto_label:
-            label = role.resolve_label(assessment.suitability, triage_cfg)
-            if label:
-                await adapter.add_label(task.id, label)
+            # No known_labels: `task` was snapshotted before the 300s LLM
+            # enrichment call above, so a label change made during that
+            # window (by a human, by /find-task, or by a concurrent batch
+            # item) must come from a fresh refetch, not this stale snapshot.
+            await role.apply_suitability_label(adapter, task.id, assessment.suitability, triage_cfg)
         console.print(f"[green]  Re-triaged: {verdict}[/green]")
         return verdict
     except Exception as exc:  # noqa: BLE001 (one issue must not abort the harden batch)
