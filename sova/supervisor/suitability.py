@@ -57,25 +57,20 @@ class Suitability:
     blocked_by: list[int] = field(default_factory=list)
 
 
-def _unsatisfied_dependencies(task: Task, graph: DependencyGraph | None) -> list[int] | None:
-    """Return open non-epic dependency ids, or None if dependency data is unavailable.
+def unsatisfied_dependencies(issue: int, graph: DependencyGraph | None) -> list[int] | None:
+    """Return open non-epic dependency ids for `issue`, or None if dependency data is unavailable.
 
     Epic dependencies are skipped: epics are tracking containers, not real
     blockers. A dependency with no known task (missing reference) is treated
     as blocking, matching the existing fail-closed `DependencyGraph` semantics.
+    The single implementation of this walk, shared by `assess_suitability()`
+    and `check_dependency_gate()` (`sova/supervisor/gates/dependency.py`), so
+    the epic-skip and missing-reference rules cannot drift between the two.
     """
-    if graph is None:
-        return None
-    try:
-        tid = int(task.id)
-    # A non-numeric tracker id (Jira) can never be a `DependencyGraph` node,
-    # so dependency data is unavailable rather than empty.
-    except (TypeError, ValueError):
-        return None
-    if not graph.has_task(tid):
+    if graph is None or not graph.has_task(issue):
         return None
     blocked_by: list[int] = []
-    for dep in sorted(graph.get_dependencies(tid)):
+    for dep in sorted(graph.get_dependencies(issue)):
         dep_task = graph.get_task(dep)
         if dep_task is None:
             blocked_by.append(dep)
@@ -85,6 +80,17 @@ def _unsatisfied_dependencies(task: Task, graph: DependencyGraph | None) -> list
         if dep_task.state != TaskState.DONE:
             blocked_by.append(dep)
     return blocked_by
+
+
+def _unsatisfied_dependencies(task: Task, graph: DependencyGraph | None) -> list[int] | None:
+    """Resolve `task`'s numeric id and delegate to `unsatisfied_dependencies()`."""
+    try:
+        tid = int(task.id)
+    # A non-numeric tracker id (Jira) can never be a `DependencyGraph` node,
+    # so dependency data is unavailable rather than empty.
+    except (TypeError, ValueError):
+        return None
+    return unsatisfied_dependencies(tid, graph)
 
 
 def assess_suitability(

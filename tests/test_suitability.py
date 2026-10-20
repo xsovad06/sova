@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from sova.adapters.base import Task, TaskState
 from sova.supervisor.dependency_graph import DependencyGraph
-from sova.supervisor.suitability import AGENT_ELIGIBLE_MODES, SuitabilityMode, assess_suitability
+from sova.supervisor.suitability import (
+    AGENT_ELIGIBLE_MODES,
+    SuitabilityMode,
+    assess_suitability,
+    unsatisfied_dependencies,
+)
 
 
 def _task(
@@ -282,6 +287,36 @@ class TestSuitabilityMode:
     def test_non_numeric_task_id_still_honours_labels(self) -> None:
         task = Task(id="RHCLOUD-42", title="x", labels=["agent:human-only"])
         assert assess_suitability(task, DependencyGraph([])).mode == SuitabilityMode.HUMAN
+
+
+class TestUnsatisfiedDependenciesSharedWithDependencyGate:
+    """`unsatisfied_dependencies()` is the one walk shared with `check_dependency_gate()`."""
+
+    def test_none_graph_is_unavailable(self) -> None:
+        assert unsatisfied_dependencies(1, None) is None
+
+    def test_issue_not_in_graph_is_unavailable(self) -> None:
+        graph = DependencyGraph([_task(2)])
+        assert unsatisfied_dependencies(1, graph) is None
+
+    def test_no_dependencies_is_empty_list(self) -> None:
+        graph = DependencyGraph([_task(1)])
+        assert unsatisfied_dependencies(1, graph) == []
+
+    def test_open_non_epic_dependency_is_listed(self) -> None:
+        tasks = [_task(1, state=TaskState.BACKLOG), _task(2, body="## Dependencies\n- #1\n")]
+        graph = DependencyGraph(tasks)
+        assert unsatisfied_dependencies(2, graph) == [1]
+
+    def test_epic_dependency_is_skipped(self) -> None:
+        tasks = [_task(1, labels=["type: epic"], state=TaskState.BACKLOG), _task(2, body="## Dependencies\n- #1\n")]
+        graph = DependencyGraph(tasks)
+        assert unsatisfied_dependencies(2, graph) == []
+
+    def test_missing_reference_is_listed(self) -> None:
+        task = _task(2, body="## Dependencies\n- #999\n")
+        graph = DependencyGraph([task])
+        assert unsatisfied_dependencies(2, graph) == [999]
 
 
 class TestLocalAssessmentValuesMatchStorage:
