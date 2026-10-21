@@ -18,6 +18,7 @@ CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 SONAR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sonarcloud.yml"
 PRE_PUSH_HOOK = REPO_ROOT / ".githooks" / "pre-push"
 GITLEAKS_CONFIG = REPO_ROOT / ".gitleaks.toml"
+MAKEFILE = REPO_ROOT / "Makefile"
 
 
 @pytest.fixture(scope="module")
@@ -31,33 +32,48 @@ def sonar_text() -> str:
 
 
 @pytest.fixture(scope="module")
+def makefile_text() -> str:
+    return MAKEFILE.read_text()
+
+
+def _job_block(ci_text: str, job_id: str) -> str:
+    pattern = rf"^  {job_id}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)"
+    match = re.search(pattern, ci_text, re.DOTALL | re.MULTILINE)
+    assert match is not None, f"{job_id} job not found in ci.yml"
+    return match.group(1)
+
+
+@pytest.fixture(scope="module")
 def hook_text() -> str:
     return PRE_PUSH_HOOK.read_text()
 
 
 class TestCoverageReporting:
-    def test_python_tests_run_with_coverage(self, ci_text: str) -> None:
-        assert "--cov=sova" in ci_text
-        assert "--cov-report=xml" in ci_text
+    def test_python_tests_run_with_coverage(self, makefile_text: str) -> None:
+        # ci.yml's python-test-matrix job delegates to `make test-ci` (see its
+        # own comment) rather than inlining the pytest invocation, so both
+        # matrix legs stay byte-identical by construction; the flags live
+        # here, in the Makefile target, not in ci.yml itself.
+        assert "--cov=sova" in makefile_text
+        assert "--cov-report=xml" in makefile_text
 
-    def test_python_tests_run_parallel_with_sysmon_and_timings(self, ci_text: str) -> None:
-        # Scope to the python-test job body (up to the next top-level, 2-space-indented
-        # job key, skipping job-level comment lines) so another job cannot satisfy
-        # these flags.
-        job = re.search(r"^  python-test:\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)", ci_text, re.DOTALL | re.MULTILINE)
-        assert job is not None, "python-test job not found in ci.yml"
-        job_block = job.group(1)
-        # Scope to the step itself (its env: block immediately followed by its run:
-        # line), not the whole job, so COVERAGE_CORE set on a different step (or only
-        # mentioned in a comment) cannot satisfy this assertion, and assert against
-        # the pytest invocation itself so the step comment naming a flag cannot stand
-        # in for the flag being passed.
-        step = re.search(
-            r"env:\n\s+COVERAGE_CORE: sysmon\n\s+run: (pytest [^\n]*--cov=sova[^\n]*)",
-            job_block,
-        )
-        assert step is not None, "coverage pytest invocation with COVERAGE_CORE sysmon not found in python-test job"
-        pytest_cmd = step.group(1)
+    def test_python_test_matrix_calls_the_shared_make_target(self, ci_text: str) -> None:
+        job_block = _job_block(ci_text, "python-test-matrix")
+        # Scope to the step itself (its env: block immediately followed by its
+        # run: line), not the whole job, so COVERAGE_CORE set on a different
+        # step (or only mentioned in a comment) cannot satisfy this assertion.
+        step = re.search(r"env:\n\s+COVERAGE_CORE: sysmon\n\s+run: (make [^\n]*)", job_block)
+        assert step is not None, "`make test-ci` with COVERAGE_CORE sysmon not found in python-test-matrix job"
+        assert step.group(1).strip() == "make test-ci"
+
+    def test_python_tests_run_parallel_with_sysmon_and_timings(self, makefile_text: str) -> None:
+        # Assert against the pytest invocation itself (the `test-ci` target's
+        # own command), so a comment naming a flag elsewhere cannot stand in
+        # for the flag actually being passed.
+        target = re.search(r"^test-ci:.*\n\t(.*)$", makefile_text, re.MULTILINE)
+        assert target is not None, "test-ci target not found in Makefile"
+        pytest_cmd = target.group(1)
+        assert "--cov=sova" in pytest_cmd
         assert "-n auto" in pytest_cmd
         assert "--durations=25" in pytest_cmd
         # xdist worker contention breaches pyproject's 30s global timeout.
@@ -80,21 +96,20 @@ class TestCoverageReporting:
     def test_python_tests_runs_on_push_to_main(self, ci_text: str) -> None:
         # sonarcloud.yml's workflow_run trigger needs an artifact on a push to
         # main too, not just on pull requests. Asserts the positive contract
-        # (the job runs unconditionally, and its artifact upload step carries
-        # no `if:` of its own) rather than the absence of one literal string:
-        # excluding push via `if: github.event_name == 'pull_request'`, a
-        # `needs` gate, or an `if:` added to the upload step would all pass a
+        # (the job runs unconditionally, and its artifact upload step is
+        # gated only on the matrix leg, never on the event) rather than the
+        # absence of one literal string: excluding push via
+        # `if: github.event_name == 'pull_request'`, a `needs` gate, or an
+        # event-scoped `if:` added to the upload step would all pass a
         # substring-absence check while still breaking the artifact
         # workflow_run depends on.
-        job = re.search(r"^  python-test:\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)", ci_text, re.DOTALL | re.MULTILINE)
-        assert job is not None, "python-test job not found in ci.yml"
-        job_block = job.group(1)
+        job_block = _job_block(ci_text, "python-test-matrix")
         assert re.search(r"^\s*if:\s*always\(\)\s*$", job_block, re.MULTILINE), (
-            "python-test must run with if: always() so a push event is never excluded"
+            "python-test-matrix must run with if: always() so a push event is never excluded"
         )
         rest = job_block[job_block.index("- name: Upload coverage report") :]
         upload_step = rest[: rest.index("with:")]
-        assert "if:" not in upload_step, "the artifact upload step must have no condition of its own"
+        assert "github.event_name" not in upload_step, "the artifact upload must not exclude any event"
 
 
 class TestSecretsScan:
