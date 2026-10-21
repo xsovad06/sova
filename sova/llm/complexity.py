@@ -69,7 +69,6 @@ _LABEL_TIERS: dict[str, ComplexityTier] = {
     "trivial": ComplexityTier.TRIVIAL,
     "easy": ComplexityTier.SIMPLE,
     "simple": ComplexityTier.SIMPLE,
-    "bug": ComplexityTier.SIMPLE,
     "moderate": ComplexityTier.MODERATE,
     "complex": ComplexityTier.COMPLEX,
     "epic": ComplexityTier.EPIC,
@@ -89,6 +88,49 @@ _LENGTH_THRESHOLDS: list[tuple[int, ComplexityTier]] = [
     (4000, ComplexityTier.COMPLEX),
     # >4000 -> EPIC
 ]
+
+# ---------------------------------------------------------------------------
+# Explicit complexity override
+# ---------------------------------------------------------------------------
+
+_EXPLICIT_COMPLEXITY_RE = re.compile(
+    r"^[ \t]*\*\*Complexity\*\*:[ \t]*(.+?)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def extract_explicit_complexity(text: str) -> ComplexityTier | None:
+    """Extract an explicit ``**Complexity**:`` override from *text*, if present.
+
+    Returns ``None`` when no such line is present, or when the last one's
+    value isn't a real :class:`ComplexityTier` (e.g. a typo), so the caller
+    falls back to the keyword/label/length/file-count heuristic vote. A
+    triage- or spec-written ``**Complexity**:`` line is a stronger signal
+    than that heuristic vote (see :func:`assess_complexity`, which combines
+    the two as a floor rather than a flat override).
+
+    The value must terminate the line (trailing whitespace aside): every real
+    producer writes exactly ``f"**Complexity**: {value}"`` with nothing after
+    it, so this rejects an unfilled template placeholder copied verbatim into
+    an issue body, e.g. ``**Complexity**: simple | moderate | complex`` or
+    ``**Complexity**: {complexity rating}``, which would otherwise capture
+    the first word and be read as a real assessment.
+
+    An issue body can carry more than one such line: triage appends a
+    ``## Triage Assessment`` section first, and the researcher pipeline
+    appends ``## Research`` and then ``## Spec`` sections after it, each a
+    deeper look than the last. The *last* line in the text wins rather than
+    the first, so a later, more informed assessment overrides an earlier
+    guess instead of being shadowed by it.
+    """
+    matches = list(_EXPLICIT_COMPLEXITY_RE.finditer(text))
+    if not matches:
+        return None
+    try:
+        return ComplexityTier(matches[-1].group(1).lower())
+    except ValueError:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # File count thresholds
@@ -203,11 +245,23 @@ def assess_complexity(
     ensures multiple strong signals (labels + file count) can override a
     single misleading keyword.
 
+    An explicit ``**Complexity**:`` line in the title or description (written
+    by triage or a spec) acts as a floor on this vote rather than replacing
+    it outright: the final tier is whichever of the explicit value and the
+    heuristic vote is higher (see extract_explicit_complexity()). A real,
+    stronger-signal assessment can still raise an underestimated issue, but a
+    coarse or fallback-default explicit line (triage's heuristic can never
+    emit EPIC, and falls back to a hardcoded "moderate" whenever its own LLM
+    call fails or is skipped) can no longer silently downgrade one the
+    keyword/label/length/file-count vote scored higher.
+
     Returns ``ComplexityTier.MODERATE`` when no signals are available.
     """
-    combined_text = f"{title} {description}".strip()
+    combined_text = f"{title}\n{description}".strip()
     if not combined_text:
         return ComplexityTier.MODERATE
+
+    explicit = extract_explicit_complexity(combined_text)
 
     # Collect weighted votes: (tier_index, weight)
     votes: list[tuple[int, float]] = []
@@ -233,11 +287,15 @@ def assess_complexity(
         votes.append((_tier_index(file_tier), 3.0))
 
     if not votes:
-        return ComplexityTier.MODERATE
+        return explicit if explicit is not None else ComplexityTier.MODERATE
 
     # Weighted average, rounded to nearest tier
     total_weight = sum(w for _, w in votes)
     weighted_sum = sum(idx * w for idx, w in votes)
     avg_index = weighted_sum / total_weight
     rounded_index = min(max(round(avg_index), 0), len(_TIER_ORDER) - 1)
-    return _TIER_ORDER[rounded_index]
+    heuristic_tier = _TIER_ORDER[rounded_index]
+
+    if explicit is not None and _tier_index(explicit) > rounded_index:
+        return explicit
+    return heuristic_tier

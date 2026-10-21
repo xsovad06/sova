@@ -4275,6 +4275,174 @@ class TestComplexityScorer:
     def test_none_file_count_accepted(self) -> None:
         assess_complexity("title", "desc", file_count_estimate=None)
 
+    def test_bug_label_casts_no_vote(self) -> None:
+        """Issue #1260: a bare 'bug' label has no reliable correlation to size,
+        so it must no longer pull complexity toward SIMPLE on its own."""
+        with_bug = assess_complexity("fix the thing", "", labels=["bug"])
+        without_label = assess_complexity("fix the thing", "")
+        assert with_bug == without_label
+
+    def test_bug_label_does_not_affect_other_label_scoring(self) -> None:
+        """A 'bug' label alongside a real complexity label must not change the result."""
+        result = assess_complexity("do something", "", labels=["bug", "complex"])
+        assert result == ComplexityTier.COMPLEX
+
+    def test_explicit_complexity_overrides_heuristic_vote(self) -> None:
+        """A **Complexity**: line (triage/spec-written) must override every other signal."""
+        result = assess_complexity(
+            "fix typo in README",
+            "**Complexity**: epic",
+            labels=["good first issue"],
+            file_count_estimate=1,
+        )
+        assert result == ComplexityTier.EPIC
+
+    def test_explicit_complexity_invalid_value_falls_back_to_heuristics(self) -> None:
+        result = assess_complexity("fix typo in README", "**Complexity**: very-high")
+        assert result == ComplexityTier.TRIVIAL
+
+    def test_explicit_complexity_absent_falls_back_to_heuristics(self) -> None:
+        result = assess_complexity("fix typo in README", "no complexity line here")
+        assert result == ComplexityTier.TRIVIAL
+
+    def test_inline_marker_in_title_does_not_override(self) -> None:
+        """CodeRabbit finding (PR #1262): title and description are joined with
+        a newline, not a space, so a quoted **Complexity**: mention in the
+        title can't run onto the description's own line and be read as a
+        standalone override."""
+        result = assess_complexity(
+            "someone quoted **Complexity**: epic in the title",
+            "fix typo in README",
+        )
+        assert result == ComplexityTier.TRIVIAL
+
+    def test_explicit_complexity_is_a_floor_not_a_ceiling(self) -> None:
+        """Issue #1260 review: a coarse explicit line (e.g. triage's own
+        heuristic, which can never emit EPIC, or one of its hardcoded
+        "moderate" fallbacks) must not silently downgrade an issue the
+        keyword/label/file-count vote scores higher. A bug-labelled body
+        with EPIC-strength keywords and an explicit "moderate" line must
+        still resolve to EPIC, not MODERATE."""
+        body = (
+            "This requires a full rewrite spanning multiple systems with "
+            "breaking changes across the whole API surface.\n\n"
+            "## Triage Assessment\n**Complexity**: moderate\n"
+        )
+        result = assess_complexity(
+            "Refactor entire pipeline",
+            body,
+            labels=["type: bug"],
+            file_count_estimate=40,
+        )
+        assert result == ComplexityTier.EPIC
+
+    def test_explicit_complexity_can_still_raise_underestimated_issue(self) -> None:
+        """The spec's motivating case: a real, deeper assessment (e.g. from
+        a spec) raising a tier the coarse heuristic vote underestimated."""
+        result = assess_complexity(
+            "fix typo in README",
+            "**Complexity**: complex",
+            labels=["good first issue"],
+            file_count_estimate=1,
+        )
+        assert result == ComplexityTier.COMPLEX
+
+    def test_explicit_complexity_with_bug_label_does_not_downgrade(self) -> None:
+        """issue #1260 review finding #17: a `type: bug` label must not
+        interact with the explicit-complexity floor to silently shrink the
+        result below what triage/spec asserted."""
+        result = assess_complexity(
+            "API change across 25 files",
+            "Touches the public API contract in a backwards-incompatible way.\n"
+            "## Triage Assessment\n**Complexity**: complex\n",
+            labels=["type: bug"],
+        )
+        assert result == ComplexityTier.COMPLEX
+
+    def test_template_placeholder_complexity_line_is_not_an_override(self) -> None:
+        """issue #1260 review finding #7: an unfilled spec/research template
+        placeholder copied verbatim into an issue body must not be read as a
+        real assessment."""
+        result = assess_complexity(
+            "fix typo in README",
+            "**Complexity**: simple | moderate | complex",
+        )
+        assert result == ComplexityTier.TRIVIAL
+
+
+class TestExtractExplicitComplexity:
+    """Tests for sova.llm.complexity.extract_explicit_complexity."""
+
+    def test_extracts_valid_tier(self) -> None:
+        from sova.llm.complexity import extract_explicit_complexity
+
+        assert extract_explicit_complexity("**Complexity**: moderate") == ComplexityTier.MODERATE
+
+    def test_case_insensitive(self) -> None:
+        from sova.llm.complexity import extract_explicit_complexity
+
+        assert extract_explicit_complexity("**COMPLEXITY**: Complex") == ComplexityTier.COMPLEX
+
+    def test_no_line_returns_none(self) -> None:
+        from sova.llm.complexity import extract_explicit_complexity
+
+        assert extract_explicit_complexity("no complexity line here") is None
+
+    def test_invalid_value_returns_none(self) -> None:
+        from sova.llm.complexity import extract_explicit_complexity
+
+        assert extract_explicit_complexity("**Complexity**: very-high") is None
+
+    def test_empty_text_returns_none(self) -> None:
+        from sova.llm.complexity import extract_explicit_complexity
+
+        assert extract_explicit_complexity("") is None
+
+    def test_last_occurrence_wins_over_earlier_one(self) -> None:
+        """Issue #1260: triage appends its **Complexity** line first, then the
+        researcher pipeline appends Research/Spec sections with their own,
+        deeper-informed line below it. The later line must win."""
+        from sova.llm.complexity import extract_explicit_complexity
+
+        text = "## Triage Assessment\n**Complexity**: moderate\n\n## Research\n**Complexity**: complex\n"
+        assert extract_explicit_complexity(text) == ComplexityTier.COMPLEX
+
+    def test_last_occurrence_invalid_falls_back_even_with_earlier_valid_one(self) -> None:
+        """A typo'd last line must not silently fall back to an earlier valid
+        one: the most recent assessment attempt is what the caller should
+        trust or discard, not a stale earlier guess."""
+        from sova.llm.complexity import extract_explicit_complexity
+
+        text = "**Complexity**: complex\n**Complexity**: not-a-real-tier\n"
+        assert extract_explicit_complexity(text) is None
+
+    def test_inline_quoted_marker_is_not_an_override(self) -> None:
+        """CodeRabbit finding (PR #1262): the marker must be anchored to a
+        standalone line, so quoted or inline text mentioning it mid-sentence
+        isn't mistaken for a real triage/spec assessment."""
+        from sova.llm.complexity import extract_explicit_complexity
+
+        text = "The reporter wrote **Complexity**: epic in their original comment, but that was a guess."
+        assert extract_explicit_complexity(text) is None
+
+    def test_indented_marker_still_matches(self) -> None:
+        """Leading whitespace on an otherwise standalone line (e.g. inside a
+        list item) must still be recognized."""
+        from sova.llm.complexity import extract_explicit_complexity
+
+        text = "  **Complexity**: complex\n"
+        assert extract_explicit_complexity(text) == ComplexityTier.COMPLEX
+
+    def test_unfilled_template_placeholder_returns_none(self) -> None:
+        """issue #1260 review finding #7: spec.md's own template
+        (`**Complexity**: simple | moderate | complex`) and research.md's
+        (`**Complexity**: {complexity rating}`) must not be read as a real
+        assessment if copied verbatim into an issue body."""
+        from sova.llm.complexity import extract_explicit_complexity
+
+        assert extract_explicit_complexity("**Complexity**: simple | moderate | complex") is None
+        assert extract_explicit_complexity("**Complexity**: {complexity rating}") is None
+
 
 # ---------------------------------------------------------------------------
 # Anthropic rate card (compute_anthropic_cost)
