@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.agents.registry import artifact_exclusion_prefixes
+from sova.git.safety import SUSPICIOUS_PATHS, unstage_suspicious_files
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run, run_checked, subprocess_error
 
@@ -24,17 +26,51 @@ log = get_logger(component="git.worktree")
 
 WORKTREE_DIR = ".claude/worktrees"
 
+# `.claude/` and `.sova/` hold agent infrastructure the pipeline itself mirrors
+# into the worktree (ensure_claude_artifacts); `artifact_exclusion_prefixes()`
+# adds every registered RuntimeAdapter's own mirrored skills directory on top.
+# None of it is the agent's own work, so a timeout/SIGTERM must not stage it
+# as "partial work" (issue #1260; same exclusion logic as
+# sova/core/steps/rearrange_commits.py and sova/core/steps/develop.py, kept in
+# sync by sharing the same artifact_exclusion_prefixes() registry call).
+_RUNTIME_ARTIFACT_PREFIXES = frozenset({".claude/", ".sova/"}) | artifact_exclusion_prefixes()
 
-async def commit_partial_work(work_dir: Path | None, reason: str) -> bool:
-    """Commit staged changes in *work_dir* with a WIP message, if any.
+
+def _exclude_rooted(prefix: str) -> str:
+    """Pathspec excluding a whole directory rooted at the worktree root."""
+    return f":(exclude){prefix}"
+
+
+def _exclude_anywhere(name: str) -> str:
+    """Pathspec excluding *name* (file or directory, with its contents) at any depth."""
+    return f":(exclude,glob)**/{name}"
+
+
+# Keep `git add -A` from ever staging a suspicious path or mirrored agent
+# artifact in the first place, rather than staging the whole tree (including
+# arbitrarily large `.venv`/`node_modules` trees in a project that doesn't
+# gitignore them) and cleaning up one path at a time afterward.
+_PRESERVE_ADD_EXCLUDE_PATHSPECS: tuple[str, ...] = tuple(
+    pattern
+    for name in sorted(SUSPICIOUS_PATHS)
+    for pattern in (_exclude_anywhere(name), _exclude_anywhere(f"{name}/**"))
+) + tuple(_exclude_rooted(prefix) for prefix in sorted(_RUNTIME_ARTIFACT_PREFIXES))
+
+
+async def preserve_partial_work(work_dir: Path | None, reason: str) -> bool:
+    """Stage and commit changes (tracked and new) in *work_dir*, if any.
 
     Shared by ``WorkflowEngine``'s step-timeout preservation and the
     ``sova run`` SIGTERM handler, so both paths preserve in-progress edits
     the same way instead of losing them when a step is aborted or the
-    process is terminated. Only tracked files are staged (``git add -u``);
-    new untracked files are not committed. Returns True if partial work was
-    committed, False otherwise (no working dir, not a git repo, nothing
-    staged, or the commit itself failed).
+    process is terminated. Commits (rather than leaving the work staged
+    only) so it survives worktree cleanup and the stash cycles
+    ``sync_branch()``/``rebase_with_conflict_resolution()`` run on the next
+    attempt; the message uses a conventional-commit type and scope
+    (``chore(core): ...``) so it passes ``invariants/commit-format.sh``,
+    unlike the earlier ``wip:`` message that prompted this function to stop
+    committing in the first place. Returns True if anything was committed,
+    False otherwise (no working dir, not a git repo, or nothing to stage).
     """
     if not work_dir:
         log.debug("worktree.partial_work.no_working_dir", reason=reason)
@@ -45,10 +81,33 @@ async def commit_partial_work(work_dir: Path | None, reason: str) -> bool:
         return False
 
     try:
-        add_result = await run("git", "add", "-u", cwd=work_dir)
+        add_result = await run("git", "add", "-A", "--", ".", *_PRESERVE_ADD_EXCLUDE_PATHSPECS, cwd=work_dir)
         if not add_result.success:
             log.debug("worktree.partial_work.add_failed", reason=reason, error=add_result.stderr)
             return False
+
+        # Defense in depth: the excludes above keep known suspicious paths out
+        # of the add in the first place, but a path this process doesn't know
+        # about yet (or one that slipped through, e.g. via a submodule) is
+        # still screened and unstaged here, mirroring branch.commit()'s guard.
+        scan = await unstage_suspicious_files(work_dir)
+        if not scan.checked:
+            log.warning("worktree.partial_work.suspicious_scan_failed", reason=reason)
+            await run("git", "reset", "HEAD", cwd=work_dir)
+            return False
+        if scan.still_staged:
+            log.error(
+                "worktree.partial_work.suspicious_files_still_staged",
+                reason=reason,
+                files=list(scan.still_staged),
+            )
+            # Can't verify the index is clean: fail closed by unstaging
+            # everything rather than reporting preserved work that may still
+            # carry a secret.
+            await run("git", "reset", "HEAD", cwd=work_dir)
+            return False
+        if scan.unstaged:
+            log.warning("worktree.partial_work.suspicious_files_unstaged", reason=reason, files=list(scan.unstaged))
 
         # Exit code 0 from `git diff --cached --quiet` means no staged changes.
         diff_result = await run("git", "diff", "--cached", "--quiet", cwd=work_dir)
@@ -56,13 +115,15 @@ async def commit_partial_work(work_dir: Path | None, reason: str) -> bool:
             log.debug("worktree.partial_work.no_staged_changes", reason=reason)
             return False
 
-        commit_msg = f"wip: partial work from {reason}"
-        commit_result = await run("git", "commit", "-m", commit_msg, cwd=work_dir)
-        if commit_result.success:
-            log.info("worktree.partial_work.committed", reason=reason)
-            return True
-        log.warning("worktree.partial_work.commit_failed", reason=reason, error=commit_result.stderr)
-        return False
+        commit_result = await run(
+            "git", "commit", "-m", f"chore(core): preserve partial work from {reason}", cwd=work_dir
+        )
+        if not commit_result.success:
+            log.warning("worktree.partial_work.commit_failed", reason=reason, error=commit_result.stderr)
+            return False
+
+        log.info("worktree.partial_work.committed", reason=reason)
+        return True
     except (RuntimeError, OSError):
         log.warning("worktree.partial_work.failed", reason=reason, exc_info=True)
         return False

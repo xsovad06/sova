@@ -10321,9 +10321,9 @@ class TestInstallSigtermHandler:
 
 
 class TestHandleSigtermShutdown:
-    """_handle_sigterm_shutdown() (issue #978): partial-work commit + best-effort cost update."""
+    """_handle_sigterm_shutdown() (issue #978): partial-work staging + best-effort cost update."""
 
-    async def test_commits_partial_work_and_updates_cost(self) -> None:
+    async def test_stages_partial_work_and_updates_cost(self) -> None:
         from sova.cli.commands.run import _handle_sigterm_shutdown
         from sova.db.models import TaskRun
         from sova.db.session import get_session
@@ -10340,10 +10340,10 @@ class TestHandleSigtermShutdown:
         ctx.project_dir = None
         ctx.cost_usd = Decimal("1.23")
 
-        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock(return_value=True)) as mock_commit:
+        with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=True)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, run_id)
 
-        mock_commit.assert_awaited_once_with(ctx.worktree_dir, "sigterm")
+        mock_preserve.assert_awaited_once_with(ctx.worktree_dir, "sigterm")
 
         async with await get_session() as session:
             async with session.begin():
@@ -10356,22 +10356,22 @@ class TestHandleSigtermShutdown:
         ctx = MagicMock()
         ctx.worktree_dir = Path("/tmp/does-not-matter")
 
-        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock(return_value=False)) as mock_commit:
+        with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, None)
 
-        mock_commit.assert_awaited_once()
+        mock_preserve.assert_awaited_once()
 
-    async def test_no_worktree_skips_commit(self) -> None:
-        """Before create_worktree runs, ctx.worktree_dir is None: never commit in the primary checkout."""
+    async def test_no_worktree_skips_staging(self) -> None:
+        """Before create_worktree runs, ctx.worktree_dir is None: never stage in the primary checkout."""
         from sova.cli.commands.run import _handle_sigterm_shutdown
 
         ctx = MagicMock()
         ctx.worktree_dir = None
 
-        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock()) as mock_commit:
+        with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock()) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, None)
 
-        mock_commit.assert_not_awaited()
+        mock_preserve.assert_not_awaited()
 
     async def test_db_failure_during_shutdown_does_not_raise(self) -> None:
         """Best-effort cleanup during shutdown must not raise, even on a broken session."""
@@ -10383,7 +10383,7 @@ class TestHandleSigtermShutdown:
         ctx.cost_usd = Decimal("0")
 
         with (
-            patch("sova.git.worktree.commit_partial_work", new=AsyncMock(return_value=False)),
+            patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)),
             patch("sova.db.session.get_session", side_effect=RuntimeError("db unavailable")),
         ):
             await _handle_sigterm_shutdown(ctx, 999)  # must not raise

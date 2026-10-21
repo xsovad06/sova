@@ -7,9 +7,6 @@ Split into focused modules:
 """
 
 from sova.git.branch import (
-    _SUSPICIOUS_PATHS as _SUSPICIOUS_PATHS,
-)
-from sova.git.branch import (
     DivergenceCheck as DivergenceCheck,
 )
 from sova.git.branch import (

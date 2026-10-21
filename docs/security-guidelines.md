@@ -73,10 +73,10 @@ cmd_parts.extend(["--role", shlex.quote(role)])
 
 ## Suspicious File Guard
 
-`sova/git/branch.py:commit()` checks staged files against `_SUSPICIOUS_PATHS` after `git add` but before `git commit`:
+`sova/git/safety.py` holds `SUSPICIOUS_PATHS` and `unstage_suspicious_files()`, shared by `sova/git/branch.py:commit()` (raises `RuntimeError` on a match) and `sova/git/worktree.py:preserve_partial_work()` (logs a warning and fails closed instead, since that caller must not abort entirely just because a secret was mixed in with real partial work):
 
 ```python
-_SUSPICIOUS_PATHS = frozenset({
+SUSPICIOUS_PATHS = frozenset({
     ".venv", ".env", ".env.local", "credentials.json",
     ".secrets", "node_modules", ".DS_Store", "__pycache__",
     ".mcp.json",
@@ -85,7 +85,7 @@ _SUSPICIOUS_PATHS = frozenset({
 
 `.mcp.json` (project root, outside `.claude/`) can hold a plaintext MCP sidecar token (see `sova/cli/commands/project.py`'s Atlassian sidecar config), so it needs the same guard as `.env`. It is also gitignored in this repo's own `.gitignore` for the same reason; `sova/utils/mcp_config.py` already writes it with mode 0600.
 
-Uses `Path(f).parts` for component matching so nested paths like `src/.env` are caught. Bad files are unstaged with `git reset HEAD` and a `RuntimeError` is raised.
+`unstage_suspicious_files()` uses `Path(f).parts` for component matching so nested paths like `src/.env` are caught, batches the `git reset HEAD --` cleanup, and re-queries the index afterward rather than trusting the reset command's own exit code, so a path the reset silently failed to remove is reported as `still_staged` instead of assumed clean. A failed staged-file query (e.g. a concurrent `index.lock`) is reported as `checked=False`, which both callers treat as unsafe rather than "nothing suspicious found".
 
 ## Secret Redaction in Logs
 

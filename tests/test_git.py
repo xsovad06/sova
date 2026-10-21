@@ -415,10 +415,15 @@ class TestRebaseWithConflictResolution:
 
 
 class TestCommit:
+    """commit()'s suspicious-file scan now runs through
+    sova.git.safety.unstage_suspicious_files(), so its own `run()` calls
+    (the staged-name query and the reset) are mocked at that module, not
+    sova.git.branch (issue #1260)."""
+
     async def test_commits_with_message(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="")
 
                 await commit("feat: add login page", cwd=Path("/repo"))
@@ -431,7 +436,7 @@ class TestCommit:
     async def test_commits_specific_files(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="src/app.py\ntests/test_app.py\n")
 
                 await commit("fix: typo", files=["src/app.py", "tests/test_app.py"], cwd=Path("/repo"))
@@ -444,7 +449,7 @@ class TestCommit:
     async def test_commits_all_when_no_files(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="")
 
                 await commit("chore: update", cwd=Path("/repo"))
@@ -458,7 +463,7 @@ class TestCommit:
     async def test_commits_with_no_verify(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="")
 
                 await commit("chore: update", cwd=Path("/repo"), no_verify=True)
@@ -471,7 +476,7 @@ class TestCommit:
     async def test_commits_without_no_verify_by_default(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="")
 
                 await commit("chore: update", cwd=Path("/repo"))
@@ -484,7 +489,7 @@ class TestCommit:
     async def test_warns_on_suspicious_staged_files(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout=".venv\n.env\napp.py\n")
 
                 with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
@@ -493,7 +498,7 @@ class TestCommit:
     async def test_catches_suspicious_files_in_subdirectories(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="src/.env\nvendor/credentials.json\napp.py\n")
 
                 with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
@@ -504,16 +509,27 @@ class TestCommit:
         sova/cli/commands/project.py); an autonomous commit must never include it."""
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout=".mcp.json\napp.py\n")
 
                 with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
                     await commit("chore: update", cwd=Path("/repo"))
 
+    async def test_raises_when_staged_query_fails(self) -> None:
+        """An unverifiable index (e.g. a concurrent index.lock) must fail
+        closed, never be read as "nothing suspicious" (issue #1260)."""
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_fail()
+
+                with pytest.raises(RuntimeError, match="Cannot verify"):
+                    await commit("chore: update", cwd=Path("/repo"))
+
     async def test_no_error_on_clean_staged_files(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="src/app.py\ntests/test.py\n")
 
                 await commit("feat: add app", cwd=Path("/repo"))
@@ -2115,12 +2131,18 @@ class TestCleanupWorktree:
             assert "remove" in call_args
 
 
-class TestCommitPartialWork:
-    """commit_partial_work() (issue #978): shared by WorkflowEngine timeout preservation
-    and the sova run SIGTERM handler."""
+class TestPreservePartialWork:
+    """preserve_partial_work() (issue #978, revised in #1260): shared by WorkflowEngine
+    timeout preservation and the sova run SIGTERM handler.
 
-    async def test_commits_staged_changes(self, tmp_path: Path) -> None:
-        from sova.git.worktree import commit_partial_work
+    Commits (not just stages) so the work survives worktree cleanup and
+    stash cycles on the next attempt. The message uses a conventional-commit
+    type and scope (``chore(core): ...``) so it passes
+    invariants/commit-format.sh, unlike the earlier ``wip:`` message.
+    """
+
+    async def test_commits_modified_tracked_file(self, tmp_path: Path) -> None:
+        from sova.git.worktree import preserve_partial_work
         from sova.utils.shell import run
 
         await run("git", "init", cwd=tmp_path)
@@ -2133,14 +2155,89 @@ class TestCommitPartialWork:
 
         test_file.write_text("modified")
 
-        result = await commit_partial_work(tmp_path, "sigterm")
+        result = await preserve_partial_work(tmp_path, "sigterm")
 
         assert result is True
-        log_result = await run("git", "log", "--oneline", "-1", cwd=tmp_path)
-        assert "wip: partial work from sigterm" in log_result.stdout
+        log_result = await run("git", "log", "--oneline", cwd=tmp_path)
+        lines = log_result.stdout.strip().splitlines()
+        assert len(lines) == 2
+        assert "chore(core): preserve partial work from sigterm" in lines[0]
+        committed = await run("git", "diff", "--name-only", "HEAD~1", "HEAD", cwd=tmp_path)
+        assert "test.txt" in committed.stdout
+
+    async def test_commits_new_untracked_file(self, tmp_path: Path) -> None:
+        from sova.git.worktree import preserve_partial_work
+        from sova.utils.shell import run
+
+        await run("git", "init", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        (tmp_path / "test.txt").write_text("initial")
+        await run("git", "add", "test.txt", cwd=tmp_path)
+        await run("git", "commit", "-m", "initial", cwd=tmp_path)
+
+        (tmp_path / "new_file.py").write_text("new content")
+
+        result = await preserve_partial_work(tmp_path, "sigterm")
+
+        assert result is True
+        committed = await run("git", "diff", "--name-only", "HEAD~1", "HEAD", cwd=tmp_path)
+        assert "new_file.py" in committed.stdout
+
+    async def test_excludes_mirrored_agent_artifacts(self, tmp_path: Path) -> None:
+        """`.claude/commands/` is agent infrastructure the pipeline mirrors
+        into every worktree, never the agent's own work: it must not be
+        swept into `git add -A` and reported as preserved partial work
+        (issue #1260)."""
+        from sova.git.worktree import preserve_partial_work
+        from sova.utils.shell import run
+
+        await run("git", "init", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        (tmp_path / "test.txt").write_text("initial")
+        await run("git", "add", "test.txt", cwd=tmp_path)
+        await run("git", "commit", "-m", "initial", cwd=tmp_path)
+
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "develop.md").write_text("mirrored command")
+
+        result = await preserve_partial_work(tmp_path, "sigterm")
+
+        assert result is False
+        status = await run("git", "status", "--porcelain", "--untracked-files=all", cwd=tmp_path)
+        assert ".claude/commands/develop.md" in status.stdout
+
+    async def test_excludes_large_dependency_tree_from_add(self, tmp_path: Path) -> None:
+        """A suspicious directory (e.g. `node_modules`) must never be staged
+        in the first place, not just cleaned up afterward (issue #1260)."""
+        from sova.git.worktree import preserve_partial_work
+        from sova.utils.shell import run
+
+        await run("git", "init", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        (tmp_path / "test.txt").write_text("initial")
+        await run("git", "add", "test.txt", cwd=tmp_path)
+        await run("git", "commit", "-m", "initial", cwd=tmp_path)
+
+        nested_nm = tmp_path / "frontend" / "node_modules"
+        nested_nm.mkdir(parents=True)
+        (nested_nm / "pkg.js").write_text("x")
+        (tmp_path / "test.txt").write_text("modified")
+
+        result = await preserve_partial_work(tmp_path, "sigterm")
+
+        assert result is True
+        committed = await run("git", "diff", "--name-only", "HEAD~1", "HEAD", cwd=tmp_path)
+        assert "test.txt" in committed.stdout
+        assert "node_modules" not in committed.stdout
+        status = await run("git", "status", "--porcelain", "--untracked-files=all", cwd=tmp_path)
+        assert "frontend/node_modules/pkg.js" in status.stdout
 
     async def test_no_staged_changes_returns_false(self, tmp_path: Path) -> None:
-        from sova.git.worktree import commit_partial_work
+        from sova.git.worktree import preserve_partial_work
         from sova.utils.shell import run
 
         await run("git", "init", cwd=tmp_path)
@@ -2151,21 +2248,67 @@ class TestCommitPartialWork:
         await run("git", "add", "test.txt", cwd=tmp_path)
         await run("git", "commit", "-m", "initial", cwd=tmp_path)
 
-        result = await commit_partial_work(tmp_path, "sigterm")
+        result = await preserve_partial_work(tmp_path, "sigterm")
 
         assert result is False
 
     async def test_not_a_git_repo_returns_false(self, tmp_path: Path) -> None:
-        from sova.git.worktree import commit_partial_work
+        from sova.git.worktree import preserve_partial_work
 
-        result = await commit_partial_work(tmp_path, "sigterm")
+        result = await preserve_partial_work(tmp_path, "sigterm")
 
         assert result is False
 
     async def test_none_work_dir_returns_false(self) -> None:
-        from sova.git.worktree import commit_partial_work
+        from sova.git.worktree import preserve_partial_work
 
-        result = await commit_partial_work(None, "sigterm")
+        result = await preserve_partial_work(None, "sigterm")
+
+        assert result is False
+
+    async def test_excludes_suspicious_file_while_keeping_legit_changes(self, tmp_path: Path) -> None:
+        """A credentials-like file must never be committed as "partial work",
+        mirroring branch.commit()'s suspicious-file guard (issue #1260)."""
+        from sova.git.worktree import preserve_partial_work
+        from sova.utils.shell import run
+
+        await run("git", "init", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("initial")
+        await run("git", "add", "test.txt", cwd=tmp_path)
+        await run("git", "commit", "-m", "initial", cwd=tmp_path)
+
+        test_file.write_text("modified")
+        (tmp_path / "credentials.json").write_text('{"token": "secret"}')
+
+        result = await preserve_partial_work(tmp_path, "sigterm")
+
+        assert result is True
+        committed = await run("git", "diff", "--name-only", "HEAD~1", "HEAD", cwd=tmp_path)
+        assert "test.txt" in committed.stdout
+        assert "credentials.json" not in committed.stdout
+        untracked = await run("git", "status", "--porcelain", cwd=tmp_path)
+        assert "credentials.json" in untracked.stdout
+
+    async def test_only_suspicious_file_staged_returns_false(self, tmp_path: Path) -> None:
+        """When the only change is a suspicious file, unstaging it must leave
+        nothing staged, so the function reports False rather than True."""
+        from sova.git.worktree import preserve_partial_work
+        from sova.utils.shell import run
+
+        await run("git", "init", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("initial")
+        await run("git", "add", "test.txt", cwd=tmp_path)
+        await run("git", "commit", "-m", "initial", cwd=tmp_path)
+
+        (tmp_path / "credentials.json").write_text('{"token": "secret"}')
+
+        result = await preserve_partial_work(tmp_path, "sigterm")
 
         assert result is False
 

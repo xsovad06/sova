@@ -588,9 +588,9 @@ class WorkflowEngine:
     async def _run_step_with_timeout(self, step: BaseStep) -> StepResult:
         """Execute step with timeout and exception handling.
 
-        On timeout: if the worktree has staged changes, commits them with a
-        WIP message so partial work is not lost. Sets partial_work=True in the
-        returned StepResult so the dashboard can surface it.
+        On timeout: commits any changes in the worktree (tracked and new) so
+        partial work is not lost. Sets partial_work=True in the returned
+        StepResult.
         """
         timeout_seconds, runaway_deadline = self._effective_step_timeout(step.name)
         usage_before = self._ctx.usage_snapshot()
@@ -656,21 +656,21 @@ class WorkflowEngine:
         return result
 
     async def _preserve_partial_work_on_timeout(self, step_name: str) -> bool:
-        """Commit staged changes on timeout to preserve partial work.
+        """Stage and commit changes on timeout to preserve partial work.
 
         Returns True if partial work was committed, False otherwise. No-op
         before a worktree exists (e.g. during sync/assess, or for roles that
         never create one): ctx.working_dir falls back to project_dir in that
-        window, and committing there could capture the operator's own
+        window, and staging there could capture the operator's own
         uncommitted edits on whatever branch they have checked out in the
         primary checkout.
         """
         if self._ctx.worktree_dir is None:
             return False
 
-        from sova.git.worktree import commit_partial_work
+        from sova.git.worktree import preserve_partial_work
 
-        return await commit_partial_work(self._ctx.worktree_dir, f"{step_name} (timeout)")
+        return await preserve_partial_work(self._ctx.worktree_dir, f"{step_name} (timeout)")
 
     async def _persist_step_result(
         self, step_exec_id: int, result: StepResult, elapsed_ms: int, step_name: str
