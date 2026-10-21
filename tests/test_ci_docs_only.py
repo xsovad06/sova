@@ -17,8 +17,8 @@ The optimization has two layers, and the second is what makes it useful:
 
 sonarcloud.yml no longer runs this detector itself (issue #1187): it triggers
 on ci.yml's own `workflow_run` completion and reuses the `coverage-xml`
-artifact ci.yml's `python-test` job already produced, rather than re-running
-the suite a second time just to get `sonar.python.coverage.reportPaths`
+artifact ci.yml's `python-test-matrix` job already produced, rather than
+re-running the suite a second time just to get `sonar.python.coverage.reportPaths`
 input. Its own tests below guard that wiring: PR resolution from the head
 commit (not the empty-for-forks `workflow_run.pull_requests`), the explicit
 Checks API report against `workflow_run.head_sha` (not the job's own
@@ -31,8 +31,9 @@ Invariants protected:
 
 * the detector classifies paths correctly and fails open on every bad input
 * ci.yml gates only its expensive steps on the detector, so required jobs
-  still run and report success, and python-test runs on push to main too so
-  sonarcloud.yml's workflow_run trigger always has an artifact to consume
+  still run and report success, and python-test-matrix runs on push to main
+  too so sonarcloud.yml's workflow_run trigger always has an artifact to
+  consume
 * sonarcloud.yml never re-executes CI code, only consumes its artifact and
   reports a check against the correct head SHA
 * `/integrate-pr` never pushes on its own account (a push there spends a CI
@@ -80,8 +81,11 @@ REQUIRED_CI_JOB_NAMES = {
     "Static Checks",
 }
 
-# Jobs whose expensive work is gated on the detector's verdict.
-GATED_CI_JOBS = ("python-lint", "python-test", "integration")
+# Jobs whose expensive work is gated on the detector's verdict. python-test
+# itself is a thin unmatrixed aggregator (see ci.yml's own comment on it) that
+# only reports python-test-matrix's result, so the detector-gated real work
+# lives in python-test-matrix instead.
+GATED_CI_JOBS = ("python-lint", "python-test-matrix", "integration")
 
 # Jobs that must run their real work unconditionally. Markdown can carry a
 # leaked credential, a banned em-dash, or a broken command frontmatter, so
@@ -385,6 +389,17 @@ class TestDetectorScript:
             ([".github/workflows/ci.yml"], "true"),
             (["Makefile"], "true"),
             (["sova.toml"], "true"),
+            # A command, skill, persona, or guideline is executable behavior
+            # authored as markdown, not documentation, regardless of extension.
+            (["sova/commands/data/commands/develop.md"], "true"),
+            (["sova/commands/data/skills/design-taste/SKILL.md"], "true"),
+            (["sova/commands/data/personas/python.md"], "true"),
+            (["sova/commands/data/guidelines/testing.md"], "true"),
+            ([".claude/commands/develop.md"], "true"),
+            ([".agents/skills/sova-develop/SKILL.md"], "true"),
+            (["plugins/sova/commands/develop.md"], "true"),
+            # A genuine markdown-named path outside those trees stays docs.
+            (["docs/guidelines-overview.md"], "false"),
         ],
     )
     def test_classify(self, files: list[str], expected: str) -> None:
@@ -554,17 +569,20 @@ class TestDetectorScript:
         assert 'echo "$json"' not in text
         assert "printf '%s' \"$json\"" in text
 
-    def test_documents_why_the_ruleset_keeps_it_sound(self) -> None:
+    def test_documents_the_deliberately_non_strict_ruleset(self) -> None:
         """A skip re-uses a green result produced against an older base tree.
 
-        That stays sound only because main-protection requires branches to be
-        up to date before merge: any later base-branch change must reach this
-        branch, with its own real diff, before merge is allowed. The script
-        must say so, and must say what breaks if that policy is ever reverted.
+        main-protection deliberately keeps strict status checks off (issue
+        #1188), so a branch that is only behind main merges without an update.
+        The script must say that this is the accepted policy rather than a
+        precondition it relies on, and must name where a semantic conflict is
+        caught instead: the test job on every push to main.
         """
         text = DETECTOR.read_text()
-        assert "strict_required_status_checks_policy to true" in text
-        assert "becomes unsound" in text
+        assert "deliberately keeps strict_required_status_checks_policy OFF" in text
+        assert "#1188" in text
+        assert "becomes unsound" not in text, "the script no longer claims to depend on the strict policy"
+        assert "push to main" in text
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +670,7 @@ class TestCIWorkflowGate:
         Measuring on the merge tree and reporting against the head tree hands
         Sonar line numbers from a revision it never analyzed.
         """
-        block = _job_block(ci_text, "python-test")
+        block = _job_block(ci_text, "python-test-matrix")
         assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in block
 
     def test_coverage_artifact_is_published_on_every_run(self, ci_text: str) -> None:
@@ -660,23 +678,111 @@ class TestCIWorkflowGate:
 
         sonarcloud.yml has to tell "CI deliberately produced no coverage" from
         "the artifact could not be downloaded", and a missing artifact cannot
-        distinguish them.
+        distinguish them. The upload is restricted to one matrix leg (so two
+        legs cannot race to publish the same artifact name), but that gate
+        must be the matrix leg, never the detector's verdict.
         """
-        block = _job_block(ci_text, "python-test")
+        block = _job_block(ci_text, "python-test-matrix")
         upload = block[block.index("- name: Upload coverage report") :]
-        assert "if:" not in upload, "the upload must not be gated on the detector"
+        upload_if = upload.splitlines()[1].strip()
+        assert upload_if.startswith("if:"), "the upload must still run, gated on the matrix leg"
+        assert "needs.changes" not in upload_if, "the upload must not be gated on the detector"
+        assert "matrix.python-version" in upload_if
         assert "coverage.xml" in upload
         assert "no-coverage.marker" in upload
 
     def test_missing_coverage_fails_the_upload_rather_than_passing_silently(self, ci_text: str) -> None:
         """Neither path existing means tests ran and produced nothing."""
-        block = _job_block(ci_text, "python-test")
+        block = _job_block(ci_text, "python-test-matrix")
         assert "if-no-files-found: error" in block
         assert "if-no-files-found: ignore" not in block
 
     def test_required_job_names_are_present(self, ci_text: str) -> None:
         for name in REQUIRED_CI_JOB_NAMES:
             assert f"name: {name}" in ci_text
+
+    def test_python_test_matrix_covers_3_12_and_3_14_on_pull_request_only(self, ci_text: str) -> None:
+        """The matrix widens test coverage without doubling push-to-main cost."""
+        block = _job_block(ci_text, "python-test-matrix")
+        assert "python-version:" in block
+        assert '["3.12", "3.14"]' in block
+        assert "github.event_name == 'pull_request'" in block
+        # A push to main keeps a single leg, not the full matrix.
+        assert '["3.12"]' in block
+
+    def test_python_test_aggregator_owns_the_required_check_name(self, ci_text: str) -> None:
+        """The matrixed job's own check name is suffixed by GitHub, so a thin,
+        unmatrixed aggregator must be the one named exactly "Python Tests":
+        the main-protection ruleset matches that required check by exact
+        string and would strand every PR if the name moved onto a matrix leg.
+        """
+        block = _job_block(ci_text, "python-test")
+        assert "strategy:" not in block
+        assert "matrix:" not in block
+        assert "name: Python Tests\n" in block
+        assert "needs: python-test-matrix" in block
+        assert "if: always()" in block
+
+    def test_python_test_aggregator_fails_on_a_non_success_matrix_result(self, ci_text: str) -> None:
+        block = _job_block(ci_text, "python-test")
+        script = _step_script(ci_text, "Check matrix result")
+        assert "needs.python-test-matrix.result" in script
+        assert "exit 1" in block
+
+
+# ---------------------------------------------------------------------------
+# Supply-chain hardening: pinned actions, checksum-verified gitleaks, timeouts
+# ---------------------------------------------------------------------------
+
+# Every job id in ci.yml, for the blanket timeout check.
+ALL_CI_JOB_IDS = (
+    "changes",
+    "lint-static",
+    "python-lint",
+    "python-test-matrix",
+    "python-test",
+    "integration",
+    "secrets-scan",
+    "invariants",
+)
+
+
+class TestCIWorkflowHardening:
+    def test_no_action_reference_uses_a_mutable_tag(self, ci_text: str) -> None:
+        """Every `uses: actions/...@...` must be pinned to a commit SHA.
+
+        A floating tag like `@v4` can be repointed by the action's own
+        maintainers (deliberately or via a compromised account) to ship
+        different code under a version a workflow already trusted.
+        """
+        for match in re.finditer(r"uses:\s*actions/[\w-]+@(\S+)", ci_text):
+            ref = match.group(1)
+            assert re.fullmatch(r"[0-9a-f]{40}", ref), f"not a pinned commit SHA: {ref}"
+
+    def test_pinned_actions_carry_a_version_comment(self, ci_text: str) -> None:
+        """A bare 40-char hex pin is unreadable; the human-facing tag must
+        ride alongside it as a trailing comment."""
+        for line in ci_text.splitlines():
+            if re.search(r"uses:\s*actions/[\w-]+@[0-9a-f]{40}", line):
+                assert re.search(r"#\s*v\d+", line), f"pinned action missing a version comment: {line}"
+
+    @pytest.mark.parametrize("job", ALL_CI_JOB_IDS)
+    def test_every_job_declares_a_timeout(self, ci_text: str, job: str) -> None:
+        """An unbounded job can hang for the GitHub-wide default (6 hours),
+        burning runner minutes long after a real failure would have."""
+        block = _job_block(ci_text, job)
+        assert "timeout-minutes:" in block
+
+    def test_gitleaks_tarball_is_checksum_verified(self, ci_text: str) -> None:
+        """TLS authenticates the connection to GitHub, not that the release
+        asset is the one gitleaks actually published; the checksum check must
+        fail the job on a mismatch, not just warn."""
+        block = _job_block(ci_text, "secrets-scan")
+        script = _step_script(block, "Install gitleaks")
+        assert "GITLEAKS_SHA256" in block
+        assert re.search(r"GITLEAKS_SHA256:\s*\"[0-9a-f]{64}\"", block)
+        assert "sha256sum -c -" in script
+        assert "set -euo pipefail" in script, "a checksum mismatch must fail the step, not warn"
 
 
 # ---------------------------------------------------------------------------
