@@ -97,6 +97,81 @@ def mock_ctx(tmp_path, mock_config):
     return ctx
 
 
+class TestWithCheckOutputTail:
+    """_with_check_output_tail() (issue #1260 review): redacts before
+    truncating, and joins the tail into a single line."""
+
+    def test_no_tail_when_output_empty(self) -> None:
+        from sova.core.steps.develop import _with_check_output_tail
+
+        assert _with_check_output_tail("reason", "") == "reason"
+
+    def test_appends_single_line_tail(self) -> None:
+        from sova.core.steps.develop import _with_check_output_tail
+
+        result = _with_check_output_tail("reason", "line one\nline two\nline three")
+
+        assert result == "reason\n\nLast check output (tail): line one | line two | line three"
+
+    def test_redacts_secret_before_truncating(self) -> None:
+        """A secret must not survive truncation by being sliced in half at
+        the boundary: redaction has to run on the full text first."""
+        from sova.core.steps.develop import _CHECK_OUTPUT_TAIL_CHARS, _with_check_output_tail
+
+        padding = "x" * (_CHECK_OUTPUT_TAIL_CHARS - 10)
+        secret_line = "AKIAABCDEFGHIJKLMNOP"
+        check_output = f"{padding}\napi_key=sk-abcdefghijklmnopqrstuvwxyz1234\n{secret_line}"
+
+        result = _with_check_output_tail("reason", check_output)
+
+        assert "sk-abcdefghijklmnopqrstuvwxyz1234" not in result
+        assert "AKIAABCDEFGHIJKLMNOP" not in result
+        assert "REDACTED" in result
+
+
+class TestCheckTimeoutForRemaining:
+    """_check_timeout_for_remaining() (issue #1260 review): a check
+    invocation's own timeout must not exceed what's actually left of the
+    step's deadline, so an overrunning check ends as a diagnosable timeout
+    rather than the outer step_hard_timeout."""
+
+    def test_unbounded_when_step_time_remaining_unknown(self, mock_ctx) -> None:
+        from sova.core.steps.develop import _check_timeout_for_remaining
+
+        mock_ctx.step_time_remaining = None
+
+        assert _check_timeout_for_remaining(mock_ctx, 300) == 300
+
+    def test_unbounded_when_deadline_is_runaway(self, mock_ctx) -> None:
+        from sova.core.steps.develop import _check_timeout_for_remaining
+
+        mock_ctx.step_time_remaining = 50
+        mock_ctx.step_deadline_is_runaway = True
+
+        assert _check_timeout_for_remaining(mock_ctx, 300) == 300
+
+    def test_bounded_by_remaining_minus_margin(self, mock_ctx) -> None:
+        from sova.core.steps.develop import _check_timeout_for_remaining
+
+        mock_ctx.step_time_remaining = 50
+
+        assert _check_timeout_for_remaining(mock_ctx, 300) == 45
+
+    def test_never_below_one_second(self, mock_ctx) -> None:
+        from sova.core.steps.develop import _check_timeout_for_remaining
+
+        mock_ctx.step_time_remaining = 2
+
+        assert _check_timeout_for_remaining(mock_ctx, 300) == 1
+
+    def test_configured_timeout_wins_when_remaining_is_ample(self, mock_ctx) -> None:
+        from sova.core.steps.develop import _check_timeout_for_remaining
+
+        mock_ctx.step_time_remaining = 10_000
+
+        assert _check_timeout_for_remaining(mock_ctx, 300) == 300
+
+
 class TestDevelopStepTimeout:
     """Tests for develop-specific step timeout.
 
@@ -149,7 +224,9 @@ class TestInnerCheckLoopTimeControl:
             patch("sova.core.steps.develop.dispatch_command") as mock_invoke_cmd,
             patch("sova.core.steps.develop.dispatch_prompt") as mock_invoke_fix,
             patch("sova.core.steps.develop.run") as mock_run,
-            patch("time.monotonic", side_effect=[0, 650, 660]),
+            # loop_start_time=0, check_start=5, check_end=7 (measured duration=2), then
+            # the budget check's own elapsed computation at 650 (>= max_fix_time=600).
+            patch("time.monotonic", side_effect=[0, 5, 7, 650]),
         ):
             mock_invoke_cmd.return_value = MockLLMResult(
                 text="done",
@@ -410,6 +487,74 @@ class TestInnerCheckLoopTimeControl:
         result = step._check_loop_budget(mock_ctx, loop_start_time=time.monotonic(), max_fix_time=600, cycle=1)
 
         assert result is None
+
+    def test_check_loop_budget_uses_full_check_timeout_when_duration_unmeasured(self, mock_ctx):
+        """With no measured_check_duration (e.g. a direct unit-test call), the
+        reserve falls back to the full check_timeout=300, so 250s remaining
+        (below the 540s worst case) is insufficient."""
+        step = DevelopStep()
+        mock_ctx.step_time_remaining = 250
+
+        result = step._check_loop_budget(mock_ctx, loop_start_time=time.monotonic(), max_fix_time=600, cycle=1)
+
+        assert result is not None
+        assert "step deadline approaching" in result
+
+    def test_check_loop_budget_sized_from_fast_measured_check_duration(self, mock_ctx):
+        """Issue #1260: a pathologically fast failing check (e.g. a syntax error
+        caught in 2s) must size the reserve from that measurement, not the full
+        check_timeout=300, making a cycle reachable within 260s remaining
+        (comfortably clear of the floored 250s worst case, not an exact tie)
+        that the unmeasured case above rejects."""
+        step = DevelopStep()
+        mock_ctx.step_time_remaining = 260
+
+        result = step._check_loop_budget(
+            mock_ctx,
+            loop_start_time=time.monotonic(),
+            max_fix_time=600,
+            cycle=1,
+            measured_check_duration=2.0,
+        )
+
+        assert result is None
+
+    def test_check_loop_budget_floor_rejects_cycle_measured_alone_would_admit(self, mock_ctx):
+        """Issue #1260 review: the _MIN_CHECK_RESERVE_SECONDS=10 floor must
+        actually bind, not just happen to agree with an exact-boundary test.
+        With the raw 2.0s measurement alone the worst case would be 2+180+60=242,
+        which 245s remaining clears; the 10s floor raises it to 250, which
+        245s does not."""
+        step = DevelopStep()
+        mock_ctx.step_time_remaining = 245
+
+        result = step._check_loop_budget(
+            mock_ctx,
+            loop_start_time=time.monotonic(),
+            max_fix_time=600,
+            cycle=1,
+            measured_check_duration=2.0,
+        )
+
+        assert result is not None
+        assert "step deadline approaching" in result
+
+    def test_check_loop_budget_caps_measured_duration_at_check_timeout(self, mock_ctx):
+        """A measured duration above check_timeout (e.g. from a slower prior
+        run) must not inflate the reserve past the configured ceiling."""
+        step = DevelopStep()
+        mock_ctx.step_time_remaining = 250
+
+        result = step._check_loop_budget(
+            mock_ctx,
+            loop_start_time=time.monotonic(),
+            max_fix_time=600,
+            cycle=1,
+            measured_check_duration=10_000.0,
+        )
+
+        assert result is not None
+        assert "step deadline approaching" in result
 
     @pytest.mark.asyncio
     async def test_step_deadline_insufficient_stops_loop_before_first_cycle(self, mock_ctx, tmp_path):

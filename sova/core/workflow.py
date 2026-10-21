@@ -588,9 +588,9 @@ class WorkflowEngine:
     async def _run_step_with_timeout(self, step: BaseStep) -> StepResult:
         """Execute step with timeout and exception handling.
 
-        On timeout: if the worktree has staged changes, commits them with a
-        WIP message so partial work is not lost. Sets partial_work=True in the
-        returned StepResult so the dashboard can surface it.
+        On timeout: commits any changes in the worktree (tracked and new) so
+        partial work is not lost. Sets partial_work=True in the returned
+        StepResult.
         """
         timeout_seconds, runaway_deadline = self._effective_step_timeout(step.name)
         usage_before = self._ctx.usage_snapshot()
@@ -656,21 +656,21 @@ class WorkflowEngine:
         return result
 
     async def _preserve_partial_work_on_timeout(self, step_name: str) -> bool:
-        """Commit staged changes on timeout to preserve partial work.
+        """Stage and commit changes on timeout to preserve partial work.
 
         Returns True if partial work was committed, False otherwise. No-op
         before a worktree exists (e.g. during sync/assess, or for roles that
         never create one): ctx.working_dir falls back to project_dir in that
-        window, and committing there could capture the operator's own
+        window, and staging there could capture the operator's own
         uncommitted edits on whatever branch they have checked out in the
         primary checkout.
         """
         if self._ctx.worktree_dir is None:
             return False
 
-        from sova.git.worktree import commit_partial_work
+        from sova.git.worktree import preserve_partial_work
 
-        return await commit_partial_work(self._ctx.worktree_dir, f"{step_name} (timeout)")
+        return await preserve_partial_work(self._ctx.worktree_dir, f"{step_name} (timeout)")
 
     async def _persist_step_result(
         self, step_exec_id: int, result: StepResult, elapsed_ms: int, step_name: str
@@ -685,7 +685,17 @@ class WorkflowEngine:
         """Classify step failure and determine retry strategy."""
         if _is_runaway_failure(step_result.error):
             return "runaway"
-        if _is_configuration_failure(step_result.error):
+        # DevelopStep's inner check loop appends a target project's own raw
+        # check output after this separator (sova/core/steps/develop.py's
+        # _with_check_output_tail()). That text is not an LLM invocation
+        # failure, but its substring-matching classifiers don't know that:
+        # a failing pytest node id like "test_rate_limit_patterns" or an
+        # assertion like "assert 429 == 200" would otherwise misclassify an
+        # ordinary check failure as billing/rate-limit exhaustion and divert
+        # it into the (expensive) fallback-model walk instead of a normal
+        # retry. Classify only the reason paragraph that precedes the tail.
+        detail = (step_result.error or "").split("\n\nLast check output", 1)[0]
+        if _is_configuration_failure(detail):
             # A static, operator-fixable configuration fact (e.g. a runtime
             # that cannot enforce a budget cap and has no explicit opt-in).
             # No retry or fallback-model hop changes it, so this must not
@@ -693,7 +703,7 @@ class WorkflowEngine:
             # a billing failure does: both would just re-raise the identical
             # error once more for no benefit.
             return "non_retryable"
-        is_billing = _is_billing_failure(step_result.error)
+        is_billing = _is_billing_failure(detail)
         if is_billing and self._has_fallback_models():
             return "billing_exhausted"
         return "failed"

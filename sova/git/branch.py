@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from sova.git.safety import unstage_suspicious_files
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, run_checked, subprocess_error
@@ -118,21 +119,6 @@ async def rebase(base: str, cwd: Path | None = None) -> None:
     await run_checked("git", "rebase", base, cwd=cwd)
 
 
-_SUSPICIOUS_PATHS = frozenset(
-    {
-        ".venv",
-        ".env",
-        ".env.local",
-        "credentials.json",
-        ".secrets",
-        "node_modules",
-        ".DS_Store",
-        "__pycache__",
-        ".mcp.json",
-    }
-)
-
-
 async def commit(
     message: str,
     files: list[str] | None = None,
@@ -147,17 +133,12 @@ async def commit(
     else:
         await run_checked("git", "add", "-A", cwd=cwd)
 
-    staged = await run("git", "diff", "--cached", "--name-only", cwd=cwd)
-    if staged.success:
-        bad = [
-            f
-            for f in staged.stdout.strip().splitlines()
-            if any(part in _SUSPICIOUS_PATHS for part in Path(f.strip()).parts)
-        ]
-        if bad:
-            for f in bad:
-                await run("git", "reset", "HEAD", "--", f, cwd=cwd)
-            raise RuntimeError(f"Refusing to commit suspicious files: {', '.join(bad)}")
+    scan = await unstage_suspicious_files(cwd)
+    if not scan.checked:
+        raise RuntimeError("Cannot verify staged files are free of suspicious paths; refusing to commit")
+    bad = scan.unstaged + scan.still_staged
+    if bad:
+        raise RuntimeError(f"Refusing to commit suspicious files: {', '.join(bad)}")
 
     args = ["git", "commit", "-m", message]
     if no_verify:

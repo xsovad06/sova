@@ -159,25 +159,25 @@ async def _run_workflow(
 async def _handle_sigterm_shutdown(ctx: ExecutionContext, task_run_id: int | None) -> None:
     """Best-effort cleanup during the SIGTERM->SIGKILL grace period.
 
-    Commits any staged partial work so a terminated process does not lose
-    in-progress edits, and (when this run is DB-tracked via --run-id) records
-    elapsed cost so a delayed or absent external finalizer still sees
-    accurate numbers. Status is deliberately left untouched here: whichever
-    process classifies the final exit (the dashboard's _finalize_task_run,
-    or the liveness sweep for a standalone run with no dashboard) decides
-    "stopped" vs "interrupted" vs "failed" from the exit code and any
-    TerminationRecord, not this handler.
+    Commits any partial work (tracked and new files) so a terminated process
+    does not lose in-progress edits, and (when this run is DB-tracked via
+    --run-id) records elapsed cost so a delayed or absent external finalizer
+    still sees accurate numbers. Status is deliberately left untouched here:
+    whichever process classifies the final exit (the dashboard's
+    _finalize_task_run, or the liveness sweep for a standalone run with no
+    dashboard) decides "stopped" vs "interrupted" vs "failed" from the exit
+    code and any TerminationRecord, not this handler.
 
-    Only commits when ctx.worktree_dir is already set. Before create_worktree
+    Only stages when ctx.worktree_dir is already set. Before create_worktree
     runs (e.g. during sync/assess, or for roles that never create a
     worktree), ctx.working_dir falls back to project_dir, the primary
-    checkout; committing there could capture the operator's own uncommitted
+    checkout; staging there could capture the operator's own uncommitted
     edits on whatever branch they have checked out.
     """
-    from sova.git.worktree import commit_partial_work
+    from sova.git.worktree import preserve_partial_work
 
     if ctx.worktree_dir is not None:
-        await commit_partial_work(ctx.worktree_dir, "sigterm")
+        await preserve_partial_work(ctx.worktree_dir, "sigterm")
 
     if task_run_id is None:
         return

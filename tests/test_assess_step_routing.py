@@ -12,7 +12,7 @@ from sova.adapters.base import Task, TaskState
 from sova.config.models import RolesConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps.assess import AssessStep
-from sova.llm.complexity import ComplexityTier
+from sova.llm.complexity import ComplexityTier, tier_timeout
 
 
 @pytest.fixture
@@ -99,6 +99,37 @@ class TestAssessStepComplexityRouting:
 
             assert result.success
             assert execution_context.complexity == ComplexityTier.COMPLEX
+
+    @pytest.mark.asyncio
+    async def test_assess_explicit_complexity_floor_does_not_downgrade_epic(
+        self, execution_context: ExecutionContext, mock_adapter: AsyncMock
+    ) -> None:
+        """Issue #1260 review finding #17/#1/#11: a bug-labelled, EPIC-strength
+        body carrying triage's own coarse "moderate" assessment line must
+        still route to the EPIC tier (and its longer step timeout), not be
+        silently downgraded to MODERATE."""
+        task = Task(
+            id="123",
+            title="Refactor entire pipeline",
+            body=(
+                "This requires a full rewrite spanning multiple systems with "
+                "breaking changes across the whole API surface.\n\n"
+                "## Triage Assessment\n**Complexity**: moderate\n"
+            ),
+            labels=["type: bug"],
+            state=TaskState.RESEARCHED,
+        )
+        mock_adapter.get_task.return_value = task
+
+        with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find:
+            mock_find.return_value = None
+
+            step = AssessStep()
+            result = await step.execute(execution_context)
+
+            assert result.success
+            assert execution_context.complexity == ComplexityTier.EPIC
+            assert tier_timeout(execution_context.complexity, normal=2400, complex_tier=3600) == 3600
 
     @pytest.mark.asyncio
     async def test_assess_resolves_model_from_complexity(

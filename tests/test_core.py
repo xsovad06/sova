@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import ProjectConfig, TaskSourceConfig
+from sova.config.models import AgentConfig, LLMConfig, ProjectConfig, TaskSourceConfig
 from sova.core.context import ExecutionContext
 from sova.core.state import InvalidTransitionError, TaskStatus, get_valid_transitions
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
@@ -1394,6 +1394,48 @@ class TestBillingFailureDetection:
     def test_stringified_typed_error_still_detected(self) -> None:
         """R4: steps stringify exceptions before the workflow layer sees them."""
         assert _is_billing_failure(str(RateLimitError("rate_limit exceeded for model")))
+
+
+class TestHandleStepFailureResultClassificationBoundary:
+    """Issue #1260 review: DevelopStep's check-output tail must not be fed
+    into the billing/configuration classifiers, since a target project's own
+    check output can plausibly contain a billing/rate-limit-shaped substring
+    (e.g. a pytest node id or an assertion on an HTTP status)."""
+
+    def _engine(self) -> WorkflowEngine:
+        ctx = _make_ctx(
+            config=ProjectConfig(
+                agent=AgentConfig(fallback_models=["claude-haiku-4-6"]),
+                llm=LLMConfig(engine_owned_fallback=True),
+            )
+        )
+        return WorkflowEngine(steps=[], ctx=ctx)
+
+    def test_billing_pattern_in_check_output_tail_is_not_classified_as_billing(self) -> None:
+        from sova.core.steps.base import StepResult
+
+        error = (
+            "checks still failing after 3 fix cycle(s)"
+            "\n\nLast check output (tail): "
+            "tests/test_llm.py::TestClassifyError::test_rate_limit_patterns FAILED | assert 429 == 200"
+        )
+        result = WorkflowEngine._handle_step_failure_result(
+            self._engine(), StepResult(success=False, summary="Development failed", error=error)
+        )
+
+        assert result == "failed"
+
+    def test_billing_pattern_in_reason_itself_is_still_classified_as_billing(self) -> None:
+        """The split must not blind the classifier to a real billing failure
+        that never went through the develop check-output tail path."""
+        from sova.core.steps.base import StepResult
+
+        result = WorkflowEngine._handle_step_failure_result(
+            self._engine(),
+            StepResult(success=False, summary="Development failed", error="rate_limit exceeded for model"),
+        )
+
+        assert result == "billing_exhausted"
 
 
 # ---------------------------------------------------------------------------
@@ -10279,9 +10321,9 @@ class TestInstallSigtermHandler:
 
 
 class TestHandleSigtermShutdown:
-    """_handle_sigterm_shutdown() (issue #978): partial-work commit + best-effort cost update."""
+    """_handle_sigterm_shutdown() (issue #978): partial-work staging + best-effort cost update."""
 
-    async def test_commits_partial_work_and_updates_cost(self) -> None:
+    async def test_stages_partial_work_and_updates_cost(self) -> None:
         from sova.cli.commands.run import _handle_sigterm_shutdown
         from sova.db.models import TaskRun
         from sova.db.session import get_session
@@ -10298,10 +10340,10 @@ class TestHandleSigtermShutdown:
         ctx.project_dir = None
         ctx.cost_usd = Decimal("1.23")
 
-        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock(return_value=True)) as mock_commit:
+        with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=True)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, run_id)
 
-        mock_commit.assert_awaited_once_with(ctx.worktree_dir, "sigterm")
+        mock_preserve.assert_awaited_once_with(ctx.worktree_dir, "sigterm")
 
         async with await get_session() as session:
             async with session.begin():
@@ -10314,22 +10356,22 @@ class TestHandleSigtermShutdown:
         ctx = MagicMock()
         ctx.worktree_dir = Path("/tmp/does-not-matter")
 
-        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock(return_value=False)) as mock_commit:
+        with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, None)
 
-        mock_commit.assert_awaited_once()
+        mock_preserve.assert_awaited_once()
 
-    async def test_no_worktree_skips_commit(self) -> None:
-        """Before create_worktree runs, ctx.worktree_dir is None: never commit in the primary checkout."""
+    async def test_no_worktree_skips_staging(self) -> None:
+        """Before create_worktree runs, ctx.worktree_dir is None: never stage in the primary checkout."""
         from sova.cli.commands.run import _handle_sigterm_shutdown
 
         ctx = MagicMock()
         ctx.worktree_dir = None
 
-        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock()) as mock_commit:
+        with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock()) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, None)
 
-        mock_commit.assert_not_awaited()
+        mock_preserve.assert_not_awaited()
 
     async def test_db_failure_during_shutdown_does_not_raise(self) -> None:
         """Best-effort cleanup during shutdown must not raise, even on a broken session."""
@@ -10341,7 +10383,7 @@ class TestHandleSigtermShutdown:
         ctx.cost_usd = Decimal("0")
 
         with (
-            patch("sova.git.worktree.commit_partial_work", new=AsyncMock(return_value=False)),
+            patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)),
             patch("sova.db.session.get_session", side_effect=RuntimeError("db unavailable")),
         ):
             await _handle_sigterm_shutdown(ctx, 999)  # must not raise
@@ -10545,7 +10587,60 @@ class TestDevelopStepInnerCheckLoop:
 
         assert passed is False
         assert "no changes produced" in summary
+        # issue #1260 review finding #16: a fix-cycle exhaustion must still
+        # carry the check output tail, not just the bare reason string.
+        assert "FAIL" in summary
         assert mock_invoke.await_count == 2
+
+    async def test_check_loop_budget_sized_from_high_water_mark_duration(self) -> None:
+        """Issue #1260 review finding #2: the reserve fed into
+        _check_loop_budget() must be a high-water mark across cycles, not
+        just the most recently measured duration. A slow check observed once
+        (cycle 1's re-run, 50s) must keep sizing the reserve even after a
+        later cycle (cycle 2's re-run) happens to measure fast again (1s)."""
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            develop=DevelopConfig(max_fix_cycles=3, guard_test_weakening=False),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        check_call_count = 0
+
+        async def mock_run_func(*args, **kwargs):
+            nonlocal check_call_count
+            if len(args) >= 3 and args[0] == "sh" and args[1] == "-c" and "command -v" in args[2]:
+                return MagicMock(success=True)
+            if len(args) >= 3 and args[0] == "sh" and args[1] == "-c" and "make check" in args[2]:
+                check_call_count += 1
+                return MagicMock(success=False, stdout=f"FAIL {check_call_count}", stderr="")
+            if args[:2] == ("git", "diff") and "--stat" in args and "HEAD" in args and "--cached" not in args:
+                return MagicMock(success=True, stdout="file.py | 1 +\n")
+            return MagicMock(success=True, stdout="")
+
+        # loop_start, then (check_start, duration) per real check run: initial
+        # (5s), cycle-1 re-run (50s, the slow one), cycle-2 re-run (1s, fast
+        # again), cycle-3 re-run (1s). _check_loop_budget is mocked out, so no
+        # time.monotonic() calls happen from inside it.
+        monotonic_values = [0, 0, 5, 5, 55, 55, 56, 56, 57]
+
+        with (
+            patch("sova.core.steps.develop.run", side_effect=mock_run_func),
+            patch("sova.core.steps.develop.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+            patch("time.monotonic", side_effect=monotonic_values),
+            patch.object(DevelopStep, "_check_loop_budget", return_value=None) as mock_budget,
+        ):
+            mock_invoke.return_value = LLMResult(
+                text="fixed", model="opus", cost_usd=Decimal("0.10"), input_tokens=100, output_tokens=10
+            )
+            await step._run_inner_check_loop(ctx)
+
+        measured_durations = [call.args[4] for call in mock_budget.call_args_list]
+        assert measured_durations == [5, 50, 50]
 
     async def test_budget_exceeded_stops_loop(self) -> None:
         from sova.config.models import AgentConfig, DevelopConfig
@@ -10800,8 +10895,50 @@ class TestDevelopStepInnerCheckLoop:
             passed, summary = await step._run_inner_check_loop(ctx)
 
         assert passed is False
-        assert summary == "checks still failing after 2 fix cycle(s)"
+        assert summary.startswith("checks still failing after 2 fix cycle(s)")
+        assert "FAIL still" in summary
         assert mock_invoke.await_count == 2
+
+    async def test_initial_check_failure_logs_tail_not_head(self) -> None:
+        """Issue #1260: the first check failure must log the output's tail, not its
+        head, so the diagnosable part survives even when no fix cycle runs."""
+        import time
+
+        from sova.config.models import DevelopConfig
+        from sova.core.steps import develop as develop_mod
+        from sova.core.steps.develop import DevelopStep
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            develop=DevelopConfig(max_fix_cycles=1),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        # Force the budget check to bail immediately before any fix cycle runs,
+        # so the test only needs to mock the initial check run.
+        ctx.step_deadline_seconds = 1
+        ctx.step_started_at = time.monotonic() - 1000
+        step = DevelopStep()
+
+        long_stdout = "HEAD_MARKER" + ("x" * 1000) + "TAIL_MARKER"
+
+        with (
+            patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
+            patch.object(develop_mod.log, "warning") as mock_warning,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # command -v probe
+                MagicMock(success=False, stdout=long_stdout, stderr=""),  # initial check
+            ]
+            passed, _summary = await step._run_inner_check_loop(ctx)
+
+        assert passed is False
+        logged_output = next(
+            call.kwargs["output"]
+            for call in mock_warning.call_args_list
+            if call.args[0] == "step.develop.checks_failed"
+        )
+        assert "TAIL_MARKER" in logged_output
+        assert "HEAD_MARKER" not in logged_output
 
     async def test_test_weakening_continues_when_not_last_cycle(self) -> None:
         """Test weakening on non-final cycle skips re-run but continues loop."""
@@ -11085,11 +11222,43 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True),  # command -v probe
                 MagicMock(success=False, stdout="FAIL", stderr=""),  # initial check
             ]
-            mock_time.side_effect = [0, 10]  # Start at 0, then 10 seconds elapsed
+            # loop_start=0, check_start=1, check_end=2 (measured duration=1),
+            # then the budget check's own elapsed computation at 10 (>= max_fix_time=1).
+            mock_time.side_effect = [0, 1, 2, 10]
             passed, summary = await step._run_inner_check_loop(ctx)
 
         assert passed is False
         assert "time budget exceeded" in summary
+
+    async def test_check_loop_budget_bail_includes_check_output_tail(self) -> None:
+        """Issue #1260: when the loop bails before any fix cycle runs (the GWYM
+        failure mode), the returned summary must still carry the failing
+        check's output, not just the generic reason, so it reaches
+        step_executions/failure_records without a fix cycle ever running."""
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            develop=DevelopConfig(max_fix_cycles=5, max_fix_time=1),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
+            patch("time.monotonic") as mock_time,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # command -v probe
+                MagicMock(success=False, stdout="", stderr="FAILED tests/test_foo.py::test_bar"),
+            ]
+            mock_time.side_effect = [0, 1, 2, 10]
+            passed, summary = await step._run_inner_check_loop(ctx)
+
+        assert passed is False
+        assert "time budget exceeded" in summary
+        assert "FAILED tests/test_foo.py::test_bar" in summary
 
     async def test_check_loop_handles_duplicate_failure(self) -> None:
         """_run_inner_check_loop detects duplicate failures and stops."""

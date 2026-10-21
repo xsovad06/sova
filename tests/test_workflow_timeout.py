@@ -175,6 +175,10 @@ class TestPartialWorkPreservation:
         asyncio.run(run("git", "config", "user.name", "Test User", cwd=tmp_path))
 
         (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
+        # Commit it so it isn't mistaken for untracked partial work by the
+        # `git add -A` tests below.
+        asyncio.run(run("git", "add", "sova.toml", cwd=tmp_path))
+        asyncio.run(run("git", "commit", "-m", "initial", cwd=tmp_path))
         cfg = load_config(tmp_path)
         ctx = ExecutionContext(
             project_dir=tmp_path,
@@ -187,7 +191,7 @@ class TestPartialWorkPreservation:
         return ctx
 
     async def test_preserve_partial_work_with_changes(self, ctx: ExecutionContext, tmp_path: Path) -> None:
-        """When timeout occurs with staged changes, they are committed."""
+        """When timeout occurs with unstaged changes, they are committed."""
         from sova.utils.shell import run
 
         # Create and commit a file so we have something to modify
@@ -195,6 +199,7 @@ class TestPartialWorkPreservation:
         test_file.write_text("initial")
         await run("git", "add", "test.txt", cwd=tmp_path)
         await run("git", "commit", "-m", "initial", cwd=tmp_path)
+        commit_count_before = len((await run("git", "log", "--oneline", cwd=tmp_path)).stdout.strip().splitlines())
 
         # Modify the file
         test_file.write_text("modified")
@@ -204,12 +209,16 @@ class TestPartialWorkPreservation:
 
         assert result is True
 
-        # Verify commit was created
-        log_result = await run("git", "log", "--oneline", "-1", cwd=tmp_path)
-        assert "wip: partial work from develop (timeout)" in log_result.stdout
+        # A new commit is created, conformant with invariants/commit-format.sh.
+        log_result = await run("git", "log", "--oneline", cwd=tmp_path)
+        lines = log_result.stdout.strip().splitlines()
+        assert len(lines) == commit_count_before + 1
+        assert "chore(core): preserve partial work from develop (timeout)" in lines[0]
+        committed = await run("git", "diff", "--name-only", "HEAD~1", "HEAD", cwd=tmp_path)
+        assert "test.txt" in committed.stdout
 
     async def test_preserve_partial_work_no_changes(self, ctx: ExecutionContext, tmp_path: Path) -> None:
-        """When there are no staged changes, no commit is created."""
+        """When there are no changes, nothing is committed."""
         from sova.utils.shell import run
 
         # Initialize repo with a commit
@@ -217,6 +226,7 @@ class TestPartialWorkPreservation:
         test_file.write_text("initial")
         await run("git", "add", "test.txt", cwd=tmp_path)
         await run("git", "commit", "-m", "initial", cwd=tmp_path)
+        commit_count_before = len((await run("git", "log", "--oneline", cwd=tmp_path)).stdout.strip().splitlines())
 
         engine = WorkflowEngine(steps=[], ctx=ctx)
         result = await engine._preserve_partial_work_on_timeout("develop")
@@ -225,7 +235,7 @@ class TestPartialWorkPreservation:
 
         # Verify no new commit
         log_result = await run("git", "log", "--oneline", cwd=tmp_path)
-        assert "wip:" not in log_result.stdout
+        assert len(log_result.stdout.strip().splitlines()) == commit_count_before
 
     async def test_preserve_partial_work_not_a_git_repo(self, tmp_path: Path) -> None:
         """When worktree_dir is not a git repo, returns False."""
@@ -270,11 +280,11 @@ class TestPartialWorkPreservation:
         assert ctx.worktree_dir is None
 
         engine = WorkflowEngine(steps=[], ctx=ctx)
-        with patch("sova.git.worktree.commit_partial_work", new=AsyncMock()) as mock_commit:
+        with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock()) as mock_preserve:
             result = await engine._preserve_partial_work_on_timeout("sync")
 
         assert result is False
-        mock_commit.assert_not_awaited()
+        mock_preserve.assert_not_awaited()
 
     async def test_timeout_sets_partial_work_flag(self, ctx: ExecutionContext, tmp_path: Path) -> None:
         """Step timeout sets partial_work=True in StepResult when work was committed."""
@@ -286,6 +296,7 @@ class TestPartialWorkPreservation:
         test_file.write_text("initial")
         await run("git", "add", "test.txt", cwd=tmp_path)
         await run("git", "commit", "-m", "initial", cwd=tmp_path)
+        commit_count_before = len((await run("git", "log", "--oneline", cwd=tmp_path)).stdout.strip().splitlines())
 
         class SlowStep(BaseStep):
             name = "slow_step"
@@ -310,9 +321,12 @@ class TestPartialWorkPreservation:
         assert result.error == "step_hard_timeout"
         assert result.partial_work is True
 
-        # Verify the WIP commit exists
-        log_result = await run("git", "log", "--oneline", "-1", cwd=tmp_path)
-        assert "wip:" in log_result.stdout
+        # A new commit preserves the edit.
+        log_result = await run("git", "log", "--oneline", cwd=tmp_path)
+        lines = log_result.stdout.strip().splitlines()
+        assert len(lines) == commit_count_before + 1
+        committed = await run("git", "diff", "--name-only", "HEAD~1", "HEAD", cwd=tmp_path)
+        assert "test.txt" in committed.stdout
 
 
 class TestStepDeadlineWiring:

@@ -48,7 +48,7 @@ The complexity *multiplier* (`sova.llm.complexity.complexity_multiplier`: 1.5x f
 
 ### Partial work preservation
 
-When a step times out, `WorkflowEngine._preserve_partial_work_on_timeout()` commits any staged changes with message `"wip: partial work from {step_name} (timeout)"`. Only tracked files modified during the step are preserved (via `git add -u`); new untracked files are not committed. The `StepResult.partial_work` flag is set to `True` so the dashboard can surface this to the user.
+When a step times out, `WorkflowEngine._preserve_partial_work_on_timeout()` stages and commits any changes (via `git add -A` excluding suspicious paths and mirrored agent artifacts, so tracked and new untracked files are both preserved) in `sova.git.worktree.preserve_partial_work()`, using a conventional-commit message (`chore(core): preserve partial work from <reason>`) so the commit itself passes `invariants/commit-format.sh`, unlike the earlier `wip:` message that made this function stage-only for a time. Committing (rather than leaving the work staged) means it survives worktree cleanup and the stash cycles the next retry attempt runs. The `StepResult.partial_work` flag is set to `True`; it has no consumer today (not persisted, not surfaced by any dashboard route or template).
 
 ### Timeout conventions
 

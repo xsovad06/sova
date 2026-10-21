@@ -269,6 +269,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A typo'd log level must never crash the caller, and an epic's block stays deliberately unscoped by pipeline candidate
 - A git-diff-level guard must run in the PR's own worktree on the PR's own branch ref, diff the base from the pre-run fork point, and confirm blob content before flagging a revert; a dependency pin diff line with no name capture must be paired by its enclosing lockfile key, not index, name, or raw adjacency; a deleted file is not a confirmed revert; and a downgrade check must diff what this run introduced, not the PR's whole history
 - A full check's reuse marker must exclude itself from the worktree-state hash it is keyed to, or writing it invalidates it
+- An issue type label is not a size signal, and a triage- or spec-written complexity line outranks the heuristic vote that reads it
 
 ## Cross-References (domain-specific details)
 
