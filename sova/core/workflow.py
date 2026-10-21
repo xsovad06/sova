@@ -685,7 +685,17 @@ class WorkflowEngine:
         """Classify step failure and determine retry strategy."""
         if _is_runaway_failure(step_result.error):
             return "runaway"
-        if _is_configuration_failure(step_result.error):
+        # DevelopStep's inner check loop appends a target project's own raw
+        # check output after this separator (sova/core/steps/develop.py's
+        # _with_check_output_tail()). That text is not an LLM invocation
+        # failure, but its substring-matching classifiers don't know that:
+        # a failing pytest node id like "test_rate_limit_patterns" or an
+        # assertion like "assert 429 == 200" would otherwise misclassify an
+        # ordinary check failure as billing/rate-limit exhaustion and divert
+        # it into the (expensive) fallback-model walk instead of a normal
+        # retry. Classify only the reason paragraph that precedes the tail.
+        detail = (step_result.error or "").split("\n\nLast check output", 1)[0]
+        if _is_configuration_failure(detail):
             # A static, operator-fixable configuration fact (e.g. a runtime
             # that cannot enforce a budget cap and has no explicit opt-in).
             # No retry or fallback-model hop changes it, so this must not
@@ -693,7 +703,7 @@ class WorkflowEngine:
             # a billing failure does: both would just re-raise the identical
             # error once more for no benefit.
             return "non_retryable"
-        is_billing = _is_billing_failure(step_result.error)
+        is_billing = _is_billing_failure(detail)
         if is_billing and self._has_fallback_models():
             return "billing_exhausted"
         return "failed"

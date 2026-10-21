@@ -122,6 +122,48 @@ def _resolve_check_cmd(ctx: ExecutionContext) -> str | None:
     return None
 
 
+# Chars of check output kept when logging and when persisting a failure
+# summary. The tail, not the head, is diagnosable: a check command (e.g.
+# ``make check``) prints lint/build output first and the failing test names
+# last.
+_CHECK_OUTPUT_TAIL_CHARS = 500
+
+
+def _with_check_output_tail(summary: str, check_output: str) -> str:
+    """Append the tail of *check_output* to a failure *summary*.
+
+    Without this, a loop exit that bails before a fix cycle completes
+    (budget exhausted, step deadline approaching, duplicate failure, cycles
+    exhausted, or a fix cycle itself giving up: no changes produced, test
+    weakening detected) leaves ``step_executions.output_summary`` and
+    ``failure_records.message`` with only the generic reason string, since
+    both are populated from this return value, not from the log line that
+    already carries the tail (issue #1260).
+
+    *check_output* is a target project's own raw subprocess output, and this
+    return value flows into ``TaskRun.error_message``, which
+    ``telemetry_push.py`` posts to an external hub: redact before truncating
+    (mirroring ``_build_exit_failure_message()`` in
+    ``sova/dashboard/services/agent_db.py``) so a secret can't be sliced in
+    half at the truncation boundary and survive redaction as a mangled
+    fragment. The tail's lines are joined with " | " rather than embedded
+    newlines for the same reason that function does it: this value is
+    rendered in dashboard table cells and single-line log records. The
+    "\\n\\nLast check output" separator before it is a stable split point
+    ``WorkflowEngine._handle_step_failure_result()`` uses to classify only
+    the reason paragraph, not a target project's own output, as a billing or
+    rate-limit failure (issue #1260 review).
+    """
+    from sova.llm.egress import scan_and_redact
+
+    redacted = scan_and_redact(check_output).redacted_text
+    tail = redacted[-_CHECK_OUTPUT_TAIL_CHARS:].strip()
+    if not tail:
+        return summary
+    tail_line = " | ".join(line.strip() for line in tail.splitlines() if line.strip())
+    return f"{summary}\n\nLast check output (tail): {tail_line}"
+
+
 _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]+\.py|tests\.py|[^/]+_test\.py)$")
 
 # Fixed allowance for the non-LLM overhead inside a fix cycle (git diff/status
@@ -132,6 +174,41 @@ _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]+\.py|tests\.py|[^/]+_test\.py)$
 # landing back on the uninformative step_hard_timeout path this budget check
 # exists to avoid.
 _CYCLE_OVERHEAD_BUFFER_SECONDS = 60
+
+# A floor on the measured-duration-derived check reserve (see
+# _check_loop_budget): a check that failed fast (e.g. a lint error caught in
+# under a second) does not guarantee the *next* cycle's check will be just as
+# fast, since a later-running, slower failure mode (e.g. a full test suite
+# that only runs once lint passes) can surface instead. Without a floor the
+# reserve could shrink to near zero and let a cycle start that the step's
+# remaining deadline can't actually absorb.
+_MIN_CHECK_RESERVE_SECONDS = 10.0
+
+# Safety margin subtracted from the step's remaining deadline when bounding a
+# check invocation's own timeout (see _check_timeout_for_remaining): leaves
+# room for the cheap git/log bookkeeping around the check call itself so the
+# check's own timeout, not the outer asyncio.timeout, is what fires first.
+_CHECK_TIMEOUT_SAFETY_MARGIN_SECONDS = 5
+
+
+def _check_timeout_for_remaining(ctx: ExecutionContext, configured_timeout: int) -> int:
+    """Bound a check invocation's timeout by the step's actual remaining deadline.
+
+    _check_loop_budget() only runs once, at the start of a cycle, sized from
+    the *previous* check's measured duration. A cycle admitted on a fast
+    measurement (e.g. lint failed in 2s) can still run into a slower failure
+    mode on the re-run (lint now passes, the full test suite runs next), and
+    without this bound that re-run check would still be launched with the
+    full configured ``check_timeout``, overrunning the step's own deadline
+    and getting killed by the outer WorkflowEngine timeout as an
+    uninformative ``step_hard_timeout`` instead of ending as a normal
+    timed-out check result this loop can report and size the next budget
+    check from.
+    """
+    if ctx.step_time_remaining is None or ctx.step_deadline_is_runaway:
+        return configured_timeout
+    return max(1, min(configured_timeout, int(ctx.step_time_remaining) - _CHECK_TIMEOUT_SAFETY_MARGIN_SECONDS))
+
 
 # Keep the runtime-artifact-prefix alternatives in sync with
 # rearrange_commits.py's _IGNORABLE_UNTRACKED_RE/_EXCLUDED_PATHSPECS: both
@@ -255,20 +332,31 @@ class DevelopStep(BaseStep):
         loop_start_time = time.monotonic()
 
         # Initial check run
-        check_result = await run("sh", "-c", check_cmd, cwd=ctx.working_dir, timeout=develop_cfg.check_timeout)
+        check_start = time.monotonic()
+        check_result = await run(
+            "sh",
+            "-c",
+            check_cmd,
+            cwd=ctx.working_dir,
+            timeout=_check_timeout_for_remaining(ctx, develop_cfg.check_timeout),
+        )
+        last_check_duration = time.monotonic() - check_start
+        max_check_duration = last_check_duration
         if check_result.success:
             log.info("step.develop.checks_passed_first_try")
             return True, "checks passed"
 
         check_output = (check_result.stdout + "\n" + check_result.stderr).strip()
-        log.warning("step.develop.checks_failed", output=check_output[:500])
+        log.warning("step.develop.checks_failed", output=check_output[-_CHECK_OUTPUT_TAIL_CHARS:])
 
         last_check_output_tail: str = check_output[-3000:]
 
         for cycle in range(1, max_cycles + 1):
-            budget_check = self._check_loop_budget(ctx, loop_start_time, develop_cfg.max_fix_time, cycle)
+            budget_check = self._check_loop_budget(
+                ctx, loop_start_time, develop_cfg.max_fix_time, cycle, max_check_duration
+            )
             if budget_check is not None:
-                return False, budget_check
+                return False, _with_check_output_tail(budget_check, check_output)
 
             if ctx.resource_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
                 log.warning(
@@ -287,10 +375,19 @@ class DevelopStep(BaseStep):
             if result is not None:
                 if result == "":
                     continue  # no-op or test weakening; skip re-run
-                return False, result
+                return False, _with_check_output_tail(result, check_output)
 
             # Re-run checks
-            check_result = await run("sh", "-c", check_cmd, cwd=ctx.working_dir, timeout=develop_cfg.check_timeout)
+            check_start = time.monotonic()
+            check_result = await run(
+                "sh",
+                "-c",
+                check_cmd,
+                cwd=ctx.working_dir,
+                timeout=_check_timeout_for_remaining(ctx, develop_cfg.check_timeout),
+            )
+            last_check_duration = time.monotonic() - check_start
+            max_check_duration = max(max_check_duration, last_check_duration)
             if check_result.success:
                 log.info("step.develop.checks_passed_after_fix", cycles=cycle)
                 return True, f"checks passed after {cycle} fix cycle(s)"
@@ -298,12 +395,14 @@ class DevelopStep(BaseStep):
             check_output = (check_result.stdout + "\n" + check_result.stderr).strip()
             duplicate_check = self._check_duplicate_failure(check_output, last_check_output_tail, cycle)
             if duplicate_check is not None:
-                return False, duplicate_check
+                return False, _with_check_output_tail(duplicate_check, check_output)
 
             last_check_output_tail = check_output[-3000:]
-            log.warning("step.develop.checks_still_failing", cycle=cycle, output=check_output[:500])
+            log.warning(
+                "step.develop.checks_still_failing", cycle=cycle, output=check_output[-_CHECK_OUTPUT_TAIL_CHARS:]
+            )
 
-        return False, f"checks still failing after {max_cycles} fix cycle(s)"
+        return False, _with_check_output_tail(f"checks still failing after {max_cycles} fix cycle(s)", check_output)
 
     def _check_loop_budget(
         self,
@@ -311,6 +410,7 @@ class DevelopStep(BaseStep):
         loop_start_time: float,
         max_fix_time: int,
         cycle: int,
+        measured_check_duration: float | None = None,
     ) -> str | None:
         """Check time and budget constraints for the inner check loop.
 
@@ -318,7 +418,7 @@ class DevelopStep(BaseStep):
 
         Two time constraints are checked: the loop's own max_fix_time window,
         and (when known) the step's own remaining hard-timeout budget. A
-        worst-case cycle (check_timeout + fix_timeout, plus a fixed buffer for
+        worst-case cycle (check reserve + fix_timeout, plus a fixed buffer for
         the non-LLM overhead between them: git diff/status calls, ruff, commit)
         must still fit inside what is left of the develop step's per-tier hard
         timeout (develop.step_timeout_normal/_complex), otherwise
@@ -326,6 +426,25 @@ class DevelopStep(BaseStep):
         reporting the generic "step_hard_timeout" instead of this loop's own
         diagnostic summary, and starving whatever pipeline steps run after
         this one.
+
+        The check reserve is sized from *measured_check_duration* (the
+        highest wall-clock duration any check run in this loop has taken so
+        far, a high-water mark rather than just the most recent run), capped
+        at develop.check_timeout and floored at _MIN_CHECK_RESERVE_SECONDS,
+        rather than always assuming the full check_timeout ceiling: a fast
+        check (e.g. a syntax error caught in a couple of seconds) should
+        make another cycle easier to fit, not harder, but the next cycle's
+        check isn't guaranteed to hit the same fast failure mode. The
+        high-water mark means a slow failure mode observed once (e.g. lint
+        passed and the full test suite ran) keeps the reserve sized for it
+        on every subsequent cycle, rather than shrinking back down if a
+        later cycle happens to fail fast again. ``None`` (no measurement
+        available, e.g. a direct unit-test call to this method) falls back
+        to the full check_timeout ceiling, matching the previous behavior.
+        Each check invocation's own timeout is separately bounded by
+        _check_timeout_for_remaining() so even an admitted cycle's re-run
+        check ends as a diagnosable timeout rather than overrunning into the
+        outer step-level hard timeout.
 
         When the step's remaining deadline was itself capped by the run-wide
         runaway wall-clock guard (ctx.step_deadline_is_runaway), this
@@ -345,7 +464,13 @@ class DevelopStep(BaseStep):
         step_remaining = ctx.step_time_remaining
         if step_remaining is not None and not ctx.step_deadline_is_runaway:
             develop_cfg = ctx.config.develop
-            worst_case_cycle = develop_cfg.check_timeout + develop_cfg.fix_timeout + _CYCLE_OVERHEAD_BUFFER_SECONDS
+            check_reserve = develop_cfg.check_timeout
+            if measured_check_duration is not None:
+                check_reserve = max(
+                    min(measured_check_duration, develop_cfg.check_timeout),
+                    _MIN_CHECK_RESERVE_SECONDS,
+                )
+            worst_case_cycle = check_reserve + develop_cfg.fix_timeout + _CYCLE_OVERHEAD_BUFFER_SECONDS
             if step_remaining < worst_case_cycle:
                 log.warning(
                     "step.develop.step_deadline_insufficient",
