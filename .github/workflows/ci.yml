@@ -31,6 +31,7 @@ jobs:
   changes:
     name: Detect Changed Paths
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -99,8 +100,9 @@ jobs:
   lint-static:
     name: Static Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
@@ -158,15 +160,16 @@ jobs:
     needs: changes
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Documentation-only change (skipping lint)
         if: needs.changes.outputs.code == 'false'
         run: echo "No Python touched (${{ needs.changes.outputs.reason }}). Reporting success without re-running Ruff."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: needs.changes.outputs.code != 'false'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         if: needs.changes.outputs.code != 'false'
         with:
           python-version: "3.12"
@@ -193,11 +196,27 @@ jobs:
   # coverage-xml artifact: sonarcloud.yml's workflow_run trigger (#1187)
   # consumes that artifact instead of re-running the suite itself, so a push
   # to main needs this job's artifact just as much as a PR does.
-  python-test:
-    name: Python Tests
+  #
+  # Matrixed over Python 3.12 and 3.14, but only on pull_request runs: a push
+  # to main keeps the single 3.12 leg, so a routine merge does not pay for a
+  # second interpreter whose only purpose is catching a regression before a
+  # PR lands. GitHub appends "(<matrix value>)" to a matrixed job's own check
+  # name, which would silently rename the "Python Tests" required status
+  # check the main-protection ruleset matches by exact string and strand
+  # every PR on "Expected: waiting for status". `python-test` below is a
+  # separate, unmatrixed aggregator that alone keeps the "Python Tests" name
+  # and required-check identity; this job does the real work under its own,
+  # deliberately different name.
+  python-test-matrix:
+    name: Python Tests (py${{ matrix.python-version }})
     needs: changes
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12", "3.14"]' || '["3.12"]') }}
     steps:
       - name: Documentation-only change (skipping tests)
         if: needs.changes.outputs.code == 'false'
@@ -209,26 +228,27 @@ jobs:
       # merge tree and reporting it against the head tree hands Sonar line
       # numbers from a revision it never analyzed, so coverage lands on the
       # wrong lines (or no lines) whenever main has moved under the PR. The
-      # merge-result signal this gives up is recovered by /integrate-pr, which
-      # rebases onto main and re-runs CI before merging; that recovery, in
-      # turn, depends on this repository's `main-protection` ruleset keeping
-      # strict_required_status_checks_policy: true (see
-      # detect-code-changes.sh's header comment), since that is what forces a
-      # stale branch to re-run CI against an up-to-date base before merge is
-      # allowed. python-lint and integration still check out the merge commit;
-      # only python-test needs the head tree, since it is the only job whose
-      # output (coverage.xml) sonarcloud.yml consumes against that exact SHA.
-      # On a push to main there is no pull_request payload and this resolves
-      # to github.sha, the default.
-      - uses: actions/checkout@v4
+      # merge-result signal this gives up is not recovered before merge: the
+      # `main-protection` ruleset deliberately keeps
+      # strict_required_status_checks_policy off (see detect-code-changes.sh's
+      # header comment), so a PR that is only behind main merges as it stands.
+      # It is recovered after merge instead, by this same job running on the
+      # push to main, where a semantic conflict between two individually
+      # green PRs shows up as a red main. python-lint and integration still
+      # check out the merge commit;
+      # only python-test-matrix needs the head tree, since it is the only job
+      # whose output (coverage.xml) sonarcloud.yml consumes against that exact
+      # SHA. On a push to main there is no pull_request payload and this
+      # resolves to github.sha, the default.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: needs.changes.outputs.code != 'false'
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         if: needs.changes.outputs.code != 'false'
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: 'pip'
 
       - name: Install package
@@ -239,12 +259,14 @@ jobs:
       # (Python 3.12+, valid because no branch coverage is configured): measured
       # 11% overhead against 47% for the default tracer, at a line rate within
       # half a point of it. The 60s per-test cap raises pyproject's 30s global,
-      # which worker contention on a slower runner breaches.
+      # which worker contention on a slower runner breaches. `make test-ci` is
+      # the single source of truth for this invocation (see AGENTS.md's "CI
+      # test invocation"), so both matrix legs stay identical by construction.
       - name: Run tests with coverage
         if: needs.changes.outputs.code != 'false'
         env:
           COVERAGE_CORE: sysmon
-        run: pytest tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60
+        run: make test-ci
 
       # On a documentation-only change no tests ran, so there is no
       # coverage.xml. The artifact is still published, carrying this marker
@@ -252,9 +274,12 @@ jobs:
       # produced no coverage" apart from "the coverage artifact could not be
       # downloaded", and the absence of an artifact cannot distinguish them.
       # Without the marker, an expired or failed download reported the quality
-      # gate as green without SonarCloud having run at all.
+      # gate as green without SonarCloud having run at all. Restricted to the
+      # 3.12 leg, like the upload below: the artifact is scoped to the whole
+      # workflow run, not to one job, so a second leg publishing the same
+      # `coverage-xml` name would collide with the first.
       - name: Write the no-coverage marker (documentation-only change)
-        if: needs.changes.outputs.code == 'false'
+        if: needs.changes.outputs.code == 'false' && matrix.python-version == '3.12'
         env:
           REASON: ${{ needs.changes.outputs.reason }}
         run: echo "$REASON" > no-coverage.marker
@@ -263,14 +288,16 @@ jobs:
       # test step ran and produced no coverage.xml, which is a real failure
       # that must not reach the scan job as a silent "docs-only" success.
       #
-      # Deliberately carries no `if:` of its own (implicit success()), so a
-      # failing "Run tests with coverage" skips this upload. That is fine:
-      # a failing python-test job reports job conclusion != success, which
-      # sonarcloud.yml's `CI_CONCLUSION != "success"` check catches before it
-      # ever looks at whether the artifact downloaded, so a missing artifact
-      # on a failed run is never mistaken for the docs-only case either way.
+      # Gated to the 3.12 leg only (see the marker step above), never on the
+      # detector: a failing "Run tests with coverage" on that leg still
+      # reaches this step with nothing to upload, and `if-no-files-found:
+      # error` is what turns that into the real failure, exactly as before
+      # the matrix. A failing python-test-matrix job reports job conclusion
+      # != success, which sonarcloud.yml's `CI_CONCLUSION != "success"` check
+      # catches before it ever looks at whether the artifact downloaded.
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-xml
           path: |
@@ -278,20 +305,43 @@ jobs:
             no-coverage.marker
           if-no-files-found: error
 
+  # Unmatrixed aggregator that owns the "Python Tests" required-check
+  # identity (see python-test-matrix's own comment for why the matrixed job
+  # cannot hold that name itself). `if: always()` so it still runs and
+  # reports even when python-test-matrix is skipped or fails, the same
+  # fail-open contract every other required job follows; it reports the
+  # matrix job's own aggregate result rather than re-deriving pass/fail.
+  python-test:
+    name: Python Tests
+    needs: python-test-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check matrix result
+        run: |
+          result="${{ needs.python-test-matrix.result }}"
+          if [ "$result" != "success" ]; then
+            echo "::error::python-test-matrix result was '$result'"
+            exit 1
+          fi
+          echo "python-test-matrix succeeded"
+
   integration:
     name: Integration Test
     needs: changes
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Documentation-only change (skipping integration test)
         if: needs.changes.outputs.code == 'false'
         run: echo "Documentation-only change (${{ needs.changes.outputs.reason }}). Reporting success without re-running integration."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: needs.changes.outputs.code != 'false'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         if: needs.changes.outputs.code != 'false'
         with:
           python-version: "3.12"
@@ -407,17 +457,29 @@ jobs:
   secrets-scan:
     name: Secrets Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0  # full history so gitleaks git can scan all commits
 
+      # Checksum verified (not just downloaded over TLS) before the tarball is
+      # ever extracted: TLS authenticates the connection to GitHub, not that
+      # the release asset itself is the one gitleaks actually published. A
+      # mismatch fails the job (`sha256sum -c -`'s own exit code), matching
+      # this repo's fail-closed convention elsewhere (see bash-patterns.md).
+      # The hash must be bumped alongside GITLEAKS_VERSION on every upgrade;
+      # read it from https://github.com/gitleaks/gitleaks/releases, asset
+      # `gitleaks_<version>_checksums.txt`.
       - name: Install gitleaks
         env:
           GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
         run: |
+          set -euo pipefail
           url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           curl -sSfL "$url" -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
           gitleaks version
@@ -428,8 +490,9 @@ jobs:
   invariants:
     name: Invariants
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 

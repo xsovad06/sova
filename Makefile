@@ -40,6 +40,9 @@ test-bash: lint-bash ## Validate bash scripts (shellcheck + --help)
 test-py: ## Run pytest suite (excludes runtime/stress/chaos/evaluation)
 	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos and not evaluation" -n $(PYTEST_WORKERS)
 
+test-ci: ## Run the pytest suite exactly as ci.yml invokes it (no marker deselection; CI's own matrix legs share this target)
+	$(PYTEST) tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60
+
 test-runtime: ## Run runtime, stress, and chaos tests (manual)
 	$(PYTEST) tests/ -v -m "runtime or stress or chaos" --timeout=120
 

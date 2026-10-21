@@ -24,21 +24,24 @@
 # green.
 #
 # A skip re-uses a green result that was produced against whatever the base
-# branch held at the time it ran. That is only safe if any later base-branch
-# change is guaranteed to reach this branch, with its own real diff, before
-# merge is allowed. This repository's `main-protection` ruleset sets
-# strict_required_status_checks_policy to true, so GitHub itself enforces
-# that: a branch that falls behind cannot merge until it is updated, and that
-# update (rebase or merge) pulls in whatever the base branch actually changed.
-# If the base branch only gained markdown, the update's tree still classifies
-# as docs-only here, correctly, since nothing but markdown is genuinely at
-# stake. If the base branch gained code, the update's tree differs by more
-# than markdown, this script returns code-changed, and the required suite
-# runs against the up-to-date branch before merge is possible. The two layers
-# above never need to know which case they are in; the enforcement lives in
-# the ruleset, not in this script. If that policy is ever turned back to
-# false, this layer becomes unsound (a stale green result could be reused
-# indefinitely) and must be revisited.
+# branch held at the time it ran. This repository's `main-protection` ruleset
+# deliberately keeps strict_required_status_checks_policy OFF (turned off on
+# 2026-10-14, issue #1188), because forcing every open PR to update and re-run
+# CI after each merge cost more than it protected. So GitHub does not require
+# a branch that fell behind to pick up the base branch's changes before merge,
+# for any PR, skipped or not. That is the accepted policy, and this script
+# does not depend on the ruleset either way.
+#
+# The skip does not widen that exposure. Layer 2 only fires when the tree is
+# byte-identical to the last green one apart from markdown, so it reuses a
+# result that a re-run of the test job would have reproduced: that job checks
+# out the pull request head tree, not a merge with the base branch. The risk
+# that remains is a semantic conflict, two PRs that pass individually but
+# break together. It is caught after merge, by the test job running on every
+# push to main (see the push trigger in ci.yml), and issue #1188 tracks an
+# alert for a red main. If strict status checks are ever turned back on, the
+# update GitHub then forces pulls in the base branch's real diff and this
+# script classifies that tree normally, so nothing here changes.
 #
 # Every failure path fails OPEN (code=true, run the suite). A skip is only ever
 # granted on positive evidence. Reason tokens come from a fixed set so
@@ -109,6 +112,15 @@ log() {
 # (docs/pipeline-determinism.html, the .claude/benchmark/*.sh hooks,
 # .claude/commands/.sova-manifest.json), so excluding those trees wholesale
 # would let a broken script merge with the suite skipped.
+#
+# A command, skill, persona, or guideline is authored as markdown but is
+# executable behavior, not documentation: /develop.md, SKILL.md and persona
+# files change what an agent actually does, so a change to one must still run
+# the suite even though its extension is .md. Matched as a path SEGMENT
+# (bounded by "/" on both sides, via the leading "/" prefix below) rather than
+# a prefix, so this catches every known home for that content:
+# sova/commands/data/{commands,skills,personas,guidelines}/, .claude/commands/,
+# .agents/skills/, and plugins/sova/commands/.
 classify_paths() {
   local files="$1"
   local path
@@ -117,6 +129,12 @@ classify_paths() {
   while IFS= read -r path; do
     [ -z "$path" ] && continue
     seen=1
+    case "/$path" in
+      */commands/* | */skills/* | */personas/* | */guidelines/* | */plugins/*)
+        echo "true"
+        return 0
+        ;;
+    esac
     case "$path" in
       *.md) ;;
       *)
