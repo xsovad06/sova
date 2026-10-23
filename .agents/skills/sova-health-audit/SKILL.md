@@ -789,8 +789,8 @@ leaving the row blank.
 
 The board belongs to the **repository owner that `gh` resolves as the base
 repo**, which is not necessarily the authenticated `github_user` that opens
-issues and PRs (in this repo, the board owner is `xsovad06`, not the
-`dsova06` account issues are filed under), and in a fork workflow is not
+issues and PRs (the board can belong to a different account from the one
+issues are filed under), and in a fork workflow is not
 necessarily the remote the agent is operating against either: `gh repo view`
 reports whichever repo `gh` picks as upstream/base, which may be the fork's
 owner rather than the original project's, if that is how `gh`'s own remote
@@ -823,8 +823,8 @@ sova config get task_source.github_project_number 2>/dev/null
       with the `project` scope instead.
     - **Missing `read:org` scope**: `gh`'s own owner-type resolution inside
       `project item-add` can demand `read:org` even to add an item to a
-      user-owned board (this repo's board is owned by `xsovad06`, a user,
-      not an org). Falling back to the GraphQL mutation with an explicit
+      user-owned board (one owned by a personal account rather than an
+      org). Falling back to the GraphQL mutation with an explicit
       `user(login:$owner)` query skips that resolution step entirely, so it
       works without `read:org` for a user-owned board. The mutation itself
       (`addProjectV2ItemById` is a write) still needs the `project` scope,
