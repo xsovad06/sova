@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import types
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from sqlalchemy import inspect, select
@@ -133,7 +134,7 @@ async def test_step_execution_retry_count_defaults_to_zero() -> None:
         assert step.retry_count == 0
 
 
-async def test_create_failure_record() -> None:
+async def test_create_failure_record(tmp_path: Path) -> None:
     """Create a failure record with context."""
     async with await get_session() as session:
         run = TaskRun(issue_number="99", role="developer", status="failed")
@@ -146,7 +147,7 @@ async def test_create_failure_record() -> None:
             step_name="develop",
             failure_type="gate_check",
             message="Development produced no code changes",
-            context={"git_diff": "", "worktree": "/tmp/wt"},
+            context={"git_diff": "", "worktree": str(tmp_path / "wt")},
         )
         session.add(failure)
         await session.commit()
@@ -2025,22 +2026,32 @@ async def test_write_loop_dispatches_disk_io_to_executor(tmp_path) -> None:
 
     loop = asyncio.get_event_loop()
     executor_funcs: list[object] = []
+    flush_dispatched = asyncio.Event()
 
     async def spy_run_in_executor(executor, func, *args):
         executor_funcs.append(func)
         func(*args)
+        if func is flush_mock:
+            flush_dispatched.set()
 
     with (
         patch("sova.monitoring.cross_project._WRITE_INTERVAL", 0),
         patch.object(loop, "run_in_executor", side_effect=spy_run_in_executor),
     ):
         task = asyncio.create_task(writer._write_loop())
-        await asyncio.sleep(0.05)
-        task.cancel()
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            # Wait for the dispatch the assertions below check for, rather than
+            # assuming a fixed delay was enough for the loop to reach it (#1209).
+            await asyncio.wait_for(flush_dispatched.wait(), timeout=5)
+        finally:
+            # In a `finally` so a timed-out wait still stops the writer loop:
+            # left running, it would keep calling the patched executor after
+            # the patch has been torn down.
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     # _flush_to_disk (disk I/O only) must be dispatched to the executor
     assert any(f is flush_mock for f in executor_funcs)

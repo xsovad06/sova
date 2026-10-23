@@ -7,6 +7,7 @@ import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi.responses import StreamingResponse
 
 from sova.dashboard.services.output_stream_service import (
     OutputStreamService,
@@ -171,10 +172,12 @@ async def test_output_stream_delivers_published_lines(setup_db) -> None:
     mock_request = AsyncMock()
     call_count = 0
 
-    async def is_disconnected():
+    async def is_disconnected() -> bool:
         nonlocal call_count
         call_count += 1
-        return call_count > 2
+        # The first check lets the generator read the published line; the
+        # second ends the stream, so it never waits out the 15s keepalive.
+        return call_count > 1
 
     mock_request.is_disconnected = is_disconnected
 
@@ -183,32 +186,38 @@ async def test_output_stream_delivers_published_lines(setup_db) -> None:
     await queue.put("test output line")
     svc.unsubscribe(42, sub_id)
 
-    # Re-subscribe via the endpoint (it creates its own subscription)
-    # We need to publish after the endpoint subscribes, so use a task
-    async def publish_after_delay():
-        await asyncio.sleep(0.05)
+    # The endpoint creates its own subscription; publish only once it exists,
+    # ordered on the subscription itself rather than on a fixed delay.
+    subscribed = asyncio.Event()
+    original_subscribe = svc.subscribe
+
+    def recording_subscribe(run_id: int) -> tuple[int, asyncio.Queue[str]]:
+        result = original_subscribe(run_id)
+        if run_id == 42:
+            subscribed.set()
+        return result
+
+    async def publish_after_subscribe() -> None:
+        await asyncio.wait_for(subscribed.wait(), timeout=5)
         svc.publish(42, "hello from agent")
 
-    task = asyncio.create_task(publish_after_delay())
+    async def collect(response: StreamingResponse) -> list[str]:
+        return [chunk async for chunk in response.body_iterator]
 
-    # Patch asyncio.wait_for to use shorter timeout (0.1s instead of 15s)
-    original_wait_for = asyncio.wait_for
+    task = asyncio.create_task(publish_after_subscribe())
+    try:
+        with patch.object(svc, "subscribe", recording_subscribe):
+            response = await stream_agent_output(run_id=42, request=mock_request)
+        chunks = await asyncio.wait_for(collect(response), timeout=5)
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        if not task.done():
+            task.cancel()
+        mod._output_stream_service = None
 
-    async def fast_wait_for(coro, timeout):
-        return await original_wait_for(coro, timeout=min(timeout, 0.1))
-
-    with patch("sova.dashboard.routers.agents.asyncio.wait_for", fast_wait_for):
-        response = await stream_agent_output(run_id=42, request=mock_request)
-        chunks = []
-        async for chunk in response.body_iterator:
-            chunks.append(chunk)
-
-    await task
     combined = "".join(chunks)
     assert "event: output" in combined
     assert "hello from agent" in combined
-
-    mod._output_stream_service = None
 
 
 @pytest.mark.asyncio
