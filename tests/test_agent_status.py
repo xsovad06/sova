@@ -852,7 +852,7 @@ async def test_rest_and_ws_parity_db_backed_run_with_null_cost(session: AsyncSes
 
 
 @pytest.mark.asyncio
-async def test_rest_parity_dashboard_pool_resource_sample(session: AsyncSession, monkeypatch):
+async def test_rest_parity_dashboard_pool_resource_sample(session: AsyncSession, monkeypatch, tmp_path: Path):
     """A run tracked in the in-memory dashboard pool reports its latest resource sample."""
     from sova.dashboard.services.agent_status import get_agent_status
 
@@ -866,7 +866,7 @@ async def test_rest_parity_dashboard_pool_resource_sample(session: AsyncSession,
     session.add(run)
     await session.commit()
 
-    project_dir = Path("/tmp/sova-test-project-1051")
+    project_dir = tmp_path / "sova-test-project-1051"
     fake_pool = SimpleNamespace(
         project_dir=project_dir,
         agents={
@@ -1112,7 +1112,7 @@ async def test_get_unified_agents_is_strict_subset_of_agent_status(session: Asyn
 
 @pytest.mark.asyncio
 async def test_get_unified_agents_dashboard_pool_branch_is_strict_subset_of_agent_status(
-    session: AsyncSession, monkeypatch
+    session: AsyncSession, monkeypatch, tmp_path: Path
 ):
     """Same mechanical parity check as test_get_unified_agents_is_strict_subset_of_agent_status,
     but for the dashboard-pool branch (get_all_agents), which the other test cannot reach: patching
@@ -1133,7 +1133,7 @@ async def test_get_unified_agents_dashboard_pool_branch_is_strict_subset_of_agen
     from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
     from sova.dashboard.services.agent_status import get_agent_status
 
-    project_dir = Path("/tmp/sova-test-project-1051-pool")
+    project_dir = tmp_path / "sova-test-project-1051-pool"
     fake_pid = 54322
     elapsed_s = 240
 
@@ -1220,7 +1220,9 @@ async def test_get_agent_status_normalizes_null_current_step(session: AsyncSessi
 
 
 @pytest.mark.asyncio
-async def test_resolve_live_pool_agents_skips_mismatched_project_dir(session: AsyncSession, monkeypatch):
+async def test_resolve_live_pool_agents_skips_mismatched_project_dir(
+    session: AsyncSession, monkeypatch, tmp_path: Path
+):
     """A pool at a different project_dir must not supply resource fields for this run.
 
     ``_resolve_live_pool_agents`` matches pools by resolved project_dir rather than blindly
@@ -1241,7 +1243,7 @@ async def test_resolve_live_pool_agents_skips_mismatched_project_dir(session: As
     await session.commit()
 
     other_pool = SimpleNamespace(
-        project_dir=Path("/tmp/sova-test-other-project-1051"),
+        project_dir=tmp_path / "sova-test-other-project-1051",
         agents={
             run.id: SimpleNamespace(
                 resource_collector=SimpleNamespace(samples=[SimpleNamespace(cpu_percent=99.0, memory_rss_bytes=1)]),
@@ -1251,7 +1253,7 @@ async def test_resolve_live_pool_agents_skips_mismatched_project_dir(session: As
     )
     monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {"other": other_pool})
 
-    status = await get_agent_status(run.id, project_dir=Path("/tmp/sova-test-target-project-1051"))
+    status = await get_agent_status(run.id, project_dir=tmp_path / "sova-test-target-project-1051")
     assert status is not None
     assert status.source == "dashboard"
     assert status.cpu_percent is None

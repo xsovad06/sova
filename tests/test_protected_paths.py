@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -121,7 +122,7 @@ class TestProtectedPathIntegration:
     """Integration test: reviewer flow with protected paths config."""
 
     @pytest.mark.asyncio
-    async def test_protected_path_only_verdict_is_approved(self) -> None:
+    async def test_protected_path_only_verdict_is_approved(self, tmp_path: Path) -> None:
         """When a PR touches only protected paths with no code issues,
         the verdict label should be sova:approved and handoff should
         use needs_human_review (not address_review).
@@ -146,8 +147,8 @@ class TestProtectedPathIntegration:
         ctx.branch_name = "feat/test"
         ctx.repo = "owner/repo"
         ctx.config = config
-        ctx.project_dir = "/tmp/test"
-        ctx.working_dir = "/tmp/test"
+        ctx.project_dir = str(tmp_path)
+        ctx.working_dir = str(tmp_path)
         ctx.adapter = adapter
         ctx.force = False
         ctx.task_run_id = None

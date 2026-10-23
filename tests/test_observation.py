@@ -94,9 +94,9 @@ class TestDataclasses:
         assert snap.partial is False
         assert snap.collected_at > 0
 
-    def test_oversight_snapshot_to_dict(self) -> None:
+    def test_oversight_snapshot_to_dict(self, tmp_path: Path) -> None:
         snap = OversightSnapshot(
-            projects=[ProjectSnapshot(slug="test", path="/tmp/test")],
+            projects=[ProjectSnapshot(slug="test", path=str(tmp_path))],
             agent_slots=AgentSlotSummary(total_max_slots=5, active_agents=2),
         )
         d = snap.to_dict()
@@ -328,8 +328,8 @@ class TestFetchOpenIssues:
 
 class TestCollectGithubData:
     @pytest.mark.asyncio
-    async def test_both_succeed(self) -> None:
-        project = ProjectSnapshot(slug="test", path="/tmp/test")
+    async def test_both_succeed(self, tmp_path: Path) -> None:
+        project = ProjectSnapshot(slug="test", path=str(tmp_path))
 
         async def mock_fetch_prs(repo):
             return [PRSummary(number=1, title="PR", state="OPEN")]
@@ -347,9 +347,9 @@ class TestCollectGithubData:
         assert len(project.open_issues) == 1
 
     @pytest.mark.asyncio
-    async def test_issue_fetch_fails_prs_succeed(self) -> None:
+    async def test_issue_fetch_fails_prs_succeed(self, tmp_path: Path) -> None:
         """Cover the issues exception path in _collect_github_data (line 252)."""
-        project = ProjectSnapshot(slug="test", path="/tmp/test")
+        project = ProjectSnapshot(slug="test", path=str(tmp_path))
 
         async def mock_fetch_prs(repo):
             return [PRSummary(number=1, title="PR", state="OPEN")]
@@ -364,8 +364,8 @@ class TestCollectGithubData:
         assert project.open_issues == []
 
     @pytest.mark.asyncio
-    async def test_pr_fetch_fails_issues_succeed(self) -> None:
-        project = ProjectSnapshot(slug="test", path="/tmp/test")
+    async def test_pr_fetch_fails_issues_succeed(self, tmp_path: Path) -> None:
+        project = ProjectSnapshot(slug="test", path=str(tmp_path))
 
         async def mock_fetch_issues(repo):
             return [IssueSummary(number=10, title="Issue")]
@@ -406,7 +406,7 @@ class TestCollectProject:
 
 class TestCollectAllProjects:
     @pytest.mark.asyncio
-    async def test_per_project_timeout_sets_timed_out(self) -> None:
+    async def test_per_project_timeout_sets_timed_out(self, tmp_path: Path) -> None:
         """Cover per-project timeout handler in _guarded (lines 161-162)."""
         snapshot = OversightSnapshot()
 
@@ -414,7 +414,7 @@ class TestCollectAllProjects:
             await asyncio.sleep(100)
 
         with patch("sova.oversight.observation._collect_project", side_effect=_slow_collect):
-            await _collect_all_projects({"slow": "/tmp/slow"}, per_project_timeout=0.01, snapshot=snapshot)
+            await _collect_all_projects({"slow": str(tmp_path / "slow")}, per_project_timeout=0.01, snapshot=snapshot)
 
         assert len(snapshot.projects) == 1
         assert snapshot.projects[0].timed_out is True
@@ -439,7 +439,7 @@ class TestCollectFleetSlots:
                 sys.modules.pop("sova.dashboard.services.fleet_service", None)
 
     @pytest.mark.asyncio
-    async def test_happy_path_with_projects(self) -> None:
+    async def test_happy_path_with_projects(self, tmp_path: Path) -> None:
         """Cover the fleet slots iteration and config load (lines 328-337)."""
         from dataclasses import dataclass
 
@@ -459,7 +459,7 @@ class TestCollectFleetSlots:
             patch.object(FleetService, "get_insights", return_value=mock_insights),
             patch("sova.oversight.observation.load_config", return_value=mock_cfg),
         ):
-            result = await _collect_fleet_slots({"proj-a": "/tmp/a", "proj-b": "/tmp/b"})
+            result = await _collect_fleet_slots({"proj-a": str(tmp_path / "a"), "proj-b": str(tmp_path / "b")})
 
         assert result.total_max_slots == 8  # 4 + 4
         # active_agents is always 0 from _collect_fleet_slots; build_snapshot derives
@@ -467,7 +467,7 @@ class TestCollectFleetSlots:
         assert result.active_agents == 0
 
     @pytest.mark.asyncio
-    async def test_fleet_slot_config_error_skips_project(self) -> None:
+    async def test_fleet_slot_config_error_skips_project(self, tmp_path: Path) -> None:
         """Cover the per-project config error handler (lines 335-336)."""
         from dataclasses import dataclass
 
@@ -481,7 +481,7 @@ class TestCollectFleetSlots:
         mock_insights = FakeInsights(projects_scanned=["good", "bad"], total_runs=1)
 
         def fake_load_config(path):
-            if "bad" in str(path):
+            if Path(path).name == "bad":
                 raise RuntimeError("config error")
             cfg = AsyncMock()
             cfg.max_parallel_agents = 2
@@ -491,7 +491,7 @@ class TestCollectFleetSlots:
             patch.object(FleetService, "get_insights", return_value=mock_insights),
             patch("sova.oversight.observation.load_config", side_effect=fake_load_config),
         ):
-            result = await _collect_fleet_slots({"good": "/tmp/good", "bad": "/tmp/bad"})
+            result = await _collect_fleet_slots({"good": str(tmp_path / "good"), "bad": str(tmp_path / "bad")})
 
         assert result.total_max_slots == 2  # only "good" counted
         assert result.active_agents == 0  # derived from per-project runs in build_snapshot
@@ -545,14 +545,14 @@ class TestBuildSnapshot:
         assert snap.partial is False
 
     @pytest.mark.asyncio
-    async def test_project_timeout_sets_timed_out(self) -> None:
+    async def test_project_timeout_sets_timed_out(self, tmp_path: Path) -> None:
         async def _slow_collect(project, path):
             import asyncio
 
             await asyncio.sleep(100)
 
         with (
-            patch("sova.oversight.observation.list_projects", return_value={"slow": "/tmp/slow"}),
+            patch("sova.oversight.observation.list_projects", return_value={"slow": str(tmp_path / "slow")}),
             patch("sova.oversight.observation._collect_fleet_slots", return_value=AgentSlotSummary()),
             patch("sova.oversight.observation._collect_project", side_effect=_slow_collect),
         ):
@@ -561,9 +561,9 @@ class TestBuildSnapshot:
         assert len(snap.projects) == 0 or snap.projects[0].timed_out or snap.partial
 
     @pytest.mark.asyncio
-    async def test_project_error_sets_timed_out(self) -> None:
+    async def test_project_error_sets_timed_out(self, tmp_path: Path) -> None:
         with (
-            patch("sova.oversight.observation.list_projects", return_value={"bad": "/tmp/bad"}),
+            patch("sova.oversight.observation.list_projects", return_value={"bad": str(tmp_path / "bad")}),
             patch("sova.oversight.observation._collect_fleet_slots", return_value=AgentSlotSummary()),
             patch("sova.oversight.observation._collect_project", side_effect=RuntimeError("boom")),
         ):
@@ -592,12 +592,12 @@ class TestBuildSnapshot:
         assert snap.projects[0].open_issues == []
 
     @pytest.mark.asyncio
-    async def test_to_dict_is_json_serializable(self) -> None:
+    async def test_to_dict_is_json_serializable(self, tmp_path: Path) -> None:
         snap = OversightSnapshot(
             projects=[
                 ProjectSnapshot(
                     slug="test",
-                    path="/tmp/test",
+                    path=str(tmp_path),
                     runs=RunSummary(total=5, running=1, done=3, failed=1),
                     open_prs=[PRSummary(number=1, title="PR", state="OPEN")],
                     open_issues=[IssueSummary(number=10, title="Issue", labels=["bug"])],

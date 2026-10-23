@@ -635,10 +635,10 @@ def test_load_spec_for_context_no_spec(tmp_path: Path) -> None:
     assert result == ""
 
 
-def test_load_spec_for_context_exception_returns_empty() -> None:
+def test_load_spec_for_context_exception_returns_empty(tmp_path: Path) -> None:
     from sova.core.steps.address_review import _load_spec_for_context
 
-    ctx = _make_ctx()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
     with patch(
         "sova.core.steps._spec_helpers.read_spec_sections",
         side_effect=OSError("disk error"),
@@ -1073,10 +1073,10 @@ def test_load_spec_for_develop_no_spec(tmp_path: Path) -> None:
     assert result == ""
 
 
-def test_load_spec_for_develop_exception_returns_empty() -> None:
+def test_load_spec_for_develop_exception_returns_empty(tmp_path: Path) -> None:
     from sova.core.steps.develop import _load_spec_for_develop
 
-    ctx = _make_ctx()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
     with patch("sova.dashboard.services.spec_service.read_spec", side_effect=OSError("disk error")):
         result = _load_spec_for_develop(ctx)
     assert result == ""
@@ -1199,8 +1199,8 @@ async def test_address_review_logs_spec_compression(tmp_path: Path) -> None:
 
 def _make_ctx(
     *,
-    project_dir: Path | None = None,
-    working_dir: Path | None = None,
+    project_dir: Path,
+    working_dir: Path,
     completed_steps: frozenset[str] | None = None,
 ) -> MagicMock:
     """Create a minimal mock ExecutionContext."""
@@ -1213,8 +1213,8 @@ def _make_ctx(
     ctx.base_branch = "main"
     ctx.task = Task(id="42", title="Test task", body="", state="in_progress", labels=[], url="")
     ctx.files_changed = ["src/main.py"]
-    ctx.working_dir = working_dir or Path("/tmp")
-    ctx.project_dir = project_dir or Path("/tmp")
+    ctx.working_dir = working_dir
+    ctx.project_dir = project_dir
     ctx.completed_steps = completed_steps or frozenset()
     ctx.pr_number = None
     ctx.cost_usd = Decimal("0")

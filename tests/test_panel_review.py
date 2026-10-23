@@ -877,7 +877,7 @@ class TestGroupDimensionsByModel:
 
 
 class TestReviewerPanelIntegration:
-    async def test_panel_enabled_delegates_to_panel_review(self) -> None:
+    async def test_panel_enabled_delegates_to_panel_review(self, tmp_path: Path) -> None:
         from sova.roles.reviewer import ReviewerRole
 
         config = ProjectConfig()
@@ -887,7 +887,7 @@ class TestReviewerPanelIntegration:
         adapter = AsyncMock()
         adapter.get_task.return_value = _task()
         ctx = ExecutionContext(
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             config=config,
             adapter=adapter,
             issue_number="42",
@@ -917,7 +917,7 @@ class TestReviewerPanelIntegration:
         assert result.success
         assert "1 findings" in result.summary
 
-    async def test_panel_disabled_uses_single_review(self) -> None:
+    async def test_panel_disabled_uses_single_review(self, tmp_path: Path) -> None:
         from sova.roles.reviewer import ReviewerRole
 
         config = ProjectConfig()
@@ -926,7 +926,7 @@ class TestReviewerPanelIntegration:
         adapter = AsyncMock()
         adapter.get_task.return_value = _task()
         ctx = ExecutionContext(
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             config=config,
             adapter=adapter,
             issue_number="42",

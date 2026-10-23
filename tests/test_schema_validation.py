@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -526,7 +527,7 @@ async def test_max_retries_zero_valid_json():
 
 
 @pytest.mark.asyncio
-async def test_reviewer_validation_fallback_uses_parse_findings():
+async def test_reviewer_validation_fallback_uses_parse_findings(tmp_path: Path):
     """When validate_step_output raises, reviewer falls back to _parse_findings."""
     from sova.roles._review_comments import ReviewResult, _parse_findings
     from sova.roles.reviewer import ReviewerRole
@@ -543,7 +544,7 @@ async def test_reviewer_validation_fallback_uses_parse_findings():
     mock_invoke_result.cost_usd = Decimal("0.01")
 
     mock_ctx = AsyncMock()
-    mock_ctx.working_dir = "/tmp"
+    mock_ctx.working_dir = str(tmp_path)
     mock_ctx.config.agent.max_budget = Decimal("1.00")
     mock_ctx.cost_usd = Decimal("0")
     mock_ctx.add_cost = lambda x: None
@@ -585,7 +586,7 @@ async def test_reviewer_validation_fallback_uses_parse_findings():
 
 
 @pytest.mark.asyncio
-async def test_triage_validation_fallback_uses_defaults():
+async def test_triage_validation_fallback_uses_defaults(tmp_path: Path):
     """When validate_step_output raises, triage uses strict fallback (rejects incomplete)."""
     from sova.roles.triage import TriageRole
 
@@ -598,7 +599,7 @@ async def test_triage_validation_fallback_uses_defaults():
     mock_invoke_result.cost_usd = Decimal("0.01")
 
     mock_ctx = AsyncMock()
-    mock_ctx.project_dir = "/tmp"
+    mock_ctx.project_dir = str(tmp_path)
     mock_ctx.config.agent.max_budget = Decimal("1.00")
     mock_ctx.config.roles = {}
     mock_ctx.config.llm = AsyncMock()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1626,13 +1627,11 @@ class TestGetWorkItems:
         assert result["items"][0]["state"] == "pr_awaiting_review"
 
     @pytest.mark.asyncio()
-    async def test_project_dir_sets_slug(self, _mock_sources) -> None:
+    async def test_project_dir_sets_slug(self, _mock_sources, tmp_path: Path) -> None:
         mock_fetch, mock_pa, _ = _mock_sources
         mock_fetch.return_value = ([], [], [], {"agents": [], "completed": []})
 
-        from pathlib import Path
-
-        await get_work_items(project_dir=Path("/tmp/my-project"))
+        await get_work_items(project_dir=tmp_path / "my-project")
 
         mock_fetch.assert_called_once()
         call_kwargs = mock_fetch.call_args[1]
@@ -2334,10 +2333,8 @@ class TestResolveSovaVerdict:
         assert calls == 1
 
     @pytest.mark.asyncio
-    async def test_same_pr_number_in_two_projects_does_not_share_verdict(self, monkeypatch) -> None:
+    async def test_same_pr_number_in_two_projects_does_not_share_verdict(self, monkeypatch, tmp_path: Path) -> None:
         """The verdict cache must not let one project answer for another's PR number."""
-        from pathlib import Path as _Path
-
         from sova.dashboard.services.work_verdict import clear_verdict_cache, resolve_sova_verdict
         from sova.git.pr import PRReviewData
 
@@ -2367,8 +2364,8 @@ class TestResolveSovaVerdict:
         adapter_a = MagicMock(repo="org/project-a", github_user="bot")
         adapter_b = MagicMock(repo="org/project-b", github_user="bot")
 
-        a = await resolve_sova_verdict("10", pr_number=42, project_dir=_Path("/tmp/project-a"), adapter=adapter_a)
-        b = await resolve_sova_verdict("10", pr_number=42, project_dir=_Path("/tmp/project-b"), adapter=adapter_b)
+        a = await resolve_sova_verdict("10", pr_number=42, project_dir=tmp_path / "project-a", adapter=adapter_a)
+        b = await resolve_sova_verdict("10", pr_number=42, project_dir=tmp_path / "project-b", adapter=adapter_b)
 
         assert a["verdict"] == "approve"
         assert b["verdict"] == "revise"

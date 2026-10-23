@@ -43,9 +43,9 @@ def _mock_adapter(state: TaskState = TaskState.TRIAGED) -> AsyncMock:
 
 
 def _make_ctx(
+    tmp_path: Path,
     *,
     role: str = "researcher",
-    project_dir: Path | None = None,
     spec_config: SpecConfig | None = None,
     **kwargs,
 ) -> ExecutionContext:
@@ -53,7 +53,7 @@ def _make_ctx(
     if spec_config:
         config = ProjectConfig(spec=spec_config)
     defaults = {
-        "project_dir": project_dir or Path("/tmp/test"),
+        "project_dir": tmp_path,
         "config": config,
         "adapter": _mock_adapter(),
         "issue_number": "42",
@@ -319,47 +319,47 @@ class TestSanitizeIssueNumber:
 
 
 class TestSpecStep:
-    async def test_can_skip_when_threshold_never(self) -> None:
-        ctx = _make_ctx(spec_config=SpecConfig(threshold="never"))
+    async def test_can_skip_when_threshold_never(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, spec_config=SpecConfig(threshold="never"))
         step = SpecStep()
         assert await step.can_skip(ctx)
 
-    async def test_cannot_skip_when_threshold_always(self) -> None:
-        ctx = _make_ctx(spec_config=SpecConfig(threshold="always"))
+    async def test_cannot_skip_when_threshold_always(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, spec_config=SpecConfig(threshold="always"))
         step = SpecStep()
         assert not await step.can_skip(ctx)
 
-    async def test_skips_when_task_below_threshold(self) -> None:
+    async def test_skips_when_task_below_threshold(self, tmp_path: Path) -> None:
         # Task is "trivial", threshold is "moderate" -> skip
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(
             id="42", title="Test", body="**Complexity**: trivial", state=TaskState.TRIAGED
         )
-        ctx = _make_ctx(spec_config=SpecConfig(threshold="moderate"), adapter=adapter)
+        ctx = _make_ctx(tmp_path, spec_config=SpecConfig(threshold="moderate"), adapter=adapter)
         step = SpecStep()
         assert await step.can_skip(ctx)
 
-    async def test_does_not_skip_when_task_at_threshold(self) -> None:
+    async def test_does_not_skip_when_task_at_threshold(self, tmp_path: Path) -> None:
         # Task is "moderate", threshold is "moderate" -> do not skip
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(
             id="42", title="Test", body="**Complexity**: moderate", state=TaskState.TRIAGED
         )
-        ctx = _make_ctx(spec_config=SpecConfig(threshold="moderate"), adapter=adapter)
+        ctx = _make_ctx(tmp_path, spec_config=SpecConfig(threshold="moderate"), adapter=adapter)
         step = SpecStep()
         assert not await step.can_skip(ctx)
 
-    async def test_does_not_skip_when_task_above_threshold(self) -> None:
+    async def test_does_not_skip_when_task_above_threshold(self, tmp_path: Path) -> None:
         # Task is "complex", threshold is "simple" -> do not skip
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(
             id="42", title="Test", body="**Complexity**: complex", state=TaskState.TRIAGED
         )
-        ctx = _make_ctx(spec_config=SpecConfig(threshold="simple"), adapter=adapter)
+        ctx = _make_ctx(tmp_path, spec_config=SpecConfig(threshold="simple"), adapter=adapter)
         step = SpecStep()
         assert not await step.can_skip(ctx)
 
-    async def test_skips_when_research_says_implemented(self) -> None:
+    async def test_skips_when_research_says_implemented(self, tmp_path: Path) -> None:
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(
             id="42",
@@ -367,11 +367,11 @@ class TestSpecStep:
             body="## Research\n\nThis is already fully implemented.\n\n**Complexity**: moderate",
             state=TaskState.TRIAGED,
         )
-        ctx = _make_ctx(spec_config=SpecConfig(threshold="always"), adapter=adapter)
+        ctx = _make_ctx(tmp_path, spec_config=SpecConfig(threshold="always"), adapter=adapter)
         step = SpecStep()
         assert await step.can_skip(ctx)
 
-    async def test_does_not_skip_when_research_is_normal(self) -> None:
+    async def test_does_not_skip_when_research_is_normal(self, tmp_path: Path) -> None:
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(
             id="42",
@@ -379,12 +379,12 @@ class TestSpecStep:
             body="## Research\n\nNeeds a new API endpoint.\n\n**Complexity**: moderate",
             state=TaskState.TRIAGED,
         )
-        ctx = _make_ctx(spec_config=SpecConfig(threshold="always"), adapter=adapter)
+        ctx = _make_ctx(tmp_path, spec_config=SpecConfig(threshold="always"), adapter=adapter)
         step = SpecStep()
         assert not await step.can_skip(ctx)
 
-    async def test_skips_when_already_completed(self) -> None:
-        ctx = _make_ctx(spec_config=SpecConfig(threshold="always"))
+    async def test_skips_when_already_completed(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, spec_config=SpecConfig(threshold="always"))
         ctx = ExecutionContext(
             project_dir=ctx.project_dir,
             config=ctx.config,
@@ -409,7 +409,7 @@ class TestSpecStep:
             state=TaskState.TRIAGED,
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -442,7 +442,7 @@ class TestSpecStep:
             id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             adapter=adapter,
             config=ProjectConfig(
                 spec=SpecConfig(auto_approve_simple=True),
@@ -474,7 +474,7 @@ class TestSpecStep:
             id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -508,7 +508,7 @@ class TestSpecStep:
             id="42", title="Simple task", body="Do it.\n\n**Complexity**: simple", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -549,7 +549,7 @@ class TestSpecStep:
             id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -574,7 +574,7 @@ class TestSpecStep:
             id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -600,7 +600,7 @@ class TestSpecStep:
             id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -630,7 +630,7 @@ class TestSpecStep:
             id="42", title="Test", body="body\n\n**Complexity**: complex", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -663,7 +663,7 @@ class TestSpecStep:
             id="42", title="Complex task", body="body\n\n**Complexity**: complex", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -713,7 +713,7 @@ class TestSpecStep:
             id="42", title="Simple task", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -729,10 +729,10 @@ class TestSpecStep:
         assert result.success
         assert not result.awaiting_approval
 
-    async def test_execute_runtime_error(self) -> None:
+    async def test_execute_runtime_error(self, tmp_path: Path) -> None:
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
-        ctx = _make_ctx(adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         step = SpecStep()
 
         with patch(
@@ -745,12 +745,12 @@ class TestSpecStep:
         assert not result.success
         assert "CLI failed" in result.error
 
-    async def test_execute_prompt_injection_error(self) -> None:
+    async def test_execute_prompt_injection_error(self, tmp_path: Path) -> None:
         from sova.llm.guard import PromptInjectionError, ScanResult
 
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
-        ctx = _make_ctx(adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         step = SpecStep()
 
         scan = ScanResult(safe=False, risk_score=0.95)
@@ -775,7 +775,7 @@ class TestSpecStep:
             id="42", title="New feature", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -807,7 +807,7 @@ class TestSpecStep:
             state=TaskState.TRIAGED,
         )
         ctx = _make_ctx(
-            project_dir=tmp_path,
+            tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
             adapter=adapter,
         )
@@ -830,7 +830,7 @@ class TestSpecStep:
 
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
-        ctx = _make_ctx(project_dir=tmp_path, adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         step = SpecStep()
 
         llm_result = LLMResult(text="", model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=0)
@@ -848,7 +848,7 @@ class TestSpecStep:
         adapter.get_task.return_value = Task(
             id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
         )
-        ctx = _make_ctx(project_dir=tmp_path, adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         step = SpecStep()
 
         spec_text = "# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n"
@@ -871,7 +871,7 @@ class TestSpecStep:
 
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
-        ctx = _make_ctx(project_dir=tmp_path, adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         step = SpecStep()
 
         llm_result = LLMResult(text="", model="sonnet", cost_usd=Decimal("0.03"), input_tokens=100, output_tokens=0)
@@ -886,13 +886,13 @@ class TestSpecStep:
         specs_dir.mkdir(parents=True)
         (specs_dir / "42-test.md").write_text("# Spec")
 
-        ctx = _make_ctx(project_dir=tmp_path)
+        ctx = _make_ctx(tmp_path)
         step = SpecStep()
         gate = await step.validate_output(ctx)
         assert gate.passed
 
     async def test_validate_output_fails(self, tmp_path: Path) -> None:
-        ctx = _make_ctx(project_dir=tmp_path)
+        ctx = _make_ctx(tmp_path)
         step = SpecStep()
         gate = await step.validate_output(ctx)
         assert not gate.passed
@@ -1707,7 +1707,7 @@ class TestSpecRouter:
 
         mock_start.assert_not_called()
 
-    async def test_skip_transitions_issue_to_researched(self) -> None:
+    async def test_skip_transitions_issue_to_researched(self, tmp_path: Path) -> None:
         """skip_spec calls adapter.transition_state(RESEARCHED) before spawning developer."""
         from sova.dashboard.routers.spec import skip_spec
         from sova.dashboard.services import control_service, handoff_service
@@ -1721,7 +1721,7 @@ class TestSpecRouter:
             return {"pid": 1}
 
         with (
-            patch("sova.config.context.get_project_dir", return_value=Path("/tmp")),
+            patch("sova.config.context.get_project_dir", return_value=tmp_path),
             patch("sova.config.loader.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, side_effect=_track_start),
@@ -1735,7 +1735,7 @@ class TestSpecRouter:
         assert call_args[0][1].value == "researched"
         assert call_order == ["transition", "start_agent"]
 
-    async def test_skip_blocks_agent_on_transition_failure(self) -> None:
+    async def test_skip_blocks_agent_on_transition_failure(self, tmp_path: Path) -> None:
         """skip_spec raises HTTP 500 and does not spawn developer when transition fails."""
         from fastapi import HTTPException
 
@@ -1746,7 +1746,7 @@ class TestSpecRouter:
         mock_adapter.transition_state.side_effect = RuntimeError("API error")
 
         with (
-            patch("sova.config.context.get_project_dir", return_value=Path("/tmp")),
+            patch("sova.config.context.get_project_dir", return_value=tmp_path),
             patch("sova.config.loader.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch.object(control_service, "start_agent", new_callable=AsyncMock) as mock_start,

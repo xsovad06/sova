@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -46,12 +47,18 @@ def config() -> ProjectConfig:
 
 
 @pytest.fixture
-def daemon(config: ProjectConfig, session_factory: async_sessionmaker) -> SupervisorDaemon:
-    return SupervisorDaemon(
+async def daemon(
+    config: ProjectConfig, session_factory: async_sessionmaker, tmp_path: Path
+) -> AsyncIterator[SupervisorDaemon]:
+    daemon = SupervisorDaemon(
         config=config,
-        project_dir=Path("/tmp/test"),
+        project_dir=tmp_path,
         session_factory=session_factory,
     )
+    yield daemon
+    # stop() is idempotent; this cancels a run loop a test left behind when an
+    # assertion or a timed-out wait ended it before its own stop() call.
+    await daemon.stop()
 
 
 class TestSupervisorDaemon:
@@ -63,10 +70,16 @@ class TestSupervisorDaemon:
         assert status["log_retention_days"] == 7
 
     async def test_start_stop(self, daemon: SupervisorDaemon) -> None:
-        with patch.object(daemon, "_poll_once", new_callable=AsyncMock, return_value={}):
+        polled = asyncio.Event()
+
+        async def poll_once(*args: object, **kwargs: object) -> dict:
+            polled.set()
+            return {}
+
+        with patch.object(daemon, "_poll_once", new_callable=AsyncMock, side_effect=poll_once):
             task = daemon.start()
             assert daemon.running is True
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(polled.wait(), timeout=5)
             await daemon.stop()
             assert daemon.running is False
             assert task.done()
@@ -74,18 +87,34 @@ class TestSupervisorDaemon:
     async def test_poll_lock_serializes(self, daemon: SupervisorDaemon) -> None:
         """Concurrent poll_once calls should serialize via the lock."""
         call_count = 0
+        in_flight = 0
+        max_in_flight = 0
+        first_entered = asyncio.Event()
+        release = asyncio.Event()
 
-        async def slow_poll():
-            nonlocal call_count
+        async def held_poll() -> dict:
+            nonlocal call_count, in_flight, max_in_flight
             call_count += 1
-            await asyncio.sleep(0.05)
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            first_entered.set()
+            await release.wait()
+            in_flight -= 1
             return {}
 
-        with patch.object(daemon, "_poll_once", new_callable=AsyncMock, side_effect=slow_poll):
+        with patch.object(daemon, "_poll_once", new_callable=AsyncMock, side_effect=held_poll):
             t1 = asyncio.create_task(daemon.poll_once())
             t2 = asyncio.create_task(daemon.poll_once())
-            await asyncio.gather(t1, t2)
-            assert call_count == 2
+            await asyncio.wait_for(first_entered.wait(), timeout=5)
+            # Give the second call every chance to enter while the first holds
+            # the lock: without the lock it would get in on one of these turns.
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert max_in_flight == 1
+            release.set()
+            await asyncio.wait_for(asyncio.gather(t1, t2), timeout=5)
+        assert call_count == 2
+        assert max_in_flight == 1
 
     async def test_poll_once_returns_all_phases(self, daemon: SupervisorDaemon, config: ProjectConfig) -> None:
         with (
@@ -194,8 +223,8 @@ class TestSupervisorDaemon:
 
         daemon._running = True
         daemon._task = asyncio.create_task(_raise())
-        # Give the task time to fail
-        await asyncio.sleep(0.05)
+        # Wait for the task to actually fail before stopping, rather than guessing a delay.
+        await asyncio.gather(daemon._task, return_exceptions=True)
         # stop() uses gather(return_exceptions=True) and should not raise
         await daemon.stop()
         assert daemon.running is False
@@ -203,10 +232,17 @@ class TestSupervisorDaemon:
 
     async def test_stop_cancels_running_task(self, daemon: SupervisorDaemon) -> None:
         """stop() cancels a long-running task and cleans up the task reference."""
-        with patch.object(daemon, "_poll_once", new_callable=AsyncMock, return_value={}):
+        polled = asyncio.Event()
+
+        async def poll_once(*args: object, **kwargs: object) -> dict:
+            polled.set()
+            await asyncio.sleep(3600)
+            return {}
+
+        with patch.object(daemon, "_poll_once", new_callable=AsyncMock, side_effect=poll_once):
             task = daemon.start()
             assert daemon.running is True
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(polled.wait(), timeout=5)
             await daemon.stop()
             assert daemon.running is False
             assert task.done()
@@ -225,7 +261,6 @@ class TestSupervisorDaemon:
             with patch.object(daemon, "_purge_old_logs", new_callable=AsyncMock):
                 daemon._running = True
                 task = asyncio.create_task(daemon._run_loop())
-                await asyncio.sleep(0.05)
                 await asyncio.gather(task, return_exceptions=True)
         assert call_count >= 1
 
@@ -334,6 +369,7 @@ class TestSupervisorDaemon:
     async def test_poll_progression_with_decisions(
         self,
         session_factory: async_sessionmaker,
+        tmp_path: Path,
     ) -> None:
         """_poll_progression executes immediately when require_approval=False."""
 
@@ -344,7 +380,7 @@ class TestSupervisorDaemon:
             supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=1, require_approval=False),
             github_repo="test/repo",
         )
-        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+        daemon = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
         mock_decision = ProgressionDecision(
             issue_number=42,
@@ -403,6 +439,7 @@ class TestSupervisorDaemon:
     async def test_poll_progression_with_llm_planning(
         self,
         session_factory: async_sessionmaker,
+        tmp_path: Path,
     ) -> None:
         """_poll_progression invokes planner when llm_planning is True."""
         from sova.config.models import ProjectConfig, SupervisorConfig
@@ -415,7 +452,7 @@ class TestSupervisorDaemon:
             ),
             github_repo="test/repo",
         )
-        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+        daemon = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
         mock_plan = PlanResult(reasoning="Merge first, then develop.", actions=())
         mock_planner = AsyncMock()
@@ -604,13 +641,15 @@ class TestSupervisorDaemon:
 
         assert "error" in result
 
-    async def test_auto_queue_disabled_skips_maintenance(self, session_factory: async_sessionmaker) -> None:
+    async def test_auto_queue_disabled_skips_maintenance(
+        self, session_factory: async_sessionmaker, tmp_path: Path
+    ) -> None:
         """Queue maintenance is skipped when auto_queue is False."""
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, auto_queue=False, poll_interval_seconds=1),
             github_repo="test/repo",
         )
-        d = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+        d = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
@@ -657,12 +696,12 @@ class TestSupervisorDecisionModel:
 class TestPollIntervalFloor:
     """The daemon enforces a minimum poll interval of 60 seconds."""
 
-    async def test_low_interval_clamped_to_60(self, session_factory: async_sessionmaker) -> None:
+    async def test_low_interval_clamped_to_60(self, session_factory: async_sessionmaker, tmp_path: Path) -> None:
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=10),
             github_repo="test/repo",
         )
-        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+        daemon = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
         sleep_values: list[float] = []
 
@@ -687,12 +726,12 @@ class TestPollIntervalFloor:
 
         assert sleep_values[0] == 60
 
-    async def test_high_interval_unchanged(self, session_factory: async_sessionmaker) -> None:
+    async def test_high_interval_unchanged(self, session_factory: async_sessionmaker, tmp_path: Path) -> None:
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=180),
             github_repo="test/repo",
         )
-        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+        daemon = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
         sleep_values: list[float] = []
 
@@ -710,29 +749,35 @@ class TestPollIntervalFloor:
 
         assert sleep_values[0] == 180
 
-    async def test_reload_config_interrupts_sleep(self, session_factory: async_sessionmaker) -> None:
+    async def test_reload_config_interrupts_sleep(self, session_factory: async_sessionmaker, tmp_path: Path) -> None:
         """reload_config() wakes _interruptible_sleep and the event is cleared afterward."""
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=300),
             github_repo="test/repo",
         )
-        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+        daemon = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
-        async def reload_after_short_delay() -> None:
-            await asyncio.sleep(0.05)
+        async def reload_once_sleeping() -> None:
+            # _interruptible_sleep() is already awaiting by the time this task
+            # first gets the loop, so no delay is needed to land inside it.
             new_cfg = ProjectConfig(
                 supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=60),
                 github_repo="test/repo",
             )
             daemon.reload_config(new_cfg)
 
-        asyncio.create_task(reload_after_short_delay())
-        await asyncio.wait_for(daemon._interruptible_sleep(300), timeout=2.0)
+        # Hold the reference: a bare create_task() result can be collected
+        # mid-flight, which would drop the reload this test depends on.
+        reloader = asyncio.create_task(reload_once_sleeping())
+        await asyncio.wait_for(daemon._interruptible_sleep(300), timeout=5.0)
+        await reloader
 
         assert not daemon._config_reloaded.is_set()
         assert daemon._config.supervisor.poll_interval_seconds == 60
 
-    async def test_reload_config_wake_false_does_not_interrupt_sleep(self, session_factory: async_sessionmaker) -> None:
+    async def test_reload_config_wake_false_does_not_interrupt_sleep(
+        self, session_factory: async_sessionmaker, tmp_path: Path
+    ) -> None:
         """reload_config(cfg, wake=False) updates the snapshot without waking sleep.
 
         Used by the queue-mutating endpoints (#935) so a dashboard edit lands
@@ -742,7 +787,7 @@ class TestPollIntervalFloor:
             supervisor=SupervisorConfig(enabled=True, task_queue=[1], poll_interval_seconds=300),
             github_repo="test/repo",
         )
-        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+        daemon = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
         new_cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, task_queue=[1, 2], poll_interval_seconds=300),

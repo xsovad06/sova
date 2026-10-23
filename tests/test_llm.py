@@ -1461,34 +1461,33 @@ class TestTryLoadConfigAsync:
 
     async def test_offloads_to_a_worker_thread_without_blocking_the_loop(self, tmp_path: Path) -> None:
         import asyncio
-        import time
+        import threading
 
         from sova.llm.client import _try_load_config_async
 
         worktree = tmp_path / "primary" / ".claude" / "worktrees" / "913"
         worktree.mkdir(parents=True)
 
+        tick_ran = threading.Event()
+        ran_concurrently: bool | None = None
+
         def _slow_resolve(start):
-            time.sleep(0.2)
+            nonlocal ran_concurrently
+            # Only a running event loop can set this; if the resolve blocked
+            # the loop, the wait times out instead.
+            ran_concurrently = tick_ran.wait(timeout=5)
             return tmp_path / "primary"
 
-        first_tick_at: float | None = None
-
         async def _tick_while_waiting() -> None:
-            nonlocal first_tick_at
-            await asyncio.sleep(0.05)
-            first_tick_at = time.monotonic()
+            await asyncio.sleep(0)
+            tick_ran.set()
 
         with patch("sova.llm.provider._resolve_primary_root", side_effect=_slow_resolve):
-            start = time.monotonic()
             await asyncio.gather(_try_load_config_async(worktree), _tick_while_waiting())
 
-        # A blocked loop could only run the tick's sleep callback after the
-        # 0.2s resolve finished, so its completion would land at ~0.2s instead
-        # of its own ~0.05s schedule. This fails if asyncio.to_thread in
-        # _try_load_config_async is ever reverted to a direct blocking call.
-        assert first_tick_at is not None
-        assert first_tick_at - start < 0.15
+        # Fails if asyncio.to_thread in _try_load_config_async is ever reverted
+        # to a direct blocking call, with no wall-clock bound to flake on.
+        assert ran_concurrently is True
 
 
 # ---------------------------------------------------------------------------
@@ -1931,7 +1930,7 @@ class TestLLMProvider:
             assert "OPENAI_API_KEY" not in os.environ
         assert provider.api_key == "sk-resolved-openai-key"
 
-    def test_create_provider_openai_api_key_scoped_to_project_and_provider(self) -> None:
+    def test_create_provider_openai_api_key_scoped_to_project_and_provider(self, tmp_path: Path) -> None:
         """The keyring lookup for openai's api_key must use a (project, provider)-scoped name."""
         from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
@@ -1946,14 +1945,15 @@ class TestLLMProvider:
             llm_mod.litellm = MagicMock()
             mock_get_secret.return_value = None
 
-            create_provider(LLMConfig(provider="openai", model="gpt-5"), project_dir=Path("/tmp/proj-a"))
+            create_provider(LLMConfig(provider="openai", model="gpt-5"), project_dir=tmp_path / "proj-a")
 
         scoped_call = mock_get_secret.call_args_list[0]
         name = scoped_call.args[0]
-        assert "openai" in name
-        assert "proj-a" in name
+        # Exact match: tmp_path's directory is named after this test, which
+        # itself contains "openai", so a substring check could never fail.
+        assert name == f"llm.api_key:openai:{(tmp_path / 'proj-a').resolve()}"
 
-    def test_create_provider_two_projects_do_not_share_openai_key_lookup(self) -> None:
+    def test_create_provider_two_projects_do_not_share_openai_key_lookup(self, tmp_path: Path) -> None:
         """Two projects must resolve distinct scoped keyring names for the same provider."""
         from sova.config.models import LLMConfig
         from sova.llm.provider import create_provider
@@ -1967,10 +1967,10 @@ class TestLLMProvider:
             llm_mod._HAS_LITELLM = True
             llm_mod.litellm = MagicMock()
 
-            create_provider(LLMConfig(provider="openai", model="gpt-5"), project_dir=Path("/tmp/proj-a"))
+            create_provider(LLMConfig(provider="openai", model="gpt-5"), project_dir=tmp_path / "proj-a")
             name_a = mock_get_secret.call_args_list[0].args[0]
             mock_get_secret.reset_mock()
-            create_provider(LLMConfig(provider="openai", model="gpt-5"), project_dir=Path("/tmp/proj-b"))
+            create_provider(LLMConfig(provider="openai", model="gpt-5"), project_dir=tmp_path / "proj-b")
             name_b = mock_get_secret.call_args_list[0].args[0]
 
         assert name_a != name_b
@@ -2534,7 +2534,7 @@ class TestProviderInitFromConfig:
         ):
             _init_llm_provider()  # must not raise
 
-    async def test_spawn_direct_makes_no_network_calls_before_exec(self) -> None:
+    async def test_spawn_direct_makes_no_network_calls_before_exec(self, tmp_path: Path) -> None:
         """Regression guard for R7: spawn_direct must not probe the network.
 
         The subprocess boundary (asyncio.create_subprocess_exec) is a local
@@ -2546,7 +2546,7 @@ class TestProviderInitFromConfig:
         from sova.ipc.runtime import spawn_direct
 
         with patch.object(socket.socket, "connect", side_effect=AssertionError("unexpected network call")):
-            proc = await spawn_direct(["true"], cwd="/tmp")
+            proc = await spawn_direct(["true"], cwd=str(tmp_path))
         await proc.stop()
 
 

@@ -264,8 +264,6 @@ jobs:
       # test invocation"), so both matrix legs stay identical by construction.
       - name: Run tests with coverage
         if: needs.changes.outputs.code != 'false'
-        env:
-          COVERAGE_CORE: sysmon
         run: make test-ci
 
       # On a documentation-only change no tests ran, so there is no

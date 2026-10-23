@@ -1,4 +1,4 @@
-.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help css css-watch marketplace commands-render skills-render
+.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help css css-watch marketplace commands-render skills-render test-ci
 
 SHELL := /bin/bash
 
@@ -7,8 +7,10 @@ RUFF := $(or $(shell command -v ruff 2>/dev/null),$(shell python3 -m site --user
 PYTEST := $(or $(shell command -v pytest 2>/dev/null),$(shell python3 -m site --user-base 2>/dev/null)/bin/pytest)
 
 # Worker count for test-py's pytest-xdist run. Override with `make test-py PYTEST_WORKERS=4`,
-# or set the pytest-xdist-native PYTEST_XDIST_AUTO_NUM_WORKERS env var. Defaults to 2 to keep
-# `make check` under the 600s CI timeout on resource-constrained machines (issue #1156).
+# or set the pytest-xdist-native PYTEST_XDIST_AUTO_NUM_WORKERS env var. Defaults to 2 so
+# concurrent test-py runs on one machine do not each claim every core (issue #1156). It does
+# not apply to `make check`, which goes through test-ci's `-n auto` to stay identical to CI
+# (issue #1209): use test-py directly when several runs may overlap.
 PYTEST_WORKERS ?= $(or $(PYTEST_XDIST_AUTO_NUM_WORKERS),2)
 
 # ── Main targets ──────────────────────────────────────────────
@@ -25,7 +27,7 @@ dev: ## Start the dashboard with auto-reload
 
 test: test-bash test-py ## Run all tests
 
-check: lint test ## Run linter + tests (close to CI, not identical: see docs/testing-guidelines.md)
+check: lint test-bash test-ci ## Run linter + tests (uses the same pytest invocation as CI; see docs/testing-guidelines.md)
 
 # ── Testing ───────────────────────────────────────────────────
 
@@ -40,8 +42,8 @@ test-bash: lint-bash ## Validate bash scripts (shellcheck + --help)
 test-py: ## Run pytest suite (excludes runtime/stress/chaos/evaluation)
 	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos and not evaluation" -n $(PYTEST_WORKERS)
 
-test-ci: ## Run the pytest suite exactly as ci.yml invokes it (no marker deselection; CI's own matrix legs share this target)
-	$(PYTEST) tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60
+test-ci: ## Run the exact pytest invocation CI's matrix legs and `make check` all use (coverage, sys.monitoring core, full marker set)
+	COVERAGE_CORE=sysmon $(PYTEST) tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60
 
 test-runtime: ## Run runtime, stress, and chaos tests (manual)
 	$(PYTEST) tests/ -v -m "runtime or stress or chaos" --timeout=120

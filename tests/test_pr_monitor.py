@@ -24,9 +24,9 @@ def _clear_rate_limit_trackers() -> None:
     _rate_check_cache.clear()
 
 
-def _make_monitor(**overrides: object) -> PRMonitor:
+def _make_monitor(tmp_path: Path, **overrides: object) -> PRMonitor:
     defaults = {
-        "project_dir": Path("/tmp/test"),
+        "project_dir": tmp_path,
         "monitor_config": PRMonitorConfig(enabled=True),
         "notification_config": NotificationConfig(desktop=True),
         "repo": "owner/repo",
@@ -75,8 +75,8 @@ class TestPRMonitorConfig:
 
 class TestFirstCycleSuppression:
     @pytest.mark.asyncio
-    async def test_first_cycle_no_notifications(self) -> None:
-        monitor = _make_monitor()
+    async def test_first_cycle_no_notifications(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         prs = [_make_pr(1, ComputedPRState.APPROVED)]
 
         with (
@@ -99,8 +99,8 @@ class TestFirstCycleSuppression:
         assert 1 in monitor._last_state
 
     @pytest.mark.asyncio
-    async def test_second_cycle_fires_notification(self) -> None:
-        monitor = _make_monitor()
+    async def test_second_cycle_fires_notification(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
 
         prs_initial = [_make_pr(1, ComputedPRState.AWAITING_REVIEW)]
         prs_changed = [_make_pr(1, ComputedPRState.APPROVED)]
@@ -122,8 +122,10 @@ class TestFirstCycleSuppression:
             await monitor._poll_cycle()  # second: detect change
 
         mock_notify.assert_called_once()
-        call_kwargs = mock_notify.call_args
-        assert "Approved" in call_kwargs.kwargs.get("subtitle", "") or "Approved" in str(call_kwargs)
+        call_kwargs = mock_notify.call_args.kwargs
+        assert call_kwargs["subtitle"] == "PR #1 Approved"
+        assert call_kwargs["group"] == "sova-pr-1"
+        assert monitor._last_state[1].computed_state == ComputedPRState.APPROVED
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +135,8 @@ class TestFirstCycleSuppression:
 
 class TestStateTransitionNotifications:
     @pytest.mark.asyncio
-    async def test_approval_notification(self) -> None:
-        monitor = _make_monitor()
+    async def test_approval_notification(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
@@ -157,10 +159,12 @@ class TestStateTransitionNotifications:
             await monitor._poll_cycle()
 
         mock_notify.assert_called_once()
+        assert mock_notify.call_args.kwargs["subtitle"] == "PR #1 Approved"
+        assert monitor._last_state[1].computed_state == ComputedPRState.APPROVED
 
     @pytest.mark.asyncio
-    async def test_ci_failure_notification(self) -> None:
-        monitor = _make_monitor()
+    async def test_ci_failure_notification(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.CI_RUNNING, title="Test"),
@@ -183,10 +187,12 @@ class TestStateTransitionNotifications:
             await monitor._poll_cycle()
 
         mock_notify.assert_called_once()
+        assert mock_notify.call_args.kwargs["subtitle"] == "PR #1 CI Failed"
+        assert monitor._last_state[1].computed_state == ComputedPRState.CI_FAILED
 
     @pytest.mark.asyncio
-    async def test_ready_to_merge_notification(self) -> None:
-        monitor = _make_monitor()
+    async def test_ready_to_merge_notification(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.CI_RUNNING, title="Test"),
@@ -209,9 +215,11 @@ class TestStateTransitionNotifications:
             await monitor._poll_cycle()
 
         mock_notify.assert_called_once()
+        assert mock_notify.call_args.kwargs["subtitle"] == "PR #1 Ready to Merge"
+        assert monitor._last_state[1].computed_state == ComputedPRState.APPROVED_CI_GREEN
 
     @pytest.mark.asyncio
-    async def test_ci_less_approved_pr_fires_ready_to_merge_not_approval(self) -> None:
+    async def test_ci_less_approved_pr_fires_ready_to_merge_not_approval(self, tmp_path: Path) -> None:
         """An approved, mergeable PR with no CI configured (ci_status="none") computes to
         APPROVED_CI_GREEN (see TestComputePrState.test_approved_with_no_ci_is_green in
         test_pr_service.py), which must fire notify_on_ready_to_merge, not notify_on_approval.
@@ -228,7 +236,7 @@ class TestStateTransitionNotifications:
 
         # notify_on_approval alone must NOT fire for this transition.
         cfg_approval_only = PRMonitorConfig(enabled=True, notify_on_approval=True, notify_on_ready_to_merge=False)
-        monitor = _make_monitor(monitor_config=cfg_approval_only)
+        monitor = _make_monitor(tmp_path, monitor_config=cfg_approval_only)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
@@ -252,7 +260,7 @@ class TestStateTransitionNotifications:
 
         # notify_on_ready_to_merge alone MUST fire for this transition.
         cfg_ready_only = PRMonitorConfig(enabled=True, notify_on_approval=False, notify_on_ready_to_merge=True)
-        monitor = _make_monitor(monitor_config=cfg_ready_only)
+        monitor = _make_monitor(tmp_path, monitor_config=cfg_ready_only)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
@@ -272,9 +280,11 @@ class TestStateTransitionNotifications:
         ):
             await monitor._poll_cycle()
         mock_notify.assert_called_once()
+        assert mock_notify.call_args.kwargs["subtitle"] == "PR #1 Ready to Merge"
+        assert monitor._last_state[1].computed_state == ComputedPRState.APPROVED_CI_GREEN
 
     @pytest.mark.asyncio
-    async def test_blocked_ci_less_approved_pr_does_not_fire_ready_to_merge(self) -> None:
+    async def test_blocked_ci_less_approved_pr_does_not_fire_ready_to_merge(self, tmp_path: Path) -> None:
         """An approved, CI-less, mergeable PR whose GitHub mergeStateStatus is BLOCKED (e.g.
         branch protection awaiting a required review) must compute to APPROVED, not
         APPROVED_CI_GREEN, so it never fires notify_on_ready_to_merge while GitHub itself
@@ -291,7 +301,7 @@ class TestStateTransitionNotifications:
         assert computed_state == ComputedPRState.APPROVED
 
         cfg = PRMonitorConfig(enabled=True, notify_on_approval=False, notify_on_ready_to_merge=True)
-        monitor = _make_monitor(monitor_config=cfg)
+        monitor = _make_monitor(tmp_path, monitor_config=cfg)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
@@ -314,9 +324,9 @@ class TestStateTransitionNotifications:
         mock_notify.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_notification_when_disabled(self) -> None:
+    async def test_no_notification_when_disabled(self, tmp_path: Path) -> None:
         cfg = PRMonitorConfig(enabled=True, notify_on_approval=False)
-        monitor = _make_monitor(monitor_config=cfg)
+        monitor = _make_monitor(tmp_path, monitor_config=cfg)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
@@ -341,8 +351,8 @@ class TestStateTransitionNotifications:
         mock_notify.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_notification_for_same_state(self) -> None:
-        monitor = _make_monitor()
+    async def test_no_notification_for_same_state(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.APPROVED, title="Test"),
@@ -367,9 +377,9 @@ class TestStateTransitionNotifications:
         mock_notify.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_notification_for_non_notifiable_transition(self) -> None:
+    async def test_no_notification_for_non_notifiable_transition(self, tmp_path: Path) -> None:
         """Transitions to states not in _NOTIFY_STATES should not notify."""
-        monitor = _make_monitor()
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
@@ -401,8 +411,8 @@ class TestStateTransitionNotifications:
 
 class TestCodeRabbitAutoRetry:
     @pytest.mark.asyncio
-    async def test_retry_when_rate_limit_clears(self) -> None:
-        monitor = _make_monitor()
+    async def test_retry_when_rate_limit_clears(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(
@@ -432,8 +442,8 @@ class TestCodeRabbitAutoRetry:
         mock_retry.assert_called_once_with(1)
 
     @pytest.mark.asyncio
-    async def test_no_retry_when_still_rate_limited(self) -> None:
-        monitor = _make_monitor()
+    async def test_no_retry_when_still_rate_limited(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(
@@ -463,9 +473,9 @@ class TestCodeRabbitAutoRetry:
         mock_retry.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_retry_when_auto_retry_disabled(self) -> None:
+    async def test_no_retry_when_auto_retry_disabled(self, tmp_path: Path) -> None:
         cfg = PRMonitorConfig(enabled=True, auto_retry_coderabbit=False)
-        monitor = _make_monitor(monitor_config=cfg)
+        monitor = _make_monitor(tmp_path, monitor_config=cfg)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(
@@ -495,8 +505,8 @@ class TestCodeRabbitAutoRetry:
         mock_retry.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_retry_posts_comment(self) -> None:
-        monitor = _make_monitor()
+    async def test_retry_posts_comment(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         success = ShellResult(returncode=0, stdout="", stderr="")
 
         with (
@@ -511,8 +521,8 @@ class TestCodeRabbitAutoRetry:
         assert "@coderabbitai review" in args
 
     @pytest.mark.asyncio
-    async def test_retry_logs_warning_on_failure(self) -> None:
-        monitor = _make_monitor()
+    async def test_retry_logs_warning_on_failure(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         failure = ShellResult(returncode=1, stdout="", stderr="gh: command failed")
 
         with (
@@ -533,8 +543,8 @@ class TestCodeRabbitAutoRetry:
 
 class TestRunLoop:
     @pytest.mark.asyncio
-    async def test_run_loop_calls_poll_cycle_and_sleeps(self) -> None:
-        monitor = _make_monitor()
+    async def test_run_loop_calls_poll_cycle_and_sleeps(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         call_count = 0
 
         async def _poll_then_cancel() -> None:
@@ -553,8 +563,8 @@ class TestRunLoop:
         assert call_count == 2
 
     @pytest.mark.asyncio
-    async def test_run_loop_catches_exceptions_and_continues(self) -> None:
-        monitor = _make_monitor()
+    async def test_run_loop_catches_exceptions_and_continues(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         call_count = 0
 
         async def _error_then_cancel() -> None:
@@ -689,8 +699,8 @@ class TestRateLimitDetection:
 
 class TestExceptionIsolation:
     @pytest.mark.asyncio
-    async def test_failing_pr_does_not_block_others(self) -> None:
-        monitor = _make_monitor()
+    async def test_failing_pr_does_not_block_others(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {}
 
@@ -727,9 +737,9 @@ class TestExceptionIsolation:
         assert 2 in monitor._last_state
 
     @pytest.mark.asyncio
-    async def test_transition_error_does_not_block_state_update(self) -> None:
+    async def test_transition_error_does_not_block_state_update(self, tmp_path: Path) -> None:
         """If _handle_transition raises for one PR, others still get processed."""
-        monitor = _make_monitor()
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {
             1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="A"),
@@ -777,8 +787,8 @@ class TestExceptionIsolation:
 
 class TestEmptyPRList:
     @pytest.mark.asyncio
-    async def test_no_prs(self) -> None:
-        monitor = _make_monitor()
+    async def test_no_prs(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
 
         with (
             patch(
@@ -802,9 +812,9 @@ class TestEmptyPRList:
 
 class TestNewPRDetection:
     @pytest.mark.asyncio
-    async def test_new_pr_with_notifiable_state(self) -> None:
+    async def test_new_pr_with_notifiable_state(self, tmp_path: Path) -> None:
         """A new PR appearing in a notifiable state should trigger notification."""
-        monitor = _make_monitor()
+        monitor = _make_monitor(tmp_path)
         monitor._initialized = True
         monitor._last_state = {}
 
@@ -826,6 +836,10 @@ class TestNewPRDetection:
             await monitor._poll_cycle()
 
         mock_notify.assert_called_once()
+        call_kwargs = mock_notify.call_args.kwargs
+        assert call_kwargs["subtitle"] == "PR #5 CI Failed"
+        assert call_kwargs["message"] == "Broken build"
+        assert monitor._last_state[5].computed_state == ComputedPRState.CI_FAILED
 
 
 # ---------------------------------------------------------------------------
@@ -835,9 +849,9 @@ class TestNewPRDetection:
 
 class TestGhEnvFailure:
     @pytest.mark.asyncio
-    async def test_retry_handles_gh_env_failure(self) -> None:
+    async def test_retry_handles_gh_env_failure(self, tmp_path: Path) -> None:
         """_retry_coderabbit_review should not crash if resolve_gh_env raises."""
-        monitor = _make_monitor()
+        monitor = _make_monitor(tmp_path)
 
         with (
             patch(
@@ -858,7 +872,7 @@ class TestGhEnvFailure:
 
 
 class TestMultiProjectMonitor:
-    def test_failing_project_config_does_not_block_others(self) -> None:
+    def test_failing_project_config_does_not_block_others(self, tmp_path: Path) -> None:
         """One project failing config load should not prevent other monitors."""
         from sova.config.models import NotificationConfig as _NC
         from sova.config.models import PRMonitorConfig as _PMC
@@ -873,14 +887,14 @@ class TestMultiProjectMonitor:
         )
 
         def _load_config(path: Path) -> ProjectConfig:
-            if "bad" in str(path):
+            if Path(path).name == "bad":
                 raise RuntimeError("config load failed")
             return good_cfg
 
         with (
             patch(
                 "sova.config.registry.list_projects",
-                return_value={"good": "/tmp/good", "bad": "/tmp/bad"},
+                return_value={"good": str(tmp_path / "good"), "bad": str(tmp_path / "bad")},
             ),
             patch("sova.config.loader.load_config", side_effect=_load_config),
             patch("pathlib.Path.is_dir", return_value=True),
@@ -890,7 +904,7 @@ class TestMultiProjectMonitor:
         assert len(monitors) == 1
         assert monitors[0].repo == "owner/good"
 
-    def test_skips_disabled_and_unconfigured_projects(self) -> None:
+    def test_skips_disabled_and_unconfigured_projects(self, tmp_path: Path) -> None:
         """Projects with pr_monitor disabled or no github_repo are skipped."""
         from sova.config.models import NotificationConfig as _NC
         from sova.config.models import PRMonitorConfig as _PMC
@@ -910,12 +924,14 @@ class TestMultiProjectMonitor:
             notification=_NC(),
         )
 
-        configs = {"/tmp/disabled": disabled_cfg, "/tmp/norepo": no_repo_cfg}
+        disabled_dir = str(tmp_path / "disabled")
+        norepo_dir = str(tmp_path / "norepo")
+        configs = {disabled_dir: disabled_cfg, norepo_dir: no_repo_cfg}
 
         with (
             patch(
                 "sova.config.registry.list_projects",
-                return_value={"disabled": "/tmp/disabled", "norepo": "/tmp/norepo"},
+                return_value={"disabled": disabled_dir, "norepo": norepo_dir},
             ),
             patch("sova.config.loader.load_config", side_effect=lambda p: configs[str(p)]),
             patch("pathlib.Path.is_dir", return_value=True),
@@ -946,7 +962,7 @@ class TestNotifyStatesValidation:
 
 class TestPRMonitorRateLimitGate:
     @pytest.mark.asyncio
-    async def test_poll_cycle_skips_when_rate_limited(self) -> None:
+    async def test_poll_cycle_skips_when_rate_limited(self, tmp_path: Path) -> None:
         """PR monitor should skip its entire poll cycle when the GitHub API is rate limited."""
         from sova.supervisor.github_quota import get_github_quota_tracker
 
@@ -954,7 +970,7 @@ class TestPRMonitorRateLimitGate:
         with patch.object(tracker, "_emit_hit_event"):
             tracker.record_rate_limit_hit()
 
-        monitor = _make_monitor()
+        monitor = _make_monitor(tmp_path)
 
         with patch(
             "sova.dashboard.services.pr_service.list_open_prs_with_state",
@@ -965,9 +981,9 @@ class TestPRMonitorRateLimitGate:
         mock_list.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_poll_cycle_runs_when_not_rate_limited(self) -> None:
+    async def test_poll_cycle_runs_when_not_rate_limited(self, tmp_path: Path) -> None:
         """PR monitor should run normally when the GitHub API is not rate limited."""
-        monitor = _make_monitor()
+        monitor = _make_monitor(tmp_path)
 
         with (
             patch(
@@ -979,6 +995,7 @@ class TestPRMonitorRateLimitGate:
             await monitor._poll_cycle()
 
         mock_list.assert_called_once()
+        assert monitor._initialized is True
 
 
 class TestRateCheckCache:

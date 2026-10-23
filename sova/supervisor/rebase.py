@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -30,6 +32,33 @@ from sova.utils.shell import run
 log = get_logger(component="supervisor.rebase")
 
 ROLE_SUPERVISOR_REBASE = "supervisor:rebase"
+
+
+@dataclass
+class RebaseOperations:
+    """The collaborators attempt_auto_rebase() calls through.
+
+    Tests construct one instance with mocked attributes instead of patching
+    each module-level function individually (issue #1209): the orchestration
+    logic in this module only ever needs to know the shape of these calls,
+    not which concrete function backs them.
+    """
+
+    load_config: Callable[..., Any]
+    get_pr_info: Callable[..., Any]
+    already_attempted: Callable[..., Any]
+    create_worktree: Callable[..., Any]
+    find_worktree_by_branch: Callable[..., Any]
+    check_worktree_active_agent: Callable[..., Any]
+    cleanup_worktree: Callable[..., Any]
+    rebase_with_conflict_resolution: Callable[..., Any]
+    create_rebase_run: Callable[..., Any]
+    update_run_cost: Callable[..., Any]
+    finalize_run: Callable[..., Any]
+    run_pre_push_hook: Callable[..., Any]
+    run: Callable[..., Any]
+    write_manual_handoff: Callable[..., Any]
+
 
 # Serializes attempt_auto_rebase() calls for the same PR across callers (the
 # dashboard's trigger_rebase endpoint and the progression daemon's
@@ -52,14 +81,17 @@ async def attempt_auto_rebase(
     issue_number: int,
     project_dir: Path,
     session_factory: async_sessionmaker,
+    *,
+    ops: RebaseOperations | None = None,
 ) -> dict[str, Any]:
     """Attempt to auto-rebase a PR branch onto the base branch."""
+    ops = ops if ops is not None else _default_ops()
     try:
-        cfg = load_config(project_dir)
+        cfg = ops.load_config(project_dir)
         if not cfg.github_repo:
             return {"status": "skipped", "reason": "No github_repo configured"}
 
-        pr_info = await _get_pr_info(issue_number, cfg.github_repo, cfg.github_user)
+        pr_info = await ops.get_pr_info(issue_number, cfg.github_repo, cfg.github_user)
         if pr_info is None:
             return {"status": "skipped", "reason": f"No open PR found for issue #{issue_number}"}
     except Exception as exc:  # noqa: BLE001 (no TaskRun exists yet; nothing to finalize)
@@ -86,6 +118,7 @@ async def attempt_auto_rebase(
             project_dir=project_dir,
             cfg=cfg,
             session_factory=session_factory,
+            ops=ops,
         )
 
 
@@ -99,6 +132,7 @@ async def _run_locked_rebase(
     project_dir: Path,
     cfg: Any,
     session_factory: async_sessionmaker,
+    ops: RebaseOperations,
 ) -> dict[str, Any]:
     """Run the already-attempted check through the rebase-and-push flow.
 
@@ -109,13 +143,13 @@ async def _run_locked_rebase(
     reused_worktree = False
     task_run: TaskRun | None = None
     try:
-        if await _already_attempted(pr_number, head_sha, session_factory):
+        if await ops.already_attempted(pr_number, head_sha, session_factory):
             return {
                 "status": "skipped",
                 "reason": f"Already attempted rebase for PR #{pr_number} at HEAD {head_sha[:8]}",
             }
 
-        task_run = await _create_rebase_run(issue_number, pr_number, branch, session_factory)
+        task_run = await ops.create_rebase_run(issue_number, pr_number, branch, session_factory)
 
         resolution = await _resolve_rebase_worktree(
             issue_number=issue_number,
@@ -127,6 +161,7 @@ async def _run_locked_rebase(
             task_run=task_run,
             head_sha=head_sha,
             session_factory=session_factory,
+            ops=ops,
         )
         if isinstance(resolution, dict):
             return resolution
@@ -142,24 +177,25 @@ async def _run_locked_rebase(
             task_run=task_run,
             head_sha=head_sha,
             session_factory=session_factory,
+            ops=ops,
         )
 
     except asyncio.CancelledError:
         log.info("auto_rebase.cancelled", issue=issue_number, pr=pr_number)
         if task_run is not None:
-            await _finalize_run(task_run.id, "failed", "Rebase cancelled", head_sha, session_factory)
+            await ops.finalize_run(task_run.id, "failed", "Rebase cancelled", head_sha, session_factory)
         raise
 
     except Exception as exc:  # noqa: BLE001 (rebase spans git, LLM and DB; any failure is recorded on the run)
         log.exception("auto_rebase.unexpected_error", issue=issue_number, pr=pr_number)
         if task_run is not None:
-            await _finalize_run(task_run.id, "failed", str(exc), head_sha, session_factory)
+            await ops.finalize_run(task_run.id, "failed", str(exc), head_sha, session_factory)
         return {"status": "failed", "pr_number": pr_number, "error": str(exc)}
 
     finally:
         if worktree_path is not None and not reused_worktree:
             try:
-                await cleanup_worktree(worktree_path, cwd=project_dir)
+                await ops.cleanup_worktree(worktree_path, cwd=project_dir)
             except (RuntimeError, OSError):
                 log.debug("auto_rebase.worktree_cleanup_failed", path=str(worktree_path), exc_info=True)
 
@@ -175,6 +211,7 @@ async def _resolve_rebase_worktree(
     task_run: TaskRun,
     head_sha: str,
     session_factory: async_sessionmaker,
+    ops: RebaseOperations,
 ) -> tuple[Path, bool] | dict[str, Any]:
     """Find or create the worktree to rebase *branch* in.
 
@@ -182,13 +219,13 @@ async def _resolve_rebase_worktree(
     already-finalized result dict when the caller should return early (the
     worktree is busy, or the safety check itself failed).
     """
-    prune_result = await run("git", "worktree", "prune", cwd=project_dir)
+    prune_result = await ops.run("git", "worktree", "prune", cwd=project_dir)
     if not prune_result.success:
         log.warning("auto_rebase.prune_failed", stderr=prune_result.stderr[:200])
 
     existing_wt: Path | None = None
     try:
-        existing_wt = await find_worktree_by_branch(branch, cwd=project_dir)
+        existing_wt = await ops.find_worktree_by_branch(branch, cwd=project_dir)
     except (RuntimeError, OSError):
         log.debug("auto_rebase.branch_worktree_lookup_failed", branch=branch, exc_info=True)
 
@@ -200,12 +237,12 @@ async def _resolve_rebase_worktree(
         # /address-pr's own worktree-safety rule warns against. Skip cleanly.
         log.info("auto_rebase.branch_in_main_worktree", issue=issue_number, pr=pr_number)
         reason = f"Branch {branch} is checked out in the main project checkout; auto-rebase does not reuse it"
-        await _finalize_run(task_run.id, "failed", reason, head_sha, session_factory, attempted=False)
+        await ops.finalize_run(task_run.id, "failed", reason, head_sha, session_factory, attempted=False)
         return {"status": "skipped", "pr_number": pr_number, "reason": reason}
 
     if existing_wt is None:
         worktree_id = f"rebase-pr-{pr_number}"
-        worktree_info = await create_worktree(
+        worktree_info = await ops.create_worktree(
             issue_id=worktree_id,
             branch=branch,
             base_branch=base_branch,
@@ -218,7 +255,7 @@ async def _resolve_rebase_worktree(
     # persistent worktree). Git refuses to check out the same branch into a
     # second worktree, so reuse it instead of colliding.
     try:
-        active_pid = await check_worktree_active_agent(existing_wt, project_dir=project_dir)
+        active_pid = await ops.check_worktree_active_agent(existing_wt, project_dir=project_dir)
     except RuntimeError as exc:
         log.warning(
             "auto_rebase.active_agent_check_failed",
@@ -228,37 +265,37 @@ async def _resolve_rebase_worktree(
             exc_info=True,
         )
         reason = f"Cannot verify worktree safety: {exc}"
-        await _finalize_run(task_run.id, "failed", reason, head_sha, session_factory, attempted=False)
+        await ops.finalize_run(task_run.id, "failed", reason, head_sha, session_factory, attempted=False)
         return {"status": "failed", "pr_number": pr_number, "error": str(exc)}
 
     if active_pid is not None:
         log.info("auto_rebase.worktree_busy", issue=issue_number, pr=pr_number, pid=active_pid)
         reason = f"Branch {branch} worktree is actively in use by agent PID {active_pid}"
-        await _finalize_run(task_run.id, "failed", reason, head_sha, session_factory, attempted=False)
+        await ops.finalize_run(task_run.id, "failed", reason, head_sha, session_factory, attempted=False)
         return {"status": "skipped", "pr_number": pr_number, "reason": reason}
 
-    if not await _worktree_is_clean(existing_wt):
+    if not await _worktree_is_clean(existing_wt, ops):
         # rebase_with_conflict_resolution() stashes and pops uncommitted
         # changes around the rebase; reusing a dirty worktree risks stranding
         # the developer's in-progress edits in the repo-wide stash if the
         # pop ever fails. Fail closed rather than risk that.
         log.warning("auto_rebase.worktree_dirty_or_unknown", issue=issue_number, pr=pr_number, path=str(existing_wt))
         reason = f"Branch {branch} worktree has uncommitted changes or its status could not be verified"
-        await _finalize_run(task_run.id, "failed", reason, head_sha, session_factory, attempted=False)
+        await ops.finalize_run(task_run.id, "failed", reason, head_sha, session_factory, attempted=False)
         return {"status": "skipped", "pr_number": pr_number, "reason": reason}
 
     log.info("auto_rebase.reusing_worktree", issue=issue_number, pr=pr_number, path=str(existing_wt))
     return existing_wt, True
 
 
-async def _worktree_is_clean(worktree_path: Path) -> bool:
+async def _worktree_is_clean(worktree_path: Path, ops: RebaseOperations) -> bool:
     """Check whether *worktree_path* has no uncommitted changes.
 
     Returns False when the status can't be read, so an unreadable worktree
     is never reused: `rebase_with_conflict_resolution()` stashes changes on a
     dirty tree, and reuse must fail closed rather than gamble on a clean one.
     """
-    status_result = await run("git", "status", "--porcelain", cwd=worktree_path)
+    status_result = await ops.run("git", "status", "--porcelain", cwd=worktree_path)
     if not status_result.success:
         log.warning(
             "auto_rebase.worktree_status_check_failed",
@@ -280,22 +317,23 @@ async def _run_rebase_and_push(
     task_run: TaskRun,
     head_sha: str,
     session_factory: async_sessionmaker,
+    ops: RebaseOperations,
 ) -> dict[str, Any]:
     """Run the rebase, validate via pre-push hook, and push. Always returns a result dict."""
-    result, cost = await rebase_with_conflict_resolution(base_branch, cwd=worktree_path, max_commits=5)
-    await _update_run_cost(task_run.id, cost, session_factory)
+    result, cost = await ops.rebase_with_conflict_resolution(base_branch, cwd=worktree_path, max_commits=5)
+    await ops.update_run_cost(task_run.id, cost, session_factory)
 
     if not result.success:
         log.warning("auto_rebase.failed", issue=issue_number, pr=pr_number, error=result.error)
-        await _finalize_run(task_run.id, "failed", result.error, head_sha, session_factory)
-        _write_manual_handoff(project_dir, issue_number, pr_number, branch, f"Auto-rebase failed: {result.error}")
+        await ops.finalize_run(task_run.id, "failed", result.error, head_sha, session_factory)
+        ops.write_manual_handoff(project_dir, issue_number, pr_number, branch, f"Auto-rebase failed: {result.error}")
         return {"status": "failed", "pr_number": pr_number, "error": result.error}
 
-    hook_result = await _run_pre_push_hook(worktree_path)
+    hook_result = await ops.run_pre_push_hook(worktree_path)
     if not hook_result["passed"]:
         log.warning("auto_rebase.pre_push_failed", issue=issue_number, pr=pr_number, output=hook_result["output"][:500])
-        await _finalize_run(task_run.id, "failed", "Pre-push hook failed", head_sha, session_factory)
-        _write_manual_handoff(
+        await ops.finalize_run(task_run.id, "failed", "Pre-push hook failed", head_sha, session_factory)
+        ops.write_manual_handoff(
             project_dir,
             issue_number,
             pr_number,
@@ -305,17 +343,17 @@ async def _run_rebase_and_push(
         )
         return {"status": "failed", "pr_number": pr_number, "error": "Pre-push hook failed after rebase"}
 
-    push_result = await run("git", "push", "origin", branch, "--force-with-lease", cwd=worktree_path)
+    push_result = await ops.run("git", "push", "origin", branch, "--force-with-lease", cwd=worktree_path)
     if not push_result.success:
         if "stale info" in push_result.stderr or "rejected" in push_result.stderr:
             log.info("auto_rebase.branch_changed", issue=issue_number, pr=pr_number)
-            await _finalize_run(task_run.id, "done", "Branch HEAD changed during rebase", head_sha, session_factory)
+            await ops.finalize_run(task_run.id, "done", "Branch HEAD changed during rebase", head_sha, session_factory)
             return {"status": "skipped", "pr_number": pr_number, "reason": "Branch HEAD changed during rebase"}
-        await _finalize_run(task_run.id, "failed", push_result.stderr[:500], head_sha, session_factory)
+        await ops.finalize_run(task_run.id, "failed", push_result.stderr[:500], head_sha, session_factory)
         return {"status": "failed", "pr_number": pr_number, "error": push_result.stderr[:500]}
 
     log.info("auto_rebase.success", issue=issue_number, pr=pr_number, conflicts_resolved=result.conflicts_resolved)
-    await _finalize_run(task_run.id, "done", None, head_sha, session_factory)
+    await ops.finalize_run(task_run.id, "done", None, head_sha, session_factory)
     return {"status": "success", "pr_number": pr_number, "conflicts_resolved": result.conflicts_resolved}
 
 
@@ -470,3 +508,28 @@ def _write_manual_handoff(
         ],
     )
     write_handoff_file(project_dir, handoff)
+
+
+def _default_ops() -> RebaseOperations:
+    """Return the real collaborators attempt_auto_rebase() uses when a caller passes no `ops`.
+
+    Built per call rather than once at import, so a test that patches one of these
+    module-level names (`patch("sova.supervisor.rebase.cleanup_worktree")`) still
+    reaches attempt_auto_rebase() instead of being bypassed by a captured reference.
+    """
+    return RebaseOperations(
+        load_config=load_config,
+        get_pr_info=_get_pr_info,
+        already_attempted=_already_attempted,
+        create_worktree=create_worktree,
+        find_worktree_by_branch=find_worktree_by_branch,
+        check_worktree_active_agent=check_worktree_active_agent,
+        cleanup_worktree=cleanup_worktree,
+        rebase_with_conflict_resolution=rebase_with_conflict_resolution,
+        create_rebase_run=_create_rebase_run,
+        update_run_cost=_update_run_cost,
+        finalize_run=_finalize_run,
+        run_pre_push_hook=_run_pre_push_hook,
+        run=run,
+        write_manual_handoff=_write_manual_handoff,
+    )

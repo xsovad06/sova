@@ -8,19 +8,50 @@ flag for non-hot-reloadable keys.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections.abc import Callable, Coroutine
 from pathlib import Path
+from typing import Any, TypeVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sova.llm.models import LLMResult
 
+_T = TypeVar("_T")
+
+# Far longer than the wake-up bound below, so a sleep that is never interrupted
+# fails with TimeoutError instead of passing slowly.
+_LONG_SLEEP = 3600.0
+_WAKE_TIMEOUT = 5.0
+
+
+async def _assert_wakes_early(sleep: Coroutine[Any, Any, _T], trigger: Callable[[], object]) -> _T:
+    """Start *sleep*, let it suspend on its wait, fire *trigger*, and require it to return promptly.
+
+    The single ``asyncio.sleep(0)`` yield runs the sleeper task up to its first
+    suspension point, so the trigger fires while the sleeper is genuinely waiting
+    rather than before it starts. The bounded ``wait_for`` is the assertion that
+    the trigger woke it: an unwoken sleep of ``_LONG_SLEEP`` raises TimeoutError.
+    """
+    sleeper = asyncio.create_task(sleep)
+    try:
+        await asyncio.sleep(0)
+        assert not sleeper.done(), "sleeper returned before the trigger fired"
+        trigger()
+        return await asyncio.wait_for(sleeper, timeout=_WAKE_TIMEOUT)
+    finally:
+        if not sleeper.done():
+            sleeper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sleeper
+
 
 class TestDaemonEnabledGuard:
     """SupervisorDaemon._poll_once skips when supervisor.enabled is False."""
 
     @pytest.mark.asyncio
-    async def test_poll_skips_when_disabled(self) -> None:
+    async def test_poll_skips_when_disabled(self, tmp_path: Path) -> None:
         from sova.supervisor.daemon import SupervisorDaemon
 
         cfg = MagicMock()
@@ -30,7 +61,7 @@ class TestDaemonEnabledGuard:
 
         daemon = SupervisorDaemon(
             config=cfg,
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             session_factory=MagicMock(),
         )
 
@@ -39,7 +70,7 @@ class TestDaemonEnabledGuard:
         assert "skipped" in result
 
     @pytest.mark.asyncio
-    async def test_poll_proceeds_when_enabled(self) -> None:
+    async def test_poll_proceeds_when_enabled(self, tmp_path: Path) -> None:
         from sova.supervisor.daemon import SupervisorDaemon
 
         cfg = MagicMock()
@@ -55,7 +86,7 @@ class TestDaemonEnabledGuard:
 
         daemon = SupervisorDaemon(
             config=cfg,
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             session_factory=session_factory,
         )
 
@@ -73,14 +104,14 @@ class TestOversightLoopExit:
     """OversightAgent._run_loop exits when enabled becomes False."""
 
     @pytest.mark.asyncio
-    async def test_loop_exits_when_disabled(self) -> None:
+    async def test_loop_exits_when_disabled(self, tmp_path: Path) -> None:
         from sova.oversight.agent import OversightAgent
 
         cfg = MagicMock()
         cfg.enabled = False
         cfg.wake_interval_minutes = 1
 
-        agent = OversightAgent(config=cfg, project_dir="/tmp/test")
+        agent = OversightAgent(config=cfg, project_dir=str(tmp_path))
         agent._task = asyncio.current_task()
 
         with patch.object(agent, "_reload_config", return_value=cfg):
@@ -90,7 +121,7 @@ class TestOversightLoopExit:
         assert not agent.running
 
     @pytest.mark.asyncio
-    async def test_loop_runs_cycle_when_enabled(self) -> None:
+    async def test_loop_runs_cycle_when_enabled(self, tmp_path: Path) -> None:
         from sova.oversight.agent import OversightAgent
 
         call_count = 0
@@ -102,7 +133,7 @@ class TestOversightLoopExit:
         cfg_disabled = MagicMock()
         cfg_disabled.enabled = False
 
-        agent = OversightAgent(config=cfg_enabled, project_dir="/tmp/test")
+        agent = OversightAgent(config=cfg_enabled, project_dir=str(tmp_path))
 
         async def fake_cycle():
             nonlocal call_count
@@ -129,7 +160,7 @@ class TestReloadDaemonConfigLifecycle:
     """_reload_daemon_config stops/starts daemon based on enabled flag."""
 
     @pytest.mark.asyncio
-    async def test_stops_daemon_when_disabled(self) -> None:
+    async def test_stops_daemon_when_disabled(self, tmp_path: Path) -> None:
         from sova.dashboard.routers import supervisor as sup_mod
         from sova.dashboard.routers.settings import _reload_daemon_config
 
@@ -140,7 +171,7 @@ class TestReloadDaemonConfigLifecycle:
         cfg = MagicMock()
         cfg.supervisor.enabled = False
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
         resolved_key = str(project_dir.resolve())
 
         orig_registry = sup_mod._daemon_registry
@@ -158,7 +189,7 @@ class TestReloadDaemonConfigLifecycle:
             sup_mod._daemon_registry = orig_registry
 
     @pytest.mark.asyncio
-    async def test_starts_daemon_when_enabled_and_none(self) -> None:
+    async def test_starts_daemon_when_enabled_and_none(self, tmp_path: Path) -> None:
         from sova.dashboard.routers import supervisor as sup_mod
         from sova.dashboard.routers.settings import _reload_daemon_config
 
@@ -185,14 +216,14 @@ class TestReloadDaemonConfigLifecycle:
                     return_value=mock_daemon_instance,
                 ),
             ):
-                await _reload_daemon_config(Path("/tmp/test"))
+                await _reload_daemon_config(tmp_path)
 
             mock_daemon_instance.start.assert_called_once()
         finally:
             sup_mod._daemon_registry = orig_registry
 
     @pytest.mark.asyncio
-    async def test_hot_reloads_when_enabled_and_running(self) -> None:
+    async def test_hot_reloads_when_enabled_and_running(self, tmp_path: Path) -> None:
         from sova.dashboard.routers import supervisor as sup_mod
         from sova.dashboard.routers.settings import _reload_daemon_config
 
@@ -206,7 +237,7 @@ class TestReloadDaemonConfigLifecycle:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch.object(sup_mod, "_get_daemon", return_value=daemon),
         ):
-            await _reload_daemon_config(Path("/tmp/test"))
+            await _reload_daemon_config(tmp_path)
 
         daemon.reload_config.assert_called_once_with(cfg)
 
@@ -289,7 +320,7 @@ class TestLifecycleErrorPropagation:
     """Lifecycle failures propagate to the caller instead of being swallowed."""
 
     @pytest.mark.asyncio
-    async def test_daemon_stop_failure_raises(self) -> None:
+    async def test_daemon_stop_failure_raises(self, tmp_path: Path) -> None:
         from sova.dashboard.routers import supervisor as sup_mod
         from sova.dashboard.routers.settings import _reload_daemon_config
 
@@ -300,7 +331,7 @@ class TestLifecycleErrorPropagation:
         cfg = MagicMock()
         cfg.supervisor.enabled = False
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
         resolved_key = str(project_dir.resolve())
 
         orig_registry = sup_mod._daemon_registry
@@ -316,7 +347,7 @@ class TestLifecycleErrorPropagation:
             sup_mod._daemon_registry = orig_registry
 
     @pytest.mark.asyncio
-    async def test_daemon_start_failure_raises(self) -> None:
+    async def test_daemon_start_failure_raises(self, tmp_path: Path) -> None:
         from sova.dashboard.routers import supervisor as sup_mod
         from sova.dashboard.routers.settings import _reload_daemon_config
 
@@ -336,7 +367,7 @@ class TestLifecycleErrorPropagation:
                 ),
             ):
                 with pytest.raises(RuntimeError, match="db unavailable"):
-                    await _reload_daemon_config(Path("/tmp/test"))
+                    await _reload_daemon_config(tmp_path)
         finally:
             sup_mod._daemon_registry = orig_registry
 
@@ -345,7 +376,7 @@ class TestLifecycleSerialization:
     """Concurrent lifecycle transitions are serialized per project."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_toggles_serialized(self) -> None:
+    async def test_concurrent_toggles_serialized(self, tmp_path: Path) -> None:
         from sova.dashboard.routers import supervisor as sup_mod
         from sova.dashboard.routers.settings import _reload_daemon_config
 
@@ -371,7 +402,7 @@ class TestLifecycleSerialization:
         mock_daemon_instance = MagicMock()
         mock_daemon_instance.start = MagicMock(return_value=MagicMock())
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
         resolved_key = str(project_dir.resolve())
 
         configs = iter([cfg_disable, cfg_enable])
@@ -406,7 +437,7 @@ class TestLifecycleSerialization:
 class TestTaskQueuePropagation:
     """task_queue changes propagate to daemon via reload_config."""
 
-    def test_queue_change_reaches_daemon(self) -> None:
+    def test_queue_change_reaches_daemon(self, tmp_path: Path) -> None:
         from sova.supervisor.daemon import SupervisorDaemon
 
         cfg1 = MagicMock()
@@ -421,7 +452,7 @@ class TestTaskQueuePropagation:
 
         daemon = SupervisorDaemon(
             config=cfg1,
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             session_factory=MagicMock(),
         )
 
@@ -433,7 +464,7 @@ class TestTaskQueuePropagation:
 class TestWatchdogReloadConfig:
     """AgentWatchdog.reload_config swaps config and wakes interruptible sleep."""
 
-    def test_reload_swaps_config(self) -> None:
+    def test_reload_swaps_config(self, tmp_path: Path) -> None:
         from sova.supervisor.watchdog import AgentWatchdog
 
         cfg1 = MagicMock()
@@ -441,38 +472,29 @@ class TestWatchdogReloadConfig:
         cfg2 = MagicMock()
         cfg2.check_interval_seconds = 10
 
-        wd = AgentWatchdog(config=cfg1, project_dir=Path("/tmp/test"))
+        wd = AgentWatchdog(config=cfg1, project_dir=tmp_path)
         assert wd._config.check_interval_seconds == 30
         wd.reload_config(cfg2)
         assert wd._config.check_interval_seconds == 10
         assert wd._wake_event.is_set()
 
     @pytest.mark.asyncio
-    async def test_interruptible_sleep_wakes_on_reload(self) -> None:
+    async def test_interruptible_sleep_wakes_on_reload(self, tmp_path: Path) -> None:
         from sova.supervisor.watchdog import AgentWatchdog
 
         cfg = MagicMock()
         cfg.check_interval_seconds = 30
 
-        wd = AgentWatchdog(config=cfg, project_dir=Path("/tmp/test"))
+        wd = AgentWatchdog(config=cfg, project_dir=tmp_path)
 
-        async def reload_soon():
-            await asyncio.sleep(0.05)
-            wd.reload_config(cfg)
-
-        asyncio.create_task(reload_soon())
-        import time
-
-        t0 = time.monotonic()
-        await wd._interruptible_sleep(10.0)
-        elapsed = time.monotonic() - t0
-        assert elapsed < 1.0
+        await _assert_wakes_early(wd._interruptible_sleep(_LONG_SLEEP), lambda: wd.reload_config(cfg))
+        assert not wd._wake_event.is_set()
 
 
 class TestPRMonitorReloadConfig:
     """PRMonitor.reload_config swaps config and wakes interruptible sleep."""
 
-    def test_reload_swaps_config(self) -> None:
+    def test_reload_swaps_config(self, tmp_path: Path) -> None:
         from sova.supervisor.pr_monitor import PRMonitor
 
         cfg1 = MagicMock()
@@ -482,7 +504,7 @@ class TestPRMonitorReloadConfig:
         ncfg = MagicMock()
 
         mon = PRMonitor(
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             monitor_config=cfg1,
             notification_config=ncfg,
             repo="test/repo",
@@ -494,7 +516,7 @@ class TestPRMonitorReloadConfig:
         assert mon._wake_event.is_set()
 
     @pytest.mark.asyncio
-    async def test_interruptible_sleep_wakes_on_reload(self) -> None:
+    async def test_interruptible_sleep_wakes_on_reload(self, tmp_path: Path) -> None:
         from sova.supervisor.pr_monitor import PRMonitor
 
         cfg = MagicMock()
@@ -502,30 +524,21 @@ class TestPRMonitorReloadConfig:
         ncfg = MagicMock()
 
         mon = PRMonitor(
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             monitor_config=cfg,
             notification_config=ncfg,
             repo="test/repo",
             github_user="testuser",
         )
 
-        async def reload_soon():
-            await asyncio.sleep(0.05)
-            mon.reload_config(cfg, ncfg)
-
-        asyncio.create_task(reload_soon())
-        import time
-
-        t0 = time.monotonic()
-        await mon._interruptible_sleep(10.0)
-        elapsed = time.monotonic() - t0
-        assert elapsed < 1.0
+        await _assert_wakes_early(mon._interruptible_sleep(_LONG_SLEEP), lambda: mon.reload_config(cfg, ncfg))
+        assert not mon._wake_event.is_set()
 
 
 class TestMergeQueueMonitorReloadConfig:
     """MergeQueueMonitor.reload_config swaps config and wakes sleep."""
 
-    def test_reload_swaps_config(self) -> None:
+    def test_reload_swaps_config(self, tmp_path: Path) -> None:
         from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor
 
         cfg1 = MagicMock()
@@ -534,7 +547,7 @@ class TestMergeQueueMonitorReloadConfig:
         cfg2.merge_queue_poll_interval = 60
 
         mon = MergeQueueMonitor(
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             repo="test/repo",
             github_user="testuser",
             integration_config=cfg1,
@@ -545,57 +558,37 @@ class TestMergeQueueMonitorReloadConfig:
         assert mon._reload_event.is_set()
 
     @pytest.mark.asyncio
-    async def test_interruptible_sleep_wakes_on_reload_not_stop(self) -> None:
+    async def test_interruptible_sleep_wakes_on_reload_not_stop(self, tmp_path: Path) -> None:
         from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor
 
         cfg = MagicMock()
         cfg.merge_queue_poll_interval = 120
 
         mon = MergeQueueMonitor(
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             repo="test/repo",
             github_user="testuser",
             integration_config=cfg,
         )
 
-        async def reload_soon():
-            await asyncio.sleep(0.05)
-            mon.reload_config(cfg)
-
-        asyncio.create_task(reload_soon())
-        import time
-
-        t0 = time.monotonic()
-        should_stop = await mon._interruptible_sleep(10.0)
-        elapsed = time.monotonic() - t0
-        assert elapsed < 1.0
+        should_stop = await _assert_wakes_early(mon._interruptible_sleep(_LONG_SLEEP), lambda: mon.reload_config(cfg))
         assert not should_stop
 
     @pytest.mark.asyncio
-    async def test_interruptible_sleep_exits_on_stop(self) -> None:
+    async def test_interruptible_sleep_exits_on_stop(self, tmp_path: Path) -> None:
         from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor
 
         cfg = MagicMock()
         cfg.merge_queue_poll_interval = 120
 
         mon = MergeQueueMonitor(
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             repo="test/repo",
             github_user="testuser",
             integration_config=cfg,
         )
 
-        async def stop_soon():
-            await asyncio.sleep(0.05)
-            mon.stop()
-
-        asyncio.create_task(stop_soon())
-        import time
-
-        t0 = time.monotonic()
-        should_stop = await mon._interruptible_sleep(10.0)
-        elapsed = time.monotonic() - t0
-        assert elapsed < 1.0
+        should_stop = await _assert_wakes_early(mon._interruptible_sleep(_LONG_SLEEP), mon.stop)
         assert should_stop
 
 
@@ -630,23 +623,16 @@ class TestPRThrottleLoopReloadConfig:
             config=cfg,
         )
 
-        async def reload_soon():
-            await asyncio.sleep(0.05)
-            loop_instance.reload_config(cfg)
-
-        asyncio.create_task(reload_soon())
-        import time
-
-        t0 = time.monotonic()
-        await loop_instance._interruptible_sleep(10.0)
-        elapsed = time.monotonic() - t0
-        assert elapsed < 1.0
+        await _assert_wakes_early(
+            loop_instance._interruptible_sleep(_LONG_SLEEP), lambda: loop_instance.reload_config(cfg)
+        )
+        assert not loop_instance._wake_event.is_set()
 
 
 class TestOversightAgentReloadConfig:
     """OversightAgent.reload_config accepts ProjectConfig and wakes sleep."""
 
-    def test_reload_with_project_config(self) -> None:
+    def test_reload_with_project_config(self, tmp_path: Path) -> None:
         from sova.oversight.agent import OversightAgent
 
         cfg = MagicMock()
@@ -656,36 +642,29 @@ class TestOversightAgentReloadConfig:
         project_cfg = MagicMock()
         project_cfg.oversight = cfg
 
-        agent = OversightAgent(config=MagicMock(), project_dir="/tmp/test")
+        agent = OversightAgent(config=MagicMock(), project_dir=str(tmp_path))
         agent.reload_config(project_cfg)
         assert agent._config is cfg
         assert agent._wake_event.is_set()
 
-    def test_reload_without_config_falls_back_to_disk(self) -> None:
+    def test_reload_without_config_falls_back_to_disk(self, tmp_path: Path) -> None:
         from sova.oversight.agent import OversightAgent
 
-        agent = OversightAgent(config=MagicMock(), project_dir="/tmp/test")
+        agent = OversightAgent(config=MagicMock(), project_dir=str(tmp_path))
         with patch.object(agent, "_reload_config") as mock_disk:
             agent.reload_config()
             mock_disk.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_interruptible_sleep_wakes_on_reload(self) -> None:
+    async def test_interruptible_sleep_wakes_on_reload(self, tmp_path: Path) -> None:
         from sova.oversight.agent import OversightAgent
 
-        agent = OversightAgent(config=MagicMock(), project_dir="/tmp/test")
+        agent = OversightAgent(config=MagicMock(), project_dir=str(tmp_path))
 
-        async def reload_soon():
-            await asyncio.sleep(0.05)
-            agent._wake_event.set()
-
-        asyncio.create_task(reload_soon())
-        import time
-
-        t0 = time.monotonic()
-        await agent._interruptible_sleep(10.0)
-        elapsed = time.monotonic() - t0
-        assert elapsed < 1.0
+        project_cfg = MagicMock()
+        await _assert_wakes_early(agent._interruptible_sleep(_LONG_SLEEP), lambda: agent.reload_config(project_cfg))
+        assert agent._config is project_cfg.oversight
+        assert not agent._wake_event.is_set()
 
 
 class TestSingletonReload:
@@ -715,7 +694,7 @@ class TestSingletonReload:
         reset_provider()
 
     @pytest.mark.asyncio
-    async def test_llm_hot_reload_honors_a_changed_alias_map(self) -> None:
+    async def test_llm_hot_reload_honors_a_changed_alias_map(self, tmp_path: Path) -> None:
         """A settings save that only changes model_aliases must reach the new provider."""
         from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
         from sova.dashboard.routers.settings import _dispatch_config_reload
@@ -731,7 +710,7 @@ class TestSingletonReload:
         provider.normalize_model_name = lambda m: m
         provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="ollama/llama3.1:70b"))
         with patch("sova.llm.client.create_provider", return_value=provider) as mock_create:
-            await _dispatch_config_reload("llm", cfg, {}, Path("/tmp"))
+            await _dispatch_config_reload("llm", cfg, {}, tmp_path)
 
         assert mock_create.call_args.args[0].model_aliases == {"smart": "ollama/llama3.1:70b"}
         assert client.get_provider() is provider
@@ -936,10 +915,10 @@ class TestInterruptibleSleepTimeout:
     """Interruptible sleep reaches timeout when no event fires."""
 
     @pytest.mark.asyncio
-    async def test_watchdog_sleep_timeout_path(self) -> None:
+    async def test_watchdog_sleep_timeout_path(self, tmp_path: Path) -> None:
         from sova.supervisor.watchdog import AgentWatchdog
 
-        wd = AgentWatchdog(config=MagicMock(), project_dir=Path("/tmp/test"))
+        wd = AgentWatchdog(config=MagicMock(), project_dir=tmp_path)
         import time
 
         t0 = time.monotonic()
@@ -948,11 +927,11 @@ class TestInterruptibleSleepTimeout:
         assert elapsed >= 0.04
 
     @pytest.mark.asyncio
-    async def test_pr_monitor_sleep_timeout_path(self) -> None:
+    async def test_pr_monitor_sleep_timeout_path(self, tmp_path: Path) -> None:
         from sova.supervisor.pr_monitor import PRMonitor
 
         mon = PRMonitor(
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             monitor_config=MagicMock(poll_interval=60),
             notification_config=MagicMock(),
             repo="test/repo",
@@ -981,12 +960,12 @@ class TestInterruptibleSleepTimeout:
 class TestMergeQueueReloadWithNotification:
     """MergeQueueMonitor.reload_config passes notification_config when provided."""
 
-    def test_reload_sets_notification_config(self) -> None:
+    def test_reload_sets_notification_config(self, tmp_path: Path) -> None:
         from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor
 
         ncfg = MagicMock()
         mon = MergeQueueMonitor(
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             repo="test/repo",
             github_user="testuser",
             integration_config=MagicMock(),
@@ -1001,33 +980,33 @@ class TestDispatchConfigReload:
     """_dispatch_config_reload routes to the correct daemon."""
 
     @pytest.mark.asyncio
-    async def test_watchdog_none_is_noop(self) -> None:
+    async def test_watchdog_none_is_noop(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _dispatch_config_reload
 
         cfg = MagicMock()
-        await _dispatch_config_reload("watchdog", cfg, {}, Path("/tmp"))
+        await _dispatch_config_reload("watchdog", cfg, {}, tmp_path)
 
     @pytest.mark.asyncio
-    async def test_empty_monitor_list_is_noop(self) -> None:
+    async def test_empty_monitor_list_is_noop(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _dispatch_config_reload
 
         cfg = MagicMock()
-        await _dispatch_config_reload("pr_monitor", cfg, {"pr_monitors": []}, Path("/tmp"))
-        await _dispatch_config_reload("coderabbit_quota", cfg, {"pr_throttles": []}, Path("/tmp"))
-        await _dispatch_config_reload("integration", cfg, {"merge_queue_monitors": []}, Path("/tmp"))
+        await _dispatch_config_reload("pr_monitor", cfg, {"pr_monitors": []}, tmp_path)
+        await _dispatch_config_reload("coderabbit_quota", cfg, {"pr_throttles": []}, tmp_path)
+        await _dispatch_config_reload("integration", cfg, {"merge_queue_monitors": []}, tmp_path)
 
 
 class TestReloadAllConfigs:
     """_reload_all_configs dispatches to correct daemons based on key prefix."""
 
     @pytest.mark.asyncio
-    async def test_watchdog_key_dispatches_to_watchdog(self) -> None:
+    async def test_watchdog_key_dispatches_to_watchdog(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
         cfg = MagicMock()
         wd = MagicMock()
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
         resolved_key = str(project_dir.resolve())
 
         with (
@@ -1043,13 +1022,13 @@ class TestReloadAllConfigs:
         wd.reload_config.assert_called_once_with(cfg.watchdog, cfg.memory_guard)
 
     @pytest.mark.asyncio
-    async def test_pr_monitor_key_dispatches_to_monitors(self) -> None:
+    async def test_pr_monitor_key_dispatches_to_monitors(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
         cfg = MagicMock()
         mon = MagicMock()
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
         resolved_key = str(project_dir.resolve())
 
         with (
@@ -1065,13 +1044,13 @@ class TestReloadAllConfigs:
         mon.reload_config.assert_called_once_with(cfg.pr_monitor, cfg.notification)
 
     @pytest.mark.asyncio
-    async def test_coderabbit_key_dispatches_to_throttle(self) -> None:
+    async def test_coderabbit_key_dispatches_to_throttle(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
         cfg = MagicMock()
         throttle = MagicMock()
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
         resolved_key = str(project_dir.resolve())
 
         with (
@@ -1087,13 +1066,13 @@ class TestReloadAllConfigs:
         throttle.reload_config.assert_called_once_with(cfg.coderabbit_quota)
 
     @pytest.mark.asyncio
-    async def test_integration_key_dispatches_to_merge_queue(self) -> None:
+    async def test_integration_key_dispatches_to_merge_queue(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
         cfg = MagicMock()
         mqm = MagicMock()
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
         resolved_key = str(project_dir.resolve())
 
         with (
@@ -1109,12 +1088,12 @@ class TestReloadAllConfigs:
         mqm.reload_config.assert_called_once_with(cfg.integration, cfg.notification)
 
     @pytest.mark.asyncio
-    async def test_llm_key_reloads_provider(self) -> None:
+    async def test_llm_key_reloads_provider(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
         cfg = MagicMock()
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
@@ -1127,12 +1106,12 @@ class TestReloadAllConfigs:
         mock_reload.assert_called_once_with(cfg, project_dir)
 
     @pytest.mark.asyncio
-    async def test_runtime_key_reloads_runtime(self) -> None:
+    async def test_runtime_key_reloads_runtime(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
         cfg = MagicMock()
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
@@ -1145,11 +1124,11 @@ class TestReloadAllConfigs:
         mock_reload.assert_called_once_with(cfg)
 
     @pytest.mark.asyncio
-    async def test_supervisor_key_dispatches_to_daemon_config(self) -> None:
+    async def test_supervisor_key_dispatches_to_daemon_config(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
         cfg = MagicMock()
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
@@ -1162,11 +1141,11 @@ class TestReloadAllConfigs:
         mock_reload.assert_called_once_with(project_dir)
 
     @pytest.mark.asyncio
-    async def test_oversight_key_dispatches_to_oversight_reload(self) -> None:
+    async def test_oversight_key_dispatches_to_oversight_reload(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
         cfg = MagicMock()
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
@@ -1182,10 +1161,10 @@ class TestReloadAllConfigs:
         mock_reload.assert_called_once_with(cfg)
 
     @pytest.mark.asyncio
-    async def test_unmatched_key_returns_none(self) -> None:
+    async def test_unmatched_key_returns_none(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
 
         with patch("sova.dashboard.app.get_daemon_components", return_value={}):
             err = await _reload_all_configs(project_dir, "some_unknown_key")
@@ -1193,10 +1172,10 @@ class TestReloadAllConfigs:
         assert err is None
 
     @pytest.mark.asyncio
-    async def test_load_config_failure_returns_error_message(self) -> None:
+    async def test_load_config_failure_returns_error_message(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
 
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("config parse error")):
             err = await _reload_all_configs(project_dir, "watchdog.enabled")
@@ -1205,14 +1184,14 @@ class TestReloadAllConfigs:
         assert "watchdog" in err
 
     @pytest.mark.asyncio
-    async def test_reload_failure_returns_error_message(self) -> None:
+    async def test_reload_failure_returns_error_message(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.settings import _reload_all_configs
 
         cfg = MagicMock()
         wd = MagicMock()
         wd.reload_config.side_effect = RuntimeError("boom")
 
-        project_dir = Path("/tmp/test")
+        project_dir = tmp_path
         resolved_key = str(project_dir.resolve())
 
         with (

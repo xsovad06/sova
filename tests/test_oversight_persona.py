@@ -30,9 +30,9 @@ class TestGetPersonaPath:
         assert path.name == PERSONA_FILENAME
         assert ".config/sova" in str(path)
 
-    def test_override_path(self) -> None:
-        path = _get_persona_path("/tmp/custom_persona.md")
-        assert path == Path("/tmp/custom_persona.md")
+    def test_override_path(self, tmp_path: Path) -> None:
+        path = _get_persona_path(str(tmp_path / "custom_persona.md"))
+        assert path == tmp_path / "custom_persona.md"
 
     def test_tilde_expansion(self) -> None:
         path = _get_persona_path("~/my_persona.md")

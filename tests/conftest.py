@@ -37,6 +37,78 @@ pytest_plugins = ["pytester"]
 # env-isolation fixture below.
 _PRESERVED_ENV = frozenset({"SOVA_DATABASE_URL"})
 
+# Paths a handful of tests still default to instead of ``tmp_path`` (see
+# docs/testing-guidelines.md). Nothing should ever write through one of these
+# literals: every exercised code path reaching a default is mocked. This
+# records each path's mtime (or its absence) at session start and fails the
+# run at session end if one changed or newly appeared, so a future test that
+# stops mocking its collaborator and starts touching the shared path for real
+# is caught immediately instead of silently corrupting another test's run.
+#
+# The snapshot covers each root *and every descendant*, because a write inside
+# an already-existing directory (``/tmp/test/existing.txt`` when ``/tmp/test``
+# is a pre-existing directory) leaves the root's own mtime untouched: comparing
+# only the root would let exactly the write this guard exists to catch pass
+# unnoticed.
+_SHARED_TEST_PATHS = (Path("/tmp/test"), Path("/tmp/test-project"), Path("/tmp/worktree"))
+_shared_path_snapshots: dict[Path, dict[str, float | str]] = {}
+
+# Sentinel recorded for a path that does not exist, so "absent -> present" and
+# "present -> absent" are both ordinary value changes rather than key churn.
+_ABSENT = "absent"
+
+# Cap on how many differing paths the session-end message names, so a root that
+# unexpectedly holds a large tree cannot bury the failure in output.
+_MAX_REPORTED_CHANGES = 20
+
+
+def _snapshot_tree(root: Path) -> dict[str, float | str]:
+    """Record ``root``'s mtime plus the mtime of every path beneath it."""
+    snapshot: dict[str, float | str] = {}
+    try:
+        snapshot[str(root)] = root.stat().st_mtime
+    except OSError:
+        snapshot[str(root)] = _ABSENT
+        return snapshot
+    if not root.is_dir():
+        return snapshot
+    try:
+        descendants = sorted(root.rglob("*"))
+    except OSError:
+        return snapshot
+    for child in descendants:
+        try:
+            snapshot[str(child)] = child.stat().st_mtime
+        except OSError:
+            snapshot[str(child)] = _ABSENT
+    return snapshot
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    for path in _SHARED_TEST_PATHS:
+        _shared_path_snapshots[path] = _snapshot_tree(path)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    changed = []
+    for root, before in _shared_path_snapshots.items():
+        after = _snapshot_tree(root)
+        for key in sorted(set(before) | set(after)):
+            prev = before.get(key, _ABSENT)
+            now = after.get(key, _ABSENT)
+            if prev != now:
+                changed.append(f"{key} (mtime {prev!r} -> {now!r})")
+    if changed:
+        reported = ", ".join(changed[:_MAX_REPORTED_CHANGES])
+        if len(changed) > _MAX_REPORTED_CHANGES:
+            reported += f", and {len(changed) - _MAX_REPORTED_CHANGES} more"
+        print(
+            "Shared /tmp test-default path(s) changed during this session, meaning "
+            "some test wrote through a literal default instead of tmp_path: " + reported
+        )
+        if exitstatus == 0:
+            session.exitstatus = 1
+
 
 def configure_test_logging() -> None:
     """Render exceptions as plain tracebacks instead of rich-with-locals.

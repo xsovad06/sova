@@ -172,12 +172,15 @@ class TestFallbackOrderControls:
 _AGENTS_TEMPLATE = _TEMPLATE.parent / "agents.html"
 
 
+# Module-level rather than a class-scoped fixture method in each class:
+# pytest 9.1 deprecates a class-scoped fixture defined as an instance method.
+@pytest.fixture(scope="module")
+def agents_source() -> str:
+    return _AGENTS_TEMPLATE.read_text(encoding="utf-8")
+
+
 class TestLaunchModalLlmOverride:
     """The launch modal's per-run "Internal LLM model" control (#1036)."""
-
-    @pytest.fixture(scope="class")
-    def agents_source(self) -> str:
-        return _AGENTS_TEMPLATE.read_text(encoding="utf-8")
 
     def test_labelled_as_this_run_only(self, agents_source: str) -> None:
         assert "Internal LLM model (this run only)" in agents_source
@@ -211,10 +214,6 @@ class TestRuntimeModelSelectors:
     Both live in JavaScript, so these are source-level drift guards in the same
     spirit as TestLaunchModalLlmOverride above.
     """
-
-    @pytest.fixture(scope="class")
-    def agents_source(self) -> str:
-        return _AGENTS_TEMPLATE.read_text(encoding="utf-8")
 
     @staticmethod
     def _runtime_select_body(agents_source: str) -> str:

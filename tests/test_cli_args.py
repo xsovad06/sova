@@ -51,10 +51,11 @@ class TestBuildClaudeCliArgs:
         budget_idx = args.index("--max-budget-usd")
         assert args[budget_idx + 1] == "0"
 
-    def test_includes_system_prompt_file(self) -> None:
-        args = build_claude_cli_args(system_prompt_file="/tmp/sova-system-prompt-abc.txt")
+    def test_includes_system_prompt_file(self, tmp_path: Path) -> None:
+        prompt_file = str(tmp_path / "sova-system-prompt-abc.txt")
+        args = build_claude_cli_args(system_prompt_file=prompt_file)
         sp_idx = args.index("--system-prompt-file")
-        assert args[sp_idx + 1] == "/tmp/sova-system-prompt-abc.txt"
+        assert args[sp_idx + 1] == prompt_file
         assert "--system-prompt" not in args
 
     def test_includes_system_prompt_file_accepts_path_object(self, tmp_path: Path) -> None:

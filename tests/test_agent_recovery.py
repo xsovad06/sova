@@ -695,13 +695,13 @@ class TestLoadRepoConfig:
         with patch("sova.dashboard.project_context.get_project_dir", return_value=None):
             assert _load_repo_config() is None
 
-    def test_load_repo_config_exception(self) -> None:
+    def test_load_repo_config_exception(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.agent_recovery import _load_repo_config
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=tmp_path),
             patch(
                 "sova.config.loader.load_config",
                 side_effect=RuntimeError("bad config"),
@@ -709,7 +709,7 @@ class TestLoadRepoConfig:
         ):
             assert _load_repo_config() is None
 
-    def test_load_repo_config_no_github_repo(self) -> None:
+    def test_load_repo_config_no_github_repo(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch
 
         from sova.dashboard.services.agent_recovery import _load_repo_config
@@ -717,7 +717,7 @@ class TestLoadRepoConfig:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = ""
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=tmp_path),
             patch(
                 "sova.config.loader.load_config",
                 return_value=mock_cfg,

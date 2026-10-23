@@ -293,7 +293,7 @@ async def test_dedup_promotes_at_threshold() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_extract_memories_is_noop() -> None:
+async def test_extract_memories_is_noop(tmp_path: Path) -> None:
     """extract_memories is a no-op that returns an empty ExtractionResult."""
     from sova.knowledge.extraction import extract_memories
 
@@ -304,7 +304,7 @@ async def test_extract_memories_is_noop() -> None:
         task_title="Fix DB session leak",
         files_changed=["sova/db/session.py"],
         step_summaries=["develop: completed"],
-        cwd="/tmp",
+        cwd=str(tmp_path),
     )
 
     assert result.memories_stored == 0
@@ -313,7 +313,7 @@ async def test_extract_memories_is_noop() -> None:
     assert result.error is None
 
 
-async def test_extract_memories_noop_with_all_optional_params() -> None:
+async def test_extract_memories_noop_with_all_optional_params(tmp_path: Path) -> None:
     """extract_memories accepts all optional params without error."""
     from sova.knowledge.extraction import extract_memories
 
@@ -326,7 +326,7 @@ async def test_extract_memories_noop_with_all_optional_params() -> None:
         step_summaries=["review: completed"],
         review_findings=[{"file": "a.py", "line": 10, "severity": 5}],
         spec_content="## Design\nSome spec content",
-        cwd="/tmp/workspace",
+        cwd=str(tmp_path / "workspace"),
     )
 
     assert result.memories_stored == 0
@@ -338,39 +338,39 @@ async def test_extract_memories_noop_with_all_optional_params() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_step_execute_returns_noop() -> None:
+async def test_step_execute_returns_noop(tmp_path: Path) -> None:
     from sova.core.steps.extract_memory import ExtractMemoryStep
 
     step = ExtractMemoryStep()
-    ctx = _make_ctx()
+    ctx = _make_ctx(tmp_path)
     result = await step.execute(ctx)
 
     assert result.success is True
     assert "No novel learnings" in result.summary
 
 
-async def test_step_validate_always_passes() -> None:
+async def test_step_validate_always_passes(tmp_path: Path) -> None:
     from sova.core.steps.extract_memory import ExtractMemoryStep
 
     step = ExtractMemoryStep()
-    ctx = _make_ctx()
+    ctx = _make_ctx(tmp_path)
     gate = await step.validate_output(ctx)
     assert gate.passed is True
 
 
-async def test_step_can_skip_when_completed() -> None:
+async def test_step_can_skip_when_completed(tmp_path: Path) -> None:
     from sova.core.steps.extract_memory import ExtractMemoryStep
 
     step = ExtractMemoryStep()
-    ctx = _make_ctx(completed_steps=frozenset({"extract_memory"}))
+    ctx = _make_ctx(tmp_path, completed_steps=frozenset({"extract_memory"}))
     assert await step.can_skip(ctx) is True
 
 
-async def test_step_can_skip_when_not_completed() -> None:
+async def test_step_can_skip_when_not_completed(tmp_path: Path) -> None:
     from sova.core.steps.extract_memory import ExtractMemoryStep
 
     step = ExtractMemoryStep()
-    ctx = _make_ctx()
+    ctx = _make_ctx(tmp_path)
     assert await step.can_skip(ctx) is False
 
 
@@ -400,7 +400,7 @@ def test_address_review_pipeline_includes_extract_memory() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_ctx(*, completed_steps: frozenset[str] | None = None) -> object:
+def _make_ctx(working_dir: Path, *, completed_steps: frozenset[str] | None = None) -> object:
     """Create a minimal mock ExecutionContext for step tests."""
     from unittest.mock import MagicMock
 
@@ -412,6 +412,6 @@ def _make_ctx(*, completed_steps: frozenset[str] | None = None) -> object:
     ctx.repo = "user/repo"
     ctx.task = Task(id="42", title="Test task", body="", state="in_progress", labels=[], url="")
     ctx.files_changed = ["src/main.py"]
-    ctx.working_dir = Path("/tmp")
+    ctx.working_dir = working_dir
     ctx.completed_steps = completed_steps or frozenset()
     return ctx

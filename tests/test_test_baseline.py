@@ -41,9 +41,9 @@ def _mock_adapter() -> AsyncMock:
     return adapter
 
 
-def _make_ctx(**kwargs) -> ExecutionContext:
+def _make_ctx(tmp_path: Path, **kwargs) -> ExecutionContext:
     defaults = {
-        "project_dir": Path("/tmp/test"),
+        "project_dir": tmp_path,
         "config": ProjectConfig(),
         "adapter": _mock_adapter(),
         "issue_number": "42",
@@ -224,10 +224,10 @@ class TestRunTestSuite:
         with pytest.raises(ValueError, match="Invalid cwd"):
             await run_test_suite("pytest", None, cmd_timeout=60)  # type: ignore[arg-type]
 
-    async def test_non_pytest_uses_exit_code_mode(self) -> None:
+    async def test_non_pytest_uses_exit_code_mode(self, tmp_path: Path) -> None:
         with patch("sova.core.test_baseline.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, success=True, stdout="", stderr="")
-            result = await run_test_suite("npm test", Path("/tmp"), cmd_timeout=60)
+            result = await run_test_suite("npm test", tmp_path, cmd_timeout=60)
         assert result.mode == "exit_code"
         assert result.exit_code == 0
         assert result.tests == []
@@ -307,7 +307,7 @@ class TestCaptureBaselineStep:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        ctx = _make_ctx(worktree_dir=worktree)
+        ctx = _make_ctx(tmp_path, worktree_dir=worktree)
 
         with patch("sova.core.steps.capture_baseline.run_test_suite", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = BaselineSnapshot(
@@ -321,36 +321,36 @@ class TestCaptureBaselineStep:
         assert ctx.test_baseline_path is not None
         assert ctx.test_baseline_path.exists()
 
-    async def test_disabled_via_config(self) -> None:
+    async def test_disabled_via_config(self, tmp_path: Path) -> None:
         from sova.core.steps.capture_baseline import CaptureBaselineStep
 
         config = ProjectConfig(testing={"baseline_enabled": False})
-        ctx = _make_ctx(config=config, worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, config=config, worktree_dir=tmp_path / "wt")
         result = await CaptureBaselineStep().execute(ctx)
         assert result.success
         assert "disabled" in result.summary
 
-    async def test_no_test_cmd(self) -> None:
+    async def test_no_test_cmd(self, tmp_path: Path) -> None:
         from sova.core.steps.capture_baseline import CaptureBaselineStep
 
         config = ProjectConfig(test_cmd="")
-        ctx = _make_ctx(config=config, worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, config=config, worktree_dir=tmp_path / "wt")
         result = await CaptureBaselineStep().execute(ctx)
         assert result.success
         assert "no test command" in result.summary.lower()
 
-    async def test_no_worktree(self) -> None:
+    async def test_no_worktree(self, tmp_path: Path) -> None:
         from sova.core.steps.capture_baseline import CaptureBaselineStep
 
-        ctx = _make_ctx(worktree_dir=None)
+        ctx = _make_ctx(tmp_path, worktree_dir=None)
         result = await CaptureBaselineStep().execute(ctx)
         assert result.success
         assert "no worktree" in result.summary.lower()
 
-    async def test_capture_failure_non_fatal(self) -> None:
+    async def test_capture_failure_non_fatal(self, tmp_path: Path) -> None:
         from sova.core.steps.capture_baseline import CaptureBaselineStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "wt")
         with patch("sova.core.steps.capture_baseline.run_test_suite", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = RuntimeError("timeout")
             result = await CaptureBaselineStep().execute(ctx)
@@ -359,10 +359,10 @@ class TestCaptureBaselineStep:
         assert "non-fatal" in result.summary.lower()
         assert ctx.test_baseline_path is None
 
-    async def test_validate_output_always_passes(self) -> None:
+    async def test_validate_output_always_passes(self, tmp_path: Path) -> None:
         from sova.core.steps.capture_baseline import CaptureBaselineStep
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         gate = await CaptureBaselineStep().validate_output(ctx)
         assert gate.passed
 
@@ -372,16 +372,16 @@ class TestCaptureBaselineStep:
         worktree = tmp_path / "worktree"
         (worktree / ".sova").mkdir(parents=True)
         (worktree / ".sova" / "test-baseline.json").write_text('{"mode":"exit_code","exit_code":0,"tests":[]}')
-        ctx = _make_ctx(worktree_dir=worktree)
+        ctx = _make_ctx(tmp_path, worktree_dir=worktree)
 
         step = CaptureBaselineStep()
         assert await step.can_skip(ctx)
         assert ctx.test_baseline_path is not None
 
-    async def test_can_skip_when_completed(self) -> None:
+    async def test_can_skip_when_completed(self, tmp_path: Path) -> None:
         from sova.core.steps.capture_baseline import CaptureBaselineStep
 
-        ctx = _make_ctx(completed_steps=frozenset({"capture_baseline"}))
+        ctx = _make_ctx(tmp_path, completed_steps=frozenset({"capture_baseline"}))
         assert await CaptureBaselineStep().can_skip(ctx)
 
     async def test_clears_stale_check_cache_marker(self, tmp_path: Path) -> None:
@@ -389,7 +389,7 @@ class TestCaptureBaselineStep:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        ctx = _make_ctx(worktree_dir=worktree)
+        ctx = _make_ctx(tmp_path, worktree_dir=worktree)
 
         with (
             patch("sova.core.steps.capture_baseline.run_test_suite", new_callable=AsyncMock) as mock_run,
@@ -417,7 +417,7 @@ class TestValidateStepRegressions:
         )
         save_baseline(baseline, worktree)
 
-        ctx = _make_ctx(worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
+        ctx = _make_ctx(tmp_path, worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
 
         with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
             mock_test.return_value = BaselineSnapshot(
@@ -442,7 +442,7 @@ class TestValidateStepRegressions:
         )
         save_baseline(baseline, worktree)
 
-        ctx = _make_ctx(worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
+        ctx = _make_ctx(tmp_path, worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
 
         with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
             mock_test.return_value = BaselineSnapshot(
@@ -454,10 +454,10 @@ class TestValidateStepRegressions:
 
         assert gate.passed
 
-    async def test_no_baseline_skips_regression_check(self) -> None:
+    async def test_no_baseline_skips_regression_check(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/wt"), test_baseline_path=None)
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "wt", test_baseline_path=None)
         gate = await ValidateStep().verify_output(ctx)
 
         assert gate.passed
@@ -482,6 +482,7 @@ class TestValidateStepRegressions:
 
         # project_dir != worktree_dir: baseline should still be found
         ctx = _make_ctx(
+            tmp_path,
             project_dir=project,
             worktree_dir=worktree,
             test_baseline_path=baseline_path(worktree),
@@ -510,7 +511,7 @@ class TestValidateStepRegressions:
         baseline = BaselineSnapshot(mode="per_test", exit_code=0, tests=[])
         save_baseline(baseline, worktree)
 
-        ctx = _make_ctx(worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
+        ctx = _make_ctx(tmp_path, worktree_dir=worktree, test_baseline_path=baseline_path(worktree))
 
         with patch("sova.core.steps.validate.run_test_suite", new_callable=AsyncMock) as mock_test:
             mock_test.side_effect = RuntimeError("boom")
@@ -519,10 +520,10 @@ class TestValidateStepRegressions:
         # Non-fatal: passes despite exception
         assert gate.passed
 
-    async def test_no_commits_ahead_fails_gate(self) -> None:
+    async def test_no_commits_ahead_fails_gate(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/wt"), test_baseline_path=None)
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "wt", test_baseline_path=None)
 
         with patch("sova.core.steps.validate.run") as mock_run:
             mock_run.return_value = MagicMock(success=True, stdout="")
@@ -531,10 +532,10 @@ class TestValidateStepRegressions:
         assert not gate.passed
         assert "No commits ahead of base" in gate.reason
 
-    async def test_git_log_failure_fails_gate(self) -> None:
+    async def test_git_log_failure_fails_gate(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/wt"), test_baseline_path=None)
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "wt", test_baseline_path=None)
 
         with patch("sova.core.steps.validate.run") as mock_run:
             mock_run.return_value = MagicMock(success=False, stdout="")

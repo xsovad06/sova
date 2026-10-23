@@ -581,7 +581,7 @@ class TestDashboardHealth:
         assert "msg.status" in html
         assert "sendBrowserNotification" in html
 
-    async def test_supervisor_page_loads(self, client: AsyncClient) -> None:
+    async def test_supervisor_page_loads(self, client: AsyncClient, tmp_path: Path) -> None:
         from dataclasses import dataclass
         from unittest.mock import patch
 
@@ -590,7 +590,7 @@ class TestDashboardHealth:
             github_repo: str = "owner/repo"
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/proj"),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path / "proj")),
             patch("sova.config.loader.load_config", return_value=FakeCfg()),
         ):
             resp = await client.get("/supervisor")
@@ -1530,7 +1530,7 @@ class TestDuplicateAgentPrevention:
         assert result["status"] == "started"
         assert result["run_id"] == 2
 
-    async def test_start_agent_passes_pr_number_to_task_run(self) -> None:
+    async def test_start_agent_passes_pr_number_to_task_run(self, tmp_path: Path) -> None:
         """pr_number should be forwarded to _create_task_run for immediate persistence."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1564,7 +1564,7 @@ class TestDuplicateAgentPrevention:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/wt"),
+                return_value=tmp_path / "wt",
             ),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -1577,7 +1577,7 @@ class TestDuplicateAgentPrevention:
         call_kwargs = mock_create.call_args
         assert call_kwargs.kwargs["pr_number"] == 122
 
-    async def test_start_agent_skips_in_progress_for_reviewer(self) -> None:
+    async def test_start_agent_skips_in_progress_for_reviewer(self, tmp_path: Path) -> None:
         """Reviewer agents must not trigger _transition_to_in_progress (would overwrite in_review)."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1607,7 +1607,7 @@ class TestDuplicateAgentPrevention:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/wt"),
+                return_value=tmp_path / "wt",
             ),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock) as mock_transition,
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -1618,7 +1618,7 @@ class TestDuplicateAgentPrevention:
         assert result["status"] == "started"
         mock_transition.assert_not_called()
 
-    async def test_start_agent_skips_in_progress_for_address_review(self) -> None:
+    async def test_start_agent_skips_in_progress_for_address_review(self, tmp_path: Path) -> None:
         """Developer spawned with pr_number (address-review) must not transition to in_progress."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1648,7 +1648,7 @@ class TestDuplicateAgentPrevention:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/wt"),
+                return_value=tmp_path / "wt",
             ),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock) as mock_transition,
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -2391,7 +2391,7 @@ class TestDuplicateAgentPrevention:
         actual_cwd = mock_spawn_direct.call_args[0][1]
         assert actual_cwd == worktree_path
 
-    async def test_start_agent_recovers_pr_number_from_db_history(self) -> None:
+    async def test_start_agent_recovers_pr_number_from_db_history(self, tmp_path: Path) -> None:
         """When start_agent is called for a developer run without pr_number but a prior
         terminal run for the same issue has one, start_agent must recover that pr_number
         so the agent gets --pr and routes to the address-review pipeline instead of
@@ -2447,7 +2447,7 @@ class TestDuplicateAgentPrevention:
                 agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/issue-344"
             ),
             patch.object(
-                agent_lifecycle, "_resolve_issue_worktree", new_callable=AsyncMock, return_value=Path("/tmp/wt")
+                agent_lifecycle, "_resolve_issue_worktree", new_callable=AsyncMock, return_value=tmp_path / "wt"
             ),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
@@ -2462,7 +2462,7 @@ class TestDuplicateAgentPrevention:
         cmd = spawned_cmd[0]
         assert "--pr" in cmd and "372" in cmd, f"Expected '--pr 372' in cmd, got: {cmd}"
 
-    async def test_start_agent_does_not_recover_pr_number_for_reviewer(self) -> None:
+    async def test_start_agent_does_not_recover_pr_number_for_reviewer(self, tmp_path: Path) -> None:
         """PR number recovery from DB history should only apply to 'developer' role.
         Other roles are not affected."""
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -2508,7 +2508,7 @@ class TestDuplicateAgentPrevention:
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
             patch.object(
-                agent_lifecycle, "_resolve_issue_worktree", new_callable=AsyncMock, return_value=Path("/tmp/wt")
+                agent_lifecycle, "_resolve_issue_worktree", new_callable=AsyncMock, return_value=tmp_path / "wt"
             ),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
@@ -2523,18 +2523,18 @@ class TestDuplicateAgentPrevention:
         # reviewer should NOT have --pr recovered from history
         assert "--pr" not in spawned_cmd[0], f"Reviewer should not get --pr: {spawned_cmd[0]}"
 
-    async def test_recover_pr_number_returns_none_on_db_error(self) -> None:
+    async def test_recover_pr_number_returns_none_on_db_error(self, tmp_path: Path) -> None:
         """_recover_last_pr_number must return None (not raise) when the DB query fails."""
         from unittest.mock import patch
 
         from sova.dashboard.services.agent_lifecycle import _recover_last_pr_number
 
         with patch("sova.db.session.get_session", side_effect=RuntimeError("db boom")):
-            result = await _recover_last_pr_number("42", Path("/tmp/proj"))
+            result = await _recover_last_pr_number("42", tmp_path / "proj")
 
         assert result is None
 
-    async def test_recover_pr_number_includes_stopped_runs(self) -> None:
+    async def test_recover_pr_number_includes_stopped_runs(self, tmp_path: Path) -> None:
         """A manually-stopped developer run (issue #978) with a pr_number must still
 
         be recoverable: before the "stopped" status existed, a deliberately-stopped
@@ -2563,7 +2563,7 @@ class TestDuplicateAgentPrevention:
             return await original()
 
         with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
-            result = await _recover_last_pr_number("345", Path("/tmp/proj"))
+            result = await _recover_last_pr_number("345", tmp_path / "proj")
 
         assert result == 373
 
@@ -4159,31 +4159,31 @@ class TestQueueServiceEnrichment:
 class TestEnrichSpecStatus:
     """Tests for _enrich_spec_status spec-aware action resolution."""
 
-    async def test_non_researched_items_get_null_spec_status(self) -> None:
+    async def test_non_researched_items_get_null_spec_status(self, tmp_path: Path) -> None:
         from sova.dashboard.services.queue_service import _enrich_spec_status
 
         queue = [
             {"state": "backlog", "issue": "1", "action": "triage"},
             {"state": "triaged", "issue": "2", "action": "research"},
         ]
-        await _enrich_spec_status(queue, Path("/tmp"))
+        await _enrich_spec_status(queue, tmp_path)
         assert queue[0]["spec_status"] is None
         assert queue[1]["spec_status"] is None
         assert queue[0]["action"] == "triage"
         assert queue[1]["action"] == "research"
 
-    async def test_researched_missing_spec_gets_develop(self) -> None:
+    async def test_researched_missing_spec_gets_develop(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.queue_service import _enrich_spec_status
 
         queue = [{"state": "researched", "issue": "10", "action": "review_spec"}]
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=None):
-            await _enrich_spec_status(queue, Path("/tmp"))
+            await _enrich_spec_status(queue, tmp_path)
         assert queue[0]["spec_status"] == "missing"
         assert queue[0]["action"] == "develop"
 
-    async def test_researched_approved_spec_gets_develop(self) -> None:
+    async def test_researched_approved_spec_gets_develop(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.queue_service import _enrich_spec_status
@@ -4193,11 +4193,11 @@ class TestEnrichSpecStatus:
             "sova.dashboard.services.spec_service.read_spec",
             return_value={"status": "approved"},
         ):
-            await _enrich_spec_status(queue, Path("/tmp"))
+            await _enrich_spec_status(queue, tmp_path)
         assert queue[0]["spec_status"] == "approved"
         assert queue[0]["action"] == "develop"
 
-    async def test_researched_draft_spec_gets_review_spec(self) -> None:
+    async def test_researched_draft_spec_gets_review_spec(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.queue_service import _enrich_spec_status
@@ -4207,11 +4207,11 @@ class TestEnrichSpecStatus:
             "sova.dashboard.services.spec_service.read_spec",
             return_value={"status": "draft"},
         ):
-            await _enrich_spec_status(queue, Path("/tmp"))
+            await _enrich_spec_status(queue, tmp_path)
         assert queue[0]["spec_status"] == "draft"
         assert queue[0]["action"] == "review_spec"
 
-    async def test_researched_rejected_spec_gets_review_spec(self) -> None:
+    async def test_researched_rejected_spec_gets_review_spec(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.queue_service import _enrich_spec_status
@@ -4221,11 +4221,11 @@ class TestEnrichSpecStatus:
             "sova.dashboard.services.spec_service.read_spec",
             return_value={"status": "rejected"},
         ):
-            await _enrich_spec_status(queue, Path("/tmp"))
+            await _enrich_spec_status(queue, tmp_path)
         assert queue[0]["spec_status"] == "rejected"
         assert queue[0]["action"] == "review_spec"
 
-    async def test_read_spec_exception_falls_back_to_missing(self) -> None:
+    async def test_read_spec_exception_falls_back_to_missing(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.queue_service import _enrich_spec_status
@@ -4235,11 +4235,11 @@ class TestEnrichSpecStatus:
             "sova.dashboard.services.spec_service.read_spec",
             side_effect=OSError("permission denied"),
         ):
-            await _enrich_spec_status(queue, Path("/tmp"))
+            await _enrich_spec_status(queue, tmp_path)
         assert queue[0]["spec_status"] == "missing"
         assert queue[0]["action"] == "develop"
 
-    async def test_spec_without_status_field_defaults_to_draft(self) -> None:
+    async def test_spec_without_status_field_defaults_to_draft(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.queue_service import _enrich_spec_status
@@ -4249,11 +4249,11 @@ class TestEnrichSpecStatus:
             "sova.dashboard.services.spec_service.read_spec",
             return_value={"complexity": "medium"},
         ):
-            await _enrich_spec_status(queue, Path("/tmp"))
+            await _enrich_spec_status(queue, tmp_path)
         assert queue[0]["spec_status"] == "draft"
         assert queue[0]["action"] == "review_spec"
 
-    async def test_mixed_states_enriched_correctly(self) -> None:
+    async def test_mixed_states_enriched_correctly(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.queue_service import _enrich_spec_status
@@ -4273,7 +4273,7 @@ class TestEnrichSpecStatus:
             return None
 
         with patch("sova.dashboard.services.spec_service.read_spec", side_effect=mock_read_spec):
-            await _enrich_spec_status(queue, Path("/tmp"))
+            await _enrich_spec_status(queue, tmp_path)
 
         assert queue[0]["spec_status"] is None
         assert queue[0]["action"] == "triage"
@@ -4517,7 +4517,7 @@ class TestAgentsAPI:
         data = resp.json()
         assert data["has_pr"] is False
 
-    async def test_pr_status_with_pr(self, client: AsyncClient) -> None:
+    async def test_pr_status_with_pr(self, client: AsyncClient, tmp_path: Path) -> None:
         from dataclasses import dataclass
         from unittest.mock import AsyncMock, patch
 
@@ -4543,7 +4543,7 @@ class TestAgentsAPI:
             github_user: str = "testuser"
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/test"),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path)),
             patch("sova.config.loader.load_config", return_value=FakeConfig()),
             patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=FakePRInfo()),
             patch("sova.git.operations.get_pr_status", new_callable=AsyncMock, return_value=FakePRStatus()),
@@ -4559,7 +4559,7 @@ class TestAgentsAPI:
         assert data["ci_status"] == "none"
         assert data["review_decision"] == "APPROVED"
 
-    async def test_pr_status_no_pr_found(self, client: AsyncClient) -> None:
+    async def test_pr_status_no_pr_found(self, client: AsyncClient, tmp_path: Path) -> None:
         from dataclasses import dataclass
         from unittest.mock import AsyncMock, patch
 
@@ -4569,7 +4569,7 @@ class TestAgentsAPI:
             github_user: str = "testuser"
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/test"),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path)),
             patch("sova.config.loader.load_config", return_value=FakeConfig()),
             patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=None),
         ):
@@ -6668,19 +6668,19 @@ class TestSetupAPI:
         reg_mod._REGISTRY_FILE = orig_file
         reg_mod._REGISTRY_DIR = orig_dir
 
-    async def test_install_nonexistent_directory(self, client: AsyncClient) -> None:
+    async def test_install_nonexistent_directory(self, client: AsyncClient, tmp_path: Path) -> None:
         resp = await client.post(
             "/api/setup/install",
-            json={"project_path": "/tmp/nonexistent_sova_test_dir_xyz"},
+            json={"project_path": str(tmp_path / "nonexistent_sova_test_dir_xyz")},
         )
         assert resp.status_code == 404
         data = resp.json()
         assert "Directory not found" in data["detail"]
 
-    async def test_configure_nonexistent_directory(self, client: AsyncClient) -> None:
+    async def test_configure_nonexistent_directory(self, client: AsyncClient, tmp_path: Path) -> None:
         resp = await client.post(
             "/api/setup/configure",
-            json={"project_path": "/tmp/nonexistent_sova_test_dir_xyz", "github_repo": "u/r"},
+            json={"project_path": str(tmp_path / "nonexistent_sova_test_dir_xyz"), "github_repo": "u/r"},
         )
         assert resp.status_code == 404
         data = resp.json()
@@ -7644,9 +7644,8 @@ class TestMergeAwareFinalization:
 
         assert await _check_pr_merged_on_failure(pr_number=None, project_dir=None) is False
 
-    async def test_start_command_passes_pr_number_to_task_run(self) -> None:
+    async def test_start_command_passes_pr_number_to_task_run(self, tmp_path: Path) -> None:
         """start_command should extract pr from args and pass to _create_task_run."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -7677,7 +7676,7 @@ class TestMergeAwareFinalization:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/fake-worktree-32"),
+                return_value=tmp_path / "fake-worktree-32",
             ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
             patch(
@@ -7702,9 +7701,8 @@ class TestMergeAwareFinalization:
         mock_create.assert_awaited_once()
         assert mock_create.call_args.kwargs.get("pr_number") == 88
 
-    async def test_start_command_sets_stream_parser_from_runtime(self) -> None:
+    async def test_start_command_sets_stream_parser_from_runtime(self, tmp_path: Path) -> None:
         """start_command stores the runtime's per-process parser on AgentState, like start_agent."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -7733,7 +7731,7 @@ class TestMergeAwareFinalization:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/fake-worktree-32"),
+                return_value=tmp_path / "fake-worktree-32",
             ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
@@ -7753,14 +7751,13 @@ class TestMergeAwareFinalization:
         assert pa.agents[99].stream_parser is sentinel_parser
         assert pa.agents[99].stream_reader_drain_timeout == 42.0
 
-    async def test_start_command_create_stream_parser_failure_does_not_orphan_process(self) -> None:
+    async def test_start_command_create_stream_parser_failure_does_not_orphan_process(self, tmp_path: Path) -> None:
         """A parser-construction failure after a successful spawn must not be treated as a spawn failure.
 
         Mirrors test_start_agent_create_stream_parser_failure_does_not_orphan_process for the
         start_command() path: the subprocess is already running by the time
         create_stream_parser() is called, so raising here must not finalize the run as orphaned.
         """
-        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -7788,7 +7785,7 @@ class TestMergeAwareFinalization:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/fake-worktree-32"),
+                return_value=tmp_path / "fake-worktree-32",
             ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
@@ -7808,13 +7805,12 @@ class TestMergeAwareFinalization:
         assert pa.agents[99].stream_parser is None
         mock_orphan.assert_not_awaited()
 
-    async def test_start_command_drain_timeout_failure_does_not_discard_parser(self) -> None:
+    async def test_start_command_drain_timeout_failure_does_not_discard_parser(self, tmp_path: Path) -> None:
         """A stream_reader_drain_timeout() failure must not discard an already-built parser.
 
         Mirrors test_start_agent_drain_timeout_failure_does_not_discard_parser for the
         start_command() path.
         """
-        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -7844,7 +7840,7 @@ class TestMergeAwareFinalization:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/fake-worktree-32"),
+                return_value=tmp_path / "fake-worktree-32",
             ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
@@ -7865,9 +7861,8 @@ class TestMergeAwareFinalization:
         assert pa.agents[99].stream_reader_drain_timeout is None
         mock_orphan.assert_not_awaited()
 
-    async def test_wait_and_finalize_overrides_failed_to_done_when_pr_merged(self) -> None:
+    async def test_wait_and_finalize_overrides_failed_to_done_when_pr_merged(self, tmp_path: Path) -> None:
         """_wait_and_finalize should mark status 'done' when integration cmd fails but PR is merged."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -7882,7 +7877,7 @@ class TestMergeAwareFinalization:
             role="command:integrate-pr",
             process=mock_process,
             pr_number=88,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         pa = ProjectAgents()
@@ -8312,8 +8307,7 @@ class TestRecordCostRuntimeModel:
 
 
 class TestWaitAndFinalizeGraphBroadcast:
-    async def test_broadcasts_graph_invalidated_on_finalization(self) -> None:
-        from pathlib import Path
+    async def test_broadcasts_graph_invalidated_on_finalization(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -8327,7 +8321,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             issue="508",
             role="developer",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         pa = ProjectAgents()
@@ -8345,15 +8339,14 @@ class TestWaitAndFinalizeGraphBroadcast:
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        project = Path("/tmp/test-project")
+        project = tmp_path
         assert [c.args for c in mock_ws_manager.broadcast_event.await_args_list] == [
             ("agent_finished", project),
             ("graph_invalidated", project),
         ]
 
-    async def test_sends_only_agent_finished_when_already_terminal(self) -> None:
+    async def test_sends_only_agent_finished_when_already_terminal(self, tmp_path: Path) -> None:
         """A run that reached a terminal status on its own (awaiting_approval) still refreshes the Tasks list."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -8367,7 +8360,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             issue="508",
             role="developer",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         pa = ProjectAgents()
@@ -8387,12 +8380,11 @@ class TestWaitAndFinalizeGraphBroadcast:
 
         mock_ws_manager.broadcast_event.assert_awaited_once_with(
             "agent_finished",
-            Path("/tmp/test-project"),
+            tmp_path,
             extra={"run_id": 43, "status": "done", "issue": "508", "pr_number": None, "role": "developer"},
         )
 
-    async def test_broadcasts_even_when_auto_handoff_raises(self) -> None:
-        from pathlib import Path
+    async def test_broadcasts_even_when_auto_handoff_raises(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -8406,7 +8398,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             issue="508",
             role="developer",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         pa = ProjectAgents()
@@ -8434,9 +8426,8 @@ class TestWaitAndFinalizeGraphBroadcast:
         events = [c.args[0] for c in mock_ws_manager.broadcast_event.await_args_list]
         assert events == ["agent_finished", "graph_invalidated"]
 
-    async def test_broadcasts_after_agent_removed_from_pool(self) -> None:
+    async def test_broadcasts_after_agent_removed_from_pool(self, tmp_path: Path) -> None:
         """A client refetching on agent_finished must not still see the agent as running (#1149)."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -8449,7 +8440,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             issue="1148",
             role="researcher",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
         pa = ProjectAgents()
         pa.agents[45] = agent
@@ -8473,8 +8464,7 @@ class TestWaitAndFinalizeGraphBroadcast:
 
         assert seen_running == [False, False]
 
-    async def test_invalidates_queue_and_pr_caches(self) -> None:
-        from pathlib import Path
+    async def test_invalidates_queue_and_pr_caches(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -8487,7 +8477,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             issue="1148",
             role="researcher",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
             pr_number=99,
         )
         pa = ProjectAgents()
@@ -8511,17 +8501,16 @@ class TestWaitAndFinalizeGraphBroadcast:
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        invalidate_queue.assert_called_once_with(Path("/tmp/test-project"))
+        invalidate_queue.assert_called_once_with(tmp_path)
         invalidate_prs.assert_called_once_with("owner/repo")
-        invalidate_verdict.assert_called_once_with(Path("/tmp/test-project"), 99)
+        invalidate_verdict.assert_called_once_with(tmp_path, 99)
 
-    def test_verdict_cache_invalidated_even_when_queue_and_pr_caches_fail(self) -> None:
+    def test_verdict_cache_invalidated_even_when_queue_and_pr_caches_fail(self, tmp_path: Path) -> None:
         """A reviewer exit must still drop the superseded SOVA verdict even if the
         unrelated queue/PR cache invalidation failed (#1162 review: a reviewer's
         agent_finished previously left the Tasks list showing a superseded verdict
         for up to 5 minutes since nothing invalidated work_verdict's own cache).
         """
-        from pathlib import Path
         from unittest.mock import patch
 
         from sova.dashboard.services import agent_finalize
@@ -8532,13 +8521,12 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
             patch("sova.dashboard.services.work_verdict.invalidate_verdict") as invalidate_verdict,
         ):
-            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"), 99)
+            agent_finalize._invalidate_work_item_caches(tmp_path, 99)
 
         invalidate_prs.assert_not_called()
-        invalidate_verdict.assert_called_once_with(Path("/tmp/test-project"), 99)
+        invalidate_verdict.assert_called_once_with(tmp_path, 99)
 
-    def test_queue_cache_invalidated_even_when_config_load_fails(self) -> None:
-        from pathlib import Path
+    def test_queue_cache_invalidated_even_when_config_load_fails(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services import agent_finalize
@@ -8548,14 +8536,13 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
         ):
-            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"))
+            agent_finalize._invalidate_work_item_caches(tmp_path)
 
-        invalidate_queue.assert_called_once_with(Path("/tmp/test-project"))
+        invalidate_queue.assert_called_once_with(tmp_path)
         invalidate_prs.assert_not_called()
 
-    def test_pr_cache_invalidated_even_when_queue_cache_invalidation_fails(self) -> None:
+    def test_pr_cache_invalidated_even_when_queue_cache_invalidation_fails(self, tmp_path: Path) -> None:
         """A failed queue cache invalidation degrades to stale-until-TTL, not a propagated exception (#1149 review)."""
-        from pathlib import Path
         from unittest.mock import MagicMock, patch
 
         from sova.dashboard.services import agent_finalize
@@ -8567,13 +8554,12 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache", side_effect=OSError("stale symlink")),
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
         ):
-            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"))
+            agent_finalize._invalidate_work_item_caches(tmp_path)
 
         invalidate_prs.assert_called_once_with("owner/repo")
 
-    def test_pr_cache_untouched_without_github_repo(self) -> None:
+    def test_pr_cache_untouched_without_github_repo(self, tmp_path: Path) -> None:
         """A Jira-only project has no repo-keyed PR cache entry to drop."""
-        from pathlib import Path
         from unittest.mock import MagicMock, patch
 
         from sova.dashboard.services import agent_finalize
@@ -8585,18 +8571,17 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
         ):
-            agent_finalize._invalidate_work_item_caches(Path("/tmp/test-project"))
+            agent_finalize._invalidate_work_item_caches(tmp_path)
 
         invalidate_prs.assert_not_called()
 
-    async def test_broadcast_failure_does_not_raise(self) -> None:
-        from pathlib import Path
+    async def test_broadcast_failure_does_not_raise(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_finalize
         from sova.dashboard.services.agent_pool import AgentState
 
-        agent = AgentState(run_id=47, issue="1", role="developer", process=None, project_dir=Path("/tmp/test-project"))
+        agent = AgentState(run_id=47, issue="1", role="developer", process=None, project_dir=tmp_path)
         mock_ws_manager = MagicMock()
         mock_ws_manager.broadcast_event = AsyncMock(side_effect=RuntimeError("socket gone"))
 
@@ -8891,7 +8876,7 @@ class TestBudgetOverride:
         mock_log.warning.assert_called_once()
         assert mock_log.warning.call_args[0][0] == "agent.budget_override_record_failed"
 
-    async def test_budget_override_start_records_override_when_over_budget(self) -> None:
+    async def test_budget_override_start_records_override_when_over_budget(self, tmp_path: Path) -> None:
         """start_agent with budget_override=True records the override when issue is over budget."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8942,7 +8927,7 @@ class TestBudgetOverride:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/wt"),
+                return_value=tmp_path / "wt",
             ),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
@@ -8964,7 +8949,7 @@ class TestBudgetOverride:
         assert call_args[0][0] == "600"
         assert call_args[0][1] == 77
 
-    async def test_force_alone_does_not_bypass_budget(self) -> None:
+    async def test_force_alone_does_not_bypass_budget(self, tmp_path: Path) -> None:
         """start_agent with force=True but budget_override=False still returns the budget error.
 
         Regression test: force is used by unrelated callers (CLI --force,
@@ -8996,7 +8981,7 @@ class TestBudgetOverride:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/wt"),
+                return_value=tmp_path / "wt",
             ),
             patch.object(agent_lifecycle, "_check_issue_budget", new_callable=AsyncMock, return_value=budget_error),
             patch.object(agent_lifecycle, "_record_budget_override", mock_record),
@@ -9007,7 +8992,7 @@ class TestBudgetOverride:
         assert result["code"] == "budget_exceeded"
         mock_record.assert_not_awaited()
 
-    async def test_no_force_no_override_recorded(self) -> None:
+    async def test_no_force_no_override_recorded(self, tmp_path: Path) -> None:
         """start_agent without force returns budget error, does not record override."""
         from unittest.mock import AsyncMock, patch
 
@@ -9033,7 +9018,7 @@ class TestBudgetOverride:
                 agent_lifecycle,
                 "_resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp/wt"),
+                return_value=tmp_path / "wt",
             ),
             patch.object(agent_lifecycle, "_check_issue_budget", new_callable=AsyncMock, return_value=budget_error),
             patch.object(agent_lifecycle, "_record_budget_override", mock_record),
@@ -9177,8 +9162,7 @@ class TestNetworkConnectivityPreSpawnCheck:
             last_source="probe",
         )
 
-    def test_blocks_while_unreachable(self) -> None:
-        from pathlib import Path
+    def test_blocks_while_unreachable(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.agent_validation import check_network_connectivity
@@ -9187,7 +9171,7 @@ class TestNetworkConnectivityPreSpawnCheck:
             patch("sova.config.loader.load_config", return_value=self._cfg()),
             patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=True)),
         ):
-            block, warn = check_network_connectivity(Path("/tmp"))
+            block, warn = check_network_connectivity(tmp_path)
 
         assert block is not None
         assert block["code"] == "network_unreachable"
@@ -9195,8 +9179,7 @@ class TestNetworkConnectivityPreSpawnCheck:
         # Reachability is binary, so unlike memory pressure there is no warn tier.
         assert warn is None
 
-    def test_clear_when_reachable(self) -> None:
-        from pathlib import Path
+    def test_clear_when_reachable(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.agent_validation import check_network_connectivity
@@ -9205,29 +9188,27 @@ class TestNetworkConnectivityPreSpawnCheck:
             patch("sova.config.loader.load_config", return_value=self._cfg()),
             patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=False)),
         ):
-            assert check_network_connectivity(Path("/tmp")) == (None, None)
+            assert check_network_connectivity(tmp_path) == (None, None)
 
-    def test_respects_disabled_config(self) -> None:
-        from pathlib import Path
+    def test_respects_disabled_config(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.agent_validation import check_network_connectivity
 
         with patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=True)):
             with patch("sova.config.loader.load_config", return_value=self._cfg(enabled=False)):
-                assert check_network_connectivity(Path("/tmp")) == (None, None)
+                assert check_network_connectivity(tmp_path) == (None, None)
             with patch("sova.config.loader.load_config", return_value=self._cfg(block_spawns=False)):
-                assert check_network_connectivity(Path("/tmp")) == (None, None)
+                assert check_network_connectivity(tmp_path) == (None, None)
 
-    def test_fails_open_when_unevaluable(self) -> None:
-        from pathlib import Path
+    def test_fails_open_when_unevaluable(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.agent_validation import check_network_connectivity
 
         # An unloadable config must not stop every spawn on the machine.
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
-            assert check_network_connectivity(Path("/tmp")) == (None, None)
+            assert check_network_connectivity(tmp_path) == (None, None)
 
 
 class TestMemoryPressureGate:
@@ -9238,8 +9219,7 @@ class TestMemoryPressureGate:
 
         rs._metrics_cache.clear()
 
-    def test_blocks_when_below_block_threshold(self) -> None:
-        from pathlib import Path
+    def test_blocks_when_below_block_threshold(self, tmp_path: Path) -> None:
         from types import SimpleNamespace
         from unittest.mock import patch
 
@@ -9253,15 +9233,14 @@ class TestMemoryPressureGate:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mem),
         ):
-            block, warn = check_memory_pressure(Path("/tmp"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is not None
         assert "error" in block
         assert "Insufficient" in block["error"]
         assert warn is None
 
-    def test_warns_when_below_warn_threshold(self) -> None:
-        from pathlib import Path
+    def test_warns_when_below_warn_threshold(self, tmp_path: Path) -> None:
         from types import SimpleNamespace
         from unittest.mock import patch
 
@@ -9275,14 +9254,13 @@ class TestMemoryPressureGate:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mem),
         ):
-            block, warn = check_memory_pressure(Path("/tmp"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
         assert warn is not None
         assert "Low memory" in warn
 
-    def test_clears_when_sufficient_memory(self) -> None:
-        from pathlib import Path
+    def test_clears_when_sufficient_memory(self, tmp_path: Path) -> None:
         from types import SimpleNamespace
         from unittest.mock import patch
 
@@ -9296,13 +9274,12 @@ class TestMemoryPressureGate:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mem),
         ):
-            block, warn = check_memory_pressure(Path("/tmp"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
         assert warn is None
 
-    def test_disabled_skips_check(self) -> None:
-        from pathlib import Path
+    def test_disabled_skips_check(self, tmp_path: Path) -> None:
         from types import SimpleNamespace
         from unittest.mock import patch
 
@@ -9312,13 +9289,12 @@ class TestMemoryPressureGate:
         cfg = SimpleNamespace(memory_guard=guard)
 
         with patch("sova.config.loader.load_config", return_value=cfg):
-            block, warn = check_memory_pressure(Path("/tmp"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
         assert warn is None
 
-    def test_psutil_failure_is_fail_open(self) -> None:
-        from pathlib import Path
+    def test_psutil_failure_is_fail_open(self, tmp_path: Path) -> None:
         from types import SimpleNamespace
         from unittest.mock import patch
 
@@ -9331,13 +9307,12 @@ class TestMemoryPressureGate:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch("psutil.virtual_memory", side_effect=OSError("no psutil")),
         ):
-            block, warn = check_memory_pressure(Path("/tmp"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
         assert warn is None
 
-    def test_config_load_failure_is_fail_open(self) -> None:
-        from pathlib import Path
+    def test_config_load_failure_is_fail_open(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.agent_validation import check_memory_pressure
@@ -9346,13 +9321,12 @@ class TestMemoryPressureGate:
             "sova.config.loader.load_config",
             side_effect=RuntimeError("bad config"),
         ):
-            block, warn = check_memory_pressure(Path("/tmp"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
         assert warn is None
 
-    def test_block_includes_available_gb(self) -> None:
-        from pathlib import Path
+    def test_block_includes_available_gb(self, tmp_path: Path) -> None:
         from types import SimpleNamespace
         from unittest.mock import patch
 
@@ -9366,7 +9340,7 @@ class TestMemoryPressureGate:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mem),
         ):
-            block, _ = check_memory_pressure(Path("/tmp"))
+            block, _ = check_memory_pressure(tmp_path)
 
         assert block is not None
         assert block["available_gb"] == 0.5
@@ -10455,7 +10429,7 @@ class TestValidateMergeCommand:
             result = await _validate_merge_command(1, agent)
         assert result.failure_reason == "integrate-pr exited without merging PR #955 (state=OPEN)"
 
-    async def test_passes_when_open_but_actively_queued(self) -> None:
+    async def test_passes_when_open_but_actively_queued(self, tmp_path: Path) -> None:
         """An enqueued PR is tracked by MergeQueueMonitor independently; not a failure."""
         from datetime import datetime, timezone
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -10471,7 +10445,7 @@ class TestValidateMergeCommand:
                     pr_number=956,
                     repo="owner/repo",
                     issue_number="915",
-                    project_dir="/tmp/test",
+                    project_dir=str(tmp_path),
                     enqueued_at=datetime.now(timezone.utc),
                     github_user="user",
                     branch_name="feat/issue-915",
@@ -10492,7 +10466,7 @@ class TestValidateMergeCommand:
         ):
             assert (await _validate_merge_command(1, agent)).failure_reason is None
 
-    async def test_open_with_resolved_queue_entry_still_fails(self) -> None:
+    async def test_open_with_resolved_queue_entry_still_fails(self, tmp_path: Path) -> None:
         """A resolved (merged/ejected) queue entry no longer excuses an open PR."""
         from datetime import datetime, timezone
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -10508,7 +10482,7 @@ class TestValidateMergeCommand:
                     pr_number=957,
                     repo="owner/repo",
                     issue_number="916",
-                    project_dir="/tmp/test",
+                    project_dir=str(tmp_path),
                     enqueued_at=datetime.now(timezone.utc),
                     github_user="user",
                     branch_name="feat/issue-916",
@@ -11034,8 +11008,7 @@ class TestPipelineOutcomeValidation:
         result = await _validate_pipeline_outcome(run_id, agent)
         assert result is None
 
-    async def test_bypass_message_includes_diagnostics(self) -> None:
-        from pathlib import Path
+    async def test_bypass_message_includes_diagnostics(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _validate_pipeline_outcome
@@ -11048,7 +11021,7 @@ class TestPipelineOutcomeValidation:
                     role="researcher",
                     status="done",
                     current_step="agent",
-                    worktree_path="/tmp/worktree/42",
+                    worktree_path=str(tmp_path / "worktree" / "42"),
                 )
                 session.add(run)
                 await session.flush()
@@ -11056,13 +11029,13 @@ class TestPipelineOutcomeValidation:
 
         agent = MagicMock(spec=AgentState)
         agent.role = "researcher"
-        agent.project_dir = Path("/tmp/project")
+        agent.project_dir = tmp_path / "project"
         agent.prompt = None
         result = await _validate_pipeline_outcome(run_id, agent)
         assert result is not None
         assert "Pipeline bypassed" in result
-        assert "worktree=/tmp/worktree/42" in result
-        assert "project_dir=/tmp/project" in result
+        assert f"worktree={tmp_path / 'worktree' / '42'}" in result
+        assert f"project_dir={tmp_path / 'project'}" in result
         assert "started_at=" in result
 
     async def test_bypass_message_omits_empty_diagnostics(self) -> None:
@@ -13115,14 +13088,16 @@ class TestBuildBypassMessage:
         call_kwargs = mock_log.warning.call_args
         assert len(call_kwargs[1]["prompt_sent"]) == 500
 
-    def test_includes_diagnostic_fields(self) -> None:
+    def test_includes_diagnostic_fields(self, tmp_path: Path) -> None:
         from sova.dashboard.services.agent_db import _build_bypass_message, _collect_bypass_diagnostics
 
-        diag = _collect_bypass_diagnostics("2026-08-13T10:00:00", "/tmp/worktrees/99", "/tmp/project")
+        diag = _collect_bypass_diagnostics(
+            "2026-08-13T10:00:00", str(tmp_path / "worktrees" / "99"), str(tmp_path / "project")
+        )
         msg = _build_bypass_message("researcher", None, None, 42, diagnostics=diag)
         assert "started_at=2026-08-13T10:00:00" in msg
-        assert "worktree=/tmp/worktrees/99" in msg
-        assert "project_dir=/tmp/project" in msg
+        assert f"worktree={tmp_path / 'worktrees' / '99'}" in msg
+        assert f"project_dir={tmp_path / 'project'}" in msg
 
     def test_omits_diagnostics_when_none(self) -> None:
         from sova.dashboard.services.agent_db import _build_bypass_message
@@ -13344,61 +13319,61 @@ class TestOutputService:
             session.add(TaskRun(id=run_id, role="developer", status="running"))
 
     @pytest.mark.asyncio
-    async def test_output_writer_write_and_read(self, session) -> None:
+    async def test_output_writer_write_and_read(self, session, tmp_path: Path) -> None:
         from sova.core.output import OutputWriter, read_lines
 
         await self._create_run(session, 1)
-        writer = OutputWriter(Path("/tmp/fake"), run_id=1)
+        writer = OutputWriter(tmp_path / "fake", run_id=1)
         writer.write_line("Hello, world")
         writer.write_line("Second line")
         await writer.close()
 
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=1)
+        lines, total = await read_lines(tmp_path / "fake", run_id=1)
         assert total == 2
         assert lines == ["Hello, world", "Second line"]
 
     @pytest.mark.asyncio
-    async def test_output_writer_read_with_offset(self, session) -> None:
+    async def test_output_writer_read_with_offset(self, session, tmp_path: Path) -> None:
         from sova.core.output import OutputWriter, read_lines
 
         await self._create_run(session, 2)
-        writer = OutputWriter(Path("/tmp/fake"), run_id=2)
+        writer = OutputWriter(tmp_path / "fake", run_id=2)
         writer.write_line("Line 1")
         writer.write_line("Line 2")
         writer.write_line("Line 3")
         await writer.close()
 
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=2, since=1)
+        lines, total = await read_lines(tmp_path / "fake", run_id=2, since=1)
         assert total == 3
         assert lines == ["Line 2", "Line 3"]
 
     @pytest.mark.asyncio
-    async def test_read_lines_empty_run(self) -> None:
+    async def test_read_lines_empty_run(self, tmp_path: Path) -> None:
         from sova.core.output import read_lines
 
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=999)
+        lines, total = await read_lines(tmp_path / "fake", run_id=999)
         assert lines == []
         assert total == 0
 
     @pytest.mark.asyncio
-    async def test_output_writer_strips_trailing_newlines(self, session) -> None:
+    async def test_output_writer_strips_trailing_newlines(self, session, tmp_path: Path) -> None:
         from sova.core.output import OutputWriter, read_lines
 
         await self._create_run(session, 3)
-        writer = OutputWriter(Path("/tmp/fake"), run_id=3)
+        writer = OutputWriter(tmp_path / "fake", run_id=3)
         writer.write_line("Line with newline\n")
         await writer.close()
 
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=3)
+        lines, total = await read_lines(tmp_path / "fake", run_id=3)
         assert total == 1
         assert lines == ["Line with newline"]
 
     @pytest.mark.asyncio
-    async def test_flush_threshold(self, session) -> None:
+    async def test_flush_threshold(self, session, tmp_path: Path) -> None:
         from sova.core.output import OutputWriter
 
         await self._create_run(session, 4)
-        writer = OutputWriter(Path("/tmp/fake"), run_id=4, flush_threshold=3)
+        writer = OutputWriter(tmp_path / "fake", run_id=4, flush_threshold=3)
         writer.write_line("A")
         writer.write_line("B")
         assert not writer.should_flush()
@@ -13407,21 +13382,21 @@ class TestOutputService:
         await writer.close()
 
     @pytest.mark.asyncio
-    async def test_closed_writer_ignores_writes(self, session) -> None:
+    async def test_closed_writer_ignores_writes(self, session, tmp_path: Path) -> None:
         from sova.core.output import OutputWriter, read_lines
 
         await self._create_run(session, 5)
-        writer = OutputWriter(Path("/tmp/fake"), run_id=5)
+        writer = OutputWriter(tmp_path / "fake", run_id=5)
         writer.write_line("Before close")
         await writer.close()
         writer.write_line("After close")
 
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=5)
+        lines, total = await read_lines(tmp_path / "fake", run_id=5)
         assert total == 1
         assert lines == ["Before close"]
 
     @pytest.mark.asyncio
-    async def test_cleanup_old_output(self, session) -> None:
+    async def test_cleanup_old_output(self, session, tmp_path: Path) -> None:
         from sova.core.output import OutputWriter, cleanup_old_output, read_lines
 
         async with session.begin():
@@ -13434,18 +13409,18 @@ class TestOutputService:
                 )
             )
 
-        writer = OutputWriter(Path("/tmp/fake"), run_id=100)
+        writer = OutputWriter(tmp_path / "fake", run_id=100)
         writer.write_line("old output")
         await writer.close()
 
-        deleted = await cleanup_old_output(Path("/tmp/fake"), retention_days=30)
+        deleted = await cleanup_old_output(tmp_path / "fake", retention_days=30)
         assert deleted == 1
 
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=100)
+        lines, total = await read_lines(tmp_path / "fake", run_id=100)
         assert total == 0
 
     @pytest.mark.asyncio
-    async def test_cleanup_preserves_recent_output(self, session) -> None:
+    async def test_cleanup_preserves_recent_output(self, session, tmp_path: Path) -> None:
         from sova.core.output import OutputWriter, cleanup_old_output, read_lines
 
         async with session.begin():
@@ -13458,14 +13433,14 @@ class TestOutputService:
                 )
             )
 
-        writer = OutputWriter(Path("/tmp/fake"), run_id=101)
+        writer = OutputWriter(tmp_path / "fake", run_id=101)
         writer.write_line("recent output")
         await writer.close()
 
-        deleted = await cleanup_old_output(Path("/tmp/fake"), retention_days=30)
+        deleted = await cleanup_old_output(tmp_path / "fake", retention_days=30)
         assert deleted == 0
 
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=101)
+        lines, total = await read_lines(tmp_path / "fake", run_id=101)
         assert total == 1
 
     @pytest.mark.asyncio
@@ -13492,50 +13467,50 @@ class TestOutputService:
         assert total == 0
 
     @pytest.mark.asyncio
-    async def test_readopted_run_seeds_line_number(self, session) -> None:
+    async def test_readopted_run_seeds_line_number(self, session, tmp_path: Path) -> None:
         """A new OutputWriter on a run with existing output continues numbering."""
         from sova.core.output import OutputWriter, read_lines
 
         await self._create_run(session, 200)
         # First writer writes 3 lines
-        w1 = OutputWriter(Path("/tmp/fake"), run_id=200)
+        w1 = OutputWriter(tmp_path / "fake", run_id=200)
         w1.write_line("Line 0")
         w1.write_line("Line 1")
         w1.write_line("Line 2")
         await w1.close()
 
         # Second writer (re-adoption) should continue from line 3
-        w2 = OutputWriter(Path("/tmp/fake"), run_id=200)
+        w2 = OutputWriter(tmp_path / "fake", run_id=200)
         w2.write_line("Line 3")
         w2.write_line("Line 4")
         await w2.close()
 
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=200)
+        lines, total = await read_lines(tmp_path / "fake", run_id=200)
         assert total == 5
         assert lines == ["Line 0", "Line 1", "Line 2", "Line 3", "Line 4"]
 
     @pytest.mark.asyncio
-    async def test_double_close_is_noop(self, session) -> None:
+    async def test_double_close_is_noop(self, session, tmp_path: Path) -> None:
         from sova.core.output import OutputWriter, read_lines
 
         await self._create_run(session, 6)
-        writer = OutputWriter(Path("/tmp/fake"), run_id=6)
+        writer = OutputWriter(tmp_path / "fake", run_id=6)
         writer.write_line("data")
         await writer.close()
         await writer.close()  # second close is a no-op
 
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=6)
+        lines, total = await read_lines(tmp_path / "fake", run_id=6)
         assert total == 1
         assert lines == ["data"]
 
     @pytest.mark.asyncio
-    async def test_flush_failure_recovery(self, session) -> None:
+    async def test_flush_failure_recovery(self, session, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.output import OutputWriter, read_lines
 
         await self._create_run(session, 7)
-        writer = OutputWriter(Path("/tmp/fake"), run_id=7, flush_threshold=2)
+        writer = OutputWriter(tmp_path / "fake", run_id=7, flush_threshold=2)
         writer.write_line("line1")
         writer.write_line("line2")
 
@@ -13547,28 +13522,28 @@ class TestOutputService:
 
         # Second flush succeeds: lines reach DB
         await writer.close()
-        lines, total = await read_lines(Path("/tmp/fake"), run_id=7)
+        lines, total = await read_lines(tmp_path / "fake", run_id=7)
         assert total == 2
         assert lines == ["line1", "line2"]
 
     @pytest.mark.asyncio
-    async def test_cleanup_old_output_exception(self) -> None:
+    async def test_cleanup_old_output_exception(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.output import cleanup_old_output
 
         with patch("sova.db.session.get_session", side_effect=Exception("db error")):
-            deleted = await cleanup_old_output(Path("/tmp/fake"), retention_days=30)
+            deleted = await cleanup_old_output(tmp_path / "fake", retention_days=30)
         assert deleted == 0
 
     @pytest.mark.asyncio
-    async def test_read_lines_exception(self) -> None:
+    async def test_read_lines_exception(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.output import read_lines
 
         with patch("sova.db.session.get_session", side_effect=Exception("db error")):
-            lines, total = await read_lines(Path("/tmp/fake"), run_id=999)
+            lines, total = await read_lines(tmp_path / "fake", run_id=999)
         assert lines == []
         assert total == 0
 
@@ -14222,7 +14197,10 @@ class _FakeProcess:
         return self.returncode
 
     def kill(self) -> None:
+        # SIGKILL cannot be ignored, so a killed process always exits; without
+        # this, a watcher awaiting wait() after kill() would hang forever.
         self.killed = True
+        self.finish(-9)
 
     def terminate(self) -> None:
         self.terminated = True
@@ -14815,7 +14793,7 @@ class TestConnectionsAPI:
             patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
         ):
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
-            await asyncio.sleep(0.2)
+            await _wait_for_reconnect_watchers()
             status = await client.get("/api/connections/reconnect/status")
         assert status.json()["status"] == "timeout"
         assert process.killed is True
@@ -14879,9 +14857,17 @@ class TestConnectionsAPI:
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             cancel_resp = await client.post("/api/connections/reconnect/cancel", headers=_csrf_request_headers(client))
             assert cancel_resp.json() == {"status": "ok"}
-            await asyncio.sleep(0.2)
+            await _wait_for_reconnect_watchers()
             status = await client.get("/api/connections/reconnect/status")
         assert status.json()["status"] == "cancelled"
+
+
+async def _wait_for_reconnect_watchers() -> None:
+    """Wait for every reconnect watcher task to finish, instead of sleeping past its patched timeout."""
+    from sova.dashboard.services import setup_service
+
+    watchers = [s.watcher for s in setup_service._reconnect_sessions.values() if s.watcher is not None]
+    await asyncio.wait_for(asyncio.gather(*watchers, return_exceptions=True), timeout=5)
 
 
 class _FakeModelsProvider:
@@ -15027,14 +15013,13 @@ class TestReconnectAvailability:
         assert result["reason"] == "headless"
         mock_backend.assert_not_called()
 
-    async def test_start_reconnect_blocked_non_loopback_never_spawns(self) -> None:
-        from pathlib import Path
+    async def test_start_reconnect_blocked_non_loopback_never_spawns(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock
 
         from sova.dashboard.services.setup_service import start_reconnect
 
         with patch("asyncio.create_subprocess_exec", AsyncMock()) as mock_spawn:
-            result = await start_reconnect(Path("/tmp/some-project"), is_loopback_bind=False)
+            result = await start_reconnect(tmp_path / "some-project", is_loopback_bind=False)
 
         assert result == {
             "status": "error",
@@ -15043,8 +15028,7 @@ class TestReconnectAvailability:
         }
         mock_spawn.assert_not_called()
 
-    async def test_start_reconnect_blocked_vertex_routed_never_spawns(self) -> None:
-        from pathlib import Path
+    async def test_start_reconnect_blocked_vertex_routed_never_spawns(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock
 
         from sova.dashboard.services.setup_service import start_reconnect
@@ -15055,14 +15039,13 @@ class TestReconnectAvailability:
             patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
             patch("asyncio.create_subprocess_exec", AsyncMock()) as mock_spawn,
         ):
-            result = await start_reconnect(Path("/tmp/some-project"), is_loopback_bind=True)
+            result = await start_reconnect(tmp_path / "some-project", is_loopback_bind=True)
 
         assert result["status"] == "error"
         assert result["reason"] == "vertex_routed"
         mock_spawn.assert_not_called()
 
-    async def test_start_reconnect_allowed_when_loopback_firstparty(self) -> None:
-        from pathlib import Path
+    async def test_start_reconnect_allowed_when_loopback_firstparty(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock
 
         from sova.dashboard.services.setup_service import _reconnect_sessions, start_reconnect
@@ -15076,7 +15059,7 @@ class TestReconnectAvailability:
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
         ):
             try:
-                result = await start_reconnect(Path("/tmp/some-project"), is_loopback_bind=True)
+                result = await start_reconnect(tmp_path / "some-project", is_loopback_bind=True)
             finally:
                 _reconnect_sessions.clear()
                 process.finish(0)
@@ -15854,7 +15837,7 @@ class TestCreateStarterMilestonesAdapterError:
 
 
 class TestMilestonesEndpoint:
-    async def test_create_milestones_success(self, client) -> None:
+    async def test_create_milestones_success(self, client, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, patch
 
         with patch(
@@ -15864,7 +15847,7 @@ class TestMilestonesEndpoint:
         ):
             resp = await client.post(
                 "/api/setup/milestones/create",
-                json={"project_path": "/tmp"},
+                json={"project_path": str(tmp_path)},
             )
 
         assert resp.status_code == 200
@@ -17116,7 +17099,7 @@ class TestWebSocketAgentStatus:
         mgr.disconnect(ws_b, dir_b)
         assert len(mgr._groups.get(dir_b, [])) == 0
 
-    async def test_agent_finished_reaches_subscriber_despite_unresolved_project_dir(self) -> None:
+    async def test_agent_finished_reaches_subscriber_despite_unresolved_project_dir(self, tmp_path: Path) -> None:
         """ws_agent_status() registers under get_project_dir() or get_default_project_dir()
         (resolved), but a broadcaster can reach the same project through a different,
         unresolved-but-equivalent form (e.g. AgentState.project_dir's default_factory=Path.cwd,
@@ -17125,7 +17108,6 @@ class TestWebSocketAgentStatus:
         dropped agent_finished (and graph_invalidated) for every subscriber (#1051 review,
         verified empirically against a real single-project deployment).
         """
-        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.routers.agents import _ConnectionManager
@@ -17133,7 +17115,7 @@ class TestWebSocketAgentStatus:
         from sova.dashboard.services.agent_pool import AgentState
 
         mgr = _ConnectionManager()
-        resolved_dir = Path("/tmp/sova-test-project-1051-ws").resolve()
+        resolved_dir = (tmp_path / "sova-test-project-1051-ws").resolve()
         unresolved_equivalent = resolved_dir / "sub" / ".."
         assert unresolved_equivalent != resolved_dir
         assert unresolved_equivalent.resolve() == resolved_dir
@@ -17379,9 +17361,8 @@ class TestReadOutputResilience:
 class TestWaitAndFinalizeOrdering:
     """_wait_and_finalize must finalize the DB record before removing from pa.agents."""
 
-    async def test_agent_in_pa_agents_during_finalize(self) -> None:
+    async def test_agent_in_pa_agents_during_finalize(self, tmp_path: Path) -> None:
         """The run_id must still be in pa.agents when _finalize_task_run is called."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -17395,7 +17376,7 @@ class TestWaitAndFinalizeOrdering:
             issue="100",
             role="developer",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         pa = ProjectAgents()
@@ -17419,9 +17400,8 @@ class TestWaitAndFinalizeOrdering:
         )
         assert 50 not in pa.agents, "run_id should be removed from pa.agents after finalization"
 
-    async def test_finalize_before_pop_prevents_sweep_race(self) -> None:
+    async def test_finalize_before_pop_prevents_sweep_race(self, tmp_path: Path) -> None:
         """Sweep should skip runs still in pa.agents, preventing the interrupted race."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -17436,7 +17416,7 @@ class TestWaitAndFinalizeOrdering:
             role="command:integrate-pr",
             process=mock_process,
             pr_number=200,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         pa = ProjectAgents()
@@ -17821,9 +17801,8 @@ class TestLivenessSweepMergeCheck:
 class TestWaitAndFinalizeOutputWriter:
     """Cover the output_writer.close() try/except in _wait_and_finalize."""
 
-    async def test_output_writer_close_called(self) -> None:
+    async def test_output_writer_close_called(self, tmp_path: Path) -> None:
         """output_writer.close() should be called before finalization."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -17840,7 +17819,7 @@ class TestWaitAndFinalizeOutputWriter:
             role="developer",
             process=mock_process,
             output_writer=mock_writer,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         pa = ProjectAgents()
@@ -17856,9 +17835,8 @@ class TestWaitAndFinalizeOutputWriter:
 
         mock_writer.close.assert_awaited_once()
 
-    async def test_output_writer_close_error_does_not_block_finalize(self) -> None:
+    async def test_output_writer_close_error_does_not_block_finalize(self, tmp_path: Path) -> None:
         """If output_writer.close() raises, finalization must still proceed."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -17875,7 +17853,7 @@ class TestWaitAndFinalizeOutputWriter:
             role="developer",
             process=mock_process,
             output_writer=mock_writer,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         pa = ProjectAgents()
@@ -17901,8 +17879,7 @@ class TestWaitAndFinalizeOutputWriter:
 class TestWaitAndFinalizeStreamFailure:
     """A runtime stream parser's terminal failure must never finalize as success."""
 
-    async def test_stream_failure_with_zero_exit_code_downgrades_to_failed(self) -> None:
-        from pathlib import Path
+    async def test_stream_failure_with_zero_exit_code_downgrades_to_failed(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -17916,7 +17893,7 @@ class TestWaitAndFinalizeStreamFailure:
             issue="300",
             role="reviewer",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
             stream_failure="codex sandbox denied write access",
         )
 
@@ -17942,9 +17919,8 @@ class TestWaitAndFinalizeStreamFailure:
         completed = pa.recently_completed[0]
         assert completed.status == "failed"
 
-    async def test_stream_failure_with_nonzero_exit_code_no_double_downgrade(self) -> None:
+    async def test_stream_failure_with_nonzero_exit_code_no_double_downgrade(self, tmp_path: Path) -> None:
         """When the process already exited nonzero, the stream failure adds no extra action."""
-        from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -17958,7 +17934,7 @@ class TestWaitAndFinalizeStreamFailure:
             issue="301",
             role="reviewer",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
             stream_failure="codex sandbox denied write access",
         )
 
@@ -17986,8 +17962,7 @@ class TestWaitAndFinalizeStreamFailure:
         ]
         assert stream_warnings == []
 
-    async def test_no_stream_failure_finalizes_as_success(self) -> None:
-        from pathlib import Path
+    async def test_no_stream_failure_finalizes_as_success(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -18001,7 +17976,7 @@ class TestWaitAndFinalizeStreamFailure:
             issue="302",
             role="reviewer",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         pa = ProjectAgents()
@@ -18032,12 +18007,12 @@ class TestWaitAndFinalizeStreamFailure:
         run_id: int,
         stream_parser,
         reader_delay: float,
+        tmp_path: Path,
         drain_timeout: float | None = None,
     ) -> tuple[list[int], object, object]:
         """Run _wait_and_finalize against an agent whose reader sets stream_failure late."""
         import asyncio
         import contextlib
-        from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
@@ -18051,7 +18026,7 @@ class TestWaitAndFinalizeStreamFailure:
             issue="303",
             role="reviewer",
             process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
             stream_parser=stream_parser,
         )
 
@@ -18093,7 +18068,7 @@ class TestWaitAndFinalizeStreamFailure:
             await agent.reader_task
         return recorded_exit_codes, mock_log, agent
 
-    async def test_pending_reader_is_drained_before_stream_failure_is_read(self) -> None:
+    async def test_pending_reader_is_drained_before_stream_failure_is_read(self, tmp_path: Path) -> None:
         """The terminal JSONL event is normally still unread when process.wait() returns.
 
         Without draining the reader first, ``stream_failure`` is observed as
@@ -18105,22 +18080,24 @@ class TestWaitAndFinalizeStreamFailure:
             run_id=73,
             stream_parser=MagicMock(),
             reader_delay=0.05,
+            tmp_path=tmp_path,
         )
 
         assert exit_codes == [1]
         assert agent.stream_failure is not None
 
-    async def test_drain_is_skipped_when_runtime_has_no_stream_parser(self) -> None:
+    async def test_drain_is_skipped_when_runtime_has_no_stream_parser(self, tmp_path: Path) -> None:
         """Claude/Aider report failures via the exit code, so finalization must not wait on the reader."""
         exit_codes, _log, _agent = await self._finalize_with_late_reader(
             run_id=74,
             stream_parser=None,
             reader_delay=0.05,
+            tmp_path=tmp_path,
         )
 
         assert exit_codes == [0]
 
-    async def test_drain_timeout_falls_back_to_the_exit_code(self) -> None:
+    async def test_drain_timeout_falls_back_to_the_exit_code(self, tmp_path: Path) -> None:
         """A reader that overruns the bound is logged; finalization proceeds rather than hanging."""
         from unittest.mock import MagicMock
 
@@ -18129,15 +18106,15 @@ class TestWaitAndFinalizeStreamFailure:
             stream_parser=MagicMock(),
             reader_delay=5.0,
             drain_timeout=0.01,
+            tmp_path=tmp_path,
         )
 
         assert exit_codes == [0]
         assert [c for c in mock_log.warning.call_args_list if c.args[:1] == ("finalize.reader_drain_timeout",)]
 
-    async def test_drain_logs_when_reader_task_raises(self) -> None:
+    async def test_drain_logs_when_reader_task_raises(self, tmp_path: Path) -> None:
         """A reader task that crashes mid-drain must be logged, not silently treated as a clean drain."""
         import asyncio
-        from pathlib import Path
         from unittest.mock import patch
 
         from sova.dashboard.services import agent_finalize
@@ -18148,7 +18125,7 @@ class TestWaitAndFinalizeStreamFailure:
             issue="304",
             role="reviewer",
             process=None,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
             stream_parser=object(),
         )
 
@@ -18163,7 +18140,7 @@ class TestWaitAndFinalizeStreamFailure:
         assert agent.reader_task.done()
         assert [c for c in mock_log.warning.call_args_list if c.args[:1] == ("finalize.reader_task_failed",)]
 
-    async def test_drain_logs_when_reader_task_already_done_before_drain_starts(self) -> None:
+    async def test_drain_logs_when_reader_task_already_done_before_drain_starts(self, tmp_path: Path) -> None:
         """A reader task that crashed BEFORE _drain_stream_reader was ever called must still be
         surfaced. The early ``task.done()`` guard must not return without checking the exception:
         that would silently reintroduce the crashed-reader gap, only narrowed to this timing
@@ -18171,7 +18148,6 @@ class TestWaitAndFinalizeStreamFailure:
         """
         import asyncio
         import contextlib
-        from pathlib import Path
         from unittest.mock import patch
 
         from sova.dashboard.services import agent_finalize
@@ -18182,7 +18158,7 @@ class TestWaitAndFinalizeStreamFailure:
             issue="307",
             role="reviewer",
             process=None,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
             stream_parser=object(),
         )
 
@@ -18201,12 +18177,10 @@ class TestWaitAndFinalizeStreamFailure:
 
         assert [c for c in mock_log.warning.call_args_list if c.args[:1] == ("finalize.reader_task_failed",)]
 
-    async def test_resolve_reader_drain_timeout_uses_value_resolved_at_spawn_time(self) -> None:
+    async def test_resolve_reader_drain_timeout_uses_value_resolved_at_spawn_time(self, tmp_path: Path) -> None:
         """The drain bound comes from AgentState.stream_reader_drain_timeout (set once at spawn
         time from AgentRuntime.stream_reader_drain_timeout()), not a config read on the hot path.
         """
-        from pathlib import Path
-
         from sova.dashboard.services import agent_finalize
         from sova.dashboard.services.agent_pool import AgentState
 
@@ -18215,7 +18189,7 @@ class TestWaitAndFinalizeStreamFailure:
             issue="305",
             role="reviewer",
             process=None,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
             stream_reader_drain_timeout=42.0,
         )
 
@@ -18223,12 +18197,10 @@ class TestWaitAndFinalizeStreamFailure:
 
         assert timeout == 42.0
 
-    async def test_resolve_reader_drain_timeout_falls_back_when_unset(self) -> None:
+    async def test_resolve_reader_drain_timeout_falls_back_when_unset(self, tmp_path: Path) -> None:
         """A runtime that declares no tuning of its own (stream_reader_drain_timeout=None) falls
         back to the module default, with no config read involved.
         """
-        from pathlib import Path
-
         from sova.dashboard.services import agent_finalize
         from sova.dashboard.services.agent_pool import AgentState
 
@@ -18237,7 +18209,7 @@ class TestWaitAndFinalizeStreamFailure:
             issue="306",
             role="reviewer",
             process=None,
-            project_dir=Path("/tmp/test-project"),
+            project_dir=tmp_path,
         )
 
         timeout = agent_finalize._resolve_reader_drain_timeout(agent)
@@ -18308,9 +18280,8 @@ class TestGetOutputBranches:
             lines = await get_output(since=1, run_id=42)
         assert lines == ["line1", "line2"]
 
-    async def test_get_output_db_fallback(self, session) -> None:
+    async def test_get_output_db_fallback(self, session, tmp_path: Path) -> None:
         """When run_id is not in memory, fall back to DB read."""
-        from pathlib import Path
         from unittest.mock import MagicMock, patch
 
         from sova.core.output import OutputWriter
@@ -18320,13 +18291,13 @@ class TestGetOutputBranches:
         async with session.begin():
             session.add(TaskRun(id=200, role="developer", status="done"))
 
-        writer = OutputWriter(Path("/tmp/fake"), run_id=200)
+        writer = OutputWriter(tmp_path / "fake", run_id=200)
         writer.write_line("db line")
         await writer.close()
 
         mock_pa = MagicMock()
         mock_pa.agents = {}
-        mock_pa.project_dir = Path("/tmp/fake")
+        mock_pa.project_dir = tmp_path / "fake"
 
         with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
             lines = await get_output(since=0, run_id=200)
@@ -18952,7 +18923,7 @@ class TestHandoffIssueFilter:
 
 
 class TestCheckMemoryPressure:
-    def test_returns_block_when_below_block_threshold(self) -> None:
+    def test_returns_block_when_below_block_threshold(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch
 
         from sova.config.models import MemoryGuardConfig, ProjectConfig
@@ -18966,14 +18937,14 @@ class TestCheckMemoryPressure:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mock_mem),
         ):
-            block, warn = check_memory_pressure(Path("/tmp/test"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is not None
         assert "Insufficient memory" in block["error"]
         assert block["available_gb"] == 1.0
         assert warn is None
 
-    def test_returns_warning_when_below_warn_threshold(self) -> None:
+    def test_returns_warning_when_below_warn_threshold(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch
 
         from sova.config.models import MemoryGuardConfig, ProjectConfig
@@ -18987,13 +18958,13 @@ class TestCheckMemoryPressure:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mock_mem),
         ):
-            block, warn = check_memory_pressure(Path("/tmp/test"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
         assert warn is not None
         assert "Low memory" in warn
 
-    def test_returns_none_when_sufficient(self) -> None:
+    def test_returns_none_when_sufficient(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch
 
         from sova.config.models import MemoryGuardConfig, ProjectConfig
@@ -19007,12 +18978,12 @@ class TestCheckMemoryPressure:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mock_mem),
         ):
-            block, warn = check_memory_pressure(Path("/tmp/test"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
         assert warn is None
 
-    def test_returns_none_when_disabled(self) -> None:
+    def test_returns_none_when_disabled(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.config.models import MemoryGuardConfig, ProjectConfig
@@ -19023,18 +18994,18 @@ class TestCheckMemoryPressure:
         )
 
         with patch("sova.config.loader.load_config", return_value=cfg):
-            block, warn = check_memory_pressure(Path("/tmp/test"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
         assert warn is None
 
-    def test_fail_open_on_exception(self) -> None:
+    def test_fail_open_on_exception(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.dashboard.services.agent_validation import check_memory_pressure
 
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
-            block, warn = check_memory_pressure(Path("/tmp/test"))
+            block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
         assert warn is None
@@ -19051,7 +19022,7 @@ class TestResourceServiceMemoryPressure:
 
         rs._metrics_cache.clear()
 
-    def test_get_memory_guard_config_returns_config(self) -> None:
+    def test_get_memory_guard_config_returns_config(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         import sova.dashboard.services.resource_service as rs
@@ -19061,7 +19032,7 @@ class TestResourceServiceMemoryPressure:
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=tmp_path),
         ):
             result = rs._get_memory_guard_config()
 
@@ -19204,7 +19175,7 @@ class TestStartAgentMemoryGate:
 
         assert result == block_error
 
-    async def test_start_agent_bypasses_memory_with_force(self) -> None:
+    async def test_start_agent_bypasses_memory_with_force(self, tmp_path: Path) -> None:
         """When force=True, memory pressure check is skipped."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19231,7 +19202,7 @@ class TestStartAgentMemoryGate:
             patch(
                 "sova.dashboard.services.agent_lifecycle._resolve_issue_worktree",
                 new_callable=AsyncMock,
-                return_value=Path("/tmp"),
+                return_value=tmp_path,
             ),
             patch("sova.dashboard.services.agent_lifecycle._create_task_run", new_callable=AsyncMock, return_value=99),
             patch("sova.dashboard.services.agent_lifecycle._transition_to_in_progress", new_callable=AsyncMock),
@@ -19272,7 +19243,7 @@ class TestStartAgentMemoryGate:
 
 
 class TestSyncBranchWorktreeConflict:
-    async def test_already_used_by_worktree_updates_ref(self) -> None:
+    async def test_already_used_by_worktree_updates_ref(self, tmp_path: Path) -> None:
         """When branch is in active use by another worktree, fetch refspec should be used."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19295,15 +19266,15 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_run.side_effect = [stash_ok, checkout_fail, fetch_ref_ok]
 
-            await sync_branch("main", cwd=Path("/tmp/worktree"))
+            await sync_branch("main", cwd=tmp_path)
 
-        mock_fetch.assert_awaited_once_with("git", "fetch", "origin", "main", cwd=Path("/tmp/worktree"))
+        mock_fetch.assert_awaited_once_with("git", "fetch", "origin", "main", cwd=tmp_path)
         assert mock_run.await_count == 3
-        mock_run.assert_any_await("git", "fetch", "origin", "main:main", cwd=Path("/tmp/worktree"))
+        mock_run.assert_any_await("git", "fetch", "origin", "main:main", cwd=tmp_path)
         stash_pop_calls = [c for c in mock_run.call_args_list if c[0] == ("git", "stash", "pop")]
         assert len(stash_pop_calls) == 0, "No stash pop when nothing was stashed"
 
-    async def test_already_used_by_worktree_pops_stash_when_dirty(self) -> None:
+    async def test_already_used_by_worktree_pops_stash_when_dirty(self, tmp_path: Path) -> None:
         """When branch is in active use by another worktree and we stashed, stash must be popped."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19329,12 +19300,12 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_run.side_effect = [stash_dirty, checkout_fail, fetch_ref_ok, pop_ok]
 
-            await sync_branch("main", cwd=Path("/tmp/worktree"))
+            await sync_branch("main", cwd=tmp_path)
 
         assert mock_run.await_count == 4
-        mock_run.assert_any_await("git", "stash", "pop", cwd=Path("/tmp/worktree"))
+        mock_run.assert_any_await("git", "stash", "pop", cwd=tmp_path)
 
-    async def test_already_used_by_worktree_ref_update_fails(self) -> None:
+    async def test_already_used_by_worktree_ref_update_fails(self, tmp_path: Path) -> None:
         """When fetch refspec fails, should log warning but not raise."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19358,7 +19329,7 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_run.side_effect = [stash_ok, checkout_fail, fetch_ref_fail]
             # Should not raise
-            await sync_branch("main", cwd=Path("/tmp/worktree"))
+            await sync_branch("main", cwd=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -19395,7 +19366,7 @@ class TestGetPrimaryWorktreeRoot:
 
         assert root == Path("/home/user/project")
 
-    async def test_returns_cwd_on_git_failure(self) -> None:
+    async def test_returns_cwd_on_git_failure(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.git.worktree import get_primary_worktree_root
@@ -19404,9 +19375,9 @@ class TestGetPrimaryWorktreeRoot:
         result_mock.success = False
 
         with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=result_mock):
-            root = await get_primary_worktree_root(cwd=Path("/tmp/not-a-repo"))
+            root = await get_primary_worktree_root(cwd=tmp_path / "not-a-repo")
 
-        assert root == Path("/tmp/not-a-repo")
+        assert root == tmp_path / "not-a-repo"
 
     async def test_defaults_to_cwd(self) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch

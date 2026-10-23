@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -42,7 +43,7 @@ class TestTasksRouterErrors:
 
 
 class TestSetupRouterErrors:
-    async def test_install_hides_exception_detail(self, client: AsyncClient) -> None:
+    async def test_install_hides_exception_detail(self, client: AsyncClient, tmp_path: Path) -> None:
         with patch(
             "sova.cli.commands.project._install",
             new_callable=AsyncMock,
@@ -50,7 +51,7 @@ class TestSetupRouterErrors:
         ):
             resp = await client.post(
                 "/api/setup/install",
-                json={"project_path": "/tmp"},
+                json={"project_path": str(tmp_path)},
             )
         assert resp.status_code == 500
         assert "Installation failed" in resp.json()["detail"]

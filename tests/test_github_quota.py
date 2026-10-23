@@ -14,6 +14,34 @@ from sova.supervisor.github_quota import (
 )
 
 
+class _FakeClock:
+    """Stands in for the ``time`` module inside sova.supervisor.github_quota.
+
+    The tracker reads ``time.monotonic()`` for every cooldown decision, so the
+    tests advance this clock explicitly instead of sleeping for real time to
+    pass. Any other ``time`` attribute falls through to the real module.
+    """
+
+    def __init__(self) -> None:
+        self._now = 1000.0
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(time, name)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
+    fake = _FakeClock()
+    monkeypatch.setattr("sova.supervisor.github_quota.time", fake)
+    return fake
+
+
 class TestGitHubQuotaTracker:
     def test_initial_state_not_limited(self) -> None:
         tracker = GitHubQuotaTracker()
@@ -41,18 +69,19 @@ class TestGitHubQuotaTracker:
             tracker.record_rate_limit_hit()
         assert tracker.get_status().hits_in_window == 3
 
-    def test_cooldown_expires(self) -> None:
+    def test_cooldown_expires(self, clock: _FakeClock) -> None:
         tracker = GitHubQuotaTracker(cooldown_seconds=0.01)
         with patch.object(tracker, "_emit_hit_event"):
             tracker.record_rate_limit_hit()
-        time.sleep(0.02)
+        assert tracker.should_skip()
+        clock.advance(0.02)
         assert not tracker.should_skip()
 
-    def test_record_success_resets_after_cooldown(self) -> None:
+    def test_record_success_resets_after_cooldown(self, clock: _FakeClock) -> None:
         tracker = GitHubQuotaTracker(cooldown_seconds=0.01)
         with patch.object(tracker, "_emit_hit_event"):
             tracker.record_rate_limit_hit()
-        time.sleep(0.02)
+        clock.advance(0.02)
         with patch.object(tracker, "_emit_recovery_event") as mock_recovery:
             tracker.record_success()
             mock_recovery.assert_called_once()
@@ -90,23 +119,25 @@ class TestGitHubQuotaTracker:
             tracker.record_rate_limit_hit()
         assert tracker.should_skip()
 
-    def test_emit_recovery_event_noop_when_not_limited(self) -> None:
+    def test_emit_recovery_event_noop_when_not_limited(self, clock: _FakeClock) -> None:
         tracker = GitHubQuotaTracker(cooldown_seconds=0.01)
         with patch.object(tracker, "_emit_hit_event"):
             tracker.record_rate_limit_hit()
-        time.sleep(0.02)
+        clock.advance(0.02)
         with patch.object(tracker, "_emit_recovery_event") as mock_recovery:
             tracker.record_success()
             mock_recovery.assert_called_once()
 
-    def test_get_status_remaining_decreases(self) -> None:
+    def test_get_status_remaining_decreases(self, clock: _FakeClock) -> None:
         tracker = GitHubQuotaTracker(cooldown_seconds=300.0)
         with patch.object(tracker, "_emit_hit_event"):
             tracker.record_rate_limit_hit()
         s1 = tracker.get_status()
-        time.sleep(0.05)
+        clock.advance(0.05)
         s2 = tracker.get_status()
         assert s2.cooldown_remaining_seconds < s1.cooldown_remaining_seconds
+        assert s1.cooldown_remaining_seconds == pytest.approx(300.0)
+        assert s2.cooldown_remaining_seconds == pytest.approx(299.95)
 
 
 class TestTrackerRegistry:

@@ -40,9 +40,9 @@ def _make_config() -> MagicMock:
     return config
 
 
-def _make_ctx(config: MagicMock | None = None) -> ExecutionContext:
+def _make_ctx(tmp_path: Path, config: MagicMock | None = None) -> ExecutionContext:
     cfg = config or _make_config()
-    return ExecutionContext(project_dir=Path("/tmp/test"), config=cfg, adapter=MagicMock())
+    return ExecutionContext(project_dir=tmp_path, config=cfg, adapter=MagicMock())
 
 
 def _llm_result(text: str) -> LLMResult:
@@ -70,9 +70,9 @@ def _assessment_json(**overrides: object) -> str:
 
 class TestAssessTasksBatch:
     @pytest.mark.asyncio
-    async def test_batch_assessment_success(self) -> None:
+    async def test_batch_assessment_success(self, tmp_path: Path) -> None:
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         tasks = [_make_task("1"), _make_task("2")]
 
         batch_results = [
@@ -98,10 +98,10 @@ class TestAssessTasksBatch:
         assert results[1][1].suitability == "needs_spec"
 
     @pytest.mark.asyncio
-    async def test_batch_passes_triage_task_type_and_project_dir(self) -> None:
+    async def test_batch_passes_triage_task_type_and_project_dir(self, tmp_path: Path) -> None:
         """The batch call opts into task_type routing, scoped to the project's own config."""
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         tasks = [_make_task("1")]
 
         mock_invoke = AsyncMock(return_value=[])
@@ -119,9 +119,9 @@ class TestAssessTasksBatch:
         assert kwargs["cwd"] == ctx.project_dir
 
     @pytest.mark.asyncio
-    async def test_heuristic_fallback_for_empty_body(self) -> None:
+    async def test_heuristic_fallback_for_empty_body(self, tmp_path: Path) -> None:
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         tasks = [_make_task("1", body=""), _make_task("2", body="Has content")]
 
         batch_results = [
@@ -143,9 +143,9 @@ class TestAssessTasksBatch:
         assert results[1][1].suitability == "ready"
 
     @pytest.mark.asyncio
-    async def test_partial_failure_falls_back_to_heuristic(self) -> None:
+    async def test_partial_failure_falls_back_to_heuristic(self, tmp_path: Path) -> None:
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         tasks = [_make_task("1"), _make_task("2"), _make_task("3")]
 
         batch_results = [
@@ -176,9 +176,9 @@ class TestAssessTasksBatch:
         assert results[2][1].suitability == "needs_research"
 
     @pytest.mark.asyncio
-    async def test_batch_failure_falls_back_to_sequential(self) -> None:
+    async def test_batch_failure_falls_back_to_sequential(self, tmp_path: Path) -> None:
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         tasks = [_make_task("1")]
 
         mock_assess = AsyncMock(
@@ -201,7 +201,7 @@ class TestAssessTasksBatch:
         assert len(results) == 1
         mock_assess.assert_called_once()
 
-    async def test_batch_failure_preserves_short_circuited_interactive_verdict(self) -> None:
+    async def test_batch_failure_preserves_short_circuited_interactive_verdict(self, tmp_path: Path) -> None:
         """A Batch-API failure must not hand a sticky interactive/human_only task back to the LLM.
 
         Before the fix, invoke_batch() raising fell back to
@@ -211,7 +211,7 @@ class TestAssessTasksBatch:
         verdict.
         """
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         normal_task = _make_task("1")
         interactive_task = Task(
             id="2",
@@ -247,9 +247,9 @@ class TestAssessTasksBatch:
         mock_assess.assert_called_once_with(normal_task, ctx)
 
     @pytest.mark.asyncio
-    async def test_cost_recorded_for_successful_results(self) -> None:
+    async def test_cost_recorded_for_successful_results(self, tmp_path: Path) -> None:
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         tasks = [_make_task("42")]
 
         batch_results = [
@@ -274,9 +274,9 @@ class TestAssessTasksBatch:
         assert call_kwargs[1]["issue"] == "42"
 
     @pytest.mark.asyncio
-    async def test_skip_patterns_filter_before_batch(self) -> None:
+    async def test_skip_patterns_filter_before_batch(self, tmp_path: Path) -> None:
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.config.triage.skip_title_prefixes = ["[QE]"]
 
         tasks = [
@@ -303,9 +303,9 @@ class TestAssessTasksBatch:
         assert results[1][1].suitability == "ready"
 
     @pytest.mark.asyncio
-    async def test_interactive_patterns_filter_before_batch(self) -> None:
+    async def test_interactive_patterns_filter_before_batch(self, tmp_path: Path) -> None:
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.config.triage.skip_title_prefixes = []
         ctx.config.triage.interactive_title_prefixes = ["[Spike]"]
 
@@ -337,9 +337,9 @@ class TestAssessTasksBatch:
         assert submitted == ["2"]
 
     @pytest.mark.asyncio
-    async def test_missing_result_gets_heuristic_fallback(self) -> None:
+    async def test_missing_result_gets_heuristic_fallback(self, tmp_path: Path) -> None:
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         tasks = [_make_task("1"), _make_task("2")]
 
         batch_results = [
@@ -363,9 +363,9 @@ class TestAssessTasksBatch:
 
 class TestSequentialFallback:
     @pytest.mark.asyncio
-    async def test_sequential_calls_assess_task_with_llm(self) -> None:
+    async def test_sequential_calls_assess_task_with_llm(self, tmp_path: Path) -> None:
         role = TriageRole()
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         tasks = [_make_task("1"), _make_task("2")]
 
         assessment = TaskAssessment(

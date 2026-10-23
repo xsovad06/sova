@@ -6,16 +6,16 @@ Conventions and patterns for writing and running tests in the SOVA codebase.
 
 | Command | Purpose |
 |---------|---------|
-| `make check` | Lint + test, run before every push (close to CI, not identical: see below) |
-| `make test` | Bash + Python tests |
-| `make test-py` | pytest suite only |
-| `make test-ci` | the exact invocation CI's test matrix runs (see below); not a developer-facing target |
+| `make check` | Lint + `make test-bash` + `make test-ci`, run before every push |
+| `make test` | Bash + Python tests (local iteration, via `make test-py`) |
+| `make test-ci` | The exact pytest invocation CI runs: used by both CI's test matrix and `make check` so neither can diverge from the other |
+| `make test-py` | pytest suite only, tuned for local iteration (see below) |
 | `make test-bash` | ShellCheck + invariant `--help` validation |
 | `make lint` | ShellCheck + Ruff (lint + format check) |
 
-CI runs `make test-ci` (`pytest tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60`) with `COVERAGE_CORE=sysmon` set, once per Python version in its matrix (3.12 and 3.14 on a pull request; 3.12 only on a push to main). `-n auto` shards across every runner core, `sysmon` (the sys.monitoring coverage core, valid on Python 3.12+ because no branch coverage is configured) costs about 11% against 47% for the default tracer, at a line rate within half a point of it, and `--timeout=60` raises the 30s global, which worker contention on a CI runner breaches. `coverage.xml` is uploaded as the `coverage-xml` artifact, which `.github/workflows/sonarcloud.yml` downloads from the triggering run via a `workflow_run` trigger on CI's completion, rather than re-running the suite itself (#1187). The pre-push hook in `.githooks/pre-push` mirrors CI's lint, invariant, and secrets checks; it does not run pytest, so run `make test-py` before pushing, remembering that it deselects the `runtime`, `stress`, and `chaos` markers CI does run, that it also deselects `evaluation` (and that CI does not, so an `evaluation` test is kept out of CI only by its own env-var `skipif`, exactly as `codex_smoke` is), and that it caps each test at pyproject's 30s rather than the 60s CI passes, so a slow test can fail locally while passing CI.
+`make test-ci` runs `pytest tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60` with `COVERAGE_CORE=sysmon` set, and both CI and `make check` call this one target rather than each keeping their own copy of the invocation (#1209). CI runs it once per Python version in its matrix (3.12 and 3.14 on a pull request; 3.12 only on a push to main). `-n auto` shards across every runner core, `sysmon` (the sys.monitoring coverage core, valid on Python 3.12+ because no branch coverage is configured) costs about 11% against 47% for the default tracer, at a line rate within half a point of it, and `--timeout=60` raises the 30s global, which worker contention on a CI runner breaches. `coverage.xml` is uploaded as the `coverage-xml` artifact, which `.github/workflows/sonarcloud.yml` downloads from the triggering run via a `workflow_run` trigger on CI's completion, rather than re-running the suite itself (#1187). The pre-push hook in `.githooks/pre-push` mirrors CI's lint, invariant, and secrets checks; it does not run pytest, so run `make check` (or `make test-ci`) before pushing.
 
-`make test-py` (and therefore `make check`) does not use `-n auto`: unlike CI's dedicated runner, a developer or SOVA agent's machine can have multiple `make check` runs in flight at once (concurrent pipeline steps), and `-n auto` shards each one across every core, so two or more concurrent runs compete for the whole machine. The Makefile's `PYTEST_WORKERS` variable defaults to 2 (`PYTEST_WORKERS ?= $(or $(PYTEST_XDIST_AUTO_NUM_WORKERS),2)`), overridable two ways: `make test-py PYTEST_WORKERS=4` on the command line, or the pytest-xdist-native `PYTEST_XDIST_AUTO_NUM_WORKERS` environment variable, which `make` picks up as a fallback if already set in the shell (a developer who sets it globally for unrelated pytest-xdist projects will see it change SOVA's default too). Measured on a 14-core Apple Silicon machine: a single `make test-py` run at the default of 2 workers completes the full suite (11484 passed, 7 skipped) in about 378s wall time; two concurrent `make test-py` runs (4 pytest-xdist workers total) each complete in about 333s, both comfortably inside the 600s `make check` timeout. CI's own `-n auto` invocation is unaffected by this variable (#1156).
+`make test-ci`'s `-n auto` shards across every core, so unlike `make test-py`, two or more concurrent `make check` runs (e.g. parallel pipeline steps) compete for the whole machine instead of yielding to each other: this is a deliberate tradeoff (#1209) in favor of `make check` never passing on an invocation CI wouldn't also pass on, at the cost of the isolation `make test-py` gives concurrent agents. Use `make test-py` directly for local iteration when several pipeline steps may be running checks at once: it deselects the `runtime`, `stress`, `chaos`, and `evaluation` markers CI does run (an `evaluation` test is kept out of CI only by its own env-var `skipif`, exactly as `codex_smoke` is), caps each test at pyproject's 30s rather than the 60s `make test-ci` passes, and uses the Makefile's `PYTEST_WORKERS` variable (default 2: `PYTEST_WORKERS ?= $(or $(PYTEST_XDIST_AUTO_NUM_WORKERS),2)`) instead of `-n auto`, overridable via `make test-py PYTEST_WORKERS=4` or the pytest-xdist-native `PYTEST_XDIST_AUTO_NUM_WORKERS` environment variable. Measured on a 14-core Apple Silicon machine: a single `make test-py` run at the default of 2 workers completes the full suite (11484 passed, 7 skipped) in about 378s wall time; two concurrent `make test-py` runs (4 pytest-xdist workers total) each complete in about 333s (#1156).
 
 ## Framework Configuration
 
@@ -130,10 +130,15 @@ mock_run.side_effect = [
 
 ### Context factory: `_make_ctx`
 
+Take `tmp_path` as the first parameter rather than defaulting `project_dir` to a
+literal `/tmp/...` path: a shared literal collides across parallel test workers
+and across runs, where `tmp_path` is unique per test. Callers pass their own
+`tmp_path` fixture through.
+
 ```python
-def _make_ctx(**kwargs) -> ExecutionContext:
+def _make_ctx(tmp_path: Path, **kwargs) -> ExecutionContext:
     defaults = {
-        "project_dir": Path("/tmp/test"),
+        "project_dir": tmp_path,
         "config": ProjectConfig(),
         "adapter": _mock_adapter(),
         "issue_number": "42",
@@ -141,6 +146,11 @@ def _make_ctx(**kwargs) -> ExecutionContext:
     }
     defaults.update(kwargs)
     return ExecutionContext(**defaults)
+
+
+def test_something(tmp_path: Path) -> None:
+    ctx = _make_ctx(tmp_path, issue_number="7")
+    ...
 ```
 
 ### `patch.object` for split modules
@@ -216,4 +226,5 @@ def test_rejects_invalid_values(model_cls, field, invalid_value):
 3c. **Seeding fixture ordering**: `reset_db_rows` is requested via `pytest.mark.usefixtures`, not `autouse=True`, so pytest resolves it *after* any autouse fixture in the same module or class. A file-specific fixture that inserts rows and is itself written as `@pytest.fixture(autouse=True)` therefore runs first and has its rows silently deleted before the test body sees them, no error, no failure, just a test that passes vacuously. Take `reset_db_rows` as an explicit parameter on that seeding fixture, even when it is autouse (`async def seed_rows(reset_db_rows): ...`), to force the correct order.
 4. **No per-file-only helpers in conftest.py**: helpers used by a single file (`_make_ctx`, `_shell_result`) are defined per-file. Copy the pattern. `tests/conftest.py` is reserved for autouse isolation fixtures and helpers genuinely shared across multiple test modules.
 5. **Ambient `SOVA_*` env vars**: a dev shell running SOVA agents may export `SOVA_MCP_TOKEN`, `SOVA_AGENT_RUN`, etc. `tests/conftest.py`'s autouse `_isolate_sova_env` fixture strips all `SOVA_*` vars except `SOVA_DATABASE_URL` before each test so Pydantic Settings config construction is deterministic. If a test needs a specific `SOVA_*` var, set it explicitly via `monkeypatch.setenv` inside the test.
-6. **Never write to a hard-coded `/tmp/...` path**: use the `tmp_path`/`tmp_path_factory` fixtures. A fixed path is a real, shared location on disk that collides across `pytest-xdist` workers and survives between runs. `tests/conftest.py`'s autouse `_isolate_cwd` fixture already chdirs each test into a fresh temp directory (so `load_config(None)`'s `Path.cwd()` fallback can't read the developer's real `.claude/sova.db`), and the sibling autouse `_isolate_home_config` fixture monkeypatches `Path.home()` (plus `sova.config.registry._REGISTRY_DIR`/`_REGISTRY_FILE` directly, since those module constants are bound to the real `Path.home()` at import time) to a fresh temp directory, so `sova/db/session.py:_get_database_url()`'s no-project-dir fallback and the project registry can never resolve under the developer's real `~/.config/sova/`. These two fixtures cover the ambient fallback paths; they do not protect an explicit `Path("/tmp/...")` literal passed as `project_dir` or similar, which must be replaced with `tmp_path` at each call site.
+6. **Never write to a hard-coded `/tmp/...` path**: use the `tmp_path`/`tmp_path_factory` fixtures. A fixed path is a real, shared location on disk that collides across `pytest-xdist` workers and survives between runs. `tests/conftest.py`'s autouse `_isolate_cwd` fixture already chdirs each test into a fresh temp directory (so `load_config(None)`'s `Path.cwd()` fallback can't read the developer's real `.claude/sova.db`), and the sibling autouse `_isolate_home_config` fixture monkeypatches `Path.home()` (plus `sova.config.registry._REGISTRY_DIR`/`_REGISTRY_FILE` directly, since those module constants are bound to the real `Path.home()` at import time) to a fresh temp directory, so `sova/db/session.py:_get_database_url()`'s no-project-dir fallback and the project registry can never resolve under the developer's real `~/.config/sova/`. These two fixtures cover the ambient fallback paths; they do not protect an explicit `Path("/tmp/...")` literal passed as `project_dir` or similar, which must be replaced with `tmp_path` at each call site. `tests/conftest.py`'s `pytest_sessionstart`/`pytest_sessionfinish` hooks record and compare the mtime of three specific paths known to have been hardcoded this way historically (`/tmp/test`, `/tmp/test-project`, `/tmp/worktree`), plus the mtime of every path beneath each of them, and fail the session if any of those changed, appeared, or disappeared, catching a future literal reintroduced on a path a mocked collaborator happens to share (#1209). The descendants matter as much as the roots: writing `/tmp/test/existing.txt` inside a pre-existing `/tmp/test` directory leaves that directory's own mtime untouched, so a root-only snapshot would miss it.
+7. **Warnings are promoted to errors**: `pyproject.toml`'s `filterwarnings = ["error", ...]` turns any warning not explicitly allowlisted there into a test failure, so a new warning is caught immediately instead of scrolling by unnoticed. Each allowlist entry is scoped as narrowly as the warning category (and, where practical, message) allows; fix the underlying cause (e.g. an `AsyncMock` coroutine a test's own early-return path never awaits) rather than widening an entry, and never allowlist `PytestUnraisableExceptionWarning` as a shortcut around a task whose exception is genuinely never retrieved.

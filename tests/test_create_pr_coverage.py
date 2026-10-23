@@ -37,10 +37,10 @@ def _mock_adapter() -> AsyncMock:
     return adapter
 
 
-def _make_ctx(**kwargs) -> ExecutionContext:
+def _make_ctx(tmp_path: Path, **kwargs) -> ExecutionContext:
     """Create a test ExecutionContext with sensible defaults."""
     defaults = {
-        "project_dir": Path("/tmp/test"),
+        "project_dir": tmp_path,
         "config": ProjectConfig(),
         "adapter": _mock_adapter(),
         "issue_number": "42",
@@ -95,7 +95,9 @@ class TestCreatePRStepLLMFailureFallback:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_llm_failure_triggers_fallback_body(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_llm_failure_triggers_fallback_body(
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
+    ) -> None:
         """When LLM fails, should use structured fallback body."""
         from sova.core.steps.create_pr import CreatePRStep
 
@@ -110,6 +112,7 @@ class TestCreatePRStepLLMFailureFallback:
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         ctx = _make_ctx(
+            tmp_path,
             branch_name="feat/issue-42",
             task=Task(id="42", title="Add widget", body="We need a widget"),
         )
@@ -134,7 +137,7 @@ class TestCreatePRStepTaskTitleFallback:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_adapter_get_task_failure_falls_back_to_branch_name(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
     ) -> None:
         """When adapter.get_task fails, should extract title from branch name."""
         from sova.core.steps.create_pr import CreatePRStep
@@ -153,6 +156,7 @@ class TestCreatePRStepTaskTitleFallback:
         adapter.get_task.side_effect = RuntimeError("Network error")
 
         ctx = _make_ctx(
+            tmp_path,
             adapter=adapter,
             task=None,  # No task in context
             branch_name="feat/issue-42-add-widget-support",
@@ -173,7 +177,9 @@ class TestCreatePRStepGitCommandFailures:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_git_log_failure_shows_unavailable(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_git_log_failure_shows_unavailable(
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
+    ) -> None:
         """When git log fails, should show (unavailable) in prompt."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -187,7 +193,7 @@ class TestCreatePRStepGitCommandFailures:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -200,7 +206,9 @@ class TestCreatePRStepGitCommandFailures:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_git_diff_stat_failure_shows_unavailable(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_git_diff_stat_failure_shows_unavailable(
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
+    ) -> None:
         """When git diff --stat fails, should show (unavailable) in prompt."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -214,7 +222,7 @@ class TestCreatePRStepGitCommandFailures:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -227,7 +235,7 @@ class TestCreatePRStepGitCommandFailures:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_git_diff_content_failure_shows_unavailable(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
     ) -> None:
         """When git diff (content) fails, should show (unavailable) in prompt."""
         from sova.core.steps.create_pr import CreatePRStep
@@ -242,7 +250,7 @@ class TestCreatePRStepGitCommandFailures:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -258,7 +266,9 @@ class TestCreatePRStepSideEffectFailures:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_assign_pr_failure_is_non_fatal(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_assign_pr_failure_is_non_fatal(
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
+    ) -> None:
         """When PR assignment fails, should log but not fail the step."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -272,7 +282,7 @@ class TestCreatePRStepSideEffectFailures:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         ctx.config = ProjectConfig(github_user="xsovad06")
 
         with patch("sova.core.steps.create_pr.git_ops.assign_pr", new_callable=AsyncMock) as mock_assign:
@@ -289,7 +299,7 @@ class TestCreatePRStepSideEffectFailures:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_tracker_state_transition_failure_is_non_fatal(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
     ) -> None:
         """When tracker state transition fails, should log but not fail the step."""
         from sova.core.steps.create_pr import CreatePRStep
@@ -307,7 +317,7 @@ class TestCreatePRStepSideEffectFailures:
         adapter = _mock_adapter()
         adapter.transition_state.side_effect = RuntimeError("API error")
 
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -319,19 +329,19 @@ class TestCreatePRStepSideEffectFailures:
 class TestCreatePRStepCanSkip:
     """Test the can_skip method."""
 
-    async def test_can_skip_when_pr_number_exists(self) -> None:
+    async def test_can_skip_when_pr_number_exists(self, tmp_path: Path) -> None:
         """Should skip when PR number is already set."""
         from sova.core.steps.create_pr import CreatePRStep
 
-        ctx = _make_ctx(pr_number=123)
+        ctx = _make_ctx(tmp_path, pr_number=123)
         step = CreatePRStep()
         assert await step.can_skip(ctx)
 
-    async def test_cannot_skip_when_no_pr_number(self) -> None:
+    async def test_cannot_skip_when_no_pr_number(self, tmp_path: Path) -> None:
         """Should not skip when PR number is not set."""
         from sova.core.steps.create_pr import CreatePRStep
 
-        ctx = _make_ctx(pr_number=None)
+        ctx = _make_ctx(tmp_path, pr_number=None)
         step = CreatePRStep()
         assert not await step.can_skip(ctx)
 
@@ -343,7 +353,9 @@ class TestCreatePRStepJiraBodyCleaning:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_jira_body_strips_closes_syntax(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_jira_body_strips_closes_syntax(
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
+    ) -> None:
         """JIRA PRs should strip 'Closes #N' from LLM output and add JIRA link instead."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -360,6 +372,7 @@ class TestCreatePRStepJiraBodyCleaning:
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         ctx = _make_ctx(
+            tmp_path,
             task=Task(id="48928", title="Fix parity", body=""),
             issue_number="48928",
             branch_name="feat/RHCLOUD-48928",
@@ -385,7 +398,7 @@ class TestCreatePRStepAdoptedPRTrackerUpdate:
     """Test tracker state transition when adopting existing PR."""
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock)
-    async def test_adopted_pr_tracker_failure_is_non_fatal(self, mock_find) -> None:
+    async def test_adopted_pr_tracker_failure_is_non_fatal(self, mock_find, tmp_path: Path) -> None:
         """When adopting existing PR, tracker update failure should be non-fatal."""
         from sova.core.steps.create_pr import CreatePRStep
 
@@ -394,7 +407,7 @@ class TestCreatePRStepAdoptedPRTrackerUpdate:
         adapter = _mock_adapter()
         adapter.transition_state.side_effect = RuntimeError("Tracker API down")
 
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -514,69 +527,69 @@ class TestResolveChangedFiles:
     """Test CreatePRStep._resolve_changed_files, the scope-inference input."""
 
     @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
-    async def test_jira_skips_the_git_call(self, mock_run) -> None:
+    async def test_jira_skips_the_git_call(self, mock_run, tmp_path: Path) -> None:
         """JIRA titles don't infer a scope, so no git diff should be run."""
         from sova.core.steps.create_pr import CreatePRStep
 
         ts = TaskSourceConfig(type="jira", jira_project_key="RHCLOUD", jira_base_url="https://issues.redhat.com")
-        ctx = _make_ctx(config=ProjectConfig(task_source=ts))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(task_source=ts))
         result = await CreatePRStep._resolve_changed_files(ctx)
 
         assert result == []
         mock_run.assert_not_called()
 
     @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
-    async def test_github_returns_changed_paths(self, mock_run) -> None:
+    async def test_github_returns_changed_paths(self, mock_run, tmp_path: Path) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_run.return_value = MagicMock(success=True, stdout="sova/cli/a.py\nsova/db/b.py\n")
-        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
         result = await CreatePRStep._resolve_changed_files(ctx)
 
         assert result == ["sova/cli/a.py", "sova/db/b.py"]
 
     @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
-    async def test_uses_merge_base_diff_not_base_tip(self, mock_run) -> None:
+    async def test_uses_merge_base_diff_not_base_tip(self, mock_run, tmp_path: Path) -> None:
         """Must diff against the merge base (three-dot), not the base branch's current
         tip (two-dot): otherwise base-only commits landed after this branch diverged
         would be attributed to this PR's scope inference."""
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_run.return_value = MagicMock(success=True, stdout="sova/cli/a.py\n")
-        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
         await CreatePRStep._resolve_changed_files(ctx)
 
         mock_run.assert_called_once_with("git", "diff", "main...HEAD", "--name-only", cwd=ctx.working_dir)
 
     @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
-    async def test_git_failure_fails_open_to_empty_list(self, mock_run) -> None:
+    async def test_git_failure_fails_open_to_empty_list(self, mock_run, tmp_path: Path) -> None:
         """A failed git diff must not abort PR creation; scope inference falls back to core."""
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_run.return_value = MagicMock(success=False, returncode=128, stdout="", stderr="fatal: bad revision")
-        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
         result = await CreatePRStep._resolve_changed_files(ctx)
 
         assert result == []
 
     @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
-    async def test_missing_git_binary_fails_open_to_empty_list(self, mock_run) -> None:
+    async def test_missing_git_binary_fails_open_to_empty_list(self, mock_run, tmp_path: Path) -> None:
         """A missing `git` binary raises FileNotFoundError from the subprocess call, not a
         failed ShellResult; this must also fail open rather than aborting PR creation."""
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_run.side_effect = FileNotFoundError("git")
-        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
         result = await CreatePRStep._resolve_changed_files(ctx)
 
         assert result == []
 
     @patch("sova.core.steps.create_pr.run", new_callable=AsyncMock)
-    async def test_blank_lines_are_filtered_out(self, mock_run) -> None:
+    async def test_blank_lines_are_filtered_out(self, mock_run, tmp_path: Path) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_run.return_value = MagicMock(success=True, stdout="sova/cli/a.py\n\n\n")
-        ctx = _make_ctx(config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(task_source=TaskSourceConfig(type="github")))
         result = await CreatePRStep._resolve_changed_files(ctx)
 
         assert result == ["sova/cli/a.py"]
@@ -609,7 +622,9 @@ class TestCreatePRStepDiffTruncation:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_large_diff_content_is_truncated(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_large_diff_content_is_truncated(
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
+    ) -> None:
         """When diff content exceeds 8000 chars, should truncate with message."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -624,7 +639,7 @@ class TestCreatePRStepDiffTruncation:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -638,11 +653,12 @@ class TestCreatePRStepDiffTruncation:
 class TestCreatePRStepJiraFallbackBody:
     """Test JIRA-specific fallback body building."""
 
-    def test_jira_fallback_body_includes_jira_link(self) -> None:
+    def test_jira_fallback_body_includes_jira_link(self, tmp_path: Path) -> None:
         """JIRA fallback body should include JIRA link instead of Closes."""
         from sova.core.steps.create_pr import CreatePRStep
 
         ctx = _make_ctx(
+            tmp_path,
             task=Task(id="48928", title="Fix parity", body=""),
             issue_number="48928",
             branch_name="feat/RHCLOUD-48928",
@@ -668,7 +684,7 @@ class TestCreatePRStepCodeRabbitTrigger:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_trigger_review_posts_comment_when_enabled(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
     ) -> None:
         """When trigger_review is enabled, should post @coderabbitai review comment."""
         from decimal import Decimal
@@ -686,7 +702,7 @@ class TestCreatePRStepCodeRabbitTrigger:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         ctx.config = ProjectConfig(
             external_reviews=ExternalReviewsConfig(
                 coderabbit=CodeRabbitConfig(trigger_review=True),
@@ -703,7 +719,9 @@ class TestCreatePRStepCodeRabbitTrigger:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_trigger_review_skipped_when_disabled(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_trigger_review_skipped_when_disabled(
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
+    ) -> None:
         """When trigger_review is disabled (default), should NOT post comment."""
         from decimal import Decimal
 
@@ -719,7 +737,7 @@ class TestCreatePRStepCodeRabbitTrigger:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -730,7 +748,9 @@ class TestCreatePRStepCodeRabbitTrigger:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_trigger_review_failure_is_non_fatal(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_trigger_review_failure_is_non_fatal(
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
+    ) -> None:
         """When posting the trigger comment fails, step should still succeed."""
         from decimal import Decimal
 
@@ -750,7 +770,7 @@ class TestCreatePRStepCodeRabbitTrigger:
         adapter = _mock_adapter()
         adapter.post_pr_comment.side_effect = RuntimeError("API error")
 
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42")
         ctx.config = ProjectConfig(
             external_reviews=ExternalReviewsConfig(
                 coderabbit=CodeRabbitConfig(trigger_review=True),
@@ -767,22 +787,22 @@ class TestCreatePRStepCodeRabbitTrigger:
 class TestCreatePRStepLdapReviewerSuggestion:
     """Test LDAP-based reviewer suggestion after PR creation."""
 
-    async def test_disabled_by_default_skips_lookup(self) -> None:
+    async def test_disabled_by_default_skips_lookup(self, tmp_path: Path) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=None)
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
 
         await CreatePRStep()._suggest_reviewers(ctx, 10)
 
         adapter.add_reviewer.assert_not_called()
 
-    async def test_no_github_user_configured_skips_lookup(self) -> None:
+    async def test_no_github_user_configured_skips_lookup(self, tmp_path: Path) -> None:
         from sova.config.models import LdapConfig
         from sova.core.steps.create_pr import CreatePRStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=None)
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
         ctx.config = ProjectConfig(github_user="", ldap=LdapConfig(enabled=True))
 
         mock_client = AsyncMock()
@@ -792,12 +812,12 @@ class TestCreatePRStepLdapReviewerSuggestion:
         mock_client.check_connectivity.assert_not_called()
         adapter.add_reviewer.assert_not_called()
 
-    async def test_vpn_unavailable_skips_lookup(self) -> None:
+    async def test_vpn_unavailable_skips_lookup(self, tmp_path: Path) -> None:
         from sova.config.models import LdapConfig
         from sova.core.steps.create_pr import CreatePRStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=None)
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
         ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
 
         mock_client = AsyncMock()
@@ -808,12 +828,12 @@ class TestCreatePRStepLdapReviewerSuggestion:
         mock_client.find_manager_chain.assert_not_called()
         adapter.add_reviewer.assert_not_called()
 
-    async def test_no_manager_found_skips_lookup(self) -> None:
+    async def test_no_manager_found_skips_lookup(self, tmp_path: Path) -> None:
         from sova.config.models import LdapConfig
         from sova.core.steps.create_pr import CreatePRStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=None)
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
         ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
 
         mock_client = AsyncMock()
@@ -825,13 +845,13 @@ class TestCreatePRStepLdapReviewerSuggestion:
         mock_client.get_org_chart.assert_not_called()
         adapter.add_reviewer.assert_not_called()
 
-    async def test_adds_up_to_two_teammates_excluding_author(self) -> None:
+    async def test_adds_up_to_two_teammates_excluding_author(self, tmp_path: Path) -> None:
         from sova.adapters.ldap_client import Person
         from sova.config.models import LdapConfig
         from sova.core.steps.create_pr import CreatePRStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=None, issue_number="42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None, issue_number="42")
         ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
 
         manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=redhat,dc=com")
@@ -854,14 +874,14 @@ class TestCreatePRStepLdapReviewerSuggestion:
             call("42", 10, "bob"),
         ]
 
-    async def test_add_reviewer_failure_is_non_fatal(self) -> None:
+    async def test_add_reviewer_failure_is_non_fatal(self, tmp_path: Path) -> None:
         from sova.adapters.ldap_client import Person
         from sova.config.models import LdapConfig
         from sova.core.steps.create_pr import CreatePRStep
 
         adapter = _mock_adapter()
         adapter.add_reviewer.side_effect = RuntimeError("API error")
-        ctx = _make_ctx(adapter=adapter, pr_number=None, issue_number="42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None, issue_number="42")
         ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
 
         manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=redhat,dc=com")
@@ -873,14 +893,14 @@ class TestCreatePRStepLdapReviewerSuggestion:
         with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
             await CreatePRStep()._suggest_reviewers(ctx, 10)  # should not raise
 
-    async def test_uses_uid_mapping_when_github_user_differs_from_ldap_uid(self) -> None:
+    async def test_uses_uid_mapping_when_github_user_differs_from_ldap_uid(self, tmp_path: Path) -> None:
         """github_user and LDAP uid are frequently different identifiers (ldap.uid_mapping)."""
         from sova.adapters.ldap_client import Person
         from sova.config.models import LdapConfig
         from sova.core.steps.create_pr import CreatePRStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=None)
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
         ctx.config = ProjectConfig(
             github_user="octocat", ldap=LdapConfig(enabled=True, uid_mapping={"octocat": "jdoe"})
         )
@@ -896,13 +916,13 @@ class TestCreatePRStepLdapReviewerSuggestion:
 
         mock_client.find_manager_chain.assert_awaited_once_with("jdoe", max_depth=1)
 
-    async def test_unmapped_identity_miss_is_logged_distinguishably(self) -> None:
+    async def test_unmapped_identity_miss_is_logged_distinguishably(self, tmp_path: Path) -> None:
         """An unmapped github_user assumed as the LDAP uid logs a distinguishable reason on miss."""
         from sova.config.models import LdapConfig
         from sova.core.steps.create_pr import CreatePRStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=None)
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
         ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
 
         mock_client = AsyncMock()

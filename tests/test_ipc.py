@@ -945,10 +945,14 @@ class TestNotify:
         from sova.ipc.notifications import notify
 
         call_order: list[str] = []
+        desktop_done = asyncio.Event()
 
         async def slow_desktop(title: str, message: str, **_: str) -> None:
-            await asyncio.sleep(0.05)
+            # Yields once more before recording completion, so the ordering
+            # assertion holds only if notify() returned without awaiting this.
+            await asyncio.sleep(0)
             call_order.append("desktop_done")
+            desktop_done.set()
 
         config = NotificationConfig(desktop=True, slack_webhook_url="")
         with patch("sova.ipc.notifications.send_desktop_notification", side_effect=slow_desktop):
@@ -956,8 +960,9 @@ class TestNotify:
             call_order.append("notify_returned")
             # notify returned before desktop finished
             assert call_order == ["notify_returned"]
-            # Wait for background task to complete
-            await asyncio.sleep(0.1)
+            # Wait on the background task's own completion signal rather than a
+            # fixed delay that a loaded machine can outrun (#1209).
+            await asyncio.wait_for(desktop_done.wait(), timeout=5)
             assert call_order == ["notify_returned", "desktop_done"]
 
 
@@ -1065,6 +1070,7 @@ class TestWebhookNotification:
 
 class TestNotifyDispatcher:
     async def test_notify_dispatches_to_email(self) -> None:
+        from sova.ipc import notifications
         from sova.ipc.notifications import notify
 
         config = NotificationConfig(
@@ -1080,7 +1086,7 @@ class TestNotifyDispatcher:
             patch("sova.ipc.notifications.send_email_notification") as mock_email,
         ):
             notify(config, "Title", "Body", subtitle="Sub")
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(asyncio.gather(*set(notifications._background_tasks)), timeout=5)
 
             mock_desktop.assert_not_awaited()
             mock_email.assert_awaited_once()
@@ -1090,6 +1096,7 @@ class TestNotifyDispatcher:
             assert "Body" in mock_email.call_args[0][2]
 
     async def test_notify_dispatches_to_webhook(self) -> None:
+        from sova.ipc import notifications
         from sova.ipc.notifications import notify
 
         config = NotificationConfig(
@@ -1103,7 +1110,7 @@ class TestNotifyDispatcher:
             patch("sova.ipc.notifications.send_webhook_notification") as mock_webhook,
         ):
             notify(config, "Title", "Body")
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(asyncio.gather(*set(notifications._background_tasks)), timeout=5)
 
             mock_desktop.assert_not_awaited()
             mock_webhook.assert_awaited_once()
@@ -1448,7 +1455,7 @@ def _stdin_mock() -> MagicMock:
 
 
 class TestClaudeCodeRuntime:
-    async def test_spawn_delegates_to_agent_process(self) -> None:
+    async def test_spawn_delegates_to_agent_process(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import ClaudeCodeRuntime
 
         mock_proc = AsyncMock()
@@ -1460,7 +1467,7 @@ class TestClaudeCodeRuntime:
 
         rt = ClaudeCodeRuntime()
         with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await rt.spawn("test prompt", Path("/tmp"))
+            ap = await rt.spawn("test prompt", tmp_path)
 
         assert ap.pid == 42
 
@@ -1734,7 +1741,7 @@ class TestClaudeCodeRuntime:
 
 
 class TestSpawnDirect:
-    async def test_spawn_direct_creates_subprocess(self) -> None:
+    async def test_spawn_direct_creates_subprocess(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import spawn_direct
 
         mock_proc = AsyncMock()
@@ -1744,7 +1751,7 @@ class TestSpawnDirect:
         mock_proc.stderr = AsyncMock()
 
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            ap = await spawn_direct(["sova", "run", "42", "--run-id", "7"], Path("/tmp"))
+            ap = await spawn_direct(["sova", "run", "42", "--run-id", "7"], tmp_path)
 
         assert ap.pid == 77
         call_args = mock_exec.call_args
@@ -1770,7 +1777,7 @@ class TestSpawnDirect:
         assert isinstance(fp, FileAgentProcess)
         assert fp.pid == 78
 
-    async def test_spawn_direct_scrubs_credentials_and_routing_vars(self) -> None:
+    async def test_spawn_direct_scrubs_credentials_and_routing_vars(self, tmp_path: Path) -> None:
         """spawn_direct() routes through _spawn_agent_process() like every other
         spawn path, so it must scrub the same credentials and routing vars,
         except OPENAI_API_KEY: it is the one trusted pipeline child that may
@@ -1791,7 +1798,7 @@ class TestSpawnDirect:
             "CLAUDE_CODE_USE_VERTEX": "1",
         }
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await spawn_direct(["sova", "run", "42"], Path("/tmp"), env=hostile)
+            await spawn_direct(["sova", "run", "42"], tmp_path, env=hostile)
 
         child_env = mock_exec.call_args.kwargs["env"]
         assert child_env["PATH"] == "/usr/bin"
@@ -1799,7 +1806,7 @@ class TestSpawnDirect:
         for leaked in ("CODEX_API_KEY", "CLAUDE_CODE_USE_VERTEX"):
             assert leaked not in child_env
 
-    async def test_spawn_direct_omits_openai_key_when_unset(self) -> None:
+    async def test_spawn_direct_omits_openai_key_when_unset(self, tmp_path: Path) -> None:
         """No OPENAI_API_KEY in the source env means none is re-admitted."""
         from sova.ipc.runtime import spawn_direct
 
@@ -1810,12 +1817,12 @@ class TestSpawnDirect:
         mock_proc.stderr = AsyncMock()
 
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await spawn_direct(["sova", "run", "42"], Path("/tmp"), env={"PATH": "/usr/bin"})
+            await spawn_direct(["sova", "run", "42"], tmp_path, env={"PATH": "/usr/bin"})
 
         child_env = mock_exec.call_args.kwargs["env"]
         assert "OPENAI_API_KEY" not in child_env
 
-    async def test_agent_runtime_spawns_never_receive_openai_key(self) -> None:
+    async def test_agent_runtime_spawns_never_receive_openai_key(self, tmp_path: Path) -> None:
         """OPENAI_API_KEY re-admission is scoped to spawn_direct() only: the
         AgentRuntime spawn paths (Claude Code, Aider, Codex) must never see it,
         even when it's set in the source env."""
@@ -1830,18 +1837,18 @@ class TestSpawnDirect:
         mock_proc.stderr = AsyncMock()
 
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await ClaudeCodeRuntime().spawn("do work", Path("/tmp"), env=hostile)
+            await ClaudeCodeRuntime().spawn("do work", tmp_path, env=hostile)
         assert "OPENAI_API_KEY" not in mock_exec.call_args.kwargs["env"]
 
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await AiderRuntime().spawn("do work", Path("/tmp"), env=hostile)
+            await AiderRuntime().spawn("do work", tmp_path, env=hostile)
         assert "OPENAI_API_KEY" not in mock_exec.call_args.kwargs["env"]
 
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
             patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
         ):
-            await CodexRuntime().spawn("do work", Path("/tmp"), env=hostile)
+            await CodexRuntime().spawn("do work", tmp_path, env=hostile)
         assert "OPENAI_API_KEY" not in mock_exec.call_args.kwargs["env"]
 
     def test_pipeline_roles_set(self) -> None:
@@ -1872,7 +1879,7 @@ class TestSpawnDirect:
 
 
 class TestAiderRuntime:
-    async def test_spawn_builds_correct_args(self) -> None:
+    async def test_spawn_builds_correct_args(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import AiderRuntime
 
         mock_proc = AsyncMock()
@@ -1883,7 +1890,7 @@ class TestAiderRuntime:
 
         rt = AiderRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            ap = await rt.spawn("fix bug", Path("/tmp"), model="gpt-4o")
+            ap = await rt.spawn("fix bug", tmp_path, model="gpt-4o")
 
         assert ap.pid == 99
         call_args = mock_exec.call_args[0]
@@ -2026,7 +2033,7 @@ class TestAiderRuntime:
         rt.transform_prompt(prompt)
         assert time.monotonic() - start < 2.0
 
-    async def test_spawn_shell_prompt_executes_directly(self) -> None:
+    async def test_spawn_shell_prompt_executes_directly(self, tmp_path: Path) -> None:
         """Shell-command prompts with sova should be executed as subprocess."""
         from sova.ipc.runtime import AiderRuntime
 
@@ -2039,7 +2046,7 @@ class TestAiderRuntime:
         rt = AiderRuntime()
         prompt = "Run the following command:\n```bash\nsova run 28\n```"
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            ap = await rt.spawn(prompt, Path("/tmp"))
+            ap = await rt.spawn(prompt, tmp_path)
 
         assert ap.pid == 42
         call_args = mock_exec.call_args[0]
@@ -2047,7 +2054,7 @@ class TestAiderRuntime:
         assert "run" in call_args
         assert "28" in call_args
 
-    async def test_spawn_with_budget_logs_warning(self) -> None:
+    async def test_spawn_with_budget_logs_warning(self, tmp_path: Path) -> None:
         from decimal import Decimal
 
         from sova.ipc.runtime import AiderRuntime
@@ -2063,13 +2070,13 @@ class TestAiderRuntime:
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sova.ipc.runtime.log") as mock_log,
         ):
-            ap = await rt.spawn("fix bug", Path("/tmp"), max_budget_usd=Decimal("5.00"))
+            ap = await rt.spawn("fix bug", tmp_path, max_budget_usd=Decimal("5.00"))
 
         assert ap.pid == 99
         mock_log.warning.assert_called_once()
         assert mock_log.warning.call_args[0][0] == "aider.budget_not_enforced"
 
-    async def test_spawn_read_only_has_no_effect_on_argv(self) -> None:
+    async def test_spawn_read_only_has_no_effect_on_argv(self, tmp_path: Path) -> None:
         """Aider has no sandbox mechanism: read_only is accepted but changes nothing."""
         from sova.ipc.runtime import AiderRuntime
 
@@ -2081,7 +2088,7 @@ class TestAiderRuntime:
 
         rt = AiderRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await rt.spawn("fix bug", Path("/tmp"), read_only=True)
+            await rt.spawn("fix bug", tmp_path, read_only=True)
 
         args = mock_exec.call_args[0]
         assert "--sandbox" not in args
@@ -2192,7 +2199,7 @@ class TestCodexRuntime:
         with patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)):
             yield
 
-    async def test_spawn_builds_correct_args(self) -> None:
+    async def test_spawn_builds_correct_args(self, tmp_path: Path) -> None:
         from sova.config.models import CodexConfig
         from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
@@ -2204,7 +2211,7 @@ class TestCodexRuntime:
 
         rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            ap = await rt.spawn("fix the bug", Path("/tmp"))
+            ap = await rt.spawn("fix the bug", tmp_path)
 
         assert ap.pid == 55
         args = mock_exec.call_args[0]
@@ -2220,7 +2227,7 @@ class TestCodexRuntime:
         assert args[-1] == _HEADLESS_PREAMBLE_CODEX + "fix the bug"
         assert "--full-auto" not in args
 
-    async def test_spawn_without_model_omits_flag(self) -> None:
+    async def test_spawn_without_model_omits_flag(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
@@ -2231,14 +2238,14 @@ class TestCodexRuntime:
 
         rt = CodexRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            ap = await rt.spawn("do something", Path("/tmp"))
+            ap = await rt.spawn("do something", tmp_path)
 
         assert ap.pid == 56
         args = mock_exec.call_args[0]
         assert "--model" not in args
         assert args[-1] == _HEADLESS_PREAMBLE_CODEX + "do something"
 
-    async def test_spawn_ignores_caller_supplied_model(self) -> None:
+    async def test_spawn_ignores_caller_supplied_model(self, tmp_path: Path) -> None:
         """CodexRuntime uses ``codex.model`` exclusively, never the caller's model.
 
         The caller's ``model`` argument is a Claude model id resolved from
@@ -2255,7 +2262,7 @@ class TestCodexRuntime:
 
         rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await rt.spawn("fix the bug", Path("/tmp"), model="claude-opus-4-6")
+            await rt.spawn("fix the bug", tmp_path, model="claude-opus-4-6")
 
         args = mock_exec.call_args[0]
         model_idx = args.index("--model")
@@ -2272,7 +2279,9 @@ class TestCodexRuntime:
             ("read-only", True, "read-only"),
         ],
     )
-    async def test_spawn_sandbox_resolution(self, configured_sandbox: str, read_only: bool, expected: str) -> None:
+    async def test_spawn_sandbox_resolution(
+        self, configured_sandbox: str, read_only: bool, expected: str, tmp_path: Path
+    ) -> None:
         """read_only=True forces --sandbox read-only; otherwise codex.sandbox is used verbatim."""
         from sova.config.models import CodexConfig
         from sova.ipc.runtime import CodexRuntime
@@ -2285,7 +2294,7 @@ class TestCodexRuntime:
 
         rt = CodexRuntime(config=CodexConfig(sandbox=configured_sandbox))
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await rt.spawn("do something", Path("/tmp"), read_only=read_only)
+            await rt.spawn("do something", tmp_path, read_only=read_only)
 
         args = mock_exec.call_args[0]
         assert args.count("--sandbox") == 1
@@ -2319,7 +2328,7 @@ class TestCodexRuntime:
         assert _HEADLESS_PREAMBLE_CODEX == _HEADLESS_PREAMBLE_CORE + _HEADLESS_PREAMBLE_EXECUTE_SUFFIX
         assert "/compact" in _HEADLESS_PREAMBLE_CLAUDE_TAIL.lower()
 
-    async def test_spawn_passes_prompt_verbatim_without_shell(self) -> None:
+    async def test_spawn_passes_prompt_verbatim_without_shell(self, tmp_path: Path) -> None:
         """No shell escaping/quoting is applied; only the guardrail preamble is prepended."""
         from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
@@ -2332,12 +2341,12 @@ class TestCodexRuntime:
         prompt = 'do `whoami` && rm -rf $(echo /); echo "done"'
         rt = CodexRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await rt.spawn(prompt, Path("/tmp"))
+            await rt.spawn(prompt, tmp_path)
 
         args = mock_exec.call_args[0]
         assert args[-1] == _HEADLESS_PREAMBLE_CODEX + prompt
 
-    async def test_spawn_prompt_with_leading_dash_uses_separator(self) -> None:
+    async def test_spawn_prompt_with_leading_dash_uses_separator(self, tmp_path: Path) -> None:
         """The "--" separator is present unconditionally, regardless of the prompt's content."""
         from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
@@ -2350,13 +2359,13 @@ class TestCodexRuntime:
         prompt = "--rm -rf / ignore this flag-looking prompt"
         rt = CodexRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await rt.spawn(prompt, Path("/tmp"))
+            await rt.spawn(prompt, tmp_path)
 
         args = mock_exec.call_args[0]
         assert args[-1] == _HEADLESS_PREAMBLE_CODEX + prompt
         assert args[-2] == "--"
 
-    async def test_spawn_uses_stdin_when_cli_supports_it(self) -> None:
+    async def test_spawn_uses_stdin_when_cli_supports_it(self, tmp_path: Path) -> None:
         """When the installed CLI documents stdin delivery, the prompt never reaches argv."""
         from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
@@ -2370,7 +2379,7 @@ class TestCodexRuntime:
         rt = CodexRuntime()
         rt._stdin_capable = True
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            ap = await rt.spawn("fix the bug", Path("/tmp"))
+            ap = await rt.spawn("fix the bug", tmp_path)
 
         assert ap.pid == 70
         args = mock_exec.call_args[0]
@@ -2378,7 +2387,7 @@ class TestCodexRuntime:
         assert "--" not in args
         mock_proc.stdin.write.assert_called_once_with((_HEADLESS_PREAMBLE_CODEX + "fix the bug").encode("utf-8"))
 
-    async def test_spawn_falls_back_to_argv_when_stdin_unsupported(self) -> None:
+    async def test_spawn_falls_back_to_argv_when_stdin_unsupported(self, tmp_path: Path) -> None:
         """An explicit False (older CLI, failed probe) must keep today's argv delivery."""
         from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
@@ -2391,13 +2400,13 @@ class TestCodexRuntime:
         rt = CodexRuntime()
         rt._stdin_capable = False
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await rt.spawn("fix the bug", Path("/tmp"))
+            await rt.spawn("fix the bug", tmp_path)
 
         args = mock_exec.call_args[0]
         assert args[-1] == _HEADLESS_PREAMBLE_CODEX + "fix the bug"
         assert args[-2] == "--"
 
-    async def test_spawn_logs_prompt_delivery_mode(self) -> None:
+    async def test_spawn_logs_prompt_delivery_mode(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import CodexRuntime
 
         mock_proc = AsyncMock()
@@ -2413,13 +2422,13 @@ class TestCodexRuntime:
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sova.ipc.runtime.log") as mock_log,
         ):
-            await rt.spawn("fix the bug", Path("/tmp"))
+            await rt.spawn("fix the bug", tmp_path)
 
         spawn_calls = [call for call in mock_log.info.call_args_list if call[0][0] == "codex.spawn"]
         assert len(spawn_calls) == 1
         assert spawn_calls[0].kwargs["prompt_delivery"] == "stdin"
 
-    async def test_resolve_stdin_capable_probes_once_and_caches(self) -> None:
+    async def test_resolve_stdin_capable_probes_once_and_caches(self, tmp_path: Path) -> None:
         """The capability probe must not re-run on every spawn from the same runtime."""
         from sova.ipc.runtime import CodexRuntime
 
@@ -2435,8 +2444,8 @@ class TestCodexRuntime:
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=True)) as mock_probe,
         ):
-            await rt.spawn("first", Path("/tmp"))
-            await rt.spawn("second", Path("/tmp"))
+            await rt.spawn("first", tmp_path)
+            await rt.spawn("second", tmp_path)
 
         mock_probe.assert_called_once()
 
@@ -2495,7 +2504,7 @@ class TestCodexRuntime:
             "```bash\nsova run 7\n",  # unterminated fence
         ],
     )
-    async def test_spawn_handles_missing_or_malformed_bash_block(self, prompt: str) -> None:
+    async def test_spawn_handles_missing_or_malformed_bash_block(self, prompt: str, tmp_path: Path) -> None:
         """spawn() must still place a usable, non-empty prompt on argv when the caller's
         prompt lacks a well-formed fenced bash block."""
         from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
@@ -2508,7 +2517,7 @@ class TestCodexRuntime:
 
         rt = CodexRuntime()
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await rt.spawn(prompt, Path("/tmp"))
+            await rt.spawn(prompt, tmp_path)
 
         args = mock_exec.call_args[0]
         assert args[-1]
@@ -2836,7 +2845,7 @@ class TestCodexRuntime:
         assert "CODEX_API_KEY set" in detail
         assert "sk-codex-sentinel" not in detail
 
-    async def test_spawn_injects_codex_api_key_scoped_to_this_process(self) -> None:
+    async def test_spawn_injects_codex_api_key_scoped_to_this_process(self, tmp_path: Path) -> None:
         """CODEX_API_KEY must reach the Codex child even though SCRUBBED_VARS strips it by default."""
         from sova.ipc.runtime import CodexRuntime
 
@@ -2851,14 +2860,14 @@ class TestCodexRuntime:
             patch.dict(os.environ, {"CODEX_API_KEY": "sk-codex-sentinel"}, clear=False),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
         ):
-            await rt.spawn("do the task", Path("/tmp"))
+            await rt.spawn("do the task", tmp_path)
 
         child_env = mock_exec.call_args.kwargs["env"]
         assert child_env["CODEX_API_KEY"] == "sk-codex-sentinel"
         args = mock_exec.call_args[0]
         assert "sk-codex-sentinel" not in args
 
-    async def test_spawn_strips_anthropic_api_key_from_codex_child(self) -> None:
+    async def test_spawn_strips_anthropic_api_key_from_codex_child(self, tmp_path: Path) -> None:
         """A key meant for Claude Code must not leak into an unrelated Codex child."""
         from sova.ipc.runtime import CodexRuntime
 
@@ -2873,12 +2882,12 @@ class TestCodexRuntime:
             patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-sentinel"}, clear=False),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
         ):
-            await rt.spawn("do the task", Path("/tmp"))
+            await rt.spawn("do the task", tmp_path)
 
         child_env = mock_exec.call_args.kwargs["env"]
         assert "ANTHROPIC_API_KEY" not in child_env
 
-    async def test_spawn_prefers_caller_supplied_api_key(self) -> None:
+    async def test_spawn_prefers_caller_supplied_api_key(self, tmp_path: Path) -> None:
         """A curated env's own key wins over whatever is in the server's process env."""
         from sova.ipc.runtime import CodexRuntime
 
@@ -2893,12 +2902,12 @@ class TestCodexRuntime:
             patch.dict(os.environ, {"CODEX_API_KEY": "sk-server-key"}, clear=False),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
         ):
-            await rt.spawn("do the task", Path("/tmp"), env={"PATH": "/bin", "CODEX_API_KEY": "sk-project-key"})
+            await rt.spawn("do the task", tmp_path, env={"PATH": "/bin", "CODEX_API_KEY": "sk-project-key"})
 
         child_env = mock_exec.call_args.kwargs["env"]
         assert child_env["CODEX_API_KEY"] == "sk-project-key"
 
-    async def test_spawn_omits_key_when_caller_env_excludes_it(self) -> None:
+    async def test_spawn_omits_key_when_caller_env_excludes_it(self, tmp_path: Path) -> None:
         """A caller that deliberately built an env without the key must not get the server's."""
         from sova.ipc.runtime import CodexRuntime
 
@@ -2913,12 +2922,12 @@ class TestCodexRuntime:
             patch.dict(os.environ, {"CODEX_API_KEY": "sk-server-key"}, clear=False),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
         ):
-            await rt.spawn("do the task", Path("/tmp"), env={"PATH": "/bin"})
+            await rt.spawn("do the task", tmp_path, env={"PATH": "/bin"})
 
         child_env = mock_exec.call_args.kwargs["env"]
         assert "CODEX_API_KEY" not in child_env
 
-    async def test_spawn_treats_blank_api_key_as_absent(self) -> None:
+    async def test_spawn_treats_blank_api_key_as_absent(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import CodexRuntime
 
         mock_proc = AsyncMock()
@@ -2932,12 +2941,12 @@ class TestCodexRuntime:
             patch.dict(os.environ, {"CODEX_API_KEY": "   "}, clear=False),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
         ):
-            await rt.spawn("do the task", Path("/tmp"))
+            await rt.spawn("do the task", tmp_path)
 
         child_env = mock_exec.call_args.kwargs["env"]
         assert "CODEX_API_KEY" not in child_env
 
-    async def test_spawn_without_codex_api_key_omits_it(self) -> None:
+    async def test_spawn_without_codex_api_key_omits_it(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import CodexRuntime
 
         mock_proc = AsyncMock()
@@ -2952,12 +2961,12 @@ class TestCodexRuntime:
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
         ):
             os.environ.pop("CODEX_API_KEY", None)
-            await rt.spawn("do the task", Path("/tmp"))
+            await rt.spawn("do the task", tmp_path)
 
         child_env = mock_exec.call_args.kwargs["env"]
         assert "CODEX_API_KEY" not in child_env
 
-    async def test_claude_code_and_aider_never_receive_codex_api_key(self) -> None:
+    async def test_claude_code_and_aider_never_receive_codex_api_key(self, tmp_path: Path) -> None:
         """CODEX_API_KEY is Codex-only; other runtimes must never see it."""
         from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime
 
@@ -2974,12 +2983,12 @@ class TestCodexRuntime:
                 patch.dict(os.environ, {"CODEX_API_KEY": "sk-codex-sentinel"}, clear=False),
                 patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
             ):
-                await rt.spawn("do the task", Path("/tmp"))
+                await rt.spawn("do the task", tmp_path)
 
             child_env = mock_exec.call_args.kwargs["env"]
             assert "CODEX_API_KEY" not in child_env
 
-    async def test_spawn_never_logs_codex_api_key(self) -> None:
+    async def test_spawn_never_logs_codex_api_key(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import CodexRuntime
 
         mock_proc = AsyncMock()
@@ -2994,12 +3003,12 @@ class TestCodexRuntime:
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sova.ipc.runtime.log") as mock_log,
         ):
-            await rt.spawn("do the task", Path("/tmp"))
+            await rt.spawn("do the task", tmp_path)
 
         for call in mock_log.mock_calls:
             assert "sk-codex-sentinel" not in str(call)
 
-    async def test_spawn_with_fallback_model_logs_warning_without_prompt(self) -> None:
+    async def test_spawn_with_fallback_model_logs_warning_without_prompt(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import CodexRuntime
 
         mock_proc = AsyncMock()
@@ -3013,14 +3022,14 @@ class TestCodexRuntime:
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sova.ipc.runtime.log") as mock_log,
         ):
-            ap = await rt.spawn("secret prompt text", Path("/tmp"), fallback_model="gpt-5-mini")
+            ap = await rt.spawn("secret prompt text", tmp_path, fallback_model="gpt-5-mini")
 
         assert ap.pid == 58
         mock_log.warning.assert_called_once()
         assert mock_log.warning.call_args[0][0] == "codex.fallback_model_not_supported"
         assert "secret prompt text" not in str(mock_log.warning.call_args)
 
-    async def test_spawn_with_budget_rejects_by_default(self) -> None:
+    async def test_spawn_with_budget_rejects_by_default(self, tmp_path: Path) -> None:
         """Codex cannot enforce a budget cap, so by default spawn() refuses it outright
         rather than silently proceeding unbounded (issue #1128)."""
         from decimal import Decimal
@@ -3033,7 +3042,7 @@ class TestCodexRuntime:
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec") as mock_exec,
             pytest.raises(ConfigurationError) as exc_info,
         ):
-            await rt.spawn("secret prompt text", Path("/tmp"), max_budget_usd=Decimal("5.00"))
+            await rt.spawn("secret prompt text", tmp_path, max_budget_usd=Decimal("5.00"))
 
         mock_exec.assert_not_called()
         # Pin the workflow-boundary classification: a step catches this as a
@@ -3052,7 +3061,7 @@ class TestCodexRuntime:
         assert is_configuration_failure(detail)
         assert not is_billing_failure(detail)
 
-    async def test_spawn_with_budget_opt_in_logs_warning_without_prompt(self) -> None:
+    async def test_spawn_with_budget_opt_in_logs_warning_without_prompt(self, tmp_path: Path) -> None:
         from decimal import Decimal
 
         from sova.config.models import CodexConfig
@@ -3069,14 +3078,14 @@ class TestCodexRuntime:
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sova.ipc.runtime.log") as mock_log,
         ):
-            ap = await rt.spawn("secret prompt text", Path("/tmp"), max_budget_usd=Decimal("5.00"))
+            ap = await rt.spawn("secret prompt text", tmp_path, max_budget_usd=Decimal("5.00"))
 
         assert ap.pid == 59
         mock_log.warning.assert_called_once()
         assert mock_log.warning.call_args[0][0] == "codex.budget_not_enforced"
         assert "secret prompt text" not in str(mock_log.warning.call_args)
 
-    async def test_spawn_with_budget_unset_needs_no_opt_in(self) -> None:
+    async def test_spawn_with_budget_unset_needs_no_opt_in(self, tmp_path: Path) -> None:
         """No budget requested at all: the opt-in flag is irrelevant and nothing warns."""
         from sova.ipc.runtime import CodexRuntime
 
@@ -3091,12 +3100,12 @@ class TestCodexRuntime:
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sova.ipc.runtime.log") as mock_log,
         ):
-            ap = await rt.spawn("test", Path("/tmp"))
+            ap = await rt.spawn("test", tmp_path)
 
         assert ap.pid == 62
         mock_log.warning.assert_not_called()
 
-    async def test_spawn_with_both_unsupported_inputs_warns_twice_when_opted_in(self) -> None:
+    async def test_spawn_with_both_unsupported_inputs_warns_twice_when_opted_in(self, tmp_path: Path) -> None:
         from decimal import Decimal
 
         from sova.config.models import CodexConfig
@@ -3115,7 +3124,7 @@ class TestCodexRuntime:
         ):
             await rt.spawn(
                 "test",
-                Path("/tmp"),
+                tmp_path,
                 fallback_model="gpt-5-mini",
                 max_budget_usd=Decimal("5.00"),
             )
@@ -3379,7 +3388,7 @@ class TestProbeCodexStdinPromptSupport:
             with pytest.raises(CodexStdinProbeAmbiguousError):
                 await _probe_codex_stdin_prompt_support()
 
-    async def test_spawn_raises_when_probe_is_ambiguous(self) -> None:
+    async def test_spawn_raises_when_probe_is_ambiguous(self, tmp_path: Path) -> None:
         """An ambiguous probe must surface as an explicit spawn error, never
         a silent fallback to argv delivery."""
         from sova.ipc.runtime import CodexRuntime, CodexStdinProbeAmbiguousError
@@ -3390,7 +3399,7 @@ class TestProbeCodexStdinPromptSupport:
             AsyncMock(side_effect=CodexStdinProbeAmbiguousError("no PROMPT line found")),
         ):
             with pytest.raises(CodexStdinProbeAmbiguousError):
-                await rt.spawn("fix the bug", Path("/tmp"))
+                await rt.spawn("fix the bug", tmp_path)
 
     async def test_usage_line_does_not_shadow_arguments_section(self) -> None:
         """clap's synopsis line (`usage: codex exec [options] [prompt]`)
@@ -3714,13 +3723,13 @@ class TestMockRuntime:
     from sova.ipc.testing import MockRuntime
 
     @pytest.mark.asyncio
-    async def test_spawn_and_track(self) -> None:
+    async def test_spawn_and_track(self, tmp_path: Path) -> None:
         rt = self.MockRuntime(stdout_lines=["hello"], exit_code=0)
         assert rt.name == "mock"
         assert rt.last_prompt is None
         assert rt.spawned_processes == []
 
-        proc = await rt.spawn("do stuff", "/tmp")
+        proc = await rt.spawn("do stuff", str(tmp_path))
         assert rt.last_prompt == "do stuff"
         assert len(rt.spawned_processes) == 1
         assert rt.spawned_processes[0] is proc
@@ -3731,24 +3740,24 @@ class TestMockRuntime:
         assert code == 0
 
     @pytest.mark.asyncio
-    async def test_multiple_spawns(self) -> None:
+    async def test_multiple_spawns(self, tmp_path: Path) -> None:
         rt = self.MockRuntime()
-        await rt.spawn("first", "/tmp")
-        await rt.spawn("second", "/tmp")
+        await rt.spawn("first", str(tmp_path))
+        await rt.spawn("second", str(tmp_path))
         assert len(rt.spawned_processes) == 2
         assert rt.last_prompt == "second"
 
     @pytest.mark.asyncio
-    async def test_records_read_only_flag(self) -> None:
+    async def test_records_read_only_flag(self, tmp_path: Path) -> None:
         """MockRuntime exposes the read_only kwarg so a caller's sandbox
         decision (e.g. start_agent's reviewer rule) is assertable."""
         rt = self.MockRuntime()
         assert rt.last_read_only is None
 
-        await rt.spawn("read the code", "/tmp", read_only=True)
+        await rt.spawn("read the code", str(tmp_path), read_only=True)
         assert rt.last_read_only is True
 
-        await rt.spawn("edit the code", "/tmp")
+        await rt.spawn("edit the code", str(tmp_path))
         assert rt.last_read_only is False
 
     def test_parse_output(self) -> None:
@@ -3777,11 +3786,11 @@ class TestMockRuntime:
         assert rt.name == "mock"
 
     @pytest.mark.asyncio
-    async def test_spawn_copies_stdout_lines(self) -> None:
+    async def test_spawn_copies_stdout_lines(self, tmp_path: Path) -> None:
         """Each spawn gets its own copy of stdout lines."""
         rt = self.MockRuntime(stdout_lines=["a", "b"])
-        p1 = await rt.spawn("first", "/tmp")
-        p2 = await rt.spawn("second", "/tmp")
+        p1 = await rt.spawn("first", str(tmp_path))
+        p2 = await rt.spawn("second", str(tmp_path))
 
         lines1 = [line async for line in p1.stdout_lines()]
         lines2 = [line async for line in p2.stdout_lines()]
