@@ -20,7 +20,6 @@ from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from sova.adapters.base import TaskAdapter
-    from sova.scheduler.parallel import ParallelExecutor
 
 log = get_logger(component="scheduler.watch")
 
@@ -57,12 +56,10 @@ class WatchLoop:
         *,
         config: ProjectConfig,
         adapter: TaskAdapter,
-        executor: ParallelExecutor | None = None,
         project_dir: str | None = None,
     ) -> None:
         self._config = config
         self._adapter = adapter
-        self._executor = executor
         self._project_dir = project_dir
         self._running = False
         self._stop_event = asyncio.Event()

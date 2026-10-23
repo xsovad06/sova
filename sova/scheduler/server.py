@@ -367,18 +367,12 @@ class SOVAServer:
     async def _run_watch_loop(self) -> None:
         """Run the watch loop, creating adapter on demand."""
         from sova.adapters import create_adapter
-        from sova.scheduler.parallel import ParallelExecutor
         from sova.scheduler.watch import WatchLoop
 
         adapter = create_adapter(self._config)
-        executor = ParallelExecutor(
-            config=self._config,
-            project_dir=self._project_dir,
-        )
         self._watch_loop = WatchLoop(
             config=self._config,
             adapter=adapter,
-            executor=executor,
             project_dir=str(self._project_dir) if self._project_dir else None,
         )
 
