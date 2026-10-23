@@ -50,6 +50,34 @@ class NodeResult:
     duration_ms: int = 0
 
 
+def _node_result_from_command(node_id: str, command: str, result: Any, elapsed_ms: int) -> NodeResult:
+    """Translate a start_command() return value into a NodeResult.
+
+    start_command() reports a refused spawn (memory, network, stale command,
+    slot limit) as {"code", "error"} with no "status" key, the same shape the
+    dashboard routers and the supervisor treat as failure, so an "error" key
+    fails the node as well as an explicit error status.
+    """
+    if not isinstance(result, dict):
+        return NodeResult(node_id=node_id, command=command, success=True, summary=str(result), duration_ms=elapsed_ms)
+
+    error = result.get("error")
+    raw_cost = result.get("cost_usd")
+    try:
+        cost_usd = Decimal(str(raw_cost)) if raw_cost not in (None, "") else Decimal("0")
+    except (InvalidOperation, TypeError, ValueError):
+        cost_usd = Decimal("0")
+    return NodeResult(
+        node_id=node_id,
+        command=command,
+        success=error is None and result.get("status") != "error",
+        summary=result.get("message", str(result)),
+        error=str(error) if error is not None else None,
+        cost_usd=cost_usd,
+        duration_ms=elapsed_ms,
+    )
+
+
 @dataclass
 class DAGResult:
     """Outcome of executing a full DAG."""
@@ -135,23 +163,7 @@ class DAGExecutor:
                 args=node.get("params"),
             )
             elapsed_ms = int((time.monotonic() - start) * 1000)
-
-            success = result.get("status") != "error" if isinstance(result, dict) else True
-            summary = result.get("message", str(result)) if isinstance(result, dict) else str(result)
-            raw_cost = result.get("cost_usd") if isinstance(result, dict) else 0
-            try:
-                cost_usd = Decimal(str(raw_cost)) if raw_cost not in (None, "") else Decimal("0")
-            except (InvalidOperation, TypeError, ValueError):
-                cost_usd = Decimal("0")
-
-            node_result = NodeResult(
-                node_id=node_id,
-                command=command,
-                success=success,
-                summary=summary,
-                cost_usd=cost_usd,
-                duration_ms=elapsed_ms,
-            )
+            node_result = _node_result_from_command(node_id, command, result, elapsed_ms)
         except Exception as exc:  # noqa: BLE001 (any node failure becomes a failed NodeResult, not a crashed DAG)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             log.warning("dag.node_execution_failed", node_id=node_id, command=command, error=str(exc), exc_info=True)

@@ -49,6 +49,7 @@ from sova.supervisor.gates.rate_limit import check_github_rate_limit_gate
 from sova.supervisor.gates.repeated_failure import check_repeated_failures_gate
 from sova.supervisor.gates.review_completed import check_review_completed_gate
 from sova.supervisor.gates.slots import check_slot_gate, get_alive_count
+from sova.supervisor.gates.stale_commands import check_stale_commands_gate
 from sova.supervisor.planner import PlanResult
 from sova.utils.logging import get_logger
 
@@ -1070,6 +1071,13 @@ class TaskProgressionEngine:
                 )
             )
         blockers.extend(r for r in simple_results if r is not None)
+
+        command = _ACTION_TO_COMMAND.get(candidate)
+        if command is not None:
+            # Renders the canonical templates and reads the install, so keep it off the event loop.
+            stale_block = await asyncio.to_thread(check_stale_commands_gate, self._project_dir, command, self._config)
+            if stale_block:
+                blockers.append(stale_block)
 
         if candidate == ProgressionAction.SPAWN_INTEGRATE:
             gate_pr_number = (refined_pr_info.number if refined_pr_info else None) or discovered_pr

@@ -174,6 +174,9 @@ from sova.dashboard.services.agent_validation import (
 from sova.dashboard.services.agent_validation import (
     check_network_connectivity as check_network_connectivity,
 )
+from sova.dashboard.services.agent_validation import (
+    check_stale_command as check_stale_command,
+)
 from sova.dashboard.services.feed_service import emit_safe
 from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.runtime import (
@@ -838,6 +841,12 @@ async def start_command(
         log.warning("start_command.network_unreachable", command=command)
         return net_block
 
+    # Renders the canonical templates and reads the install, so keep it off the event loop.
+    stale_block = await asyncio.to_thread(check_stale_command, pa.project_dir, command)
+    if stale_block:
+        log.warning("start_command.stale_command", command=command, reason=stale_block["error"])
+        return stale_block
+
     pre_run_sha = None
     if pr_number:
         pre_run_sha = await _capture_pr_head_sha(pr_number, pa.project_dir)
@@ -864,6 +873,14 @@ async def start_command(
         if pr_number and cwd.resolve() == project_dir.resolve():
             log.error("command.worktree_isolation_failed", pr=pr_number, command=command)
             return {"error": f"Cannot start PR-based command: worktree isolation failed for PR {pr_number}"}
+
+        # The slash command resolves from the worktree, whose branch may track an
+        # older copy than the primary checkout just verified.
+        if cwd.resolve() != project_dir.resolve():
+            branch_block = await asyncio.to_thread(check_stale_command, project_dir, command, cwd)
+            if branch_block:
+                log.warning("start_command.stale_branch_command", command=command, reason=branch_block["error"])
+                return branch_block
 
         pre_run_head_sha = None
         if pre_run_sha is None:
