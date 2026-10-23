@@ -246,10 +246,32 @@ This command runs as a headless agent. You MUST execute every step below through
       git status --porcelain
       git diff "$BACKUP"
       ```
-      Both commands MUST print nothing. If either does, something was lost or left uncommitted: restore the pre-squash state (this keeps the review fixes, which are in the backup's WIP commit), then start again from step d:
+      Both commands MUST print nothing. If either does, something was lost or left uncommitted: restore the pre-squash state (this keeps the review fixes, which are in the backup's WIP commit), then start again from step d. Restore through the block below, never a bare `git reset --hard`: an edit made during step e (a lint fix, a reworded line) exists only in the working tree, not in `$BACKUP`, so the block first commits anything uncommitted to a rescue branch, which you inspect and carry forward:
       ```bash
       BACKUP=<backup branch printed in step c>
+      if [ -n "$(git status --porcelain)" ]; then
+        git add -A && git commit -m "chore: WIP rescue before re-reset" \
+          || { echo "Rescue commit failed: STOP, do not reset over uninspected changes" >&2; exit 1; }
+        RESCUE="rescue/squash-$(date +%s)-$$-$RANDOM"
+        git branch "$RESCUE" || { echo "Failed to create rescue branch $RESCUE: STOP" >&2; exit 1; }
+        echo "Rescue branch: $RESCUE"
+      fi
       git reset --hard "$BACKUP"
+      ```
+
+      Then confirm the squash kept what the base gained. The two checks above cannot see this: a reset that wrongly targeted `origin/$BASE` leaves the tree identical, so `git diff "$BACKUP"` stays empty while the branch's diff now reverts everything the base gained since the fork point. The block must end by printing `File-set check passed`; if it stops instead, restore the backup as above and start again from step d:
+      ```bash
+      BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName)
+      BACKUP=<backup branch printed in step c>
+      OLD_FORK=$(git merge-base "$BACKUP" "origin/$BASE") || { echo "Cannot resolve the backup's fork point: STOP" >&2; exit 1; }
+      NEW_FORK=$(git merge-base HEAD "origin/$BASE") || { echo "Cannot resolve HEAD's fork point: STOP" >&2; exit 1; }
+      BEFORE=$(git diff --name-only "$OLD_FORK" "$BACKUP") || { echo "git diff failed: STOP" >&2; exit 1; }
+      AFTER=$(git diff --name-only "$NEW_FORK" HEAD) || { echo "git diff failed: STOP" >&2; exit 1; }
+      BASE_CHANGED=$(git diff --name-only "$OLD_FORK" "origin/$BASE") || { echo "git diff failed: STOP" >&2; exit 1; }
+      # A file the squash newly brought into the branch's diff that the base changed since the fork is a reverted base change.
+      REVERTED=$(comm -12 <(comm -13 <(sort <<<"$BEFORE") <(sort <<<"$AFTER")) <(sort <<<"$BASE_CHANGED"))
+      if [ -n "$REVERTED" ]; then printf 'Squash reverted base changes in:\n%s\nSTOP\n' "$REVERTED" >&2; exit 1; fi
+      echo "File-set check passed"
       ```
 
    g. Keep the backup branch until the push in step 12 succeeds; it is deleted there, not here.

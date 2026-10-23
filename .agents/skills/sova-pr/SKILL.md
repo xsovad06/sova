@@ -36,7 +36,7 @@ Create a pull request for the current branch using the project's standard PR tem
 
 3. **Handle existing PR, then rebase only when it is safe**:
    If a PR already exists, **ASK THE USER** which workflow they want (when running headless, with no user to ask, use Option B: it never rewrites history the remote already has):
-   - **Option A: AI feedback workflow**: reset and recreate all commits (soft reset to `origin/$BASE`, reorganize). Rebasing is safe here since step 10 force-pushes this option.
+   - **Option A: AI feedback workflow**: reset and recreate all commits (back up the branch, soft reset to the fork point, reorganize, verify: see step 5). Rebasing is safe here since step 10 force-pushes this option.
    - **Option B: Incremental workflow**: add new commits on top of the existing remote history. Do NOT rebase: step 10 pushes this option with a plain `git push`, which fails as non-fast-forward if the rebase rewrote commit IDs the remote already has.
 
    For a new PR (no existing PR yet) or Option A, rebase now, before adding any commits:
@@ -59,8 +59,19 @@ Create a pull request for the current branch using the project's standard PR tem
    - Generate a descriptive branch name (e.g., `fix/lint-errors`, `feat/add-caching`)
    - Continue PR process on the new branch
 
-5. **Handle uncommitted changes** (if any exist, including a WIP commit from step 3):
-   - If step 3 created a WIP commit, confirm `git log -1 --format=%s` prints `chore: WIP snapshot before rebase`, then undo it with `git reset --soft HEAD~1` so its contents are uncommitted again
+5. **Recreate history (Option A) and handle uncommitted changes**. For Option A, the first bullet and the verification after the commit format below always run, even when nothing is uncommitted. The remaining bullets apply whenever uncommitted changes exist, including a WIP commit from step 3:
+   - **Option A only**: recreate every commit. Back up the branch, then soft-reset to the fork point; this replaces the WIP undo in the next bullet, since the reset uncommits the WIP snapshot too. Never reset to `origin/$BASE` by name: the step 3 rebase made the two equal, but a later fetch can move `origin/$BASE`, and recommitting this branch's tree on top of the newer base silently reverts everything the base gained. Note the printed backup name: the verification below and step 10 re-assign `BACKUP` to it.
+     ```bash
+     [ -z "$(git status --porcelain)" ] || { echo "Uncommitted changes remain: STOP before creating the backup" >&2; exit 1; }
+     BASE=$(gh pr view --json baseRefName --jq .baseRefName 2>&1) || { case "$BASE" in *"no pull requests found"*) BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name) ;; *) echo "Unable to resolve the base branch: $BASE" >&2; exit 1 ;; esac; }
+     [ -n "$BASE" ] || { echo "Unable to resolve the base branch" >&2; exit 1; }
+     FORK_POINT=$(git merge-base HEAD "origin/$BASE") || { echo "Cannot resolve the fork point: STOP before resetting" >&2; exit 1; }
+     BACKUP="backup/pr-$(date +%s)-$$-$RANDOM"
+     git branch "$BACKUP" || { echo "Failed to create backup branch $BACKUP: STOP before resetting" >&2; exit 1; }
+     echo "Backup branch: $BACKUP"
+     git reset --soft "$FORK_POINT" && git reset HEAD .
+     ```
+   - Otherwise (a new PR), if step 3 created a WIP commit, confirm `git log -1 --format=%s` prints `chore: WIP snapshot before rebase`, then undo it with `git reset --soft HEAD~1` so its contents are uncommitted again
    - Analyze and group related changes logically
    - **Create small, atomic commits with detailed explanations**:
      * Each commit = ONE logical change
@@ -73,6 +84,41 @@ Create a pull request for the current branch using the project's standard PR tem
 
    Detailed explanation of what this commit does and why.
    Include before/after behavior if applicable.
+   ```
+
+   **Option A only: verify the recreated history.** Both commands below must print nothing: the recreated branch must have exactly the tree it had before.
+   ```bash
+   BACKUP=<backup branch printed in step 5>
+   git status --porcelain
+   git diff "$BACKUP"
+   ```
+   Then confirm the recreated history kept what the base gained. The two checks above cannot see this: a reset that wrongly targeted `origin/$BASE` leaves the tree identical, so `git diff "$BACKUP"` stays empty while the branch's diff now reverts everything the base gained since the fork point. The block must end by printing `File-set check passed`.
+   ```bash
+   BASE=$(gh pr view --json baseRefName --jq .baseRefName 2>&1) || { case "$BASE" in *"no pull requests found"*) BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name) ;; *) echo "Unable to resolve the base branch: $BASE" >&2; exit 1 ;; esac; }
+   [ -n "$BASE" ] || { echo "Unable to resolve the base branch" >&2; exit 1; }
+   BACKUP=<backup branch printed in step 5>
+   OLD_FORK=$(git merge-base "$BACKUP" "origin/$BASE") || { echo "Cannot resolve the backup's fork point: STOP" >&2; exit 1; }
+   NEW_FORK=$(git merge-base HEAD "origin/$BASE") || { echo "Cannot resolve HEAD's fork point: STOP" >&2; exit 1; }
+   BEFORE=$(git diff --name-only "$OLD_FORK" "$BACKUP") || { echo "git diff failed: STOP" >&2; exit 1; }
+   AFTER=$(git diff --name-only "$NEW_FORK" HEAD) || { echo "git diff failed: STOP" >&2; exit 1; }
+   BASE_CHANGED=$(git diff --name-only "$OLD_FORK" "origin/$BASE") || { echo "git diff failed: STOP" >&2; exit 1; }
+   # A file the squash newly brought into the branch's diff that the base changed since the fork is a reverted base change.
+   REVERTED=$(comm -12 <(comm -13 <(sort <<<"$BEFORE") <(sort <<<"$AFTER")) <(sort <<<"$BASE_CHANGED"))
+   if [ -n "$REVERTED" ]; then printf 'Squash reverted base changes in:\n%s\nSTOP\n' "$REVERTED" >&2; exit 1; fi
+   echo "File-set check passed"
+   ```
+
+   **If any check fails**, first preserve anything uncommitted: `git status --porcelain` output means tracked or untracked edits exist only in the working tree, made during commit recreation, and are not in `$BACKUP` or any commit on this branch, so the recovery reset below would silently discard them. Commit them to a rescue branch before resetting, then redo Option A's reset from the top of this step:
+   ```bash
+   BACKUP=<backup branch printed in step 5>
+   if [ -n "$(git status --porcelain)" ]; then
+     git add -A && git commit -m "chore: WIP rescue before re-reset" \
+       || { echo "Rescue commit failed: STOP, do not reset over uninspected changes" >&2; exit 1; }
+     RESCUE="rescue/squash-$(date +%s)-$$-$RANDOM"
+     git branch "$RESCUE" || { echo "Failed to create rescue branch $RESCUE: STOP" >&2; exit 1; }
+     echo "Rescue branch: $RESCUE"
+   fi
+   git reset --hard "$BACKUP"
    ```
 
 6. **Analyze all changes** (existing + new commits):
@@ -159,7 +205,11 @@ Create a pull request for the current branch using the project's standard PR tem
 
 10. **Push the branch**:
     - New PR: `git push -u origin $(git branch --show-current)`
-    - Existing PR (AI feedback): `git push --force-with-lease origin $(git branch --show-current)`
+    - Existing PR (AI feedback): push, then delete the step 5 backup only once the push has succeeded. If the push fails, keep the backup and report its name:
+      ```bash
+      BACKUP=<backup branch printed in step 5>
+      git push --force-with-lease origin "$(git branch --show-current)" && git branch -D "$BACKUP"
+      ```
     - Existing PR (incremental): `git push origin $(git branch --show-current)`
 
 11. **Create or update PR**:
