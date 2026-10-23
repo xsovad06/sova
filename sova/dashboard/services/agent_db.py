@@ -671,8 +671,8 @@ async def _check_pr_diff_guard(agent: AgentState) -> OutcomeValidation:
     `sova/core/pr_diff_guard.py`). Skips (returns valid) when there is no
     recorded pre-run baseline: a missing baseline means "cannot verify", not
     "verified bad", and this check is additive on top of the push tiers above.
-    Shared by both ``address-pr`` and ``rearrange-commits``, so messages use
-    the agent's own command name rather than hardcoding one.
+    Shared by ``address-pr``, ``rearrange-commits`` and ``pr``, so messages
+    use the agent's own command name rather than hardcoding one.
 
     Runs against ``agent.worktree_path``, preferring it over
     ``agent.project_dir``: a PR-based command run always has a worktree set
@@ -1029,15 +1029,15 @@ async def _validate_merge_command(run_id: int, agent: AgentState) -> OutcomeVali
     return OutcomeValidation(f"{cmd_name} exited without merging PR #{agent.pr_number} (state={pr_status.state})")
 
 
-async def _validate_rearrange_commits(run_id: int, agent: AgentState) -> OutcomeValidation:  # noqa: ARG001 (run_id kept for _COMMAND_VALIDATORS' shared signature)
-    """Check that rearrange-commits did not silently revert a sibling PR's change.
+async def _validate_squash_command(run_id: int, agent: AgentState) -> OutcomeValidation:  # noqa: ARG001 (run_id kept for _COMMAND_VALIDATORS' shared signature)
+    """Check that rearrange-commits or pr did not silently revert a sibling PR's change.
 
-    Unlike address-pr, this command never pushes on its own (pushing is left
-    to a later `/pr` or pipeline step), so there is no "confirm the push
-    happened" tier to gate on first: the squash-capable rewrite it performs
-    (soft-reset to the fork point, then recommit) is exactly the risk
-    `_check_pr_diff_guard` exists to catch, so it runs directly against the
-    local branch.
+    Unlike address-pr, neither has a "confirm the push happened" tier to gate
+    on first: rearrange-commits never pushes on its own, and pr may be
+    creating the PR rather than updating one. The squash-capable rewrite both
+    can perform (soft-reset to the fork point, then recommit) is exactly the
+    risk `_check_pr_diff_guard` exists to catch, so it runs directly against
+    the branch.
     """
     return await _check_pr_diff_guard(agent)
 
@@ -1046,7 +1046,8 @@ _COMMAND_VALIDATORS = {
     "address-pr": _validate_address_pr,
     "review-pr": _validate_review_pr,
     "integrate-pr": _validate_merge_command,
-    "rearrange-commits": _validate_rearrange_commits,
+    "rearrange-commits": _validate_squash_command,
+    "pr": _validate_squash_command,
 }
 
 _PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})
@@ -1055,7 +1056,7 @@ _PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})
 async def _validate_command_outcome(run_id: int, agent: AgentState) -> OutcomeValidation:
     """Validate that a command run actually produced its expected outcome.
 
-    For known command types (address-pr, review-pr), checks evidence of
+    For known command types (those in ``_COMMAND_VALIDATORS``), checks evidence of
     the expected side effects (commits pushed, review posted, etc.).
     Returns a failure reason if validation fails, and whether the verification
     itself was blocked by the network being unreachable.

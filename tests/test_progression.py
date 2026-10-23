@@ -4996,7 +4996,37 @@ class TestReviewLoopActionMapping:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.SPAWN_REVIEWER
-        assert pr is not None and pr.number == 10
+        assert pr is not None
+        assert pr.number == 10
+
+    @pytest.mark.asyncio
+    async def test_approve_anchored_before_address_pr_push_spawns_rereview(self) -> None:
+        """After address-pr pushes past an approve, the new head is re-reviewed, never integrated.
+
+        Issue #1251: the approve is anchored to the pre-push SHA, so integrating would
+        merge whatever the squash produced without review. Auto-integrate is enabled to
+        prove the stale anchor, not a disabled flag, is what keeps it from integrating.
+        """
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_review=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=10, url=""))
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr(head_sha="sha_after_address_pr"))
+        approve_before_push = {
+            "has_sova_review": True,
+            "verdict": "approve",
+            "finding_count": 0,
+            "reviewed_at": "2026-01-01",
+            "run_status": "done",
+            "review_head_sha": "sha_before_address_pr",
+        }
+        with patch(
+            "sova.supervisor.progression.resolve_sova_verdict",
+            new_callable=AsyncMock,
+            return_value=approve_before_push,
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_REVIEWER
+        assert pr is not None
+        assert pr.number == 10
 
     @pytest.mark.asyncio
     async def test_addressed_verdict_without_auto_review_is_checkpoint(self) -> None:
