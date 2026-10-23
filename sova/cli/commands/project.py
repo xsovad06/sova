@@ -551,6 +551,24 @@ def _uninstall_mcp_servers_step(claude_dir: Path, project_dir: Path) -> tuple[li
     return removed, failed
 
 
+def _uninstall_permissions_step(claude_dir: Path, project_dir: Path) -> tuple[list[str], list[str]]:
+    """Step 6b: agent permission entries SOVA added (always removed, SOVA-managed)."""
+    removed: list[str] = []
+    failed: list[str] = []
+    try:
+        from sova.utils.permissions import PermissionRemovalResult, remove_agent_permissions
+
+        result = remove_agent_permissions(claude_dir)
+        if result is PermissionRemovalResult.CHANGED:
+            removed.append("agent permissions from .claude/settings.json")
+        elif result is PermissionRemovalResult.ERROR:
+            failed.append("agent permissions: failed to update .claude/settings.json")
+    except Exception as exc:  # noqa: BLE001 (uninstall continues past any single step; failures are reported to the user)
+        log.debug("uninstall.permissions_failed", project_dir=str(project_dir), exc_info=True)
+        failed.append(f"agent permissions: {exc}")
+    return removed, failed
+
+
 def _uninstall_agent_memory_step(claude_dir: Path) -> tuple[list[str], list[str]]:
     """Step 7: agent memory (opt-in removal)."""
     removed: list[str] = []
@@ -636,6 +654,7 @@ def _uninstall(
         lambda: _uninstall_ephemeral_dirs_step(claude_dir),
         lambda: _uninstall_rtk_hook_step(claude_dir, project_dir),
         lambda: _uninstall_mcp_servers_step(claude_dir, project_dir),
+        lambda: _uninstall_permissions_step(claude_dir, project_dir),
     ]
     trailing_opt_in_steps: list[tuple[bool, Callable[[], tuple[list[str], list[str]]]]] = [
         (remove_memory, lambda: _uninstall_agent_memory_step(claude_dir)),

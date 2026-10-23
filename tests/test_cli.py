@@ -1320,6 +1320,56 @@ class TestUninstallCommand:
 
         assert any("MCP servers" in f for f in failures)
 
+    def test_uninstall_removes_agent_permissions_always(self, tmp_path: Path) -> None:
+        """Agent permissions SOVA added are always removed, even without opt-in flags."""
+        import json
+
+        from sova.cli.commands.project import _uninstall
+        from sova.utils.permissions import inject_agent_permissions
+
+        _scaffold_full_install(tmp_path)
+        claude_dir = tmp_path / ".claude"
+        settings_path = claude_dir / "settings.json"
+        settings_path.write_text(json.dumps({"permissions": {"allow": ["Custom(*)"]}}))
+        inject_agent_permissions(claude_dir)
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            _uninstall(path=tmp_path)
+
+        data = json.loads(settings_path.read_text())
+        assert data["permissions"]["allow"] == ["Custom(*)"]
+
+    def test_uninstall_preserves_permissions_predating_sova(self, tmp_path: Path) -> None:
+        """A permission entry present before sova install was ever run survives sova uninstall."""
+        import json
+
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        # Bash(*) predates SOVA: it was never recorded as something SOVA added.
+        settings_path.write_text(json.dumps({"permissions": {"allow": ["Bash(*)"]}}))
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            _uninstall(path=tmp_path)
+
+        data = json.loads(settings_path.read_text())
+        assert data["permissions"]["allow"] == ["Bash(*)"]
+
+    def test_uninstall_permissions_failure_is_non_fatal(self, tmp_path: Path) -> None:
+        """A raising remove_agent_permissions is captured and reported, not propagated."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with (
+            patch("sova.config.registry.list_projects", return_value={}),
+            patch("sova.utils.permissions.remove_agent_permissions", side_effect=RuntimeError("settings.json corrupt")),
+        ):
+            failures = _uninstall(path=tmp_path)
+
+        assert any("agent permissions" in f for f in failures)
+
     def test_remove_managed_commands_skips_path_traversal(self, tmp_path: Path) -> None:
         """Manifest entries that escape the managed directory are skipped."""
         import json
