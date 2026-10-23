@@ -12,6 +12,7 @@ import pytest
 from sova.supervisor import rebase as rebase_module
 from sova.supervisor.rebase import (
     ROLE_SUPERVISOR_REBASE,
+    RebaseOperations,
     _already_attempted,
     _create_rebase_run,
     _finalize_run,
@@ -21,6 +22,33 @@ from sova.supervisor.rebase import (
     _write_manual_handoff,
     attempt_auto_rebase,
 )
+
+
+def _make_ops(**overrides: object) -> RebaseOperations:
+    """Build a RebaseOperations with every collaborator mocked to a success shape.
+
+    Replaces the old pattern of 8-13 stacked ``@patch("sova.supervisor.rebase.X")``
+    decorators per test: a test overrides just the attributes relevant to the
+    behavior under test on one object instead of patching each function.
+    """
+    defaults: dict[str, object] = dict(
+        load_config=MagicMock(),
+        get_pr_info=AsyncMock(),
+        already_attempted=AsyncMock(return_value=False),
+        create_worktree=AsyncMock(),
+        find_worktree_by_branch=AsyncMock(return_value=None),
+        check_worktree_active_agent=AsyncMock(return_value=None),
+        cleanup_worktree=AsyncMock(),
+        rebase_with_conflict_resolution=AsyncMock(),
+        create_rebase_run=AsyncMock(),
+        update_run_cost=AsyncMock(),
+        finalize_run=AsyncMock(),
+        run_pre_push_hook=AsyncMock(return_value={"passed": True, "output": ""}),
+        run=AsyncMock(return_value=MagicMock(success=True, stdout="", stderr="")),
+        write_manual_handoff=MagicMock(),
+    )
+    defaults.update(overrides)
+    return RebaseOperations(**defaults)
 
 
 @pytest.fixture(autouse=True)
@@ -166,60 +194,67 @@ class TestWriteManualHandoff:
 
 class TestAttemptAutoRebase:
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_no_github_repo_skips(self, mock_cfg: MagicMock) -> None:
-        mock_cfg.return_value.github_repo = ""
+    async def test_no_github_repo_skips(self) -> None:
+        ops = _make_ops()
+        ops.load_config.return_value.github_repo = ""
         factory, _ = _mock_session_factory()
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "skipped"
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_no_pr_skips(self, mock_cfg: MagicMock, mock_info: AsyncMock) -> None:
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.github_user = "user"
-        mock_info.return_value = None
+    async def test_no_pr_skips(self) -> None:
+        ops = _make_ops()
+        ops.load_config.return_value.github_repo = "owner/repo"
+        ops.load_config.return_value.github_user = "user"
+        ops.get_pr_info.return_value = None
         factory, _ = _mock_session_factory()
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "skipped"
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_already_attempted_skips(
-        self,
-        mock_cfg: MagicMock,
-        mock_info: AsyncMock,
-        mock_dup: AsyncMock,
-    ) -> None:
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.github_user = "user"
-        mock_cfg.return_value.base_branch = "main"
-        mock_info.return_value = {"number": 55, "branch": "feat/x", "head_sha": "abc123", "base_branch": "main"}
-        mock_dup.return_value = True
+    async def test_already_attempted_skips(self) -> None:
+        ops = _make_ops()
+        ops.load_config.return_value.github_repo = "owner/repo"
+        ops.load_config.return_value.github_user = "user"
+        ops.load_config.return_value.base_branch = "main"
+        ops.get_pr_info.return_value = {"number": 55, "branch": "feat/x", "head_sha": "abc123", "base_branch": "main"}
+        ops.already_attempted.return_value = True
         factory, _ = _mock_session_factory()
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "skipped"
         assert "Already attempted" in result["reason"]
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_setup_exception_returns_dict(self, mock_cfg: MagicMock, mock_info: AsyncMock) -> None:
+    async def test_setup_exception_returns_dict(self) -> None:
         """Setup exceptions (before task_run created) return failed dict, not propagate."""
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.github_user = "user"
-        mock_cfg.return_value.base_branch = "main"
-        mock_info.return_value = {"number": 55, "branch": "feat/x", "head_sha": "abc123", "base_branch": "main"}
+        ops = _make_ops()
+        ops.load_config.return_value.github_repo = "owner/repo"
+        ops.load_config.return_value.github_user = "user"
+        ops.load_config.return_value.base_branch = "main"
+        ops.get_pr_info.return_value = {"number": 55, "branch": "feat/x", "head_sha": "abc123", "base_branch": "main"}
+        ops.already_attempted.side_effect = RuntimeError("db crash")
         factory, _ = _mock_session_factory()
-        with patch(
-            "sova.supervisor.rebase._already_attempted", new_callable=AsyncMock, side_effect=RuntimeError("db crash")
-        ):
-            result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "db crash" in result["error"]
+
+    def test_default_ops_bind_the_real_collaborators(self) -> None:
+        ops = rebase_module._default_ops()
+        assert ops.get_pr_info is _get_pr_info
+        assert ops.finalize_run is _finalize_run
+        assert ops.write_manual_handoff is _write_manual_handoff
+        assert ops.cleanup_worktree is rebase_module.cleanup_worktree
+
+    @pytest.mark.asyncio
+    async def test_no_ops_uses_module_collaborators_at_call_time(self) -> None:
+        """Callers (dashboard, progression daemon) pass no `ops`; the defaults must
+        resolve when called, so patching a module-level name still takes effect."""
+        factory, _ = _mock_session_factory()
+        with patch.object(rebase_module, "load_config") as mock_load:
+            mock_load.return_value.github_repo = ""
+            result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        assert result == {"status": "skipped", "reason": "No github_repo configured"}
+        mock_load.assert_called_once_with(Path("/fake"))
 
 
 class TestRoleSupervisorRebaseConstant:
@@ -333,590 +368,283 @@ class TestAttemptAutoRebaseExecution:
         pr_info = dict(number=55, branch="feat/x", head_sha="abc123def", base_branch="main")
         return factory, session, mock_task_run, pr_info
 
-    def _cfg_mock(self, mock_cfg):
-        mock_cfg.return_value.github_repo = "owner/repo"
-        mock_cfg.return_value.github_user = "user"
-        mock_cfg.return_value.base_branch = "main"
-        mock_cfg.return_value.worktree.copy_files = []
+    def _cfg_mock(self, ops: RebaseOperations) -> None:
+        ops.load_config.return_value.github_repo = "owner/repo"
+        ops.load_config.return_value.github_user = "user"
+        ops.load_config.return_value.base_branch = "main"
+        ops.load_config.return_value.worktree.copy_files = []
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._run_pre_push_hook", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_success_path(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_hook,
-        mock_run,
-        mock_cleanup,
-    ) -> None:  # noqa: E501
+    async def test_success_path(self, tmp_path: Path) -> None:
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
-        mock_wt.return_value = wt_info
-        mock_create_run.return_value = mock_task_run
-        mock_rebase.return_value = (MagicMock(success=True, conflicts_resolved=2), Decimal("0.05"))
-        mock_hook.return_value = {"passed": True, "output": ""}
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (
+            MagicMock(success=True, conflicts_resolved=2),
+            Decimal("0.05"),
+        )
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "success"
         assert result["pr_number"] == 55
-        mock_cleanup.assert_awaited_once()
+        ops.cleanup_worktree.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_rebase_failure_writes_handoff(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_run,
-        mock_cleanup,
-    ) -> None:  # noqa: E501
+    async def test_rebase_failure_writes_handoff(self, tmp_path: Path) -> None:
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
-        mock_wt.return_value = wt_info
-        mock_create_run.return_value = mock_task_run
-        mock_rebase.return_value = (MagicMock(success=False, error="conflict"), Decimal("0.03"))
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        with patch("sova.supervisor.rebase._write_manual_handoff"):
-            result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (MagicMock(success=False, error="conflict"), Decimal("0.03"))
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
-        mock_cleanup.assert_awaited_once()
+        ops.cleanup_worktree.assert_awaited_once()
+        ops.write_manual_handoff.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._run_pre_push_hook", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.check_worktree_active_agent", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_worktree_by_branch", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_reuses_existing_worktree_for_branch(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_find_wt,
-        mock_active,
-        mock_create_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_hook,
-        mock_run,
-        mock_cleanup,
-    ) -> None:  # noqa: E501
+    async def test_reuses_existing_worktree_for_branch(self) -> None:
         """When the branch is already checked out in another worktree (e.g. the
         developer's persistent worktree), reuse it instead of trying to create
         a second, colliding worktree, and never clean up a worktree we don't own."""
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
         existing_path = Path("/fake/.claude/worktrees/991")
-        mock_find_wt.return_value = existing_path
-        mock_active.return_value = None
-        mock_create_run.return_value = mock_task_run
-        mock_rebase.return_value = (MagicMock(success=True, conflicts_resolved=1), Decimal("0.01"))
-        mock_hook.return_value = {"passed": True, "output": ""}
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        ops.find_worktree_by_branch.return_value = existing_path
+        ops.check_worktree_active_agent.return_value = None
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (
+            MagicMock(success=True, conflicts_resolved=1),
+            Decimal("0.01"),
+        )
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "success"
-        mock_create_wt.assert_not_awaited()
-        mock_cleanup.assert_not_awaited()
+        ops.create_worktree.assert_not_awaited()
+        ops.cleanup_worktree.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.check_worktree_active_agent", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_worktree_by_branch", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_skips_when_existing_worktree_busy(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_create_run,
-        mock_finalize,
-        mock_find_wt,
-        mock_active,
-        mock_run,
-    ) -> None:  # noqa: E501
+    async def test_skips_when_existing_worktree_busy(self) -> None:
         """A worktree with a live agent PID must never be touched by auto-rebase."""
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
-        mock_find_wt.return_value = Path("/fake/.claude/worktrees/991")
-        mock_active.return_value = 12345
-        mock_create_run.return_value = mock_task_run
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
+        ops.find_worktree_by_branch.return_value = Path("/fake/.claude/worktrees/991")
+        ops.check_worktree_active_agent.return_value = 12345
+        ops.create_rebase_run.return_value = mock_task_run
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "skipped"
         assert "actively in use" in result["reason"]
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.check_worktree_active_agent", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_worktree_by_branch", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_fails_when_worktree_safety_check_errors(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_create_run,
-        mock_finalize,
-        mock_find_wt,
-        mock_active,
-        mock_run,
-    ) -> None:  # noqa: E501
+    async def test_fails_when_worktree_safety_check_errors(self) -> None:
         """A DB failure while checking worktree safety fails closed rather than reusing blindly."""
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
-        mock_find_wt.return_value = Path("/fake/.claude/worktrees/991")
-        mock_active.side_effect = RuntimeError("DB query failed")
-        mock_create_run.return_value = mock_task_run
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
+        ops.find_worktree_by_branch.return_value = Path("/fake/.claude/worktrees/991")
+        ops.check_worktree_active_agent.side_effect = RuntimeError("DB query failed")
+        ops.create_rebase_run.return_value = mock_task_run
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "DB query failed" in result["error"]
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_worktree_by_branch", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_skips_when_branch_checked_out_in_main_worktree(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_create_run,
-        mock_finalize,
-        mock_find_wt,
-        mock_create_wt,
-        mock_run,
-    ) -> None:  # noqa: E501
+    async def test_skips_when_branch_checked_out_in_main_worktree(self) -> None:
         """A branch checked out in the main project checkout (no dedicated worktree)
         must never be reused or collided into a second create_worktree() call."""
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
-        mock_find_wt.return_value = Path("/fake")
-        mock_create_run.return_value = mock_task_run
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
+        ops.find_worktree_by_branch.return_value = Path("/fake")
+        ops.create_rebase_run.return_value = mock_task_run
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "skipped"
         assert "main project checkout" in result["reason"]
-        mock_create_wt.assert_not_awaited()
+        ops.create_worktree.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.check_worktree_active_agent", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_worktree_by_branch", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_skips_when_existing_worktree_is_dirty(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_create_run,
-        mock_finalize,
-        mock_find_wt,
-        mock_active,
-        mock_run,
-    ) -> None:  # noqa: E501
+    async def test_skips_when_existing_worktree_is_dirty(self) -> None:
         """A worktree with uncommitted changes must not be reused: the rebase
         helper stashes and pops around the rebase, risking a stranded stash."""
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
-        mock_find_wt.return_value = Path("/fake/.claude/worktrees/991")
-        mock_active.return_value = None
-        mock_create_run.return_value = mock_task_run
-        mock_run.return_value = MagicMock(success=True, stdout="M some_file.py\n", stderr="")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
+        ops.find_worktree_by_branch.return_value = Path("/fake/.claude/worktrees/991")
+        ops.check_worktree_active_agent.return_value = None
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.run.return_value = MagicMock(success=True, stdout="M some_file.py\n", stderr="")
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "skipped"
         assert "uncommitted changes" in result["reason"]
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.check_worktree_active_agent", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_worktree_by_branch", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_fails_closed_when_worktree_status_check_errors(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_create_run,
-        mock_finalize,
-        mock_find_wt,
-        mock_active,
-        mock_run,
-    ) -> None:  # noqa: E501
+    async def test_fails_closed_when_worktree_status_check_errors(self) -> None:
         """An unreadable git status must fail closed (skip reuse), not assume clean."""
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
-        mock_find_wt.return_value = Path("/fake/.claude/worktrees/991")
-        mock_active.return_value = None
-        mock_create_run.return_value = mock_task_run
-        mock_run.return_value = MagicMock(success=False, stdout="", stderr="fatal: not a git repository")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
+        ops.find_worktree_by_branch.return_value = Path("/fake/.claude/worktrees/991")
+        ops.check_worktree_active_agent.return_value = None
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.run.return_value = MagicMock(success=False, stdout="", stderr="fatal: not a git repository")
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "skipped"
         assert "uncommitted changes" in result["reason"]
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._run_pre_push_hook", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_worktree_by_branch", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_branch_worktree_lookup_failure_falls_back_to_create(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_find_wt,
-        mock_create_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_hook,
-        mock_run,
-        mock_cleanup,
-    ) -> None:  # noqa: E501
+    async def test_branch_worktree_lookup_failure_falls_back_to_create(self, tmp_path: Path) -> None:
         """A failed find_worktree_by_branch lookup (e.g. git error) falls back to creating a dedicated worktree."""
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
-        mock_find_wt.side_effect = OSError("git not found")
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
+        ops.find_worktree_by_branch.side_effect = OSError("git not found")
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
-        mock_create_wt.return_value = wt_info
-        mock_create_run.return_value = mock_task_run
-        mock_rebase.return_value = (MagicMock(success=True, conflicts_resolved=1), Decimal("0.01"))
-        mock_hook.return_value = {"passed": True, "output": ""}
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (
+            MagicMock(success=True, conflicts_resolved=1),
+            Decimal("0.01"),
+        )
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "success"
-        mock_create_wt.assert_awaited_once()
-        mock_cleanup.assert_awaited_once()
+        ops.create_worktree.assert_awaited_once()
+        ops.cleanup_worktree.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._run_pre_push_hook", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_pre_push_hook_failure(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_hook,
-        mock_run,
-        mock_cleanup,
-    ) -> None:  # noqa: E501
+    async def test_pre_push_hook_failure(self, tmp_path: Path) -> None:
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
-        mock_wt.return_value = wt_info
-        mock_create_run.return_value = mock_task_run
-        mock_rebase.return_value = (MagicMock(success=True, conflicts_resolved=1), Decimal("0.02"))
-        mock_hook.return_value = {"passed": False, "output": "ruff check failed"}
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        with patch("sova.supervisor.rebase._write_manual_handoff"):
-            result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (
+            MagicMock(success=True, conflicts_resolved=1),
+            Decimal("0.02"),
+        )
+        ops.run_pre_push_hook.return_value = {"passed": False, "output": "ruff check failed"}
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "Pre-push hook failed" in result["error"]
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._run_pre_push_hook", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_push_stale_info_skipped(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_hook,
-        mock_run,
-        mock_cleanup,
-    ) -> None:  # noqa: E501
+    async def test_push_stale_info_skipped(self, tmp_path: Path) -> None:
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
-        mock_wt.return_value = wt_info
-        mock_create_run.return_value = mock_task_run
-        mock_rebase.return_value = (MagicMock(success=True, conflicts_resolved=1), Decimal("0.01"))
-        mock_hook.return_value = {"passed": True, "output": ""}
-        mock_run.return_value = MagicMock(success=False, stdout="", stderr="stale info detected")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (
+            MagicMock(success=True, conflicts_resolved=1),
+            Decimal("0.01"),
+        )
+        ops.run.return_value = MagicMock(success=False, stdout="", stderr="stale info detected")
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "skipped"
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._run_pre_push_hook", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_push_other_failure(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_hook,
-        mock_run,
-        mock_cleanup,
-    ) -> None:  # noqa: E501
+    async def test_push_other_failure(self, tmp_path: Path) -> None:
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
-        mock_wt.return_value = wt_info
-        mock_create_run.return_value = mock_task_run
-        mock_rebase.return_value = (MagicMock(success=True, conflicts_resolved=1), Decimal("0.01"))
-        mock_hook.return_value = {"passed": True, "output": ""}
-        mock_run.return_value = MagicMock(success=False, stdout="", stderr="network timeout")
-        result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (
+            MagicMock(success=True, conflicts_resolved=1),
+            Decimal("0.01"),
+        )
+        ops.run.return_value = MagicMock(success=False, stdout="", stderr="network timeout")
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "network timeout" in result["error"]
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_unexpected_exception(
-        self, mock_cfg, mock_info, mock_dup, mock_wt, mock_create_run, mock_run, mock_finalize, mock_cleanup
-    ) -> None:  # noqa: E501
+    async def test_unexpected_exception(self, tmp_path: Path) -> None:
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
-        mock_wt.return_value = wt_info
-        mock_create_run.return_value = mock_task_run
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        with patch(
-            "sova.supervisor.rebase.rebase_with_conflict_resolution",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("unexpected crash"),
-        ):  # noqa: E501
-            result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.side_effect = RuntimeError("unexpected crash")
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "unexpected crash" in result["error"]
-        mock_finalize.assert_awaited_once()
-        mock_cleanup.assert_awaited_once()
+        ops.finalize_run.assert_awaited_once()
+        ops.cleanup_worktree.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._run_pre_push_hook", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_worktree_cleanup_failure_non_fatal(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_hook,
-        mock_run,
-    ) -> None:  # noqa: E501
+    async def test_worktree_cleanup_failure_non_fatal(self, tmp_path: Path) -> None:
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
-        mock_wt.return_value = wt_info
-        mock_create_run.return_value = mock_task_run
-        mock_rebase.return_value = (MagicMock(success=True, conflicts_resolved=1), Decimal("0.01"))
-        mock_hook.return_value = {"passed": True, "output": ""}
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
-        with patch(
-            "sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock, side_effect=OSError("cleanup failed")
-        ):  # noqa: E501
-            result = await attempt_auto_rebase(42, Path("/fake"), factory)
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (
+            MagicMock(success=True, conflicts_resolved=1),
+            Decimal("0.01"),
+        )
+        ops.cleanup_worktree.side_effect = OSError("cleanup failed")
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._run_pre_push_hook", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_concurrent_calls_for_same_pr_are_serialized(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_hook,
-        mock_run,
-        mock_cleanup,
-    ) -> None:  # noqa: E501
+    async def test_concurrent_calls_for_same_pr_are_serialized(self, tmp_path: Path) -> None:
         """Two concurrent attempt_auto_rebase() calls for the same PR (e.g. a
         dashboard click racing a daemon poll cycle) must not both reach the
         rebase step at once and risk reusing the same worktree concurrently."""
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
-        mock_wt.return_value = wt_info
-        mock_create_run.return_value = mock_task_run
-        mock_hook.return_value = {"passed": True, "output": ""}
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
 
         concurrent = 0
         max_concurrent = 0
@@ -929,70 +657,43 @@ class TestAttemptAutoRebaseExecution:
             concurrent -= 1
             return MagicMock(success=True, conflicts_resolved=0), Decimal("0.00")
 
-        mock_rebase.side_effect = _fake_rebase
+        ops.rebase_with_conflict_resolution.side_effect = _fake_rebase
 
         results = await asyncio.gather(
-            attempt_auto_rebase(42, Path("/fake"), factory),
-            attempt_auto_rebase(42, Path("/fake"), factory),
+            attempt_auto_rebase(42, Path("/fake"), factory, ops=ops),
+            attempt_auto_rebase(42, Path("/fake"), factory, ops=ops),
         )
         assert max_concurrent == 1
         assert all(r["status"] == "success" for r in results)
 
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.cleanup_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._run_pre_push_hook", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._finalize_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._update_run_cost", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._create_rebase_run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.create_worktree", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_worktree_by_branch", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._already_attempted", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase._get_pr_info", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.load_config")
-    async def test_failed_run_cleans_up_worktree_before_releasing_lock(
-        self,
-        mock_cfg,
-        mock_info,
-        mock_dup,
-        mock_find_wt,
-        mock_wt,
-        mock_rebase,
-        mock_create_run,
-        mock_update_cost,
-        mock_finalize,
-        mock_hook,
-        mock_run,
-        mock_cleanup,
-    ) -> None:  # noqa: E501
+    async def test_failed_run_cleans_up_worktree_before_releasing_lock(self, tmp_path: Path) -> None:
         """When the first call's rebase fails, its owned worktree must be
         cleaned up before a same-PR call waiting on the lock proceeds, or the
         waiting call could start reusing/recreating the worktree while the
         first call is still tearing it down."""
         factory, session, mock_task_run, pr_info = self._setup_mocks()
-        self._cfg_mock(mock_cfg)
-        mock_info.return_value = pr_info
-        mock_dup.return_value = False
-        mock_find_wt.return_value = None
-        mock_create_run.return_value = mock_task_run
-        mock_hook.return_value = {"passed": True, "output": ""}
-        mock_run.return_value = MagicMock(success=True, stdout="", stderr="")
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = False
+        ops.find_worktree_by_branch.return_value = None
+        ops.create_rebase_run.return_value = mock_task_run
 
         events: list[str] = []
         wt_info = MagicMock()
-        wt_info.path = Path("/tmp/wt")
+        wt_info.path = tmp_path / "wt"
 
         async def _fake_create_worktree(*args, **kwargs):
             events.append("create_worktree")
             return wt_info
 
-        mock_wt.side_effect = _fake_create_worktree
+        ops.create_worktree.side_effect = _fake_create_worktree
 
         async def _fake_cleanup(*args, **kwargs):
             events.append("cleanup")
 
-        mock_cleanup.side_effect = _fake_cleanup
+        ops.cleanup_worktree.side_effect = _fake_cleanup
 
         call_count = 0
 
@@ -1004,11 +705,11 @@ class TestAttemptAutoRebaseExecution:
                 raise RuntimeError("rebase blew up")
             return MagicMock(success=True, conflicts_resolved=0), Decimal("0.00")
 
-        mock_rebase.side_effect = _fake_rebase
+        ops.rebase_with_conflict_resolution.side_effect = _fake_rebase
 
         results = await asyncio.gather(
-            attempt_auto_rebase(42, Path("/fake"), factory),
-            attempt_auto_rebase(42, Path("/fake"), factory),
+            attempt_auto_rebase(42, Path("/fake"), factory, ops=ops),
+            attempt_auto_rebase(42, Path("/fake"), factory, ops=ops),
         )
         assert results[0]["status"] == "failed"
         assert results[1]["status"] == "success"
