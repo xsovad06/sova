@@ -448,7 +448,7 @@ jobs:
         # check run as "superseded, nothing to see" and is indistinguishable
         # from a concurrency-group supersede.
         timeout-minutes: 15
-        uses: SonarSource/sonarqube-scan-action@v6
+        uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
