@@ -35,7 +35,7 @@ async with await get_session(project_dir=project_dir) as session:
 
 ## ORM Model Conventions
 
-10 models in `sova/db/models.py`: `TaskRun`, `StepExecution`, `FailureRecord`, `CostRecord`, `Memory`, `TaskAssessmentRecord`, `IssueLifecycle`, `LifecyclePhaseRecord`, `WorkflowDefinition`, `CommandContract`.
+26 models in `sova/db/models.py`: `TaskRun`, `OutputLine`, `StepExecution`, `FailureRecord`, `CostRecord`, `Memory`, `MemoryEdge`, `TaskAssessmentRecord`, `IssueLifecycle`, `LifecyclePhaseRecord`, `WorkflowDefinition`, `CommandContract`, `CodeRabbitEvent`, `ResourceSampleRecord`, `ResourceSummaryRecord`, `ActionFeedback`, `OversightRun`, `OversightFinding`, `PRCreationQueue`, `TelemetryEvent`, `SupervisorDecision`, `PREvent`, `ProjectSetting`, `MergeQueueEntry`, `FeedEventRecord`, `BudgetOverride`.
 
 | Convention | Example |
 |---|---|

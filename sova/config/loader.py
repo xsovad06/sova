@@ -342,6 +342,13 @@ def _migrate_deprecated_keys(flat: dict[str, Any]) -> None:
         if "auto_approve_simple" not in spec:
             spec["auto_approve_simple"] = old_val not in ("never", "none")
 
+    pipeline = flat.get("pipeline")
+    if isinstance(pipeline, dict):
+        # Removed: the auto-retry system these fields configured was deleted in
+        # v0.x. No replacement; a stale sova.toml value is simply dropped.
+        pipeline.pop("max_retries", None)
+        pipeline.pop("retry_delay_seconds", None)
+
 
 def _auto_migrate_toml_to_db(project_dir: Path, toml_flat: dict[str, Any]) -> None:
     """Auto-migrate TOML config to DB on first load (one-time, silent).

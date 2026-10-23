@@ -13,9 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sova.config.db_loader import (
     _set_nested,
     _try_load_from_db,
-    delete_setting,
     get_setting,
-    load_config_from_db,
     save_setting,
 )
 from sova.config.loader import _deep_merge
@@ -59,110 +57,6 @@ class TestSetNested:
         d: dict[str, Any] = {"pipeline": "old_value"}
         _set_nested(d, "pipeline.auto_handoff", True)
         assert d == {"pipeline": {"auto_handoff": True}}
-
-
-class TestLoadConfigFromDB:
-    @pytest.mark.asyncio
-    async def test_returns_none_on_empty_table(self, db_session: AsyncSession) -> None:
-        result = await load_config_from_db(db_session)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_loads_flat_settings(self, db_session: AsyncSession) -> None:
-        db_session.add(ProjectSetting(key="github_repo", value='"user/repo"'))
-        db_session.add(ProjectSetting(key="base_branch", value='"develop"'))
-        await db_session.flush()
-
-        result = await load_config_from_db(db_session)
-        assert result == {"github_repo": "user/repo", "base_branch": "develop"}
-
-    @pytest.mark.asyncio
-    async def test_loads_nested_settings(self, db_session: AsyncSession) -> None:
-        db_session.add(ProjectSetting(key="pipeline.auto_handoff", value="false"))
-        db_session.add(ProjectSetting(key="agent.max_budget", value="5.0"))
-        await db_session.flush()
-
-        result = await load_config_from_db(db_session)
-        assert result == {
-            "pipeline": {"auto_handoff": False},
-            "agent": {"max_budget": 5.0},
-        }
-
-    @pytest.mark.asyncio
-    async def test_loads_deeply_nested(self, db_session: AsyncSession) -> None:
-        db_session.add(ProjectSetting(key="external_reviews.sonarcloud.project_key", value='"my-key"'))
-        await db_session.flush()
-
-        result = await load_config_from_db(db_session)
-        assert result == {"external_reviews": {"sonarcloud": {"project_key": "my-key"}}}
-
-    @pytest.mark.asyncio
-    async def test_skips_invalid_json(self, db_session: AsyncSession) -> None:
-        db_session.add(ProjectSetting(key="good_key", value='"good_value"'))
-        db_session.add(ProjectSetting(key="bad_key", value="not valid json {{{"))
-        await db_session.flush()
-
-        result = await load_config_from_db(db_session)
-        assert result == {"good_key": "good_value"}
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_all_invalid_json(self, db_session: AsyncSession) -> None:
-        db_session.add(ProjectSetting(key="bad", value="not json"))
-        await db_session.flush()
-
-        result = await load_config_from_db(db_session)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_handles_list_values(self, db_session: AsyncSession) -> None:
-        db_session.add(ProjectSetting(key="ci.flaky_checks", value='["check1", "check2"]'))
-        await db_session.flush()
-
-        result = await load_config_from_db(db_session)
-        assert result == {"ci": {"flaky_checks": ["check1", "check2"]}}
-
-    @pytest.mark.asyncio
-    async def test_handles_boolean_values(self, db_session: AsyncSession) -> None:
-        db_session.add(ProjectSetting(key="review.enabled", value="true"))
-        db_session.add(ProjectSetting(key="pipeline.auto_handoff", value="false"))
-        await db_session.flush()
-
-        result = await load_config_from_db(db_session)
-        assert result == {
-            "review": {"enabled": True},
-            "pipeline": {"auto_handoff": False},
-        }
-
-    @pytest.mark.asyncio
-    async def test_excludes_internal_orphan_sweep_marker(self, db_session: AsyncSession) -> None:
-        """The orphan-edge sweep's own bookkeeping row must never surface as user config."""
-        from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY
-
-        db_session.add(ProjectSetting(key=_ORPHAN_SWEEP_MARKER_KEY, value="true"))
-        db_session.add(ProjectSetting(key="github_repo", value='"user/repo"'))
-        await db_session.flush()
-
-        result = await load_config_from_db(db_session)
-        assert result == {"github_repo": "user/repo"}
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_only_internal_marker_present(self, db_session: AsyncSession) -> None:
-        from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY
-
-        db_session.add(ProjectSetting(key=_ORPHAN_SWEEP_MARKER_KEY, value="true"))
-        await db_session.flush()
-
-        result = await load_config_from_db(db_session)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_missing_table(self) -> None:
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        async with factory() as session:
-            result = await load_config_from_db(session)
-        await engine.dispose()
-        assert result is None
 
 
 class TestSaveSetting:
@@ -212,24 +106,6 @@ class TestSaveSetting:
 
         val = await get_setting(db_session, "github_repo")
         assert val == "user/repo"
-
-
-class TestDeleteSetting:
-    @pytest.mark.asyncio
-    async def test_delete_existing(self, db_session: AsyncSession) -> None:
-        await save_setting(db_session, "github_repo", "user/repo")
-        await db_session.commit()
-
-        result = await delete_setting(db_session, "github_repo")
-        assert result is True
-
-        val = await get_setting(db_session, "github_repo")
-        assert val is None
-
-    @pytest.mark.asyncio
-    async def test_delete_nonexistent(self, db_session: AsyncSession) -> None:
-        result = await delete_setting(db_session, "nonexistent")
-        assert result is False
 
 
 class TestGetSetting:
@@ -308,35 +184,6 @@ class TestDeepMerge:
 
 
 class TestLoadConfigWithDB:
-    @pytest.mark.asyncio
-    async def test_db_overrides_toml(self, tmp_path) -> None:
-        toml_content = """
-[project]
-github_repo = "user/repo"
-base_branch = "main"
-
-[pipeline]
-auto_handoff = true
-"""
-        (tmp_path / "sova.toml").write_text(toml_content)
-
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        async with factory() as session:
-            await save_setting(session, "pipeline.auto_handoff", False)
-            await save_setting(session, "base_branch", "develop")
-            await session.commit()
-
-            result = await load_config_from_db(session)
-
-        await engine.dispose()
-
-        assert result is not None
-        assert result["pipeline"]["auto_handoff"] is False
-        assert result["base_branch"] == "develop"
-
     def test_load_config_without_db_falls_back_to_toml(self, tmp_path, monkeypatch) -> None:
         toml_content = """
 [project]
@@ -406,21 +253,6 @@ auto_address_review = true
         cfg = load_config(tmp_path)
         assert cfg.github_repo == ""
         assert cfg.base_branch == "main"
-
-
-class TestLoadConfigFromDBExceptionPath:
-    @pytest.mark.asyncio
-    async def test_returns_none_on_generic_exception(self) -> None:
-        """Generic exception path in load_config_from_db."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        session = MagicMock(spec=AsyncSession)
-        session.execute = AsyncMock(side_effect=RuntimeError("unexpected"))
-        session.rollback = AsyncMock()
-
-        result = await load_config_from_db(session)
-        assert result is None
-        session.rollback.assert_awaited_once()
 
 
 class TestResolveDbPath:
@@ -578,6 +410,33 @@ class TestTryLoadFromDBSyncBridge:
             result = _try_load_from_db(tmp_path)
         assert result is None
 
+    def test_excludes_internal_orphan_sweep_marker(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The orphan-edge sweep's own bookkeeping row must never surface as user config."""
+        from sqlalchemy import create_engine
+
+        from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        db_path = claude_dir / "sova.db"
+
+        engine = create_engine(f"sqlite:///{db_path}")
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                ProjectSetting.__table__.insert(),
+                [
+                    {"key": _ORPHAN_SWEEP_MARKER_KEY, "value": "true"},
+                    {"key": "github_repo", "value": '"user/repo"'},
+                ],
+            )
+        engine.dispose()
+
+        result = _try_load_from_db(tmp_path)
+        assert result == {"github_repo": "user/repo"}
+
 
 class TestFlattenTomlResourcesMigration:
     def test_migrates_resources_to_memory_guard(self) -> None:
@@ -683,6 +542,21 @@ class TestMigrateDeprecatedKeys:
         assert flat["commit"]["ai_coauthor"] is True
 
     def test_noop_when_no_commit_section(self) -> None:
+        from sova.config.loader import _migrate_deprecated_keys
+
+        flat: dict[str, Any] = {"github_repo": "user/repo"}
+        _migrate_deprecated_keys(flat)
+        assert flat == {"github_repo": "user/repo"}
+
+    def test_drops_dead_pipeline_retry_fields(self) -> None:
+        """pipeline.max_retries/retry_delay_seconds are silently dropped (auto-retry system removed)."""
+        from sova.config.loader import _migrate_deprecated_keys
+
+        flat: dict[str, Any] = {"pipeline": {"max_retries": 3, "retry_delay_seconds": 10, "auto_handoff": False}}
+        _migrate_deprecated_keys(flat)
+        assert flat == {"pipeline": {"auto_handoff": False}}
+
+    def test_noop_when_no_pipeline_section(self) -> None:
         from sova.config.loader import _migrate_deprecated_keys
 
         flat: dict[str, Any] = {"github_repo": "user/repo"}

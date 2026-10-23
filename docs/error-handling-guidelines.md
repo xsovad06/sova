@@ -8,7 +8,6 @@ SOVA defines two custom exception groups. Prefer standard library exceptions els
 
 | Exception | Module | Purpose |
 |-----------|--------|---------|
-| `InvalidTransitionError` | `sova/core/state.py` | Invalid state machine transition (`current` and `target` fields) |
 | `LLMError` and subclasses | `sova/llm/errors.py` | Typed LLM invocation failures (see below) |
 | `AdapterError` | `sova/adapters/base.py` | Tracker API failure (network, rate limit, auth, unparseable list response) |
 | `RuntimeError` | stdlib | Step failures, subprocess errors, suspicious file detection |
@@ -248,7 +247,6 @@ Always `DROP TABLE IF EXISTS alembic_version` before the fallback stamp to avoid
 |-----------|--------|
 | Step cannot produce valid output | Return `StepResult(success=False, error=str(exc))` |
 | Subprocess command fails | `run()` returns failure; `run_checked()` raises `RuntimeError` |
-| Invalid state transition | Raise `InvalidTransitionError` |
 | Tracker/notification/assignment fails | Log warning with `exc_info=True`, continue |
 | LLM call fails | Fall back to structured output from available data |
 | JSON parse fails | Try substring extraction, then log and return empty |

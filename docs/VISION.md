@@ -25,12 +25,12 @@ A unified repository that ships:
 ```
 sova/
   sova/                            # Python package (15 modules)
-    cli/                           # Typer CLI (22 subcommands)
-    core/                          # Workflow engine, 26 step implementations, state machine
+    cli/                           # Typer CLI (29 subcommands)
+    core/                          # Workflow engine, 29 step implementations, state machine
     roles/                         # Agent roles (triage, researcher, developer, reviewer)
     adapters/                      # Task source plugins (GitHub implemented; JIRA, Linear planned)
-    dashboard/                     # FastAPI web UI (16 routers, 22 services, 23 templates)
-    scheduler/                     # Watch loop, parallel executor, server daemon
+    dashboard/                     # FastAPI web UI (33 routers, 49 services, 29 templates)
+    scheduler/                     # Watch loop, server daemon
     llm/                           # Claude CLI async wrapper, cost tracking
     mcp/                           # MCP server for tool integration
     git/                           # Branch, PR, rebase (with LLM conflict resolution), worktree
@@ -42,7 +42,7 @@ sova/
       data/guidelines/             # Distributable guideline templates
       data/skills/                 # Distributable skill templates
     config/                        # Pydantic Settings v2 + TOML config + project registry
-    db/                            # SQLAlchemy 2.0 async ORM (10 models), Alembic migrations
+    db/                            # SQLAlchemy 2.0 async ORM (26 models), Alembic migrations
     utils/                         # Logging, shell, formatting
   invariants/                      # Pluggable pre-push constraint checks (bash)
   knowledge/
@@ -55,7 +55,7 @@ sova/
     design-system.md               # Dashboard design system reference
     handoff-protocol.md            # Agent handoff protocol
     naming-journey.md              # How SOVA got its name
-  tests/                           # pytest suite (10600+ test functions)
+  tests/                           # pytest suite (11200+ test functions)
   deploy/                          # systemd + launchd service files
 ```
 

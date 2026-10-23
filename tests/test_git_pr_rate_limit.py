@@ -2,7 +2,7 @@
 
 Verifies that _track_gh_rate_limit feeds the GitHubQuotaTracker from
 gh CLI calls made outside the GitHubAdapter (list_open_prs,
-find_pr_for_issue, get_review_thread_counts, etc.).
+find_pr_for_issue, get_pr_review_data, etc.).
 """
 
 from __future__ import annotations
@@ -209,8 +209,8 @@ class TestFindPrForIssueChecked:
                     await find_pr_for_issue_checked("42", repo="owner/repo", github_user="testuser")
 
 
-class TestGetReviewThreadCountsTracking:
-    """get_review_thread_counts should feed the rate limit tracker."""
+class TestGetPrReviewDataTracking:
+    """get_pr_review_data should feed the rate limit tracker."""
 
     def setup_method(self) -> None:
         from sova.supervisor import github_quota
@@ -219,12 +219,12 @@ class TestGetReviewThreadCountsTracking:
 
     @pytest.mark.asyncio
     async def test_review_threads_tracks_rate_limit(self) -> None:
-        from sova.git.pr import get_review_thread_counts
+        from sova.git.pr import get_pr_review_data
 
         rate_limited = ShellResult(returncode=1, stdout="", stderr="API rate limit exceeded")
         with patch("sova.git.pr.run", new_callable=AsyncMock, return_value=rate_limited):
             with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
-                result = await get_review_thread_counts([1, 2], repo="owner/repo", github_user="testuser")
+                result = await get_pr_review_data([1, 2], repo="owner/repo", github_user="testuser")
 
         assert result == {1: None, 2: None}
         tracker = get_github_quota_tracker("testuser")

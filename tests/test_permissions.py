@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 
 from sova.utils.permissions import (
+    _ADDED_MARKER_FILENAME,
     _REQUIRED_PERMISSIONS,
+    PermissionRemovalResult,
     check_agent_permissions,
     inject_agent_permissions,
     remove_agent_permissions,
@@ -179,31 +181,31 @@ def test_check_agent_permissions_malformed_json(tmp_path: Path) -> None:
 
 
 def test_remove_agent_permissions_success(tmp_path: Path) -> None:
-    """Test removing permissions."""
+    """Test removing permissions that SOVA itself added."""
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
+    inject_agent_permissions(claude_dir)
     settings_path = claude_dir / "settings.json"
-    settings_path.write_text(json.dumps({"permissions": {"allow": REQUIRED_PERMISSIONS.copy()}}))
 
     result = remove_agent_permissions(claude_dir)
 
-    assert result is True
+    assert result is PermissionRemovalResult.CHANGED
     # File should be deleted when permissions section is removed and no other content remains
     data = json.loads(settings_path.read_text())
     assert "permissions" not in data or not data.get("permissions", {}).get("allow")
 
 
 def test_remove_agent_permissions_preserve_other_permissions(tmp_path: Path) -> None:
-    """Test removing only agent permissions when other permissions exist."""
+    """Test removing only the agent permissions SOVA added when other permissions exist."""
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
     settings_path = claude_dir / "settings.json"
-    all_perms = REQUIRED_PERMISSIONS + ["CustomTool(*)"]
-    settings_path.write_text(json.dumps({"permissions": {"allow": all_perms.copy()}}))
+    settings_path.write_text(json.dumps({"permissions": {"allow": ["CustomTool(*)"]}}))
+    inject_agent_permissions(claude_dir)
 
     result = remove_agent_permissions(claude_dir)
 
-    assert result is True
+    assert result is PermissionRemovalResult.CHANGED
     data = json.loads(settings_path.read_text())
     assert data["permissions"]["allow"] == ["CustomTool(*)"]
 
@@ -213,18 +215,45 @@ def test_remove_agent_permissions_preserve_other_sections(tmp_path: Path) -> Non
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
     settings_path = claude_dir / "settings.json"
-    original = {
-        "permissions": {"allow": REQUIRED_PERMISSIONS.copy()},
-        "mcpServers": {"server1": {"command": "test"}},
-    }
+    original = {"mcpServers": {"server1": {"command": "test"}}}
     settings_path.write_text(json.dumps(original))
+    inject_agent_permissions(claude_dir)
 
     result = remove_agent_permissions(claude_dir)
 
-    assert result is True
+    assert result is PermissionRemovalResult.CHANGED
     data = json.loads(settings_path.read_text())
     assert data["mcpServers"] == original["mcpServers"]
     assert "permissions" not in data or not data.get("permissions", {}).get("allow")
+
+
+def test_remove_agent_permissions_preserves_pre_existing_entries(tmp_path: Path) -> None:
+    """An entry that predates SOVA, and was never recorded as added, survives uninstall."""
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    settings_path = claude_dir / "settings.json"
+    settings_path.write_text(json.dumps({"permissions": {"allow": ["Bash(*)"]}}))
+    inject_agent_permissions(claude_dir)  # only adds Read(*), Edit(*), Write(*)
+
+    result = remove_agent_permissions(claude_dir)
+
+    assert result is PermissionRemovalResult.CHANGED
+    data = json.loads(settings_path.read_text())
+    assert data["permissions"]["allow"] == ["Bash(*)"]
+
+
+def test_remove_agent_permissions_no_marker_leaves_entries_untouched(tmp_path: Path) -> None:
+    """Without a record of what SOVA added, removal must not guess and delete entries."""
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    settings_path = claude_dir / "settings.json"
+    settings_path.write_text(json.dumps({"permissions": {"allow": REQUIRED_PERMISSIONS.copy()}}))
+
+    result = remove_agent_permissions(claude_dir)
+
+    assert result is PermissionRemovalResult.UNCHANGED
+    data = json.loads(settings_path.read_text())
+    assert data["permissions"]["allow"] == REQUIRED_PERMISSIONS
 
 
 def test_remove_agent_permissions_missing_file(tmp_path: Path) -> None:
@@ -234,19 +263,20 @@ def test_remove_agent_permissions_missing_file(tmp_path: Path) -> None:
 
     result = remove_agent_permissions(claude_dir)
 
-    assert result is False
+    assert result is PermissionRemovalResult.UNCHANGED
 
 
 def test_remove_agent_permissions_already_removed(tmp_path: Path) -> None:
     """Test removing permissions that are already absent."""
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
+    inject_agent_permissions(claude_dir)
     settings_path = claude_dir / "settings.json"
     settings_path.write_text(json.dumps({"mcpServers": {}}))
 
     result = remove_agent_permissions(claude_dir)
 
-    assert result is False
+    assert result is PermissionRemovalResult.UNCHANGED
 
 
 def test_inject_agent_permissions_allow_contains_non_hashable(tmp_path: Path) -> None:
@@ -282,7 +312,8 @@ def test_remove_agent_permissions_allow_contains_non_hashable(tmp_path: Path) ->
     settings_path.write_text(
         json.dumps({"permissions": {"allow": ["Bash(*)", "Read(*)", "Edit(*)", "Write(*)", ["nested", "list"]]}})
     )
+    (claude_dir / _ADDED_MARKER_FILENAME).write_text(json.dumps({"added": REQUIRED_PERMISSIONS.copy()}))
 
     result = remove_agent_permissions(claude_dir)
 
-    assert result is False
+    assert result is PermissionRemovalResult.ERROR

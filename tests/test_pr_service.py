@@ -820,23 +820,23 @@ class TestCountPrCommits:
 
 
 # ---------------------------------------------------------------------------
-# get_review_thread_counts
+# get_pr_review_data
 # ---------------------------------------------------------------------------
 
 
-class TestGetReviewThreadCounts:
-    """Tests for get_review_thread_counts in git/pr.py."""
+class TestGetPrReviewData:
+    """Tests for get_pr_review_data in git/pr.py."""
 
     @pytest.mark.asyncio
     async def test_empty_list_returns_empty(self) -> None:
-        from sova.git.pr import get_review_thread_counts
+        from sova.git.pr import get_pr_review_data
 
-        result = await get_review_thread_counts([], repo="owner/repo")
+        result = await get_pr_review_data([], repo="owner/repo")
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_parses_thread_counts(self, monkeypatch) -> None:
-        from sova.git.pr import get_review_thread_counts
+        from sova.git.pr import get_pr_review_data
 
         graphql_response = {
             "data": {
@@ -866,13 +866,13 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.run", mock_run)
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
-        result = await get_review_thread_counts([10, 20], repo="owner/repo")
-        assert result[10] == (3, 2)
-        assert result[20] == (1, 0)
+        result = await get_pr_review_data([10, 20], repo="owner/repo")
+        assert (result[10].thread_total, result[10].thread_resolved) == (3, 2)
+        assert (result[20].thread_total, result[20].thread_resolved) == (1, 0)
 
     @pytest.mark.asyncio
     async def test_returns_none_per_pr_on_failure(self, monkeypatch) -> None:
-        from sova.git.pr import get_review_thread_counts
+        from sova.git.pr import get_pr_review_data
 
         mock_run = AsyncMock()
         mock_run.return_value.success = False
@@ -880,12 +880,12 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.run", mock_run)
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
-        result = await get_review_thread_counts([10], repo="owner/repo")
+        result = await get_pr_review_data([10], repo="owner/repo")
         assert result == {10: None}
 
     @pytest.mark.asyncio
     async def test_returns_none_per_pr_on_bad_json(self, monkeypatch) -> None:
-        from sova.git.pr import get_review_thread_counts
+        from sova.git.pr import get_pr_review_data
 
         mock_run = AsyncMock()
         mock_run.return_value.success = True
@@ -893,13 +893,13 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.run", mock_run)
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
-        result = await get_review_thread_counts([10], repo="owner/repo")
+        result = await get_pr_review_data([10], repo="owner/repo")
         assert result == {10: None}
 
     @pytest.mark.asyncio
     async def test_handles_missing_pr_data(self, monkeypatch) -> None:
         """A PR alias missing entirely from the GraphQL response is unknown, not (0, 0)."""
-        from sova.git.pr import get_review_thread_counts
+        from sova.git.pr import get_pr_review_data
 
         graphql_response = {"data": {"repository": {}}}
         mock_run = AsyncMock()
@@ -908,13 +908,13 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.run", mock_run)
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
-        result = await get_review_thread_counts([10], repo="owner/repo")
+        result = await get_pr_review_data([10], repo="owner/repo")
         assert result[10] is None
 
     @pytest.mark.asyncio
     async def test_handles_null_aliased_pr_data(self, monkeypatch) -> None:
         """A PR alias present but null (e.g. force-deleted mid-query) is unknown, not (0, 0)."""
-        from sova.git.pr import get_review_thread_counts
+        from sova.git.pr import get_pr_review_data
 
         graphql_response = {"data": {"repository": {"pr10": None}}}
         mock_run = AsyncMock()
@@ -923,13 +923,13 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.run", mock_run)
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
-        result = await get_review_thread_counts([10], repo="owner/repo")
+        result = await get_pr_review_data([10], repo="owner/repo")
         assert result[10] is None
 
     @pytest.mark.asyncio
     async def test_handles_data_null_response(self, monkeypatch) -> None:
         """A full-response GraphQL error (data: null) is unknown for every requested PR."""
-        from sova.git.pr import get_review_thread_counts
+        from sova.git.pr import get_pr_review_data
 
         graphql_response = {"data": None, "errors": [{"message": "something went wrong"}]}
         mock_run = AsyncMock()
@@ -938,7 +938,7 @@ class TestGetReviewThreadCounts:
         monkeypatch.setattr("sova.git.pr.run", mock_run)
         monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
 
-        result = await get_review_thread_counts([10], repo="owner/repo")
+        result = await get_pr_review_data([10], repo="owner/repo")
         assert result[10] is None
 
     @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-"""Tests for sova.scheduler: watch loop, parallel executor, server daemon."""
+"""Tests for sova.scheduler: watch loop, server daemon."""
 
 from __future__ import annotations
 
@@ -336,133 +336,6 @@ class TestWatchLoop:
 
 
 # ---------------------------------------------------------------------------
-# ParallelExecutor tests
-# ---------------------------------------------------------------------------
-
-
-class TestParallelExecutor:
-    """Tests for sova.scheduler.parallel.ParallelExecutor."""
-
-    async def test_submit_respects_max_concurrent(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        config = _make_config(max_parallel_agents=2)
-        executor = ParallelExecutor(config=config)
-
-        assert executor.max_concurrent == 2
-        assert executor.active_count == 0
-
-    async def test_execute_tasks_runs_all(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        config = _make_config(max_parallel_agents=3)
-        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
-        executor = ParallelExecutor(config=config)
-
-        tasks = [
-            _make_task("1", state=TaskState.RESEARCHED),
-            _make_task("2", state=TaskState.RESEARCHED),
-        ]
-
-        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock()) as mock_dispatch:
-            from sova.roles.base import RoleResult
-
-            mock_dispatch.return_value = (MagicMock(), RoleResult(success=True, summary="OK"))
-
-            results = await executor.execute_tasks(tasks, adapter=adapter)
-
-        assert len(results) == 2
-        assert all(r.success for r in results)
-
-    async def test_execute_tasks_limits_concurrency(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        config = _make_config(max_parallel_agents=1)
-        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
-        executor = ParallelExecutor(config=config)
-
-        concurrent_count = 0
-        max_concurrent_seen = 0
-
-        async def track_concurrency(*args, **kwargs):
-            nonlocal concurrent_count, max_concurrent_seen
-            concurrent_count += 1
-            max_concurrent_seen = max(max_concurrent_seen, concurrent_count)
-            await asyncio.sleep(0.01)
-            concurrent_count -= 1
-            from sova.roles.base import RoleResult
-
-            return MagicMock(), RoleResult(success=True, summary="OK")
-
-        tasks = [
-            _make_task("1", state=TaskState.RESEARCHED),
-            _make_task("2", state=TaskState.RESEARCHED),
-            _make_task("3", state=TaskState.RESEARCHED),
-        ]
-
-        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock(side_effect=track_concurrency)):
-            await executor.execute_tasks(tasks, adapter=adapter)
-
-        assert max_concurrent_seen <= 1
-
-    async def test_execute_tasks_collects_failures(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        config = _make_config(max_parallel_agents=2)
-        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
-        executor = ParallelExecutor(config=config)
-
-        call_count = 0
-
-        async def alternating_dispatch(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            from sova.roles.base import RoleResult
-
-            if call_count % 2 == 0:
-                return MagicMock(), RoleResult(success=False, summary="", error="Failed")
-            return MagicMock(), RoleResult(success=True, summary="OK")
-
-        tasks = [
-            _make_task("1", state=TaskState.RESEARCHED),
-            _make_task("2", state=TaskState.RESEARCHED),
-        ]
-
-        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock(side_effect=alternating_dispatch)):
-            results = await executor.execute_tasks(tasks, adapter=adapter)
-
-        successes = [r for r in results if r.success]
-        failures = [r for r in results if not r.success]
-        assert len(successes) == 1
-        assert len(failures) == 1
-
-    async def test_execute_tasks_handles_exceptions(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        config = _make_config(max_parallel_agents=2)
-        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
-        executor = ParallelExecutor(config=config)
-
-        tasks = [_make_task("1", state=TaskState.RESEARCHED)]
-
-        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock(side_effect=RuntimeError("boom"))):
-            results = await executor.execute_tasks(tasks, adapter=adapter)
-
-        assert len(results) == 1
-        assert results[0].success is False
-        assert "boom" in results[0].error
-
-    async def test_stop_cancels_active_tasks(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        config = _make_config(max_parallel_agents=2)
-        executor = ParallelExecutor(config=config)
-
-        # Stopping when nothing is running should not raise
-        await executor.stop()
-
-
-# ---------------------------------------------------------------------------
 # SOVAServer tests
 # ---------------------------------------------------------------------------
 
@@ -693,43 +566,6 @@ class TestServerConfig:
 
 
 # ---------------------------------------------------------------------------
-# Integration: WatchLoop + ParallelExecutor
-# ---------------------------------------------------------------------------
-
-
-class TestWatchParallelIntegration:
-    """Tests for WatchLoop using ParallelExecutor for concurrent dispatch."""
-
-    async def test_watch_loop_with_parallel_executor(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-        from sova.scheduler.watch import WatchLoop
-
-        tasks = [
-            _make_task("1", state=TaskState.RESEARCHED),
-            _make_task("2", state=TaskState.TRIAGED),
-        ]
-        adapter = _mock_adapter(tasks=tasks, default_state=TaskState.RESEARCHED)
-        config = _make_config(max_parallel_agents=2, watch=WatchConfig(veto_seconds=1))
-
-        executor = ParallelExecutor(config=config)
-        loop = WatchLoop(config=config, adapter=adapter, executor=executor)
-
-        processed = []
-
-        async def mock_process(task: Task) -> bool:
-            processed.append(task.id)
-            loop.stop()
-            return True
-
-        loop.process_task = mock_process  # type: ignore[assignment]
-        await loop.run()
-
-        assert len(processed) == 1
-        # Should pick the highest-priority task first (RESEARCHED)
-        assert processed[0] == "1"
-
-
-# ---------------------------------------------------------------------------
 # WatchLoop edge-case tests
 # ---------------------------------------------------------------------------
 
@@ -906,92 +742,6 @@ class TestWatchLoopEdgeCases:
 
         ctx_arg = dispatch.call_args[0][0]
         assert str(ctx_arg.project_dir) == "/my/project"
-
-
-# ---------------------------------------------------------------------------
-# ParallelExecutor edge-case tests
-# ---------------------------------------------------------------------------
-
-
-class TestParallelExecutorEdgeCases:
-    """Additional edge-case tests for ParallelExecutor."""
-
-    async def test_execute_tasks_empty_list_returns_empty(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        executor = ParallelExecutor(config=_make_config())
-        results = await executor.execute_tasks([], adapter=_mock_adapter())
-        assert results == []
-
-    async def test_execute_tasks_passes_force_flag(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
-        executor = ParallelExecutor(config=_make_config())
-        tasks = [_make_task("1", state=TaskState.RESEARCHED)]
-
-        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock()) as mock_dispatch:
-            from sova.roles.base import RoleResult
-
-            mock_dispatch.return_value = (MagicMock(), RoleResult(success=True, summary="OK"))
-            await executor.execute_tasks(tasks, adapter=adapter, force=True)
-
-            ctx_arg = mock_dispatch.call_args[0][0]
-            assert ctx_arg.force is True
-
-    async def test_dispatch_task_returns_role_name(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
-        executor = ParallelExecutor(config=_make_config())
-        tasks = [_make_task("1", state=TaskState.RESEARCHED)]
-
-        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock()) as mock_dispatch:
-            from sova.roles.base import RoleResult
-
-            role_mock = MagicMock()
-            role_mock.name = "developer"
-            mock_dispatch.return_value = (role_mock, RoleResult(success=True, summary="Done"))
-            results = await executor.execute_tasks(tasks, adapter=adapter)
-
-        assert results[0].role == "developer"
-
-    async def test_dispatch_task_failure_includes_error(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
-        executor = ParallelExecutor(config=_make_config())
-        tasks = [_make_task("1", state=TaskState.RESEARCHED)]
-
-        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock()) as mock_dispatch:
-            from sova.roles.base import RoleResult
-
-            role_mock = MagicMock()
-            role_mock.name = "developer"
-            mock_dispatch.return_value = (role_mock, RoleResult(success=False, summary="", error="lint failed"))
-            results = await executor.execute_tasks(tasks, adapter=adapter)
-
-        assert results[0].success is False
-        assert results[0].error == "lint failed"
-        assert results[0].role == "developer"
-
-    async def test_active_count_is_zero_when_idle(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        executor = ParallelExecutor(config=_make_config())
-        assert executor.active_count == 0
-
-    async def test_project_dir_defaults_to_cwd(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        executor = ParallelExecutor(config=_make_config())
-        assert executor._project_dir == Path.cwd()
-
-    async def test_project_dir_uses_provided_path(self) -> None:
-        from sova.scheduler.parallel import ParallelExecutor
-
-        executor = ParallelExecutor(config=_make_config(), project_dir=Path("/custom"))
-        assert executor._project_dir == Path("/custom")
 
 
 # ---------------------------------------------------------------------------
@@ -1540,46 +1290,6 @@ class TestSOVAServerEdgeCases:
             result = read_pid_file(config)
 
         assert result is None
-
-
-class TestParallelExecutorCoverage:
-    """Coverage tests for uncovered paths in ParallelExecutor."""
-
-    async def test_execute_tasks_with_exception(self) -> None:
-        """execute_tasks() converts exceptions to failed TaskResults."""
-        from sova.scheduler.parallel import ParallelExecutor
-
-        config = _make_config()
-        executor = ParallelExecutor(config=config)
-        adapter = _mock_adapter()
-
-        tasks = [_make_task("1"), _make_task("2")]
-
-        with patch.object(executor, "_dispatch_task", side_effect=RuntimeError("boom")):
-            results = await executor.execute_tasks(tasks, adapter=adapter)
-
-        assert len(results) == 2
-        assert all(not r.success for r in results)
-        assert all("boom" in r.error for r in results)
-
-    async def test_stop_cancels_active_tasks(self) -> None:
-        """stop() cancels all active asyncio tasks."""
-        from sova.scheduler.parallel import ParallelExecutor
-
-        config = _make_config()
-        executor = ParallelExecutor(config=config)
-
-        # Create a long-running fake task
-        async def slow_work() -> None:
-            await asyncio.sleep(999)
-
-        fake_task = asyncio.create_task(slow_work())
-        executor._active.add(fake_task)
-
-        await executor.stop()
-
-        assert fake_task.cancelled() or fake_task.done()
-        assert len(executor._active) == 0
 
 
 class TestServerCLICommands:

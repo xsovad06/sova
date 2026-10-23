@@ -91,10 +91,6 @@ class PRStatus:
     merge_state: str = ""  # GitHub mergeStateStatus: CLEAN|BEHIND|BLOCKED|DIRTY|UNSTABLE|HAS_HOOKS|DRAFT|UNKNOWN
 
     @property
-    def is_open(self) -> bool:
-        return self.state == "OPEN"
-
-    @property
     def is_mergeable(self) -> bool:
         return self.mergeable == "MERGEABLE"
 
@@ -615,24 +611,6 @@ async def get_pr_review_data(
     if data is None:
         return dict.fromkeys(pr_numbers)
     return data
-
-
-async def get_review_thread_counts(
-    pr_numbers: list[int],
-    *,
-    repo: str,
-    github_user: str = "",
-) -> dict[int, tuple[int, int] | None]:
-    """Batch-fetch review thread counts (total, resolved) for multiple PRs.
-
-    Returns {pr_number: (total_threads, resolved_threads)}, or None for any PR
-    whose count could not be determined (missing from the response, or the
-    whole call failed): never a silent (0, 0). Uses a single GraphQL call.
-    """
-    if not pr_numbers:
-        return {}
-    data = await get_pr_review_data(pr_numbers, repo=repo, github_user=github_user)
-    return {n: (v.thread_total, v.thread_resolved) if v is not None else None for n, v in data.items()}
 
 
 _GET_PR_BRANCH_FAILED_EVENT = "git.get_pr_branch.failed"

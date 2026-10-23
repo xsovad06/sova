@@ -634,6 +634,7 @@ def create_app(
         from sova.core.output import cleanup_old_output
         from sova.dashboard.services.agent_recovery import _kill_terminal_zombies
         from sova.dashboard.services.feed_service import get_feed_service
+        from sova.monitoring.writer import cleanup_old_resources
 
         gc_task: asyncio.Task | None = None
         if is_multi:
@@ -651,6 +652,7 @@ def create_app(
                     await cleanup_old_output(p, pcfg.output.retention_days)
                     await get_feed_service().prune_old_events(retention_days=pcfg.feed.retention_days, project_dir=p)
                     await get_feed_service().init_counter(p)
+                    await cleanup_old_resources(p)
         else:
             await init_db(resolved)
             await recover_stale_runs(resolved)
@@ -658,6 +660,7 @@ def create_app(
             await cleanup_old_output(resolved, cfg.output.retention_days)
             await get_feed_service().prune_old_events(retention_days=cfg.feed.retention_days, project_dir=resolved)
             await get_feed_service().init_counter(resolved)
+            await cleanup_old_resources(resolved)
 
             if cfg.dashboard.gc_on_startup:
                 gc_task = asyncio.create_task(_startup_gc(resolved))

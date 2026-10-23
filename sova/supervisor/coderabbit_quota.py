@@ -56,11 +56,6 @@ def get_last_sync_iso(repo: str = "") -> str | None:
     return wall.isoformat().replace("+00:00", "Z")
 
 
-def invalidate_sync_cache(repo: str = "") -> None:
-    """Force the next ``sync_from_github`` call to hit the API."""
-    _sync_cache.pop(repo, None)
-
-
 async def get_quota_status(
     session: AsyncSession,
     config: CodeRabbitQuotaConfig,
@@ -185,26 +180,6 @@ async def sync_from_github(
         _sync_cache[repo] = time.monotonic()
         log.info("sync_from_github.done", repo=repo, new_events=new_count, total_fetched=len(reviews))
         return new_count
-
-
-async def record_event(
-    session: AsyncSession,
-    *,
-    pr_number: int,
-    event_type: str,
-    review_id: str,
-    recorded_at: datetime | None = None,
-    project_slug: str = "",
-) -> bool:
-    """Record a CodeRabbit event directly (e.g., from a webhook or step observation).
-
-    Returns True if a new row was inserted, False if deduplicated.
-    """
-    if recorded_at is None:
-        recorded_at = datetime.now(timezone.utc)
-    inserted = await _upsert_event(session, pr_number, event_type, review_id, recorded_at, project_slug)
-    await session.commit()
-    return inserted
 
 
 async def _get_review_events_in_window(

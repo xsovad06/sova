@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sova.adapters.base import Task, TaskState
 from sova.config.models import AgentConfig, LLMConfig, ProjectConfig, TaskSourceConfig
 from sova.core.context import ExecutionContext
-from sova.core.state import InvalidTransitionError, TaskStatus, get_valid_transitions
+from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.workflow import WorkflowEngine, _is_billing_failure
 from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
@@ -84,61 +84,6 @@ class TestTaskStatus:
         actual = {s.name for s in TaskStatus}
         assert expected == actual
 
-    def test_running_transitions(self) -> None:
-        valid = get_valid_transitions(TaskStatus.RUNNING)
-        assert TaskStatus.PENDING in valid
-        assert TaskStatus.ADDRESSING_REVIEW in valid
-        assert TaskStatus.PAUSED in valid
-        assert TaskStatus.FAILED in valid
-        assert TaskStatus.DONE not in valid
-
-    def test_pending_transitions(self) -> None:
-        valid = get_valid_transitions(TaskStatus.PENDING)
-        assert TaskStatus.ASSESSING in valid
-        assert TaskStatus.PAUSED in valid
-        assert TaskStatus.FAILED in valid
-
-    def test_assessing_can_reject(self) -> None:
-        valid = get_valid_transitions(TaskStatus.ASSESSING)
-        assert TaskStatus.REJECTED in valid
-
-    def test_developing_transitions(self) -> None:
-        valid = get_valid_transitions(TaskStatus.DEVELOPING)
-        assert TaskStatus.SIMPLIFYING in valid
-        assert TaskStatus.PAUSED in valid
-        assert TaskStatus.FAILED in valid
-
-    def test_done_is_terminal(self) -> None:
-        valid = get_valid_transitions(TaskStatus.DONE)
-        assert len(valid) == 0
-
-    def test_rejected_is_terminal(self) -> None:
-        valid = get_valid_transitions(TaskStatus.REJECTED)
-        assert len(valid) == 0
-
-    def test_failed_is_terminal(self) -> None:
-        valid = get_valid_transitions(TaskStatus.FAILED)
-        assert len(valid) == 0
-
-    def test_paused_can_resume(self) -> None:
-        valid = get_valid_transitions(TaskStatus.PAUSED)
-        assert TaskStatus.PENDING in valid
-        assert TaskStatus.DEVELOPING in valid
-
-    def test_awaiting_approval_can_resume(self) -> None:
-        valid = get_valid_transitions(TaskStatus.AWAITING_APPROVAL)
-        assert TaskStatus.PENDING in valid
-        assert TaskStatus.DEVELOPING in valid
-        assert TaskStatus.DONE not in valid
-
-    def test_awaiting_approval_reachable_from_non_terminal(self) -> None:
-        valid = get_valid_transitions(TaskStatus.DEVELOPING)
-        assert TaskStatus.AWAITING_APPROVAL in valid
-
-    def test_awaiting_approval_not_reachable_from_terminal(self) -> None:
-        valid = get_valid_transitions(TaskStatus.DONE)
-        assert TaskStatus.AWAITING_APPROVAL not in valid
-
     def test_awaiting_approval_in_task_run_terminal(self) -> None:
         from sova.core.state import TASK_RUN_TERMINAL
 
@@ -149,40 +94,6 @@ class TestTaskStatus:
         from sova.core.state import TASK_RUN_TERMINAL
 
         assert "paused" in TASK_RUN_TERMINAL
-
-    def test_happy_path_sequence(self) -> None:
-        """The happy path through the pipeline is valid."""
-        happy_path = [
-            TaskStatus.PENDING,
-            TaskStatus.ASSESSING,
-            TaskStatus.IN_PROGRESS,
-            TaskStatus.DEVELOPING,
-            TaskStatus.SIMPLIFYING,
-            TaskStatus.REVIEWING,
-            TaskStatus.COMMITTING,
-            TaskStatus.PUSHING,
-            TaskStatus.PR_CREATED,
-            TaskStatus.CI_MONITORING,
-            TaskStatus.AUTOMATED_REVIEW,
-            TaskStatus.ADDRESSING_REVIEW,
-            TaskStatus.DONE,
-        ]
-        for i in range(len(happy_path) - 1):
-            current = happy_path[i]
-            next_state = happy_path[i + 1]
-            valid = get_valid_transitions(current)
-            assert next_state in valid, f"Cannot transition from {current} to {next_state}"
-
-    def test_validate_transition_raises_on_invalid(self) -> None:
-        from sova.core.state import validate_transition
-
-        with pytest.raises(InvalidTransitionError):
-            validate_transition(TaskStatus.DONE, TaskStatus.PENDING)
-
-    def test_validate_transition_allows_valid(self) -> None:
-        from sova.core.state import validate_transition
-
-        validate_transition(TaskStatus.PENDING, TaskStatus.ASSESSING)
 
 
 # ---------------------------------------------------------------------------

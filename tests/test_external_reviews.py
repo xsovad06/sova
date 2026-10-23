@@ -15,7 +15,6 @@ from sova.adapters.external_reviews import (
     ExternalFinding,
     _fetch_coderabbit_threads,
     _ThreadsResult,
-    fetch_coderabbit_findings,
     fetch_sonarcloud_coverage_issues,
     fetch_sonarcloud_issues,
     format_coverage_findings_for_prompt,
@@ -220,10 +219,10 @@ class TestFetchCodeRabbitFindings:
             patch("sova.utils.gh.run", new_callable=AsyncMock, return_value=_shell_result()),
         ):
             mock_run.return_value = _shell_result(stdout=json.dumps(_GQL_RESPONSE))
-            findings = await fetch_coderabbit_findings("owner/repo", 94)
-        assert len(findings) == 1
-        assert findings[0].file_path == "sova/core/dag.py"
-        assert findings[0].tool_id == "PRRT_abc"
+            result = await _fetch_coderabbit_threads("owner/repo", 94)
+        assert len(result.findings) == 1
+        assert result.findings[0].file_path == "sova/core/dag.py"
+        assert result.findings[0].tool_id == "PRRT_abc"
 
     async def test_returns_thread_ids(self) -> None:
         with (

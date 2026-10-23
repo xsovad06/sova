@@ -249,7 +249,7 @@ class TestAgentPoolConfig:
             agent_pool._projects.update(old_projects)
 
 
-class TestGetProjectPool:
+class TestGetProjectAgentsCaching:
     def test_returns_and_caches_pool_for_slug(self, tmp_path: Path) -> None:
         project_path = tmp_path / "proj"
         project_path.mkdir()
@@ -260,8 +260,8 @@ class TestGetProjectPool:
             patch("sova.config.registry.get_project_path", return_value=project_path),
             patch.object(pool_mod, "read_max_parallel", return_value=2),
         ):
-            pa = pool_mod.get_project_pool("proj")
-            pa_again = pool_mod.get_project_pool("proj")
+            pa = pool_mod._get_project_agents("proj")
+            pa_again = pool_mod._get_project_agents("proj")
 
         assert pa.project_dir == project_path.resolve()
         assert pa is pa_again

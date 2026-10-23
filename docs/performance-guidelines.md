@@ -97,7 +97,7 @@ The Agents page Tasks list reads two 120-second caches: `queue_service._queue_ca
 
 | Scope | Default | Config | File |
 |-------|---------|--------|------|
-| Parallel agents (scheduler) | 2 | `max_parallel_agents` | `sova/scheduler/parallel.py` |
+| Parallel agents (`sova parallel`) | 2 | `max_parallel_agents` | `sova/cli/commands/run.py` |
 | Per-project agent slots | 3 | `max_concurrent` in ProjectAgents | `sova/dashboard/services/agent_pool.py` |
 | Batch triage | 3 | per-batch `max_concurrency` | `sova/dashboard/services/batch_service.py` |
 | Batch harden | 2 | per-batch `max_concurrency` | `sova/dashboard/services/batch_service.py` |

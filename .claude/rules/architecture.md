@@ -11,7 +11,7 @@ SOVA has four main components:
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
 - `core/workflow.py` (WorkflowEngine): executes step pipelines with DB persistence (TaskRun, StepExecution, FailureRecord)
-- `core/state.py`: 19-state TaskStatus StrEnum with transition validation
+- `core/state.py`: 19-state TaskStatus StrEnum (no transition validation: `TaskRun.status` writes come from several pipeline variants and recovery paths that don't fit one table)
 - `core/context.py`: ExecutionContext dataclass threading state through steps
 - `core/output.py`: OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
 - `core/steps/`: 29 BaseStep implementations with execute/validate_output/verify_output/can_skip. Four pipeline variants:
@@ -32,7 +32,7 @@ SOVA has four main components:
 ### 3. Dashboard (`sova/dashboard/`)
 - Python/FastAPI web UI with app factory pattern (`create_app(project_dir=None)`)
 - Jinja2 templates + Tailwind CSS (prebuilt via `make css`), Catppuccin dark theme
-- 26 pages: dashboard, agents, run_detail, lifecycle, costs, pr_metrics, queue, reliability, specs, logs, settings, connections, memory, setup, home, style_guide, roles, role_editor, commands, spec, base, supervisor, fleet, oversight, briefing, dependency_health
+- 26 templates: dashboard, agents, run_detail, lifecycle, costs, pr_metrics, queue, reliability, specs, logs, settings, connections, memory, setup, home, style_guide, roles, role_editor, commands, spec, base, supervisor, fleet, oversight, briefing, dependency_health
 - **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, Tailwind config in `tailwind.config.js` (repo root), SVG icon macro in `_icons.html`, component macros in `_components.html`. Run `make css` after adding or removing Tailwind classes in templates/JS (the prebuilt `static/tailwind.min.css` is checked in, not built by CI)
 - 33 API routers under `/api`: auth, overview, runs, costs, feed, handoff, health, lifecycle, memory, models, logs, tasks, queue, quota, reliability, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp, briefing, dependency_health
 - 49 services: run, cost, memory, models, control (facade), feed, handoff, health, lifecycle, queue, batch, reliability, work, work_item, work_state, work_verdict, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, output (re-export facade for core/output), role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness, dependency_health
@@ -48,8 +48,7 @@ SOVA has four main components:
 - Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport, in-memory SQLite via `sqlite+aiosqlite://`), run via `make test-py`
 
 ### 4. Scheduler (`sova/scheduler/`)
-- `watch.py` (WatchLoop): async poll with priority scan (RESEARCHED > TRIAGED > BACKLOG), veto window, asyncio.Event for shutdown
-- `parallel.py` (ParallelExecutor): asyncio.Semaphore for max_parallel_agents
+- `watch.py` (WatchLoop): async poll with priority scan (RESEARCHED > TRIAGED > BACKLOG), veto window, asyncio.Event for shutdown. Dispatches one task at a time (`max_parallel_agents` has no effect here; `sova parallel` is the concurrent path)
 - `server.py` (SOVAServer): combined FastAPI dashboard + scheduler in one process, PID file lifecycle. Scheduler-specific API endpoints (`/api/scheduler/status`, `/api/scheduler/health`, `/api/scheduler/digest`) plus the general `/api/health` (reports the package version and git SHA, and `degraded` once the watch loop's `last_scan_at` exceeds three times `watch.interval_idle` with no task in flight, or, if no scan has ever completed, once that same threshold has passed since process start, so a loop whose `scan()` fails on every attempt does not report `ok` forever) are defined here, not in dashboard routers
 - Deploy: `deploy/sova-server.service` (systemd user unit; `ReadWritePaths` must list the whole project dir, not just its `.claude/`, because agents write `{project}/.git` too) + `deploy/com.sova.server.plist` (launchd) + `deploy/com.sova.server.newsyslog.conf` (reference newsyslog.d entry for the plist's unrotated stdout/stderr files; `install-service --type launchd` generates the path-substituted copy). `uvicorn.run(access_log=False)` in `SOVAServer.run()`: an access-log line per dashboard poll is what made those files grow unbounded
 - CLI: `sova server start/stop/status/restart/digest/install-service`

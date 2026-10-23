@@ -141,6 +141,9 @@ This project uses **GitHub Issues** with a project board.
 - **No emojis**: not in documentation
 - **Code blocks**: always specify language (```bash, ```python, etc.)
 
+### Dependencies
+- **After any `pyproject.toml` dependency edit, run `uv lock` and commit `uv.lock`**: CI installs the exact versions in that universal lock (`uv export --locked`, which fails on a stale lock); local installs still use pip.
+
 ### Testing
 - **All checks**: `make check` (lint + `make test-bash` + `make test-ci`, the same pytest invocation CI runs; see below for what it does not cover)
 - **Bash scripts**: `make lint-bash` (shellcheck on `invariants/` + `.github/scripts/`) + `make test-bash` (`--help` smoke test on both)

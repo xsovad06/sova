@@ -24,10 +24,10 @@ SOVA is a standalone application that turns GitHub Issues into merged pull reque
 
 - **Role-Based Agents**: specialized triage, researcher, developer, and reviewer roles with automatic dispatch and autonomous Developer-Reviewer chaining
 - **Gate-Checked Pipeline**: every step validates its output before the next begins; Developer pipeline (17 steps), Address-Review pipeline (10 steps)
-- **Web Dashboard**: 26-page UI for monitoring runs, costs, agent control, lifecycle tracking, and configuration
-- **24/7 Server Mode**: scheduler with priority-based watch loop and parallel execution
+- **Web Dashboard**: 25-page UI for monitoring runs, costs, agent control, lifecycle tracking, and configuration
+- **24/7 Server Mode**: scheduler with a priority-based watch loop; `sova parallel` runs several issues concurrently
 - **Handoff System**: per-issue handoff files eliminate race conditions in parallel agent runs; dashboard renders action buttons for human decisions
-- **27 Standardized Commands**: develop, test, review, PR, ship, debug, and more. Works on any project
+- **28 Standardized Commands**: develop, test, review, PR, ship, debug, and more. Works on any project
 - **4-Tier Knowledge System**: layered memory with cross-project learning ([details](knowledge/KNOWLEDGE.md))
 - **Persona Auto-Detection**: detects your tech stack and loads relevant guidance (see [`sova/commands/data/personas/`](sova/commands/data/personas/))
 - **Pluggable Task Sources**: GitHub Issues and Jira Cloud supported, Linear planned

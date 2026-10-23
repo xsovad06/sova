@@ -6,25 +6,43 @@ API contract patterns, request/response models, and integration conventions used
 
 ### Router Organization
 
-16 API routers in `sova/dashboard/routers/`, mounted under `/api` via `_register_api_routers()` in `sova/dashboard/app.py`:
+33 API routers in `sova/dashboard/routers/`, mounted under `/api` via `_register_api_routers()` in `sova/dashboard/app.py`:
 
 | Router | Purpose |
 |--------|---------|
-| overview | Dashboard summary (legacy redirect) |
-| agents | Agent lifecycle control |
-| runs | Legacy redirect to agents |
-| costs | Cost tracking and budgets |
-| handoff | Handoff file read/execute/clear |
-| lifecycle | Issue lifecycle phase tracking |
-| memory | Memory CRUD and search |
-| logs | Run log file access |
+| a2a | A2A protocol: Agent Card discovery and task management |
+| agents | Multi-agent start, stop, status, and output streaming |
+| auth | LLM provider/agent runtime auth status and the Connections page |
+| briefing | Dashboard page backing the awareness briefing |
+| costs | Cost tracking from the database |
+| dependencies | DAG visualization, readiness, and chain queries |
+| dependency_health | Outdated, deprecated, and vulnerable dependency tracking |
+| feed | SSE stream, history, and briefing endpoints |
+| fleet_insights | Cross-project analytics from FleetService |
+| fleet_manager | Live fleet status and slot adjustment |
+| handoff | Read, execute, and clear agent handoff actions |
+| health | Read-only diagnostic checks for the settings page panel |
+| lifecycle | Issue lifecycle tracking and phase control |
+| logs | Filterable log viewer |
+| mcp | HTTP+SSE endpoint for agent self-inspection tools |
+| memory | Agent memory entries from the database |
+| models | Read-only LLM/runtime model enumeration |
+| oversight | Status, runs, findings, run-now trigger, and finding actions |
+| overview | Aggregated dashboard data |
+| prs | PR tracker |
+| queue | Priority-sorted issue queue |
+| quota | CodeRabbit quota: rate-limit status, sync, and PR queue |
+| reliability | Success rate, failure taxonomy, and spend by outcome |
+| resources | Resource monitoring data for agent runs |
+| roles | CRUD for workflow definitions and role introspection |
+| runs | Task run history from the database |
+| settings | Config, invariants, personas, installation status |
+| setup | Project onboarding, scanning, and installation |
+| spec | Read, approve, revise, skip, reject specs |
+| supervisor | Status, manual poll trigger, decision log queries, approval plan, and persona |
 | tasks | Open issues from the task source |
-| queue | Batch operations and queue management |
-| settings | Project settings CRUD |
-| setup | Setup wizard state |
-| roles | Custom role CRUD |
-| work | Work page unified views |
-| spec | Spec generation and storage |
+| telemetry | Receives run summaries from remote SOVA instances |
+| work | Unified active tasks and run history |
 
 ### Response Format
 

@@ -241,7 +241,7 @@ class TestProcessQueue:
 
     async def test_process_blocked_by_quota(self) -> None:
         from sova.db.session import get_session
-        from sova.supervisor.coderabbit_quota import record_event
+        from sova.supervisor.coderabbit_quota import _upsert_event
         from sova.supervisor.pr_throttle import enqueue, process_queue
 
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
@@ -250,13 +250,8 @@ class TestProcessQueue:
         # Fill quota
         async with await get_session() as session:
             for i in range(4):
-                await record_event(
-                    session,
-                    pr_number=i + 1,
-                    event_type="review",
-                    review_id=f"r{i}",
-                    recorded_at=now,
-                )
+                await _upsert_event(session, i + 1, "review", f"r{i}", now, "")
+            await session.commit()
 
         run_id = await _create_task_run()
         async with await get_session() as session:
@@ -1038,9 +1033,9 @@ def _make_config_with_trigger(enabled: bool):
     )
 
 
-class TestProcessQueueLoop:
+class TestPRThrottleLoopRun:
     async def test_loop_stops_on_cancel(self) -> None:
-        from sova.supervisor.pr_throttle import process_queue_loop
+        from sova.supervisor.pr_throttle import PRThrottleLoop
 
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
 
@@ -1049,15 +1044,16 @@ class TestProcessQueueLoop:
 
         from sova.db.session import get_session
 
+        loop = PRThrottleLoop(_session_factory, cfg)
         with patch("sova.supervisor.pr_throttle._PROCESS_INTERVAL_SECONDS", 0.01):
-            task = asyncio.create_task(process_queue_loop(_session_factory, cfg))
+            task = asyncio.create_task(loop.run())
             await asyncio.sleep(0.05)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
 
     async def test_loop_stops_on_event(self) -> None:
-        from sova.supervisor.pr_throttle import process_queue_loop
+        from sova.supervisor.pr_throttle import PRThrottleLoop
 
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
 
@@ -1068,15 +1064,12 @@ class TestProcessQueueLoop:
 
         stop = asyncio.Event()
 
+        loop = PRThrottleLoop(_session_factory, cfg, stop_event=stop)
         with patch("sova.supervisor.pr_throttle._PROCESS_INTERVAL_SECONDS", 0.01):
-            task = asyncio.create_task(process_queue_loop(_session_factory, cfg, stop_event=stop))
+            task = asyncio.create_task(loop.run())
             await asyncio.sleep(0.05)
             stop.set()
-            # Give it time to check the event
-            await asyncio.sleep(0.05)
-            if not task.done():
-                task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            # A timeout here means the loop ignored stop_event; let it fail the
+            # test instead of cancelling the task and accepting that as proof.
+            await asyncio.wait_for(task, timeout=1.0)
+        assert task.done()

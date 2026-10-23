@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
 
 from sova.core.state import STEP_DONE_STATUSES
 from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
@@ -74,94 +73,6 @@ class AgentStatus:
     source: str = "dashboard"
 
 
-async def get_agent_status(
-    run_id: int,
-    *,
-    stuck_threshold_ms: int = DEFAULT_STUCK_THRESHOLD_MS,
-    project_dir: Path | None = None,
-) -> AgentStatus | None:
-    """Compute rich status for a single TaskRun.
-
-    Returns None if the run_id does not exist.
-    """
-    try:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-        from sova.db.models import StepExecution, TaskRun
-        from sova.db.session import get_session
-
-        async with await get_session(project_dir=project_dir) as session:
-            task_run = await session.get(TaskRun, run_id)
-            if task_run is None:
-                return None
-
-            progress = await get_step_progress(
-                task_run.current_step,
-                role=task_run.role,
-                pr_number=task_run.pr_number,
-                project_dir=project_dir,
-            )
-
-            # Fetch step executions for this run
-            result = await session.execute(
-                select(StepExecution).where(StepExecution.task_run_id == run_id).order_by(StepExecution.started_at)
-            )
-            steps = result.scalars().all()
-
-            completed = [s.step_name for s in steps if s.status in STEP_DONE_STATUSES]
-            is_terminal = task_run.status in _TERMINAL_STATUSES
-
-            # Progress percentage
-            step_progress_pct = _compute_progress_pct(
-                task_run.status, progress["step_index"], progress["total_steps"], len(completed)
-            )
-
-            # Time in step
-            time_in_step_ms, time_in_step_known = _compute_time_in_step(task_run, steps, is_terminal=is_terminal)
-
-            # Stuck detection
-            is_stuck = not is_terminal and time_in_step_ms > stuck_threshold_ms
-
-            # Estimated remaining time
-            estimated_remaining_ms = await _estimate_remaining_ms(
-                session,
-                progress["steps"],
-                completed,
-            )
-
-        now = datetime.now(timezone.utc)
-        live_agents = _resolve_live_pool_agents(project_dir)
-        live_fields = _compute_live_fields(task_run, live_agents)
-
-        return AgentStatus(
-            run_id=run_id,
-            status=task_run.status,
-            role=task_run.role,
-            pipeline_variant=progress["pipeline_variant"],
-            current_step=task_run.current_step or "agent",
-            step_index=progress["step_index"],
-            total_steps=progress["total_steps"],
-            step_progress_pct=step_progress_pct,
-            time_in_step_ms=time_in_step_ms,
-            time_in_step_known=time_in_step_known,
-            is_stuck=is_stuck,
-            estimated_remaining_ms=estimated_remaining_ms,
-            issue=task_run.issue_number,
-            pid=task_run.pid,
-            elapsed_seconds=_compute_elapsed_seconds(task_run, now),
-            cost_usd=format_cost_usd(task_run.total_cost_usd),
-            pr_number=task_run.pr_number,
-            completed_steps=completed,
-            error_message=task_run.error_message,
-            output_lines=live_fields["output_lines"],
-            cpu_percent=live_fields["cpu_percent"],
-            memory_rss_bytes=live_fields["memory_rss_bytes"],
-            source=live_fields["source"],
-        )
-    except (OSError, RuntimeError, SQLAlchemyError):
-        log.warning(f"Failed to get agent status for run {run_id}", exc_info=True)
-        return None
-
-
 async def get_all_agent_statuses(
     *,
     stuck_threshold_ms: int = DEFAULT_STUCK_THRESHOLD_MS,
@@ -211,9 +122,9 @@ async def get_all_agent_statuses(
                 completed = [s.step_name for s in run_steps if s.status in STEP_DONE_STATUSES]
 
                 step_progress_pct = _compute_progress_pct(
-                    run.status, progress["step_index"], progress["total_steps"], len(completed)
+                    progress["step_index"], progress["total_steps"], len(completed)
                 )
-                time_in_step_ms, time_in_step_known = _compute_time_in_step(run, run_steps, is_terminal=False)
+                time_in_step_ms, time_in_step_known = _compute_time_in_step(run, run_steps)
                 is_stuck = time_in_step_ms > stuck_threshold_ms
 
                 # Estimation: fetch averages once per variant
@@ -331,10 +242,8 @@ def _compute_elapsed_seconds(task_run: TaskRun, now: datetime) -> int:
     return max(0, round((now - _as_utc(started)).total_seconds()))
 
 
-def _compute_progress_pct(status: str, step_index: int, total_steps: int, completed_count: int) -> float:
+def _compute_progress_pct(step_index: int, total_steps: int, completed_count: int) -> float:
     """Compute progress percentage from completed step count."""
-    if status == "done":
-        return 100.0
     if step_index == 0 and completed_count == 0:
         return 0.0
     if total_steps == 0:
@@ -342,7 +251,7 @@ def _compute_progress_pct(status: str, step_index: int, total_steps: int, comple
     return completed_count / total_steps * 100
 
 
-def _compute_time_in_step(task_run: TaskRun, steps: list[StepExecution], *, is_terminal: bool) -> tuple[int, bool]:
+def _compute_time_in_step(task_run: TaskRun, steps: list[StepExecution]) -> tuple[int, bool]:
     """Compute (milliseconds the run has been in its current step, whether that figure is a
     genuine in-step measurement).
 
@@ -352,9 +261,6 @@ def _compute_time_in_step(task_run: TaskRun, steps: list[StepExecution], *, is_t
     fallback below duplicates the adjacent run-elapsed value rather than measuring time in a
     step; callers must not present it as a "time in current step" figure.
     """
-    if is_terminal:
-        return 0, False
-
     now = datetime.now(timezone.utc)
 
     # Find the latest in-progress step (not done)
@@ -371,16 +277,6 @@ def _compute_time_in_step(task_run: TaskRun, steps: list[StepExecution], *, is_t
         return max(0, int(delta.total_seconds() * 1000)), False
 
     return 0, False
-
-
-async def _estimate_remaining_ms(
-    session: AsyncSession,
-    pipeline_steps: list[str],
-    completed_steps: list[str],
-) -> int | None:
-    """Estimate remaining time based on historical step durations."""
-    averages = await _fetch_step_averages(session, pipeline_steps)
-    return _compute_estimation(averages, pipeline_steps, completed_steps)
 
 
 async def _fetch_step_averages(

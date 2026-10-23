@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.config.models import CodeRabbitQuotaConfig
 from sova.db.session import close_db, init_db
@@ -27,6 +28,25 @@ async def setup_db():
     await close_db()
     os.environ.pop("SOVA_DATABASE_URL", None)
     _sync_cache.clear()
+
+
+async def _record_event(
+    session: AsyncSession,
+    *,
+    pr_number: int,
+    event_type: str,
+    review_id: str,
+    recorded_at: datetime | None = None,
+    project_slug: str = "",
+) -> bool:
+    """Test-only seeding helper around the private _upsert_event, committing like the old record_event did."""
+    from sova.supervisor.coderabbit_quota import _upsert_event
+
+    if recorded_at is None:
+        recorded_at = datetime.now(timezone.utc)
+    inserted = await _upsert_event(session, pr_number, event_type, review_id, recorded_at, project_slug)
+    await session.commit()
+    return inserted
 
 
 # ---------------------------------------------------------------------------
@@ -94,14 +114,14 @@ class TestGetQuotaStatus:
 
     async def test_under_limit_available(self) -> None:
         from sova.db.session import get_session
-        from sova.supervisor.coderabbit_quota import get_quota_status, record_event
+        from sova.supervisor.coderabbit_quota import get_quota_status
 
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
         now = datetime.now(timezone.utc)
 
         async with await get_session() as session:
-            await record_event(session, pr_number=1, event_type="review", review_id="r1", recorded_at=now)
-            await record_event(session, pr_number=2, event_type="review", review_id="r2", recorded_at=now)
+            await _record_event(session, pr_number=1, event_type="review", review_id="r1", recorded_at=now)
+            await _record_event(session, pr_number=2, event_type="review", review_id="r2", recorded_at=now)
 
         async with await get_session() as session:
             status = await get_quota_status(session, cfg)
@@ -110,14 +130,14 @@ class TestGetQuotaStatus:
 
     async def test_at_limit_blocked(self) -> None:
         from sova.db.session import get_session
-        from sova.supervisor.coderabbit_quota import get_quota_status, record_event
+        from sova.supervisor.coderabbit_quota import get_quota_status
 
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
         now = datetime.now(timezone.utc)
 
         async with await get_session() as session:
             for i in range(4):
-                await record_event(
+                await _record_event(
                     session,
                     pr_number=i + 1,
                     event_type="review",
@@ -134,14 +154,14 @@ class TestGetQuotaStatus:
 
     async def test_old_events_outside_window(self) -> None:
         from sova.db.session import get_session
-        from sova.supervisor.coderabbit_quota import get_quota_status, record_event
+        from sova.supervisor.coderabbit_quota import get_quota_status
 
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
         old = datetime.now(timezone.utc) - timedelta(minutes=120)
 
         async with await get_session() as session:
             for i in range(4):
-                await record_event(
+                await _record_event(
                     session,
                     pr_number=i + 1,
                     event_type="review",
@@ -156,14 +176,14 @@ class TestGetQuotaStatus:
 
     async def test_summary_events_not_counted(self) -> None:
         from sova.db.session import get_session
-        from sova.supervisor.coderabbit_quota import get_quota_status, record_event
+        from sova.supervisor.coderabbit_quota import get_quota_status
 
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
         now = datetime.now(timezone.utc)
 
         async with await get_session() as session:
             for i in range(10):
-                await record_event(
+                await _record_event(
                     session,
                     pr_number=i + 1,
                     event_type="summary_only",
@@ -177,28 +197,29 @@ class TestGetQuotaStatus:
         assert status.can_create_pr is True
 
 
-class TestRecordEvent:
+class TestUpsertEvent:
+    """Dedup and project-isolation behavior of the private _upsert_event, via the _record_event test helper."""
+
     async def test_deduplication(self) -> None:
         from sova.db.session import get_session
-        from sova.supervisor.coderabbit_quota import record_event
 
         now = datetime.now(timezone.utc)
         async with await get_session() as session:
-            first = await record_event(session, pr_number=1, event_type="review", review_id="dup1", recorded_at=now)
-            second = await record_event(session, pr_number=1, event_type="review", review_id="dup1", recorded_at=now)
+            first = await _record_event(session, pr_number=1, event_type="review", review_id="dup1", recorded_at=now)
+            second = await _record_event(session, pr_number=1, event_type="review", review_id="dup1", recorded_at=now)
         assert first is True
         assert second is False
 
     async def test_project_isolation(self) -> None:
         from sova.db.session import get_session
-        from sova.supervisor.coderabbit_quota import get_quota_status, record_event
+        from sova.supervisor.coderabbit_quota import get_quota_status
 
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
         now = datetime.now(timezone.utc)
 
         async with await get_session() as session:
             for i in range(4):
-                await record_event(
+                await _record_event(
                     session,
                     pr_number=i + 1,
                     event_type="review",
@@ -343,10 +364,11 @@ class TestSyncFromGitHub:
             status = await get_quota_status(session, cfg, repo="fresh/repo")
         assert status.synced_at is None
 
-    async def test_invalidate_sync_cache(self) -> None:
-        """invalidate_sync_cache should force the next sync to call the API."""
+    async def test_sync_cache_invalidation_forces_refetch(self) -> None:
+        """Popping the repo's sync-cache entry should force the next sync to call the API."""
         from sova.db.session import get_session
-        from sova.supervisor.coderabbit_quota import invalidate_sync_cache, sync_from_github
+        from sova.supervisor import coderabbit_quota
+        from sova.supervisor.coderabbit_quota import sync_from_github
 
         cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
         mock_fetch = AsyncMock(return_value=[])
@@ -358,7 +380,7 @@ class TestSyncFromGitHub:
                 await sync_from_github(session, "owner/repo", cfg)
             assert mock_fetch.call_count == 1
 
-            invalidate_sync_cache("owner/repo")
+            coderabbit_quota._sync_cache.pop("owner/repo", None)
 
             async with await get_session() as session:
                 await sync_from_github(session, "owner/repo", cfg)
@@ -667,17 +689,6 @@ class TestSyncFromGitHubEmpty:
             async with await get_session() as session:
                 count = await sync_from_github(session, "owner/repo", cfg)
         assert count == 0
-
-
-class TestRecordEventDefaultTimestamp:
-    async def test_default_recorded_at(self) -> None:
-        """Line 148: recorded_at defaults to now when None."""
-        from sova.db.session import get_session
-        from sova.supervisor.coderabbit_quota import record_event
-
-        async with await get_session() as session:
-            result = await record_event(session, pr_number=99, event_type="review", review_id="auto_ts")
-        assert result is True
 
 
 class TestFetchCodeRabbitReviewsFromGitHub:

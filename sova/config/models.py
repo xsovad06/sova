@@ -559,11 +559,6 @@ class PipelineConfig(BaseSettings):
     auto_address_review: bool = True
     max_address_review_cycles: int = Field(3, ge=0)
 
-    # Deprecated: auto-retry system removed in v0.x. These fields are accepted
-    # but have no effect so existing sova.toml files do not break.
-    max_retries: int = Field(0, ge=0)
-    retry_delay_seconds: int = Field(0, ge=0)
-
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_PIPELINE_")
 
 

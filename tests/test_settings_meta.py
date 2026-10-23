@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic_settings import BaseSettings
 
 from sova.config.models import AtlassianMCPConfig
 from sova.dashboard.settings_meta import (
@@ -336,3 +337,41 @@ class TestEnumerableModelMeta:
         groups = get_grouped_config({"llm.provider": "anthropic"})
         setting = next(s for g in groups for s in g["settings"] if s["key"] == "llm.provider")
         assert setting["options_source"] == ""
+
+
+def _model_leaf_keys(model: BaseSettings, prefix: str = "") -> set[str]:
+    """Dot-notation keys of every leaf field on a ProjectConfig instance.
+
+    Recurses only into nested BaseSettings sub-models; a dict[str, str]-typed
+    field (e.g. llm.routing) is itself a leaf, not a container to flatten,
+    since its keys are arbitrary user data rather than fixed schema fields.
+    """
+    keys: set[str] = set()
+    for name in type(model).model_fields:
+        value = getattr(model, name)
+        full_key = f"{prefix}.{name}" if prefix else name
+        if isinstance(value, BaseSettings):
+            keys |= _model_leaf_keys(value, full_key)
+        else:
+            keys.add(full_key)
+    return keys
+
+
+class TestSettingMetaRegistryParity:
+    """Every ProjectConfig leaf field has a SettingMeta entry, and vice versa (issue #1208)."""
+
+    def test_every_leaf_field_has_a_setting_meta(self) -> None:
+        from sova.config.models import ProjectConfig
+
+        model_keys = _model_leaf_keys(ProjectConfig())
+        registry_keys = {m.key for m in _REGISTRY}
+        missing = sorted(model_keys - registry_keys)
+        assert not missing, f"ProjectConfig fields with no SettingMeta entry: {missing}"
+
+    def test_every_setting_meta_key_exists_on_the_model(self) -> None:
+        from sova.config.models import ProjectConfig
+
+        model_keys = _model_leaf_keys(ProjectConfig())
+        registry_keys = {m.key for m in _REGISTRY}
+        extra = sorted(registry_keys - model_keys)
+        assert not extra, f"SettingMeta entries with no matching ProjectConfig field: {extra}"

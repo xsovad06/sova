@@ -1322,12 +1322,23 @@ class TestSaveConfigToDbSync:
             assert _is_db_confirmed_empty(tmp_path) is False
 
 
+async def _load_all_settings(session: object) -> dict[str, object] | None:
+    """Read back every row written by save_config_to_db, as a nested dict."""
+    from sqlalchemy import select
+
+    from sova.config.db_loader import _rows_to_nested
+    from sova.db.models import ProjectSetting
+
+    result = await session.execute(select(ProjectSetting).order_by(ProjectSetting.key))
+    return _rows_to_nested(result.scalars().all())
+
+
 @pytest.mark.asyncio
 class TestSaveConfigToDbAsync:
     async def test_save_and_load(self, tmp_path: Path, monkeypatch: object) -> None:
         import os
 
-        from sova.config.db_loader import load_config_from_db, save_config_to_db
+        from sova.config.db_loader import save_config_to_db
         from sova.db.session import close_db, get_session, init_db
 
         monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")  # type: ignore[union-attr]
@@ -1344,7 +1355,7 @@ class TestSaveConfigToDbAsync:
                     )
 
             async with await get_session() as session:
-                loaded = await load_config_from_db(session)
+                loaded = await _load_all_settings(session)
             assert loaded is not None
             assert loaded["github_repo"] == "owner/repo"
             assert loaded["task_source"]["type"] == "jira"
@@ -1355,7 +1366,7 @@ class TestSaveConfigToDbAsync:
     async def test_jira_to_github_removes_stale_keys_async(self, tmp_path: Path, monkeypatch: object) -> None:
         import os
 
-        from sova.config.db_loader import load_config_from_db, save_config_to_db
+        from sova.config.db_loader import save_config_to_db
         from sova.db.session import close_db, get_session, init_db
 
         monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")  # type: ignore[union-attr]
@@ -1386,7 +1397,7 @@ class TestSaveConfigToDbAsync:
                     )
 
             async with await get_session() as session:
-                loaded = await load_config_from_db(session)
+                loaded = await _load_all_settings(session)
             assert loaded is not None
             assert loaded["github_repo"] == "owner/repo"
             assert loaded["task_source"]["type"] == "github"
