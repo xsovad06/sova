@@ -117,6 +117,20 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "shared_knowledge_dir", "Shared knowledge dir", "Directory for cross-project shared knowledge files", "project"
     ),
+    SettingMeta(
+        "shared_knowledge_categories",
+        "Shared knowledge categories",
+        "Knowledge categories synced to/from the shared knowledge dir",
+        "project",
+        "list",
+    ),
+    SettingMeta(
+        "ignored_shared_hashes",
+        "Ignored shared hashes",
+        "Content hashes of shared knowledge entries to never pull into this project",
+        "project",
+        "list",
+    ),
     SettingMeta("invariants_dir", "Invariants dir", "Directory containing invariant check scripts", "project"),
     SettingMeta(
         "max_parallel_agents",
