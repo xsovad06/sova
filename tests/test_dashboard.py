@@ -3840,6 +3840,42 @@ class TestMultiProject:
             reg_mod._REGISTRY_FILE = orig_file
             reg_mod._REGISTRY_DIR = orig_dir
 
+    async def test_startup_cleans_up_old_resources_per_project(self, tmp_path) -> None:
+        """Multi-project startup extends resource-sample retention to every registered project.
+
+        ``cleanup_old_resources()`` existed only as a tested, uncalled
+        function (issue #1208): it must actually run during startup GC, once
+        per registered project, not just for the single-project path.
+        """
+        from sova.config import registry
+
+        reg_file = tmp_path / "registry" / "projects.json"
+        import sova.config.registry as reg_mod
+
+        orig_file = reg_mod._REGISTRY_FILE
+        orig_dir = reg_mod._REGISTRY_DIR
+        reg_mod._REGISTRY_FILE = reg_file
+        reg_mod._REGISTRY_DIR = tmp_path / "registry"
+
+        try:
+            good = tmp_path / "project-good"
+            good.mkdir()
+            (good / ".claude").mkdir()
+            registry.register_project(good, slug="good")
+
+            app = create_app(multi_project=True)
+            with (
+                patch("sova.utils.logging.setup_logging"),
+                patch("sova.monitoring.writer.cleanup_old_resources", new=AsyncMock(return_value=0)) as mock_cleanup,
+            ):
+                async with app.router.lifespan_context(app):
+                    pass
+
+            mock_cleanup.assert_any_call(good)
+        finally:
+            reg_mod._REGISTRY_FILE = orig_file
+            reg_mod._REGISTRY_DIR = orig_dir
+
     async def test_setup_page_loads(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/setup")
         assert resp.status_code == 200
@@ -6657,11 +6693,15 @@ class TestSetupAPI:
         assert "slug" in data
 
         # Verify via async session (in-memory DB is accessible async, not sync)
-        from sova.config.db_loader import load_config_from_db
+        from sqlalchemy import select
+
+        from sova.config.db_loader import _rows_to_nested
+        from sova.db.models import ProjectSetting
         from sova.db.session import get_session
 
         async with await get_session(project_dir=project) as session:
-            db_config = await load_config_from_db(session)
+            result = await session.execute(select(ProjectSetting).order_by(ProjectSetting.key))
+            db_config = _rows_to_nested(result.scalars().all())
         assert db_config is not None
         assert db_config["github_repo"] == "user/test"
 
@@ -20170,6 +20210,23 @@ class TestCrashRecoveryCleanup:
         mock_get_branch.assert_not_awaited()
         mock_delete_branch.assert_not_awaited()
         mock_post_merge.assert_not_awaited()
+
+
+class TestSingleProjectStartupResourceCleanup:
+    """Single-project startup must also run cleanup_old_resources (issue #1208)."""
+
+    async def test_startup_cleans_up_old_resources(self, tmp_path: Path) -> None:
+        """ASGITransport never drives the lifespan protocol, so enter it directly."""
+        (tmp_path / ".claude").mkdir()
+        app = create_app(project_dir=tmp_path)
+        with (
+            patch("sova.utils.logging.setup_logging"),
+            patch("sova.monitoring.writer.cleanup_old_resources", new=AsyncMock(return_value=0)) as mock_cleanup,
+        ):
+            async with app.router.lifespan_context(app):
+                pass
+
+        mock_cleanup.assert_any_call(tmp_path.resolve())
 
 
 class TestRateLimiting:
