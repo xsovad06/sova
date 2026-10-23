@@ -366,6 +366,29 @@ class TestDAGExecutorExecution:
         assert len(result.node_results) == 1
         assert "develop crashed" in result.error
 
+    @pytest.mark.parametrize("code", ["stale_command", "network_unreachable"])
+    async def test_execute_stops_when_command_spawn_is_blocked(self, code: str):
+        """start_command() reports a pre-spawn block as {"code", "error"} with no "status" key.
+
+        Reading only "status" counted a refused spawn as a successful node and ran
+        the next one, so a stale safety-critical recipe block (#1251) was ignored.
+        """
+        graph = {
+            "nodes": [
+                {"id": "a", "command": "address-pr"},
+                {"id": "b", "command": "integrate-pr"},
+            ],
+            "edges": [{"source": "a", "target": "b"}],
+        }
+        exe = self._make_executor(graph)
+        mock_cmd = AsyncMock(return_value={"code": code, "error": "Installed /address-pr is out of date"})
+        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
+            result = await exe.execute()
+        assert not result.success
+        assert len(result.node_results) == 1
+        assert not result.node_results[0].success
+        assert "out of date" in result.error
+
     async def test_execute_invalid_dag_returns_error(self):
         graph = {"nodes": [], "edges": []}
         exe = self._make_executor(graph)
