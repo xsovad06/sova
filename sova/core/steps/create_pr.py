@@ -62,6 +62,7 @@ _VALID_SCOPES = frozenset(
         "db",
         "awareness",
         "oversight",
+        "deps",
     }
 )
 _DEFAULT_SCOPE = "core"

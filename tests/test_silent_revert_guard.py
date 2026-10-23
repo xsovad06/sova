@@ -6,6 +6,12 @@ PR #1153 (issue #1148) did exactly that to PRs #1151 and #1152: both of its
 commits were ``feat(core)``, nothing conflicted, and CI stayed green because the
 reverted PRs' own tests disappeared with their code.
 
+Replayed over 300 commits of main history the guard flagged about 4% of them:
+this incident, its own repair (a deliberate undo that needs the trailer), and
+several apparent earlier reverts. That is the guard's recorded false-positive
+calibration, so check any proposed change to ``SILENT_REVERT_THRESHOLD`` or the
+72 hour window against it.
+
 The guard runs two independent checks, and both are exercised here against real
 throwaway git repositories (a bare ``origin`` plus a clone), so the exact
 ``origin/main..HEAD`` range logic is what is under test:
@@ -108,6 +114,8 @@ class TestScopeAndProse:
         ("path", "seed_lines", "message", "env", "expected"),
         [
             pytest.param("sova/db/models.py", 80, "fix(db): simplify", {}, 0, id="in-scope deletion passes"),
+            pytest.param("pyproject.toml", 80, "chore(deps): bump", {}, 0, id="deps scope owns pyproject.toml"),
+            pytest.param("sova/db/models.py", 80, "chore(deps): bump", {}, 1, id="deps scope does not own code"),
             pytest.param(ADAPTER, 80, "fix(db): simplify", {}, 1, id="out-of-scope deletion over threshold fails"),
             pytest.param(ADAPTER, 30, "fix(db): tweak", {}, 0, id="out-of-scope deletion below threshold passes"),
             pytest.param(

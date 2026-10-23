@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Invariant: Branch names must follow the naming convention
 # Format: feat/<name>, fix/<name>, refactor/<name>, docs/<name>, chore/<name>, test/<name>
+# (plus Dependabot's own dependabot/... branches)
 set -euo pipefail
 
 WORKTREE_DIR="$1"
@@ -23,6 +24,12 @@ fi
 
 # main/master are always allowed
 if [[ "$branch" == "main" || "$branch" == "master" ]]; then
+  exit 0
+fi
+
+# Dependabot names its own branches (dependabot/<ecosystem>/<dependency>, with
+# dots, underscores and capitals) and offers no setting to change the prefix
+if [[ "$branch" == dependabot/* ]]; then
   exit 0
 fi
 

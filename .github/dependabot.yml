@@ -1,5 +1,24 @@
 # Weekly update PRs for the Python dependencies (pyproject.toml and the
 # uv.lock CI installs from) and for the actions pinned in .github/workflows/.
+#
+# Updates are grouped so a week's bumps arrive as a few PRs, not one per
+# dependency. A group's PR is all-or-nothing: one incompatible bump holds back
+# the rest, so major Python updates stay ungrouped (one PR each) and land on
+# their own after a real look at the changelog.
+#
+# Commit prefixes must pass invariants/commit-format.sh: Dependabot appends
+# ": " to the prefix, giving "chore(deps): ..." and "ci: ...".
+#
+# Two things to confirm on the first grouped PR, because neither can be tested
+# before one exists:
+#   1. The commit prefix really arrives as "chore(deps): ..." / "ci: ...". If
+#      Dependabot does not insert the ": ", commit-format.sh fails the PR.
+#   2. SonarCloud Analysis passes. It runs on workflow_run and needs
+#      SONAR_TOKEN, and GitHub gives a Dependabot-triggered workflow the
+#      Dependabot secrets, not the Actions secrets. It is undocumented whether
+#      a workflow_run downstream of a Dependabot-triggered CI run inherits that
+#      restriction. If the scan fails on a missing token, add SONAR_TOKEN as a
+#      Dependabot secret as well, not only as an Actions secret.
 version: 2
 updates:
   - package-ecosystem: "uv"
@@ -7,9 +26,27 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # For a 0.x package, a minor bump (uvicorn 0.30 to 0.54) is what semver
+      # would call breaking; it still lands here and CI is the check.
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      # All actions together, majors included: ci.yml uploads the coverage
+      # artifact sonarcloud.yml downloads, so the artifact actions must move
+      # in step, and every bump is verified by the same CI run.
+      github-actions:
+        patterns:
+          - "*"

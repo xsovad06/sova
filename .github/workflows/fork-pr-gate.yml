@@ -17,10 +17,14 @@ jobs:
   gate:
     name: Fork PR Safety Gate
     runs-on: ubuntu-latest
+    # Only PRs from forks. A same-repo branch was pushed by someone (or a bot
+    # such as Dependabot) with write access, and Dependabot's author_association
+    # is NONE, so the association check alone would gate every dependency PR.
     if: >-
-      github.event.pull_request.author_association == 'NONE'
+      github.event.pull_request.head.repo.full_name != github.repository
+      && (github.event.pull_request.author_association == 'NONE'
       || github.event.pull_request.author_association == 'FIRST_TIMER'
-      || github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+      || github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR')
     steps:
       - name: Check changed files for sensitive paths
         id: check
@@ -129,4 +133,5 @@ jobs:
           body="${body}"$'\n'"- [ ] Dependencies are legitimate (check new packages on PyPI)"
           body="${body}"$'\n'"- [ ] No CI resource abuse (crypto mining, infinite loops)"
 
-          gh pr comment "$pr_number" --body "$body"
+          # --repo: the job has no checkout, so gh cannot infer it from a .git
+          gh pr comment "$pr_number" --repo "${{ github.repository }}" --body "$body"
