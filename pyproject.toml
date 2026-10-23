@@ -115,3 +115,60 @@ markers = [
     "codex_smoke: opt-in smoke tests against a real Codex CLI (set SOVA_CODEX_SMOKE=1; deselect with -m 'not codex_smoke')",
     "evaluation: opt-in model-evaluation harness tests against live providers (set SOVA_EVAL_LIVE=1; deselect with -m 'not evaluation')",
 ]
+# "error" promotes every warning not explicitly allowlisted below into a test
+# failure, so a new, unreviewed warning is caught instead of scrolling by
+# unnoticed in a wall of output (issue #1209). Each entry below is a warning
+# category confirmed benign by inspection, scoped as narrowly as the warning
+# itself allows: most come from unawaited sqlite/aiosqlite connections and
+# AsyncMock coroutines in test doubles that the suite never runs to
+# completion, never from production code.
+filterwarnings = [
+    "error",
+    # sqlite3/aiosqlite connections are garbage-collected rather than closed
+    # when a test's in-memory DB engine goes out of scope; nothing is left
+    # unflushed since the DB is in-memory and discarded with the process.
+    "ignore:unclosed database.*:ResourceWarning",
+    "ignore:unclosed <aiosqlite.core.Connection.*:ResourceWarning",
+    # aiosqlite 0.22 words the same warning differently.
+    "ignore:<aiosqlite\\.core\\.Connection object at .* was deleted before being closed:ResourceWarning",
+    # The same aiosqlite GC above, but when __del__ runs during garbage
+    # collection outside any test's own call stack, Python treats its
+    # ResourceWarning as unraisable and pytest's unraisablehook re-wraps it
+    # into this category instead, surfacing on whichever test happens to run
+    # when collection fires rather than on the test that created the
+    # connection. The message pytest generates names only the deallocator,
+    # not the warning it wraps, so this is matched on that name rather than
+    # on "unclosed" like the entries above. Python 3.12 phrases it
+    # "Exception ignored in:", 3.14 "Exception ignored while calling
+    # deallocator"; CI runs both. The 3.12 colon is matched with "." because
+    # a literal colon would end the filter's message field.
+    "ignore:Exception ignored (in.|while calling deallocator) <function Connection\\.__del__:pytest.PytestUnraisableExceptionWarning",
+    # The same unclosed connection seen from aiosqlite's worker thread: once
+    # the test's event loop has closed, the thread's attempt to hand back a
+    # result raises "Event loop is closed", which pytest reports per thread.
+    "ignore:Exception in thread .*\\(_connection_worker_thread\\):pytest.PytestUnhandledThreadExceptionWarning",
+    # sova.db.migrate's lock file is intentionally left for the OS to reclaim
+    # at process exit rather than closed per-test; see sova/db/migrate.py.
+    "ignore:unclosed file.*sova\\.db\\.migrate\\.lock.*:ResourceWarning",
+    # A mocked async collaborator (AsyncMock) that a test's own early return,
+    # exception path, or cancellation never awaits still creates a coroutine
+    # object, which warns on its own __del__. This entry is deliberately the
+    # widest in the list, and it is the one to narrow first: "coroutine X was
+    # never awaited" is also exactly how a forgotten `await` on production
+    # code surfaces, so the category-wide ignore costs real signal. Measured
+    # while promoting warnings to errors, replacing it with
+    # "ignore:coroutine 'AsyncMockMixin\\._execute_mock_call' was never awaited"
+    # (the AsyncMock case alone) fails five tests on pre-existing leaks, none
+    # of them a test double: 'create_subprocess_exec' (tests/test_ipc.py),
+    # 'poll.<locals>._run_poll' (sova/cli/commands/supervisor.py, reached from
+    # tests/test_supervisor_cli.py), '_ConnectionManager._produce_loop'
+    # (tests/test_dashboard.py's websocket tests) and 'Queue.get' (garbage
+    # collected during the setup of a tests/test_output_stream_service.py test,
+    # so leaked by an earlier test on the same xdist worker, not yet traced).
+    # Fix those, then narrow this entry to the AsyncMock message.
+    "ignore:coroutine .* was never awaited:RuntimeWarning",
+    # Third-party: starlette.testclient's own documented httpx migration path,
+    # unrelated to SOVA code. StarletteDeprecationWarning subclasses
+    # UserWarning, not DeprecationWarning.
+    "ignore::starlette.exceptions.StarletteDeprecationWarning",
+]
