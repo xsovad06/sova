@@ -1,8 +1,8 @@
 # Model Selection Risk Assessment and Migration Path
 
 Status: proposal for review (author: Opus 4.8, 2026-09-02)
-Companion: [MODEL_SELECTION_ARCHITECTURE.md](MODEL_SELECTION_ARCHITECTURE.md),
-[MODEL_SELECTION_TASK_PLAN.md](MODEL_SELECTION_TASK_PLAN.md).
+Companion: [model-selection-architecture.md](model-selection-architecture.md),
+[model-selection-task-plan.md](specs/model-selection-task-plan.md).
 
 These risks were surfaced by two adversarial critique passes over three candidate designs and
 then verified against the real code. Each is rated by severity and paired with the mitigation

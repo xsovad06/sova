@@ -1,8 +1,8 @@
 # Model Selection Task Plan
 
 Status: proposal for review (author: Opus 4.8, 2026-09-02)
-Companion: [docs/model-selection-architecture.md](docs/model-selection-architecture.md),
-[docs/model-selection-risk-assessment.md](docs/model-selection-risk-assessment.md).
+Companion: [docs/model-selection-architecture.md](../model-selection-architecture.md),
+[docs/model-selection-risk-assessment.md](../model-selection-risk-assessment.md).
 
 15 PRs in 5 phases, ordered by dependency. Each is independently mergeable, keeps `main` green,
 and rolls back via a config or flag flip. Phase 1 delivers the user-visible fix (the crash and
@@ -24,7 +24,7 @@ Add `sova/llm/errors.py`: `LLMError(RuntimeError)` base with `ModelUnavailableEr
 `RateLimitError`, `BillingError`, `ProviderUnavailableError`, `LLMTimeoutError`,
 `LLMInvocationError`, plus `classify_error(detail: str) -> type[LLMError]` and
 `is_fallback_eligible(exc) -> bool`. Move the pattern table out of
-[workflow.py:34-44](sova/core/workflow.py#L34-L44) into `errors.py` as the single source; have
+[workflow.py:34-44](../../sova/core/workflow.py#L34-L44) into `errors.py` as the single source; have
 `_is_billing_failure` delegate to it. Nothing raises the new types yet.
 
 Acceptance criteria:
@@ -38,7 +38,7 @@ Acceptance criteria:
 
 ### PR2: Providers raise typed errors `[llm]`
 `ClaudeCodeProvider.invoke`/`invoke_streaming` raise `classify_error(detail)(msg)` instead of
-the bare `RuntimeError` at [claude_code.py:76-78](sova/llm/providers/claude_code.py#L76-L78),
+the bare `RuntimeError` at [claude_code.py:76-78](../../sova/llm/providers/claude_code.py#L76-L78),
 reusing `_extract_failure_detail` so the message format is unchanged. Map
 `litellm_provider` and `anthropic_api` SDK exceptions onto the hierarchy. `workflow._is_billing_failure`
 adds an `isinstance` fast path but **keeps the string table as the load-bearing classifier**
@@ -48,7 +48,7 @@ adds an `isinstance` fast path but **keeps the string table as the load-bearing 
 Acceptance criteria:
 - A simulated `"...is not available..."` stderr yields `ModelUnavailableError`.
 - The exit-1-with-valid-JSON-and-empty-stderr partial-success path
-  ([claude_code.py:58-69](sova/llm/providers/claude_code.py#L58-L69)) still returns success and
+  ([claude_code.py:58-69](../../sova/llm/providers/claude_code.py#L58-L69)) still returns success and
   is unchanged (regression test).
 - All existing `except RuntimeError` sites keep catching (no signature or catch changes).
 
@@ -86,7 +86,7 @@ Add a `task_type` parameter to `invoke_command()` and route it through the resol
 `invoke()` so config is loaded even when `model` is set, and adjust `_resolve_task_type_model`
 so a **configured** route can override the passed model (documented semantic change; no-op under
 empty `llm.routing`). **Apply `_apply_pin` on the task-type branch** in
-[routing.py:106-110](sova/llm/routing.py#L106-L110). Add a `TASK_TYPE` tag to each step and pass
+[routing.py:106-110](../../sova/llm/routing.py#L106-L110). Add a `TASK_TYPE` tag to each step and pass
 it at the invoke site while keeping `model=ctx.resolved_model or ctx.config.agent.model` as the
 default. Drop the stale "not referenced yet" comment.
 
@@ -209,7 +209,7 @@ Acceptance criteria:
 Add a query/endpoint aggregating `CostRecord` by model and by parsed complexity tier /
 `model_selection_reason`, plus a dashboard surface. This is the feedback loop that lets routing
 decisions be validated and savings measured (`model_selection_reason` is already persisted at
-[cost.py:44](sova/llm/cost.py#L44)).
+[cost.py:44](../../sova/llm/cost.py#L44)).
 
 Acceptance criteria:
 - Endpoint returns cost rolled up by model and by tier/reason.

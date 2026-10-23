@@ -2,9 +2,9 @@
 
 Status: proposal for review (author: Opus 4.8, 2026-09-02)
 Grounding: every claim below is verified against the current code at file:line. Where the
-original briefing (`MODEL_SELECTION_*.md`) was wrong, the correction is called out inline.
-Companion documents: [MODEL_SELECTION_TASK_PLAN.md](MODEL_SELECTION_TASK_PLAN.md),
-[MODEL_SELECTION_RISK_ASSESSMENT.md](MODEL_SELECTION_RISK_ASSESSMENT.md).
+original briefing (`docs/specs/model-selection-research-context.md` and `docs/specs/model-selection-task-plan.md`) was wrong, the correction is called out inline.
+Companion documents: [model-selection-task-plan.md](specs/model-selection-task-plan.md),
+[model-selection-risk-assessment.md](model-selection-risk-assessment.md).
 
 ---
 
@@ -812,7 +812,7 @@ No Ollama daemon or API keys in CI; everything is mocked/faked.
 
 ### Q8. Migration order
 
-See [MODEL_SELECTION_TASK_PLAN.md](MODEL_SELECTION_TASK_PLAN.md). In brief: typed errors ->
+See [model-selection-task-plan.md](specs/model-selection-task-plan.md). In brief: typed errors ->
 crash fix plus unified fallback -> routing wiring plus pinning -> de-hardcode roles ->
 multi-provider config and cost/runaway guards -> new provider types -> observability and
 cleanup. Every risky PR is a config or flag flip to roll back.
