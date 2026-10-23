@@ -441,22 +441,3 @@ class PRThrottleLoop:
             except Exception:  # noqa: BLE001 (background loop must survive any single-cycle error)
                 log.warning("pr_throttle.loop_error", exc_info=True)
             await self._interruptible_sleep(_PROCESS_INTERVAL_SECONDS)
-
-
-async def process_queue_loop(
-    session_factory: Callable[[], Awaitable[AsyncSession]],
-    config: CodeRabbitQuotaConfig,
-    *,
-    project_slug: str = "",
-    project_dir: Path | None = None,
-    stop_event: asyncio.Event | None = None,
-) -> None:
-    """Backward-compatible wrapper around PRThrottleLoop.run()."""
-    loop = PRThrottleLoop(
-        session_factory,
-        config,
-        project_slug=project_slug,
-        project_dir=project_dir,
-        stop_event=stop_event,
-    )
-    await loop.run()

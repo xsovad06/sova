@@ -34,14 +34,23 @@ async def session() -> AsyncSession:
 NOW = datetime.now(timezone.utc)
 
 
+async def _status_for(run_id: int, **kwargs: object) -> object | None:
+    """The get_all_agent_statuses() entry for *run_id*, or None if the run is not listed."""
+    from sova.dashboard.services.agent_status import get_all_agent_statuses
+
+    return next((s for s in await get_all_agent_statuses(**kwargs) if s.run_id == run_id), None)
+
+
 # Single run status tests -------------------------------------------------
+#
+# Each test reads one run's entry from get_all_agent_statuses(), the list the
+# WebSocket producer broadcasts. Terminal runs are never listed, so they have
+# no status of their own to check (see test_terminal_runs_are_excluded).
 
 
 @pytest.mark.asyncio
 async def test_running_run(session: AsyncSession):
     """Running run returns correct progress and timing."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="10",
         role="developer",
@@ -88,7 +97,7 @@ async def test_running_run(session: AsyncSession):
     session.add_all([s1, s2, s3, s4])
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.run_id == run.id
     assert status.status == "running"
@@ -108,77 +117,8 @@ async def test_running_run(session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_completed_run(session: AsyncSession):
-    """Completed (done) run returns 100% progress."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
-    run = TaskRun(
-        issue_number="11",
-        role="developer",
-        status="done",
-        current_step="handoff_to_reviewer",
-        started_at=NOW - timedelta(hours=1),
-        ended_at=NOW,
-    )
-    session.add(run)
-    await session.commit()
-
-    status = await get_agent_status(run.id)
-    assert status is not None
-    assert status.step_progress_pct == 100.0
-    assert status.time_in_step_ms == 0
-    assert status.is_stuck is False
-
-
-@pytest.mark.asyncio
-async def test_failed_run(session: AsyncSession):
-    """Failed run uses completed step count for progress."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
-    run = TaskRun(
-        issue_number="12",
-        role="developer",
-        status="failed",
-        current_step="develop",
-        error_message="Tests failed",
-        started_at=NOW - timedelta(minutes=30),
-        ended_at=NOW,
-    )
-    session.add(run)
-    await session.flush()
-
-    s1 = StepExecution(
-        task_run_id=run.id,
-        step_name="sync",
-        status="done",
-        duration_ms=5000,
-        started_at=NOW - timedelta(minutes=30),
-    )
-    s2 = StepExecution(
-        task_run_id=run.id,
-        step_name="develop",
-        status="failed",
-        duration_ms=100000,
-        started_at=NOW - timedelta(minutes=29),
-    )
-    session.add_all([s1, s2])
-    await session.commit()
-
-    status = await get_agent_status(run.id)
-    assert status is not None
-    assert status.status == "failed"
-    assert status.error_message == "Tests failed"
-    # 1 completed step out of 17
-    assert abs(status.step_progress_pct - (1 / 17 * 100)) < 0.01
-    assert status.time_in_step_ms == 0  # terminal
-    assert status.is_stuck is False
-
-
-@pytest.mark.asyncio
 async def test_passed_status_counted_as_completed(session: AsyncSession):
     """Steps with legacy 'passed' status are counted as completed in progress."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="13",
         role="developer",
@@ -226,7 +166,7 @@ async def test_passed_status_counted_as_completed(session: AsyncSession):
     )
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.completed_steps == ["sync", "assess", "create_worktree"]
     assert abs(status.step_progress_pct - (3 / 17 * 100)) < 0.01
@@ -235,8 +175,6 @@ async def test_passed_status_counted_as_completed(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_stuck_detection_true(session: AsyncSession):
     """Run stuck in a step beyond threshold is detected."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="13",
         role="developer",
@@ -259,7 +197,7 @@ async def test_stuck_detection_true(session: AsyncSession):
     await session.commit()
 
     # Default threshold is 5 min (300,000 ms), 10 min should be stuck
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.is_stuck is True
     assert status.time_in_step_ms > 300_000
@@ -268,8 +206,6 @@ async def test_stuck_detection_true(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_stuck_detection_false(session: AsyncSession):
     """Run within threshold is not stuck."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="14",
         role="developer",
@@ -290,7 +226,7 @@ async def test_stuck_detection_false(session: AsyncSession):
     session.add(s1)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.is_stuck is False
 
@@ -298,8 +234,6 @@ async def test_stuck_detection_false(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_stuck_custom_threshold(session: AsyncSession):
     """Custom stuck threshold is respected."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="15",
         role="developer",
@@ -321,48 +255,14 @@ async def test_stuck_custom_threshold(session: AsyncSession):
     await session.commit()
 
     # Very low threshold should make it stuck
-    status = await get_agent_status(run.id, stuck_threshold_ms=1000)
+    status = await _status_for(run.id, stuck_threshold_ms=1000)
     assert status is not None
     assert status.is_stuck is True
 
 
 @pytest.mark.asyncio
-async def test_stuck_terminal_always_false(session: AsyncSession):
-    """Terminal runs are never stuck regardless of timing."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
-    run = TaskRun(
-        issue_number="16",
-        role="developer",
-        status="interrupted",
-        current_step="develop",
-        started_at=NOW - timedelta(hours=2),
-    )
-    session.add(run)
-    await session.flush()
-
-    # Step started a long time ago
-    s1 = StepExecution(
-        task_run_id=run.id,
-        step_name="develop",
-        status="running",
-        duration_ms=0,
-        started_at=NOW - timedelta(hours=1),
-    )
-    session.add(s1)
-    await session.commit()
-
-    status = await get_agent_status(run.id)
-    assert status is not None
-    assert status.is_stuck is False
-    assert status.time_in_step_ms == 0
-
-
-@pytest.mark.asyncio
 async def test_estimation_with_history(session: AsyncSession):
     """Estimation returns positive value when sufficient history exists."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     # Create 2 completed historical runs with step durations
     for i in range(2):
         hist_run = TaskRun(
@@ -441,7 +341,7 @@ async def test_estimation_with_history(session: AsyncSession):
 
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.estimated_remaining_ms is not None
     assert status.estimated_remaining_ms > 0
@@ -456,8 +356,6 @@ async def test_estimation_with_history(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_estimation_partial_step_history(session: AsyncSession):
     """Estimation works when many runs exist but some steps have sparse history."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     # Create 5 completed historical runs with only early steps (sync, assess, create_worktree)
     for i in range(5):
         hist_run = TaskRun(
@@ -536,7 +434,7 @@ async def test_estimation_partial_step_history(session: AsyncSession):
         )
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     # Should NOT return None: enough historical runs exist (6 >= _MIN_HISTORY_RUNS)
     # But remaining steps include some without full history, so estimation may be None
@@ -552,8 +450,6 @@ async def test_estimation_partial_step_history(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_estimation_without_history(session: AsyncSession):
     """Estimation returns None when insufficient history exists."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="21",
         role="developer",
@@ -564,7 +460,7 @@ async def test_estimation_without_history(session: AsyncSession):
     session.add(run)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.estimated_remaining_ms is None
 
@@ -572,8 +468,6 @@ async def test_estimation_without_history(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_unknown_step(session: AsyncSession):
     """Unknown current_step (agent sentinel) yields step_index=0 and 0% progress."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="22",
         role="developer",
@@ -584,22 +478,46 @@ async def test_unknown_step(session: AsyncSession):
     session.add(run)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.step_index == 0
     assert status.step_progress_pct == 0.0
 
 
-@pytest.mark.asyncio
-async def test_nonexistent_run_id():
-    """Nonexistent run_id returns None."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
-    status = await get_agent_status(99999)
-    assert status is None
-
-
 # Bulk fetch tests --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status", ["done", "failed", "rejected", "interrupted", "paused", "awaiting_approval", "stopped"]
+)
+async def test_terminal_runs_are_excluded(session: AsyncSession, status: str):
+    """A terminal run is never listed, however long ago its in-progress step started,
+    so it can never be reported as stuck."""
+    from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
+
+    assert status in _TERMINAL_STATUSES
+    run = TaskRun(
+        issue_number="16",
+        role="developer",
+        status=status,
+        current_step="develop",
+        started_at=NOW - timedelta(hours=2),
+    )
+    session.add(run)
+    await session.flush()
+    session.add(
+        StepExecution(
+            task_run_id=run.id,
+            step_name="develop",
+            status="running",
+            duration_ms=0,
+            started_at=NOW - timedelta(hours=1),
+        )
+    )
+    await session.commit()
+
+    assert await _status_for(run.id) is None
 
 
 @pytest.mark.asyncio
@@ -671,8 +589,6 @@ async def test_bulk_fetch_empty(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_researcher_pipeline(session: AsyncSession):
     """Researcher role is detected correctly."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="50",
         role="researcher",
@@ -693,7 +609,7 @@ async def test_researcher_pipeline(session: AsyncSession):
     session.add(s1)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.pipeline_variant == "researcher"
     assert status.total_steps == 4
@@ -703,8 +619,6 @@ async def test_researcher_pipeline(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_address_review_pipeline(session: AsyncSession):
     """Address-review variant is detected from pr_number + agent sentinel."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="51",
         role="developer",
@@ -716,7 +630,7 @@ async def test_address_review_pipeline(session: AsyncSession):
     session.add(run)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.pipeline_variant == "address_review"
     assert status.total_steps == 10
@@ -725,8 +639,6 @@ async def test_address_review_pipeline(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_no_steps_yet(session: AsyncSession):
     """Run with no StepExecution records yet falls back to TaskRun.started_at."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="60",
         role="developer",
@@ -737,7 +649,7 @@ async def test_no_steps_yet(session: AsyncSession):
     session.add(run)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.completed_steps == []
     assert status.step_progress_pct == 0.0
@@ -755,8 +667,6 @@ async def test_no_steps_yet(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_rest_parity_fields_from_task_run(session: AsyncSession, monkeypatch):
     """issue/pid/elapsed_seconds/cost_usd/pr_number come straight from TaskRun."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {})
 
     run = TaskRun(
@@ -772,7 +682,7 @@ async def test_rest_parity_fields_from_task_run(session: AsyncSession, monkeypat
     session.add(run)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.issue == "70"
     assert status.pr_number == 99
@@ -783,8 +693,6 @@ async def test_rest_parity_fields_from_task_run(session: AsyncSession, monkeypat
 @pytest.mark.asyncio
 async def test_rest_parity_defaults_with_no_live_process(session: AsyncSession, monkeypatch):
     """No matching pool entry and no alive pid: resource fields absent, source defaults to dashboard."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {})
 
     run = TaskRun(
@@ -797,7 +705,7 @@ async def test_rest_parity_defaults_with_no_live_process(session: AsyncSession, 
     session.add(run)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.pid is None
     assert status.cpu_percent is None
@@ -818,15 +726,15 @@ def test_decimal_to_json_none_defaults_to_zero_string():
 
 
 @pytest.mark.asyncio
-async def test_rest_and_ws_parity_db_backed_run_with_null_cost(session: AsyncSession, monkeypatch):
+async def test_null_cost_db_row_serializes_at_full_precision(session: AsyncSession, monkeypatch):
     """A DB row with total_cost_usd=None (e.g. a pre-migration row SQLite backfilled as
     NULL regardless of the model's Python-side default) must still serialize cost_usd at
-    the same precision as every other branch, through both get_agent_status() (the single-run
-    path used by the WebSocket producer) and get_all_agent_statuses() (the REST/WS list path).
-    decimal_to_json(None) alone would answer "0.00", silently disagreeing with the "0.000000"
-    every other source produces; format_cost_usd() must be used at every cost site instead.
+    the same precision as every other branch through get_all_agent_statuses() (the list the
+    WebSocket producer broadcasts). decimal_to_json(None) alone would answer "0.00", silently
+    disagreeing with the "0.000000" every other source produces; format_cost_usd() must be
+    used at every cost site instead.
     """
-    from sova.dashboard.services.agent_status import get_agent_status, get_all_agent_statuses
+    from sova.dashboard.services.agent_status import get_all_agent_statuses
 
     monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {})
 
@@ -841,10 +749,6 @@ async def test_rest_and_ws_parity_db_backed_run_with_null_cost(session: AsyncSes
     session.add(run)
     await session.commit()
 
-    single = await get_agent_status(run.id)
-    assert single is not None
-    assert single.cost_usd == "0.000000"
-
     all_statuses = await get_all_agent_statuses()
     matching = [s for s in all_statuses if s.run_id == run.id]
     assert len(matching) == 1
@@ -854,8 +758,6 @@ async def test_rest_and_ws_parity_db_backed_run_with_null_cost(session: AsyncSes
 @pytest.mark.asyncio
 async def test_rest_parity_dashboard_pool_resource_sample(session: AsyncSession, monkeypatch, tmp_path: Path):
     """A run tracked in the in-memory dashboard pool reports its latest resource sample."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="72",
         role="developer",
@@ -880,7 +782,7 @@ async def test_rest_parity_dashboard_pool_resource_sample(session: AsyncSession,
     )
     monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {"p": fake_pool})
 
-    status = await get_agent_status(run.id, project_dir=project_dir)
+    status = await _status_for(run.id, project_dir=project_dir)
     assert status is not None
     assert status.source == "dashboard"
     assert status.cpu_percent == 12.5
@@ -891,8 +793,6 @@ async def test_rest_parity_dashboard_pool_resource_sample(session: AsyncSession,
 @pytest.mark.asyncio
 async def test_rest_parity_external_source_for_alive_untracked_pid(session: AsyncSession, monkeypatch):
     """A run with a live PID the dashboard pool doesn't know about is CLI/externally-spawned."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
     monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {})
     monkeypatch.setattr("sova.utils.process.is_process_alive", lambda pid: True)
 
@@ -907,7 +807,7 @@ async def test_rest_parity_external_source_for_alive_untracked_pid(session: Asyn
     session.add(run)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.source == "external"
     assert status.cpu_percent is None
@@ -965,30 +865,6 @@ async def test_bulk_fetch_groups_steps_by_run(session: AsyncSession, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_get_agent_status_returns_none_on_runtime_error(session: AsyncSession, monkeypatch):
-    """A RuntimeError while computing status is caught and logged, returning None."""
-    from sova.dashboard.services.agent_status import get_agent_status
-
-    run = TaskRun(
-        issue_number="90",
-        role="developer",
-        status="running",
-        current_step="develop",
-        started_at=NOW - timedelta(minutes=1),
-    )
-    session.add(run)
-    await session.commit()
-
-    async def boom(*_args, **_kwargs):
-        raise RuntimeError("transient failure")
-
-    monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.get_step_progress", boom)
-
-    status = await get_agent_status(run.id)
-    assert status is None
-
-
-@pytest.mark.asyncio
 async def test_get_all_agent_statuses_skips_run_that_raises(session: AsyncSession, monkeypatch):
     """One run's status computation raising does not abort the whole listing."""
     from sova.dashboard.services.agent_status import get_all_agent_statuses
@@ -1031,36 +907,6 @@ async def test_get_all_agent_statuses_skips_run_that_raises(session: AsyncSessio
 
 
 @pytest.mark.asyncio
-async def test_rest_parity_fields_in_bulk_fetch(session: AsyncSession, monkeypatch):
-    """get_all_agent_statuses populates the same REST-parity fields as get_agent_status."""
-    from sova.dashboard.services.agent_status import get_all_agent_statuses
-
-    monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {})
-
-    run = TaskRun(
-        issue_number="74",
-        role="developer",
-        status="running",
-        current_step="develop",
-        pr_number=7,
-        total_cost_usd=Decimal("0.500000"),
-        started_at=NOW - timedelta(minutes=3),
-    )
-    session.add(run)
-    await session.commit()
-
-    statuses = await get_all_agent_statuses()
-    assert len(statuses) == 1
-    status = statuses[0]
-    assert status.issue == "74"
-    assert status.pr_number == 7
-    assert status.cost_usd == "0.500000"
-    assert status.elapsed_seconds >= 180
-    assert status.source == "dashboard"
-    assert status.cpu_percent is None
-
-
-@pytest.mark.asyncio
 async def test_get_unified_agents_is_strict_subset_of_agent_status(session: AsyncSession, monkeypatch):
     """Mechanically verify the module docstring's claim: every field in a single
     get_unified_agents() agent dict (the /agents/active REST shape) must also appear on the
@@ -1071,7 +917,6 @@ async def test_get_unified_agents_is_strict_subset_of_agent_status(session: Asyn
     from dataclasses import asdict
 
     from sova.dashboard.services.agent_lifecycle import get_unified_agents
-    from sova.dashboard.services.agent_status import get_agent_status
 
     monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {})
     monkeypatch.setattr("sova.utils.process.is_process_alive", lambda pid: True)
@@ -1095,7 +940,7 @@ async def test_get_unified_agents_is_strict_subset_of_agent_status(session: Asyn
     assert len(matches) == 1
     agent_dict = matches[0]
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     status_dict = asdict(status)
 
@@ -1131,7 +976,6 @@ async def test_get_unified_agents_dashboard_pool_branch_is_strict_subset_of_agen
 
     from sova.dashboard.services.agent_lifecycle import get_unified_agents
     from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
-    from sova.dashboard.services.agent_status import get_agent_status
 
     project_dir = tmp_path / "sova-test-project-1051-pool"
     fake_pid = 54322
@@ -1178,7 +1022,7 @@ async def test_get_unified_agents_dashboard_pool_branch_is_strict_subset_of_agen
     agent_dict = matches[0]
     assert agent_dict["source"] == "dashboard"
 
-    status = await get_agent_status(run.id, project_dir=project_dir)
+    status = await _status_for(run.id, project_dir=project_dir)
     assert status is not None
     status_dict = asdict(status)
 
@@ -1194,14 +1038,12 @@ async def test_get_unified_agents_dashboard_pool_branch_is_strict_subset_of_agen
 
 
 @pytest.mark.asyncio
-async def test_get_agent_status_normalizes_null_current_step(session: AsyncSession, monkeypatch):
+async def test_normalizes_null_current_step(session: AsyncSession, monkeypatch):
     """A TaskRun with no recorded current_step reports "agent", matching get_unified_agents()'s own
     ``r.current_step or "agent"`` normalization (agent_db.py's ``_fetch_run_states``), so the WS and
     REST paths agree on what a null step means instead of one sending ``None`` and the other
     ``"agent"``.
     """
-    from sova.dashboard.services.agent_status import get_agent_status
-
     monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {})
 
     run = TaskRun(
@@ -1214,7 +1056,7 @@ async def test_get_agent_status_normalizes_null_current_step(session: AsyncSessi
     session.add(run)
     await session.commit()
 
-    status = await get_agent_status(run.id)
+    status = await _status_for(run.id)
     assert status is not None
     assert status.current_step == "agent"
 
@@ -1230,8 +1072,6 @@ async def test_resolve_live_pool_agents_skips_mismatched_project_dir(
     non-matching pools dict (the trivial all-empty case is already covered by
     test_rest_parity_defaults_with_no_live_process).
     """
-    from sova.dashboard.services.agent_status import get_agent_status
-
     run = TaskRun(
         issue_number="75",
         role="developer",
@@ -1253,7 +1093,7 @@ async def test_resolve_live_pool_agents_skips_mismatched_project_dir(
     )
     monkeypatch.setattr("sova.dashboard.services.agent_pool.list_all_pools", lambda: {"other": other_pool})
 
-    status = await get_agent_status(run.id, project_dir=tmp_path / "sova-test-target-project-1051")
+    status = await _status_for(run.id, project_dir=tmp_path / "sova-test-target-project-1051")
     assert status is not None
     assert status.source == "dashboard"
     assert status.cpu_percent is None
@@ -1305,7 +1145,7 @@ def test_compute_progress_pct_zero_total_steps():
     """Zero total_steps (not the step_index==0/completed_count==0 case) yields 0%."""
     from sova.dashboard.services.agent_status import _compute_progress_pct
 
-    assert _compute_progress_pct("running", step_index=1, total_steps=0, completed_count=0) == 0.0
+    assert _compute_progress_pct(step_index=1, total_steps=0, completed_count=0) == 0.0
 
 
 def test_compute_time_in_step_no_steps_no_started_at():
@@ -1313,15 +1153,7 @@ def test_compute_time_in_step_no_steps_no_started_at():
     from sova.dashboard.services.agent_status import _compute_time_in_step
 
     run = TaskRun(issue_number="101", role="developer", status="running", started_at=None)
-    assert _compute_time_in_step(run, [], is_terminal=False) == (0, False)
-
-
-def test_compute_time_in_step_terminal_run():
-    """A terminal run reports (0, not authoritative) regardless of step state."""
-    from sova.dashboard.services.agent_status import _compute_time_in_step
-
-    run = TaskRun(issue_number="102", role="developer", status="done", started_at=NOW - timedelta(minutes=5))
-    assert _compute_time_in_step(run, [], is_terminal=True) == (0, False)
+    assert _compute_time_in_step(run, []) == (0, False)
 
 
 def test_compute_time_in_step_run_started_at_fallback_not_authoritative():
@@ -1332,7 +1164,7 @@ def test_compute_time_in_step_run_started_at_fallback_not_authoritative():
     from sova.dashboard.services.agent_status import _compute_time_in_step
 
     run = TaskRun(issue_number="103", role="developer", status="running", started_at=NOW - timedelta(seconds=30))
-    ms, known = _compute_time_in_step(run, [], is_terminal=False)
+    ms, known = _compute_time_in_step(run, [])
     assert ms > 0
     assert known is False
 

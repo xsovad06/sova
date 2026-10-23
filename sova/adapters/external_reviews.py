@@ -402,17 +402,6 @@ async def _fetch_coderabbit_threads(
     return out
 
 
-async def fetch_coderabbit_findings(
-    repo: str,
-    pr_number: int,
-    *,
-    github_user: str | None = None,
-) -> list[ExternalFinding]:
-    """Fetch unresolved CodeRabbit findings for a PR."""
-    result = await _fetch_coderabbit_threads(repo, pr_number, github_user=github_user)
-    return result.findings
-
-
 async def resolve_coderabbit_threads(
     thread_ids: list[str],
     *,

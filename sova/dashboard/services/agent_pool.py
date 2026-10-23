@@ -214,14 +214,6 @@ def sync_max_concurrent(project_dir: Path | None = None, slug: str | None = None
         log.debug("pool.max_concurrent.sync_failed", exc_info=True)
 
 
-def get_project_pool(slug: str | None = None) -> ProjectAgents:
-    """Public accessor for the project agent pool.
-
-    Returns the pool for the given slug, creating one if needed.
-    """
-    return _get_project_agents(slug)
-
-
 def list_all_pools() -> dict[str, ProjectAgents]:
     """Return all initialized project pools (projects that have been accessed this session)."""
     with _projects_lock:

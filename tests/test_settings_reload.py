@@ -242,46 +242,6 @@ class TestReloadDaemonConfigLifecycle:
         daemon.reload_config.assert_called_once_with(cfg)
 
 
-class TestReloadOversightConfigLifecycle:
-    """_reload_oversight_config stops/starts oversight agent based on enabled flag."""
-
-    @pytest.mark.asyncio
-    async def test_stops_agent_when_disabled(self) -> None:
-        from sova.dashboard.routers.settings import _reload_oversight_config
-
-        agent = MagicMock()
-        agent.running = True
-        agent._config.enabled = False
-        agent.stop = AsyncMock()
-
-        with patch("sova.dashboard.routers.oversight.get_oversight_agent", return_value=agent):
-            await _reload_oversight_config()
-
-        agent.reload_config.assert_called_once()
-        agent.stop.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_starts_agent_when_enabled_and_not_running(self) -> None:
-        from sova.dashboard.routers.settings import _reload_oversight_config
-
-        agent = MagicMock()
-        agent.running = False
-        agent._config.enabled = True
-
-        with patch("sova.dashboard.routers.oversight.get_oversight_agent", return_value=agent):
-            await _reload_oversight_config()
-
-        agent.reload_config.assert_called_once()
-        agent.start.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_no_action_when_none(self) -> None:
-        from sova.dashboard.routers.settings import _reload_oversight_config
-
-        with patch("sova.dashboard.routers.oversight.get_oversight_agent", return_value=None):
-            await _reload_oversight_config()
-
-
 class TestRestartRequiredFlag:
     """Settings update returns restart_required for non-hot-reloadable keys."""
 
@@ -893,22 +853,6 @@ class TestPRThrottleLoopRunExceptionHandling:
         with patch.object(loop_instance, "_interruptible_sleep", new_callable=AsyncMock):
             await loop_instance.run()
         assert call_count >= 2
-
-
-class TestProcessQueueLoopWrapper:
-    """process_queue_loop backward-compat wrapper delegates to PRThrottleLoop."""
-
-    @pytest.mark.asyncio
-    async def test_wrapper_creates_loop_and_runs(self) -> None:
-        from sova.supervisor.pr_throttle import process_queue_loop
-
-        stop = asyncio.Event()
-        stop.set()
-
-        cfg = MagicMock()
-        factory = AsyncMock()
-
-        await process_queue_loop(factory, cfg, stop_event=stop)
 
 
 class TestInterruptibleSleepTimeout:

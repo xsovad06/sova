@@ -28,11 +28,6 @@ _KNOWN_STRATEGIES = frozenset({"text", "json", "code", "log", "diff"})
 _DEFAULT_STRATEGY = "text"
 
 
-def is_compression_available() -> bool:
-    """Return True if the optional ``headroom-ai`` package is importable."""
-    return _HEADROOM_AVAILABLE
-
-
 def compress(text: str, content_type: str = "text", cwd: str | None = None) -> str:
     """Compress ``text`` via Headroom when enabled, available, and large enough.
 

@@ -155,27 +155,6 @@ def _validate_github_config(cfg: ProjectConfig) -> None:
         )
 
 
-async def _reload_oversight_config() -> None:
-    """Trigger a config reload on the oversight agent, managing its lifecycle.
-
-    Stops the agent when ``oversight.enabled`` becomes False, starts it
-    when it becomes True. Serialized to prevent concurrent toggle races.
-
-    Raises on lifecycle failure so the caller can report it to the UI.
-    """
-    from sova.dashboard.routers.oversight import get_oversight_agent
-
-    async with _oversight_lifecycle_lock:
-        agent = get_oversight_agent()
-        if agent is not None:
-            agent.reload_config()
-            if not agent._config.enabled and agent.running:
-                await agent.stop()
-                log.info("settings.oversight_stopped_on_disable")
-            elif agent._config.enabled and not agent.running:
-                agent.start()
-
-
 class ConfigUpdateRequest(BaseModel):
     key: str
     value: str | bool | int | float

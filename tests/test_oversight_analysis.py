@@ -933,45 +933,6 @@ class TestConfigReload:
         assert result is cfg
         assert result.wake_interval_minutes == 60
 
-    @pytest.mark.asyncio
-    async def test_reload_starts_agent_when_enabled_from_disabled(self) -> None:
-        from sova.config.models import OversightConfig
-        from sova.dashboard.routers.settings import _reload_oversight_config
-
-        cfg = OversightConfig(enabled=False)
-        agent = MagicMock()
-        agent._config = cfg
-        agent.running = False
-        agent.reload_config.side_effect = lambda: setattr(agent, "_config", OversightConfig(enabled=True))
-
-        with patch(
-            "sova.dashboard.routers.oversight.get_oversight_agent",
-            return_value=agent,
-        ):
-            await _reload_oversight_config()
-
-        agent.reload_config.assert_called_once()
-        agent.start.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_reload_does_not_restart_already_running_agent(self) -> None:
-        from sova.config.models import OversightConfig
-        from sova.dashboard.routers.settings import _reload_oversight_config
-
-        cfg = OversightConfig(enabled=True)
-        agent = MagicMock()
-        agent._config = cfg
-        agent.running = True
-
-        with patch(
-            "sova.dashboard.routers.oversight.get_oversight_agent",
-            return_value=agent,
-        ):
-            await _reload_oversight_config()
-
-        agent.reload_config.assert_called_once()
-        agent.start.assert_not_called()
-
 
 class TestFingerprintCrossCheck:
     """Tests for _find_existing_issue_by_fingerprint in actions."""

@@ -80,16 +80,6 @@ def update_manifest(target_dir: Path, filename: str, content_hash: str) -> None:
     write_manifest(target_dir, manifest)
 
 
-def remove_from_manifest(target_dir: Path, filename: str) -> None:
-    """Remove a command entry from the manifest."""
-    manifest = read_manifest(target_dir)
-    if manifest is None:
-        return
-
-    manifest.commands.pop(filename, None)
-    write_manifest(target_dir, manifest)
-
-
 def file_hash(content: str) -> str:
     """Compute a SHA-256 hash of file content."""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]

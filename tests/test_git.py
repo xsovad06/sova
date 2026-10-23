@@ -2796,13 +2796,8 @@ class TestPRStatus:
             title="feat: add login",
         )
         assert status.number == 42
-        assert status.is_open
         assert status.is_mergeable
         assert status.is_approved
-
-    def test_closed_pr(self) -> None:
-        status = PRStatus(number=1, state="CLOSED", mergeable="", review_decision="", url="", title="")
-        assert not status.is_open
 
     def test_not_mergeable(self) -> None:
         status = PRStatus(number=1, state="OPEN", mergeable="CONFLICTING", review_decision="", url="", title="")

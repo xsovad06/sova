@@ -31,28 +31,6 @@ _DB_FILENAME = "sova.db"
 _INTERNAL_SETTING_KEYS = frozenset({_ORPHAN_SWEEP_MARKER_KEY})
 
 
-async def load_config_from_db(session: AsyncSession) -> dict[str, Any] | None:
-    """Load all project settings from the DB and return as a nested dict.
-
-    Returns None if the table does not exist, is empty, or cannot be read.
-    """
-    try:
-        result = await session.execute(select(ProjectSetting).order_by(ProjectSetting.key))
-        rows = result.scalars().all()
-    except (OperationalError, ProgrammingError):
-        await session.rollback()
-        return None
-    except Exception:  # noqa: BLE001 (fail-open: docstring guarantees None on any read failure)
-        logger.warning("Failed to load config from DB", exc_info=True)
-        await session.rollback()
-        return None
-
-    if not rows:
-        return None
-
-    return _rows_to_nested(rows)
-
-
 async def save_setting(session: AsyncSession, key: str, value: Any) -> None:
     """Upsert a single setting (dot-notation key, any JSON-serializable value)."""
     from sqlalchemy.exc import IntegrityError
@@ -74,17 +52,6 @@ async def save_setting(session: AsyncSession, key: str, value: Any) -> None:
             if row is not None:
                 row.value = json_value
     await session.flush()
-
-
-async def delete_setting(session: AsyncSession, key: str) -> bool:
-    """Delete a setting by key. Returns True if it existed."""
-    existing = await session.execute(select(ProjectSetting).where(ProjectSetting.key == key))
-    row = existing.scalar_one_or_none()
-    if row is None:
-        return False
-    await session.delete(row)
-    await session.flush()
-    return True
 
 
 async def get_setting(session: AsyncSession, key: str) -> Any | None:

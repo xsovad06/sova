@@ -17,19 +17,6 @@ def _config(*, enabled: bool = True, min_chars: int = 10) -> ProjectConfig:
     return ProjectConfig(compression=HeadroomConfig(enabled=enabled, min_chars=min_chars))
 
 
-# is_compression_available
-
-
-def test_is_compression_available_true() -> None:
-    with patch.object(compression, "_HEADROOM_AVAILABLE", True):
-        assert compression.is_compression_available() is True
-
-
-def test_is_compression_available_false() -> None:
-    with patch.object(compression, "_HEADROOM_AVAILABLE", False):
-        assert compression.is_compression_available() is False
-
-
 # compress: passthrough paths
 
 
