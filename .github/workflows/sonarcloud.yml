@@ -254,7 +254,7 @@ jobs:
       # exists to make cheap. The coverage artifact lives outside the
       # workspace (see above), so this checkout can use its normal defaults
       # without risking that file.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.coverage.outputs.present == 'true'
         with:
           fetch-depth: 0
