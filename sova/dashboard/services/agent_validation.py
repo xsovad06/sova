@@ -222,6 +222,29 @@ def check_network_connectivity(project_dir: Path) -> tuple[dict | None, str | No
     return None, None
 
 
+def check_stale_command(project_dir: Path, command: str, run_dir: Path | None = None) -> dict | None:
+    """Block a safety-critical command whose installed copy predates its canonical fix (#1251).
+
+    The spawn-time counterpart of the supervisor's ``stale_commands`` gate,
+    and the only enforcement point for commands the supervisor never spawns
+    (``pr``, ``rearrange-commits``, ``review-full``), which reach a run only
+    through a dashboard button or handoff action. Fail-open, like the other
+    pre-spawn checks: an install or config that cannot be read must not block
+    every command. ``run_dir`` is the worktree the command will run in; see
+    ``find_stale_command()`` for why its branch's copy is judged separately.
+    """
+    try:
+        from sova.commands.staleness import find_stale_command
+
+        reason = find_stale_command(project_dir, command, run_dir=run_dir)
+    except Exception:  # noqa: BLE001 (stale-command check is advisory when it cannot be evaluated; spawning proceeds)
+        log.warning("stale_command.check_failed", command=command, exc_info=True)
+        return None
+    if reason is None:
+        return None
+    return {"code": "stale_command", "error": reason}
+
+
 async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
     """Move the issue to IN_PROGRESS on the configured tracker."""
     try:

@@ -1620,6 +1620,55 @@ class TestConnectivityGate:
         assert mock_mem_gate.call_count == 1
 
 
+class TestStaleCommandsGateWiring:
+    """Issue #1251: a command-carried action is gated on its installed recipe being current."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("candidate", "command"),
+        [
+            (ProgressionAction.SPAWN_ADDRESS_PR, "address-pr"),
+            (ProgressionAction.SPAWN_INTEGRATE, "integrate-pr"),
+        ],
+    )
+    async def test_stale_commands_gate_blocks_command_actions(self, candidate: ProgressionAction, command: str) -> None:
+        """Issue #1251: a stale installed recipe must stop the supervisor deciding to run it."""
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=False))
+        stale = BlockReason(gate="stale_commands", detail="/address-pr is out of date")
+        with (
+            patch("sova.supervisor.progression.check_stale_commands_gate", return_value=stale) as mock_gate,
+            patch("sova.supervisor.progression.check_review_completed_gate", new_callable=AsyncMock, return_value=None),
+        ):
+            blockers, _pr = await engine._collect_gate_blockers(
+                42,
+                candidate,
+                DependencyGraph({}),
+                precomputed_memory=None,
+                precomputed_quota=None,
+                precomputed_slots=None,
+            )
+        mock_gate.assert_called_once_with(engine._project_dir, command, engine._config)
+        assert stale in blockers
+
+    @pytest.mark.asyncio
+    async def test_stale_commands_gate_skips_agent_roles(self) -> None:
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=False))
+        with patch("sova.supervisor.progression.check_stale_commands_gate") as mock_gate:
+            await engine._collect_gate_blockers(
+                42,
+                ProgressionAction.SPAWN_DEVELOPER,
+                DependencyGraph({}),
+                precomputed_memory=None,
+                precomputed_quota=None,
+                precomputed_slots=None,
+            )
+        mock_gate.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Exception paths (fail-open)
 # ---------------------------------------------------------------------------

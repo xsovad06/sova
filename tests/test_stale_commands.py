@@ -17,7 +17,7 @@ there is nothing stale to block.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from structlog.testing import capture_logs
@@ -167,6 +167,129 @@ class TestBranchCopyStaleness:
             find_stale_command(project, "address-pr", run_dir=worktree)
 
         mock_load.assert_called_once_with(project)
+
+
+class TestStaleCommandsGate:
+    def test_stale_command_blocks(self, project: Path, cfg: ProjectConfig) -> None:
+        from sova.supervisor.gates.stale_commands import check_stale_commands_gate
+
+        _age_manifest_entry(project, "address-pr.md", "old recipe\n")
+
+        block = check_stale_commands_gate(project, "address-pr", cfg)
+
+        assert block is not None
+        assert block.gate == "stale_commands"
+        assert "/address-pr" in block.detail
+
+    def test_current_command_passes(self, project: Path, cfg: ProjectConfig) -> None:
+        from sova.supervisor.gates.stale_commands import check_stale_commands_gate
+
+        assert check_stale_commands_gate(project, "integrate-pr", cfg) is None
+
+    def test_unevaluable_gate_fails_open(self, project: Path, cfg: ProjectConfig) -> None:
+        from sova.supervisor.gates.stale_commands import check_stale_commands_gate
+
+        with patch("sova.supervisor.gates.stale_commands.find_stale_command", side_effect=RuntimeError("boom")):
+            assert check_stale_commands_gate(project, "address-pr", cfg) is None
+
+
+class TestStaleCommandPreSpawnCheck:
+    def test_stale_command_blocks(self, project: Path, cfg: ProjectConfig) -> None:
+        from sova.dashboard.services.agent_validation import check_stale_command
+
+        _age_manifest_entry(project, "rearrange-commits.md", "old recipe\n")
+
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            block = check_stale_command(project, "rearrange-commits")
+
+        assert block is not None
+        assert block["code"] == "stale_command"
+        assert "/rearrange-commits" in block["error"]
+
+    def test_current_command_passes(self, project: Path, cfg: ProjectConfig) -> None:
+        from sova.dashboard.services.agent_validation import check_stale_command
+
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            assert check_stale_command(project, "review-full") is None
+
+    def test_non_safety_command_skips_config_load(self, project: Path) -> None:
+        """Every dashboard command passes through here: only the safety-critical ones may pay for a config load."""
+        from sova.dashboard.services.agent_validation import check_stale_command
+
+        with patch("sova.config.loader.load_config") as mock_load:
+            assert check_stale_command(project, "agent-resume") is None
+        mock_load.assert_not_called()
+
+    def test_unevaluable_check_fails_open(self, project: Path) -> None:
+        from sova.dashboard.services.agent_validation import check_stale_command
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+            assert check_stale_command(project, "address-pr") is None
+
+
+class TestStartCommandStaleBlock:
+    async def test_start_command_returns_block_without_spawning(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import start_command
+
+        block = {"code": "stale_command", "error": "/address-pr is out of date"}
+        capture_sha = AsyncMock()
+        with (
+            patch(
+                "sova.dashboard.services.agent_lifecycle._get_project_agents",
+                return_value=MagicMock(project_dir=Path("/tmp")),
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_command_context",
+                new_callable=AsyncMock,
+                return_value=(7, "42"),
+            ),
+            patch("sova.dashboard.services.agent_lifecycle.check_memory_pressure", return_value=(None, None)),
+            patch("sova.dashboard.services.agent_lifecycle.check_network_connectivity", return_value=(None, None)),
+            patch("sova.dashboard.services.agent_lifecycle.check_stale_command", return_value=block) as mock_stale,
+            patch("sova.dashboard.services.agent_db._capture_pr_head_sha", capture_sha),
+        ):
+            result = await start_command("address-pr", {"pr": 7})
+
+        assert result == block
+        mock_stale.assert_called_once_with(Path("/tmp"), "address-pr")
+        capture_sha.assert_not_awaited()
+
+    async def test_start_command_blocks_an_outdated_copy_on_the_worktree_branch(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.dashboard.services.agent_lifecycle import start_command
+
+        project_dir = tmp_path / "primary"
+        worktree = tmp_path / "worktree"
+        project_dir.mkdir()
+        worktree.mkdir()
+        pa = MagicMock(project_dir=project_dir, agents={}, max_concurrent=3, _lock=asyncio.Lock())
+        block = {"code": "stale_command", "error": "branch copy of /address-pr is out of date"}
+        create_run = AsyncMock()
+        with (
+            patch("sova.dashboard.services.agent_lifecycle._get_project_agents", return_value=pa),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_command_context",
+                new_callable=AsyncMock,
+                return_value=(7, "42"),
+            ),
+            patch("sova.dashboard.services.agent_lifecycle.check_memory_pressure", return_value=(None, None)),
+            patch("sova.dashboard.services.agent_lifecycle.check_network_connectivity", return_value=(None, None)),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.check_stale_command", side_effect=[None, block]
+            ) as mock_stale,
+            patch("sova.dashboard.services.agent_db._capture_pr_head_sha", AsyncMock(return_value="abc")),
+            patch("sova.dashboard.services.agent_lifecycle._check_issue_conflict", AsyncMock(return_value=None)),
+            patch("sova.dashboard.services.agent_lifecycle._evict_completed_for_issue"),
+            patch("sova.dashboard.services.agent_lifecycle._resolve_branch_name", AsyncMock(return_value="feat/x")),
+            patch("sova.dashboard.services.agent_lifecycle._resolve_issue_worktree", AsyncMock(return_value=worktree)),
+            patch("sova.dashboard.services.agent_lifecycle._create_task_run", create_run),
+        ):
+            result = await start_command("address-pr", {"pr": 7})
+
+        assert result == block
+        assert mock_stale.call_args_list[1].args == (project_dir, "address-pr", worktree)
+        create_run.assert_not_awaited()
 
 
 class TestSyncOverwriteLog:

@@ -7665,6 +7665,7 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            patch.object(agent_lifecycle, "check_stale_command", return_value=None),
             # Resolved explicitly rather than left to fall through
             # _resolve_issue_worktree()'s real worktree-discovery logic against a
             # bare MagicMock project_dir: that function now calls
@@ -7725,6 +7726,7 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            patch.object(agent_lifecycle, "check_stale_command", return_value=None),
             # See the comment on the same patch in
             # test_start_command_passes_pr_number_to_task_run above.
             patch.object(
@@ -7778,6 +7780,7 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            patch.object(agent_lifecycle, "check_stale_command", return_value=None),
             patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
             # See the comment on the same patch in
             # test_start_command_passes_pr_number_to_task_run above.
@@ -7833,6 +7836,7 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            patch.object(agent_lifecycle, "check_stale_command", return_value=None),
             patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
             # See the comment on the same patch in
             # test_start_command_passes_pr_number_to_task_run above.
