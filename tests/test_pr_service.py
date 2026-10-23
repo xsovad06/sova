@@ -1602,7 +1602,7 @@ class TestRecordStateTransitions:
     """Test _record_state_transitions early returns and event write logic."""
 
     @pytest.mark.asyncio
-    async def test_skips_prs_with_no_previous_state(self, monkeypatch) -> None:
+    async def test_skips_prs_with_no_previous_state(self, monkeypatch, tmp_path: Path) -> None:
         """Test lines 523-524: early continue when prev is None."""
         from sova.dashboard.services import pr_service
         from sova.dashboard.services.pr_service import _record_state_transitions
@@ -1611,11 +1611,11 @@ class TestRecordStateTransitions:
         pr_service._last_known_states.clear()
 
         prs = [{"number": 10, "computed_state": "approved"}]
-        await _record_state_transitions(prs, repo="owner/repo", project_dir=Path("/tmp"))
+        await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
         # No exception = success, no events written because prev is None
 
     @pytest.mark.asyncio
-    async def test_skips_prs_with_same_state(self, monkeypatch) -> None:
+    async def test_skips_prs_with_same_state(self, monkeypatch, tmp_path: Path) -> None:
         """Test lines 525-526: early continue when state == prev."""
         from sova.dashboard.services import pr_service
         from sova.dashboard.services.pr_service import _record_state_transitions
@@ -1624,11 +1624,11 @@ class TestRecordStateTransitions:
         pr_service._last_known_states[10] = "approved"
 
         prs = [{"number": 10, "computed_state": "approved", "updated_at": "2026-08-01T12:00:00Z"}]
-        await _record_state_transitions(prs, repo="owner/repo", project_dir=Path("/tmp"))
+        await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
         # No exception = success, no events written because state unchanged
 
     @pytest.mark.asyncio
-    async def test_skips_state_with_no_event_mapping(self, monkeypatch) -> None:
+    async def test_skips_state_with_no_event_mapping(self, monkeypatch, tmp_path: Path) -> None:
         """Test lines 528-530: early continue when state has no event type mapping."""
         from sova.dashboard.services import pr_service
         from sova.dashboard.services.pr_service import _record_state_transitions
@@ -1637,7 +1637,7 @@ class TestRecordStateTransitions:
         pr_service._last_known_states[10] = "some_old_state"
 
         prs = [{"number": 10, "computed_state": "unknown_state", "updated_at": "2026-08-01T12:00:00Z"}]
-        await _record_state_transitions(prs, repo="owner/repo", project_dir=Path("/tmp"))
+        await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
         # No exception = success, no events written because no mapping
 
     @pytest.mark.asyncio

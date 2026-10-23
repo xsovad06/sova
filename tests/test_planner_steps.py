@@ -44,9 +44,9 @@ def _mock_adapter() -> AsyncMock:
     return adapter
 
 
-def _make_ctx(**kwargs) -> ExecutionContext:
+def _make_ctx(tmp_path: Path, **kwargs) -> ExecutionContext:
     defaults = {
-        "project_dir": Path("/tmp/test-project"),
+        "project_dir": tmp_path,
         "config": ProjectConfig(),
         "adapter": _mock_adapter(),
         "issue_number": "",
@@ -86,7 +86,7 @@ class TestScanProjectStep:
         (tmp_path / "src").mkdir()
         (tmp_path / "README.md").write_text("# Test")
 
-        ctx = _make_ctx(project_dir=tmp_path)
+        ctx = _make_ctx(tmp_path)
         step = ScanProjectStep()
 
         with patch("sova.core.steps.scan_project.run") as mock_run:
@@ -108,7 +108,7 @@ class TestScanProjectStep:
         """ScanProjectStep succeeds with empty issues when adapter fails."""
         adapter = AsyncMock()
         adapter.list_tasks.side_effect = RuntimeError("API down")
-        ctx = _make_ctx(project_dir=tmp_path, adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         step = ScanProjectStep()
 
         with patch("sova.core.steps.scan_project.run") as mock_run:
@@ -122,7 +122,7 @@ class TestScanProjectStep:
     @pytest.mark.asyncio
     async def test_scan_gate_check(self, tmp_path: Path) -> None:
         """validate_output passes when scan is populated, fails otherwise."""
-        ctx = _make_ctx(project_dir=tmp_path)
+        ctx = _make_ctx(tmp_path)
         step = ScanProjectStep()
 
         # Before execution: no plan_result
@@ -140,7 +140,7 @@ class TestScanProjectStep:
     @pytest.mark.asyncio
     async def test_scan_handles_git_exception(self, tmp_path: Path) -> None:
         """ScanProjectStep succeeds even when git log raises an exception."""
-        ctx = _make_ctx(project_dir=tmp_path)
+        ctx = _make_ctx(tmp_path)
         step = ScanProjectStep()
 
         with patch("sova.core.steps.scan_project.run") as mock_run:
@@ -154,7 +154,7 @@ class TestScanProjectStep:
     @pytest.mark.asyncio
     async def test_scan_raw_summary_contains_issues(self, tmp_path: Path) -> None:
         """raw_summary should mention open issues."""
-        ctx = _make_ctx(project_dir=tmp_path)
+        ctx = _make_ctx(tmp_path)
         step = ScanProjectStep()
 
         with patch("sova.core.steps.scan_project.run") as mock_run:
@@ -198,7 +198,7 @@ class TestScanProjectRoot:
 
 class TestGenerateTasksStep:
     @pytest.mark.asyncio
-    async def test_generate_parses_llm_response(self) -> None:
+    async def test_generate_parses_llm_response(self, tmp_path: Path) -> None:
         """GenerateTasksStep invokes LLM and parses JSON into PlannedTask list."""
         import json
 
@@ -224,7 +224,7 @@ class TestGenerateTasksStep:
         )
 
         llm_result = MagicMock(text=tasks_json, cost_usd=Decimal("0.01"), total_tokens=500)
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test summary"))
 
         step = GenerateTasksStep()
@@ -238,10 +238,10 @@ class TestGenerateTasksStep:
         assert all("timeout" not in call.kwargs for call in mock_invoke.call_args_list)
 
     @pytest.mark.asyncio
-    async def test_generate_tags_task_type_and_suppresses_it_during_fallback(self) -> None:
+    async def test_generate_tags_task_type_and_suppresses_it_during_fallback(self, tmp_path: Path) -> None:
         """The step routes like every other tagged step, including fallback suppression."""
         llm_result = MagicMock(text="[]", cost_usd=Decimal("0"), total_tokens=0)
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test summary"))
 
         step = GenerateTasksStep()
@@ -255,7 +255,7 @@ class TestGenerateTasksStep:
         assert mock_invoke.call_args.kwargs["task_type"] is None
 
     @pytest.mark.asyncio
-    async def test_generate_handles_fenced_json(self) -> None:
+    async def test_generate_handles_fenced_json(self, tmp_path: Path) -> None:
         """GenerateTasksStep handles markdown-fenced JSON responses."""
         fenced = (
             '```json\n[{"title": "feat(x): test",'
@@ -264,7 +264,7 @@ class TestGenerateTasksStep:
             ' "rationale": "Test."}]\n```'
         )
         llm_result = MagicMock(text=fenced, cost_usd=Decimal("0.005"), total_tokens=200)
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test"))
 
         step = GenerateTasksStep()
@@ -275,10 +275,10 @@ class TestGenerateTasksStep:
         assert len(ctx.plan_result.proposed_tasks) == 1
 
     @pytest.mark.asyncio
-    async def test_generate_returns_empty_on_prose_response(self) -> None:
+    async def test_generate_returns_empty_on_prose_response(self, tmp_path: Path) -> None:
         """GenerateTasksStep returns success with 0 tasks when LLM returns prose."""
         llm_result = MagicMock(text="I cannot generate tasks.", cost_usd=Decimal("0.01"), total_tokens=50)
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test"))
 
         step = GenerateTasksStep()
@@ -289,18 +289,18 @@ class TestGenerateTasksStep:
         assert len(ctx.plan_result.proposed_tasks) == 0
 
     @pytest.mark.asyncio
-    async def test_generate_fails_without_scan(self) -> None:
+    async def test_generate_fails_without_scan(self, tmp_path: Path) -> None:
         """GenerateTasksStep fails when no scan result is available."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = GenerateTasksStep()
         result = await step.execute(ctx)
         assert not result.success
         assert "scan" in result.error.lower()
 
     @pytest.mark.asyncio
-    async def test_generate_gate_check(self) -> None:
+    async def test_generate_gate_check(self, tmp_path: Path) -> None:
         """validate_output passes when proposed_tasks is non-empty."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = GenerateTasksStep()
 
         # No plan_result
@@ -313,9 +313,9 @@ class TestGenerateTasksStep:
         assert gate.passed
 
     @pytest.mark.asyncio
-    async def test_generate_respects_budget(self) -> None:
+    async def test_generate_respects_budget(self, tmp_path: Path) -> None:
         """GenerateTasksStep refuses to run when budget is exceeded."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.cost_usd = Decimal("999999")
         ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test"))
 
@@ -325,9 +325,9 @@ class TestGenerateTasksStep:
         assert "budget" in result.summary.lower()
 
     @pytest.mark.asyncio
-    async def test_generate_llm_exception_includes_traceback(self) -> None:
+    async def test_generate_llm_exception_includes_traceback(self, tmp_path: Path) -> None:
         """GenerateTasksStep logs exc_info on LLM failure and returns failure."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test"))
 
         step = GenerateTasksStep()
@@ -560,7 +560,7 @@ class TestParseTasks:
 
 class TestValidateTasksStep:
     @pytest.mark.asyncio
-    async def test_validate_accepts_good_tasks(self) -> None:
+    async def test_validate_accepts_good_tasks(self, tmp_path: Path) -> None:
         """ValidateTasksStep accepts tasks that pass all checks."""
         titles = [
             "feat(core): add validation layer",
@@ -570,7 +570,7 @@ class TestValidateTasksStep:
             "feat(adapters): add linear integration",
         ]
         tasks = [_make_valid_task(t) for t in titles]
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(
             scan=ProjectScanResult(open_issues=[]),
             proposed_tasks=tasks,
@@ -584,7 +584,7 @@ class TestValidateTasksStep:
         assert len(ctx.plan_result.rejected_reasons) == 0
 
     @pytest.mark.asyncio
-    async def test_validate_rejects_vague_titles(self) -> None:
+    async def test_validate_rejects_vague_titles(self, tmp_path: Path) -> None:
         """Tasks with vague titles are rejected."""
         tasks = [
             _make_valid_task("Improve things overall"),
@@ -593,7 +593,7 @@ class TestValidateTasksStep:
             _make_valid_task("feat(cli): specific task two"),
             _make_valid_task("feat(db): specific task three"),
         ]
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(
             scan=ProjectScanResult(open_issues=[]),
             proposed_tasks=tasks,
@@ -607,14 +607,14 @@ class TestValidateTasksStep:
         assert len(ctx.plan_result.rejected_reasons) == 2
 
     @pytest.mark.asyncio
-    async def test_validate_rejects_missing_acceptance_criteria(self) -> None:
+    async def test_validate_rejects_missing_acceptance_criteria(self, tmp_path: Path) -> None:
         """Tasks without acceptance criteria are rejected."""
         task = _make_valid_task()
         task.body = (
             "This task needs to be done. It involves changing several files "
             "and updating the configuration across multiple modules."
         )
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(
             scan=ProjectScanResult(open_issues=[]),
             proposed_tasks=[
@@ -633,7 +633,7 @@ class TestValidateTasksStep:
         assert "acceptance criteria" in ctx.plan_result.rejected_reasons[0].lower()
 
     @pytest.mark.asyncio
-    async def test_validate_detects_duplicates_against_open_issues(self) -> None:
+    async def test_validate_detects_duplicates_against_open_issues(self, tmp_path: Path) -> None:
         """Tasks that overlap with existing issues are rejected."""
         open_issues = [{"number": "10", "title": "Fix login bug in authentication module"}]
         tasks = [
@@ -642,7 +642,7 @@ class TestValidateTasksStep:
             _make_valid_task("feat(cli): add export command"),
             _make_valid_task("feat(db): add migration tool"),
         ]
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(
             scan=ProjectScanResult(open_issues=open_issues),
             proposed_tasks=tasks,
@@ -656,7 +656,7 @@ class TestValidateTasksStep:
         assert any("duplicate" in r.lower() for r in ctx.plan_result.rejected_reasons)
 
     @pytest.mark.asyncio
-    async def test_validate_self_deduplicates(self) -> None:
+    async def test_validate_self_deduplicates(self, tmp_path: Path) -> None:
         """Duplicate proposed tasks are filtered out."""
         tasks = [
             _make_valid_task("feat(core): add validation layer for inputs"),
@@ -664,7 +664,7 @@ class TestValidateTasksStep:
             _make_valid_task("feat(cli): add export command"),
             _make_valid_task("feat(db): add migration tool"),
         ]
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(
             scan=ProjectScanResult(open_issues=[]),
             proposed_tasks=tasks,
@@ -678,13 +678,13 @@ class TestValidateTasksStep:
         assert any("self-duplicate" in r.lower() for r in ctx.plan_result.rejected_reasons)
 
     @pytest.mark.asyncio
-    async def test_validate_succeeds_below_threshold_but_gate_fails(self) -> None:
+    async def test_validate_succeeds_below_threshold_but_gate_fails(self, tmp_path: Path) -> None:
         """ValidateTasksStep execute() succeeds but gate check fails when < 3 tasks pass."""
         tasks = [
             _make_valid_task("Improve everything"),
             _make_valid_task("Update all the things"),
         ]
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(
             scan=ProjectScanResult(open_issues=[]),
             proposed_tasks=tasks,
@@ -698,9 +698,9 @@ class TestValidateTasksStep:
         assert not gate.passed
 
     @pytest.mark.asyncio
-    async def test_validate_gate_check(self) -> None:
+    async def test_validate_gate_check(self, tmp_path: Path) -> None:
         """validate_output reflects valid_tasks count."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = ValidateTasksStep()
 
         # No plan_result
@@ -718,11 +718,11 @@ class TestValidateTasksStep:
         assert gate.passed
 
     @pytest.mark.asyncio
-    async def test_validate_rejects_short_body(self) -> None:
+    async def test_validate_rejects_short_body(self, tmp_path: Path) -> None:
         """Tasks with body < 50 chars are rejected."""
         task = _make_valid_task()
         task.body = "Too short."
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.plan_result = PlanResult(
             scan=ProjectScanResult(open_issues=[]),
             proposed_tasks=[

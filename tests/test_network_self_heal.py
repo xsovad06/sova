@@ -105,10 +105,10 @@ def _run(
 
 
 class TestEligibility:
-    async def test_resumes_an_outage_failed_run(self, healthy_network, guard_config, spawner) -> None:
+    async def test_resumes_an_outage_failed_run(self, healthy_network, guard_config, spawner, tmp_path: Path) -> None:
         await _add(_run(issue="659", status="failed", error=PUSH_FAILURE, cost="5.65"))
 
-        resumed = await attempt_network_self_heal(Path("/tmp/project"))
+        resumed = await attempt_network_self_heal(tmp_path / "project")
 
         assert len(resumed) == 1
         assert resumed[0]["issue"] == "659"
@@ -118,24 +118,32 @@ class TestEligibility:
         assert kwargs["resume_run_id"] == resumed[0]["run_id"]
         assert kwargs["role"] == "developer"
 
-    async def test_ignores_a_failure_that_is_not_network_related(self, healthy_network, guard_config, spawner) -> None:
+    async def test_ignores_a_failure_that_is_not_network_related(
+        self, healthy_network, guard_config, spawner, tmp_path: Path
+    ) -> None:
         # Overlapping the outage window is a filter, never evidence. This is the
         # line between this feature and the general auto-retry that was removed.
         await _add(_run(issue="700", status="failed", error="AssertionError: test_foo failed"))
 
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
         spawner.assert_not_awaited()
 
-    async def test_ignores_a_run_with_no_error_message(self, healthy_network, guard_config, spawner) -> None:
+    async def test_ignores_a_run_with_no_error_message(
+        self, healthy_network, guard_config, spawner, tmp_path: Path
+    ) -> None:
         await _add(_run(issue="701", status="failed", error=None))
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
 
     @pytest.mark.parametrize("status", ["done", "stopped", "running", "paused", "awaiting_approval"])
-    async def test_ignores_non_failure_statuses(self, healthy_network, guard_config, spawner, status: str) -> None:
+    async def test_ignores_non_failure_statuses(
+        self, healthy_network, guard_config, spawner, status: str, tmp_path: Path
+    ) -> None:
         await _add(_run(issue="702", status=status))
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
 
-    async def test_never_resumes_a_deliberate_stop(self, healthy_network, guard_config, spawner) -> None:
+    async def test_never_resumes_a_deliberate_stop(
+        self, healthy_network, guard_config, spawner, tmp_path: Path
+    ) -> None:
         # A stop button or watchdog kill carries a termination_reason. Even if
         # its message mentions the network, undoing a deliberate stop
         # automatically would be wrong.
@@ -147,38 +155,42 @@ class TestEligibility:
                 termination_reason="manual_stop",
             )
         )
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
 
-    async def test_ignores_command_roles(self, healthy_network, guard_config, spawner) -> None:
+    async def test_ignores_command_roles(self, healthy_network, guard_config, spawner, tmp_path: Path) -> None:
         # No checkpoint to resume, and the supervisor re-proposes the action.
         await _add(_run(issue="704", status="failed", role="command:address-pr"))
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
 
-    async def test_ignores_reviewer_role(self, healthy_network, guard_config, spawner) -> None:
+    async def test_ignores_reviewer_role(self, healthy_network, guard_config, spawner, tmp_path: Path) -> None:
         # Reviewer is a non-pipeline role with no --resume checkpoint of its
         # own; auto-resuming a failed review risks posting a stale verdict
         # against a PR head that has since moved on.
         await _add(_run(issue="706", status="failed", role="reviewer"))
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
 
-    async def test_ignores_failures_older_than_the_window(self, healthy_network, guard_config, spawner) -> None:
+    async def test_ignores_failures_older_than_the_window(
+        self, healthy_network, guard_config, spawner, tmp_path: Path
+    ) -> None:
         await _add(_run(issue="705", status="failed", minutes_ago=120))
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
 
 
 class TestExactlyOnce:
-    async def test_skips_an_issue_the_system_already_redid(self, healthy_network, guard_config, spawner) -> None:
+    async def test_skips_an_issue_the_system_already_redid(
+        self, healthy_network, guard_config, spawner, tmp_path: Path
+    ) -> None:
         """The motivating incident's own resolution: the supervisor respawned
         both issues once the network returned, so resuming the outage-era runs
         would duplicate work and could open a second PR."""
         await _add(_run(issue="656", status="failed"))
         await _add(_run(issue="656", status="running", error=None, minutes_ago=1))
 
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
         spawner.assert_not_awaited()
 
     async def test_skips_an_older_outage_run_behind_a_newer_unrelated_failure(
-        self, healthy_network, guard_config, spawner
+        self, healthy_network, guard_config, spawner, tmp_path: Path
     ) -> None:
         """A newer failure for the same issue blocks an older outage candidate
         even when that newer run's own cause has nothing to do with the
@@ -191,11 +203,11 @@ class TestExactlyOnce:
             _run(issue="707", status="failed", error="AssertionError: test_foo failed", minutes_ago=2),
         )
 
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
         spawner.assert_not_awaited()
 
     async def test_skips_an_outage_run_behind_a_newer_run_in_an_unmatched_status(
-        self, healthy_network, guard_config, spawner
+        self, healthy_network, guard_config, spawner, tmp_path: Path
     ) -> None:
         """A newer run the outer query's own filters exclude (here, a status
         outside _SELF_HEAL_STATUSES) must still block an older candidate: it
@@ -212,10 +224,12 @@ class TestExactlyOnce:
             _run(issue="708", status="rejected", error=None, minutes_ago=2),
         )
 
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
         spawner.assert_not_awaited()
 
-    async def test_skips_a_run_that_was_already_resumed(self, healthy_network, guard_config, spawner) -> None:
+    async def test_skips_a_run_that_was_already_resumed(
+        self, healthy_network, guard_config, spawner, tmp_path: Path
+    ) -> None:
         async with await get_session() as session:
             failed = _run(issue="660", status="failed")
             session.add(failed)
@@ -234,13 +248,15 @@ class TestExactlyOnce:
             )
             await session.commit()
 
-        resumed = await attempt_network_self_heal(Path("/tmp/project"))
+        resumed = await attempt_network_self_heal(tmp_path / "project")
         # Nothing is resumed: the original is excluded because something already
         # resumed it, and the resume itself is excluded because chains are
         # capped at one automatic follow-up.
         assert [r["issue"] for r in resumed] == []
 
-    async def test_chains_are_capped_at_one_automatic_follow_up(self, healthy_network, guard_config, spawner) -> None:
+    async def test_chains_are_capped_at_one_automatic_follow_up(
+        self, healthy_network, guard_config, spawner, tmp_path: Path
+    ) -> None:
         """A resume that also dies from an outage is handed back to a human.
 
         Without this the flap guard and hourly cap would still bound the waste,
@@ -259,22 +275,22 @@ class TestExactlyOnce:
             )
         )
 
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
         spawner.assert_not_awaited()
 
-    async def test_one_resume_per_tick(self, healthy_network, guard_config, spawner) -> None:
+    async def test_one_resume_per_tick(self, healthy_network, guard_config, spawner, tmp_path: Path) -> None:
         await _add(
             _run(issue="801", status="failed"),
             _run(issue="802", status="failed"),
             _run(issue="803", status="failed"),
         )
 
-        resumed = await attempt_network_self_heal(Path("/tmp/project"))
+        resumed = await attempt_network_self_heal(tmp_path / "project")
 
         assert len(resumed) == 1
         assert spawner.await_count == 1
 
-    async def test_most_recovered_work_goes_first(self, healthy_network, guard_config, spawner) -> None:
+    async def test_most_recovered_work_goes_first(self, healthy_network, guard_config, spawner, tmp_path: Path) -> None:
         async with await get_session() as session:
             cheap = _run(issue="901", status="failed", cost="0")
             valuable = _run(issue="902", status="failed", cost="5.65")
@@ -284,32 +300,32 @@ class TestExactlyOnce:
                 session.add(StepExecution(task_run_id=valuable.id, step_name="develop", status="done"))
             await session.commit()
 
-        resumed = await attempt_network_self_heal(Path("/tmp/project"))
+        resumed = await attempt_network_self_heal(tmp_path / "project")
 
         assert resumed[0]["issue"] == "902"
         assert resumed[0]["steps_done"] == 4
 
 
 class TestGuards:
-    async def test_holds_off_while_the_connection_is_still_down(self, guard_config, spawner) -> None:
+    async def test_holds_off_while_the_connection_is_still_down(self, guard_config, spawner, tmp_path: Path) -> None:
         await _add(_run(issue="661", status="failed"))
 
         with patch("sova.supervisor.network_health.get_connectivity_tracker") as mock:
             mock.return_value.is_down.return_value = True
-            assert await attempt_network_self_heal(Path("/tmp/project")) == []
+            assert await attempt_network_self_heal(tmp_path / "project") == []
         spawner.assert_not_awaited()
 
-    async def test_holds_off_until_the_grace_period_passes(self, guard_config, spawner) -> None:
+    async def test_holds_off_until_the_grace_period_passes(self, guard_config, spawner, tmp_path: Path) -> None:
         # A connection that has only just answered may be about to drop again.
         await _add(_run(issue="662", status="failed"))
 
         with patch("sova.supervisor.network_health.get_connectivity_tracker") as mock:
             mock.return_value.is_down.return_value = False
             mock.return_value.healthy_for_seconds.return_value = 5.0
-            assert await attempt_network_self_heal(Path("/tmp/project")) == []
+            assert await attempt_network_self_heal(tmp_path / "project") == []
         spawner.assert_not_awaited()
 
-    async def test_respects_the_hourly_cap(self, healthy_network, guard_config, spawner) -> None:
+    async def test_respects_the_hourly_cap(self, healthy_network, guard_config, spawner, tmp_path: Path) -> None:
         async with await get_session() as session:
             session.add(_run(issue="663", status="failed"))
             for i in range(3):
@@ -324,17 +340,19 @@ class TestGuards:
                 )
             await session.commit()
 
-        assert await attempt_network_self_heal(Path("/tmp/project")) == []
+        assert await attempt_network_self_heal(tmp_path / "project") == []
 
-    async def test_disabled_by_config(self, healthy_network, spawner) -> None:
+    async def test_disabled_by_config(self, healthy_network, spawner, tmp_path: Path) -> None:
         from sova.config.models import NetworkGuardConfig
 
         await _add(_run(issue="664", status="failed"))
         cfg = type("Cfg", (), {"network_guard": NetworkGuardConfig(auto_resume=False)})()
         with patch("sova.config.loader.load_config", return_value=cfg):
-            assert await attempt_network_self_heal(Path("/tmp/project")) == []
+            assert await attempt_network_self_heal(tmp_path / "project") == []
 
-    async def test_a_rejected_spawn_is_not_reported_as_resumed(self, healthy_network, guard_config) -> None:
+    async def test_a_rejected_spawn_is_not_reported_as_resumed(
+        self, healthy_network, guard_config, tmp_path: Path
+    ) -> None:
         # force=False on purpose, so the slot, memory and conflict gates still
         # apply; a rejection must not be recorded as a successful resume.
         await _add(_run(issue="665", status="failed"))
@@ -343,15 +361,15 @@ class TestGuards:
             new_callable=AsyncMock,
             return_value={"error": "Maximum concurrent agents reached (3)"},
         ):
-            assert await attempt_network_self_heal(Path("/tmp/project")) == []
+            assert await attempt_network_self_heal(tmp_path / "project") == []
 
-    async def test_db_failure_fails_open(self, healthy_network, guard_config) -> None:
+    async def test_db_failure_fails_open(self, healthy_network, guard_config, tmp_path: Path) -> None:
         with patch(
             "sova.dashboard.services.agent_recovery._find_self_heal_candidates",
             new_callable=AsyncMock,
             side_effect=RuntimeError("db down"),
         ):
-            assert await attempt_network_self_heal(Path("/tmp/project")) == []
+            assert await attempt_network_self_heal(tmp_path / "project") == []
 
 
 class TestMultiProjectSlugResolution:
@@ -383,13 +401,13 @@ class TestMultiProjectSlugResolution:
             assert spawner.await_args.kwargs["slug"] == "slug-b"
 
     async def test_unregistered_project_dir_falls_back_to_default_resolution(
-        self, healthy_network, guard_config, spawner
+        self, healthy_network, guard_config, spawner, tmp_path: Path
     ) -> None:
         # Single-project mode: the directory isn't in the registry at all, so
         # slug resolution must not error, and must fall through to
         # start_agent()'s own default (get_project_slug() / _DEFAULT_SLUG).
         await _add(_run(issue="930", status="failed"))
 
-        await attempt_network_self_heal(Path("/tmp/unregistered-project"))
+        await attempt_network_self_heal(tmp_path / "unregistered-project")
 
         assert spawner.await_args.kwargs["slug"] is None

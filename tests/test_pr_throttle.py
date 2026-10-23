@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -496,7 +497,7 @@ class TestPollUntilCreated:
 class TestCreatePRStepThrottledInternals:
     """Test the _create_pr_throttled method paths that exercise create_pr.py new code."""
 
-    async def test_throttled_enqueue_failure_falls_back(self) -> None:
+    async def test_throttled_enqueue_failure_falls_back(self, tmp_path: Path) -> None:
         """When enqueue raises, falls back to immediate creation."""
         from unittest.mock import MagicMock
 
@@ -511,11 +512,11 @@ class TestCreatePRStepThrottledInternals:
         ctx.has_issue = True
         ctx.issue_number = "42"
         ctx.task_run_id = 1
-        ctx.project_dir = "/tmp"
+        ctx.project_dir = str(tmp_path)
         ctx.config = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
         ctx.base_branch = "main"
         ctx.repo = "owner/repo"
-        ctx.working_dir = "/tmp"
+        ctx.working_dir = str(tmp_path)
         ctx.pr_number = None
         ctx.pr_url = ""
 
@@ -533,7 +534,7 @@ class TestCreatePRStepThrottledInternals:
         assert result.success is True
         assert "10" in result.summary
 
-    async def test_throttled_poll_timeout_returns_failure(self) -> None:
+    async def test_throttled_poll_timeout_returns_failure(self, tmp_path: Path) -> None:
         """When poll_until_created returns None, step returns failure."""
         from unittest.mock import MagicMock
 
@@ -547,11 +548,11 @@ class TestCreatePRStepThrottledInternals:
         ctx.has_issue = True
         ctx.issue_number = "42"
         ctx.task_run_id = 1
-        ctx.project_dir = "/tmp"
+        ctx.project_dir = str(tmp_path)
         ctx.config = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
         ctx.base_branch = "main"
         ctx.repo = "owner/repo"
-        ctx.working_dir = "/tmp"
+        ctx.working_dir = str(tmp_path)
         ctx.pr_number = None
         ctx.pr_url = ""
 
@@ -571,7 +572,7 @@ class TestCreatePRStepThrottledInternals:
         assert result.error is not None
         assert "99" in result.error
 
-    async def test_throttled_poll_success(self) -> None:
+    async def test_throttled_poll_success(self, tmp_path: Path) -> None:
         """When poll returns CREATED with pr_number, step succeeds."""
         from unittest.mock import MagicMock
 
@@ -586,11 +587,11 @@ class TestCreatePRStepThrottledInternals:
         ctx.has_issue = True
         ctx.issue_number = "42"
         ctx.task_run_id = 1
-        ctx.project_dir = "/tmp"
+        ctx.project_dir = str(tmp_path)
         ctx.config = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
         ctx.base_branch = "main"
         ctx.repo = "owner/repo"
-        ctx.working_dir = "/tmp"
+        ctx.working_dir = str(tmp_path)
         ctx.pr_number = None
         ctx.pr_url = ""
 
@@ -610,7 +611,7 @@ class TestCreatePRStepThrottledInternals:
         assert "77" in result.summary
         assert ctx.pr_number == 77
 
-    async def test_throttled_poll_failed_status(self) -> None:
+    async def test_throttled_poll_failed_status(self, tmp_path: Path) -> None:
         """When poll returns FAILED status, step returns failure with error message."""
         from unittest.mock import MagicMock
 
@@ -625,11 +626,11 @@ class TestCreatePRStepThrottledInternals:
         ctx.has_issue = True
         ctx.issue_number = "42"
         ctx.task_run_id = 1
-        ctx.project_dir = "/tmp"
+        ctx.project_dir = str(tmp_path)
         ctx.config = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
         ctx.base_branch = "main"
         ctx.repo = "owner/repo"
-        ctx.working_dir = "/tmp"
+        ctx.working_dir = str(tmp_path)
         ctx.pr_number = None
         ctx.pr_url = ""
 
@@ -649,7 +650,7 @@ class TestCreatePRStepThrottledInternals:
         assert "API rate limit" in result.summary
         assert result.error == "API rate limit"
 
-    async def test_throttled_poll_failed_status_null_error_message(self) -> None:
+    async def test_throttled_poll_failed_status_null_error_message(self, tmp_path: Path) -> None:
         """When error_message is present but None, falls back to a message naming the queue entry."""
         from unittest.mock import MagicMock
 
@@ -664,11 +665,11 @@ class TestCreatePRStepThrottledInternals:
         ctx.has_issue = True
         ctx.issue_number = "42"
         ctx.task_run_id = 1
-        ctx.project_dir = "/tmp"
+        ctx.project_dir = str(tmp_path)
         ctx.config = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
         ctx.base_branch = "main"
         ctx.repo = "owner/repo"
-        ctx.working_dir = "/tmp"
+        ctx.working_dir = str(tmp_path)
         ctx.pr_number = None
         ctx.pr_url = ""
 
@@ -690,7 +691,7 @@ class TestCreatePRStepThrottledInternals:
 
 
 class TestCreatePRStepThrottle:
-    async def test_disabled_quota_uses_immediate(self) -> None:
+    async def test_disabled_quota_uses_immediate(self, tmp_path: Path) -> None:
         """When coderabbit_quota.enabled is False, CreatePRStep creates PR directly."""
         from unittest.mock import MagicMock
 
@@ -709,7 +710,7 @@ class TestCreatePRStepThrottle:
         ctx.config = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=False))
         ctx.base_branch = "main"
         ctx.repo = "owner/repo"
-        ctx.working_dir = "/tmp"
+        ctx.working_dir = str(tmp_path)
         ctx.pr_number = None
         ctx.pr_url = ""
 
@@ -724,7 +725,7 @@ class TestCreatePRStepThrottle:
         assert result.success is True
         assert "10" in result.summary
 
-    async def test_enabled_quota_enqueues(self) -> None:
+    async def test_enabled_quota_enqueues(self, tmp_path: Path) -> None:
         """When coderabbit_quota.enabled is True, CreatePRStep enqueues."""
         from unittest.mock import MagicMock
 
@@ -742,8 +743,8 @@ class TestCreatePRStepThrottle:
         ctx.config = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
         ctx.base_branch = "main"
         ctx.repo = "owner/repo"
-        ctx.project_dir = "/tmp"
-        ctx.working_dir = "/tmp"
+        ctx.project_dir = str(tmp_path)
+        ctx.working_dir = str(tmp_path)
         ctx.task_run_id = 1
         ctx.pr_number = None
         ctx.pr_url = ""
@@ -762,7 +763,7 @@ class TestCreatePRStepThrottle:
         assert result.success is True
         assert "88" in result.summary
 
-    async def test_no_task_run_id_falls_back_to_immediate(self) -> None:
+    async def test_no_task_run_id_falls_back_to_immediate(self, tmp_path: Path) -> None:
         """When task_run_id is None, falls back to immediate creation."""
         from unittest.mock import MagicMock
 
@@ -781,7 +782,7 @@ class TestCreatePRStepThrottle:
         ctx.config = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
         ctx.base_branch = "main"
         ctx.repo = "owner/repo"
-        ctx.working_dir = "/tmp"
+        ctx.working_dir = str(tmp_path)
         ctx.task_run_id = None
         ctx.pr_number = None
         ctx.pr_url = ""

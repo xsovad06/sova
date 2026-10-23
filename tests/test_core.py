@@ -40,10 +40,10 @@ def _mock_adapter() -> AsyncMock:
     return adapter
 
 
-def _make_ctx(**kwargs) -> ExecutionContext:
+def _make_ctx(tmp_path: Path, **kwargs) -> ExecutionContext:
     """Create a test ExecutionContext with sensible defaults."""
     defaults = {
-        "project_dir": Path("/tmp/test"),
+        "project_dir": tmp_path,
         "config": ProjectConfig(),
         "adapter": _mock_adapter(),
         "issue_number": "42",
@@ -191,64 +191,64 @@ class TestTaskStatus:
 
 
 class TestExecutionContext:
-    def test_create_minimal(self) -> None:
-        ctx = _make_ctx()
-        assert ctx.project_dir == Path("/tmp/test")
+    def test_create_minimal(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
+        assert ctx.project_dir == tmp_path
         assert ctx.issue_number == "42"
         assert ctx.role == "developer"
         assert ctx.cost_usd == Decimal("0")
 
-    def test_add_cost(self) -> None:
-        ctx = _make_ctx()
+    def test_add_cost(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         ctx.add_cost(Decimal("1.50"))
         ctx.add_cost(Decimal("0.75"))
         assert ctx.cost_usd == Decimal("2.25")
 
-    def test_budget_exceeded(self) -> None:
+    def test_budget_exceeded(self, tmp_path: Path) -> None:
         config = ProjectConfig(agent={"max_budget": Decimal("5.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("5.01"))
         assert ctx.is_budget_exceeded
 
-    def test_budget_not_exceeded(self) -> None:
+    def test_budget_not_exceeded(self, tmp_path: Path) -> None:
         config = ProjectConfig(agent={"max_budget": Decimal("5.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("4.99"))
         assert not ctx.is_budget_exceeded
 
-    def test_budget_remaining_fraction_full_at_zero_cost(self) -> None:
+    def test_budget_remaining_fraction_full_at_zero_cost(self, tmp_path: Path) -> None:
         config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         assert ctx.budget_remaining_fraction == 1.0
 
-    def test_budget_remaining_fraction_half(self) -> None:
+    def test_budget_remaining_fraction_half(self, tmp_path: Path) -> None:
         config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("5.00"))
         assert ctx.budget_remaining_fraction == 0.5
 
-    def test_budget_remaining_fraction_clamped_when_over_budget(self) -> None:
+    def test_budget_remaining_fraction_clamped_when_over_budget(self, tmp_path: Path) -> None:
         config = ProjectConfig(agent={"max_budget": Decimal("5.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("7.00"))
         assert ctx.budget_remaining_fraction == 0.0
 
-    def test_budget_remaining_fraction_zero_at_exact_max_budget(self) -> None:
+    def test_budget_remaining_fraction_zero_at_exact_max_budget(self, tmp_path: Path) -> None:
         config = ProjectConfig(agent={"max_budget": Decimal("5.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("5.00"))
         assert ctx.budget_remaining_fraction == 0.0
 
-    def test_resource_remaining_fraction_matches_budget_when_others_disabled(self) -> None:
+    def test_resource_remaining_fraction_matches_budget_when_others_disabled(self, tmp_path: Path) -> None:
         config = ProjectConfig(
             agent={"max_budget": Decimal("10.00")},
             runaway={"max_run_wall_clock_seconds": 0, "max_llm_calls": 0},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("5.00"))
         assert ctx.resource_remaining_fraction == 0.5
 
-    def test_resource_remaining_fraction_constrained_by_call_count(self) -> None:
+    def test_resource_remaining_fraction_constrained_by_call_count(self, tmp_path: Path) -> None:
         """The composite fraction reacts to LLM call pressure even with $0 spent,
         the exact R6 gap budget_remaining_fraction alone cannot see."""
         from sova.llm.client import _increment_call_counter, reset_call_counter, start_call_counter
@@ -257,7 +257,7 @@ class TestExecutionContext:
             agent={"max_budget": Decimal("10.00")},
             runaway={"max_run_wall_clock_seconds": 0, "max_llm_calls": 10},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         start_call_counter()
         try:
             _increment_call_counter(9)
@@ -266,20 +266,20 @@ class TestExecutionContext:
         finally:
             reset_call_counter()
 
-    def test_resource_remaining_fraction_constrained_by_wall_clock(self) -> None:
+    def test_resource_remaining_fraction_constrained_by_wall_clock(self, tmp_path: Path) -> None:
         import time
 
         config = ProjectConfig(
             agent={"max_budget": Decimal("10.00")},
             runaway={"max_run_wall_clock_seconds": 100, "max_llm_calls": 0},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.run_started_at = time.monotonic() - 90.0
 
         assert ctx.budget_remaining_fraction == 1.0
         assert ctx.resource_remaining_fraction == pytest.approx(0.1, abs=0.02)
 
-    def test_resource_remaining_fraction_wall_clock_scaled_by_complexity(self) -> None:
+    def test_resource_remaining_fraction_wall_clock_scaled_by_complexity(self, tmp_path: Path) -> None:
         import time
 
         from sova.llm.complexity import ComplexityTier
@@ -288,7 +288,7 @@ class TestExecutionContext:
             agent={"max_budget": Decimal("10.00")},
             runaway={"max_run_wall_clock_seconds": 100, "max_llm_calls": 0},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.complexity = ComplexityTier.EPIC
         # 90s elapsed against a flat 100s ceiling would read as nearly exhausted,
         # but the EPIC 2.0x multiplier scales the ceiling to 200s.
@@ -296,53 +296,53 @@ class TestExecutionContext:
 
         assert ctx.resource_remaining_fraction == pytest.approx(0.55, abs=0.02)
 
-    def test_resource_remaining_fraction_full_when_run_not_started(self) -> None:
+    def test_resource_remaining_fraction_full_when_run_not_started(self, tmp_path: Path) -> None:
         config = ProjectConfig(runaway={"max_run_wall_clock_seconds": 100})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         assert ctx.run_started_at == 0.0
         assert ctx.resource_remaining_fraction == 1.0
 
-    def test_routing_task_type_passes_tag_through(self) -> None:
-        ctx = _make_ctx()
+    def test_routing_task_type_passes_tag_through(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         assert ctx.routing_task_type("develop") == "develop"
 
-    def test_routing_task_type_treats_untagged_step_as_unset(self) -> None:
-        ctx = _make_ctx()
+    def test_routing_task_type_treats_untagged_step_as_unset(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         assert ctx.routing_task_type("") is None
 
-    def test_routing_task_type_suppressed_while_falling_back(self) -> None:
-        ctx = _make_ctx(fallback_model_index=1)
+    def test_routing_task_type_suppressed_while_falling_back(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, fallback_model_index=1)
         assert ctx.routing_task_type("develop") is None
 
-    def test_working_dir_defaults_to_project(self) -> None:
-        ctx = _make_ctx()
-        assert ctx.working_dir == Path("/tmp/test")
+    def test_working_dir_defaults_to_project(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
+        assert ctx.working_dir == tmp_path
 
-    def test_working_dir_uses_worktree(self) -> None:
-        ctx = _make_ctx(worktree_dir=Path("/tmp/wt"))
-        assert ctx.working_dir == Path("/tmp/wt")
+    def test_working_dir_uses_worktree(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "wt")
+        assert ctx.working_dir == tmp_path / "wt"
 
-    def test_repo_property(self) -> None:
-        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo"))
+    def test_repo_property(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(github_repo="owner/repo"))
         assert ctx.repo == "owner/repo"
 
-    def test_issueless_context(self) -> None:
-        ctx = _make_ctx(issue_number="", run_label="planner-1234")
+    def test_issueless_context(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, issue_number="", run_label="planner-1234")
         assert not ctx.has_issue
         assert ctx.display_label == "planner-1234"
         assert ctx.issue_number == ""
 
-    def test_issueless_context_no_label(self) -> None:
-        ctx = _make_ctx(issue_number="", run_label="", task_run_id=99)
+    def test_issueless_context_no_label(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, issue_number="", run_label="", task_run_id=99)
         assert not ctx.has_issue
         assert ctx.display_label == "run-99"
 
-    def test_issueless_context_fallback(self) -> None:
-        ctx = _make_ctx(issue_number="", run_label="")
+    def test_issueless_context_fallback(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, issue_number="", run_label="")
         assert ctx.display_label == "issue-less"
 
-    def test_issue_context_display(self) -> None:
-        ctx = _make_ctx(issue_number="42")
+    def test_issue_context_display(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, issue_number="42")
         assert ctx.has_issue
         assert ctx.display_label == "#42"
 
@@ -410,27 +410,27 @@ class TestGateCheckResult:
 
 
 class TestBaseStep:
-    async def test_execute_success(self) -> None:
+    async def test_execute_success(self, tmp_path: Path) -> None:
         step = DummyStep(should_pass=True)
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         result = await step.execute(ctx)
         assert result.success
 
-    async def test_execute_failure(self) -> None:
+    async def test_execute_failure(self, tmp_path: Path) -> None:
         step = DummyStep(should_pass=False)
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         result = await step.execute(ctx)
         assert not result.success
 
-    async def test_gate_check(self) -> None:
+    async def test_gate_check(self, tmp_path: Path) -> None:
         step = DummyStep(gate_pass=True)
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         gate = await step.validate_output(ctx)
         assert gate.passed
 
-    async def test_can_skip(self) -> None:
+    async def test_can_skip(self, tmp_path: Path) -> None:
         step = DummyStep(skip=True)
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         assert await step.can_skip(ctx)
 
 
@@ -440,8 +440,8 @@ class TestBaseStep:
 
 
 class TestWorkflowEngine:
-    async def test_run_single_step_success(self) -> None:
-        ctx = _make_ctx()
+    async def test_run_single_step_success(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -451,8 +451,8 @@ class TestWorkflowEngine:
         assert result.steps_completed == 1
         assert result.steps_failed == 0
 
-    async def test_run_step_failure_records_error(self) -> None:
-        ctx = _make_ctx()
+    async def test_run_step_failure_records_error(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=False, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -461,8 +461,8 @@ class TestWorkflowEngine:
         assert not result.success
         assert result.steps_failed == 1
 
-    async def test_run_gate_check_failure_pauses(self) -> None:
-        ctx = _make_ctx()
+    async def test_run_gate_check_failure_pauses(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=False)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -471,8 +471,8 @@ class TestWorkflowEngine:
         assert not result.success
         assert result.final_status == TaskStatus.PAUSED
 
-    async def test_skipped_step(self) -> None:
-        ctx = _make_ctx()
+    async def test_skipped_step(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step1 = DummyStep(should_pass=True, gate_pass=True, skip=True)
         step2 = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step1, step2], ctx=ctx)
@@ -483,8 +483,8 @@ class TestWorkflowEngine:
         assert result.steps_completed == 1
         assert result.steps_skipped == 1
 
-    async def test_multiple_steps_happy_path(self) -> None:
-        ctx = _make_ctx()
+    async def test_multiple_steps_happy_path(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         steps = [
             DummyStep(should_pass=True, gate_pass=True),
             DummyStep(should_pass=True, gate_pass=True),
@@ -498,9 +498,9 @@ class TestWorkflowEngine:
         assert result.steps_completed == 3
         assert result.final_status == TaskStatus.DONE
 
-    async def test_budget_exceeded_pauses(self) -> None:
+    async def test_budget_exceeded_pauses(self, tmp_path: Path) -> None:
         config = ProjectConfig(agent={"max_budget": Decimal("0.01")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("0.02"))
 
         step = DummyStep(should_pass=True, gate_pass=True)
@@ -511,7 +511,7 @@ class TestWorkflowEngine:
         assert not result.success
         assert result.final_status == TaskStatus.PAUSED
 
-    async def test_runaway_guard_step_count_pauses(self) -> None:
+    async def test_runaway_guard_step_count_pauses(self, tmp_path: Path) -> None:
         """Step-count guard trips even when cost stays at $0 the whole run.
 
         Named acceptance scenario for the R6 backstop: a provider that always
@@ -519,7 +519,7 @@ class TestWorkflowEngine:
         must still be stopped.
         """
         config = ProjectConfig(runaway={"max_run_steps": 1, "max_run_wall_clock_seconds": 0, "max_llm_calls": 0})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         steps = [
             DummyStep(should_pass=True, gate_pass=True, name="step1"),
             DummyStep(should_pass=True, gate_pass=True, name="step2"),
@@ -534,9 +534,9 @@ class TestWorkflowEngine:
         assert result.steps_completed == 1
         assert len(result.step_records) == 1
 
-    async def test_runaway_guard_step_count_disabled_by_zero(self) -> None:
+    async def test_runaway_guard_step_count_disabled_by_zero(self, tmp_path: Path) -> None:
         config = ProjectConfig(runaway={"max_run_steps": 0, "max_run_wall_clock_seconds": 0, "max_llm_calls": 0})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         steps = [
             DummyStep(should_pass=True, gate_pass=True, name="step1"),
             DummyStep(should_pass=True, gate_pass=True, name="step2"),
@@ -548,11 +548,11 @@ class TestWorkflowEngine:
         assert result.success
         assert result.steps_completed == 2
 
-    async def test_runaway_guard_wall_clock_pauses(self) -> None:
+    async def test_runaway_guard_wall_clock_pauses(self, tmp_path: Path) -> None:
         import time
 
         config = ProjectConfig(runaway={"max_run_wall_clock_seconds": 100, "max_run_steps": 0, "max_llm_calls": 0})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
         # Simulate a run that started 500s ago (real time.monotonic() can't be
@@ -569,14 +569,14 @@ class TestWorkflowEngine:
             rows = (await session.execute(select(FailureRecord))).scalars().all()
             assert any(r.failure_type == "runaway_guard" and "wall clock" in r.message for r in rows)
 
-    async def test_runaway_guard_wall_clock_scales_with_complexity(self) -> None:
+    async def test_runaway_guard_wall_clock_scales_with_complexity(self, tmp_path: Path) -> None:
         """An EPIC-complexity run gets 2x the configured wall-clock ceiling."""
         import time
 
         from sova.llm.complexity import ComplexityTier
 
         config = ProjectConfig(runaway={"max_run_wall_clock_seconds": 100, "max_run_steps": 0, "max_llm_calls": 0})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.complexity = ComplexityTier.EPIC
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -587,7 +587,7 @@ class TestWorkflowEngine:
 
         assert result.success
 
-    async def test_runaway_guard_llm_call_count_pauses(self) -> None:
+    async def test_runaway_guard_llm_call_count_pauses(self, tmp_path: Path) -> None:
         """LLM call count guard trips even when cost stays at $0 and step count is small.
 
         Named acceptance scenario for the R6 gap: retry/fix loops that burn LLM
@@ -606,7 +606,7 @@ class TestWorkflowEngine:
                 return await super().execute(ctx)
 
         config = ProjectConfig(runaway={"max_llm_calls": 1, "max_run_steps": 0, "max_run_wall_clock_seconds": 0})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         steps = [
             _LLMCallStep(should_pass=True, gate_pass=True, name="step1"),
             DummyStep(should_pass=True, gate_pass=True, name="step2"),
@@ -619,9 +619,9 @@ class TestWorkflowEngine:
         assert result.final_status == TaskStatus.PAUSED
         assert result.steps_completed == 1
 
-    async def test_step_retry_on_failure(self) -> None:
+    async def test_step_retry_on_failure(self, tmp_path: Path) -> None:
         """A step with max_retries > 0 retries before failing."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
 
         step = DummyStep(should_pass=False)
         step.max_retries = 1
@@ -642,7 +642,7 @@ class TestWorkflowEngine:
         assert result.success
         assert call_count == 2
 
-    async def test_max_step_attempts_caps_total_attempts(self) -> None:
+    async def test_max_step_attempts_caps_total_attempts(self, tmp_path: Path) -> None:
         """runaway.max_step_attempts caps cumulative attempts even when the
         step's own max_retries would allow more, catching the case where a
         fallback-model chain would otherwise reset the per-model retry
@@ -650,7 +650,7 @@ class TestWorkflowEngine:
         trip (PAUSED, resumable), not an ordinary step failure (FAILED).
         """
         config = ProjectConfig(runaway={"max_step_attempts": 3})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         step = DummyStep(should_pass=False)
         step.max_retries = 10
@@ -666,9 +666,9 @@ class TestWorkflowEngine:
             rows = (await session.execute(select(FailureRecord))).scalars().all()
             assert any(r.failure_type == "runaway_guard" and "attempts" in r.message for r in rows)
 
-    async def test_max_step_attempts_disabled_by_zero(self) -> None:
+    async def test_max_step_attempts_disabled_by_zero(self, tmp_path: Path) -> None:
         config = ProjectConfig(runaway={"max_step_attempts": 0})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         step = DummyStep(should_pass=False)
         step.max_retries = 2
@@ -679,8 +679,8 @@ class TestWorkflowEngine:
         assert not result.success
         assert result.step_records[0].total_attempts == 3
 
-    async def test_step_records_populated(self) -> None:
-        ctx = _make_ctx()
+    async def test_step_records_populated(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -690,7 +690,7 @@ class TestWorkflowEngine:
         assert result.step_records[0].step_name == "dummy"
         assert result.step_records[0].status == "done"
 
-    async def test_adopt_existing_task_run(self) -> None:
+    async def test_adopt_existing_task_run(self, tmp_path: Path) -> None:
         """When ctx.task_run_id is set, the engine should reuse it instead of creating a new one."""
         async with await get_session() as session:
             async with session.begin():
@@ -705,7 +705,7 @@ class TestWorkflowEngine:
                 await session.flush()
                 existing_id = existing.id
 
-        ctx = _make_ctx(task_run_id=existing_id)
+        ctx = _make_ctx(tmp_path, task_run_id=existing_id)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -719,7 +719,7 @@ class TestWorkflowEngine:
             assert task_run.pid == 99999  # PID preserved from dashboard
             assert task_run.current_step != "agent"
 
-    async def test_adopt_does_not_create_extra_task_run(self) -> None:
+    async def test_adopt_does_not_create_extra_task_run(self, tmp_path: Path) -> None:
         """Adopting must not create a second TaskRun for the same issue."""
         async with await get_session() as session:
             async with session.begin():
@@ -734,7 +734,7 @@ class TestWorkflowEngine:
                 await session.flush()
                 existing_id = existing.id
 
-        ctx = _make_ctx(task_run_id=existing_id)
+        ctx = _make_ctx(tmp_path, task_run_id=existing_id)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
         await engine.run()
@@ -745,9 +745,9 @@ class TestWorkflowEngine:
             count = (await session.execute(select(func.count(TaskRun.id)).where(TaskRun.issue_number == "42"))).scalar()
             assert count == 1
 
-    async def test_no_run_id_creates_new_task_run(self) -> None:
+    async def test_no_run_id_creates_new_task_run(self, tmp_path: Path) -> None:
         """Without task_run_id, the engine should create its own TaskRun (backward compat)."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         assert ctx.task_run_id is None
 
         step = DummyStep(should_pass=True, gate_pass=True)
@@ -790,7 +790,7 @@ class TestWorkflowEngine:
                 await init_db_for_project(real_dir)
                 await init_db_for_project(other_dir)
 
-            ctx = _make_ctx(project_dir=real_dir)
+            ctx = _make_ctx(tmp_path, project_dir=real_dir)
             engine = WorkflowEngine(steps=[], ctx=ctx)
 
             set_project_context(other_dir, "other")
@@ -809,9 +809,9 @@ class TestWorkflowEngine:
                 if entry := _engines.pop(url, None):
                     await entry[0].dispose()
 
-    async def test_create_step_execution_db_error_retries(self) -> None:
+    async def test_create_step_execution_db_error_retries(self, tmp_path: Path) -> None:
         """When _create_step_execution raises, the engine retries and can still succeed."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         step.max_retries = 1
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -833,9 +833,9 @@ class TestWorkflowEngine:
         assert call_count == 2
         assert result.step_records[0].retries == 1
 
-    async def test_create_step_execution_db_error_exhausts_retries(self) -> None:
+    async def test_create_step_execution_db_error_exhausts_retries(self, tmp_path: Path) -> None:
         """When _create_step_execution fails on every attempt, the step fails."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         step.max_retries = 0
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -853,9 +853,9 @@ class TestWorkflowEngine:
         assert record.result is not None
         assert "DB error" in (record.result.summary or "")
 
-    async def test_update_step_execution_db_error_non_fatal(self) -> None:
+    async def test_update_step_execution_db_error_non_fatal(self, tmp_path: Path) -> None:
         """When _update_step_execution raises, the step still succeeds."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -868,7 +868,7 @@ class TestWorkflowEngine:
         assert result.success
         assert result.steps_completed == 1
 
-    async def test_update_step_execution_splits_mixed_runtime_and_provider_cost(self) -> None:
+    async def test_update_step_execution_splits_mixed_runtime_and_provider_cost(self, tmp_path: Path) -> None:
         """A step that both dispatches to an unpriced runtime (Codex) and makes a
         separate priced provider call (e.g. DevelopStep's implementation-notes
         extraction) must split into two CostRecords by source, not merge the
@@ -877,7 +877,7 @@ class TestWorkflowEngine:
         from sova.core.context import TokenUsage
         from sova.llm.models import CostSource
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         engine = WorkflowEngine(steps=[], ctx=ctx)
         engine._task_run_id = await engine._create_task_run()
         step_exec_id = await engine._create_step_execution("develop")
@@ -915,7 +915,7 @@ class TestWorkflowEngine:
         assert claude_record.input_tokens == 200
         assert claude_record.output_tokens == 100
 
-    async def test_update_step_execution_attributes_fix_loop_dispatch_to_the_runtime(self) -> None:
+    async def test_update_step_execution_attributes_fix_loop_dispatch_to_the_runtime(self, tmp_path: Path) -> None:
         """DevelopStep's real sequence on Codex, driven through add_usage(): the /develop
         dispatch, the priced implementation-notes call, then a fix-loop dispatch. The
         fix-loop's tokens belong on the runtime record and the provider record keeps
@@ -923,7 +923,7 @@ class TestWorkflowEngine:
         thread on context.py add_usage)."""
         from sova.llm.models import CostSource, LLMResult
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         engine = WorkflowEngine(steps=[], ctx=ctx)
         engine._task_run_id = await engine._create_task_run()
         step_exec_id = await engine._create_step_execution("develop")
@@ -978,7 +978,7 @@ class TestWorkflowEngine:
         assert claude_record.cost_usd == Decimal("0.05")
         assert claude_record.cost_source == "priced"
 
-    async def test_update_step_execution_runtime_only_step_writes_one_runtime_record(self) -> None:
+    async def test_update_step_execution_runtime_only_step_writes_one_runtime_record(self, tmp_path: Path) -> None:
         """A step whose only call was a Codex dispatch writes exactly one record,
         attributed to the runtime, even with no tokens reported (a dispatch killed
         before its terminal event): an unknown cost must still be recorded, not
@@ -986,7 +986,7 @@ class TestWorkflowEngine:
         from sova.core.context import TokenUsage
         from sova.llm.models import CostSource
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         engine = WorkflowEngine(steps=[], ctx=ctx)
         engine._task_run_id = await engine._create_task_run()
         step_exec_id = await engine._create_step_execution("self_review")
@@ -1008,9 +1008,9 @@ class TestWorkflowEngine:
         assert records[0].cost_source == "unknown"
         assert records[0].model_selection_reason == "runtime:codex reported no model"
 
-    async def test_awaiting_approval_pauses_pipeline(self) -> None:
+    async def test_awaiting_approval_pauses_pipeline(self, tmp_path: Path) -> None:
         """A step returning awaiting_approval=True pauses the pipeline."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
 
         class ApprovalStep(BaseStep):
             name = "needs_approval"
@@ -1034,9 +1034,9 @@ class TestWorkflowEngine:
         assert len(result.step_records) == 1
         assert result.step_records[0].step_name == "needs_approval"
 
-    async def test_awaiting_approval_default_false_no_pause(self) -> None:
+    async def test_awaiting_approval_default_false_no_pause(self, tmp_path: Path) -> None:
         """Steps returning default awaiting_approval=False do not pause."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -1045,11 +1045,11 @@ class TestWorkflowEngine:
         assert result.success
         assert result.final_status == TaskStatus.DONE
 
-    async def test_awaiting_approval_with_handoff_actions(self) -> None:
+    async def test_awaiting_approval_with_handoff_actions(self, tmp_path: Path) -> None:
         """A step returning handoff_actions writes a handoff file."""
         from sova.ipc.handoff import HandoffAction
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         actions = [
             HandoffAction(
                 id="approve_spec",
@@ -1088,7 +1088,7 @@ class TestWorkflowEngine:
         assert len(written_handoff.next_actions) == 1
         assert written_handoff.next_actions[0].id == "approve_spec"
 
-    async def test_step_hard_timeout(self) -> None:
+    async def test_step_hard_timeout(self, tmp_path: Path) -> None:
         """Steps exceeding the hard timeout are terminated with a failure."""
 
         class SlowStep(BaseStep):
@@ -1103,7 +1103,7 @@ class TestWorkflowEngine:
                 return GateCheckResult(passed=True)
 
         config = ProjectConfig(agent={"step_timeout_normal": 1})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         step = SlowStep()
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -1113,13 +1113,13 @@ class TestWorkflowEngine:
         assert result.steps_failed == 1
         assert result.error == "step_hard_timeout"
 
-    async def test_billing_failure_triggers_model_fallback(self) -> None:
+    async def test_billing_failure_triggers_model_fallback(self, tmp_path: Path) -> None:
         """A billing failure should switch to the next fallback model and retry."""
         config = ProjectConfig(
             agent={"model": "opus", "fallback_models": ["sonnet"]},
             llm={"engine_owned_fallback": True},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         call_models: list[str | None] = []
 
@@ -1138,13 +1138,13 @@ class TestWorkflowEngine:
         assert result.success
         assert "sonnet" in call_models
 
-    async def test_all_fallback_models_exhausted(self) -> None:
+    async def test_all_fallback_models_exhausted(self, tmp_path: Path) -> None:
         """When all fallback models fail with billing errors, step fails."""
         config = ProjectConfig(
             agent={"model": "opus", "fallback_models": ["sonnet", "haiku"]},
             llm={"engine_owned_fallback": True},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         step = DummyStep(should_pass=False, gate_pass=True)
         step.max_retries = 0
@@ -1157,7 +1157,7 @@ class TestWorkflowEngine:
         assert not result.success
         assert step.execute.await_count == 3  # opus + sonnet + haiku
 
-    async def test_configuration_failure_is_never_retried_or_fallback(self) -> None:
+    async def test_configuration_failure_is_never_retried_or_fallback(self, tmp_path: Path) -> None:
         """A static configuration fault (e.g. CodexRuntime's budget-cap refusal) must
         cost exactly one attempt and never walk agent.fallback_models, unlike a billing
         failure (test_billing_failure_triggers_model_fallback/test_all_fallback_models_exhausted
@@ -1166,7 +1166,7 @@ class TestWorkflowEngine:
             agent={"model": "opus", "fallback_models": ["sonnet"]},
             llm={"engine_owned_fallback": True},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         step = DummyStep(should_pass=False, gate_pass=True)
         step.max_retries = 5
@@ -1188,13 +1188,13 @@ class TestWorkflowEngine:
         # staying at its unset default is itself proof no fallback hop ran.
         assert ctx.resolved_model is None
 
-    async def test_non_billing_failure_does_not_trigger_fallback(self) -> None:
+    async def test_non_billing_failure_does_not_trigger_fallback(self, tmp_path: Path) -> None:
         """A regular code error should not trigger model fallback."""
         config = ProjectConfig(
             agent={"model": "opus", "fallback_models": ["sonnet"]},
             llm={"engine_owned_fallback": True},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         step = DummyStep(should_pass=False, gate_pass=True)
         step.max_retries = 0
@@ -1207,13 +1207,13 @@ class TestWorkflowEngine:
         assert not result.success
         assert step.execute.await_count == 1
 
-    async def test_fallback_skips_duplicate_model(self) -> None:
+    async def test_fallback_skips_duplicate_model(self, tmp_path: Path) -> None:
         """If fallback_models contains the same model as primary, skip it."""
         config = ProjectConfig(
             agent={"model": "opus", "fallback_models": ["opus", "sonnet"]},
             llm={"engine_owned_fallback": True},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         models_tried: list[str | None] = []
 
@@ -1233,7 +1233,7 @@ class TestWorkflowEngine:
         assert "sonnet" in models_tried
         assert models_tried.count(None) <= 1  # opus might show as None (unresolved)
 
-    async def test_engine_fallback_off_by_default(self) -> None:
+    async def test_engine_fallback_off_by_default(self, tmp_path: Path) -> None:
         """Fallback is client-owned: the engine must not walk the chain too.
 
         Without the gate the client loop and the engine loop would nest, giving
@@ -1241,7 +1241,7 @@ class TestWorkflowEngine:
         """
         config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet", "haiku"]})
         assert config.llm.engine_owned_fallback is False
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         step = DummyStep(should_pass=False, gate_pass=True)
         step.max_retries = 0
@@ -1252,10 +1252,10 @@ class TestWorkflowEngine:
         assert not result.success
         assert step.execute.await_count == 1
 
-    async def test_empty_fallback_models_no_change(self) -> None:
+    async def test_empty_fallback_models_no_change(self, tmp_path: Path) -> None:
         """Empty fallback_models means billing failure just fails the step."""
         config = ProjectConfig(agent={"model": "opus", "fallback_models": []})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         step = DummyStep(should_pass=False, gate_pass=True)
         step.max_retries = 0
@@ -1266,13 +1266,13 @@ class TestWorkflowEngine:
         assert not result.success
         assert step.execute.await_count == 1
 
-    async def test_fallback_model_persists_for_subsequent_steps(self) -> None:
+    async def test_fallback_model_persists_for_subsequent_steps(self, tmp_path: Path) -> None:
         """After a successful fallback, subsequent steps use the fallback model."""
         config = ProjectConfig(
             agent={"model": "opus", "fallback_models": ["sonnet"]},
             llm={"engine_owned_fallback": True},
         )
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
 
         step2_model: list[str | None] = []
 
@@ -1298,9 +1298,9 @@ class TestWorkflowEngine:
         assert result.success
         assert step2_model == ["sonnet"]
 
-    async def test_step_unhandled_exception_captured(self) -> None:
+    async def test_step_unhandled_exception_captured(self, tmp_path: Path) -> None:
         """Unhandled exceptions in step.execute are captured and recorded as failures."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
 
         async def raise_exception(ctx_inner: ExecutionContext) -> StepResult:
             raise RuntimeError("Unexpected error in step")
@@ -1314,9 +1314,9 @@ class TestWorkflowEngine:
         assert result.steps_failed == 1
         assert "Unexpected error in step" in (result.error or "")
 
-    async def test_persist_step_result_db_error_non_fatal(self) -> None:
+    async def test_persist_step_result_db_error_non_fatal(self, tmp_path: Path) -> None:
         """DB errors when persisting step results are logged but don't fail the pipeline."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
 
         with patch("sova.core.workflow.WorkflowEngine._update_step_execution", side_effect=Exception("DB error")):
@@ -1325,9 +1325,9 @@ class TestWorkflowEngine:
 
         assert result.success
 
-    async def test_prepare_step_execution_db_error_retries(self) -> None:
+    async def test_prepare_step_execution_db_error_retries(self, tmp_path: Path) -> None:
         """DB errors when creating StepExecution trigger retry on the same step."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         step.max_retries = 1
 
@@ -1402,16 +1402,17 @@ class TestHandleStepFailureResultClassificationBoundary:
     check output can plausibly contain a billing/rate-limit-shaped substring
     (e.g. a pytest node id or an assertion on an HTTP status)."""
 
-    def _engine(self) -> WorkflowEngine:
+    def _engine(self, tmp_path: Path) -> WorkflowEngine:
         ctx = _make_ctx(
+            tmp_path,
             config=ProjectConfig(
                 agent=AgentConfig(fallback_models=["claude-haiku-4-6"]),
                 llm=LLMConfig(engine_owned_fallback=True),
-            )
+            ),
         )
         return WorkflowEngine(steps=[], ctx=ctx)
 
-    def test_billing_pattern_in_check_output_tail_is_not_classified_as_billing(self) -> None:
+    def test_billing_pattern_in_check_output_tail_is_not_classified_as_billing(self, tmp_path: Path) -> None:
         from sova.core.steps.base import StepResult
 
         error = (
@@ -1420,18 +1421,18 @@ class TestHandleStepFailureResultClassificationBoundary:
             "tests/test_llm.py::TestClassifyError::test_rate_limit_patterns FAILED | assert 429 == 200"
         )
         result = WorkflowEngine._handle_step_failure_result(
-            self._engine(), StepResult(success=False, summary="Development failed", error=error)
+            self._engine(tmp_path), StepResult(success=False, summary="Development failed", error=error)
         )
 
         assert result == "failed"
 
-    def test_billing_pattern_in_reason_itself_is_still_classified_as_billing(self) -> None:
+    def test_billing_pattern_in_reason_itself_is_still_classified_as_billing(self, tmp_path: Path) -> None:
         """The split must not blind the classifier to a real billing failure
         that never went through the develop check-output tail path."""
         from sova.core.steps.base import StepResult
 
         result = WorkflowEngine._handle_step_failure_result(
-            self._engine(),
+            self._engine(tmp_path),
             StepResult(success=False, summary="Development failed", error="rate_limit exceeded for model"),
         )
 
@@ -1452,10 +1453,10 @@ def _mock_git_identity_ok():
 
 
 class TestSyncStep:
-    async def test_execute_syncs_branch(self) -> None:
+    async def test_execute_syncs_branch(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = SyncStep()
 
         with (
@@ -1466,13 +1467,13 @@ class TestSyncStep:
             result = await step.execute(ctx)
 
         assert result.success
-        mock_ops.sync_branch.assert_awaited_once_with("main", cwd=Path("/tmp/test"))
+        mock_ops.sync_branch.assert_awaited_once_with("main", cwd=tmp_path)
 
-    async def test_fails_when_git_identity_missing(self) -> None:
+    async def test_fails_when_git_identity_missing(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
         from sova.utils.shell import GitIdentityResult
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = SyncStep()
         missing_identity = GitIdentityResult(name="", email="")
 
@@ -1483,11 +1484,11 @@ class TestSyncStep:
         assert "user.name" in result.error
         assert "user.email" in result.error
 
-    async def test_fails_when_git_name_only_missing(self) -> None:
+    async def test_fails_when_git_name_only_missing(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
         from sova.utils.shell import GitIdentityResult
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = SyncStep()
         partial = GitIdentityResult(name="", email="test@example.com")
 
@@ -1498,14 +1499,14 @@ class TestSyncStep:
         assert "user.name" in result.error
         assert result.error.startswith("Missing git config: user.name.")
 
-    async def test_fails_with_configured_user_when_push_permission_denied(self) -> None:
+    async def test_fails_with_configured_user_when_push_permission_denied(self, tmp_path: Path) -> None:
         """When github_user is configured and its token was actually used for the
         check, report that identity, not whatever gh account happens to be
         ambient-active."""
         from sova.core.steps.sync import SyncStep
         from sova.utils.gh import PushPermission, PushPermissionCheck
 
-        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo", github_user="xsovad06"))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(github_repo="owner/repo", github_user="xsovad06"))
         step = SyncStep()
 
         with (
@@ -1529,11 +1530,11 @@ class TestSyncStep:
         assert "owner/repo" in result.error
         mock_active_user.assert_not_awaited()
 
-    async def test_fails_with_active_user_when_no_user_configured(self) -> None:
+    async def test_fails_with_active_user_when_no_user_configured(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
         from sova.utils.gh import PushPermission, PushPermissionCheck
 
-        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo"))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(github_repo="owner/repo"))
         step = SyncStep()
 
         with (
@@ -1554,7 +1555,7 @@ class TestSyncStep:
         assert not result.success
         assert "ambient-user" in result.error
 
-    async def test_fails_with_active_user_when_configured_user_token_unresolved(self) -> None:
+    async def test_fails_with_active_user_when_configured_user_token_unresolved(self, tmp_path: Path) -> None:
         """A github_user is configured, but token resolution for it failed (e.g. that
         account was never `gh auth login`'d on this machine), so the API call actually
         ran under whatever account is ambient-active. The error must name that account,
@@ -1563,7 +1564,7 @@ class TestSyncStep:
         from sova.core.steps.sync import SyncStep
         from sova.utils.gh import PushPermission, PushPermissionCheck
 
-        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo", github_user="xsovad06"))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(github_repo="owner/repo", github_user="xsovad06"))
         step = SyncStep()
 
         with (
@@ -1588,11 +1589,11 @@ class TestSyncStep:
         assert "xsovad06" not in result.error
         mock_active_user.assert_awaited_once()
 
-    async def test_fails_with_unknown_account_when_nothing_resolves(self) -> None:
+    async def test_fails_with_unknown_account_when_nothing_resolves(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
         from sova.utils.gh import PushPermission, PushPermissionCheck
 
-        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo"))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(github_repo="owner/repo"))
         step = SyncStep()
 
         with (
@@ -1609,11 +1610,11 @@ class TestSyncStep:
         assert not result.success
         assert "(unknown account)" in result.error
 
-    async def test_proceeds_when_push_permission_allowed(self) -> None:
+    async def test_proceeds_when_push_permission_allowed(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
         from sova.utils.gh import PushPermission, PushPermissionCheck
 
-        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo", base_branch="main"))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(github_repo="owner/repo", base_branch="main"))
         step = SyncStep()
 
         with (
@@ -1631,11 +1632,11 @@ class TestSyncStep:
         assert result.success
         mock_check.assert_awaited_once_with("owner/repo", github_user="", cwd=ctx.project_dir)
 
-    async def test_proceeds_when_push_permission_unknown(self) -> None:
+    async def test_proceeds_when_push_permission_unknown(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
         from sova.utils.gh import PushPermission, PushPermissionCheck
 
-        ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo", base_branch="main"))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(github_repo="owner/repo", base_branch="main"))
         step = SyncStep()
 
         with (
@@ -1652,10 +1653,10 @@ class TestSyncStep:
 
         assert result.success
 
-    async def test_skips_push_permission_check_when_no_repo(self) -> None:
+    async def test_skips_push_permission_check_when_no_repo(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
 
-        ctx = _make_ctx(config=ProjectConfig(github_repo="", base_branch="main"))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(github_repo="", base_branch="main"))
         step = SyncStep()
 
         with (
@@ -1671,38 +1672,38 @@ class TestSyncStep:
 
 
 class TestAssessStep:
-    async def test_researched_issue_passes(self) -> None:
+    async def test_researched_issue_passes(self, tmp_path: Path) -> None:
         from sova.core.steps.assess import AssessStep
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.RESEARCHED
-        ctx = _make_ctx(adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         step = AssessStep()
 
         result = await step.execute(ctx)
 
         assert result.success
 
-    async def test_non_researched_issue_fails(self) -> None:
+    async def test_non_researched_issue_fails(self, tmp_path: Path) -> None:
         from sova.core.steps.assess import AssessStep
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.BACKLOG
-        ctx = _make_ctx(adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         step = AssessStep()
 
         result = await step.execute(ctx)
 
         assert not result.success
 
-    async def test_force_mode_skips_gate(self) -> None:
+    async def test_force_mode_skips_gate(self, tmp_path: Path) -> None:
         from sova.core.steps.assess import AssessStep
 
-        ctx = _make_ctx(force=True)
+        ctx = _make_ctx(tmp_path, force=True)
         step = AssessStep()
         assert await step.can_skip(ctx)
 
-    async def test_existing_pr_adopted_into_context(self) -> None:
+    async def test_existing_pr_adopted_into_context(self, tmp_path: Path) -> None:
         """When a fresh developer run finds an existing PR, AssessStep should
         adopt it (set ctx.pr_number + ctx.branch_name) and succeed, routing
         the pipeline into the address-review variant."""
@@ -1711,7 +1712,7 @@ class TestAssessStep:
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.IN_PROGRESS
-        ctx = _make_ctx(adapter=adapter, issue_number="42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, issue_number="42")
         step = AssessStep()
 
         with (
@@ -1726,7 +1727,7 @@ class TestAssessStep:
         assert ctx.pr_number == 99
         assert ctx.branch_name == "feat/issue-42"
 
-    async def test_existing_pr_adoption_uses_prinfo_branch_without_api_call(self) -> None:
+    async def test_existing_pr_adoption_uses_prinfo_branch_without_api_call(self, tmp_path: Path) -> None:
         """When PRInfo already carries a branch, AssessStep must use it directly
         and must NOT call get_pr_branch (avoids an extra GitHub API round-trip)."""
         from sova.core.steps.assess import AssessStep
@@ -1734,7 +1735,7 @@ class TestAssessStep:
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.IN_PROGRESS
-        ctx = _make_ctx(adapter=adapter, issue_number="42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, issue_number="42")
         step = AssessStep()
 
         with (
@@ -1751,14 +1752,14 @@ class TestAssessStep:
         assert ctx.branch_name == "feat/issue-42"
         mock_get_branch.assert_not_awaited()
 
-    async def test_existing_pr_adoption_sets_pr_number_even_without_branch(self) -> None:
+    async def test_existing_pr_adoption_sets_pr_number_even_without_branch(self, tmp_path: Path) -> None:
         """PR adoption should still succeed when get_pr_branch returns empty string."""
         from sova.core.steps.assess import AssessStep
         from sova.git.pr import PRInfo
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.IN_PROGRESS
-        ctx = _make_ctx(adapter=adapter, issue_number="42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, issue_number="42")
         step = AssessStep()
 
         with (
@@ -1771,12 +1772,12 @@ class TestAssessStep:
         assert result.success
         assert ctx.pr_number == 99
 
-    async def test_existing_pr_allowed_when_pr_number_set(self) -> None:
+    async def test_existing_pr_allowed_when_pr_number_set(self, tmp_path: Path) -> None:
         from sova.core.steps.assess import AssessStep
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.IN_PROGRESS
-        ctx = _make_ctx(adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=99)
         step = AssessStep()
 
         with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find:
@@ -1785,12 +1786,12 @@ class TestAssessStep:
         mock_find.assert_not_called()
         assert result.success
 
-    async def test_existing_pr_allowed_with_force(self) -> None:
+    async def test_existing_pr_allowed_with_force(self, tmp_path: Path) -> None:
         from sova.core.steps.assess import AssessStep
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.IN_PROGRESS
-        ctx = _make_ctx(adapter=adapter, force=True)
+        ctx = _make_ctx(tmp_path, adapter=adapter, force=True)
         step = AssessStep()
 
         with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find:
@@ -1799,12 +1800,12 @@ class TestAssessStep:
         mock_find.assert_not_called()
         assert result.success
 
-    async def test_no_existing_pr_passes(self) -> None:
+    async def test_no_existing_pr_passes(self, tmp_path: Path) -> None:
         from sova.core.steps.assess import AssessStep
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.RESEARCHED
-        ctx = _make_ctx(adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         step = AssessStep()
 
         with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find:
@@ -1819,13 +1820,13 @@ class TestAssessStepDivergence:
     already diverged from origin/{branch}, instead of discovering the
     conflict at push time after a full develop cycle."""
 
-    async def test_noop_when_branch_name_empty(self) -> None:
+    async def test_noop_when_branch_name_empty(self, tmp_path: Path) -> None:
         """A fresh developer run has no branch yet; the check must not run."""
         from sova.core.steps.assess import AssessStep
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.RESEARCHED
-        ctx = _make_ctx(adapter=adapter, branch_name="")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="")
         step = AssessStep()
 
         with patch("sova.core.steps.assess.check_branch_divergence", new_callable=AsyncMock) as mock_check:
@@ -1834,13 +1835,13 @@ class TestAssessStepDivergence:
         assert result.success
         mock_check.assert_not_awaited()
 
-    async def test_fails_when_diverged(self) -> None:
+    async def test_fails_when_diverged(self, tmp_path: Path) -> None:
         from sova.core.steps.assess import AssessStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.RESEARCHED
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42", worktree_dir=tmp_path / "worktree")
         step = AssessStep()
 
         with patch(
@@ -1854,13 +1855,13 @@ class TestAssessStepDivergence:
         assert "deadbeef" in result.error
         assert "cafe" in result.error
 
-    async def test_proceeds_when_ancestor(self) -> None:
+    async def test_proceeds_when_ancestor(self, tmp_path: Path) -> None:
         from sova.core.steps.assess import AssessStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.RESEARCHED
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42", worktree_dir=tmp_path / "worktree")
         step = AssessStep()
 
         with patch(
@@ -1872,7 +1873,7 @@ class TestAssessStepDivergence:
 
         assert result.success
 
-    async def test_proceeds_when_check_errors(self) -> None:
+    async def test_proceeds_when_check_errors(self, tmp_path: Path) -> None:
         """A failed check (shallow clone, git unreachable) must not be
         misread as a divergence; the run proceeds normally."""
         from sova.core.steps.assess import AssessStep
@@ -1880,7 +1881,7 @@ class TestAssessStepDivergence:
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.RESEARCHED
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42", worktree_dir=tmp_path / "worktree")
         step = AssessStep()
 
         with patch(
@@ -1892,7 +1893,7 @@ class TestAssessStepDivergence:
 
         assert result.success
 
-    async def test_skips_check_when_worktree_dir_unresolved(self) -> None:
+    async def test_skips_check_when_worktree_dir_unresolved(self, tmp_path: Path) -> None:
         """branch_name can be populated on a resumed run whose worktree_path
         no longer exists on disk, leaving working_dir falling back to
         project_dir (the main checkout). Running the check there would
@@ -1902,7 +1903,7 @@ class TestAssessStepDivergence:
 
         adapter = _mock_adapter()
         adapter.get_state.return_value = TaskState.RESEARCHED
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42")
         assert ctx.worktree_dir is None
         step = AssessStep()
 
@@ -1914,28 +1915,28 @@ class TestAssessStepDivergence:
 
 
 class TestWorktreeStep:
-    async def test_creates_worktree(self) -> None:
+    async def test_creates_worktree(self, tmp_path: Path) -> None:
         from sova.core.steps.create_worktree import WorktreeStep
 
-        ctx = _make_ctx(issue_number="42", branch_name="feat/test")
+        ctx = _make_ctx(tmp_path, issue_number="42", branch_name="feat/test")
         step = WorktreeStep()
 
         with patch("sova.core.steps.create_worktree.worktree") as mock_wt:
             mock_info = MagicMock()
-            mock_info.path = Path("/tmp/test/.claude/worktrees/42")
+            mock_info.path = tmp_path / ".claude" / "worktrees" / "42"
             mock_wt.create_worktree = AsyncMock(return_value=mock_info)
             result = await step.execute(ctx)
 
         assert result.success
-        assert ctx.worktree_dir == Path("/tmp/test/.claude/worktrees/42")
+        assert ctx.worktree_dir == tmp_path / ".claude" / "worktrees" / "42"
 
-    async def test_clears_stale_check_cache_marker(self) -> None:
+    async def test_clears_stale_check_cache_marker(self, tmp_path: Path) -> None:
         """A worktree reused across cycles (same path, different issue/branch) must
         not inherit a check-cache marker whose hash happens to coincidentally match
         the new cycle's content."""
         from sova.core.steps.create_worktree import WorktreeStep
 
-        ctx = _make_ctx(issue_number="42", branch_name="feat/test")
+        ctx = _make_ctx(tmp_path, issue_number="42", branch_name="feat/test")
         step = WorktreeStep()
 
         with (
@@ -1943,39 +1944,39 @@ class TestWorktreeStep:
             patch("sova.core.steps.create_worktree.clear_marker") as mock_clear,
         ):
             mock_info = MagicMock()
-            mock_info.path = Path("/tmp/test/.claude/worktrees/42")
+            mock_info.path = tmp_path / ".claude" / "worktrees" / "42"
             mock_wt.create_worktree = AsyncMock(return_value=mock_info)
             await step.execute(ctx)
 
-        mock_clear.assert_called_once_with(Path("/tmp/test/.claude/worktrees/42"))
+        mock_clear.assert_called_once_with(tmp_path / ".claude" / "worktrees" / "42")
 
 
 class TestEnsureWorktreeStep:
-    async def test_skips_when_worktree_exists(self) -> None:
+    async def test_skips_when_worktree_exists(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
-        wt = Path("/tmp/test/.claude/worktrees/42")
-        ctx = _make_ctx(worktree_dir=wt, branch_name="feat/issue-42")
+        wt = tmp_path / ".claude" / "worktrees" / "42"
+        ctx = _make_ctx(tmp_path, worktree_dir=wt, branch_name="feat/issue-42")
         step = EnsureWorktreeStep()
 
         with patch.object(Path, "exists", return_value=True):
             assert await step.can_skip(ctx) is True
 
-    async def test_fails_without_branch_name(self) -> None:
+    async def test_fails_without_branch_name(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
-        ctx = _make_ctx(branch_name="")
+        ctx = _make_ctx(tmp_path, branch_name="")
         step = EnsureWorktreeStep()
         result = await step.execute(ctx)
         assert not result.success
         assert "branch_name" in result.error
 
-    async def test_finds_existing_worktree_by_branch(self) -> None:
+    async def test_finds_existing_worktree_by_branch(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
-        ctx = _make_ctx(branch_name="feat/issue-42", project_dir=Path("/tmp/proj"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42", project_dir=tmp_path / "proj")
         step = EnsureWorktreeStep()
-        wt_path = Path("/tmp/proj/.claude/worktrees/42")
+        wt_path = tmp_path / "proj" / ".claude" / "worktrees" / "42"
 
         with patch(
             "sova.core.steps.ensure_worktree.find_worktree_by_branch",
@@ -1987,17 +1988,18 @@ class TestEnsureWorktreeStep:
         assert result.success
         assert ctx.worktree_dir == wt_path
 
-    async def test_creates_worktree_for_pr(self) -> None:
+    async def test_creates_worktree_for_pr(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
         ctx = _make_ctx(
+            tmp_path,
             issue_number="",
             pr_number=55,
             branch_name="fix/standalone",
-            project_dir=Path("/tmp/proj"),
+            project_dir=tmp_path / "proj",
         )
         step = EnsureWorktreeStep()
-        wt_path = Path("/tmp/proj/.claude/worktrees/pr-55")
+        wt_path = tmp_path / "proj" / ".claude" / "worktrees" / "pr-55"
 
         with (
             patch(
@@ -2027,11 +2029,12 @@ class TestEnsureWorktreeStep:
         call_kwargs = mock_create.call_args
         assert call_kwargs[1]["issue_id"] == "pr-55"
 
-    async def test_rejects_project_dir_as_worktree(self) -> None:
+    async def test_rejects_project_dir_as_worktree(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
-        project = Path("/tmp/proj")
+        project = tmp_path / "proj"
         ctx = _make_ctx(
+            tmp_path,
             worktree_dir=project,
             branch_name="feat/issue-42",
             project_dir=project,
@@ -2044,12 +2047,13 @@ class TestEnsureWorktreeStep:
         ):
             assert await step.can_skip(ctx) is False
 
-    async def test_clears_project_dir_worktree_and_discovers(self) -> None:
+    async def test_clears_project_dir_worktree_and_discovers(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
-        project = Path("/tmp/proj")
-        wt_path = Path("/tmp/proj/.claude/worktrees/42")
+        project = tmp_path / "proj"
+        wt_path = tmp_path / "proj" / ".claude" / "worktrees" / "42"
         ctx = _make_ctx(
+            tmp_path,
             worktree_dir=project,
             branch_name="feat/issue-42",
             project_dir=project,
@@ -2066,11 +2070,11 @@ class TestEnsureWorktreeStep:
         assert result.success
         assert ctx.worktree_dir == wt_path
 
-    async def test_validate_output_rejects_project_dir(self) -> None:
+    async def test_validate_output_rejects_project_dir(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
-        project = Path("/tmp/proj")
-        ctx = _make_ctx(worktree_dir=project, project_dir=project)
+        project = tmp_path / "proj"
+        ctx = _make_ctx(tmp_path, worktree_dir=project, project_dir=project)
         step = EnsureWorktreeStep()
 
         with patch.object(Path, "exists", return_value=True):
@@ -2079,40 +2083,40 @@ class TestEnsureWorktreeStep:
         assert not gate.passed
         assert "project root" in gate.reason
 
-    async def test_resolve_base_branch_prefers_local(self) -> None:
+    async def test_resolve_base_branch_prefers_local(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
         mock_result = MagicMock(success=True, stdout="abc123\n")
         with patch("sova.core.steps.ensure_worktree.run", new_callable=AsyncMock, return_value=mock_result):
-            branch = await EnsureWorktreeStep._resolve_base_branch("feat/test", Path("/tmp"))
+            branch = await EnsureWorktreeStep._resolve_base_branch("feat/test", tmp_path)
 
         assert branch == "feat/test"
 
-    async def test_resolve_base_branch_falls_back_to_origin(self) -> None:
+    async def test_resolve_base_branch_falls_back_to_origin(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
         fail = MagicMock(success=False)
         ok = MagicMock(success=True, stdout="abc123\n")
         with patch("sova.core.steps.ensure_worktree.run", new_callable=AsyncMock, side_effect=[fail, ok]):
-            branch = await EnsureWorktreeStep._resolve_base_branch("feat/test", Path("/tmp"))
+            branch = await EnsureWorktreeStep._resolve_base_branch("feat/test", tmp_path)
 
         assert branch == "origin/feat/test"
 
-    async def test_resolve_base_branch_returns_name_when_unresolved(self) -> None:
+    async def test_resolve_base_branch_returns_name_when_unresolved(self, tmp_path: Path) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 
         fail = MagicMock(success=False)
         with patch("sova.core.steps.ensure_worktree.run", new_callable=AsyncMock, return_value=fail):
-            branch = await EnsureWorktreeStep._resolve_base_branch("feat/test", Path("/tmp"))
+            branch = await EnsureWorktreeStep._resolve_base_branch("feat/test", tmp_path)
 
         assert branch == "feat/test"
 
 
 class TestDevelopStep:
-    async def test_gate_check_requires_code_changes(self) -> None:
+    async def test_gate_check_requires_code_changes(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2122,10 +2126,10 @@ class TestDevelopStep:
         assert not gate.passed
         assert "no code changes" in gate.reason.lower()
 
-    async def test_gate_check_passes_with_changes(self) -> None:
+    async def test_gate_check_passes_with_changes(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2137,11 +2141,11 @@ class TestDevelopStep:
 
         assert gate.passed
 
-    async def test_gate_check_passes_with_only_untracked_files(self) -> None:
+    async def test_gate_check_passes_with_only_untracked_files(self, tmp_path: Path) -> None:
         """Gate must pass when Claude wrote new files but never staged them."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2155,11 +2159,11 @@ class TestDevelopStep:
 
         assert gate.passed
 
-    async def test_gate_check_fails_with_all_signals_empty(self) -> None:
+    async def test_gate_check_fails_with_all_signals_empty(self, tmp_path: Path) -> None:
         """Gate must fail when no diffs, no commits, and no untracked files exist."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2174,11 +2178,11 @@ class TestDevelopStep:
         assert not gate.passed
         assert "no code changes" in gate.reason.lower()
 
-    async def test_gate_check_ignores_non_untracked_porcelain_lines(self) -> None:
+    async def test_gate_check_ignores_non_untracked_porcelain_lines(self, tmp_path: Path) -> None:
         """Only lines starting with '??' count as untracked; modified lines do not."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2192,11 +2196,11 @@ class TestDevelopStep:
 
         assert not gate.passed
 
-    async def test_gate_check_fails_with_only_lockfile_commits(self) -> None:
+    async def test_gate_check_fails_with_only_lockfile_commits(self, tmp_path: Path) -> None:
         """Gate must fail when only lockfile/metadata files were changed (#532)."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2212,11 +2216,11 @@ class TestDevelopStep:
         assert not gate.passed
         assert "no substantive" in gate.reason.lower()
 
-    async def test_gate_check_fails_with_only_metadata_commits(self) -> None:
+    async def test_gate_check_fails_with_only_metadata_commits(self, tmp_path: Path) -> None:
         """Gate must fail when only .sova/ or package-lock.json files changed (#532)."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2234,11 +2238,11 @@ class TestDevelopStep:
 
         assert not gate.passed
 
-    async def test_gate_check_passes_with_mixed_lockfile_and_source(self) -> None:
+    async def test_gate_check_passes_with_mixed_lockfile_and_source(self, tmp_path: Path) -> None:
         """Gate must pass when lockfile changes accompany real source changes."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2256,11 +2260,11 @@ class TestDevelopStep:
 
         assert gate.passed
 
-    async def test_gate_check_passes_with_only_source_commits(self) -> None:
+    async def test_gate_check_passes_with_only_source_commits(self, tmp_path: Path) -> None:
         """Gate must pass when commits contain only source code changes."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2275,11 +2279,11 @@ class TestDevelopStep:
 
         assert gate.passed
 
-    async def test_gate_check_still_passes_with_unstaged_changes(self) -> None:
+    async def test_gate_check_still_passes_with_unstaged_changes(self, tmp_path: Path) -> None:
         """When there are unstaged source file changes, the gate passes."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2295,11 +2299,11 @@ class TestDevelopStep:
 
         assert gate.passed
 
-    async def test_gate_check_fails_with_only_unstaged_lockfile(self) -> None:
+    async def test_gate_check_fails_with_only_unstaged_lockfile(self, tmp_path: Path) -> None:
         """Gate must fail when only unstaged lockfile changes exist."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2316,11 +2320,11 @@ class TestDevelopStep:
         assert not gate.passed
         assert "no substantive" in gate.reason.lower()
 
-    async def test_gate_check_fails_with_only_untracked_metadata(self) -> None:
+    async def test_gate_check_fails_with_only_untracked_metadata(self, tmp_path: Path) -> None:
         """Gate must fail when only untracked .sova/ or .claude/ metadata exists."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2335,11 +2339,11 @@ class TestDevelopStep:
         assert not gate.passed
         assert "no substantive" in gate.reason.lower()
 
-    async def test_gate_check_passes_with_mixed_unstaged_lockfile_and_source(self) -> None:
+    async def test_gate_check_passes_with_mixed_unstaged_lockfile_and_source(self, tmp_path: Path) -> None:
         """Gate must pass when unstaged lockfile changes accompany source changes."""
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run") as mock_run:
@@ -2357,10 +2361,10 @@ class TestDevelopStep:
 
 
 class TestCommitStep:
-    async def test_commits_uncommitted_changes(self) -> None:
+    async def test_commits_uncommitted_changes(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         ctx.task = Task(id="73", title="LLM provider abstraction")
         step = CommitStep()
 
@@ -2383,13 +2387,13 @@ class TestCommitStep:
         assert "Closes #42" in msg
         assert mock_commit.call_args.kwargs["no_verify"] is False
 
-    async def test_skips_hooks_when_budget_critically_low(self) -> None:
+    async def test_skips_hooks_when_budget_critically_low(self, tmp_path: Path) -> None:
         """Below the 8% threshold, commit passes no_verify=True to preserve work."""
         from sova.config.models import AgentConfig
         from sova.core.steps.commit import CommitStep
 
         config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"), config=config)
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree", config=config)
         ctx.cost_usd = Decimal("9.50")  # 5% remaining, below 8% threshold
         ctx.task = Task(id="73", title="LLM provider abstraction")
         step = CommitStep()
@@ -2409,11 +2413,11 @@ class TestCommitStep:
         assert result.success
         assert mock_commit.call_args.kwargs["no_verify"] is True
 
-    async def test_normalizes_double_prefixed_task_title(self) -> None:
+    async def test_normalizes_double_prefixed_task_title(self, tmp_path: Path) -> None:
         """Generated commit messages should not contain duplicate conventional prefixes."""
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         ctx.task = Task(id="73", title="feat(core): validate commit messages")
         step = CommitStep()
 
@@ -2435,11 +2439,11 @@ class TestCommitStep:
         assert "feat(core): feat(core):" not in msg
         assert "Closes #42" in msg
 
-    async def test_normalizes_scope_with_digits(self) -> None:
+    async def test_normalizes_scope_with_digits(self, tmp_path: Path) -> None:
         """Generated commit messages should normalize scopes containing digits."""
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         ctx.task = Task(id="73", title="feat(api2): validate commit messages")
         step = CommitStep()
 
@@ -2460,10 +2464,10 @@ class TestCommitStep:
         assert msg.startswith("feat(core): validate commit messages")
         assert "Closes #42" in msg
 
-    async def test_skips_when_already_committed(self) -> None:
+    async def test_skips_when_already_committed(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = CommitStep()
 
         with patch("sova.core.steps.commit.run") as mock_run:
@@ -2478,10 +2482,10 @@ class TestCommitStep:
         assert result.success
         assert "already exist" in result.summary
 
-    async def test_fails_when_no_changes_and_no_commits(self) -> None:
+    async def test_fails_when_no_changes_and_no_commits(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = CommitStep()
 
         with patch("sova.core.steps.commit.run") as mock_run:
@@ -2495,10 +2499,10 @@ class TestCommitStep:
 
         assert not result.success
 
-    async def test_gate_requires_commits_ahead(self) -> None:
+    async def test_gate_requires_commits_ahead(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = CommitStep()
 
         with patch("sova.core.steps.commit.run") as mock_run:
@@ -2507,10 +2511,10 @@ class TestCommitStep:
 
         assert not gate.passed
 
-    async def test_gate_passes_with_commits(self) -> None:
+    async def test_gate_passes_with_commits(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = CommitStep()
 
         with patch("sova.core.steps.commit.run") as mock_run:
@@ -2519,12 +2523,13 @@ class TestCommitStep:
 
         assert gate.passed
 
-    async def test_address_review_uses_fix_prefix(self) -> None:
+    async def test_address_review_uses_fix_prefix(self, tmp_path: Path) -> None:
         """Address-review commits should use 'fix:' not 'feat:'."""
         from sova.core.steps.commit import CommitStep
 
         ctx = _make_ctx(
-            worktree_dir=Path("/tmp/worktree"),
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
             pr_number=130,
             completed_steps=frozenset({"address_review"}),
         )
@@ -2548,11 +2553,11 @@ class TestCommitStep:
         assert "issue 42" in msg
         assert "Closes" not in msg
 
-    async def test_developer_commit_without_task_uses_issue_number(self) -> None:
+    async def test_developer_commit_without_task_uses_issue_number(self, tmp_path: Path) -> None:
         """When ctx.task is None (no adapter fetch), falls back to issue number."""
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         ctx.task = None
         step = CommitStep()
 
@@ -2585,10 +2590,10 @@ class TestValidateStep:
         ):
             yield
 
-    async def test_skips_when_no_hook(self) -> None:
+    async def test_skips_when_no_hook(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = ValidateStep()
 
         with patch("sova.core.steps.validate.run") as mock_run:
@@ -2602,10 +2607,10 @@ class TestValidateStep:
         assert result.success
         assert "no pre-push hook" in result.summary.lower()
 
-    async def test_passes_when_hook_succeeds(self) -> None:
+    async def test_passes_when_hook_succeeds(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = ValidateStep()
 
         with patch("sova.core.steps.validate.run") as mock_run:
@@ -2619,11 +2624,11 @@ class TestValidateStep:
         assert result.success
         assert "passed" in result.summary.lower()
 
-    async def test_invokes_llm_on_hook_failure(self) -> None:
+    async def test_invokes_llm_on_hook_failure(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = ValidateStep()
 
         with (
@@ -2650,11 +2655,11 @@ class TestValidateStep:
         mock_invoke.assert_awaited_once()
         assert "missing type hints" in mock_invoke.call_args[1].get("prompt", mock_invoke.call_args[0][1])
 
-    async def test_fails_after_max_attempts(self) -> None:
+    async def test_fails_after_max_attempts(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = ValidateStep()
 
         with (
@@ -2679,13 +2684,13 @@ class TestValidateStep:
         assert "still failing" in result.summary.lower()
         assert mock_invoke.await_count == 2
 
-    async def test_llm_timeout_produces_distinct_marker(self) -> None:
+    async def test_llm_timeout_produces_distinct_marker(self, tmp_path: Path) -> None:
         """A fix-LLM timeout must be tagged distinctly from a generic RuntimeError
         and from the unrelated step_hard_timeout string (issue #977)."""
         from sova.core.steps.validate import ValidateStep
         from sova.llm.errors import LLMTimeoutError
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = ValidateStep()
 
         with (
@@ -2707,13 +2712,13 @@ class TestValidateStep:
         assert result.error.startswith("fix_llm_timeout on cycle 1:")
         assert result.error != "step_hard_timeout"
 
-    async def test_low_budget_fraction_stops_retry_without_failing(self) -> None:
+    async def test_low_budget_fraction_stops_retry_without_failing(self, tmp_path: Path) -> None:
         """Below the 20% threshold, the fix loop stops retrying but reports success."""
         from sova.config.models import AgentConfig
         from sova.core.steps.validate import ValidateStep
 
         config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"), config=config)
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree", config=config)
         ctx.cost_usd = Decimal("8.50")  # 15% remaining, below 20% threshold
         step = ValidateStep()
 
@@ -2732,10 +2737,10 @@ class TestValidateStep:
         assert "stopping fix retries" in result.summary
         mock_invoke.assert_not_awaited()
 
-    async def test_gate_requires_commits(self) -> None:
+    async def test_gate_requires_commits(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = ValidateStep()
 
         with patch("sova.core.steps.validate.run") as mock_run:
@@ -2744,10 +2749,10 @@ class TestValidateStep:
 
         assert not gate.passed
 
-    async def test_gate_passes_with_commits(self) -> None:
+    async def test_gate_passes_with_commits(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = ValidateStep()
 
         with patch("sova.core.steps.validate.run") as mock_run:
@@ -2803,11 +2808,11 @@ class TestValidateStep:
 
         assert _truncate_hook_output("") == ""
 
-    async def test_llm_prompt_uses_truncated_output(self) -> None:
+    async def test_llm_prompt_uses_truncated_output(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import _HOOK_OUTPUT_LIMIT, ValidateStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = ValidateStep()
         large_output = "HEADER\n" * 2000 + "ACTUAL ERROR"
 
@@ -2834,11 +2839,11 @@ class TestValidateStep:
         code_block = prompt.split("```\n")[1].split("\n```")[0]
         assert len(code_block) <= _HOOK_OUTPUT_LIMIT + 100
 
-    async def test_retry_path_also_truncates(self) -> None:
+    async def test_retry_path_also_truncates(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import _HOOK_OUTPUT_LIMIT, ValidateStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = ValidateStep()
         large_retry_output = "Z" * 10000 + "RETRY_ERROR"
 
@@ -2868,10 +2873,10 @@ class TestValidateStep:
 
 
 class TestPushStep:
-    async def test_gate_check_requires_commits_ahead(self) -> None:
+    async def test_gate_check_requires_commits_ahead(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with patch("sova.core.steps.push.run") as mock_run:
@@ -2882,18 +2887,18 @@ class TestPushStep:
 
 
 class TestCreatePRStep:
-    async def test_gate_check_requires_pr_number(self) -> None:
+    async def test_gate_check_requires_pr_number(self, tmp_path: Path) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
-        ctx = _make_ctx(pr_number=None)
+        ctx = _make_ctx(tmp_path, pr_number=None)
         step = CreatePRStep()
         gate = await step.validate_output(ctx)
         assert not gate.passed
 
-    async def test_gate_check_passes_with_pr(self) -> None:
+    async def test_gate_check_passes_with_pr(self, tmp_path: Path) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
-        ctx = _make_ctx(pr_number=99)
+        ctx = _make_ctx(tmp_path, pr_number=99)
         step = CreatePRStep()
         gate = await step.validate_output(ctx)
         assert gate.passed
@@ -2902,7 +2907,14 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_generates_structured_body(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_execute_generates_structured_body(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -2919,6 +2931,7 @@ class TestCreatePRStep:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(
+            tmp_path,
             adapter=adapter,
             task=Task(id="42", title="Add widget", body="We need a widget"),
             branch_name="feat/issue-42",
@@ -2936,7 +2949,14 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_includes_closes_for_issue(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_execute_includes_closes_for_issue(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -2949,7 +2969,7 @@ class TestCreatePRStep:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=12, url="https://github.com/x/y/pull/12")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         step = CreatePRStep()
         await step.execute(ctx)
 
@@ -2961,7 +2981,12 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_execute_appends_closes_for_bare_issue_mention(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
     ) -> None:
         """A bare '#42' mention (no Closes/Fixes/Resolves keyword) does not count as closing the issue."""
         from sova.core.steps.create_pr import CreatePRStep
@@ -2978,7 +3003,7 @@ class TestCreatePRStep:
         )
         mock_create_pr.return_value = MagicMock(number=13, url="https://github.com/x/y/pull/13")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         step = CreatePRStep()
         await step.execute(ctx)
 
@@ -2991,7 +3016,12 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_execute_appends_closes_even_when_body_closes_a_different_issue(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
     ) -> None:
         """A stacked PR's body can legitimately close a different issue; ours still gets appended."""
         from sova.core.steps.create_pr import CreatePRStep
@@ -3008,7 +3038,7 @@ class TestCreatePRStep:
         )
         mock_create_pr.return_value = MagicMock(number=14, url="https://github.com/x/y/pull/14")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         step = CreatePRStep()
         await step.execute(ctx)
 
@@ -3020,7 +3050,14 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_body_includes_commits_and_diff(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_execute_body_includes_commits_and_diff(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -3040,6 +3077,7 @@ class TestCreatePRStep:
         mock_create_pr.return_value = MagicMock(number=11, url="https://github.com/x/y/pull/11")
 
         ctx = _make_ctx(
+            tmp_path,
             branch_name="feat/issue-42",
             task=Task(id="42", title="Add widget", body="We need a widget"),
         )
@@ -3058,7 +3096,14 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_assigns_pr_to_user(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_execute_assigns_pr_to_user(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -3072,7 +3117,7 @@ class TestCreatePRStep:
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42")
         ctx.config = ProjectConfig(github_user="xsovad06")
         step = CreatePRStep()
 
@@ -3092,6 +3137,7 @@ class TestCreatePRStep:
         mock_run,
         mock_invoke,
         _find,
+        tmp_path: Path,
     ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -3105,7 +3151,7 @@ class TestCreatePRStep:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         ctx.config = ProjectConfig(github_user="")
         step = CreatePRStep()
 
@@ -3116,13 +3162,13 @@ class TestCreatePRStep:
         mock_assign.assert_not_awaited()
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock)
-    async def test_execute_adopts_existing_pr(self, mock_find) -> None:
+    async def test_execute_adopts_existing_pr(self, mock_find, tmp_path: Path) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_find.return_value = MagicMock(number=55, url="https://github.com/x/y/pull/55")
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -3132,14 +3178,14 @@ class TestCreatePRStep:
         assert ctx.pr_url == "https://github.com/x/y/pull/55"
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock)
-    async def test_execute_transitions_to_in_review_on_adopt(self, mock_find) -> None:
+    async def test_execute_transitions_to_in_review_on_adopt(self, mock_find, tmp_path: Path) -> None:
         """Adopting an existing PR must still transition issue to IN_REVIEW."""
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_find.return_value = MagicMock(number=55, url="https://github.com/x/y/pull/55")
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42")
         step = CreatePRStep()
         await step.execute(ctx)
 
@@ -3150,7 +3196,12 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_execute_adopts_pr_from_already_exists_error(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
     ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -3168,7 +3219,7 @@ class TestCreatePRStep:
         )
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-48809")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-48809")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -3181,7 +3232,12 @@ class TestCreatePRStep:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_execute_fails_on_non_duplicate_runtime_error(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
     ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -3195,7 +3251,7 @@ class TestCreatePRStep:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.side_effect = RuntimeError("permission denied")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -3210,7 +3266,14 @@ class TestCreatePRStepJira:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_jira_pr_title_has_ticket_prefix(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_jira_pr_title_has_ticket_prefix(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -3224,6 +3287,7 @@ class TestCreatePRStepJira:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(
+            tmp_path,
             adapter=adapter,
             task=Task(id="48928", title="Improve parity check log output"),
             issue_number="48928",
@@ -3247,7 +3311,14 @@ class TestCreatePRStepJira:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_jira_pr_body_has_ticket_link(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_jira_pr_body_has_ticket_link(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -3261,6 +3332,7 @@ class TestCreatePRStepJira:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(
+            tmp_path,
             adapter=adapter,
             task=Task(id="48928", title="Improve parity check log output"),
             issue_number="48928",
@@ -3284,7 +3356,14 @@ class TestCreatePRStepJira:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_jira_fallback_body_has_ticket_link(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_jira_fallback_body_has_ticket_link(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_run.side_effect = [
@@ -3297,6 +3376,7 @@ class TestCreatePRStepJira:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(
+            tmp_path,
             adapter=adapter,
             task=Task(id="48928", title="Improve parity check log output"),
             issue_number="48928",
@@ -3321,7 +3401,12 @@ class TestCreatePRStepJira:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_github_pr_title_uses_inferred_scope_not_issue_number(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
     ) -> None:
         """GitHub titles use a valid conventional scope, never feat(#N): (no JIRA prefix)."""
         from sova.core.steps.create_pr import CreatePRStep
@@ -3341,7 +3426,7 @@ class TestCreatePRStepJira:
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42")
         ctx.config = ProjectConfig(task_source=TaskSourceConfig(type="github"))
         step = CreatePRStep()
         await step.execute(ctx)
@@ -3359,7 +3444,14 @@ class TestCreatePRStepJiraPrompt:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_jira_prompt_has_no_closes_syntax(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_jira_prompt_has_no_closes_syntax(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         """The LLM prompt for JIRA projects should not contain Closes #N."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -3373,6 +3465,7 @@ class TestCreatePRStepJiraPrompt:
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         ctx = _make_ctx(
+            tmp_path,
             task=Task(id="48928", title="Improve output"),
             issue_number="48928",
             branch_name="feat/RHCLOUD-48928-improve-output",
@@ -3397,7 +3490,14 @@ class TestCreatePRStepJiraPrompt:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_branch_fallback_title_strips_prefixes(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_branch_fallback_title_strips_prefixes(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         """When task.title is missing, branch name should be cleaned for PR title."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -3413,6 +3513,7 @@ class TestCreatePRStepJiraPrompt:
         adapter = _mock_adapter()
         adapter.get_task.side_effect = RuntimeError("unavailable")
         ctx = _make_ctx(
+            tmp_path,
             adapter=adapter,
             task=None,
             issue_number="48928",
@@ -3440,7 +3541,14 @@ class TestCreatePRStepDiffContent:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_prompt_includes_actual_diff_content(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_prompt_includes_actual_diff_content(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         """The LLM prompt must include actual diff content, not just --stat."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -3458,6 +3566,7 @@ class TestCreatePRStepDiffContent:
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         ctx = _make_ctx(
+            tmp_path,
             branch_name="feat/issue-42",
             task=Task(id="42", title="Add widget", body="We need a widget"),
         )
@@ -3473,7 +3582,7 @@ class TestCreatePRStepDiffContent:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_large_diff_is_truncated(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_large_diff_is_truncated(self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path) -> None:
         """Large diffs should be truncated to avoid exceeding LLM context."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -3488,7 +3597,7 @@ class TestCreatePRStepDiffContent:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Add widget"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42", task=Task(id="42", title="Add widget"))
         step = CreatePRStep()
         await step.execute(ctx)
 
@@ -3502,7 +3611,14 @@ class TestCreatePRStepDiffContent:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_prompt_truncates_issue_body(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_prompt_truncates_issue_body(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         """Issue body should be truncated in the prompt to avoid over-weighting it."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -3517,7 +3633,7 @@ class TestCreatePRStepDiffContent:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Title", body=long_body))
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42", task=Task(id="42", title="Title", body=long_body))
         step = CreatePRStep()
         await step.execute(ctx)
 
@@ -3527,12 +3643,11 @@ class TestCreatePRStepDiffContent:
 
 
 class TestHandoffToReviewerStep:
-    async def test_writes_handoff_and_succeeds(self) -> None:
+    async def test_writes_handoff_and_succeeds(self, tmp_path: Path) -> None:
         from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=42)
-        ctx.project_dir = Path("/tmp/test-handoff")
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=42)
         step = HandoffToReviewerStep()
 
         with (
@@ -3551,14 +3666,13 @@ class TestHandoffToReviewerStep:
         assert handoff.next_actions[0].auto_execute is True
         assert handoff.next_actions[0].mode == "agent"
 
-    async def test_auto_execute_disabled_by_config(self) -> None:
+    async def test_auto_execute_disabled_by_config(self, tmp_path: Path) -> None:
         from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 
         config = ProjectConfig()
         config.pipeline.auto_handoff = False
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=42, config=config)
-        ctx.project_dir = Path("/tmp/test-handoff")
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=42, config=config)
         step = HandoffToReviewerStep()
 
         with (
@@ -3572,21 +3686,20 @@ class TestHandoffToReviewerStep:
         handoff = mock_file.call_args[0][1]
         assert handoff.next_actions[0].auto_execute is False
 
-    async def test_can_skip_when_completed(self) -> None:
+    async def test_can_skip_when_completed(self, tmp_path: Path) -> None:
         from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 
-        ctx = _make_ctx(completed_steps=frozenset({"handoff_to_reviewer"}))
+        ctx = _make_ctx(tmp_path, completed_steps=frozenset({"handoff_to_reviewer"}))
         step = HandoffToReviewerStep()
         assert await step.can_skip(ctx)
 
     @staticmethod
-    async def _handoff_with_score(score: int, *, gate_enabled: bool = True):
+    async def _handoff_with_score(tmp_path: Path, score: int, *, gate_enabled: bool = True):
         """Run the step with a confidence score set and return the written handoff."""
         from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 
         config = ProjectConfig(confidence={"enabled": True, "gate_enabled": gate_enabled})
-        ctx = _make_ctx(adapter=_mock_adapter(), pr_number=42, config=config)
-        ctx.project_dir = Path("/tmp/test-handoff")
+        ctx = _make_ctx(tmp_path, adapter=_mock_adapter(), pr_number=42, config=config)
         ctx.confidence_score = score
 
         with (
@@ -3598,8 +3711,8 @@ class TestHandoffToReviewerStep:
 
         return mock_file.call_args[0][1]
 
-    async def test_critical_score_forces_manual_review_when_gate_enabled(self) -> None:
-        handoff = await self._handoff_with_score(40)
+    async def test_critical_score_forces_manual_review_when_gate_enabled(self, tmp_path: Path) -> None:
+        handoff = await self._handoff_with_score(tmp_path, 40)
 
         assert len(handoff.next_actions) == 1
         review_action = handoff.next_actions[0]
@@ -3607,8 +3720,8 @@ class TestHandoffToReviewerStep:
         assert "40/100" in review_action.description
         assert "critical risk" in review_action.description
 
-    async def test_low_score_forces_manual_review_when_gate_enabled(self) -> None:
-        handoff = await self._handoff_with_score(55)
+    async def test_low_score_forces_manual_review_when_gate_enabled(self, tmp_path: Path) -> None:
+        handoff = await self._handoff_with_score(tmp_path, 55)
 
         assert len(handoff.next_actions) == 1
         review_action = handoff.next_actions[0]
@@ -3616,8 +3729,8 @@ class TestHandoffToReviewerStep:
         assert "55/100" in review_action.description
         assert "below review threshold" in review_action.description
 
-    async def test_high_score_adds_integrate_action_when_gate_enabled(self) -> None:
-        handoff = await self._handoff_with_score(90)
+    async def test_high_score_adds_integrate_action_when_gate_enabled(self, tmp_path: Path) -> None:
+        handoff = await self._handoff_with_score(tmp_path, 90)
 
         assert {a.id for a in handoff.next_actions} == {"review", "integrate"}
         integrate_action = next(a for a in handoff.next_actions if a.id == "integrate")
@@ -3628,27 +3741,26 @@ class TestHandoffToReviewerStep:
         assert review_action.auto_execute is False
         assert "90/100" in review_action.description
 
-    async def test_mid_score_leaves_routing_unaffected_when_gate_enabled(self) -> None:
-        handoff = await self._handoff_with_score(70)
+    async def test_mid_score_leaves_routing_unaffected_when_gate_enabled(self, tmp_path: Path) -> None:
+        handoff = await self._handoff_with_score(tmp_path, 70)
 
         assert len(handoff.next_actions) == 1
         review_action = handoff.next_actions[0]
         assert review_action.auto_execute is True
         assert "70/100" in review_action.description
 
-    async def test_score_ignored_when_gate_disabled(self) -> None:
-        handoff = await self._handoff_with_score(10, gate_enabled=False)
+    async def test_score_ignored_when_gate_disabled(self, tmp_path: Path) -> None:
+        handoff = await self._handoff_with_score(tmp_path, 10, gate_enabled=False)
 
         assert len(handoff.next_actions) == 1
         assert handoff.next_actions[0].auto_execute is True
 
 
 class TestHandoffToUserStep:
-    async def test_writes_handoff_with_integrate_actions(self) -> None:
+    async def test_writes_handoff_with_integrate_actions(self, tmp_path: Path) -> None:
         from sova.core.steps.handoff_to_user import HandoffToUserStep
 
-        ctx = _make_ctx(pr_number=42)
-        ctx.project_dir = Path("/tmp/test-handoff")
+        ctx = _make_ctx(tmp_path, pr_number=42)
         step = HandoffToUserStep()
 
         with (
@@ -3666,11 +3778,11 @@ class TestHandoffToUserStep:
 
 
 class TestAddressReviewStep:
-    async def test_no_findings_returns_success(self) -> None:
+    async def test_no_findings_returns_success(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep
 
-        ctx = _make_ctx(pr_number=42)
-        ctx.project_dir = Path("/tmp/nonexistent")
+        ctx = _make_ctx(tmp_path, pr_number=42)
+        ctx.project_dir = tmp_path / "nonexistent"
         step = AddressReviewStep()
 
         with (
@@ -3689,10 +3801,10 @@ class TestAddressReviewStep:
 
 
 class TestRearrangeCommitsStep:
-    async def test_execute_invokes_rearrange_command(self) -> None:
+    async def test_execute_invokes_rearrange_command(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as mock_invoke:
@@ -3713,10 +3825,10 @@ class TestRearrangeCommitsStep:
             ctx=ctx,
         )
 
-    async def test_execute_returns_failure_on_error(self) -> None:
+    async def test_execute_returns_failure_on_error(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as mock_invoke:
@@ -3726,10 +3838,10 @@ class TestRearrangeCommitsStep:
         assert not result.success
         assert "failed" in result.summary
 
-    async def test_validate_passes_when_commits_ahead_and_clean(self) -> None:
+    async def test_validate_passes_when_commits_ahead_and_clean(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
@@ -3743,10 +3855,10 @@ class TestRearrangeCommitsStep:
 
         assert gate.passed
 
-    async def test_validate_fails_when_untracked_files_remain(self) -> None:
+    async def test_validate_fails_when_untracked_files_remain(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
@@ -3761,7 +3873,7 @@ class TestRearrangeCommitsStep:
         assert not gate.passed
         assert "Untracked" in gate.reason
 
-    async def test_validate_excludes_agent_infrastructure_pathspecs(self) -> None:
+    async def test_validate_excludes_agent_infrastructure_pathspecs(self, tmp_path: Path) -> None:
         """The diff checks must exclude .claude/ and .sova/ entirely.
 
         ensure_claude_artifacts() mirrors .claude/{commands,rules,skills} from the
@@ -3771,7 +3883,7 @@ class TestRearrangeCommitsStep:
         """
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
@@ -3815,7 +3927,7 @@ class TestRearrangeCommitsStep:
         # Inherited dirt only: a tracked .claude/ file mirrored from the primary checkout.
         (tmp_path / ".claude" / "commands" / "develop.md").write_text("rendered by a sync\n")
 
-        ctx = _make_ctx(worktree_dir=tmp_path)  # config.base_branch defaults to "main"
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=tmp_path)  # config.base_branch defaults to "main"
         gate = await RearrangeCommitsStep().validate_output(ctx)
 
         assert gate.passed, gate.reason
@@ -3841,16 +3953,16 @@ class TestRearrangeCommitsStep:
         git("commit", "-qam", "feat(core): real work")
         (tmp_path / "src.py").write_text("x = 3  # left behind\n")
 
-        ctx = _make_ctx(worktree_dir=tmp_path)  # config.base_branch defaults to "main"
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=tmp_path)  # config.base_branch defaults to "main"
         gate = await RearrangeCommitsStep().validate_output(ctx)
 
         assert not gate.passed
         assert "Uncommitted" in gate.reason
 
-    async def test_validate_fails_when_no_commits(self) -> None:
+    async def test_validate_fails_when_no_commits(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
@@ -3860,10 +3972,10 @@ class TestRearrangeCommitsStep:
         assert not gate.passed
         assert "No commits" in gate.reason
 
-    async def test_validate_fails_when_uncommitted_changes_remain(self) -> None:
+    async def test_validate_fails_when_uncommitted_changes_remain(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
@@ -3877,10 +3989,10 @@ class TestRearrangeCommitsStep:
         assert not gate.passed
         assert "Uncommitted" in gate.reason
 
-    async def test_validate_fails_when_git_status_fails(self) -> None:
+    async def test_validate_fails_when_git_status_fails(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
@@ -3895,10 +4007,10 @@ class TestRearrangeCommitsStep:
         assert not gate.passed
         assert "git status failed" in gate.reason
 
-    async def test_validate_ignores_claude_and_sova_untracked(self) -> None:
+    async def test_validate_ignores_claude_and_sova_untracked(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
@@ -3915,7 +4027,7 @@ class TestRearrangeCommitsStep:
 
         assert gate.passed
 
-    async def test_validate_ignores_mirrored_codex_skills_untracked(self) -> None:
+    async def test_validate_ignores_mirrored_codex_skills_untracked(self, tmp_path: Path) -> None:
         """A freshly-mirrored `.agents/skills/` tree (Codex's manifest and command-derived
         skills included) must not fail the gate as the agent's own leftover work. Regression
         test for the #1090 failure mode reopening: with `--untracked-files=all` git lists
@@ -3923,7 +4035,7 @@ class TestRearrangeCommitsStep:
         whole-directory `.agents/skills/` exclusion prefix can match every line."""
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
@@ -3944,10 +4056,10 @@ class TestRearrangeCommitsStep:
 
         assert gate.passed
 
-    async def test_validate_reports_untracked_filenames(self) -> None:
+    async def test_validate_reports_untracked_filenames(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
@@ -3963,18 +4075,18 @@ class TestRearrangeCommitsStep:
         assert "leftover.py" in gate.reason
         assert "extra.txt" in gate.reason
 
-    async def test_can_skip_when_already_completed(self) -> None:
+    async def test_can_skip_when_already_completed(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"), completed_steps=frozenset({"rearrange_commits"}))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree", completed_steps=frozenset({"rearrange_commits"}))
         step = RearrangeCommitsStep()
 
         assert await step.can_skip(ctx)
 
-    async def test_cannot_skip_when_not_completed(self) -> None:
+    async def test_cannot_skip_when_not_completed(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
         assert not await step.can_skip(ctx)
@@ -4031,8 +4143,8 @@ class TestStepRegistry:
 
 
 class TestWorkflowDB:
-    async def test_creates_task_run_record(self) -> None:
-        ctx = _make_ctx()
+    async def test_creates_task_run_record(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -4046,8 +4158,8 @@ class TestWorkflowDB:
             assert task_run.issue_number == "42"
             assert task_run.role == "developer"
 
-    async def test_task_run_finalized_on_success(self) -> None:
-        ctx = _make_ctx()
+    async def test_task_run_finalized_on_success(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -4059,8 +4171,8 @@ class TestWorkflowDB:
             assert task_run.status == TaskStatus.DONE.value
             assert task_run.ended_at is not None
 
-    async def test_step_execution_created(self) -> None:
-        ctx = _make_ctx()
+    async def test_step_execution_created(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -4077,8 +4189,8 @@ class TestWorkflowDB:
             assert rows[0].step_name == "dummy"
             assert rows[0].status == "done"
 
-    async def test_failure_creates_failure_record(self) -> None:
-        ctx = _make_ctx()
+    async def test_failure_creates_failure_record(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=False, gate_pass=True)
         step.max_retries = 0
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -4097,8 +4209,8 @@ class TestWorkflowDB:
             assert rows[0].failure_type == "exception"
             assert rows[0].step_name == "dummy"
 
-    async def test_gate_failure_creates_failure_record(self) -> None:
-        ctx = _make_ctx()
+    async def test_gate_failure_creates_failure_record(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=False)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -4115,9 +4227,9 @@ class TestWorkflowDB:
             assert len(rows) == 1
             assert rows[0].failure_type == "gate_check"
 
-    async def test_budget_exceeded_creates_failure_record(self) -> None:
+    async def test_budget_exceeded_creates_failure_record(self, tmp_path: Path) -> None:
         config = ProjectConfig(agent={"max_budget": Decimal("0.01")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("0.02"))
 
         step = DummyStep(should_pass=True, gate_pass=True)
@@ -4136,8 +4248,8 @@ class TestWorkflowDB:
             assert len(rows) == 1
             assert rows[0].failure_type == "budget_exceeded"
 
-    async def test_multiple_steps_create_multiple_step_executions(self) -> None:
-        ctx = _make_ctx()
+    async def test_multiple_steps_create_multiple_step_executions(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         steps = [
             DummyStep(should_pass=True, gate_pass=True),
             DummyStep(should_pass=True, gate_pass=True),
@@ -4166,9 +4278,9 @@ class TestWorkflowDB:
             assert rows[0].step_name == "step_a"
             assert rows[1].step_name == "step_b"
 
-    async def test_skipped_step_creates_step_execution(self) -> None:
+    async def test_skipped_step_creates_step_execution(self, tmp_path: Path) -> None:
         """Skipped steps create a StepExecution record with status 'skipped'."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step_a = DummyStep(should_pass=True, gate_pass=True, skip=True, name="step_a")
         step_b = DummyStep(should_pass=True, gate_pass=True, name="step_b")
         engine = WorkflowEngine(steps=[step_a, step_b], ctx=ctx)
@@ -4201,9 +4313,9 @@ class TestWorkflowDB:
             assert rows[1].step_name == "step_b"
             assert rows[1].status == "done"
 
-    async def test_skipped_step_db_failure_does_not_break_workflow(self) -> None:
+    async def test_skipped_step_db_failure_does_not_break_workflow(self, tmp_path: Path) -> None:
         """When _create_step_execution raises during a skip, the workflow continues."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step_a = DummyStep(should_pass=True, gate_pass=True, skip=True, name="step_a")
         step_b = DummyStep(should_pass=True, gate_pass=True, name="step_b")
         engine = WorkflowEngine(steps=[step_a, step_b], ctx=ctx)
@@ -4225,8 +4337,8 @@ class TestWorkflowDB:
         assert result.steps_skipped == 1
         assert result.steps_completed == 1
 
-    async def test_task_run_id_set_on_context(self) -> None:
-        ctx = _make_ctx()
+    async def test_task_run_id_set_on_context(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -4234,8 +4346,8 @@ class TestWorkflowDB:
 
         assert ctx.task_run_id is not None
 
-    async def test_resumed_from_id_stored(self) -> None:
-        ctx = _make_ctx(resume_run_id=99)
+    async def test_resumed_from_id_stored(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, resume_run_id=99)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -4246,9 +4358,9 @@ class TestWorkflowDB:
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.resumed_from_id == 99
 
-    async def test_step_in_status_map_sets_final_status(self) -> None:
+    async def test_step_in_status_map_sets_final_status(self, tmp_path: Path) -> None:
         """A step whose name is in _STEP_STATUS_MAP updates final_status mid-pipeline."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step_sync = DummyStep(should_pass=True, gate_pass=True, name="sync")
         step_fail = DummyStep(should_pass=True, gate_pass=False, name="next")
         engine = WorkflowEngine(steps=[step_sync, step_fail], ctx=ctx)
@@ -4267,9 +4379,9 @@ class TestWorkflowDB:
         assert result.final_status == TaskStatus.PAUSED
         assert TaskStatus.PAUSED in status_updates
 
-    async def test_step_execute_generic_exception(self) -> None:
+    async def test_step_execute_generic_exception(self, tmp_path: Path) -> None:
         """A generic exception in step.execute() is caught and recorded."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         step.execute = AsyncMock(side_effect=ValueError("boom"))
         engine = WorkflowEngine(steps=[step], ctx=ctx)
@@ -4279,23 +4391,23 @@ class TestWorkflowDB:
         assert not result.success
         assert "boom" in (result.error or "")
 
-    async def test_step_timeout_monitor_ci(self) -> None:
+    async def test_step_timeout_monitor_ci(self, tmp_path: Path) -> None:
         """_step_timeout returns ci.max_wait + 120 for monitor_ci."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         engine = WorkflowEngine(steps=[], ctx=ctx)
 
         timeout = engine._step_timeout("monitor_ci")
 
         assert timeout == ctx.config.ci.max_wait + 120
 
-    async def test_step_timeout_regular_step(self) -> None:
+    async def test_step_timeout_regular_step(self, tmp_path: Path) -> None:
         """_step_timeout reads the per-tier fields, not the legacy step_timeout ones.
 
         Asserting against develop.step_timeout/agent.step_timeout would pass by
         coincidence today (the *_normal defaults are numerically equal to them)
         while testing nothing, and would break silently if either default moved.
         """
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.config.develop.step_timeout_normal = 1234
         ctx.config.agent.step_timeout_normal = 567
         engine = WorkflowEngine(steps=[], ctx=ctx)
@@ -4303,9 +4415,9 @@ class TestWorkflowDB:
         assert engine._step_timeout("develop") == 1234
         assert engine._step_timeout("commit") == 567
 
-    async def test_write_output_flushes_when_needed(self) -> None:
+    async def test_write_output_flushes_when_needed(self, tmp_path: Path) -> None:
         """_write_output calls flush() when should_flush() returns True."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         engine = WorkflowEngine(steps=[], ctx=ctx)
         writer = MagicMock()
         writer.should_flush.return_value = True
@@ -4317,16 +4429,16 @@ class TestWorkflowDB:
         writer.write_line.assert_called_once_with("hello")
         writer.flush.assert_awaited_once()
 
-    async def test_update_step_execution_status_none_id(self) -> None:
+    async def test_update_step_execution_status_none_id(self, tmp_path: Path) -> None:
         """_update_step_execution_status returns early when step_exec_id is None."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         engine = WorkflowEngine(steps=[], ctx=ctx)
 
         await engine._update_step_execution_status(None, "done")
 
-    async def test_update_step_execution_status_db_error(self) -> None:
+    async def test_update_step_execution_status_db_error(self, tmp_path: Path) -> None:
         """_update_step_execution_status logs warning on DB error."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         engine = WorkflowEngine(steps=[], ctx=ctx)
 
         with patch("sova.core.workflow.get_session", side_effect=RuntimeError("db down")):
@@ -4337,9 +4449,9 @@ class TestWorkflowDB:
             call_kwargs = mock_log.warning.call_args
             assert "status_update_failed" in str(call_kwargs)
 
-    async def test_write_approval_handoff_exception(self) -> None:
+    async def test_write_approval_handoff_exception(self, tmp_path: Path) -> None:
         """_write_approval_handoff logs warning when write_handoff_file raises."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         engine = WorkflowEngine(steps=[], ctx=ctx)
         result = StepResult(success=True, summary="needs approval", awaiting_approval=True)
 
@@ -4349,9 +4461,9 @@ class TestWorkflowDB:
 
             mock_log.warning.assert_called()
 
-    async def test_step_with_cost_creates_cost_record(self) -> None:
+    async def test_step_with_cost_creates_cost_record(self, tmp_path: Path) -> None:
         """When a step returns cost_usd > 0, a CostRecord is created."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
 
         async def execute_with_cost(_ctx: object) -> StepResult:
@@ -4374,11 +4486,11 @@ class TestWorkflowDB:
             assert rows[0].cost_usd == Decimal("0.05")
             assert rows[0].phase == "dummy"
 
-    async def test_finalize_task_run_preserves_existing_ended_at(self) -> None:
+    async def test_finalize_task_run_preserves_existing_ended_at(self, tmp_path: Path) -> None:
         """_finalize_task_run does not overwrite ended_at if already set."""
         from datetime import datetime, timezone
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -4404,9 +4516,9 @@ class TestWorkflowDB:
 
 
 class TestCheckpointResume:
-    async def test_completed_steps_skips_steps(self) -> None:
+    async def test_completed_steps_skips_steps(self, tmp_path: Path) -> None:
         """Steps in completed_steps are skipped via can_skip()."""
-        ctx = _make_ctx(completed_steps=frozenset({"step_a"}))
+        ctx = _make_ctx(tmp_path, completed_steps=frozenset({"step_a"}))
 
         step_a = DummyStep(should_pass=True, gate_pass=True, name="step_a")
         step_b = DummyStep(should_pass=True, gate_pass=True, name="step_b")
@@ -4418,9 +4530,9 @@ class TestCheckpointResume:
         assert result.steps_skipped == 1
         assert result.steps_completed == 1
 
-    async def test_failed_step_not_skipped(self) -> None:
+    async def test_failed_step_not_skipped(self, tmp_path: Path) -> None:
         """Steps NOT in completed_steps execute normally."""
-        ctx = _make_ctx(completed_steps=frozenset({"step_a"}))
+        ctx = _make_ctx(tmp_path, completed_steps=frozenset({"step_a"}))
 
         step_a = DummyStep(should_pass=True, gate_pass=True, name="step_a")
         step_b = DummyStep(should_pass=False, gate_pass=True, name="step_b")
@@ -4432,9 +4544,9 @@ class TestCheckpointResume:
         assert result.steps_skipped == 1
         assert result.steps_failed == 1
 
-    async def test_empty_completed_steps_runs_all(self) -> None:
+    async def test_empty_completed_steps_runs_all(self, tmp_path: Path) -> None:
         """With no completed_steps, all steps execute."""
-        ctx = _make_ctx(completed_steps=frozenset())
+        ctx = _make_ctx(tmp_path, completed_steps=frozenset())
 
         step_a = DummyStep(should_pass=True, gate_pass=True, name="step_a")
         step_b = DummyStep(should_pass=True, gate_pass=True, name="step_b")
@@ -4446,9 +4558,10 @@ class TestCheckpointResume:
         assert result.steps_skipped == 0
         assert result.steps_completed == 2
 
-    async def test_resume_preserves_cost_from_context(self) -> None:
+    async def test_resume_preserves_cost_from_context(self, tmp_path: Path) -> None:
         """Resumed run's budget check uses pre-loaded cost."""
         ctx = _make_ctx(
+            tmp_path,
             completed_steps=frozenset({"step_a"}),
             cost_usd=Decimal("100"),
         )
@@ -4478,6 +4591,7 @@ class TestContextPersistence:
         worktree = tmp_path / "wt" / "42"
         worktree.mkdir(parents=True)
         ctx = _make_ctx(
+            tmp_path,
             branch_name="feat/issue-42",
             worktree_dir=worktree,
         )
@@ -4498,6 +4612,7 @@ class TestContextPersistence:
         worktree = tmp_path / "wt" / "73"
         worktree.mkdir(parents=True)
         ctx = _make_ctx(
+            tmp_path,
             branch_name="feat/issue-73",
             worktree_dir=worktree,
         )
@@ -4518,6 +4633,7 @@ class TestContextPersistence:
         worktree = tmp_path / "wt" / "99"
         worktree.mkdir(parents=True)
         ctx = _make_ctx(
+            tmp_path,
             branch_name="fix/broken",
             worktree_dir=worktree,
         )
@@ -4540,6 +4656,7 @@ class TestContextPersistence:
         worktree.mkdir(parents=True)
         config = ProjectConfig(agent={"max_budget": Decimal("0.01")})
         ctx = _make_ctx(
+            tmp_path,
             config=config,
             branch_name="feat/expensive",
             worktree_dir=worktree,
@@ -4560,7 +4677,7 @@ class TestContextPersistence:
 
     async def test_context_updated_mid_pipeline(self, tmp_path: Path) -> None:
         """Context fields set by a middle step are persisted even if a later step fails."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         worktree = tmp_path / "wt" / "dynamic"
         worktree.mkdir(parents=True)
 
@@ -4588,9 +4705,10 @@ class TestContextPersistence:
             assert task_run.branch_name == "feat/dynamic"
             assert task_run.worktree_path == str(worktree)
 
-    async def test_pr_number_persisted_on_failure(self) -> None:
+    async def test_pr_number_persisted_on_failure(self, tmp_path: Path) -> None:
         """pr_number set during execution is saved even if a later step fails."""
         ctx = _make_ctx(
+            tmp_path,
             branch_name="feat/pr-test",
             pr_number=42,
         )
@@ -4610,6 +4728,7 @@ class TestContextPersistence:
         worktree = tmp_path / "wt" / "approval"
         worktree.mkdir(parents=True)
         ctx = _make_ctx(
+            tmp_path,
             branch_name="feat/spec-approval",
             worktree_dir=worktree,
         )
@@ -4638,9 +4757,9 @@ class TestContextPersistence:
             assert task_run.branch_name == "feat/spec-approval"
             assert task_run.worktree_path == str(worktree)
 
-    async def test_awaiting_approval_step_execution_status(self) -> None:
+    async def test_awaiting_approval_step_execution_status(self, tmp_path: Path) -> None:
         """StepExecution is marked 'awaiting_approval' (not 'done') so resume re-executes it."""
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
 
         class ApprovalStep(BaseStep):
             name = "needs_approval"
@@ -4692,10 +4811,10 @@ class TestMonitorCIStep:
         ):
             yield
 
-    async def test_passes_when_all_checks_pass(self) -> None:
+    async def test_passes_when_all_checks_pass(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -4710,12 +4829,12 @@ class TestMonitorCIStep:
         assert "1 CI checks passed" in result.summary
         mock_checks.assert_awaited_once_with("abc123def456", repo=ctx.repo, github_user=ctx.config.github_user)
 
-    async def test_fails_when_check_fails_and_fix_disabled(self) -> None:
+    async def test_fails_when_check_fails_and_fix_disabled(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.max_fix_attempts = 0
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         check = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
@@ -4730,12 +4849,12 @@ class TestMonitorCIStep:
         assert not result.success
         assert "lint" in result.summary
 
-    async def test_no_checks_passes_after_grace_period(self) -> None:
+    async def test_no_checks_passes_after_grace_period(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.no_checks_grace_period = 0
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         with (
@@ -4751,7 +4870,7 @@ class TestMonitorCIStep:
         assert "no ci checks" in result.summary.lower()
         mock_pr_checks.assert_awaited_once_with(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
 
-    async def test_sha_checks_not_registered_keeps_polling_when_pr_has_checks(self) -> None:
+    async def test_sha_checks_not_registered_keeps_polling_when_pr_has_checks(self, tmp_path: Path) -> None:
         """An empty SHA-scoped result past the grace period must not pass the
         step while the PR-level lookup reports checks exist: GitHub may simply
         not have registered the SHA-scoped checks yet (#1175 CodeRabbit review:
@@ -4764,7 +4883,7 @@ class TestMonitorCIStep:
         config.ci.no_checks_grace_period = 0
         config.ci.poll_interval = 10
         config.ci.max_wait = 20
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         with (
@@ -4787,7 +4906,7 @@ class TestMonitorCIStep:
         assert not result.success
         assert "timed out" in result.summary.lower()
 
-    async def test_exclude_checks_matching_everything_passes_after_grace_period(self) -> None:
+    async def test_exclude_checks_matching_everything_passes_after_grace_period(self, tmp_path: Path) -> None:
         """When every check on both the SHA-scoped and PR-level lookups
         matches ci.exclude_checks, the no-checks cross-check must apply the
         same exclude patterns to the PR-level result, or a project whose
@@ -4798,7 +4917,7 @@ class TestMonitorCIStep:
         config = ProjectConfig()
         config.ci.exclude_checks = ["Konflux"]
         config.ci.no_checks_grace_period = 0
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         excluded = MagicMock(is_completed=False, is_passed=False, is_failed=False)
@@ -4815,7 +4934,7 @@ class TestMonitorCIStep:
         assert result.success
         assert "no ci checks" in result.summary.lower()
 
-    async def test_pr_confirm_fetch_failure_does_not_false_pass(self) -> None:
+    async def test_pr_confirm_fetch_failure_does_not_false_pass(self, tmp_path: Path) -> None:
         """A transient failure of the PR-level cross-check lookup must not be
         read as 'confirmed no CI': that is the same silent pass the
         cross-check exists to prevent, just moved behind one failed API call.
@@ -4827,7 +4946,7 @@ class TestMonitorCIStep:
         config.ci.no_checks_grace_period = 0
         config.ci.poll_interval = 10
         config.ci.max_wait = 20
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         with (
@@ -4844,14 +4963,14 @@ class TestMonitorCIStep:
         assert not result.success
         assert "timed out" in result.summary.lower()
 
-    async def test_no_checks_waits_during_grace_period(self) -> None:
+    async def test_no_checks_waits_during_grace_period(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.no_checks_grace_period = 120
         config.ci.poll_interval = 60
         config.ci.max_wait = 180
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -4867,14 +4986,14 @@ class TestMonitorCIStep:
         assert result.success
         assert "1 CI checks passed" in result.summary
 
-    async def test_fetch_failure_does_not_false_pass(self) -> None:
+    async def test_fetch_failure_does_not_false_pass(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.no_checks_grace_period = 0
         config.ci.poll_interval = 10
         config.ci.max_wait = 30
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -4890,13 +5009,13 @@ class TestMonitorCIStep:
         assert "1 CI checks passed" in result.summary
         assert mock_checks.call_count == 3
 
-    async def test_fetch_failure_times_out(self) -> None:
+    async def test_fetch_failure_times_out(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.poll_interval = 10
         config.ci.max_wait = 20
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         with (
@@ -4911,10 +5030,10 @@ class TestMonitorCIStep:
         assert not result.success
         assert "timed out" in result.summary.lower()
 
-    async def test_fails_when_no_pr(self) -> None:
+    async def test_fails_when_no_pr(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=None)
+        ctx = _make_ctx(tmp_path, pr_number=None)
         step = MonitorCIStep()
 
         result = await step.execute(ctx)
@@ -4922,7 +5041,7 @@ class TestMonitorCIStep:
         assert not result.success
         assert "no pr" in result.summary.lower()
 
-    async def test_poll_ci_binds_to_resolved_head_sha(self) -> None:
+    async def test_poll_ci_binds_to_resolved_head_sha(self, tmp_path: Path) -> None:
         """The initial poll resolves the local HEAD SHA and scopes the lookup to it.
 
         This is the core fix for issue #1175: a PR-level check lookup can
@@ -4931,7 +5050,7 @@ class TestMonitorCIStep:
         """
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -4947,7 +5066,7 @@ class TestMonitorCIStep:
         mock_sha_checks.assert_awaited_once_with("abc123def456", repo=ctx.repo, github_user=ctx.config.github_user)
         mock_pr_checks.assert_not_awaited()
 
-    async def test_poll_ci_rebinds_when_pr_head_no_longer_matches(self) -> None:
+    async def test_poll_ci_rebinds_when_pr_head_no_longer_matches(self, tmp_path: Path) -> None:
         """If another actor updates the PR after this pipeline's push (a human
         pushing a review fix, GitHub's 'Update branch' button, a concurrent
         SOVA run), that is a benign event, not a failure of this pipeline's
@@ -4960,7 +5079,7 @@ class TestMonitorCIStep:
         config = ProjectConfig()
         config.ci.poll_interval = 10
         config.ci.max_wait = 30
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         stale_passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -4986,7 +5105,7 @@ class TestMonitorCIStep:
         mock_checks.assert_any_call("differentsha789", repo=ctx.repo, github_user=ctx.config.github_user)
         mock_sleep.assert_not_awaited()
 
-    async def test_rebind_resets_no_checks_grace_clock(self) -> None:
+    async def test_rebind_resets_no_checks_grace_clock(self, tmp_path: Path) -> None:
         """Rebinding to a new PR head must reset the no-checks grace clock,
         not just the SHA: the overall ``elapsed`` clock can already exceed
         ``no_checks_grace_period`` by the time a mismatch is confirmed (the
@@ -5003,7 +5122,7 @@ class TestMonitorCIStep:
         config.ci.poll_interval = 10
         config.ci.max_wait = 1000
         config.ci.no_checks_grace_period = 50
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         stale_passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -5036,12 +5155,12 @@ class TestMonitorCIStep:
         assert mock_checks.call_count == 3
         mock_pr_checks.assert_not_awaited()
 
-    async def test_poll_ci_falls_back_to_pr_level_when_sha_unresolved(self) -> None:
+    async def test_poll_ci_falls_back_to_pr_level_when_sha_unresolved(self, tmp_path: Path) -> None:
         """When the local HEAD SHA can't be resolved, fall back to the PR-level lookup
         instead of failing the whole step outright (design decision 4)."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -5057,10 +5176,10 @@ class TestMonitorCIStep:
         mock_sha_checks.assert_not_awaited()
         mock_pr_checks.assert_awaited_once_with(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
 
-    async def test_skipped_checks_do_not_block_or_fail(self) -> None:
+    async def test_skipped_checks_do_not_block_or_fail(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="Tests")
@@ -5075,13 +5194,13 @@ class TestMonitorCIStep:
         assert result.success
         assert "2 CI checks passed" in result.summary
 
-    async def test_exclude_checks_filters_matching(self) -> None:
+    async def test_exclude_checks_filters_matching(self, tmp_path: Path) -> None:
         """Checks matching exclude_checks patterns are ignored entirely."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.exclude_checks = ["bonfire-tekton"]
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         passed = MagicMock(is_completed=True, is_passed=True, is_failed=False)
@@ -5098,14 +5217,14 @@ class TestMonitorCIStep:
         assert result.success
         assert "1 CI checks passed" in result.summary
 
-    async def test_exclude_checks_does_not_filter_non_matching(self) -> None:
+    async def test_exclude_checks_does_not_filter_non_matching(self, tmp_path: Path) -> None:
         """Checks not matching exclude_checks patterns are still evaluated."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.exclude_checks = ["bonfire-tekton"]
         config.ci.max_fix_attempts = 0
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         failed = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
@@ -5120,11 +5239,11 @@ class TestMonitorCIStep:
         assert not result.success
         assert "lint" in result.summary
 
-    async def test_resume_skips_poll_when_ci_passed(self) -> None:
+    async def test_resume_skips_poll_when_ci_passed(self, tmp_path: Path) -> None:
         """On resume, if CI already passed, skip polling entirely."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10, resume_run_id=5)
+        ctx = _make_ctx(tmp_path, pr_number=10, resume_run_id=5)
         step = MonitorCIStep()
 
         check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -5138,13 +5257,13 @@ class TestMonitorCIStep:
         assert result.success
         assert "resumed after interruption" in result.summary
 
-    async def test_resume_skips_poll_when_ci_failed(self) -> None:
+    async def test_resume_skips_poll_when_ci_failed(self, tmp_path: Path) -> None:
         """On resume, if CI already failed, return failure immediately."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.max_fix_attempts = 0
-        ctx = _make_ctx(pr_number=10, config=config, resume_run_id=5)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config, resume_run_id=5)
         step = MonitorCIStep()
 
         check = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
@@ -5159,11 +5278,11 @@ class TestMonitorCIStep:
         assert not result.success
         assert "lint" in result.summary
 
-    async def test_resume_polls_when_ci_incomplete(self) -> None:
+    async def test_resume_polls_when_ci_incomplete(self, tmp_path: Path) -> None:
         """On resume, if CI is still running, fall through to normal polling."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10, resume_run_id=5)
+        ctx = _make_ctx(tmp_path, pr_number=10, resume_run_id=5)
         step = MonitorCIStep()
 
         incomplete = MagicMock(is_completed=False, is_passed=False, is_failed=False, name="CI")
@@ -5180,13 +5299,13 @@ class TestMonitorCIStep:
         assert result.success
         assert "1 CI checks passed" in result.summary
 
-    async def test_resume_respects_exclude_checks(self) -> None:
+    async def test_resume_respects_exclude_checks(self, tmp_path: Path) -> None:
         """On resume, excluded checks should not cause false failures."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.exclude_checks = ["sonar"]
-        ctx = _make_ctx(pr_number=10, config=config, resume_run_id=5)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config, resume_run_id=5)
         step = MonitorCIStep()
 
         passed = MagicMock(is_completed=True, is_passed=True, is_failed=False)
@@ -5203,14 +5322,14 @@ class TestMonitorCIStep:
         assert result.success
         assert "resumed after interruption" in result.summary
 
-    async def test_heartbeat_writes_during_poll(self) -> None:
+    async def test_heartbeat_writes_during_poll(self, tmp_path: Path) -> None:
         """CI polling should write heartbeat messages to the output writer."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.poll_interval = 10
         config.ci.max_wait = 30
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         mock_writer = MagicMock()
         ctx.output_writer = mock_writer
         step = MonitorCIStep()
@@ -5230,14 +5349,14 @@ class TestMonitorCIStep:
         heartbeat_msg = mock_writer.write_line.call_args_list[0][0][0]
         assert "CI poll:" in heartbeat_msg
 
-    async def test_get_local_head_sha_returns_empty_on_missing_git(self) -> None:
+    async def test_get_local_head_sha_returns_empty_on_missing_git(self, tmp_path: Path) -> None:
         """A missing ``git`` executable (or pruned working_dir) must not raise
         out of ``_get_local_head_sha``; it should fall back to an empty string
         so callers degrade to the PR-level lookup (#1175 CodeRabbit review:
         finding 7)."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         with patch("sova.utils.shell.run", new_callable=AsyncMock, side_effect=FileNotFoundError("no git")):
@@ -5245,7 +5364,7 @@ class TestMonitorCIStep:
 
         assert result == ""
 
-    async def test_unknown_commit_fails_with_named_diagnosis_not_bare_timeout(self) -> None:
+    async def test_unknown_commit_fails_with_named_diagnosis_not_bare_timeout(self, tmp_path: Path) -> None:
         """A SHA GitHub has no record of at all (e.g. a push that silently
         failed) can never resolve on retry. The step must fail immediately
         with a diagnosis naming the unresolvable commit, rather than polling
@@ -5257,7 +5376,7 @@ class TestMonitorCIStep:
         config = ProjectConfig()
         config.ci.poll_interval = 10
         config.ci.max_wait = 9999
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         with (
@@ -5277,7 +5396,7 @@ class TestMonitorCIStep:
         mock_checks.assert_awaited_once()
         mock_sleep.assert_not_awaited()
 
-    async def test_unknown_commit_retries_when_pr_head_still_matches(self) -> None:
+    async def test_unknown_commit_retries_when_pr_head_still_matches(self, tmp_path: Path) -> None:
         """A corroborated UnknownCommitError (both check-runs and commit-status
         404/422) is still not conclusive if the PR's own head SHA confirms the
         commit exists: that is strong evidence of a transient GitHub-side
@@ -5289,7 +5408,7 @@ class TestMonitorCIStep:
         config = ProjectConfig()
         config.ci.poll_interval = 10
         config.ci.max_wait = 30
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -5310,7 +5429,7 @@ class TestMonitorCIStep:
         mock_sleep.assert_awaited_once()
         assert mock_checks.call_count == 2
 
-    async def test_unknown_commit_retries_when_pr_head_unverifiable(self) -> None:
+    async def test_unknown_commit_retries_when_pr_head_unverifiable(self, tmp_path: Path) -> None:
         """An unreadable PR head (get_pr_head_sha returning "" on a transient
         gh/network failure) is 'no corroboration either way', not 'confirmed
         bad push': the step must keep polling rather than failing terminally
@@ -5321,7 +5440,7 @@ class TestMonitorCIStep:
         config = ProjectConfig()
         config.ci.poll_interval = 10
         config.ci.max_wait = 30
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
@@ -5345,7 +5464,7 @@ class TestMonitorCIStep:
         mock_sleep.assert_awaited_once()
         assert mock_checks.call_count == 2
 
-    async def test_all_cancelled_checks_do_not_report_success(self) -> None:
+    async def test_all_cancelled_checks_do_not_report_success(self, tmp_path: Path) -> None:
         """A fully cancelled check set on the bound SHA (the normal consequence
         of a superseding push cancelling the polled commit's runs) must not
         read as 'CI passed': CANCELLED is completed but neither passed nor
@@ -5357,7 +5476,7 @@ class TestMonitorCIStep:
         config = ProjectConfig()
         config.ci.poll_interval = 10
         config.ci.max_wait = 30
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         cancelled_check = MagicMock(
@@ -5377,7 +5496,7 @@ class TestMonitorCIStep:
 
         assert not result.success
 
-    async def test_all_skipped_checks_with_no_passing_check_still_pass(self) -> None:
+    async def test_all_skipped_checks_with_no_passing_check_still_pass(self, tmp_path: Path) -> None:
         """An all-SKIPPED (or all-NEUTRAL) set is a deliberate non-blocking
         outcome, not a failure: the 'nothing passed' guard added for the
         CANCELLED case must be scoped to CANCELLED specifically, or it
@@ -5386,7 +5505,7 @@ class TestMonitorCIStep:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.git.operations import CheckConclusion
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         skipped_a = MagicMock(is_completed=True, is_passed=False, is_failed=False, conclusion=CheckConclusion.SKIPPED)
@@ -5411,10 +5530,10 @@ class TestMonitorCIStep:
 class TestCheckExistingCI:
     """Tests for MonitorCIStep._check_existing_ci fast path."""
 
-    async def test_no_new_commits_all_passed(self) -> None:
+    async def test_no_new_commits_all_passed(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         ctx.no_new_commits = True
         step = MonitorCIStep()
 
@@ -5427,12 +5546,12 @@ class TestCheckExistingCI:
         assert result.success
         assert "already passed" in result.summary
 
-    async def test_no_new_commits_some_failed(self) -> None:
+    async def test_no_new_commits_some_failed(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.max_fix_attempts = 0
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         ctx.no_new_commits = True
         step = MonitorCIStep()
 
@@ -5446,14 +5565,14 @@ class TestCheckExistingCI:
         assert "already failed" in result.summary
         assert "lint" in result.summary
 
-    async def test_no_new_commits_still_running_falls_through(self) -> None:
+    async def test_no_new_commits_still_running_falls_through(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.no_checks_grace_period = 0
         config.ci.poll_interval = 10
         config.ci.max_wait = 20
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         ctx.no_new_commits = True
         step = MonitorCIStep()
 
@@ -5470,10 +5589,10 @@ class TestCheckExistingCI:
 
         assert result.success
 
-    async def test_no_new_commits_no_checks(self) -> None:
+    async def test_no_new_commits_no_checks(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         ctx.no_new_commits = True
         step = MonitorCIStep()
 
@@ -5484,14 +5603,14 @@ class TestCheckExistingCI:
         assert result.success
         assert "no ci checks" in result.summary.lower() or "No new commits" in result.summary
 
-    async def test_no_new_commits_fetch_failure_falls_through(self) -> None:
+    async def test_no_new_commits_fetch_failure_falls_through(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.no_checks_grace_period = 0
         config.ci.poll_interval = 10
         config.ci.max_wait = 20
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         ctx.no_new_commits = True
         step = MonitorCIStep()
 
@@ -5507,12 +5626,12 @@ class TestCheckExistingCI:
         assert result.success
         assert mock_checks.call_count == 2
 
-    async def test_no_new_commits_respects_exclude_checks(self) -> None:
+    async def test_no_new_commits_respects_exclude_checks(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.exclude_checks = ["flaky-sonar"]
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         ctx.no_new_commits = True
         step = MonitorCIStep()
 
@@ -5531,10 +5650,10 @@ class TestCheckExistingCI:
 class TestEnsureCommitted:
     """Tests for MonitorCIStep._ensure_committed lint-then-commit safety net."""
 
-    async def test_ruff_fixes_committed(self) -> None:
+    async def test_ruff_fixes_committed(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
         run = AsyncMock()
         run.return_value = MagicMock(success=True, stdout="M sova/core/foo.py\n", stderr="")
@@ -5549,10 +5668,10 @@ class TestEnsureCommitted:
         assert ("git", "add", "-u") == calls[3][:3]
         assert calls[4][0] == "git" and calls[4][1] == "commit"
 
-    async def test_no_changes_returns_false(self) -> None:
+    async def test_no_changes_returns_false(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
         run = AsyncMock()
         run.return_value = MagicMock(success=True, stdout="", stderr="")
@@ -5561,10 +5680,10 @@ class TestEnsureCommitted:
 
         assert result is False
 
-    async def test_ruff_not_installed_continues(self) -> None:
+    async def test_ruff_not_installed_continues(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         ruff_fail = MagicMock(success=False, stdout="", stderr="command not found")
@@ -5576,10 +5695,10 @@ class TestEnsureCommitted:
         assert result is False
         assert run.call_count == 2
 
-    async def test_ruff_makes_no_changes(self) -> None:
+    async def test_ruff_makes_no_changes(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         ruff_ok = MagicMock(success=True, stdout="", stderr="")
@@ -5591,10 +5710,10 @@ class TestEnsureCommitted:
 
         assert result is False
 
-    async def test_stage_failure_returns_none(self) -> None:
+    async def test_stage_failure_returns_none(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         ruff_ok = MagicMock(success=True, stdout="", stderr="")
@@ -5607,10 +5726,10 @@ class TestEnsureCommitted:
 
         assert result is None
 
-    async def test_commit_failure_returns_none(self) -> None:
+    async def test_commit_failure_returns_none(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         step = MonitorCIStep()
 
         ruff_ok = MagicMock(success=True, stdout="", stderr="")
@@ -5628,10 +5747,10 @@ class TestEnsureCommitted:
 class TestValidateFixRunsEnsureCommitted:
     """Verify _ensure_committed is called before the pre-push hook in _validate_fix."""
 
-    async def test_ensure_committed_called_before_hook(self) -> None:
+    async def test_ensure_committed_called_before_hook(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test")
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test")
         step = MonitorCIStep()
 
         call_order = []
@@ -5655,11 +5774,11 @@ class TestValidateFixRunsEnsureCommitted:
 
         assert call_order == ["ensure_committed", "find_hook"]
 
-    async def test_auto_commits_when_llm_skips_commit(self) -> None:
+    async def test_auto_commits_when_llm_skips_commit(self, tmp_path: Path) -> None:
         """_ensure_committed creates a commit when LLM left changes uncommitted."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test")
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test")
         step = MonitorCIStep()
 
         ruff_ok = MagicMock(success=True, stdout="", stderr="")
@@ -5676,11 +5795,11 @@ class TestValidateFixRunsEnsureCommitted:
         assert commit_call[0][1] == "commit"
         assert "fix(core):" in commit_call[0][3]
 
-    async def test_ensure_committed_failure_skips_attempt(self) -> None:
+    async def test_ensure_committed_failure_skips_attempt(self, tmp_path: Path) -> None:
         """_validate_fix skips attempt when _ensure_committed returns None."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test")
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test")
         step = MonitorCIStep()
 
         async def mock_ensure_fail(c, r):
@@ -5695,11 +5814,11 @@ class TestValidateFixRunsEnsureCommitted:
         assert should_skip is True
         assert error is None
 
-    async def test_ensure_committed_failure_last_attempt_errors(self) -> None:
+    async def test_ensure_committed_failure_last_attempt_errors(self, tmp_path: Path) -> None:
         """_validate_fix returns error on last attempt when _ensure_committed fails."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test")
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test")
         step = MonitorCIStep()
 
         async def mock_ensure_fail(c, r):
@@ -5720,10 +5839,10 @@ class TestValidateFixRunsEnsureCommitted:
 class TestBuildFixPromptEnhancements:
     """Verify _build_fix_prompt includes lint instructions and invariant rules."""
 
-    def test_includes_ruff_instructions(self) -> None:
+    def test_includes_ruff_instructions(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         check = MagicMock()
         check.name = "tests"
         step = MonitorCIStep()
@@ -5733,10 +5852,10 @@ class TestBuildFixPromptEnhancements:
         assert "ruff check --fix" in prompt
         assert "ruff format" in prompt
 
-    def test_includes_invariant_rules(self) -> None:
+    def test_includes_invariant_rules(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         check = MagicMock()
         check.name = "tests"
         step = MonitorCIStep()
@@ -5749,10 +5868,10 @@ class TestBuildFixPromptEnhancements:
         assert "emojis" in prompt
         assert "Project Invariant Rules" in prompt
 
-    def test_prompt_uses_scoped_commit_format(self) -> None:
+    def test_prompt_uses_scoped_commit_format(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         check = MagicMock()
         check.name = "tests"
         step = MonitorCIStep()
@@ -5765,11 +5884,11 @@ class TestBuildFixPromptEnhancements:
 class TestCILogTruncation:
     """Verify _invoke_fix truncates long CI logs before building the prompt."""
 
-    async def test_short_logs_unchanged(self) -> None:
+    async def test_short_logs_unchanged(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import _CI_LOG_LIMIT, MonitorCIStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
         short_log = "ERROR: something failed\n" * 10
 
@@ -5789,11 +5908,11 @@ class TestCILogTruncation:
         assert short_log in prompt
         assert "...(truncated)" not in prompt
 
-    async def test_long_logs_truncated_to_tail(self) -> None:
+    async def test_long_logs_truncated_to_tail(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import _CI_LOG_LIMIT, MonitorCIStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
         long_log = "X" * (_CI_LOG_LIMIT + 5000)
 
@@ -5812,11 +5931,11 @@ class TestCILogTruncation:
         assert long_log not in prompt
         assert long_log[-_CI_LOG_LIMIT:] in prompt
 
-    async def test_exact_limit_not_truncated(self) -> None:
+    async def test_exact_limit_not_truncated(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import _CI_LOG_LIMIT, MonitorCIStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
         exact_log = "Y" * _CI_LOG_LIMIT
 
@@ -5834,11 +5953,11 @@ class TestCILogTruncation:
         assert "...(truncated)" not in prompt
         assert exact_log in prompt
 
-    async def test_truncation_happens_after_redaction(self) -> None:
+    async def test_truncation_happens_after_redaction(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import _CI_LOG_LIMIT, MonitorCIStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
         raw_log = "A" * (_CI_LOG_LIMIT + 2000)
 
@@ -5859,11 +5978,11 @@ class TestCILogTruncation:
         assert redacted_tail in prompt
         assert "...(truncated)" in prompt
 
-    async def test_empty_logs_not_truncated(self) -> None:
+    async def test_empty_logs_not_truncated(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
 
         run = AsyncMock(return_value=MagicMock(success=True, stdout="abc commit\n"))
@@ -6156,12 +6275,12 @@ class TestHydrateCollapsedFindings:
         assert description == "This looks wrong to me, can you double check?"
         assert suggestion == ""
 
-    async def test_collapsed_finding_is_hydrated_from_inline_comment(self) -> None:
+    async def test_collapsed_finding_is_hydrated_from_inline_comment(self, tmp_path: Path) -> None:
         """A 'see inline comment above' body entry gets its real text back from the inline comment."""
         from sova.core.steps.address_review import _load_findings_from_github_reviews
         from sova.roles._review_format import format_review_body
 
-        ctx = _make_ctx(pr_number=11)
+        ctx = _make_ctx(tmp_path, pr_number=11)
         body = format_review_body(
             [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash on empty input"}],
             "summary",
@@ -6198,13 +6317,13 @@ class TestHydrateCollapsedFindings:
         assert findings[0]["description"] == "crash on empty input"
         assert findings[0]["suggestion"] == "guard the empty case"
 
-    async def test_unhydratable_stub_keeps_its_reference(self) -> None:
+    async def test_unhydratable_stub_keeps_its_reference(self, tmp_path: Path) -> None:
         """A stub with no matching inline comment keeps the stub rather than becoming empty."""
         from sova.core.steps.address_review import _load_findings_from_github_reviews
         from sova.roles._review_format import format_review_body
         from sova.utils.review_markers import INLINE_COMMENT_STUB
 
-        ctx = _make_ctx(pr_number=12)
+        ctx = _make_ctx(tmp_path, pr_number=12)
         body = format_review_body(
             [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
             "summary",
@@ -6224,12 +6343,12 @@ class TestHydrateCollapsedFindings:
         assert len(findings) == 1
         assert findings[0]["description"] == INLINE_COMMENT_STUB
 
-    async def test_no_stub_means_no_inline_comment_fetch(self) -> None:
+    async def test_no_stub_means_no_inline_comment_fetch(self, tmp_path: Path) -> None:
         """An uncollapsed body never spends a second API call on inline comments."""
         from sova.core.steps.address_review import _load_findings_from_github_reviews
         from sova.roles._review_format import format_review_body
 
-        ctx = _make_ctx(pr_number=13)
+        ctx = _make_ctx(tmp_path, pr_number=13)
         body = format_review_body(
             [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
             "summary",
@@ -6242,12 +6361,12 @@ class TestHydrateCollapsedFindings:
         assert mock_run.await_count == 1
         assert findings[0]["description"] == "crash"
 
-    async def test_hydrates_from_concatenated_paginated_comments(self) -> None:
+    async def test_hydrates_from_concatenated_paginated_comments(self, tmp_path: Path) -> None:
         """`gh api --paginate` emits one JSON array per page; a >30-comment PR concatenates them."""
         from sova.core.steps.address_review import _load_findings_from_github_reviews
         from sova.roles._review_format import format_review_body
 
-        ctx = _make_ctx(pr_number=14)
+        ctx = _make_ctx(tmp_path, pr_number=14)
         body = format_review_body(
             [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
             "summary",
@@ -6283,12 +6402,12 @@ class TestHydrateCollapsedFindings:
 
         assert result == [{"id": 1}]
 
-    async def test_hydrates_despite_null_user_comment(self) -> None:
+    async def test_hydrates_despite_null_user_comment(self, tmp_path: Path) -> None:
         """A `"user": null` comment (deleted/ghost author) must not abort hydration for the whole PR."""
         from sova.core.steps.address_review import _load_findings_from_github_reviews
         from sova.roles._review_format import format_review_body
 
-        ctx = _make_ctx(pr_number=15)
+        ctx = _make_ctx(tmp_path, pr_number=15)
         body = format_review_body(
             [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
             "summary",
@@ -6318,12 +6437,12 @@ class TestHydrateCollapsedFindings:
 
         assert findings[0]["description"] == "crash"
 
-    async def test_sova_shaped_comment_wins_over_human_note_at_same_location(self) -> None:
+    async def test_sova_shaped_comment_wins_over_human_note_at_same_location(self, tmp_path: Path) -> None:
         """A human's top-level note at the same (path, line) must not outrank SOVA's own comment."""
         from sova.core.steps.address_review import _load_findings_from_github_reviews
         from sova.roles._review_format import format_review_body
 
-        ctx = _make_ctx(pr_number=16)
+        ctx = _make_ctx(tmp_path, pr_number=16)
         body = format_review_body(
             [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
             "summary",
@@ -6353,13 +6472,13 @@ class TestHydrateCollapsedFindings:
 
         assert findings[0]["description"] == "crash"
 
-    async def test_two_matching_comments_at_same_location_stay_ambiguous(self) -> None:
+    async def test_two_matching_comments_at_same_location_stay_ambiguous(self, tmp_path: Path) -> None:
         """Two distinct findings landing on the same (path, line) keep the stub rather than guess."""
         from sova.core.steps.address_review import _load_findings_from_github_reviews
         from sova.roles._review_format import format_review_body
         from sova.utils.review_markers import INLINE_COMMENT_STUB
 
-        ctx = _make_ctx(pr_number=17)
+        ctx = _make_ctx(tmp_path, pr_number=17)
         body = format_review_body(
             [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash"}],
             "summary",
@@ -6405,11 +6524,11 @@ class TestLoadFindingsFromGithubReviews:
             return_value=MagicMock(success=True, stdout=gh_json),
         )
 
-    async def test_filters_bot_reviews(self) -> None:
+    async def test_filters_bot_reviews(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
         from sova.roles._review_format import format_review_body
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         real_body = format_review_body(
             [{"file": "a.py", "line": 1, "severity": 9, "category": "bug", "description": "real issue"}],
             "summary",
@@ -6427,11 +6546,11 @@ class TestLoadFindingsFromGithubReviews:
         assert len(findings) == 1
         assert findings[0]["description"] == "real issue"
 
-    async def test_filters_dismissed_reviews(self) -> None:
+    async def test_filters_dismissed_reviews(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
         from sova.roles._review_format import format_review_body
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         body = format_review_body(
             [{"file": "a.py", "line": 1, "severity": 9, "category": "bug", "description": "old issue"}],
             "summary",
@@ -6443,10 +6562,10 @@ class TestLoadFindingsFromGithubReviews:
             findings = await _load_findings_from_github_reviews(ctx)
         assert findings == []
 
-    async def test_filters_empty_body(self) -> None:
+    async def test_filters_empty_body(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         gh_json = _gh_reviews_json(
             {"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": "  "},
         )
@@ -6454,10 +6573,10 @@ class TestLoadFindingsFromGithubReviews:
             findings = await _load_findings_from_github_reviews(ctx)
         assert findings == []
 
-    async def test_gh_api_failure_returns_empty(self) -> None:
+    async def test_gh_api_failure_returns_empty(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         mock_result = MagicMock(success=False, stdout="", stderr="API error")
         with patch(
             "sova.core.steps.address_review.run",
@@ -6467,13 +6586,13 @@ class TestLoadFindingsFromGithubReviews:
             findings = await _load_findings_from_github_reviews(ctx)
         assert findings == []
 
-    async def test_freeform_human_review_falls_back_to_single_finding(self) -> None:
+    async def test_freeform_human_review_falls_back_to_single_finding(self, tmp_path: Path) -> None:
         """A human reviewer's free-text comment (no ### Findings section) is not
         structured, so it degrades to the single-finding fallback rather than
         being silently dropped."""
         from sova.core.steps.address_review import _load_findings_from_github_reviews
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         body = (
             "This has an XSS vulnerability in app.py:42 where unsanitized input "
             "reaches the response. Please use escape() before rendering it."
@@ -6525,11 +6644,11 @@ class TestMonitorCIFixLoop:
         ):
             yield
 
-    async def test_ci_fails_fix_succeeds_first_attempt(self) -> None:
+    async def test_ci_fails_fix_succeeds_first_attempt(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
 
         failed_check = _make_ci_check(
@@ -6563,11 +6682,11 @@ class TestMonitorCIFixLoop:
         assert "1 fix attempt" in result.summary
         assert ctx.cost_usd == Decimal("1.00")
 
-    async def test_ci_fails_fix_succeeds_second_attempt(self) -> None:
+    async def test_ci_fails_fix_succeeds_second_attempt(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
 
         failed_check = _make_ci_check(
@@ -6603,13 +6722,13 @@ class TestMonitorCIFixLoop:
         assert mock_invoke.await_count == 2
         assert ctx.cost_usd == Decimal("1.00")
 
-    async def test_ci_fails_all_attempts_exhausted(self) -> None:
+    async def test_ci_fails_all_attempts_exhausted(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.models import LLMResult
 
         config = ProjectConfig()
         config.ci.max_fix_attempts = 2
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt", config=config)
         step = MonitorCIStep()
 
         failed_check = _make_ci_check(
@@ -6640,13 +6759,13 @@ class TestMonitorCIFixLoop:
         assert "Tests" in result.summary
         assert mock_invoke.await_count == 2
 
-    async def test_llm_timeout_produces_distinct_marker(self) -> None:
+    async def test_llm_timeout_produces_distinct_marker(self, tmp_path: Path) -> None:
         """A CI fix-LLM timeout must be tagged distinctly from a generic
         RuntimeError and from the unrelated step_hard_timeout string (issue #977)."""
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.errors import LLMTimeoutError
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
 
         failed_check = _make_ci_check(
@@ -6679,7 +6798,7 @@ class TestMonitorCIFixLoop:
         assert result.error.startswith("fix_llm_timeout on cycle 1:")
         assert result.error != "step_hard_timeout"
 
-    async def test_low_budget_fraction_stops_retry_and_fails(self) -> None:
+    async def test_low_budget_fraction_stops_retry_and_fails(self, tmp_path: Path) -> None:
         """Below the 20% threshold, CI fix retries stop and the step reports
         failure: CI is still red, so returning success=True here would let
         WorkflowEngine advance past a broken build."""
@@ -6687,7 +6806,7 @@ class TestMonitorCIFixLoop:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt", config=config)
         ctx.cost_usd = Decimal("8.50")  # 15% remaining, below 20% threshold
         step = MonitorCIStep()
 
@@ -6718,12 +6837,12 @@ class TestMonitorCIFixLoop:
         assert "Tests" in (result.error or "")
         mock_invoke.assert_not_awaited()
 
-    async def test_ci_fix_disabled_when_zero(self) -> None:
+    async def test_ci_fix_disabled_when_zero(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.max_fix_attempts = 0
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         failed_check = _make_ci_check("lint", passed=False)
@@ -6737,10 +6856,10 @@ class TestMonitorCIFixLoop:
         assert not result.success
         assert "lint" in result.summary
 
-    async def test_ci_fix_respects_budget(self) -> None:
+    async def test_ci_fix_respects_budget(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         ctx.cost_usd = Decimal("999")  # over budget
         step = MonitorCIStep()
 
@@ -6757,13 +6876,13 @@ class TestMonitorCIFixLoop:
         assert not result.success
         assert "budget" in result.summary.lower()
 
-    async def test_ci_fix_local_hook_fails(self) -> None:
+    async def test_ci_fix_local_hook_fails(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.models import LLMResult
 
         config = ProjectConfig()
         config.ci.max_fix_attempts = 1
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt", config=config)
         step = MonitorCIStep()
 
         failed_check = _make_ci_check("Tests", passed=False, details_url="https://github.com/o/r/actions/runs/1/job/2")
@@ -6800,11 +6919,11 @@ class TestMonitorCIFixLoop:
         assert "local validation" in result.summary.lower()
         mock_push.assert_not_awaited()
 
-    async def test_ci_fix_push_fails(self) -> None:
+    async def test_ci_fix_push_fails(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
 
         failed_check = _make_ci_check("Tests", passed=False, details_url="https://github.com/o/r/actions/runs/1/job/2")
@@ -6830,11 +6949,11 @@ class TestMonitorCIFixLoop:
         assert not result.success
         assert "push failed" in result.summary.lower()
 
-    async def test_ci_log_fetch_graceful_failure(self) -> None:
+    async def test_ci_log_fetch_graceful_failure(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt")
         step = MonitorCIStep()
 
         failed_check = _make_ci_check("Tests", passed=False, details_url="")
@@ -6889,24 +7008,24 @@ class TestMonitorCISonarCloud:
         assert sonar_checks == []
         assert len(other_checks) == 1
 
-    async def test_fetch_coverage_prompt_returns_empty_without_sonar_checks(self) -> None:
+    async def test_fetch_coverage_prompt_returns_empty_without_sonar_checks(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        ctx = _make_ctx(tmp_path, pr_number=10)
         result = await MonitorCIStep._fetch_sonarcloud_coverage_prompt(ctx, [])
         assert result == ""
 
-    async def test_fetch_coverage_prompt_returns_empty_without_config(self) -> None:
+    async def test_fetch_coverage_prompt_returns_empty_without_config(self, tmp_path: Path) -> None:
         from sova.config.models import ExternalReviewsConfig
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig(external_reviews=ExternalReviewsConfig())
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
         result = await MonitorCIStep._fetch_sonarcloud_coverage_prompt(ctx, [sonar])
         assert result == ""
 
-    async def test_fetch_coverage_prompt_returns_empty_when_sonarcloud_not_in_tools(self) -> None:
+    async def test_fetch_coverage_prompt_returns_empty_when_sonarcloud_not_in_tools(self, tmp_path: Path) -> None:
         from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
         from sova.core.steps.monitor_ci import MonitorCIStep
 
@@ -6916,12 +7035,12 @@ class TestMonitorCISonarCloud:
             sonarcloud=SonarCloudConfig(project_key="org_repo"),
         )
         config = ProjectConfig(external_reviews=ext)
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
         result = await MonitorCIStep._fetch_sonarcloud_coverage_prompt(ctx, [sonar])
         assert result == ""
 
-    async def test_fetch_coverage_prompt_with_gap(self) -> None:
+    async def test_fetch_coverage_prompt_with_gap(self, tmp_path: Path) -> None:
         from sova.adapters.external_reviews import CoverageReport, ExternalFinding
         from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
         from sova.core.steps.monitor_ci import MonitorCIStep
@@ -6932,7 +7051,7 @@ class TestMonitorCISonarCloud:
             sonarcloud=SonarCloudConfig(project_key="org_repo"),
         )
         config = ProjectConfig(external_reviews=ext)
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
 
         report = CoverageReport(
@@ -6953,7 +7072,7 @@ class TestMonitorCISonarCloud:
         assert "pytest" in result
         assert "sova/core/workflow.py:235" in result
 
-    async def test_fetch_coverage_prompt_coverage_ok(self) -> None:
+    async def test_fetch_coverage_prompt_coverage_ok(self, tmp_path: Path) -> None:
         from sova.adapters.external_reviews import CoverageReport
         from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
         from sova.core.steps.monitor_ci import MonitorCIStep
@@ -6964,7 +7083,7 @@ class TestMonitorCISonarCloud:
             sonarcloud=SonarCloudConfig(project_key="org_repo"),
         )
         config = ProjectConfig(external_reviews=ext)
-        ctx = _make_ctx(pr_number=10, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
 
         report = CoverageReport(coverage_pct=Decimal("85.0"), required_pct=Decimal("80.0"), findings=[])
@@ -6977,7 +7096,7 @@ class TestMonitorCISonarCloud:
 
         assert result == ""
 
-    async def test_invoke_fix_uses_coverage_prompt_for_sonarcloud(self) -> None:
+    async def test_invoke_fix_uses_coverage_prompt_for_sonarcloud(self, tmp_path: Path) -> None:
         """When only SonarCloud fails, _invoke_fix uses the coverage prompt."""
         from sova.adapters.external_reviews import CoverageReport
         from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
@@ -6990,7 +7109,7 @@ class TestMonitorCISonarCloud:
             sonarcloud=SonarCloudConfig(project_key="org_repo"),
         )
         config = ProjectConfig(external_reviews=ext)
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt", config=config)
         step = MonitorCIStep()
 
         sonar_check = _make_ci_check("SonarCloud Code Analysis", passed=False)
@@ -7014,7 +7133,7 @@ class TestMonitorCISonarCloud:
         assert "65.0%" in prompt_arg
         assert "pytest" in prompt_arg
 
-    async def test_invoke_fix_combined_sonar_and_other_failures(self) -> None:
+    async def test_invoke_fix_combined_sonar_and_other_failures(self, tmp_path: Path) -> None:
         """When both SonarCloud and other checks fail, logs are fetched for non-Sonar checks only."""
         from sova.adapters.external_reviews import CoverageReport
         from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
@@ -7027,7 +7146,7 @@ class TestMonitorCISonarCloud:
             sonarcloud=SonarCloudConfig(project_key="org_repo"),
         )
         config = ProjectConfig(external_reviews=ext)
-        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        ctx = _make_ctx(tmp_path, pr_number=10, branch_name="feat/test", worktree_dir=tmp_path / "wt", config=config)
         step = MonitorCIStep()
 
         sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
@@ -7067,12 +7186,12 @@ class TestMonitorCISonarCloud:
 
 
 class TestSyncStepTaskFetch:
-    async def test_fetches_task_during_sync(self) -> None:
+    async def test_fetches_task_during_sync(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
 
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(id="42", title="Test task")
-        ctx = _make_ctx(adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
         assert ctx.task is None
 
         step = SyncStep()
@@ -7087,12 +7206,12 @@ class TestSyncStepTaskFetch:
         assert ctx.task is not None
         assert ctx.task.title == "Test task"
 
-    async def test_preserves_existing_task(self) -> None:
+    async def test_preserves_existing_task(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
 
         existing_task = Task(id="42", title="Already set")
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, task=existing_task)
+        ctx = _make_ctx(tmp_path, adapter=adapter, task=existing_task)
 
         step = SyncStep()
         with (
@@ -7106,12 +7225,12 @@ class TestSyncStepTaskFetch:
         assert ctx.task.title == "Already set"
         adapter.get_task.assert_not_awaited()
 
-    async def test_sync_succeeds_even_if_task_fetch_fails(self) -> None:
+    async def test_sync_succeeds_even_if_task_fetch_fails(self, tmp_path: Path) -> None:
         from sova.core.steps.sync import SyncStep
 
         adapter = _mock_adapter()
         adapter.get_task.side_effect = RuntimeError("GitHub API down")
-        ctx = _make_ctx(adapter=adapter)
+        ctx = _make_ctx(tmp_path, adapter=adapter)
 
         step = SyncStep()
         with (
@@ -7131,10 +7250,10 @@ class TestSyncStepTaskFetch:
 
 
 class TestCommitStepAgentArtifacts:
-    async def test_skips_commit_when_only_agent_artifacts_untracked(self) -> None:
+    async def test_skips_commit_when_only_agent_artifacts_untracked(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = CommitStep()
 
         with patch("sova.core.steps.commit.run") as mock_run:
@@ -7149,10 +7268,10 @@ class TestCommitStepAgentArtifacts:
         assert result.success
         assert "already exist" in result.summary
 
-    async def test_commits_meaningful_untracked_files(self) -> None:
+    async def test_commits_meaningful_untracked_files(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         ctx.task = Task(id="42", title="Add feature")
         step = CommitStep()
 
@@ -7178,11 +7297,11 @@ class TestCommitStepAgentArtifacts:
 
 
 class TestCommitStepIssueless:
-    async def test_issueless_commit_uses_run_label(self) -> None:
+    async def test_issueless_commit_uses_run_label(self, tmp_path: Path) -> None:
         """Issueless runs should use run_label in commit message, no Closes line."""
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(issue_number="", run_label="sprint-planning", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, issue_number="", run_label="sprint-planning", worktree_dir=tmp_path / "worktree")
         ctx.task = None
         step = CommitStep()
 
@@ -7202,11 +7321,11 @@ class TestCommitStepIssueless:
         assert "sprint-planning" in msg
         assert "Closes" not in msg
 
-    async def test_issueless_commit_fallback_title(self) -> None:
+    async def test_issueless_commit_fallback_title(self, tmp_path: Path) -> None:
         """When no task, no issue, and no run_label, commit uses 'run'."""
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(issue_number="", run_label="", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, issue_number="", run_label="", worktree_dir=tmp_path / "worktree")
         ctx.task = None
         step = CommitStep()
 
@@ -7226,14 +7345,15 @@ class TestCommitStepIssueless:
         assert "feat(core): run" in msg
         assert "Closes" not in msg
 
-    async def test_issueless_address_review_uses_run_label(self) -> None:
+    async def test_issueless_address_review_uses_run_label(self, tmp_path: Path) -> None:
         """Address-review without issue uses run_label for commit message."""
         from sova.core.steps.commit import CommitStep
 
         ctx = _make_ctx(
+            tmp_path,
             issue_number="",
             run_label="sprint-planning",
-            worktree_dir=Path("/tmp/worktree"),
+            worktree_dir=tmp_path / "worktree",
             pr_number=200,
             completed_steps=frozenset({"address_review"}),
         )
@@ -7256,11 +7376,11 @@ class TestCommitStepIssueless:
         assert msg.startswith("fix(core):")
         assert "sprint-planning" in msg
 
-    async def test_commit_failure_returns_error(self) -> None:
+    async def test_commit_failure_returns_error(self, tmp_path: Path) -> None:
         """RuntimeError during git commit should return a failed StepResult."""
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = CommitStep()
 
         with (
@@ -7285,12 +7405,13 @@ class TestCommitStepIssueless:
 
 
 class TestCommitStepJira:
-    async def test_jira_commit_message_has_ticket_link(self) -> None:
+    async def test_jira_commit_message_has_ticket_link(self, tmp_path: Path) -> None:
         """JIRA projects should emit JIRA: link instead of Closes #N."""
         from sova.core.steps.commit import CommitStep
 
         ctx = _make_ctx(
-            worktree_dir=Path("/tmp/worktree"),
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
             issue_number="48767",
             config=ProjectConfig(
                 task_source=TaskSourceConfig(
@@ -7319,11 +7440,11 @@ class TestCommitStepJira:
         assert "JIRA: https://issues.redhat.com/browse/RHCLOUD-48767" in msg
         assert "Closes #" not in msg
 
-    async def test_github_commit_message_unchanged(self) -> None:
+    async def test_github_commit_message_unchanged(self, tmp_path: Path) -> None:
         """GitHub projects should still produce Closes #N."""
         from sova.core.steps.commit import CommitStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         ctx.task = Task(id="42", title="Fix login bug")
         ctx.config = ProjectConfig(task_source=TaskSourceConfig(type="github"))
         step = CommitStep()
@@ -7351,11 +7472,11 @@ class TestCommitStepJira:
 
 
 class TestWorktreeStepJira:
-    async def test_jira_branch_name_uses_project_key(self) -> None:
+    async def test_jira_branch_name_uses_project_key(self, tmp_path: Path) -> None:
         """JIRA projects should produce feat/PROJKEY-N-slug branch names."""
         from sova.core.steps.create_worktree import WorktreeStep
 
-        ctx = _make_ctx(issue_number="48767")
+        ctx = _make_ctx(tmp_path, issue_number="48767")
         ctx.task = Task(id="48767", title="Add security logging")
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
@@ -7367,16 +7488,16 @@ class TestWorktreeStepJira:
         step = WorktreeStep()
 
         with patch("sova.core.steps.create_worktree.worktree.create_worktree", new_callable=AsyncMock) as mock_wt:
-            mock_wt.return_value = MagicMock(path=Path("/tmp/wt"))
+            mock_wt.return_value = MagicMock(path=tmp_path / "wt")
             await step.execute(ctx)
 
         assert ctx.branch_name == "feat/RHCLOUD-48767-Add-security-logging"
 
-    async def test_jira_branch_name_without_task_title(self) -> None:
+    async def test_jira_branch_name_without_task_title(self, tmp_path: Path) -> None:
         """JIRA branch name without task title should use bare JIRA key."""
         from sova.core.steps.create_worktree import WorktreeStep
 
-        ctx = _make_ctx(issue_number="48767")
+        ctx = _make_ctx(tmp_path, issue_number="48767")
         ctx.task = None
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
@@ -7388,21 +7509,21 @@ class TestWorktreeStepJira:
         step = WorktreeStep()
 
         with patch("sova.core.steps.create_worktree.worktree.create_worktree", new_callable=AsyncMock) as mock_wt:
-            mock_wt.return_value = MagicMock(path=Path("/tmp/wt"))
+            mock_wt.return_value = MagicMock(path=tmp_path / "wt")
             await step.execute(ctx)
 
         assert ctx.branch_name == "feat/RHCLOUD-48767"
 
-    async def test_github_branch_name_unchanged(self) -> None:
+    async def test_github_branch_name_unchanged(self, tmp_path: Path) -> None:
         """GitHub projects should still produce feat/issue-N branch names."""
         from sova.core.steps.create_worktree import WorktreeStep
 
-        ctx = _make_ctx(issue_number="42")
+        ctx = _make_ctx(tmp_path, issue_number="42")
         ctx.config = ProjectConfig(task_source=TaskSourceConfig(type="github"))
         step = WorktreeStep()
 
         with patch("sova.core.steps.create_worktree.worktree.create_worktree", new_callable=AsyncMock) as mock_wt:
-            mock_wt.return_value = MagicMock(path=Path("/tmp/wt"))
+            mock_wt.return_value = MagicMock(path=tmp_path / "wt")
             await step.execute(ctx)
 
         assert ctx.branch_name == "feat/issue-42"
@@ -7460,7 +7581,12 @@ class TestCreatePRStepTitleFallback:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_fetches_title_from_adapter_when_task_is_none(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
     ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -7471,7 +7597,7 @@ class TestCreatePRStepTitleFallback:
 
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(id="375", title="concurrent branch file-overlap prevention gate")
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-375", task=None)
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-375", task=None)
 
         step = CreatePRStep()
         await step.execute(ctx)
@@ -7487,7 +7613,12 @@ class TestCreatePRStepTitleFallback:
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_falls_back_to_branch_name_when_adapter_fails(
-        self, mock_create_pr, mock_run, mock_invoke, _find
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
     ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -7498,7 +7629,7 @@ class TestCreatePRStepTitleFallback:
 
         adapter = _mock_adapter()
         adapter.get_task.side_effect = RuntimeError("API error")
-        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-375", task=None)
+        ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-375", task=None)
 
         step = CreatePRStep()
         await step.execute(ctx)
@@ -7511,7 +7642,14 @@ class TestCreatePRStepTitleFallback:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_uses_task_title_directly_when_available(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_uses_task_title_directly_when_available(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         """When ctx.task is populated, no adapter call is needed."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -7522,6 +7660,7 @@ class TestCreatePRStepTitleFallback:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(
+            tmp_path,
             adapter=adapter,
             branch_name="feat/issue-42",
             task=Task(id="42", title="Add widget support"),
@@ -7538,7 +7677,14 @@ class TestCreatePRStepTitleFallback:
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_no_adapter_call_for_issueless_run(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_no_adapter_call_for_issueless_run(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+        tmp_path: Path,
+    ) -> None:
         """Issueless runs should use branch name, not try the adapter."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
@@ -7548,7 +7694,7 @@ class TestCreatePRStepTitleFallback:
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, issue_number="", branch_name="feat/sprint-plan", task=None)
+        ctx = _make_ctx(tmp_path, adapter=adapter, issue_number="", branch_name="feat/sprint-plan", task=None)
 
         step = CreatePRStep()
         await step.execute(ctx)
@@ -7564,16 +7710,17 @@ class TestCreatePRStepTitleFallback:
 
 
 class TestCreatePRStepIssueless:
-    async def test_issueless_pr_title_has_no_issue_ref(self) -> None:
+    async def test_issueless_pr_title_has_no_issue_ref(self, tmp_path: Path) -> None:
         """Issueless PRs should not include '#(none)' in the title."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
         ctx = _make_ctx(
+            tmp_path,
             issue_number="",
             run_label="sprint-planning",
             branch_name="feat/sprint-plan",
-            worktree_dir=Path("/tmp/worktree"),
+            worktree_dir=tmp_path / "worktree",
         )
         ctx.task = None
         step = CreatePRStep()
@@ -7600,51 +7747,53 @@ class TestCreatePRStepIssueless:
         assert ctx.pr_number == 99
         assert "(#" not in result.summary or "99" in result.summary
 
-    async def test_issueless_pr_body_has_no_closes(self) -> None:
+    async def test_issueless_pr_body_has_no_closes(self, tmp_path: Path) -> None:
         """PR body for issueless runs should omit Closes line."""
         from sova.core.steps.create_pr import CreatePRStep
 
-        ctx = _make_ctx(issue_number="", run_label="sprint-planning")
+        ctx = _make_ctx(tmp_path, issue_number="", run_label="sprint-planning")
         ctx.task = None
         body = CreatePRStep._build_fallback_body(ctx, "sprint plan", "abc123 feat: plan", "plan.py | 3 +++")
         assert "Closes" not in body
         assert "sprint plan" in body
 
-    async def test_pr_body_includes_issue_excerpt(self) -> None:
+    async def test_pr_body_includes_issue_excerpt(self, tmp_path: Path) -> None:
         """PR body should include a truncated issue body excerpt."""
         from sova.core.steps.create_pr import CreatePRStep
 
-        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Widget", body="Add widget support"))
+        ctx = _make_ctx(
+            tmp_path, branch_name="feat/issue-42", task=Task(id="42", title="Widget", body="Add widget support")
+        )
         body = CreatePRStep._build_fallback_body(ctx, "Widget", "abc feat", "x.py | 3 +++")
         assert "## Context" in body
         assert "Add widget support" in body
         assert "Closes #42" in body
 
-    async def test_pr_body_truncates_long_issue_body(self) -> None:
+    async def test_pr_body_truncates_long_issue_body(self, tmp_path: Path) -> None:
         """Issue body excerpts longer than 500 chars should be truncated."""
         from sova.core.steps.create_pr import CreatePRStep
 
         long_body = "x" * 600
-        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Big", body=long_body))
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42", task=Task(id="42", title="Big", body=long_body))
         body = CreatePRStep._build_fallback_body(ctx, "Big", "abc feat", "x.py | 3 +++")
         assert "## Context" in body
         assert "..." in body
         assert long_body not in body  # should be truncated
 
-    async def test_pr_body_omits_context_when_no_issue_body(self) -> None:
+    async def test_pr_body_omits_context_when_no_issue_body(self, tmp_path: Path) -> None:
         """PR body should not include Context section when issue has no body."""
         from sova.core.steps.create_pr import CreatePRStep
 
-        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Fix", body=""))
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42", task=Task(id="42", title="Fix", body=""))
         body = CreatePRStep._build_fallback_body(ctx, "Fix", "abc feat", "x.py | 3 +++")
         assert "## Context" not in body
         assert "Closes #42" in body
 
-    async def test_pr_body_omits_context_when_whitespace_only_body(self) -> None:
+    async def test_pr_body_omits_context_when_whitespace_only_body(self, tmp_path: Path) -> None:
         """PR body should not include Context section when issue body is whitespace-only."""
         from sova.core.steps.create_pr import CreatePRStep
 
-        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Fix", body="   "))
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42", task=Task(id="42", title="Fix", body="   "))
         body = CreatePRStep._build_fallback_body(ctx, "Fix", "abc feat", "x.py | 3 +++")
         assert "## Context" not in body
         assert "Closes #42" in body
@@ -7656,10 +7805,10 @@ class TestCreatePRStepIssueless:
 
 
 class TestRebaseStep:
-    async def test_clean_rebase(self) -> None:
+    async def test_clean_rebase(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = RebaseStep()
 
         with (
@@ -7675,10 +7824,10 @@ class TestRebaseStep:
         assert result.success
         assert "Rebased onto" in result.summary
 
-    async def test_rebase_with_conflicts_resolved(self) -> None:
+    async def test_rebase_with_conflicts_resolved(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = RebaseStep()
 
         with (
@@ -7694,11 +7843,11 @@ class TestRebaseStep:
         assert result.success
         assert "2 conflicts resolved" in result.summary
 
-    async def test_clean_rebase_same_dir_skips_artifacts(self) -> None:
+    async def test_clean_rebase_same_dir_skips_artifacts(self, tmp_path: Path) -> None:
         """When working_dir == project_dir, ensure_claude_artifacts is not called."""
         from sova.core.steps.rebase import RebaseStep
 
-        ctx = _make_ctx(branch_name="feat/test")
+        ctx = _make_ctx(tmp_path, branch_name="feat/test")
         step = RebaseStep()
 
         with (
@@ -7714,10 +7863,10 @@ class TestRebaseStep:
         assert result.success
         mock_artifacts.assert_not_called()
 
-    async def test_rebase_failure(self) -> None:
+    async def test_rebase_failure(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = RebaseStep()
 
         with patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase:
@@ -7733,7 +7882,7 @@ class TestRebaseStep:
     async def test_gate_check_detects_rebase_in_progress(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
-        ctx = _make_ctx(worktree_dir=tmp_path)
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=tmp_path)
         step = RebaseStep()
 
         # Simulate rebase-merge marker in the git directory
@@ -7750,7 +7899,7 @@ class TestRebaseStep:
     async def test_gate_check_passes_when_clean(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
-        ctx = _make_ctx(worktree_dir=tmp_path)
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=tmp_path)
         step = RebaseStep()
 
         git_dir = tmp_path / ".git"
@@ -7762,10 +7911,10 @@ class TestRebaseStep:
 
         assert gate.passed
 
-    async def test_gate_check_fails_when_git_dir_unknown(self) -> None:
+    async def test_gate_check_fails_when_git_dir_unknown(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RebaseStep()
 
         with patch("sova.core.steps.rebase.run", new_callable=AsyncMock) as mock_run:
@@ -7775,13 +7924,14 @@ class TestRebaseStep:
         assert not gate.passed
         assert "Cannot determine git directory" in gate.reason
 
-    async def test_ensure_claude_artifacts_called_on_success(self) -> None:
+    async def test_ensure_claude_artifacts_called_on_success(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
         ctx = _make_ctx(
+            tmp_path,
             branch_name="feat/test",
-            worktree_dir=Path("/tmp/worktree"),
-            project_dir=Path("/tmp/project"),
+            worktree_dir=tmp_path / "worktree",
+            project_dir=tmp_path / "project",
         )
         step = RebaseStep()
 
@@ -7796,13 +7946,13 @@ class TestRebaseStep:
             result = await step.execute(ctx)
 
         assert result.success
-        mock_artifacts.assert_called_once_with(Path("/tmp/project"), Path("/tmp/worktree"))
+        mock_artifacts.assert_called_once_with(tmp_path / "project", tmp_path / "worktree")
 
-    async def test_ensure_claude_artifacts_not_called_when_same_dir(self) -> None:
+    async def test_ensure_claude_artifacts_not_called_when_same_dir(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/project"))
-        ctx.project_dir = Path("/tmp/project")
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "project")
+        ctx.project_dir = tmp_path / "project"
         step = RebaseStep()
 
         with (
@@ -7818,13 +7968,14 @@ class TestRebaseStep:
         assert result.success
         mock_artifacts.assert_not_called()
 
-    async def test_ensure_claude_artifacts_not_called_on_failure(self) -> None:
+    async def test_ensure_claude_artifacts_not_called_on_failure(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
         ctx = _make_ctx(
+            tmp_path,
             branch_name="feat/test",
-            worktree_dir=Path("/tmp/worktree"),
-            project_dir=Path("/tmp/project"),
+            worktree_dir=tmp_path / "worktree",
+            project_dir=tmp_path / "project",
         )
         step = RebaseStep()
 
@@ -7841,10 +7992,10 @@ class TestRebaseStep:
         assert not result.success
         mock_artifacts.assert_not_called()
 
-    async def test_can_skip_when_completed(self) -> None:
+    async def test_can_skip_when_completed(self, tmp_path: Path) -> None:
         from sova.core.steps.rebase import RebaseStep
 
-        ctx = _make_ctx(completed_steps=frozenset({"rebase"}))
+        ctx = _make_ctx(tmp_path, completed_steps=frozenset({"rebase"}))
         step = RebaseStep()
         assert await step.can_skip(ctx)
 
@@ -7855,7 +8006,7 @@ class TestRebaseStep:
 
 
 class TestRebaseWithConflictResolution:
-    async def test_clean_rebase_no_conflicts(self) -> None:
+    async def test_clean_rebase_no_conflicts(self, tmp_path: Path) -> None:
         from sova.git.operations import rebase_with_conflict_resolution
 
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
@@ -7864,12 +8015,12 @@ class TestRebaseWithConflictResolution:
                 MagicMock(success=True, stdout="No local changes to save"),  # stash (nothing to stash)
                 MagicMock(success=True, stdout=""),  # rebase (clean)
             ]
-            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+            result, cost = await rebase_with_conflict_resolution("main", cwd=tmp_path)
 
         assert result.success
         assert cost == Decimal("0")
 
-    async def test_clean_rebase_stashes_and_restores_dirty_worktree(self) -> None:
+    async def test_clean_rebase_stashes_and_restores_dirty_worktree(self, tmp_path: Path) -> None:
         """Unstaged changes are stashed before rebasing and restored after."""
         from sova.git.operations import rebase_with_conflict_resolution
 
@@ -7880,14 +8031,14 @@ class TestRebaseWithConflictResolution:
                 MagicMock(success=True, stdout=""),  # rebase (clean)
                 MagicMock(success=True),  # stash pop
             ]
-            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+            result, cost = await rebase_with_conflict_resolution("main", cwd=tmp_path)
 
         assert result.success
         assert cost == Decimal("0")
         assert mock_run.call_args_list[1][0][:3] == ("git", "stash", "--include-untracked")
         assert mock_run.call_args_list[3][0][:3] == ("git", "stash", "pop")
 
-    async def test_unstaged_changes_no_conflict_surfaces_real_error(self) -> None:
+    async def test_unstaged_changes_no_conflict_surfaces_real_error(self, tmp_path: Path) -> None:
         """When rebase fails for a non-conflict reason, the real error is reported."""
         from sova.git.operations import rebase_with_conflict_resolution
 
@@ -7899,13 +8050,13 @@ class TestRebaseWithConflictResolution:
                 MagicMock(success=True, stdout=""),  # conflicted files (none)
                 MagicMock(success=True),  # rebase --abort
             ]
-            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+            result, cost = await rebase_with_conflict_resolution("main", cwd=tmp_path)
 
         assert not result.success
         assert "Rebase failed" in result.error
         assert "index mismatch" in result.error
 
-    async def test_conflict_resolved_by_llm(self) -> None:
+    async def test_conflict_resolved_by_llm(self, tmp_path: Path) -> None:
         from sova.git.operations import rebase_with_conflict_resolution
         from sova.llm.models import LLMResult
 
@@ -7923,13 +8074,13 @@ class TestRebaseWithConflictResolution:
             ]
             mock_llm.return_value = LLMResult(text="resolved", model="sonnet", cost_usd=Decimal("0.02"))
 
-            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+            result, cost = await rebase_with_conflict_resolution("main", cwd=tmp_path)
 
         assert result.success
         assert result.conflicts_resolved == 1
         assert cost == Decimal("0.02")
 
-    async def test_conflict_resolution_fails_aborts(self) -> None:
+    async def test_conflict_resolution_fails_aborts(self, tmp_path: Path) -> None:
         from sova.git.operations import rebase_with_conflict_resolution
 
         with (
@@ -7945,17 +8096,17 @@ class TestRebaseWithConflictResolution:
             ]
             mock_llm.side_effect = RuntimeError("LLM failed")
 
-            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+            result, cost = await rebase_with_conflict_resolution("main", cwd=tmp_path)
 
         assert not result.success
         assert "LLM failed" in result.error
 
-    async def test_fetch_failure_returns_error(self) -> None:
+    async def test_fetch_failure_returns_error(self, tmp_path: Path) -> None:
         from sova.git.operations import rebase_with_conflict_resolution
 
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = MagicMock(success=False, stderr="Could not resolve host")
-            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+            result, cost = await rebase_with_conflict_resolution("main", cwd=tmp_path)
 
         assert not result.success
         assert "Fetch failed" in result.error
@@ -7967,11 +8118,11 @@ class TestRebaseWithConflictResolution:
 
 
 class TestSimplifyStep:
-    async def test_execute_calls_llm(self) -> None:
+    async def test_execute_calls_llm(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SimplifyStep()
 
         with patch("sova.core.steps.simplify.dispatch_command", new_callable=AsyncMock) as mock_invoke:
@@ -7989,11 +8140,11 @@ class TestSimplifyStep:
         assert mock_invoke.call_args[0][1] == "/simplify"
         assert mock_invoke.call_args.kwargs["task_type"] == "simplify"
 
-    async def test_execute_suppresses_task_type_during_fallback(self) -> None:
+    async def test_execute_suppresses_task_type_during_fallback(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"), fallback_model_index=1)
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree", fallback_model_index=1)
         step = SimplifyStep()
 
         with patch("sova.core.steps.simplify.dispatch_command", new_callable=AsyncMock) as mock_invoke:
@@ -8002,10 +8153,10 @@ class TestSimplifyStep:
 
         assert mock_invoke.call_args.kwargs["task_type"] is None
 
-    async def test_execute_handles_runtime_error(self) -> None:
+    async def test_execute_handles_runtime_error(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SimplifyStep()
 
         with patch("sova.core.steps.simplify.dispatch_command", new_callable=AsyncMock) as mock_invoke:
@@ -8015,10 +8166,10 @@ class TestSimplifyStep:
         assert not result.success
         assert "Claude CLI unavailable" in result.error
 
-    async def test_validate_output_passes_with_unstaged_changes(self) -> None:
+    async def test_validate_output_passes_with_unstaged_changes(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SimplifyStep()
 
         with patch("sova.core.steps.simplify.run") as mock_run:
@@ -8032,10 +8183,10 @@ class TestSimplifyStep:
 
         assert gate.passed
 
-    async def test_validate_output_passes_with_staged_changes(self) -> None:
+    async def test_validate_output_passes_with_staged_changes(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SimplifyStep()
 
         with patch("sova.core.steps.simplify.run") as mock_run:
@@ -8049,10 +8200,10 @@ class TestSimplifyStep:
 
         assert gate.passed
 
-    async def test_validate_output_passes_with_commits_ahead(self) -> None:
+    async def test_validate_output_passes_with_commits_ahead(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SimplifyStep()
 
         with patch("sova.core.steps.simplify.run") as mock_run:
@@ -8066,11 +8217,11 @@ class TestSimplifyStep:
 
         assert gate.passed
 
-    async def test_validate_output_passes_with_only_untracked_files(self) -> None:
+    async def test_validate_output_passes_with_only_untracked_files(self, tmp_path: Path) -> None:
         """Gate must pass when Claude wrote new files but never staged them."""
         from sova.core.steps.simplify import SimplifyStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SimplifyStep()
 
         with patch("sova.core.steps.simplify.run") as mock_run:
@@ -8084,10 +8235,10 @@ class TestSimplifyStep:
 
         assert gate.passed
 
-    async def test_validate_output_fails_when_all_reverted(self) -> None:
+    async def test_validate_output_fails_when_all_reverted(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SimplifyStep()
 
         with patch("sova.core.steps.simplify.run") as mock_run:
@@ -8102,11 +8253,11 @@ class TestSimplifyStep:
         assert not gate.passed
         assert "reverted" in gate.reason.lower()
 
-    async def test_validate_output_status_failure_falls_back_to_other_checks(self) -> None:
+    async def test_validate_output_status_failure_falls_back_to_other_checks(self, tmp_path: Path) -> None:
         """When git status --porcelain fails, has_untracked is False; gate still passes via other checks."""
         from sova.core.steps.simplify import SimplifyStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SimplifyStep()
 
         with patch("sova.core.steps.simplify.run") as mock_run:
@@ -8120,27 +8271,27 @@ class TestSimplifyStep:
 
         assert gate.passed
 
-    async def test_can_skip_when_completed(self) -> None:
+    async def test_can_skip_when_completed(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
 
-        ctx = _make_ctx(completed_steps=frozenset({"simplify"}))
+        ctx = _make_ctx(tmp_path, completed_steps=frozenset({"simplify"}))
         step = SimplifyStep()
         assert await step.can_skip(ctx)
 
-    async def test_can_skip_when_budget_low(self) -> None:
+    async def test_can_skip_when_budget_low(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
 
         config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("7.00"))  # 30% remaining, below 40% threshold
         step = SimplifyStep()
         assert await step.can_skip(ctx)
 
-    async def test_does_not_skip_when_budget_sufficient(self) -> None:
+    async def test_does_not_skip_when_budget_sufficient(self, tmp_path: Path) -> None:
         from sova.core.steps.simplify import SimplifyStep
 
         config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("5.00"))  # 50% remaining, above 40% threshold
         step = SimplifyStep()
         assert not await step.can_skip(ctx)
@@ -8152,11 +8303,11 @@ class TestSimplifyStep:
 
 
 class TestSelfReviewStep:
-    async def test_execute_calls_review_command(self) -> None:
+    async def test_execute_calls_review_command(self, tmp_path: Path) -> None:
         from sova.core.steps.self_review import SelfReviewStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SelfReviewStep()
 
         with patch("sova.core.steps.self_review.dispatch_command", new_callable=AsyncMock) as mock_invoke:
@@ -8174,10 +8325,10 @@ class TestSelfReviewStep:
         assert mock_invoke.call_args[0][1] == "/review"
         assert mock_invoke.call_args.kwargs["task_type"] == "self_review"
 
-    async def test_execute_handles_runtime_error(self) -> None:
+    async def test_execute_handles_runtime_error(self, tmp_path: Path) -> None:
         from sova.core.steps.self_review import SelfReviewStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SelfReviewStep()
 
         with patch("sova.core.steps.self_review.dispatch_command", new_callable=AsyncMock) as mock_invoke:
@@ -8187,10 +8338,10 @@ class TestSelfReviewStep:
         assert not result.success
         assert "LLM failed" in result.error
 
-    async def test_validate_output_checks_untracked_files(self) -> None:
+    async def test_validate_output_checks_untracked_files(self, tmp_path: Path) -> None:
         from sova.core.steps.self_review import SelfReviewStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SelfReviewStep()
 
         with patch("sova.utils.shell.run") as mock_run:
@@ -8204,10 +8355,10 @@ class TestSelfReviewStep:
 
         assert gate.passed
 
-    async def test_validate_output_fails_when_all_lost(self) -> None:
+    async def test_validate_output_fails_when_all_lost(self, tmp_path: Path) -> None:
         from sova.core.steps.self_review import SelfReviewStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = SelfReviewStep()
 
         with patch("sova.utils.shell.run") as mock_run:
@@ -8222,36 +8373,36 @@ class TestSelfReviewStep:
         assert not gate.passed
         assert "lost" in gate.reason.lower()
 
-    async def test_can_skip_when_review_disabled(self) -> None:
+    async def test_can_skip_when_review_disabled(self, tmp_path: Path) -> None:
         from sova.core.steps.self_review import SelfReviewStep
 
         config = ProjectConfig()
         config.review.enabled = False
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         step = SelfReviewStep()
         assert await step.can_skip(ctx)
 
-    async def test_can_skip_when_completed(self) -> None:
+    async def test_can_skip_when_completed(self, tmp_path: Path) -> None:
         from sova.core.steps.self_review import SelfReviewStep
 
-        ctx = _make_ctx(completed_steps=frozenset({"self_review"}))
+        ctx = _make_ctx(tmp_path, completed_steps=frozenset({"self_review"}))
         step = SelfReviewStep()
         assert await step.can_skip(ctx)
 
-    async def test_can_skip_when_budget_low(self) -> None:
+    async def test_can_skip_when_budget_low(self, tmp_path: Path) -> None:
         from sova.core.steps.self_review import SelfReviewStep
 
         config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("7.00"))  # 30% remaining, below 40% threshold
         step = SelfReviewStep()
         assert await step.can_skip(ctx)
 
-    async def test_does_not_skip_when_budget_sufficient(self) -> None:
+    async def test_does_not_skip_when_budget_sufficient(self, tmp_path: Path) -> None:
         from sova.core.steps.self_review import SelfReviewStep
 
         config = ProjectConfig(agent={"max_budget": Decimal("10.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("5.00"))  # 50% remaining, above 40% threshold
         step = SelfReviewStep()
         assert not await step.can_skip(ctx)
@@ -8303,8 +8454,10 @@ class TestConfidenceScoreStep:
 
         return LLMResult(text=json.dumps(payload), model="sonnet", cost_usd=Decimal("0.01"))
 
-    async def test_no_changes_scores_100_without_llm_call(self) -> None:
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+    async def test_no_changes_scores_100_without_llm_call(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, mock_invoke, _ = await self._execute(ctx, git_results=[MagicMock(success=True, stdout="")])
 
@@ -8312,9 +8465,12 @@ class TestConfidenceScoreStep:
         assert ctx.confidence_score == 100
         mock_invoke.assert_not_called()
 
-    async def test_execute_parses_score_and_updates_pr_body(self) -> None:
+    async def test_execute_parses_score_and_updates_pr_body(self, tmp_path: Path) -> None:
         ctx = _make_ctx(
-            config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"), pr_number=7
+            tmp_path,
+            config=ProjectConfig(confidence={"enabled": True}),
+            worktree_dir=tmp_path / "worktree",
+            pr_number=7,
         )
         risks = [{"category": "api", "severity": "important", "description": "Contract change"}]
 
@@ -8335,16 +8491,20 @@ class TestConfidenceScoreStep:
         assert "sova-confidence: 82" in new_body
         assert "82/100" in new_body
 
-    async def test_execute_clamps_out_of_range_score(self) -> None:
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+    async def test_execute_clamps_out_of_range_score(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, _, _ = await self._execute(ctx, self._llm_result({"score": 150, "risks": [], "summary": "x"}))
 
         assert result.success
         assert ctx.confidence_score == 100
 
-    async def test_execute_handles_llm_failure_gracefully(self) -> None:
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+    async def test_execute_handles_llm_failure_gracefully(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, _, _ = await self._execute(ctx, RuntimeError("LLM unavailable"))
 
@@ -8352,10 +8512,12 @@ class TestConfidenceScoreStep:
         assert ctx.confidence_score is None
         assert "skipped" in result.summary.lower()
 
-    async def test_execute_handles_unparseable_response_gracefully(self) -> None:
+    async def test_execute_handles_unparseable_response_gracefully(self, tmp_path: Path) -> None:
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, _, _ = await self._execute(
             ctx, LLMResult(text="not json at all", model="sonnet", cost_usd=Decimal("0.01"))
@@ -8365,10 +8527,12 @@ class TestConfidenceScoreStep:
         assert ctx.confidence_score is None
         assert "could not parse" in result.summary.lower()
 
-    async def test_execute_handles_non_object_json_gracefully(self) -> None:
+    async def test_execute_handles_non_object_json_gracefully(self, tmp_path: Path) -> None:
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, _, _ = await self._execute(ctx, LLMResult(text="[1, 2]", model="sonnet", cost_usd=Decimal("0.01")))
 
@@ -8376,9 +8540,9 @@ class TestConfidenceScoreStep:
         assert ctx.confidence_score is None
         assert "could not parse" in result.summary.lower()
 
-    async def test_execute_skips_llm_call_when_budget_exhausted(self) -> None:
+    async def test_execute_skips_llm_call_when_budget_exhausted(self, tmp_path: Path) -> None:
         config = ProjectConfig(confidence={"enabled": True}, agent={"max_budget": Decimal("1.00")})
-        ctx = _make_ctx(config=config, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=config, worktree_dir=tmp_path / "worktree")
         ctx.add_cost(Decimal("1.00"))
 
         result, mock_invoke, _ = await self._execute(ctx)
@@ -8387,8 +8551,10 @@ class TestConfidenceScoreStep:
         assert ctx.confidence_score is None
         mock_invoke.assert_not_called()
 
-    async def test_execute_skips_when_diff_names_command_fails(self) -> None:
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+    async def test_execute_skips_when_diff_names_command_fails(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, mock_invoke, _ = await self._execute(
             ctx, git_results=[MagicMock(success=False, stdout="", stderr="git error")]
@@ -8399,8 +8565,10 @@ class TestConfidenceScoreStep:
         assert "skipped" in result.summary.lower()
         mock_invoke.assert_not_called()
 
-    async def test_execute_skips_when_diff_content_command_fails(self) -> None:
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+    async def test_execute_skips_when_diff_content_command_fails(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, mock_invoke, _ = await self._execute(
             ctx,
@@ -8416,8 +8584,10 @@ class TestConfidenceScoreStep:
         assert "skipped" in result.summary.lower()
         mock_invoke.assert_not_called()
 
-    async def test_execute_skips_when_score_missing(self) -> None:
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+    async def test_execute_skips_when_score_missing(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, _, _ = await self._execute(ctx, self._llm_result({"risks": [], "summary": "x"}))
 
@@ -8425,8 +8595,10 @@ class TestConfidenceScoreStep:
         assert ctx.confidence_score is None
         assert "skipped" in result.summary.lower()
 
-    async def test_execute_skips_when_score_non_numeric(self) -> None:
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+    async def test_execute_skips_when_score_non_numeric(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, _, _ = await self._execute(ctx, self._llm_result({"score": "high", "risks": [], "summary": "x"}))
 
@@ -8434,8 +8606,10 @@ class TestConfidenceScoreStep:
         assert ctx.confidence_score is None
         assert "skipped" in result.summary.lower()
 
-    async def test_execute_skips_when_score_is_boolean(self) -> None:
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), worktree_dir=Path("/tmp/worktree"))
+    async def test_execute_skips_when_score_is_boolean(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
 
         result, _, _ = await self._execute(ctx, self._llm_result({"score": True, "risks": [], "summary": "x"}))
 
@@ -8476,11 +8650,11 @@ class TestConfidenceScoreStep:
         assert "\\## Notes" in out
         assert "`#999`" in out
 
-    async def test_pr_body_stays_idempotent_when_summary_contains_a_heading(self) -> None:
+    async def test_pr_body_stays_idempotent_when_summary_contains_a_heading(self, tmp_path: Path) -> None:
         from sova.core.steps.confidence_score import ConfidenceScoreStep
         from sova.utils.markdown import upsert_section
 
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": True}), pr_number=9)
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(confidence={"enabled": True}), pr_number=9)
         ctx.confidence_score = 82
         ctx.confidence_details = {"risks": [], "summary": "Fine.\n## Notes\nmore"}
         first = upsert_section("## Summary\nx\n", "Confidence Score", ConfidenceScoreStep._render_pr_section(ctx))
@@ -8493,39 +8667,41 @@ class TestConfidenceScoreStep:
         assert "more" not in second
         assert second.count("## Confidence Score") == 1
 
-    async def test_validate_output_always_passes(self) -> None:
+    async def test_validate_output_always_passes(self, tmp_path: Path) -> None:
         from sova.core.steps.confidence_score import ConfidenceScoreStep
 
-        gate = await ConfidenceScoreStep().validate_output(_make_ctx())
+        gate = await ConfidenceScoreStep().validate_output(_make_ctx(tmp_path))
         assert gate.passed
 
-    async def test_can_skip_when_disabled(self) -> None:
+    async def test_can_skip_when_disabled(self, tmp_path: Path) -> None:
         from sova.core.steps.confidence_score import ConfidenceScoreStep
 
-        ctx = _make_ctx(config=ProjectConfig(confidence={"enabled": False}))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(confidence={"enabled": False}))
         assert await ConfidenceScoreStep().can_skip(ctx)
 
-    async def test_can_skip_when_completed(self) -> None:
+    async def test_can_skip_when_completed(self, tmp_path: Path) -> None:
         from sova.core.steps.confidence_score import ConfidenceScoreStep
 
         ctx = _make_ctx(
-            config=ProjectConfig(confidence={"enabled": True}), completed_steps=frozenset({"confidence_score"})
+            tmp_path,
+            config=ProjectConfig(confidence={"enabled": True}),
+            completed_steps=frozenset({"confidence_score"}),
         )
         assert await ConfidenceScoreStep().can_skip(ctx)
 
-    async def test_can_skip_when_budget_low(self) -> None:
+    async def test_can_skip_when_budget_low(self, tmp_path: Path) -> None:
         from sova.core.steps.confidence_score import ConfidenceScoreStep
 
         config = ProjectConfig(confidence={"enabled": True}, agent={"max_budget": Decimal("10.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         ctx.add_cost(Decimal("7.00"))  # 30% remaining, below 40% threshold
         assert await ConfidenceScoreStep().can_skip(ctx)
 
-    async def test_does_not_skip_when_enabled_and_budget_sufficient(self) -> None:
+    async def test_does_not_skip_when_enabled_and_budget_sufficient(self, tmp_path: Path) -> None:
         from sova.core.steps.confidence_score import ConfidenceScoreStep
 
         config = ProjectConfig(confidence={"enabled": True}, agent={"max_budget": Decimal("10.00")})
-        ctx = _make_ctx(config=config)
+        ctx = _make_ctx(tmp_path, config=config)
         assert not await ConfidenceScoreStep().can_skip(ctx)
 
 
@@ -8536,12 +8712,12 @@ class TestConfidenceScoreStep:
 
 class TestDevelopStepExecute:
     @pytest.mark.parametrize("tier", [None, "simple", "complex", "epic"])
-    async def test_execute_calls_develop_command(self, tier: str | None) -> None:
+    async def test_execute_calls_develop_command(self, tier: str | None, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
         from sova.llm.complexity import ComplexityTier
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         ctx.complexity = ComplexityTier(tier) if tier is not None else None
         ctx.config.develop.step_timeout = 999
         step = DevelopStep()
@@ -8572,10 +8748,10 @@ class TestDevelopStepExecute:
         # per-tier hard timeout was introduced to fix).
         assert mock_invoke.call_args.kwargs["timeout"] == 999
 
-    async def test_execute_handles_runtime_error(self) -> None:
+    async def test_execute_handles_runtime_error(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.dispatch_command", new_callable=AsyncMock) as mock_invoke:
@@ -8585,12 +8761,12 @@ class TestDevelopStepExecute:
         assert not result.success
         assert "Timeout" in result.error
 
-    async def test_execute_fails_when_checks_exhausted(self) -> None:
+    async def test_execute_fails_when_checks_exhausted(self, tmp_path: Path) -> None:
         """execute() must return success=False when fix cycles are exhausted (#532)."""
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -8612,12 +8788,12 @@ class TestDevelopStepExecute:
         assert not result.success
         assert "checks still failing" in result.summary
 
-    async def test_execute_fails_when_checks_exhausted_budget(self) -> None:
+    async def test_execute_fails_when_checks_exhausted_budget(self, tmp_path: Path) -> None:
         """execute() must return success=False when fix cycles hit budget limit."""
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -8639,12 +8815,12 @@ class TestDevelopStepExecute:
         assert not result.success
         assert "budget exceeded" in result.summary
 
-    async def test_execute_fails_when_no_changes_produced(self) -> None:
+    async def test_execute_fails_when_no_changes_produced(self, tmp_path: Path) -> None:
         """execute() must return success=False when fix cycles produce no changes."""
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -8666,12 +8842,12 @@ class TestDevelopStepExecute:
         assert not result.success
         assert "no changes produced" in result.summary
 
-    async def test_execute_succeeds_when_checks_pass(self) -> None:
+    async def test_execute_succeeds_when_checks_pass(self, tmp_path: Path) -> None:
         """execute() must return success=True when checks pass."""
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -8693,12 +8869,12 @@ class TestDevelopStepExecute:
         assert result.success
         assert "checks passed" in result.summary
 
-    async def test_execute_succeeds_when_no_check_cmd(self) -> None:
+    async def test_execute_succeeds_when_no_check_cmd(self, tmp_path: Path) -> None:
         """execute() must return success=True when no check command is configured."""
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -8719,12 +8895,12 @@ class TestDevelopStepExecute:
 
         assert result.success
 
-    async def test_execute_fails_when_fix_llm_fails(self) -> None:
+    async def test_execute_fails_when_fix_llm_fails(self, tmp_path: Path) -> None:
         """execute() must return success=False when the fix LLM call fails."""
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -8760,11 +8936,11 @@ class TestDevelopStepExecute:
 
 
 class TestPushStepExecute:
-    async def test_execute_calls_git_push(self) -> None:
+    async def test_execute_calls_git_push(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with (
@@ -8784,17 +8960,17 @@ class TestPushStepExecute:
             force=False,
             lease_sha=None,
             set_upstream=True,
-            cwd=Path("/tmp/worktree"),
+            cwd=tmp_path / "worktree",
             no_verify=False,
             github_user=ctx.config.github_user,
         )
 
-    async def test_execute_plain_push_on_first_push(self) -> None:
+    async def test_execute_plain_push_on_first_push(self, tmp_path: Path) -> None:
         """No remote ref (first push of a new branch) must resolve to a plain push."""
         from sova.core.steps.push import PushStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with (
@@ -8813,18 +8989,18 @@ class TestPushStepExecute:
             force=False,
             lease_sha=None,
             set_upstream=True,
-            cwd=Path("/tmp/worktree"),
+            cwd=tmp_path / "worktree",
             no_verify=False,
             github_user=ctx.config.github_user,
         )
 
-    async def test_execute_plain_push_when_divergence_check_errors(self) -> None:
+    async def test_execute_plain_push_when_divergence_check_errors(self, tmp_path: Path) -> None:
         """A failed divergence check (unreachable git, shallow clone) must fall
         through to a plain push rather than guessing at force."""
         from sova.core.steps.push import PushStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with (
@@ -8843,17 +9019,17 @@ class TestPushStepExecute:
             force=False,
             lease_sha=None,
             set_upstream=True,
-            cwd=Path("/tmp/worktree"),
+            cwd=tmp_path / "worktree",
             no_verify=False,
             github_user=ctx.config.github_user,
         )
 
-    async def test_execute_force_with_lease_when_diverged(self) -> None:
+    async def test_execute_force_with_lease_when_diverged(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
         from sova.dashboard.services.feed_service import FeedEventSeverity
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with (
@@ -8878,7 +9054,7 @@ class TestPushStepExecute:
             force=True,
             lease_sha="deadbeef",
             set_upstream=True,
-            cwd=Path("/tmp/worktree"),
+            cwd=tmp_path / "worktree",
             no_verify=False,
             github_user=ctx.config.github_user,
         )
@@ -8886,12 +9062,12 @@ class TestPushStepExecute:
         _, emit_kwargs = mock_emit.call_args
         assert emit_kwargs["severity"] == FeedEventSeverity.warning
 
-    async def test_execute_emits_info_when_force_push_drops_nothing(self) -> None:
+    async def test_execute_emits_info_when_force_push_drops_nothing(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
         from sova.dashboard.services.feed_service import FeedEventSeverity
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with (
@@ -8913,7 +9089,7 @@ class TestPushStepExecute:
         _, emit_kwargs = mock_emit.call_args
         assert emit_kwargs["severity"] == FeedEventSeverity.info
 
-    async def test_execute_skips_hooks_when_budget_critically_low(self) -> None:
+    async def test_execute_skips_hooks_when_budget_critically_low(self, tmp_path: Path) -> None:
         """When dollar budget is critically low, Push must skip the pre-push
         hook, matching CommitStep's BUDGET_SKIP_HOOKS_THRESHOLD so both
         hook-skip decisions agree. Keyed on budget_remaining_fraction alone
@@ -8924,7 +9100,7 @@ class TestPushStepExecute:
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
         config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"), config=config)
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree", config=config)
         ctx.cost_usd = Decimal("9.50")  # 5% remaining, below the 8% skip-hooks threshold
         step = PushStep()
 
@@ -8944,16 +9120,16 @@ class TestPushStepExecute:
             force=False,
             lease_sha=None,
             set_upstream=True,
-            cwd=Path("/tmp/worktree"),
+            cwd=tmp_path / "worktree",
             no_verify=True,
             github_user=ctx.config.github_user,
         )
 
-    async def test_execute_rejects_empty_branch_name(self) -> None:
+    async def test_execute_rejects_empty_branch_name(self, tmp_path: Path) -> None:
         """An empty branch_name must fail fast without ever calling git_ops.push."""
         from sova.core.steps.push import PushStep
 
-        ctx = _make_ctx(branch_name="", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
@@ -8963,11 +9139,11 @@ class TestPushStepExecute:
         assert "branch_name is empty" in result.error
         mock_push.assert_not_awaited()
 
-    async def test_execute_handles_push_failure(self) -> None:
+    async def test_execute_handles_push_failure(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with (
@@ -8984,7 +9160,7 @@ class TestPushStepExecute:
         assert not result.success
         assert "Permission denied" in result.error
 
-    async def test_execute_retries_once_on_rejection_when_lease_unchanged(self) -> None:
+    async def test_execute_retries_once_on_rejection_when_lease_unchanged(self, tmp_path: Path) -> None:
         """A force push rejected due to a transient failure (the fresh
         divergence check on retry observes the SAME remote SHA as the first
         attempt) is re-evaluated once and retried with that unchanged lease,
@@ -8992,7 +9168,7 @@ class TestPushStepExecute:
         from sova.core.steps.push import PushStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         divergence_results = [
@@ -9023,7 +9199,7 @@ class TestPushStepExecute:
         assert second_call_kwargs["force"] is True
         assert second_call_kwargs["lease_sha"] == "same-sha"
 
-    async def test_execute_aborts_retry_when_remote_moved(self) -> None:
+    async def test_execute_aborts_retry_when_remote_moved(self, tmp_path: Path) -> None:
         """A force push rejected because a concurrent writer landed a real
         commit must never retry with a freshly re-derived lease: that lease
         would be trivially satisfied by the very commit that caused the
@@ -9033,7 +9209,7 @@ class TestPushStepExecute:
         from sova.core.steps.push import PushStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         divergence_results = [
@@ -9064,7 +9240,7 @@ class TestPushStepExecute:
         mock_dropped.assert_not_awaited()
         mock_emit.assert_not_called()
 
-    async def test_execute_plain_push_rejection_fails_without_escalating(self) -> None:
+    async def test_execute_plain_push_rejection_fails_without_escalating(self, tmp_path: Path) -> None:
         """A plain push (original decision was ANCESTOR, not DIVERGED) that
         gets rejected means a concurrent writer landed a real commit between
         the check and the push. This must surface as a clear error on the
@@ -9072,7 +9248,7 @@ class TestPushStepExecute:
         from sova.core.steps.push import PushStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with (
@@ -9091,13 +9267,13 @@ class TestPushStepExecute:
         mock_push.assert_awaited_once()
         assert mock_push.await_args.kwargs["force"] is False
 
-    async def test_execute_surfaces_error_when_retry_also_rejected(self) -> None:
+    async def test_execute_surfaces_error_when_retry_also_rejected(self, tmp_path: Path) -> None:
         """A concurrent writer refusing both attempts must surface as a clear
         error, never fall back to a bare force push."""
         from sova.core.steps.push import PushStep
         from sova.git.branch import DivergenceCheck, DivergenceStatus
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with (
@@ -9121,10 +9297,10 @@ class TestPushStepExecute:
         assert "rejected" in result.error.lower()
         assert mock_push.await_count == 2
 
-    async def test_validate_output_passes_with_commits(self) -> None:
+    async def test_validate_output_passes_with_commits(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with patch("sova.core.steps.push.run") as mock_run:
@@ -9133,10 +9309,10 @@ class TestPushStepExecute:
 
         assert gate.passed
 
-    async def test_validate_output_fails_on_command_failure(self) -> None:
+    async def test_validate_output_fails_on_command_failure(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with patch("sova.core.steps.push.run") as mock_run:
@@ -9146,10 +9322,10 @@ class TestPushStepExecute:
         assert not gate.passed
         assert "Failed to count" in gate.reason
 
-    async def test_validate_output_fails_on_bad_output(self) -> None:
+    async def test_validate_output_fails_on_bad_output(self, tmp_path: Path) -> None:
         from sova.core.steps.push import PushStep
 
-        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, branch_name="feat/test", worktree_dir=tmp_path / "worktree")
         step = PushStep()
 
         with patch("sova.core.steps.push.run") as mock_run:
@@ -9166,11 +9342,11 @@ class TestPushStepExecute:
 
 
 class TestAddressReviewStepExecute:
-    async def test_execute_loads_findings_from_file(self) -> None:
+    async def test_execute_loads_findings_from_file(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, pr_number=42, worktree_dir=tmp_path / "worktree")
         step = AddressReviewStep()
 
         findings = [
@@ -9205,11 +9381,11 @@ class TestAddressReviewStepExecute:
         assert "foo.py:10" in prompt
         assert mock_invoke.call_args.kwargs["task_type"] == "address_review"
 
-    async def test_execute_includes_coderabbit_findings(self) -> None:
+    async def test_execute_includes_coderabbit_findings(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, pr_number=42, worktree_dir=tmp_path / "worktree")
         step = AddressReviewStep()
 
         sova_findings = [
@@ -9250,11 +9426,11 @@ class TestAddressReviewStepExecute:
         assert "CodeRabbit finding" in prompt
         assert "coderabbit" in prompt
 
-    async def test_execute_captures_head_before_llm(self) -> None:
+    async def test_execute_captures_head_before_llm(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, pr_number=42, worktree_dir=tmp_path / "worktree")
         step = AddressReviewStep()
 
         findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Issue"}]
@@ -9277,11 +9453,11 @@ class TestAddressReviewStepExecute:
 
         assert step._head_before_llm == "abc123"
 
-    async def test_execute_falls_back_to_db(self) -> None:
+    async def test_execute_falls_back_to_db(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, pr_number=42, worktree_dir=tmp_path / "worktree")
         ctx.resume_run_id = 99
         step = AddressReviewStep()
 
@@ -9316,10 +9492,10 @@ class TestAddressReviewStepExecute:
         prompt = mock_invoke.call_args[0][1]
         assert "Formatting" in prompt
 
-    async def test_execute_handles_llm_failure(self) -> None:
+    async def test_execute_handles_llm_failure(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep
 
-        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, pr_number=42, worktree_dir=tmp_path / "worktree")
         step = AddressReviewStep()
 
         findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Issue"}]
@@ -9343,10 +9519,10 @@ class TestAddressReviewStepExecute:
         assert not result.success
         assert "LLM crashed" in result.error
 
-    async def test_validate_output_passes_with_staged_changes(self) -> None:
+    async def test_validate_output_passes_with_staged_changes(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = AddressReviewStep()
 
         with patch("sova.core.steps.address_review.run") as mock_run:
@@ -9359,10 +9535,10 @@ class TestAddressReviewStepExecute:
 
         assert gate.passed
 
-    async def test_validate_output_passes_when_head_moved(self) -> None:
+    async def test_validate_output_passes_when_head_moved(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = AddressReviewStep()
         step._head_before_llm = "abc123"
 
@@ -9376,11 +9552,11 @@ class TestAddressReviewStepExecute:
 
         assert gate.passed
 
-    async def test_validate_output_passes_when_findings_already_fixed(self) -> None:
+    async def test_validate_output_passes_when_findings_already_fixed(self, tmp_path: Path) -> None:
         """When LLM produces no changes but branch has prior commits, findings are already fixed."""
         from sova.core.steps.address_review import AddressReviewStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = AddressReviewStep()
         step._head_before_llm = "abc123"
 
@@ -9395,10 +9571,10 @@ class TestAddressReviewStepExecute:
 
         assert gate.passed
 
-    async def test_validate_output_fails_with_no_changes_and_no_prior_commits(self) -> None:
+    async def test_validate_output_fails_with_no_changes_and_no_prior_commits(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import AddressReviewStep
 
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = AddressReviewStep()
         step._head_before_llm = "abc123"
 
@@ -9444,22 +9620,22 @@ class TestAddressReviewHelpers:
         assert "1." in prompt
         assert "2." in prompt
 
-    def test_load_review_findings_from_handoff(self) -> None:
+    def test_load_review_findings_from_handoff(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import _load_review_findings
 
         mock_handoff = MagicMock()
         mock_handoff.details = {"findings": [{"file": "x.py"}]}
 
         with patch("sova.core.steps.address_review.read_handoff_file", return_value=mock_handoff):
-            findings = _load_review_findings(Path("/tmp"))
+            findings = _load_review_findings(tmp_path)
 
         assert len(findings) == 1
 
-    def test_load_review_findings_returns_empty_when_no_handoff(self) -> None:
+    def test_load_review_findings_returns_empty_when_no_handoff(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import _load_review_findings
 
         with patch("sova.core.steps.address_review.read_handoff_file", return_value=None):
-            findings = _load_review_findings(Path("/tmp"))
+            findings = _load_review_findings(tmp_path)
 
         assert findings == []
 
@@ -9507,7 +9683,7 @@ class TestAddressReviewHelpers:
         assert len(findings) == 1
         assert findings[0]["file"] == "a.py"
 
-    async def test_execute_falls_back_to_issue_query(self) -> None:
+    async def test_execute_falls_back_to_issue_query(self, tmp_path: Path) -> None:
         """When file and resume_run_id both miss, finds reviewer run by issue."""
         from datetime import datetime, timezone
 
@@ -9533,7 +9709,7 @@ class TestAddressReviewHelpers:
                 )
             )
 
-        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, pr_number=42, worktree_dir=tmp_path / "worktree")
         ctx.issue_number = "201"
         ctx.resume_run_id = None
         step = AddressReviewStep()
@@ -9569,7 +9745,7 @@ class TestResolveExternalReviewsStep:
         """Stub the address-summary HEAD lookup.
 
         ``_post_address_summary()`` resolves HEAD in ``ctx.working_dir``, which
-        for ``_make_ctx()`` is a placeholder path that need not exist. Without
+        for ``_make_ctx(tmp_path)`` is a placeholder path that need not exist. Without
         the stub the subprocess spawn itself fails on the missing cwd, so these
         tests would assert the step's degraded path rather than its real one.
         """
@@ -9579,10 +9755,10 @@ class TestResolveExternalReviewsStep:
         ):
             yield
 
-    async def test_skips_when_no_pr(self) -> None:
+    async def test_skips_when_no_pr(self, tmp_path: Path) -> None:
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.pr_number = None
         step = ResolveExternalReviewsStep()
 
@@ -9590,11 +9766,11 @@ class TestResolveExternalReviewsStep:
         assert result.success
         assert "No PR" in result.summary
 
-    async def test_resolves_threads_and_dismisses_reviews(self) -> None:
+    async def test_resolves_threads_and_dismisses_reviews(self, tmp_path: Path) -> None:
         from sova.adapters.external_reviews import _ThreadsResult
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
-        ctx = _make_ctx(pr_number=42)
+        ctx = _make_ctx(tmp_path, pr_number=42)
         step = ResolveExternalReviewsStep()
 
         cr_result = _ThreadsResult(thread_ids=["thread-1", "thread-2"])
@@ -9627,14 +9803,14 @@ class TestResolveExternalReviewsStep:
         assert "1 bot reviews dismissed" in result.summary
         mock_resolve.assert_awaited_once_with(["thread-1", "thread-2"], github_user="")
 
-    async def test_includes_github_user_in_authors(self) -> None:
+    async def test_includes_github_user_in_authors(self, tmp_path: Path) -> None:
         """SOVA reviewer threads (posted under github_user) should also be resolved."""
         from sova.adapters.external_reviews import _ThreadsResult
         from sova.config.models import ProjectConfig
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
         config = ProjectConfig(github_user="xsovad06", github_repo="user/repo")
-        ctx = _make_ctx(pr_number=42, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=42, config=config)
         step = ResolveExternalReviewsStep()
 
         cr_result = _ThreadsResult(thread_ids=["thread-sova"])
@@ -9668,14 +9844,14 @@ class TestResolveExternalReviewsStep:
         assert "xsovad06" in call_kwargs["authors"]
         assert "coderabbitai" in call_kwargs["authors"]
 
-    async def test_includes_active_gh_user_in_authors(self) -> None:
+    async def test_includes_active_gh_user_in_authors(self, tmp_path: Path) -> None:
         """When active gh user differs from config, both should be in the authors filter."""
         from sova.adapters.external_reviews import _ThreadsResult
         from sova.config.models import ProjectConfig
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
         config = ProjectConfig(github_user="xsovad06", github_repo="user/repo")
-        ctx = _make_ctx(pr_number=42, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=42, config=config)
         step = ResolveExternalReviewsStep()
 
         cr_result = _ThreadsResult(thread_ids=["thread-sova"])
@@ -9709,14 +9885,14 @@ class TestResolveExternalReviewsStep:
         assert "dsova06" in call_kwargs["authors"], "active gh auth user must be included"
         assert "coderabbitai" in call_kwargs["authors"], "default bot authors must be included"
 
-    async def test_active_gh_user_failure_does_not_break_resolution(self) -> None:
+    async def test_active_gh_user_failure_does_not_break_resolution(self, tmp_path: Path) -> None:
         """If get_active_gh_user fails, resolution should still work with configured user."""
         from sova.adapters.external_reviews import _ThreadsResult
         from sova.config.models import ProjectConfig
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
         config = ProjectConfig(github_user="xsovad06", github_repo="user/repo")
-        ctx = _make_ctx(pr_number=42, config=config)
+        ctx = _make_ctx(tmp_path, pr_number=42, config=config)
         step = ResolveExternalReviewsStep()
 
         cr_result = _ThreadsResult(thread_ids=["thread-1"])
@@ -9748,11 +9924,11 @@ class TestResolveExternalReviewsStep:
         call_kwargs = mock_fetch.call_args[1]
         assert "xsovad06" in call_kwargs["authors"]
 
-    async def test_no_threads_to_resolve(self) -> None:
+    async def test_no_threads_to_resolve(self, tmp_path: Path) -> None:
         from sova.adapters.external_reviews import _ThreadsResult
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
-        ctx = _make_ctx(pr_number=42)
+        ctx = _make_ctx(tmp_path, pr_number=42)
         ctx.pipeline_variant = "address_review"
         step = ResolveExternalReviewsStep()
 
@@ -9781,18 +9957,18 @@ class TestResolveExternalReviewsStep:
         # address-review budget counts.
         assert result.summary == "address summary posted"
 
-    async def test_can_skip_without_pr(self) -> None:
+    async def test_can_skip_without_pr(self, tmp_path: Path) -> None:
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.pr_number = None
         step = ResolveExternalReviewsStep()
         assert await step.can_skip(ctx)
 
-    async def test_gate_always_passes(self) -> None:
+    async def test_gate_always_passes(self, tmp_path: Path) -> None:
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
-        ctx = _make_ctx(pr_number=42)
+        ctx = _make_ctx(tmp_path, pr_number=42)
         step = ResolveExternalReviewsStep()
         gate = await step.validate_output(ctx)
         assert gate.passed
@@ -10000,10 +10176,10 @@ class TestDismissBotReviewsEdgeCases:
 
 
 class TestLoadCoderabbitFindings:
-    async def test_returns_findings_from_external_reviews(self) -> None:
+    async def test_returns_findings_from_external_reviews(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import _load_coderabbit_findings
 
-        ctx = _make_ctx(pr_number=42)
+        ctx = _make_ctx(tmp_path, pr_number=42)
 
         mock_result = MagicMock()
         mock_result.findings = [
@@ -10023,19 +10199,19 @@ class TestLoadCoderabbitFindings:
         assert findings[0]["source"] == "coderabbit"
         assert thread_ids == ["t1"]
 
-    async def test_returns_empty_without_pr(self) -> None:
+    async def test_returns_empty_without_pr(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import _load_coderabbit_findings
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         ctx.pr_number = None
         findings, thread_ids = await _load_coderabbit_findings(ctx)
         assert findings == []
         assert thread_ids == []
 
-    async def test_returns_empty_on_exception(self) -> None:
+    async def test_returns_empty_on_exception(self, tmp_path: Path) -> None:
         from sova.core.steps.address_review import _load_coderabbit_findings
 
-        ctx = _make_ctx(pr_number=42)
+        ctx = _make_ctx(tmp_path, pr_number=42)
 
         with patch(
             "sova.adapters.external_reviews._fetch_coderabbit_threads",
@@ -10056,8 +10232,8 @@ class TestLoadCoderabbitFindings:
 class TestIssuelessWorkflow:
     """Test that the workflow engine and steps handle issue-less runs."""
 
-    async def test_workflow_engine_issueless_run(self) -> None:
-        ctx = _make_ctx(issue_number="", run_label="planner-123")
+    async def test_workflow_engine_issueless_run(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, issue_number="", run_label="planner-123")
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
@@ -10070,19 +10246,19 @@ class TestIssuelessWorkflow:
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run is not None
 
-    async def test_workflow_engine_issueless_creates_task_run(self) -> None:
-        ctx = _make_ctx(issue_number="", run_label="test-run")
+    async def test_workflow_engine_issueless_creates_task_run(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(tmp_path, issue_number="", run_label="test-run")
         step = DummyStep(should_pass=True, gate_pass=True)
         engine = WorkflowEngine(steps=[step], ctx=ctx)
 
         result = await engine.run()
         assert result.task_run_id is not None
 
-    async def test_dispatch_requires_role_for_issueless(self) -> None:
+    async def test_dispatch_requires_role_for_issueless(self, tmp_path: Path) -> None:
         """Dispatch without issue and without role should raise ValueError."""
         from sova.roles.dispatcher import dispatch
 
-        ctx = _make_ctx(issue_number="")
+        ctx = _make_ctx(tmp_path, issue_number="")
         with pytest.raises(ValueError, match="Issue-less runs require"):
             await dispatch(ctx)
 
@@ -10323,7 +10499,7 @@ class TestInstallSigtermHandler:
 class TestHandleSigtermShutdown:
     """_handle_sigterm_shutdown() (issue #978): partial-work staging + best-effort cost update."""
 
-    async def test_stages_partial_work_and_updates_cost(self) -> None:
+    async def test_stages_partial_work_and_updates_cost(self, tmp_path: Path) -> None:
         from sova.cli.commands.run import _handle_sigterm_shutdown
         from sova.db.models import TaskRun
         from sova.db.session import get_session
@@ -10336,7 +10512,7 @@ class TestHandleSigtermShutdown:
                 run_id = run.id
 
         ctx = MagicMock()
-        ctx.worktree_dir = Path("/tmp/does-not-matter")
+        ctx.worktree_dir = tmp_path / "does-not-matter"
         ctx.project_dir = None
         ctx.cost_usd = Decimal("1.23")
 
@@ -10350,11 +10526,11 @@ class TestHandleSigtermShutdown:
                 refreshed = await session.get(TaskRun, run_id)
                 assert refreshed.total_cost_usd == Decimal("1.23")
 
-    async def test_no_task_run_id_skips_db_update(self) -> None:
+    async def test_no_task_run_id_skips_db_update(self, tmp_path: Path) -> None:
         from sova.cli.commands.run import _handle_sigterm_shutdown
 
         ctx = MagicMock()
-        ctx.worktree_dir = Path("/tmp/does-not-matter")
+        ctx.worktree_dir = tmp_path / "does-not-matter"
 
         with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, None)
@@ -10373,12 +10549,12 @@ class TestHandleSigtermShutdown:
 
         mock_preserve.assert_not_awaited()
 
-    async def test_db_failure_during_shutdown_does_not_raise(self) -> None:
+    async def test_db_failure_during_shutdown_does_not_raise(self, tmp_path: Path) -> None:
         """Best-effort cleanup during shutdown must not raise, even on a broken session."""
         from sova.cli.commands.run import _handle_sigterm_shutdown
 
         ctx = MagicMock()
-        ctx.worktree_dir = Path("/tmp/does-not-matter")
+        ctx.worktree_dir = tmp_path / "does-not-matter"
         ctx.project_dir = None
         ctx.cost_usd = Decimal("0")
 
@@ -10450,12 +10626,12 @@ class TestRunWorkflowCancellation:
 class TestDevelopStepInnerCheckLoop:
     """Tests for _run_inner_check_loop and its helpers."""
 
-    async def test_check_loop_skipped_when_disabled(self) -> None:
+    async def test_check_loop_skipped_when_disabled(self, tmp_path: Path) -> None:
         from sova.config.models import DevelopConfig
         from sova.core.steps.develop import DevelopStep
 
         cfg = ProjectConfig(develop=DevelopConfig(max_fix_cycles=0))
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         passed, summary = await step._run_inner_check_loop(ctx)
@@ -10467,7 +10643,7 @@ class TestDevelopStepInnerCheckLoop:
         from sova.core.steps.develop import DevelopStep
 
         cfg = ProjectConfig(check_cmd="", develop=DevelopConfig(max_fix_cycles=3))
-        ctx = _make_ctx(config=cfg, worktree_dir=tmp_path)
+        ctx = _make_ctx(tmp_path / "project", config=cfg, worktree_dir=tmp_path)
         step = DevelopStep()
 
         passed, summary = await step._run_inner_check_loop(ctx)
@@ -10475,11 +10651,11 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is True
         assert summary == ""
 
-    async def test_check_loop_skipped_when_cmd_not_found(self) -> None:
+    async def test_check_loop_skipped_when_cmd_not_found(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
 
         cfg = ProjectConfig(check_cmd="nonexistent_tool check")
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
@@ -10490,11 +10666,11 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is True
         assert summary == ""
 
-    async def test_checks_pass_first_try(self) -> None:
+    async def test_checks_pass_first_try(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
 
         cfg = ProjectConfig(check_cmd="make check")
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
@@ -10507,12 +10683,12 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is True
         assert summary == "checks passed"
 
-    async def test_fix_cycle_succeeds(self) -> None:
+    async def test_fix_cycle_succeeds(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
 
         cfg = ProjectConfig(check_cmd="make check")
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -10544,7 +10720,7 @@ class TestDevelopStepInnerCheckLoop:
         assert summary == "checks passed after 1 fix cycle(s)"
         assert ctx.cost_usd == Decimal("0.50")
 
-    async def test_fix_cycle_no_changes_exhausts_attempts(self) -> None:
+    async def test_fix_cycle_no_changes_exhausts_attempts(self, tmp_path: Path) -> None:
         from sova.config.models import DevelopConfig
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
@@ -10553,7 +10729,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=2, guard_test_weakening=False),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -10592,7 +10768,7 @@ class TestDevelopStepInnerCheckLoop:
         assert "FAIL" in summary
         assert mock_invoke.await_count == 2
 
-    async def test_check_loop_budget_sized_from_high_water_mark_duration(self) -> None:
+    async def test_check_loop_budget_sized_from_high_water_mark_duration(self, tmp_path: Path) -> None:
         """Issue #1260 review finding #2: the reserve fed into
         _check_loop_budget() must be a high-water mark across cycles, not
         just the most recently measured duration. A slow check observed once
@@ -10606,7 +10782,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=3, guard_test_weakening=False),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         check_call_count = 0
@@ -10642,7 +10818,7 @@ class TestDevelopStepInnerCheckLoop:
         measured_durations = [call.args[4] for call in mock_budget.call_args_list]
         assert measured_durations == [5, 50, 50]
 
-    async def test_budget_exceeded_stops_loop(self) -> None:
+    async def test_budget_exceeded_stops_loop(self, tmp_path: Path) -> None:
         from sova.config.models import AgentConfig, DevelopConfig
         from sova.core.steps.develop import DevelopStep
 
@@ -10651,7 +10827,7 @@ class TestDevelopStepInnerCheckLoop:
             agent=AgentConfig(max_budget=Decimal("1.00")),
             develop=DevelopConfig(max_fix_cycles=3),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         ctx.cost_usd = Decimal("2.00")  # Already over budget
         step = DevelopStep()
 
@@ -10665,7 +10841,7 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is False
         assert "budget exceeded" in summary
 
-    async def test_low_budget_fraction_stops_retry_without_failing(self) -> None:
+    async def test_low_budget_fraction_stops_retry_without_failing(self, tmp_path: Path) -> None:
         """Below the 20% threshold, the loop stops retrying but reports success (preserve work)."""
         from sova.config.models import AgentConfig, DevelopConfig
         from sova.core.steps.develop import DevelopStep
@@ -10675,7 +10851,7 @@ class TestDevelopStepInnerCheckLoop:
             agent=AgentConfig(max_budget=Decimal("10.00")),
             develop=DevelopConfig(max_fix_cycles=3),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         ctx.cost_usd = Decimal("8.50")  # 15% remaining, below 20% threshold
         step = DevelopStep()
 
@@ -10689,11 +10865,11 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is True
         assert "stopping retries" in summary
 
-    async def test_llm_failure_returns_error_summary(self) -> None:
+    async def test_llm_failure_returns_error_summary(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
 
         cfg = ProjectConfig(check_cmd="make check")
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -10712,7 +10888,7 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is False
         assert "LLM timeout" in summary
 
-    async def test_test_weakening_detected_and_reverted(self) -> None:
+    async def test_test_weakening_detected_and_reverted(self, tmp_path: Path) -> None:
         from sova.config.models import DevelopConfig
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
@@ -10721,7 +10897,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=1, guard_test_weakening=True),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -10755,7 +10931,7 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is False
         assert "test weakening detected" in summary
 
-    async def test_committed_test_weakening_triggers_hard_reset(self) -> None:
+    async def test_committed_test_weakening_triggers_hard_reset(self, tmp_path: Path) -> None:
         """When the LLM commits test file changes (disobeying instructions),
         git reset --hard pre_hash is used instead of git checkout HEAD."""
         from sova.config.models import DevelopConfig
@@ -10766,7 +10942,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=1, guard_test_weakening=True),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -10805,12 +10981,12 @@ class TestDevelopStepInnerCheckLoop:
         reset_call = mock_run.call_args_list[-1]
         assert reset_call.args == ("git", "reset", "--hard", "abc123")
 
-    async def test_execute_includes_check_summary(self) -> None:
+    async def test_execute_includes_check_summary(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
 
         cfg = ProjectConfig(check_cmd="make check")
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -10831,26 +11007,26 @@ class TestDevelopStepInnerCheckLoop:
         assert result.success
         assert "checks passed after 1 fix cycle(s)" in result.summary
 
-    async def test_resolve_check_cmd_uses_config(self) -> None:
+    async def test_resolve_check_cmd_uses_config(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import _resolve_check_cmd
 
-        ctx = _make_ctx(config=ProjectConfig(check_cmd="pytest"))
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(check_cmd="pytest"))
         assert _resolve_check_cmd(ctx) == "pytest"
 
     async def test_resolve_check_cmd_fallback_makefile(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import _resolve_check_cmd
 
         (tmp_path / "Makefile").write_text("check:\n\techo ok\n")
-        ctx = _make_ctx(config=ProjectConfig(check_cmd=""), worktree_dir=tmp_path)
+        ctx = _make_ctx(tmp_path / "project", config=ProjectConfig(check_cmd=""), worktree_dir=tmp_path)
         assert _resolve_check_cmd(ctx) == "make check"
 
     async def test_resolve_check_cmd_returns_none(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import _resolve_check_cmd
 
-        ctx = _make_ctx(config=ProjectConfig(check_cmd=""), worktree_dir=tmp_path)
+        ctx = _make_ctx(tmp_path / "project", config=ProjectConfig(check_cmd=""), worktree_dir=tmp_path)
         assert _resolve_check_cmd(ctx) is None
 
-    async def test_checks_still_failing_after_all_cycles(self) -> None:
+    async def test_checks_still_failing_after_all_cycles(self, tmp_path: Path) -> None:
         """Loop exhaustion: changes are produced but checks keep failing."""
         from sova.config.models import DevelopConfig
         from sova.core.steps.develop import DevelopStep
@@ -10860,7 +11036,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=2, guard_test_weakening=False),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -10899,7 +11075,7 @@ class TestDevelopStepInnerCheckLoop:
         assert "FAIL still" in summary
         assert mock_invoke.await_count == 2
 
-    async def test_initial_check_failure_logs_tail_not_head(self) -> None:
+    async def test_initial_check_failure_logs_tail_not_head(self, tmp_path: Path) -> None:
         """Issue #1260: the first check failure must log the output's tail, not its
         head, so the diagnosable part survives even when no fix cycle runs."""
         import time
@@ -10912,7 +11088,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=1),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         # Force the budget check to bail immediately before any fix cycle runs,
         # so the test only needs to mock the initial check run.
         ctx.step_deadline_seconds = 1
@@ -10940,7 +11116,7 @@ class TestDevelopStepInnerCheckLoop:
         assert "TAIL_MARKER" in logged_output
         assert "HEAD_MARKER" not in logged_output
 
-    async def test_test_weakening_continues_when_not_last_cycle(self) -> None:
+    async def test_test_weakening_continues_when_not_last_cycle(self, tmp_path: Path) -> None:
         """Test weakening on non-final cycle skips re-run but continues loop."""
         from sova.config.models import DevelopConfig
         from sova.core.steps.develop import DevelopStep
@@ -10950,7 +11126,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=2, guard_test_weakening=True),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -10994,7 +11170,7 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is True
         assert summary == "checks passed after 2 fix cycle(s)"
 
-    async def test_committed_test_weakening_detected(self) -> None:
+    async def test_committed_test_weakening_detected(self, tmp_path: Path) -> None:
         """Test weakening via committed test files uses git reset --hard, not checkout."""
         from sova.config.models import DevelopConfig
         from sova.core.steps.develop import DevelopStep
@@ -11004,7 +11180,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=1, guard_test_weakening=True),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -11044,12 +11220,12 @@ class TestDevelopStepInnerCheckLoop:
         reset_call = mock_run.call_args_list[-1]
         assert reset_call[0] == ("git", "reset", "--hard", "abc123")
 
-    async def test_detect_fix_changes_all_sources(self) -> None:
+    async def test_detect_fix_changes_all_sources(self, tmp_path: Path) -> None:
         """_detect_fix_changes detects unstaged, staged, and commit changes independently."""
         from sova.core.steps.develop import DevelopStep
 
         step = DevelopStep()
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
 
         with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
             # Case: only staged changes
@@ -11067,12 +11243,12 @@ class TestDevelopStepInnerCheckLoop:
         assert changes["has_untracked"] is False
         assert changes["any"] is True
 
-    async def test_detect_fix_changes_untracked_only(self) -> None:
+    async def test_detect_fix_changes_untracked_only(self, tmp_path: Path) -> None:
         """_detect_fix_changes returns any=True when only untracked files exist."""
         from sova.core.steps.develop import DevelopStep
 
         step = DevelopStep()
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
 
         with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
@@ -11089,12 +11265,12 @@ class TestDevelopStepInnerCheckLoop:
         assert changes["has_new_commits"] is False
         assert changes["any"] is True
 
-    async def test_get_head_hash_failure(self) -> None:
+    async def test_get_head_hash_failure(self, tmp_path: Path) -> None:
         """_get_head_hash returns empty string on failure."""
         from sova.core.steps.develop import DevelopStep
 
         step = DevelopStep()
-        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
 
         with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = MagicMock(success=False, stdout="", stderr="not a repo")
@@ -11102,7 +11278,7 @@ class TestDevelopStepInnerCheckLoop:
 
         assert result == ""
 
-    async def test_get_dirty_test_files_returns_matches(self) -> None:
+    async def test_get_dirty_test_files_returns_matches(self, tmp_path: Path) -> None:
         """_get_dirty_test_files filters for test file patterns."""
         from sova.core.steps.develop import _get_dirty_test_files
 
@@ -11111,11 +11287,11 @@ class TestDevelopStepInnerCheckLoop:
                 success=True,
                 stdout="src/module.py\ntests/test_core.py\nutils_test.py\n",
             )
-            result = await _get_dirty_test_files(Path("/tmp/worktree"))
+            result = await _get_dirty_test_files(tmp_path / "worktree")
 
         assert result == {"tests/test_core.py", "utils_test.py"}
 
-    def test_check_loop_budget_returns_none_when_within_limits(self) -> None:
+    def test_check_loop_budget_returns_none_when_within_limits(self, tmp_path: Path) -> None:
         """_check_loop_budget returns None when time and budget are within limits."""
         import time
 
@@ -11123,7 +11299,7 @@ class TestDevelopStepInnerCheckLoop:
         from sova.core.steps.develop import DevelopStep
 
         cfg = ProjectConfig(develop=DevelopConfig(max_fix_time=300))
-        ctx = _make_ctx(config=cfg)
+        ctx = _make_ctx(tmp_path, config=cfg)
         step = DevelopStep()
 
         loop_start = time.monotonic()
@@ -11131,7 +11307,7 @@ class TestDevelopStepInnerCheckLoop:
 
         assert result is None
 
-    def test_check_loop_budget_returns_error_when_time_exceeded(self) -> None:
+    def test_check_loop_budget_returns_error_when_time_exceeded(self, tmp_path: Path) -> None:
         """_check_loop_budget returns error summary when time budget exceeded."""
         import time
 
@@ -11139,7 +11315,7 @@ class TestDevelopStepInnerCheckLoop:
         from sova.core.steps.develop import DevelopStep
 
         cfg = ProjectConfig(develop=DevelopConfig(max_fix_time=1))
-        ctx = _make_ctx(config=cfg)
+        ctx = _make_ctx(tmp_path, config=cfg)
         step = DevelopStep()
 
         loop_start = time.monotonic() - 10
@@ -11149,7 +11325,7 @@ class TestDevelopStepInnerCheckLoop:
         assert "time budget exceeded" in result
         assert "after 1 fix cycle(s)" in result
 
-    def test_check_loop_budget_returns_error_when_budget_exceeded(self) -> None:
+    def test_check_loop_budget_returns_error_when_budget_exceeded(self, tmp_path: Path) -> None:
         """_check_loop_budget returns error summary when cost budget exceeded."""
         import time
 
@@ -11160,7 +11336,7 @@ class TestDevelopStepInnerCheckLoop:
             agent=AgentConfig(max_budget=Decimal("1.00")),
             develop=DevelopConfig(max_fix_time=300),
         )
-        ctx = _make_ctx(config=cfg)
+        ctx = _make_ctx(tmp_path, config=cfg)
         ctx.cost_usd = Decimal("2.00")
         step = DevelopStep()
 
@@ -11202,7 +11378,7 @@ class TestDevelopStepInnerCheckLoop:
         assert "duplicate failure" in result
         assert "after 3 fix cycle(s)" in result
 
-    async def test_check_loop_handles_max_fix_time_exceeded(self) -> None:
+    async def test_check_loop_handles_max_fix_time_exceeded(self, tmp_path: Path) -> None:
         """_run_inner_check_loop stops when max_fix_time exceeded."""
         from sova.config.models import DevelopConfig
         from sova.core.steps.develop import DevelopStep
@@ -11211,7 +11387,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=5, max_fix_time=1),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -11230,7 +11406,7 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is False
         assert "time budget exceeded" in summary
 
-    async def test_check_loop_budget_bail_includes_check_output_tail(self) -> None:
+    async def test_check_loop_budget_bail_includes_check_output_tail(self, tmp_path: Path) -> None:
         """Issue #1260: when the loop bails before any fix cycle runs (the GWYM
         failure mode), the returned summary must still carry the failing
         check's output, not just the generic reason, so it reaches
@@ -11242,7 +11418,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=5, max_fix_time=1),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         with (
@@ -11260,7 +11436,7 @@ class TestDevelopStepInnerCheckLoop:
         assert "time budget exceeded" in summary
         assert "FAILED tests/test_foo.py::test_bar" in summary
 
-    async def test_check_loop_handles_duplicate_failure(self) -> None:
+    async def test_check_loop_handles_duplicate_failure(self, tmp_path: Path) -> None:
         """_run_inner_check_loop detects duplicate failures and stops."""
         from sova.config.models import DevelopConfig
         from sova.core.steps.develop import DevelopStep
@@ -11270,7 +11446,7 @@ class TestDevelopStepInnerCheckLoop:
             check_cmd="make check",
             develop=DevelopConfig(max_fix_cycles=3, guard_test_weakening=False),
         )
-        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
         step = DevelopStep()
 
         same_error = "SAME ERROR OUTPUT" * 200
@@ -11383,12 +11559,11 @@ class TestHandoffToReviewerRereview:
     """The address-review pipeline ends with HandoffToReviewerStep so the loop reaches
     an approving verdict on the new head without a human click."""
 
-    async def test_address_review_variant_writes_rereview_handoff(self) -> None:
+    async def test_address_review_variant_writes_rereview_handoff(self, tmp_path: Path) -> None:
         from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=42)
-        ctx.project_dir = Path("/tmp/test-handoff")
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=42)
         ctx.task_run_id = 1
         ctx.pipeline_variant = "address_review"
         ctx.addressed_review_findings = [{"file": "a.py", "line": 1, "severity": 5, "description": "x"}]
@@ -11412,12 +11587,11 @@ class TestHandoffToReviewerRereview:
         assert handoff.next_actions[0].auto_execute is True
         assert handoff.next_actions[0].args["role"] == "reviewer"
 
-    async def test_developer_variant_is_unchanged(self) -> None:
+    async def test_developer_variant_is_unchanged(self, tmp_path: Path) -> None:
         from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=42)
-        ctx.project_dir = Path("/tmp/test-handoff")
+        ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=42)
         ctx.task_run_id = 1
         step = HandoffToReviewerStep()
 

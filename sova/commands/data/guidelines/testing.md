@@ -51,9 +51,14 @@ mock_run.side_effect = [
 
 ### Context factory for test data
 
+Take `tmp_path` as the first parameter rather than defaulting `project_dir` to a
+literal `/tmp/...` path: a shared literal collides across parallel test workers
+and across runs, where `tmp_path` is unique per test. Callers pass their own
+`tmp_path` fixture through.
+
 ```python
-def _make_ctx(**kwargs) -> ExecutionContext:
-    defaults = {"project_dir": Path("/tmp/test"), "config": Config()}
+def _make_ctx(tmp_path: Path, **kwargs) -> ExecutionContext:
+    defaults = {"project_dir": tmp_path, "config": Config()}
     defaults.update(kwargs)
     return ExecutionContext(**defaults)
 ```

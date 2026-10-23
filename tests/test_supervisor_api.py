@@ -829,7 +829,7 @@ class TestSupervisorDaemonRequireApproval:
 
         return await get_session_factory(Path.cwd())
 
-    async def test_require_approval_stores_plan_without_executing(self, session_factory) -> None:
+    async def test_require_approval_stores_plan_without_executing(self, session_factory, tmp_path: Path) -> None:
         from sova.config.models import ProjectConfig, SupervisorConfig
         from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
         from sova.supervisor.daemon import SupervisorDaemon
@@ -837,7 +837,7 @@ class TestSupervisorDaemonRequireApproval:
 
         set_pending_plan([], project_slug="test/repo")
         cfg = ProjectConfig(supervisor=SupervisorConfig(enabled=True, require_approval=True), github_repo="test/repo")
-        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+        daemon = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
         decisions = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
 
@@ -862,13 +862,13 @@ class TestSupervisorDaemonRequireApproval:
         assert result["progression"]["executed"] == 0
         set_pending_plan([], project_slug="test/repo")
 
-    async def test_require_approval_false_executes_directly(self, session_factory) -> None:
+    async def test_require_approval_false_executes_directly(self, session_factory, tmp_path: Path) -> None:
         from sova.config.models import ProjectConfig, SupervisorConfig
         from sova.supervisor.daemon import SupervisorDaemon
         from sova.supervisor.progression import ProgressionAction, ProgressionDecision
 
         cfg = ProjectConfig(supervisor=SupervisorConfig(enabled=True, require_approval=False))
-        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+        daemon = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
         decisions = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
         execute_results = [{"run_id": 1}]
@@ -898,7 +898,7 @@ class TestSupervisorDaemonRequireApproval:
 class TestExecutePlanDecisions:
     """Direct tests of _execute_plan_decisions to cover lines not reached via mocked approve_plan tests."""
 
-    async def test_execute_plan_decisions_success(self) -> None:
+    async def test_execute_plan_decisions_success(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.supervisor import _execute_plan_decisions
         from sova.supervisor.progression import ProgressionAction, ProgressionDecision
 
@@ -920,12 +920,12 @@ class TestExecutePlanDecisions:
                 side_effect=_fake_execute_decision,
             ),
         ):
-            results = await _execute_plan_decisions(decisions, Path("/tmp/test"))
+            results = await _execute_plan_decisions(decisions, tmp_path)
 
         assert len(results) == 1
         assert results[0]["run_id"] == 1
 
-    async def test_execute_plan_decisions_catches_per_decision_exception(self) -> None:
+    async def test_execute_plan_decisions_catches_per_decision_exception(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.supervisor import _execute_plan_decisions
         from sova.supervisor.progression import ProgressionAction, ProgressionDecision
 
@@ -950,7 +950,7 @@ class TestExecutePlanDecisions:
                 side_effect=_fake_execute_decision,
             ),
         ):
-            results = await _execute_plan_decisions(decisions, Path("/tmp/test"))
+            results = await _execute_plan_decisions(decisions, tmp_path)
 
         assert len(results) == 2
         assert results[0] == {"run_id": 1}
@@ -1539,13 +1539,13 @@ class TestSupervisorPersonaEndpoints:
             with patch("sova.dashboard.app.list_projects", return_value={}):
                 return create_app(project_dir=Path.cwd())
 
-    async def test_get_persona_success(self, app) -> None:
-        persona_info = {"content": "Test persona", "path": "/tmp/persona.md", "exists": True}
+    async def test_get_persona_success(self, app, tmp_path: Path) -> None:
+        persona_info = {"content": "Test persona", "path": str(tmp_path / "persona.md"), "exists": True}
         with (
             patch("sova.config.loader.load_config") as mock_cfg,
             patch("sova.supervisor.persona.get_persona_info", return_value=persona_info),
         ):
-            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            mock_cfg.return_value.supervisor.persona_path = str(tmp_path / "persona.md")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/persona")
@@ -1568,55 +1568,55 @@ class TestSupervisorPersonaEndpoints:
         assert resp.status_code == 500
         assert "Failed to load project configuration" in resp.json()["detail"]
 
-    async def test_open_persona_no_editor_returns_400(self, app) -> None:
+    async def test_open_persona_no_editor_returns_400(self, app, tmp_path: Path) -> None:
         with (
             patch("sova.config.loader.load_config") as mock_cfg,
-            patch("sova.supervisor.persona.ensure_persona_exists", return_value=Path("/tmp/persona.md")),
+            patch("sova.supervisor.persona.ensure_persona_exists", return_value=tmp_path / "persona.md"),
             patch("sova.oversight.persona.get_open_command", return_value=None),
         ):
-            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            mock_cfg.return_value.supervisor.persona_path = str(tmp_path / "persona.md")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 400
         assert "No editor command" in resp.json()["detail"]
 
-    async def test_open_persona_editor_not_found_returns_400(self, app) -> None:
+    async def test_open_persona_editor_not_found_returns_400(self, app, tmp_path: Path) -> None:
         with (
             patch("sova.config.loader.load_config") as mock_cfg,
-            patch("sova.supervisor.persona.ensure_persona_exists", return_value=Path("/tmp/persona.md")),
+            patch("sova.supervisor.persona.ensure_persona_exists", return_value=tmp_path / "persona.md"),
             patch("sova.oversight.persona.get_open_command", return_value="nonexistent-editor"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=FileNotFoundError()),
         ):
-            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            mock_cfg.return_value.supervisor.persona_path = str(tmp_path / "persona.md")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 400
         assert "not found" in resp.json()["detail"]
 
-    async def test_open_persona_subprocess_error_returns_500(self, app) -> None:
+    async def test_open_persona_subprocess_error_returns_500(self, app, tmp_path: Path) -> None:
         with (
             patch("sova.config.loader.load_config") as mock_cfg,
-            patch("sova.supervisor.persona.ensure_persona_exists", return_value=Path("/tmp/persona.md")),
+            patch("sova.supervisor.persona.ensure_persona_exists", return_value=tmp_path / "persona.md"),
             patch("sova.oversight.persona.get_open_command", return_value="code"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=OSError("spawn failed")),
         ):
-            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            mock_cfg.return_value.supervisor.persona_path = str(tmp_path / "persona.md")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 500
         assert "Failed to open editor" in resp.json()["detail"]
 
-    async def test_open_persona_success(self, app) -> None:
+    async def test_open_persona_success(self, app, tmp_path: Path) -> None:
         with (
             patch("sova.config.loader.load_config") as mock_cfg,
-            patch("sova.supervisor.persona.ensure_persona_exists", return_value=Path("/tmp/persona.md")),
+            patch("sova.supervisor.persona.ensure_persona_exists", return_value=tmp_path / "persona.md"),
             patch("sova.oversight.persona.get_open_command", return_value="code"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
         ):
-            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            mock_cfg.return_value.supervisor.persona_path = str(tmp_path / "persona.md")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")

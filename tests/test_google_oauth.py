@@ -350,10 +350,10 @@ def test_raises_when_google_libs_missing(awareness_config: AwarenessConfig, toke
     "func_name,args",
     [
         ("_load_token", (Path("/etc/passwd"),)),
-        ("_save_token", ({"test": True}, Path("/tmp/evil.pickle"))),
+        ("_save_token", ({"test": True}, "evil.pickle")),
     ],
 )
-def test_path_validation_rejects_outside_allowed(func_name: str, args: tuple) -> None:
+def test_path_validation_rejects_outside_allowed(func_name: str, args: tuple, tmp_path: Path) -> None:
     from sova.awareness.auth.google_oauth import _load_token, _save_token
 
     func = _load_token if func_name == "_load_token" else _save_token
@@ -362,8 +362,11 @@ def test_path_validation_rejects_outside_allowed(func_name: str, args: tuple) ->
         with fake_exists, pytest.raises(ValueError, match="outside allowed"):
             func(*args)
     else:
+        # Outside the allowed config dir, but private to this test: if the
+        # validation ever regressed, the write lands here rather than in /tmp.
+        token, name = args
         with pytest.raises(ValueError, match="outside allowed"):
-            func(*args)
+            func(token, tmp_path / name)
 
 
 def test_path_validation_accepts_sova_config_dir() -> None:

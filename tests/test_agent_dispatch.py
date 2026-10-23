@@ -164,7 +164,7 @@ def _stub_preflight(model: str | None = None, timeout: float | None = None):
 
 
 class TestDispatchTextOnly:
-    async def test_delegates_to_llm_client_invoke_command(self) -> None:
+    async def test_delegates_to_llm_client_invoke_command(self, tmp_path: Path) -> None:
         step = _TextOnlyStep()
         with patch("sova.core.agent_dispatch.client.invoke_command", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResult(text="hi", model="m")
@@ -174,7 +174,7 @@ class TestDispatchTextOnly:
                 args="42",
                 model="m",
                 task_type="triage",
-                cwd="/tmp/project",
+                cwd=str(tmp_path / "project"),
                 timeout=30,
             )
         assert result.text == "hi"
@@ -184,7 +184,7 @@ class TestDispatchTextOnly:
             model="m",
             fallback_model=None,
             task_type="triage",
-            cwd="/tmp/project",
+            cwd=str(tmp_path / "project"),
             max_budget_usd=None,
             timeout=30,
         )
@@ -201,7 +201,7 @@ class TestDispatchTextOnly:
 
 
 class TestDispatchToolStep:
-    async def test_fails_fast_when_runtime_unavailable_no_fallback(self) -> None:
+    async def test_fails_fast_when_runtime_unavailable_no_fallback(self, tmp_path: Path) -> None:
         step = _ToolStep()
         unavailable_runtime = _StubRuntime(_StubProcess(), available=False, detail="codex CLI not found")
         with (
@@ -209,7 +209,7 @@ class TestDispatchToolStep:
             patch("sova.core.agent_dispatch.client.invoke_command", new_callable=AsyncMock) as mock_invoke,
         ):
             with pytest.raises(AgentRuntimeUnavailableError, match="codex CLI not found"):
-                await dispatch_command(step, "/develop", args="42", cwd="/tmp/project")
+                await dispatch_command(step, "/develop", args="42", cwd=str(tmp_path / "project"))
         mock_invoke.assert_not_called()
 
     async def test_missing_command_file_raises(self, tmp_path: Path) -> None:
@@ -454,7 +454,7 @@ class TestDispatchPrompt:
         assert runtime.spawn_calls[0]["prompt"] == "fix the failing checks"
         assert runtime.spawn_calls[0]["model"] == "routed-model"
 
-    async def test_tool_step_fails_fast_when_runtime_unavailable(self) -> None:
+    async def test_tool_step_fails_fast_when_runtime_unavailable(self, tmp_path: Path) -> None:
         step = _ToolStep()
         runtime = _StubRuntime(_StubProcess(), available=False, detail="claude CLI not found")
         with (
@@ -462,7 +462,7 @@ class TestDispatchPrompt:
             patch("sova.core.agent_dispatch.client.invoke", new_callable=AsyncMock) as mock_invoke,
         ):
             with pytest.raises(AgentRuntimeUnavailableError, match="claude CLI not found"):
-                await dispatch_prompt(step, "fix it", cwd="/tmp/project")
+                await dispatch_prompt(step, "fix it", cwd=str(tmp_path / "project"))
         mock_invoke.assert_not_called()
 
     async def test_timeout_raises_llm_timeout_error(self, tmp_path: Path) -> None:

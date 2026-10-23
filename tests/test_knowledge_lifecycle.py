@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -343,7 +344,7 @@ async def test_find_consolidation_two_members_not_clustered() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_consolidate_cluster_success() -> None:
+async def test_consolidate_cluster_success(tmp_path: Path) -> None:
     from sova.knowledge.lifecycle import ConsolidationCluster, consolidate_cluster
     from sova.knowledge.memory import get, store
 
@@ -379,7 +380,7 @@ async def test_consolidate_cluster_success() -> None:
     mock_result.cost_usd = 0.001
 
     with patch("sova.llm.client.invoke", return_value=mock_result):
-        new_id = await consolidate_cluster(cluster, cwd="/tmp")
+        new_id = await consolidate_cluster(cluster, cwd=str(tmp_path))
 
     assert new_id is not None
 
@@ -394,7 +395,7 @@ async def test_consolidate_cluster_success() -> None:
     assert old_m1.superseded_by == new_id
 
 
-async def test_consolidate_cluster_llm_failure() -> None:
+async def test_consolidate_cluster_llm_failure(tmp_path: Path) -> None:
     from sova.knowledge.lifecycle import ConsolidationCluster, consolidate_cluster
     from sova.knowledge.memory import store
 
@@ -409,12 +410,12 @@ async def test_consolidate_cluster_llm_failure() -> None:
     )
 
     with patch("sova.llm.client.invoke", side_effect=RuntimeError("LLM unavailable")):
-        new_id = await consolidate_cluster(cluster, cwd="/tmp")
+        new_id = await consolidate_cluster(cluster, cwd=str(tmp_path))
 
     assert new_id is None
 
 
-async def test_consolidate_cluster_default_model_is_haiku() -> None:
+async def test_consolidate_cluster_default_model_is_haiku(tmp_path: Path) -> None:
     """No config / no llm.routing override at cwd -> resolves to the haiku default."""
     from sova.knowledge.lifecycle import ConsolidationCluster, consolidate_cluster
     from sova.knowledge.memory import store
@@ -437,14 +438,14 @@ async def test_consolidate_cluster_default_model_is_haiku() -> None:
         patch("sova.knowledge.lifecycle._try_load_config", return_value=None),
         patch("sova.llm.client.invoke", mock_invoke),
     ):
-        new_id = await consolidate_cluster(cluster, cwd="/tmp")
+        new_id = await consolidate_cluster(cluster, cwd=str(tmp_path))
 
     assert new_id is not None
     assert mock_invoke.call_args.kwargs["model"] == "haiku"
     assert mock_invoke.call_args.kwargs["task_type"] == "extraction"
 
 
-async def test_consolidate_cluster_extraction_routing_override() -> None:
+async def test_consolidate_cluster_extraction_routing_override(tmp_path: Path) -> None:
     """llm.routing['extraction'] set at cwd overrides the haiku default."""
     from sova.config.models import ProjectConfig
     from sova.knowledge.lifecycle import ConsolidationCluster, consolidate_cluster
@@ -471,7 +472,7 @@ async def test_consolidate_cluster_extraction_routing_override() -> None:
         patch("sova.knowledge.lifecycle._try_load_config", return_value=cfg),
         patch("sova.llm.client.invoke", mock_invoke),
     ):
-        new_id = await consolidate_cluster(cluster, cwd="/tmp")
+        new_id = await consolidate_cluster(cluster, cwd=str(tmp_path))
 
     assert new_id is not None
     assert mock_invoke.call_args.kwargs["model"] == "sonnet"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -298,7 +299,7 @@ class TestProposeIssueEndpoint:
         assert data["ok"] is False
         assert "not logged in" in data["error"]
 
-    async def test_uses_config_when_project_dir_available(self, client: AsyncClient) -> None:
+    async def test_uses_config_when_project_dir_available(self, client: AsyncClient, tmp_path: Path) -> None:
         from sova.adapters.base import Task
 
         mock_task = Task(id="500", title="x", url="https://github.com/xsovad06/sova/issues/500")
@@ -308,7 +309,7 @@ class TestProposeIssueEndpoint:
 
         with (
             patch("sova.adapters.github.GitHubAdapter") as mock_adapter_cls,
-            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/proj"),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path / "proj")),
             patch("sova.config.loader.load_config", return_value=mock_cfg),
         ):
             mock_adapter = AsyncMock()

@@ -1035,7 +1035,7 @@ class TestLifecycleResourceIntegration:
         assert "resource_flush_task" in agent
 
     @pytest.mark.asyncio
-    async def test_start_resource_monitoring_disabled(self) -> None:
+    async def test_start_resource_monitoring_disabled(self, tmp_path: Path) -> None:
         """When monitoring is disabled, no collector is started."""
         from unittest.mock import MagicMock
 
@@ -1048,7 +1048,7 @@ class TestLifecycleResourceIntegration:
 
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value.monitoring.enabled = False
-            _start_resource_monitoring(agent, Path("/tmp/test"), 999)
+            _start_resource_monitoring(agent, tmp_path, 999)
 
         assert agent.resource_collector is None
         assert agent.resource_writer is None
@@ -1184,7 +1184,7 @@ class TestLifecycleResourceIntegration:
             await _resource_flush_loop(agent)  # should return via except branch, not raise
 
     @pytest.mark.asyncio
-    async def test_start_resource_monitoring_enabled(self) -> None:
+    async def test_start_resource_monitoring_enabled(self, tmp_path: Path) -> None:
         """When monitoring is enabled, collector, writer, and flush task are created."""
         from collections import deque
 
@@ -1212,7 +1212,7 @@ class TestLifecycleResourceIntegration:
         ):
             mock_cfg.return_value.monitoring.enabled = True
             mock_cfg.return_value.monitoring.interval = 5.0
-            _start_resource_monitoring(agent, Path("/tmp/test"), 999)
+            _start_resource_monitoring(agent, tmp_path, 999)
 
         assert agent.resource_collector is mock_collector
         assert agent.resource_writer is mock_writer
@@ -1223,7 +1223,7 @@ class TestLifecycleResourceIntegration:
         await asyncio.gather(agent.resource_flush_task, return_exceptions=True)
 
     @pytest.mark.asyncio
-    async def test_start_resource_monitoring_import_error(self) -> None:
+    async def test_start_resource_monitoring_import_error(self, tmp_path: Path) -> None:
         """When collector import fails, no collector is created (graceful degradation)."""
         from sova.dashboard.services.agent_lifecycle import _start_resource_monitoring
         from sova.dashboard.services.agent_pool import AgentState
@@ -1241,7 +1241,7 @@ class TestLifecycleResourceIntegration:
         ):
             mock_cfg.return_value.monitoring.enabled = True
             mock_cfg.return_value.monitoring.interval = 5.0
-            _start_resource_monitoring(agent, Path("/tmp/test"), 999)
+            _start_resource_monitoring(agent, tmp_path, 999)
 
         assert agent.resource_collector is None
 

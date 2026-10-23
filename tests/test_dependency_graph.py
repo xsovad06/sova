@@ -638,7 +638,9 @@ class TestDependencyGraph:
 
 
 class TestGetSpecMeta:
-    _dummy_dir = Path("/tmp/project")
+    @pytest.fixture(autouse=True)
+    def _dummy_project_dir(self, tmp_path: Path) -> None:
+        self._dummy_dir = tmp_path / "project"
 
     def test_returns_none_when_no_spec_file(self) -> None:
         """Returns None when read_spec finds no file for the issue."""
@@ -696,7 +698,9 @@ class TestGetSpecMeta:
 
 
 class TestToDict_SpecEnrichment:
-    _dummy_dir = Path("/tmp/project")
+    @pytest.fixture(autouse=True)
+    def _dummy_project_dir(self, tmp_path: Path) -> None:
+        self._dummy_dir = tmp_path / "project"
 
     def test_researched_without_spec_keeps_developer_action(self) -> None:
         """RESEARCHED node with no spec file keeps the default 'Run Developer' action."""
@@ -958,24 +962,24 @@ async def client(reset_db_rows):
 
 class TestBuildGraphConfigError:
     @pytest.mark.asyncio
-    async def test_config_load_failure_raises_config_error(self) -> None:
+    async def test_config_load_failure_raises_config_error(self, tmp_path: Path) -> None:
         from sova.dashboard.routers.dependencies import _build_graph, _ConfigError
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/fake"),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path / "fake")),
             patch("sova.config.loader.load_config", side_effect=FileNotFoundError("no sova.toml")),
         ):
             with pytest.raises(_ConfigError, match="no sova.toml"):
                 await _build_graph()
 
     @pytest.mark.asyncio
-    async def test_adapter_creation_failure_raises_config_error(self) -> None:
+    async def test_adapter_creation_failure_raises_config_error(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.routers.dependencies import _build_graph, _ConfigError
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/fake"),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path / "fake")),
             patch("sova.config.loader.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", side_effect=ValueError("missing repo")),
         ):
@@ -1270,12 +1274,12 @@ class TestFetchLastRunMap:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_returns_newest_terminal_run_per_issue(self, reset_db_rows) -> None:
+    async def test_returns_newest_terminal_run_per_issue(self, reset_db_rows, tmp_path: Path) -> None:
         from sova.dashboard.routers.dependencies import _fetch_last_run_map
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        project_dir = "/tmp/test-project"
+        project_dir = str(tmp_path)
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():

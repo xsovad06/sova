@@ -68,12 +68,12 @@ def execution_context(mock_config: MagicMock, mock_adapter: AsyncMock, tmp_path:
 class TestFormatFindingsPromptWithoutFindings:
     """_format_findings_prompt must degrade gracefully with an empty findings list."""
 
-    def test_empty_findings_omits_the_address_all_header(self) -> None:
-        prompt = _format_findings_prompt([], pending_docs_path=Path("/tmp/pending-docs.md"))
+    def test_empty_findings_omits_the_address_all_header(self, tmp_path: Path) -> None:
+        prompt = _format_findings_prompt([], pending_docs_path=tmp_path / "pending-docs.md")
         assert "Address ALL of the following code review findings" not in prompt
 
-    def test_empty_findings_with_pending_docs_still_instructs_the_drain(self) -> None:
-        pending = Path("/tmp/pending-docs.md")
+    def test_empty_findings_with_pending_docs_still_instructs_the_drain(self, tmp_path: Path) -> None:
+        pending = tmp_path / "pending-docs.md"
         prompt = _format_findings_prompt([], pending_docs_path=pending)
         assert str(pending) in prompt
         assert "no code review findings" in prompt.lower()

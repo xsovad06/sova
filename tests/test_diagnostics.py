@@ -388,19 +388,19 @@ class TestDiagnosticHelpers:
         assert checks[0].passed is True
         assert checks[1].passed is True
 
-    async def test_check_git_identity_configured(self) -> None:
+    async def test_check_git_identity_configured(self, tmp_path: Path) -> None:
         identity = GitIdentityResult(name="Test User", email="test@example.com")
         with patch("sova.utils.diagnostics.check_git_identity", new_callable=AsyncMock, return_value=identity):
-            checks = await _check_git_identity(Path("/tmp/test"))
+            checks = await _check_git_identity(tmp_path)
         assert len(checks) == 1
         assert checks[0].name == "git identity"
         assert checks[0].passed is True
         assert "Test User" in checks[0].detail
 
-    async def test_check_git_identity_missing(self) -> None:
+    async def test_check_git_identity_missing(self, tmp_path: Path) -> None:
         identity = GitIdentityResult(name="", email="")
         with patch("sova.utils.diagnostics.check_git_identity", new_callable=AsyncMock, return_value=identity):
-            checks = await _check_git_identity(Path("/tmp/test"))
+            checks = await _check_git_identity(tmp_path)
         assert len(checks) == 1
         assert checks[0].name == "git identity"
         assert checks[0].passed is False

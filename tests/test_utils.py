@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -435,7 +436,7 @@ class TestCheckPushPermission:
 
     @pytest.mark.asyncio
     @patch("sova.utils.gh.run", new_callable=AsyncMock)
-    async def test_skips_api_call_for_ssh_remote(self, mock_run: AsyncMock) -> None:
+    async def test_skips_api_call_for_ssh_remote(self, mock_run: AsyncMock, tmp_path: Path) -> None:
         """check_push_permission() verifies a GitHub REST API token, which has no
         bearing on SSH push auth. Skip the API call entirely for an SSH remote
         rather than reporting a verdict for an auth path the real push won't use."""
@@ -449,14 +450,14 @@ class TestCheckPushPermission:
 
         mock_run.side_effect = fake_run
 
-        result = await check_push_permission("owner/repo", cwd="/tmp/repo")
+        result = await check_push_permission("owner/repo", cwd=str(tmp_path / "repo"))
 
         assert result.permission is PushPermission.UNKNOWN
         mock_run.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("sova.utils.gh.run", new_callable=AsyncMock)
-    async def test_checks_api_for_https_remote(self, mock_run: AsyncMock) -> None:
+    async def test_checks_api_for_https_remote(self, mock_run: AsyncMock, tmp_path: Path) -> None:
         from sova.utils.gh import PushPermission, check_push_permission
         from sova.utils.shell import ShellResult
 
@@ -467,7 +468,7 @@ class TestCheckPushPermission:
 
         mock_run.side_effect = fake_run
 
-        result = await check_push_permission("owner/repo", cwd="/tmp/repo")
+        result = await check_push_permission("owner/repo", cwd=str(tmp_path / "repo"))
 
         assert result.permission is PushPermission.ALLOWED
         assert mock_run.call_count == 2

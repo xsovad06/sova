@@ -852,12 +852,12 @@ class TestCheckMergeQueueOnFailure:
 
 class TestMergeQueueEntryModel:
     @pytest.mark.asyncio
-    async def test_model_fields(self) -> None:
+    async def test_model_fields(self, tmp_path: Path) -> None:
         entry = MergeQueueEntry(
             pr_number=42,
             repo="owner/repo",
             issue_number="10",
-            project_dir="/tmp/test",
+            project_dir=str(tmp_path),
             enqueued_at=datetime.now(timezone.utc),
             github_user="user1",
             branch_name="feat/test",

@@ -720,7 +720,9 @@ class TestMaintainQueuePrunesPreExistingUnsuitable:
 
 
 class TestMaintainQueue:
-    async def test_prunes_done_and_discovers_ready(self, adapter: AsyncMock, config: SupervisorConfig) -> None:
+    async def test_prunes_done_and_discovers_ready(
+        self, adapter: AsyncMock, config: SupervisorConfig, tmp_path: Path
+    ) -> None:
         adapter.list_tasks.return_value = _make_tasks(
             {
                 10: TaskState.DONE,
@@ -731,7 +733,7 @@ class TestMaintainQueue:
         )
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
-            result = await maintain_queue(adapter, config, Path("/tmp/test"))
+            result = await maintain_queue(adapter, config, tmp_path)
 
         assert result.changed is True
         assert 10 in result.removed
@@ -742,7 +744,7 @@ class TestMaintainQueue:
         assert 10 not in result.current
         mock_save.assert_called_once()
 
-    async def test_no_changes(self, adapter: AsyncMock, config: SupervisorConfig) -> None:
+    async def test_no_changes(self, adapter: AsyncMock, config: SupervisorConfig, tmp_path: Path) -> None:
         adapter.list_tasks.return_value = _make_tasks(
             {
                 10: TaskState.TRIAGED,
@@ -752,13 +754,13 @@ class TestMaintainQueue:
         )
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
-            result = await maintain_queue(adapter, config, Path("/tmp/test"))
+            result = await maintain_queue(adapter, config, tmp_path)
 
         assert result.changed is False
         assert result.current == (10, 20, 30)
         mock_save.assert_not_called()
 
-    async def test_all_done_then_discover(self, adapter: AsyncMock) -> None:
+    async def test_all_done_then_discover(self, adapter: AsyncMock, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20], max_queue_size=5)
         adapter.list_tasks.return_value = _make_tasks(
             {
@@ -769,21 +771,25 @@ class TestMaintainQueue:
         )
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.removed == (10, 20)
         assert result.added == (30,)
         assert result.current == (30,)
 
-    async def test_list_tasks_failure_skips_maintenance(self, adapter: AsyncMock, config: SupervisorConfig) -> None:
+    async def test_list_tasks_failure_skips_maintenance(
+        self, adapter: AsyncMock, config: SupervisorConfig, tmp_path: Path
+    ) -> None:
         adapter.list_tasks.side_effect = RuntimeError("rate limited")
 
-        result = await maintain_queue(adapter, config, Path("/tmp/test"))
+        result = await maintain_queue(adapter, config, tmp_path)
 
         assert result.changed is False
         assert result.current == (10, 20, 30)
 
-    async def test_adapter_error_skips_maintenance(self, adapter: AsyncMock, config: SupervisorConfig) -> None:
+    async def test_adapter_error_skips_maintenance(
+        self, adapter: AsyncMock, config: SupervisorConfig, tmp_path: Path
+    ) -> None:
         """AdapterError is what the real adapters raise on rate limit / auth / bad JSON.
 
         It subclasses Exception directly, not RuntimeError, so a narrowed handler
@@ -791,12 +797,12 @@ class TestMaintainQueue:
         """
         adapter.list_tasks.side_effect = AdapterError("Failed to fetch issues from test/repo: rate limited")
 
-        result = await maintain_queue(adapter, config, Path("/tmp/test"))
+        result = await maintain_queue(adapter, config, tmp_path)
 
         assert result.changed is False
         assert result.current == (10, 20, 30)
 
-    async def test_empty_queue_discovers_ready(self, adapter: AsyncMock) -> None:
+    async def test_empty_queue_discovers_ready(self, adapter: AsyncMock, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
         adapter.list_tasks.return_value = _make_tasks(
             {
@@ -806,12 +812,12 @@ class TestMaintainQueue:
         )
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.added == (5,)
         assert result.current == (5,)
 
-    async def test_max_queue_size_caps_additions(self, adapter: AsyncMock) -> None:
+    async def test_max_queue_size_caps_additions(self, adapter: AsyncMock, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[1, 2], max_queue_size=3)
         adapter.list_tasks.return_value = _make_tasks(
             {
@@ -824,12 +830,12 @@ class TestMaintainQueue:
         )
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert len(result.current) == 3
         assert len(result.added) == 1
 
-    async def test_updates_config_in_memory(self, adapter: AsyncMock) -> None:
+    async def test_updates_config_in_memory(self, adapter: AsyncMock, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10], max_queue_size=10)
         adapter.list_tasks.return_value = _make_tasks(
             {
@@ -839,11 +845,11 @@ class TestMaintainQueue:
         )
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            await maintain_queue(adapter, cfg, tmp_path)
 
         assert cfg.task_queue == [20]
 
-    async def test_deleted_issues_pruned(self, adapter: AsyncMock) -> None:
+    async def test_deleted_issues_pruned(self, adapter: AsyncMock, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30], max_queue_size=10)
         adapter.list_tasks.return_value = _make_tasks(
             {
@@ -852,19 +858,19 @@ class TestMaintainQueue:
         )
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert 10 not in result.current
         assert 30 not in result.current
         assert result.removed == (10, 30)
 
-    async def test_empty_list_guard_prevents_data_loss(self, adapter: AsyncMock) -> None:
+    async def test_empty_list_guard_prevents_data_loss(self, adapter: AsyncMock, tmp_path: Path) -> None:
         """When adapter returns [] but queue is non-empty, skip maintenance to prevent data loss."""
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30], max_queue_size=10)
         adapter.list_tasks.return_value = []
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
-            result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is False
         assert result.current == (10, 20, 30)
@@ -872,13 +878,13 @@ class TestMaintainQueue:
         assert result.added == ()
         mock_save.assert_not_called()
 
-    async def test_empty_list_with_empty_queue_proceeds(self, adapter: AsyncMock) -> None:
+    async def test_empty_list_with_empty_queue_proceeds(self, adapter: AsyncMock, tmp_path: Path) -> None:
         """When both adapter and queue are empty, guard should not trigger."""
         cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
         adapter.list_tasks.return_value = []
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
-            result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is False
         assert result.current == ()
@@ -886,98 +892,98 @@ class TestMaintainQueue:
 
 
 class TestApplyPlannerQueueChanges:
-    async def test_removals(self) -> None:
+    async def test_removals(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30])
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"), removals=[20])
+            result = await apply_planner_queue_changes(cfg, tmp_path, removals=[20])
 
         assert result == [10, 30]
         assert cfg.task_queue == [10, 30]
 
-    async def test_reorder_full(self) -> None:
+    async def test_reorder_full(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30])
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"), reorder=[30, 10, 20])
+            result = await apply_planner_queue_changes(cfg, tmp_path, reorder=[30, 10, 20])
 
         assert result == [30, 10, 20]
 
-    async def test_reorder_partial(self) -> None:
+    async def test_reorder_partial(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30, 40])
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"), reorder=[30, 10])
+            result = await apply_planner_queue_changes(cfg, tmp_path, reorder=[30, 10])
 
         assert result == [30, 10, 20, 40]
 
-    async def test_removals_and_reorder(self) -> None:
+    async def test_removals_and_reorder(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30, 40])
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"), removals=[20], reorder=[40, 10, 30])
+            result = await apply_planner_queue_changes(cfg, tmp_path, removals=[20], reorder=[40, 10, 30])
 
         assert result == [40, 10, 30]
 
-    async def test_no_changes(self) -> None:
+    async def test_no_changes(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20])
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"))
+            result = await apply_planner_queue_changes(cfg, tmp_path)
 
         assert result == [10, 20]
         mock_save.assert_not_called()
 
-    async def test_removal_of_nonexistent_issue(self) -> None:
+    async def test_removal_of_nonexistent_issue(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20])
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"), removals=[99])
+            result = await apply_planner_queue_changes(cfg, tmp_path, removals=[99])
 
         assert result == [10, 20]
         mock_save.assert_not_called()
 
-    async def test_reorder_with_extra_issues_ignored(self) -> None:
+    async def test_reorder_with_extra_issues_ignored(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20])
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"), reorder=[99, 10, 20])
+            result = await apply_planner_queue_changes(cfg, tmp_path, reorder=[99, 10, 20])
 
         assert result == [10, 20]
         mock_save.assert_not_called()
 
-    async def test_removal_plus_reorder_normalizes(self) -> None:
+    async def test_removal_plus_reorder_normalizes(self, tmp_path: Path) -> None:
         """Reorder list is normalized by removing planned removals before validation."""
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30, 40])
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"), removals=[20], reorder=[40, 20, 30, 10])
+            result = await apply_planner_queue_changes(cfg, tmp_path, removals=[20], reorder=[40, 20, 30, 10])
 
         assert result == [40, 30, 10]
 
-    async def test_reorder_with_duplicates_deduplicates(self) -> None:
+    async def test_reorder_with_duplicates_deduplicates(self, tmp_path: Path) -> None:
         """Duplicate values in reorder list are deduplicated (first occurrence wins)."""
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30])
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"), reorder=[30, 10, 30, 20])
+            result = await apply_planner_queue_changes(cfg, tmp_path, reorder=[30, 10, 30, 20])
 
         assert result == [30, 10, 20]
 
-    async def test_persist_failure_reverts_config(self) -> None:
+    async def test_persist_failure_reverts_config(self, tmp_path: Path) -> None:
         """When persistence fails, in-memory config stays unchanged."""
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30])
         fail = AsyncMock(side_effect=Exception("persist failed"))
 
         with patch("sova.config.db_loader.save_task_queue", fail):
-            result = await apply_planner_queue_changes(cfg, Path("/tmp"), removals=[20])
+            result = await apply_planner_queue_changes(cfg, tmp_path, removals=[20])
 
         assert result == [10, 20, 30]
         assert cfg.task_queue == [10, 20, 30]
 
 
 class TestMaintainQueuePersistenceFailure:
-    async def test_persist_failure_reverts_changes(self, adapter: AsyncMock) -> None:
+    async def test_persist_failure_reverts_changes(self, adapter: AsyncMock, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20], max_queue_size=10)
         adapter.list_tasks.return_value = _make_tasks(
             {
@@ -989,7 +995,7 @@ class TestMaintainQueuePersistenceFailure:
         fail = AsyncMock(side_effect=Exception("persist failed"))
 
         with patch("sova.config.db_loader.save_task_queue", fail):
-            result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is False
         assert result.current == (10, 20)
@@ -999,36 +1005,36 @@ class TestMaintainQueuePersistenceFailure:
 class TestMaintainQueueEmptyListGuard:
     """Test the empty-list defense guard that prevents queue pruning on API failures."""
 
-    async def test_empty_list_with_non_empty_queue_returns_unchanged(self, adapter: AsyncMock) -> None:
+    async def test_empty_list_with_non_empty_queue_returns_unchanged(self, adapter: AsyncMock, tmp_path: Path) -> None:
         """When API returns [] but queue is non-empty, return queue unchanged."""
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30], max_queue_size=10)
         adapter.list_tasks.return_value = []
 
-        result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+        result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is False
         assert result.current == (10, 20, 30)
         assert cfg.task_queue == [10, 20, 30]
 
-    async def test_empty_list_with_empty_queue_returns_empty(self, adapter: AsyncMock) -> None:
+    async def test_empty_list_with_empty_queue_returns_empty(self, adapter: AsyncMock, tmp_path: Path) -> None:
         """When API returns [] and queue is already empty, no guard triggers."""
         cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
         adapter.list_tasks.return_value = []
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
-            result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is False
         assert result.current == ()
         mock_save.assert_not_called()
 
-    async def test_genuinely_empty_tracker_after_pruning_clears_queue(self, adapter: AsyncMock) -> None:
+    async def test_genuinely_empty_tracker_after_pruning_clears_queue(self, adapter: AsyncMock, tmp_path: Path) -> None:
         """When all queued issues are DONE and tracker has no other issues, queue clears."""
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20], max_queue_size=10)
         adapter.list_tasks.return_value = _make_tasks({10: TaskState.DONE, 20: TaskState.DONE})
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
-            result = await maintain_queue(adapter, cfg, Path("/tmp/test"))
+            result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is True
         assert result.current == ()

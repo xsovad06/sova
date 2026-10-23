@@ -93,11 +93,11 @@ class TestBuildPrePushStdin:
 
 
 class TestValidateStepTimeout:
-    async def test_hook_timeout_does_not_trigger_an_llm_fix(self) -> None:
+    async def test_hook_timeout_does_not_trigger_an_llm_fix(self, tmp_path: Path) -> None:
         """A killed hook has no diagnosable output, so do not spend an LLM call on it."""
         from tests.test_core import _make_ctx
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         timed_out = ShellResult(returncode=-1, stdout="", stderr="Command timed out after 120s", timed_out=True)
 
         with (
@@ -112,11 +112,11 @@ class TestValidateStepTimeout:
         assert result.error == "hook_timeout"
         mock_invoke.assert_not_called()
 
-    async def test_retry_timeout_stops_instead_of_spending_more_attempts(self) -> None:
+    async def test_retry_timeout_stops_instead_of_spending_more_attempts(self, tmp_path: Path) -> None:
         from sova.llm.models import LLMResult
         from tests.test_core import _make_ctx
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(tmp_path)
         failed = ShellResult(returncode=1, stdout="FAIL: lint\n", stderr="")
         timed_out = ShellResult(returncode=-1, stdout="", stderr="Command timed out after 120s", timed_out=True)
 
@@ -150,7 +150,7 @@ class TestValidateStepEndToEnd:
         )
         hook.chmod(0o755)
 
-        ctx = _make_ctx(worktree_dir=tmp_path)
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path)
         with patch("sova.core.steps.validate.dispatch_prompt", AsyncMock()) as mock_invoke:
             result = await ValidateStep().execute(ctx)
 
@@ -176,7 +176,7 @@ class TestValidateStepEndToEnd:
         )
         hook.chmod(0o755)
 
-        ctx = _make_ctx(worktree_dir=tmp_path)
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path)
 
         async def _fake_fix(*_args: object, **_kwargs: object) -> LLMResult:
             # Simulate the LLM committing a fix: HEAD moves before the retry.

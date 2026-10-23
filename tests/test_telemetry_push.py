@@ -230,7 +230,7 @@ class TestMachineIdDerivation:
 
 @pytest.mark.asyncio
 class TestProjectSlugFallback:
-    async def test_empty_project_slug_uses_dir_name(self) -> None:
+    async def test_empty_project_slug_uses_dir_name(self, tmp_path: Path) -> None:
         from sova.dashboard.services.telemetry_push import push_telemetry
 
         run_id = await _seed_run(project_slug="")
@@ -242,7 +242,7 @@ class TestProjectSlugFallback:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        project_dir = Path("/tmp/my-cool-project")
+        project_dir = tmp_path / "my-cool-project"
         with patch("httpx.AsyncClient", return_value=mock_client):
             await push_telemetry(run_id, project_dir, cfg)
 

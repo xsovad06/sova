@@ -104,18 +104,18 @@ class TestHasHumanApproval:
 
 class TestCheckReviewCompletedGate:
     @pytest.mark.asyncio
-    async def test_passes_with_sova_label(self) -> None:
+    async def test_passes_with_sova_label(self, tmp_path: Path) -> None:
         result = await check_review_completed_gate(
             42,
             labels=["sova:approved"],
             pr_number=100,
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             pr_data={"thread_total": 0, "thread_resolved": 0},
         )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_passes_with_reviewer_run(self) -> None:
+    async def test_passes_with_reviewer_run(self, tmp_path: Path) -> None:
         verdict = {
             "has_sova_review": True,
             "verdict": "approve",
@@ -132,13 +132,13 @@ class TestCheckReviewCompletedGate:
                 42,
                 labels=[],
                 pr_number=100,
-                project_dir=Path("/tmp/test"),
+                project_dir=tmp_path,
                 pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_revise_review_marker_still_satisfies_gate(self) -> None:
+    async def test_revise_review_marker_still_satisfies_gate(self, tmp_path: Path) -> None:
         """Documents the known residual gap (module docstring): source 2 is verdict-blind
         by design (issue #993 scope excludes reworking _has_review_marker(), overlaps #991),
         so a "revise" marker still satisfies the gate even though the matching sova:revise
@@ -159,13 +159,13 @@ class TestCheckReviewCompletedGate:
                 42,
                 labels=[],
                 pr_number=100,
-                project_dir=Path("/tmp/test"),
+                project_dir=tmp_path,
                 pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_passes_with_completed_addressed_reviewer_run(self) -> None:
+    async def test_passes_with_completed_addressed_reviewer_run(self, tmp_path: Path) -> None:
         """An addressed verdict is not a rejection: a review did happen, so the gate is satisfied."""
         verdict = {
             "has_sova_review": True,
@@ -183,20 +183,20 @@ class TestCheckReviewCompletedGate:
                 42,
                 labels=[],
                 pr_number=100,
-                project_dir=Path("/tmp/test"),
+                project_dir=tmp_path,
                 pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_blocks_with_unresolved_threads_despite_sova_label(self) -> None:
+    async def test_blocks_with_unresolved_threads_despite_sova_label(self, tmp_path: Path) -> None:
         """Unresolved review threads block integration even with an approved label."""
         pr_data = {"thread_total": 3, "thread_resolved": 1}
         result = await check_review_completed_gate(
             42,
             labels=["sova:approved"],
             pr_number=100,
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             pr_data=pr_data,
         )
         assert result is not None
@@ -204,19 +204,19 @@ class TestCheckReviewCompletedGate:
         assert "unresolved" in result.detail.lower()
 
     @pytest.mark.asyncio
-    async def test_passes_with_all_threads_resolved(self) -> None:
+    async def test_passes_with_all_threads_resolved(self, tmp_path: Path) -> None:
         pr_data = {"thread_total": 3, "thread_resolved": 3}
         result = await check_review_completed_gate(
             42,
             labels=["sova:approved"],
             pr_number=100,
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             pr_data=pr_data,
         )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_passes_with_human_approval(self) -> None:
+    async def test_passes_with_human_approval(self, tmp_path: Path) -> None:
         verdict = {"has_sova_review": False, "verdict": None}
         pr_data = {
             "review_decision": "APPROVED",
@@ -233,13 +233,13 @@ class TestCheckReviewCompletedGate:
                 42,
                 labels=[],
                 pr_number=100,
-                project_dir=Path("/tmp/test"),
+                project_dir=tmp_path,
                 pr_data=pr_data,
             )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_blocks_with_revise_label_and_no_other_source(self) -> None:
+    async def test_blocks_with_revise_label_and_no_other_source(self, tmp_path: Path) -> None:
         """A sova:revise label must not authorize SPAWN_INTEGRATE on its own.
 
         No completed reviewer run and no human approval are supplied, so this
@@ -256,14 +256,14 @@ class TestCheckReviewCompletedGate:
                 42,
                 labels=["sova:revise"],
                 pr_number=100,
-                project_dir=Path("/tmp/test"),
+                project_dir=tmp_path,
                 pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is not None
         assert result.gate == "review_completed"
 
     @pytest.mark.asyncio
-    async def test_blocks_with_block_label_and_no_other_source(self) -> None:
+    async def test_blocks_with_block_label_and_no_other_source(self, tmp_path: Path) -> None:
         verdict = {"has_sova_review": False, "verdict": None}
         with patch(
             "sova.dashboard.services.work_verdict.resolve_sova_verdict",
@@ -274,14 +274,14 @@ class TestCheckReviewCompletedGate:
                 42,
                 labels=["sova:block"],
                 pr_number=100,
-                project_dir=Path("/tmp/test"),
+                project_dir=tmp_path,
                 pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is not None
         assert result.gate == "review_completed"
 
     @pytest.mark.asyncio
-    async def test_blocks_with_no_review(self) -> None:
+    async def test_blocks_with_no_review(self, tmp_path: Path) -> None:
         verdict = {"has_sova_review": False, "verdict": None}
         with patch(
             "sova.dashboard.services.work_verdict.resolve_sova_verdict",
@@ -292,7 +292,7 @@ class TestCheckReviewCompletedGate:
                 42,
                 labels=[],
                 pr_number=100,
-                project_dir=Path("/tmp/test"),
+                project_dir=tmp_path,
                 pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is not None
@@ -300,7 +300,7 @@ class TestCheckReviewCompletedGate:
         assert "#42" in result.detail
 
     @pytest.mark.asyncio
-    async def test_blocks_with_bot_only_approval(self) -> None:
+    async def test_blocks_with_bot_only_approval(self, tmp_path: Path) -> None:
         verdict = {"has_sova_review": False, "verdict": None}
         pr_data = {
             "review_decision": "APPROVED",
@@ -317,14 +317,14 @@ class TestCheckReviewCompletedGate:
                 42,
                 labels=[],
                 pr_number=100,
-                project_dir=Path("/tmp/test"),
+                project_dir=tmp_path,
                 pr_data=pr_data,
             )
         assert result is not None
         assert result.gate == "review_completed"
 
     @pytest.mark.asyncio
-    async def test_db_error_falls_through(self) -> None:
+    async def test_db_error_falls_through(self, tmp_path: Path) -> None:
         with patch(
             "sova.dashboard.services.work_verdict.resolve_sova_verdict",
             new_callable=AsyncMock,
@@ -334,14 +334,14 @@ class TestCheckReviewCompletedGate:
                 42,
                 labels=[],
                 pr_number=100,
-                project_dir=Path("/tmp/test"),
+                project_dir=tmp_path,
                 pr_data={"thread_total": 0, "thread_resolved": 0},
             )
         assert result is not None
         assert result.gate == "review_completed"
 
     @pytest.mark.asyncio
-    async def test_passes_with_no_pr_data_fetched(self) -> None:
+    async def test_passes_with_no_pr_data_fetched(self, tmp_path: Path) -> None:
         """No pr_data at all (e.g. a transient enrichment failure) is treated as
         zero unresolved threads and falls through to the other review sources,
         rather than blocking outright."""
@@ -349,26 +349,26 @@ class TestCheckReviewCompletedGate:
             42,
             labels=["sova:approved"],
             pr_number=100,
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             pr_data=None,
         )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_passes_with_missing_thread_keys(self) -> None:
+    async def test_passes_with_missing_thread_keys(self, tmp_path: Path) -> None:
         """pr_data present but missing thread_total/thread_resolved keys (e.g. a
         synthetic dict) is treated as zero unresolved threads, not unknown."""
         result = await check_review_completed_gate(
             42,
             labels=["sova:approved"],
             pr_number=100,
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             pr_data={},
         )
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_blocks_with_unresolvable_thread_counts(self) -> None:
+    async def test_blocks_with_unresolvable_thread_counts(self, tmp_path: Path) -> None:
         """pr_data present but thread_total/thread_resolved explicitly None (API
         fetch succeeded but data is unusable) is genuinely unknown and must fail
         closed, distinctly from a genuine zero-unresolved-threads result."""
@@ -376,7 +376,7 @@ class TestCheckReviewCompletedGate:
             42,
             labels=["sova:approved"],
             pr_number=100,
-            project_dir=Path("/tmp/test"),
+            project_dir=tmp_path,
             pr_data={"thread_total": None, "thread_resolved": None},
         )
         assert result is not None

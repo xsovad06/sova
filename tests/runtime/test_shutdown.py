@@ -91,7 +91,7 @@ class TestShutdownCancelsWsProducerTasks:
 class TestShutdownCancelsBatchTasks:
     """Batch job tasks must be cancelled during shutdown."""
 
-    async def test_cancel_all_batches_stops_running_batches(self) -> None:
+    async def test_cancel_all_batches_stops_running_batches(self, tmp_path: Path) -> None:
         """cancel_all_batches() cancels tasks in _active_batches."""
         from sova.dashboard.services.batch_service import (
             BatchJob,
@@ -109,7 +109,7 @@ class TestShutdownCancelsBatchTasks:
         job = BatchJob(
             batch_id="test-1",
             action="triage",
-            project_dir=Path("/tmp"),
+            project_dir=tmp_path,
         )
         job._task = asyncio.create_task(_fake_batch())
         _active_batches["test-1"] = job

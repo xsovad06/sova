@@ -33,6 +33,7 @@ def _mock_adapter(state: TaskState = TaskState.BACKLOG) -> AsyncMock:
 
 
 def _make_ctx(
+    tmp_path: Path,
     *,
     role: str = "developer",
     force: bool = False,
@@ -40,7 +41,7 @@ def _make_ctx(
     **kwargs,
 ) -> ExecutionContext:
     defaults = {
-        "project_dir": Path("/tmp/test"),
+        "project_dir": tmp_path,
         "config": ProjectConfig(),
         "adapter": _mock_adapter(state),
         "issue_number": "42",
@@ -122,11 +123,11 @@ class TestTriageRole:
         assert TaskState.BACKLOG in role.allowed_input_states
         assert role.output_state == TaskState.TRIAGED
 
-    async def test_execute_moves_to_triaged(self) -> None:
+    async def test_execute_moves_to_triaged(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()
 
         result = await role.execute(ctx)
@@ -135,11 +136,11 @@ class TestTriageRole:
         assert result.output_state == TaskState.TRIAGED
         adapter.transition_state.assert_awaited_once_with("42", TaskState.TRIAGED)
 
-    async def test_execute_rejects_wrong_state(self) -> None:
+    async def test_execute_rejects_wrong_state(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.IN_PROGRESS)
-        ctx = _make_ctx(role="triage", state=TaskState.IN_PROGRESS, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.IN_PROGRESS, adapter=adapter)
         role = TriageRole()
 
         result = await role.execute(ctx)
@@ -147,22 +148,22 @@ class TestTriageRole:
         assert not result.success
         assert "precondition" in result.error.lower()
 
-    async def test_execute_force_bypasses_state_check(self) -> None:
+    async def test_execute_force_bypasses_state_check(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.IN_PROGRESS)
-        ctx = _make_ctx(role="triage", state=TaskState.IN_PROGRESS, adapter=adapter, force=True)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.IN_PROGRESS, adapter=adapter, force=True)
         role = TriageRole()
 
         result = await role.execute(ctx)
 
         assert result.success
 
-    async def test_appends_assessment_to_body(self) -> None:
+    async def test_appends_assessment_to_body(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()
 
         await role.execute(ctx)
@@ -171,7 +172,7 @@ class TestTriageRole:
         updated_body = adapter.edit_body.call_args[0][1]
         assert "triage" in updated_body.lower() or "assessment" in updated_body.lower()
 
-    async def test_execute_strips_stale_ready_label_on_retriage_to_interactive(self) -> None:
+    async def test_execute_strips_stale_ready_label_on_retriage_to_interactive(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
@@ -184,7 +185,7 @@ class TestTriageRole:
         )
         config = ProjectConfig()
         config.triage.interactive_title_prefixes = ["[Spike]"]
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
         role = TriageRole()
 
         result = await role.execute(ctx)
@@ -193,11 +194,11 @@ class TestTriageRole:
         adapter.remove_label.assert_awaited_once_with("42", "agent:ready")
         adapter.add_label.assert_awaited_once_with("42", "agent:interactive-recommended")
 
-    async def test_execute_does_not_remove_label_when_nothing_stale(self) -> None:
+    async def test_execute_does_not_remove_label_when_nothing_stale(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()
 
         await role.execute(ctx)
@@ -384,7 +385,7 @@ class TestTriageRoleHeuristicAssess:
         jsonschema.validate(data, get_triage_schema())
         assert TriageRole._assessment_from_dict(data).suitability == "interactive"
 
-    async def test_quality_gate_leaves_interactive_alone(self) -> None:
+    async def test_quality_gate_leaves_interactive_alone(self, tmp_path: Path) -> None:
         from sova.config.models import ProjectConfig, TriageConfig
         from sova.roles.triage import TriageRole
 
@@ -401,7 +402,7 @@ class TestTriageRoleHeuristicAssess:
             body="Update `sova/handler.py`.\n\nExpected behavior: returns 200.\n",
             state=TaskState.BACKLOG,
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         result = await TriageRole().execute(ctx)
 
@@ -423,12 +424,12 @@ class TestTriageRoleLdapAssigneeSuggestion:
         defaults.update(kwargs)
         return Task(**defaults)
 
-    async def test_disabled_by_default_skips_ldap(self) -> None:
+    async def test_disabled_by_default_skips_ldap(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = self._ready_task()
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()
 
         with patch("sova.adapters.ldap_client.create_ldap_client") as mock_create:
@@ -437,7 +438,7 @@ class TestTriageRoleLdapAssigneeSuggestion:
         mock_create.assert_not_called()
         adapter.assign_to_user.assert_not_called()
 
-    async def test_fuzzy_match_annotates_without_assigning(self) -> None:
+    async def test_fuzzy_match_annotates_without_assigning(self, tmp_path: Path) -> None:
         """A fuzzy name/uid/email match is a suggestion only, never auto-assigned.
 
         Result ordering from search_people() does not establish component or
@@ -450,7 +451,7 @@ class TestTriageRoleLdapAssigneeSuggestion:
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = self._ready_task()
         config = ProjectConfig(ldap=LdapConfig(enabled=True))
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
         role = TriageRole()
 
         mock_client = AsyncMock()
@@ -467,14 +468,14 @@ class TestTriageRoleLdapAssigneeSuggestion:
         assert "Suggested assignee" in updated_body
         assert "jdoe" in updated_body
 
-    async def test_assigns_on_unambiguous_team_mapping_match(self) -> None:
+    async def test_assigns_on_unambiguous_team_mapping_match(self, tmp_path: Path) -> None:
         from sova.adapters.ldap_client import Person
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = self._ready_task()
         config = ProjectConfig(ldap=LdapConfig(enabled=True, team_mapping={"auth": "team-auth"}))
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
         role = TriageRole()
 
         mock_client = AsyncMock()
@@ -490,14 +491,14 @@ class TestTriageRoleLdapAssigneeSuggestion:
         mock_client.search_people.assert_not_called()
         adapter.assign_to_user.assert_awaited_once_with("42", "jdoe")
 
-    async def test_ambiguous_team_mapping_falls_back_to_suggestion_only(self) -> None:
+    async def test_ambiguous_team_mapping_falls_back_to_suggestion_only(self, tmp_path: Path) -> None:
         from sova.adapters.ldap_client import Person
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = self._ready_task()
         config = ProjectConfig(ldap=LdapConfig(enabled=True, team_mapping={"auth": "team-auth"}))
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
         role = TriageRole()
 
         mock_client = AsyncMock()
@@ -512,13 +513,13 @@ class TestTriageRoleLdapAssigneeSuggestion:
         mock_client.search_people.assert_awaited_once_with("auth")
         adapter.assign_to_user.assert_not_called()
 
-    async def test_no_component_or_area_label_skips_suggestion(self) -> None:
+    async def test_no_component_or_area_label_skips_suggestion(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = self._ready_task(components=[])
         config = ProjectConfig(ldap=LdapConfig(enabled=True))
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
         role = TriageRole()
 
         mock_client = AsyncMock()
@@ -528,13 +529,13 @@ class TestTriageRoleLdapAssigneeSuggestion:
         mock_client.check_connectivity.assert_not_called()
         adapter.assign_to_user.assert_not_called()
 
-    async def test_vpn_unavailable_skips_assignment(self) -> None:
+    async def test_vpn_unavailable_skips_assignment(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = self._ready_task()
         config = ProjectConfig(ldap=LdapConfig(enabled=True))
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
         role = TriageRole()
 
         mock_client = AsyncMock()
@@ -547,13 +548,13 @@ class TestTriageRoleLdapAssigneeSuggestion:
         mock_client.search_people.assert_not_called()
         adapter.assign_to_user.assert_not_called()
 
-    async def test_no_match_skips_assignment(self) -> None:
+    async def test_no_match_skips_assignment(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = self._ready_task()
         config = ProjectConfig(ldap=LdapConfig(enabled=True))
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
         role = TriageRole()
 
         mock_client = AsyncMock()
@@ -566,14 +567,14 @@ class TestTriageRoleLdapAssigneeSuggestion:
         assert result.success
         adapter.assign_to_user.assert_not_called()
 
-    async def test_ldap_unavailable_falls_back_gracefully(self) -> None:
+    async def test_ldap_unavailable_falls_back_gracefully(self, tmp_path: Path) -> None:
         """create_ldap_client() returning None (package missing/disabled) never raises."""
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = self._ready_task()
         config = ProjectConfig(ldap=LdapConfig(enabled=True))
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
         role = TriageRole()
 
         with patch("sova.adapters.ldap_client.create_ldap_client", return_value=None):
@@ -602,14 +603,14 @@ class TestResearcherRole:
 
         assert "researcher" in _PIPELINE_ROLES
 
-    async def test_execute_moves_to_researched(self) -> None:
+    async def test_execute_moves_to_researched(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.workflow import WorkflowResult
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.TRIAGED)
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         role = ResearcherRole()
 
         mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
@@ -620,25 +621,25 @@ class TestResearcherRole:
         assert result.output_state == TaskState.RESEARCHED
         adapter.transition_state.assert_awaited_once_with("42", TaskState.RESEARCHED)
 
-    async def test_rejects_backlog_state(self) -> None:
+    async def test_rejects_backlog_state(self, tmp_path: Path) -> None:
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="researcher", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.BACKLOG, adapter=adapter)
         role = ResearcherRole()
 
         result = await role.execute(ctx)
 
         assert not result.success
 
-    async def test_force_bypasses_state_check(self) -> None:
+    async def test_force_bypasses_state_check(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.workflow import WorkflowResult
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="researcher", state=TaskState.BACKLOG, adapter=adapter, force=True)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.BACKLOG, adapter=adapter, force=True)
         role = ResearcherRole()
 
         mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
@@ -648,14 +649,14 @@ class TestResearcherRole:
         assert result.success
         assert result.output_state == TaskState.RESEARCHED
 
-    async def test_workflow_failure_returns_failure(self) -> None:
+    async def test_workflow_failure_returns_failure(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.workflow import WorkflowResult
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.TRIAGED)
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         role = ResearcherRole()
 
         mock_result = WorkflowResult(
@@ -667,7 +668,7 @@ class TestResearcherRole:
         assert not result.success
         adapter.transition_state.assert_not_called()
 
-    async def test_spec_awaiting_approval_transitions_and_returns_failure(self) -> None:
+    async def test_spec_awaiting_approval_transitions_and_returns_failure(self, tmp_path: Path) -> None:
         """When the spec step pauses for human review, the issue label advances to RESEARCHED
         (blocking supervisor re-spawn) but RoleResult.success is False."""
         from unittest.mock import patch
@@ -676,7 +677,7 @@ class TestResearcherRole:
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.TRIAGED)
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         role = ResearcherRole()
 
         mock_result = WorkflowResult(success=False, final_status=TaskStatus.AWAITING_APPROVAL, task_run_id=1)
@@ -687,14 +688,14 @@ class TestResearcherRole:
         assert "awaiting" in result.summary.lower()
         adapter.transition_state.assert_awaited_once_with("42", TaskState.RESEARCHED)
 
-    async def test_invalid_pipeline_config_fails_cleanly(self) -> None:
+    async def test_invalid_pipeline_config_fails_cleanly(self, tmp_path: Path) -> None:
         from sova.config.models import ProjectConfig
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.TRIAGED)
         cfg = ProjectConfig()
         cfg.pipelines.researcher = ["fetch_task", "no_such_step"]
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter, config=cfg)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter, config=cfg)
 
         result = await ResearcherRole().execute(ctx)
 
@@ -710,14 +711,14 @@ class TestResearcherRole:
         names = [s.name for s in steps]
         assert names == ["fetch_task", "research", "spec", "extract_memory"]
 
-    async def test_execute_sets_allowed_input_states_on_context(self) -> None:
+    async def test_execute_sets_allowed_input_states_on_context(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.workflow import WorkflowResult
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.TRIAGED)
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         role = ResearcherRole()
 
         mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
@@ -733,11 +734,11 @@ class TestResearcherRole:
 
 
 class TestFetchTaskStep:
-    async def test_execute_populates_context(self) -> None:
+    async def test_execute_populates_context(self, tmp_path: Path) -> None:
         from sova.core.steps.fetch_task import FetchTaskStep
 
         adapter = _mock_adapter(TaskState.TRIAGED)
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         step = FetchTaskStep()
 
         result = await step.execute(ctx)
@@ -746,31 +747,31 @@ class TestFetchTaskStep:
         assert ctx.task is not None
         assert ctx.task.title == "Test issue"
 
-    async def test_validate_output_passes_when_task_set(self) -> None:
+    async def test_validate_output_passes_when_task_set(self, tmp_path: Path) -> None:
         from sova.core.steps.fetch_task import FetchTaskStep
 
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED)
         ctx.task = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
         step = FetchTaskStep()
 
         gate = await step.validate_output(ctx)
         assert gate.passed
 
-    async def test_validate_output_fails_when_task_missing(self) -> None:
+    async def test_validate_output_fails_when_task_missing(self, tmp_path: Path) -> None:
         from sova.core.steps.fetch_task import FetchTaskStep
 
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED)
         ctx.task = None
         step = FetchTaskStep()
 
         gate = await step.validate_output(ctx)
         assert not gate.passed
 
-    async def test_rejects_wrong_state_when_allowed_states_set(self) -> None:
+    async def test_rejects_wrong_state_when_allowed_states_set(self, tmp_path: Path) -> None:
         from sova.core.steps.fetch_task import FetchTaskStep
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="researcher", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.BACKLOG, adapter=adapter)
         ctx.allowed_input_states = frozenset({TaskState.TRIAGED})
         step = FetchTaskStep()
 
@@ -780,11 +781,11 @@ class TestFetchTaskStep:
         assert "Precondition failed" in result.error
         assert "BACKLOG" in result.error or "backlog" in result.error
 
-    async def test_accepts_correct_state_when_allowed_states_set(self) -> None:
+    async def test_accepts_correct_state_when_allowed_states_set(self, tmp_path: Path) -> None:
         from sova.core.steps.fetch_task import FetchTaskStep
 
         adapter = _mock_adapter(TaskState.TRIAGED)
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         ctx.allowed_input_states = frozenset({TaskState.TRIAGED})
         step = FetchTaskStep()
 
@@ -793,11 +794,11 @@ class TestFetchTaskStep:
         assert result.success
         assert ctx.task is not None
 
-    async def test_force_bypasses_state_check_in_step(self) -> None:
+    async def test_force_bypasses_state_check_in_step(self, tmp_path: Path) -> None:
         from sova.core.steps.fetch_task import FetchTaskStep
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="researcher", state=TaskState.BACKLOG, adapter=adapter, force=True)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.BACKLOG, adapter=adapter, force=True)
         ctx.allowed_input_states = frozenset({TaskState.TRIAGED})
         step = FetchTaskStep()
 
@@ -805,11 +806,11 @@ class TestFetchTaskStep:
 
         assert result.success
 
-    async def test_no_state_check_without_allowed_states(self) -> None:
+    async def test_no_state_check_without_allowed_states(self, tmp_path: Path) -> None:
         from sova.core.steps.fetch_task import FetchTaskStep
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="developer", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="developer", state=TaskState.BACKLOG, adapter=adapter)
         step = FetchTaskStep()
 
         result = await step.execute(ctx)
@@ -818,14 +819,14 @@ class TestFetchTaskStep:
 
 
 class TestResearchStep:
-    async def test_execute_success(self) -> None:
+    async def test_execute_success(self, tmp_path: Path) -> None:
         from decimal import Decimal
         from unittest.mock import patch
 
         from sova.core.steps.research import ResearchStep
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED)
         step = ResearchStep()
 
         llm_result = LLMResult(
@@ -845,7 +846,7 @@ class TestResearchStep:
         assert ctx.cost_usd == Decimal("0.02")
         assert mock_invoke.call_args.kwargs["task_type"] == "research"
 
-    async def test_execute_honors_researcher_model(self) -> None:
+    async def test_execute_honors_researcher_model(self, tmp_path: Path) -> None:
         # roles.researcher_model must apply here too, matching SpecStep's
         # resolution so the setting has one meaning across both steps (#1129).
         from decimal import Decimal
@@ -855,7 +856,7 @@ class TestResearchStep:
         from sova.llm.models import LLMResult
 
         config = ProjectConfig(roles=RolesConfig(researcher_model="custom-researcher-model"))
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, config=config)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, config=config)
         step = ResearchStep()
 
         llm_result = LLMResult(
@@ -868,12 +869,12 @@ class TestResearchStep:
 
         assert mock_invoke.call_args.kwargs["model"] == "custom-researcher-model"
 
-    async def test_execute_runtime_error(self) -> None:
+    async def test_execute_runtime_error(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.steps.research import ResearchStep
 
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED)
         step = ResearchStep()
 
         with patch(
@@ -886,12 +887,12 @@ class TestResearchStep:
         assert not result.success
         assert "CLI failed" in result.error
 
-    async def test_execute_timeout_error(self) -> None:
+    async def test_execute_timeout_error(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.steps.research import ResearchStep
 
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED)
         step = ResearchStep()
 
         with patch(
@@ -904,12 +905,12 @@ class TestResearchStep:
         assert not result.success
         assert "Timeout" in result.error
 
-    async def test_execute_file_not_found_error(self) -> None:
+    async def test_execute_file_not_found_error(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.steps.research import ResearchStep
 
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED)
         step = ResearchStep()
 
         with patch(
@@ -922,12 +923,12 @@ class TestResearchStep:
         assert not result.success
         assert "Missing command" in result.error
 
-    async def test_execute_generic_exception(self) -> None:
+    async def test_execute_generic_exception(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.steps.research import ResearchStep
 
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED)
         step = ResearchStep()
 
         with patch(
@@ -941,45 +942,45 @@ class TestResearchStep:
         assert "ValueError" in result.error
         assert "unexpected value" in result.error
 
-    async def test_validate_output_passes_with_research_section(self) -> None:
+    async def test_validate_output_passes_with_research_section(self, tmp_path: Path) -> None:
         from sova.core.steps.research import ResearchStep
 
         adapter = _mock_adapter(TaskState.TRIAGED)
         adapter.get_task.return_value = Task(
             id="42", title="Test", body="Some text\n\n## Research\n\nFindings here", state=TaskState.TRIAGED
         )
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         step = ResearchStep()
 
         gate = await step.validate_output(ctx)
         assert gate.passed
 
-    async def test_validate_output_passes_with_research_in_comments(self) -> None:
+    async def test_validate_output_passes_with_research_in_comments(self, tmp_path: Path) -> None:
         from sova.core.steps.research import ResearchStep
 
         adapter = _mock_adapter(TaskState.TRIAGED)
         adapter.get_task.return_value = Task(id="42", title="Test", body="No research here", state=TaskState.TRIAGED)
         adapter.get_comments.return_value = ["Some comment", "## Research\n\nFindings here"]
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         step = ResearchStep()
 
         gate = await step.validate_output(ctx)
         assert gate.passed
 
-    async def test_validate_output_fails_without_research_anywhere(self) -> None:
+    async def test_validate_output_fails_without_research_anywhere(self, tmp_path: Path) -> None:
         from sova.core.steps.research import ResearchStep
 
         adapter = _mock_adapter(TaskState.TRIAGED)
         adapter.get_task.return_value = Task(id="42", title="Test", body="No research here", state=TaskState.TRIAGED)
         adapter.get_comments.return_value = ["Some unrelated comment"]
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         step = ResearchStep()
 
         gate = await step.validate_output(ctx)
         assert not gate.passed
         assert "comments" in gate.reason
 
-    async def test_validate_output_fails_closed_when_comments_fetch_raises(self) -> None:
+    async def test_validate_output_fails_closed_when_comments_fetch_raises(self, tmp_path: Path) -> None:
         # The comments lookup is best-effort: an adapter/transport failure must
         # fall through to the "not found" verdict rather than propagate, since
         # the body already proved the section is absent.
@@ -988,7 +989,7 @@ class TestResearchStep:
         adapter = _mock_adapter(TaskState.TRIAGED)
         adapter.get_task.return_value = Task(id="42", title="Test", body="No research here", state=TaskState.TRIAGED)
         adapter.get_comments.side_effect = RuntimeError("tracker unreachable")
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         step = ResearchStep()
 
         gate = await step.validate_output(ctx)
@@ -1003,10 +1004,10 @@ class TestResearchStep:
 
 
 class TestAdoptTaskRun:
-    async def test_raises_on_missing_task_run(self) -> None:
+    async def test_raises_on_missing_task_run(self, tmp_path: Path) -> None:
         from sova.core.workflow import WorkflowEngine
 
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED)
         ctx.task_run_id = 99999
         steps = []
         engine = WorkflowEngine(steps=steps, ctx=ctx)
@@ -1015,7 +1016,7 @@ class TestAdoptTaskRun:
         with pytest.raises(RuntimeError, match="TaskRun 99999 not found"):
             await engine._adopt_task_run()
 
-    async def test_adopts_existing_task_run(self) -> None:
+    async def test_adopts_existing_task_run(self, tmp_path: Path) -> None:
         from sova.core.workflow import WorkflowEngine
 
         async with await get_session() as session:
@@ -1030,7 +1031,7 @@ class TestAdoptTaskRun:
                 await session.flush()
                 run_id = run.id
 
-        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED)
         ctx.task_run_id = run_id
         steps = []
         engine = WorkflowEngine(steps=steps, ctx=ctx)
@@ -1084,11 +1085,11 @@ class TestDeveloperRole:
         task = Task(id="1", title="Test", state=TaskState.IN_PROGRESS)
         assert role.validate_preconditions(task)
 
-    async def test_execute_rejects_non_researched(self) -> None:
+    async def test_execute_rejects_non_researched(self, tmp_path: Path) -> None:
         from sova.roles.developer import DeveloperRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="developer", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="developer", state=TaskState.BACKLOG, adapter=adapter)
         role = DeveloperRole()
 
         result = await role.execute(ctx)
@@ -1096,14 +1097,14 @@ class TestDeveloperRole:
         assert not result.success
         assert "researched" in result.error.lower()
 
-    async def test_execute_force_bypasses_gate_3(self) -> None:
+    async def test_execute_force_bypasses_gate_3(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.core.workflow import WorkflowResult
         from sova.roles.developer import DeveloperRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="developer", state=TaskState.BACKLOG, adapter=adapter, force=True)
+        ctx = _make_ctx(tmp_path, role="developer", state=TaskState.BACKLOG, adapter=adapter, force=True)
         role = DeveloperRole()
 
         mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
@@ -1112,7 +1113,7 @@ class TestDeveloperRole:
 
         assert result.success
 
-    async def test_execute_transitions_to_in_progress(self) -> None:
+    async def test_execute_transitions_to_in_progress(self, tmp_path: Path) -> None:
         """Developer must move issue to IN_PROGRESS on the tracker before running steps."""
         from unittest.mock import patch
 
@@ -1120,7 +1121,7 @@ class TestDeveloperRole:
         from sova.roles.developer import DeveloperRole
 
         adapter = _mock_adapter(TaskState.RESEARCHED)
-        ctx = _make_ctx(role="developer", state=TaskState.RESEARCHED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="developer", state=TaskState.RESEARCHED, adapter=adapter)
         role = DeveloperRole()
 
         mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
@@ -1130,7 +1131,7 @@ class TestDeveloperRole:
         assert result.success
         adapter.transition_state.assert_called_once_with("42", TaskState.IN_PROGRESS)
 
-    async def test_execute_routes_to_address_review_when_pr_number_set(self) -> None:
+    async def test_execute_routes_to_address_review_when_pr_number_set(self, tmp_path: Path) -> None:
         """pr_number alone should route to address-review pipeline, regardless of issue state."""
         from unittest.mock import patch
 
@@ -1139,7 +1140,12 @@ class TestDeveloperRole:
 
         adapter = _mock_adapter(TaskState.IN_PROGRESS)
         ctx = _make_ctx(
-            role="developer", state=TaskState.IN_PROGRESS, adapter=adapter, pr_number=88, branch_name="feat/issue-42"
+            tmp_path,
+            role="developer",
+            state=TaskState.IN_PROGRESS,
+            adapter=adapter,
+            pr_number=88,
+            branch_name="feat/issue-42",
         )
         role = DeveloperRole()
 
@@ -1151,7 +1157,7 @@ class TestDeveloperRole:
         assert result.output_state == TaskState.IN_REVIEW
         adapter.transition_state.assert_not_called()
 
-    async def test_address_review_discovers_branch_from_pr(self) -> None:
+    async def test_address_review_discovers_branch_from_pr(self, tmp_path: Path) -> None:
         """Address-review should discover branch_name from the PR when not set."""
         from unittest.mock import patch
 
@@ -1159,7 +1165,7 @@ class TestDeveloperRole:
         from sova.roles.developer import DeveloperRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="developer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=88)
+        ctx = _make_ctx(tmp_path, role="developer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=88)
         assert ctx.branch_name == ""
         role = DeveloperRole()
 
@@ -1177,7 +1183,7 @@ class TestDeveloperRole:
         assert result.success
         assert ctx.branch_name == "feat/issue-42"
 
-    async def test_address_review_fails_cleanly_when_branch_unresolved(self) -> None:
+    async def test_address_review_fails_cleanly_when_branch_unresolved(self, tmp_path: Path) -> None:
         """Regression for PR #1015: an unresolved branch_name must surface as a
         clean RoleResult failure, not propagate out of execute() as a raw
         RuntimeError (which would crash the CLI process before ever reaching
@@ -1187,7 +1193,7 @@ class TestDeveloperRole:
         from sova.roles.developer import DeveloperRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="developer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=88)
+        ctx = _make_ctx(tmp_path, role="developer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=88)
         role = DeveloperRole()
 
         with (
@@ -1216,11 +1222,11 @@ class TestDeveloperRole:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(
+            tmp_path,
             role="developer",
             state=TaskState.IN_REVIEW,
             adapter=adapter,
             pr_number=88,
-            project_dir=tmp_path,
         )
         ctx.branch_name = "feat/issue-42"
         assert ctx.worktree_dir is None
@@ -1233,7 +1239,7 @@ class TestDeveloperRole:
         assert result.success
         assert ctx.worktree_dir == worktree_path
 
-    async def test_execute_routes_to_development_without_pr_number(self) -> None:
+    async def test_execute_routes_to_development_without_pr_number(self, tmp_path: Path) -> None:
         """Without pr_number, developer should run the full development pipeline."""
         from unittest.mock import patch
 
@@ -1241,7 +1247,7 @@ class TestDeveloperRole:
         from sova.roles.developer import DeveloperRole
 
         adapter = _mock_adapter(TaskState.RESEARCHED)
-        ctx = _make_ctx(role="developer", state=TaskState.RESEARCHED, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="developer", state=TaskState.RESEARCHED, adapter=adapter)
         role = DeveloperRole()
 
         mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
@@ -1251,7 +1257,7 @@ class TestDeveloperRole:
         assert result.success
         adapter.transition_state.assert_called_once_with("42", TaskState.IN_PROGRESS)
 
-    async def test_invalid_pipeline_config_fails_cleanly(self) -> None:
+    async def test_invalid_pipeline_config_fails_cleanly(self, tmp_path: Path) -> None:
         """An unknown step name in [pipelines] fails the run instead of crashing the agent."""
         from sova.config.models import ProjectConfig
         from sova.roles.developer import DeveloperRole
@@ -1259,7 +1265,7 @@ class TestDeveloperRole:
         adapter = _mock_adapter(TaskState.RESEARCHED)
         cfg = ProjectConfig()
         cfg.pipelines.developer = ["sync", "no_such_step"]
-        ctx = _make_ctx(role="developer", state=TaskState.RESEARCHED, adapter=adapter, config=cfg)
+        ctx = _make_ctx(tmp_path, role="developer", state=TaskState.RESEARCHED, adapter=adapter, config=cfg)
 
         result = await DeveloperRole().execute(ctx)
 
@@ -1294,9 +1300,9 @@ class TestDiscoverAddressReviewContext:
         from sova.roles.developer import DeveloperRole
 
         ctx = _make_ctx(
+            tmp_path,
             issue_number="",
             pr_number=100,
-            project_dir=tmp_path,
         )
         role = DeveloperRole()
         wt_path = tmp_path / ".claude" / "worktrees" / "55"
@@ -1330,10 +1336,10 @@ class TestDiscoverAddressReviewContext:
         wt_path.mkdir(parents=True)
 
         ctx = _make_ctx(
+            tmp_path,
             issue_number="42",
             pr_number=100,
             branch_name="feat/issue-42",
-            project_dir=tmp_path,
         )
         role = DeveloperRole()
 
@@ -1353,9 +1359,9 @@ class TestDiscoverAddressReviewContext:
         from sova.roles.developer import DeveloperRole
 
         ctx = _make_ctx(
+            tmp_path,
             issue_number="",
             pr_number=200,
-            project_dir=tmp_path,
         )
         role = DeveloperRole()
 
@@ -1382,10 +1388,10 @@ class TestDiscoverAddressReviewContext:
         from sova.roles.developer import DeveloperRole
 
         ctx = _make_ctx(
+            tmp_path,
             issue_number="",
             pr_number=42,
             branch_name="fix/standalone",
-            project_dir=tmp_path,
         )
         role = DeveloperRole()
         wt_path = tmp_path / ".claude" / "worktrees" / "pr-42"
@@ -1412,9 +1418,9 @@ class TestDiscoverAddressReviewContext:
         wt_path.mkdir(parents=True)
 
         ctx = _make_ctx(
+            tmp_path,
             issue_number="",
             pr_number=1015,
-            project_dir=tmp_path,
         )
         role = DeveloperRole()
 
@@ -1444,7 +1450,7 @@ class TestReviewerRole:
         assert role.name == "reviewer"
         assert TaskState.IN_REVIEW in role.allowed_input_states
 
-    async def test_execute_reviews_pr(self) -> None:
+    async def test_execute_reviews_pr(self, tmp_path: Path) -> None:
         import json
         from decimal import Decimal
         from unittest.mock import patch
@@ -1453,7 +1459,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
         llm_resp = json.dumps({"findings": [], "summary": "OK"})
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
@@ -1475,7 +1481,7 @@ class TestReviewerRole:
 
         assert result.success
 
-    async def test_execute_discovers_pr_when_not_provided(self) -> None:
+    async def test_execute_discovers_pr_when_not_provided(self, tmp_path: Path) -> None:
         import json
         from decimal import Decimal
         from unittest.mock import patch
@@ -1485,7 +1491,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
         role = ReviewerRole()
         llm_resp = json.dumps({"findings": [], "summary": "OK"})
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
@@ -1509,7 +1515,7 @@ class TestReviewerRole:
         assert ctx.pr_number == 82
         assert ctx.branch_name == "feat/issue-42"
 
-    async def test_reviewer_discovers_branch_when_pr_number_preset(self) -> None:
+    async def test_reviewer_discovers_branch_when_pr_number_preset(self, tmp_path: Path) -> None:
         """When pr_number is already set, reviewer should still discover branch_name."""
         import json
         from decimal import Decimal
@@ -1519,7 +1525,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         assert ctx.branch_name == ""
         role = ReviewerRole()
         llm_resp = json.dumps({"findings": [], "summary": "OK"})
@@ -1543,7 +1549,7 @@ class TestReviewerRole:
         assert result.success
         assert ctx.branch_name == "feat/issue-42"
 
-    async def test_reviewer_propagates_branch_name_in_handoff(self) -> None:
+    async def test_reviewer_propagates_branch_name_in_handoff(self, tmp_path: Path) -> None:
         """Reviewer must include branch_name in handoff so address-review can find the worktree."""
         import json
         from decimal import Decimal
@@ -1554,7 +1560,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
         ctx.task_run_id = 1
         role = ReviewerRole()
 
@@ -1583,13 +1589,13 @@ class TestReviewerRole:
         file_handoff = mock_file_handoff.call_args[0][1]
         assert file_handoff.branch == "feat/issue-42"
 
-    async def test_execute_fails_when_no_pr_found(self) -> None:
+    async def test_execute_fails_when_no_pr_found(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
         role = ReviewerRole()
 
         with patch(
@@ -1602,7 +1608,7 @@ class TestReviewerRole:
         assert not result.success
         assert "no linked pr" in result.error.lower()
 
-    async def test_execute_branch_discovery_failure_non_fatal(self) -> None:
+    async def test_execute_branch_discovery_failure_non_fatal(self, tmp_path: Path) -> None:
         """Branch discovery failure should not prevent the review from proceeding."""
         import json
         from decimal import Decimal
@@ -1612,7 +1618,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         ctx.branch_name = ""
         role = ReviewerRole()
         llm_resp = json.dumps({"findings": [], "summary": "OK"})
@@ -1635,7 +1641,7 @@ class TestReviewerRole:
 
         assert result.success
 
-    async def test_execute_extract_memory_failure_non_fatal(self) -> None:
+    async def test_execute_extract_memory_failure_non_fatal(self, tmp_path: Path) -> None:
         """Memory extraction failure should not prevent reviewer from returning success."""
         import json
         from decimal import Decimal
@@ -1645,7 +1651,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
         llm_resp = json.dumps({"findings": [], "summary": "OK"})
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
@@ -1672,7 +1678,7 @@ class TestReviewerRole:
 
         assert result.success
 
-    async def test_execute_handoff_db_failure_non_fatal(self) -> None:
+    async def test_execute_handoff_db_failure_non_fatal(self, tmp_path: Path) -> None:
         """DB handoff write failure should not prevent reviewer from returning success."""
         import json
         from decimal import Decimal
@@ -1682,7 +1688,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         ctx.task_run_id = 1
         role = ReviewerRole()
         llm_resp = json.dumps({"findings": [], "summary": "OK"})
@@ -1709,7 +1715,7 @@ class TestReviewerRole:
 
         assert result.success
 
-    async def test_execute_handoff_file_failure_non_fatal(self) -> None:
+    async def test_execute_handoff_file_failure_non_fatal(self, tmp_path: Path) -> None:
         """File handoff write failure should not prevent reviewer from returning success."""
         import json
         from decimal import Decimal
@@ -1719,7 +1725,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
         llm_resp = json.dumps({"findings": [], "summary": "OK"})
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
@@ -1744,7 +1750,7 @@ class TestReviewerRole:
 
         assert result.success
 
-    async def test_execute_review_rationale_failure_non_fatal(self) -> None:
+    async def test_execute_review_rationale_failure_non_fatal(self, tmp_path: Path) -> None:
         """Review rationale spec append failure should not prevent success."""
         import json
         from decimal import Decimal
@@ -1754,7 +1760,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
         findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Issue"}]
         llm_resp = json.dumps({"findings": findings, "summary": "Found issue"})
@@ -1782,7 +1788,7 @@ class TestReviewerRole:
         assert result.success
         assert "1 findings" in result.summary
 
-    async def test_execute_posts_inline_review_comments(self) -> None:
+    async def test_execute_posts_inline_review_comments(self, tmp_path: Path) -> None:
         import json
         from decimal import Decimal
         from unittest.mock import patch
@@ -1791,7 +1797,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
 
         findings = [
@@ -1842,7 +1848,7 @@ class TestReviewerRole:
         assert comments[0]["line"] == 2
         adapter.post_pr_comment.assert_not_called()
 
-    async def test_execute_falls_back_to_comment_on_review_failure(self) -> None:
+    async def test_execute_falls_back_to_comment_on_review_failure(self, tmp_path: Path) -> None:
         import json
         from decimal import Decimal
         from unittest.mock import patch
@@ -1852,7 +1858,7 @@ class TestReviewerRole:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         adapter.post_pr_review.side_effect = RuntimeError("API failed")
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
 
         llm_resp = json.dumps({"findings": [], "summary": "OK"})
@@ -1874,7 +1880,7 @@ class TestReviewerRole:
         assert result.success
         adapter.post_pr_comment.assert_called_once()
 
-    async def test_reviewer_retries_body_only_before_comment_fallback(self) -> None:
+    async def test_reviewer_retries_body_only_before_comment_fallback(self, tmp_path: Path) -> None:
         """When post_pr_review fails with inline comments, reviewer retries without them."""
         import json
         from decimal import Decimal
@@ -1893,7 +1899,7 @@ class TestReviewerRole:
                 raise RuntimeError("Inline comments failed")
 
         adapter.post_pr_review = AsyncMock(side_effect=fail_with_inline_succeed_without)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
 
         findings = [{"file": "foo.py", "line": 2, "severity": 6, "category": "bug", "description": "Issue"}]
@@ -1934,7 +1940,7 @@ class TestReviewerRole:
         assert second_call[1]["comments"] == []
         adapter.post_pr_comment.assert_not_called()
 
-    async def test_reviewer_falls_back_to_comment_when_body_only_also_fails(self) -> None:
+    async def test_reviewer_falls_back_to_comment_when_body_only_also_fails(self, tmp_path: Path) -> None:
         """Full fallback: inline fails -> body-only fails -> issue comment posted."""
         import json
         from decimal import Decimal
@@ -1945,7 +1951,7 @@ class TestReviewerRole:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         adapter.post_pr_review = AsyncMock(side_effect=RuntimeError("API down"))
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
 
         findings = [{"file": "foo.py", "line": 2, "severity": 6, "category": "bug", "description": "Issue"}]
@@ -1981,18 +1987,18 @@ class TestReviewerRole:
         assert adapter.post_pr_review.call_count == 2
         adapter.post_pr_comment.assert_called_once()
 
-    async def test_rejects_wrong_state(self) -> None:
+    async def test_rejects_wrong_state(self, tmp_path: Path) -> None:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="reviewer", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.BACKLOG, adapter=adapter)
         role = ReviewerRole()
 
         result = await role.execute(ctx)
 
         assert not result.success
 
-    async def test_execute_includes_spec_in_review(self) -> None:
+    async def test_execute_includes_spec_in_review(self, tmp_path: Path) -> None:
         """When a spec file exists, review prompt includes spec context."""
         import json
         from decimal import Decimal
@@ -2002,7 +2008,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
 
         findings = [
             {
@@ -2059,7 +2065,7 @@ class TestReviewerRole:
         assert "Spec alignment" in captured_prompt
         assert "spec_alignment" in captured_prompt
 
-    async def test_execute_without_spec_is_backward_compatible(self) -> None:
+    async def test_execute_without_spec_is_backward_compatible(self, tmp_path: Path) -> None:
         """When no spec file exists, review works normally without spec context."""
         import json
         from decimal import Decimal
@@ -2069,7 +2075,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         llm_resp = json.dumps({"findings": [], "summary": "OK"})
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
@@ -2108,10 +2114,10 @@ class TestReviewerRole:
 
 
 class TestReviewerGatherRepoContext:
-    async def test_disabled_by_default_returns_empty(self) -> None:
+    async def test_disabled_by_default_returns_empty(self, tmp_path: Path) -> None:
         from sova.roles.reviewer import ReviewerRole
 
-        ctx = _make_ctx(role="reviewer")
+        ctx = _make_ctx(tmp_path, role="reviewer")
         role = ReviewerRole()
 
         with patch("sova.roles.reviewer.run_shell", new_callable=AsyncMock) as mock_run:
@@ -2120,7 +2126,7 @@ class TestReviewerGatherRepoContext:
         assert result == ""
         mock_run.assert_not_awaited()
 
-    async def test_proceeds_without_unenforced_budget_opt_in(self) -> None:
+    async def test_proceeds_without_unenforced_budget_opt_in(self, tmp_path: Path) -> None:
         """This sub-call bypasses CodexRuntime.spawn() entirely and requests no budget
         cap at all, so unlike a pipeline spawn with a requested cap, it must not require
         codex.allow_unenforced_budget: by CodexRuntime's own rule, an unbudgeted spawn
@@ -2130,7 +2136,7 @@ class TestReviewerGatherRepoContext:
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
-        ctx = _make_ctx(role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
+        ctx = _make_ctx(tmp_path, role="reviewer", config=ProjectConfig(review=ReviewConfig(repo_context_agent=True)))
         role = ReviewerRole()
 
         with (
@@ -2145,11 +2151,12 @@ class TestReviewerGatherRepoContext:
 
         mock_run.assert_awaited_once()
 
-    async def test_returns_empty_when_codex_unavailable(self) -> None:
+    async def test_returns_empty_when_codex_unavailable(self, tmp_path: Path) -> None:
         from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2163,12 +2170,13 @@ class TestReviewerGatherRepoContext:
 
         assert result == ""
 
-    async def test_returns_context_text_on_success(self) -> None:
+    async def test_returns_context_text_on_success(self, tmp_path: Path) -> None:
         from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2200,7 +2208,7 @@ class TestReviewerGatherRepoContext:
         assert ctx.input_tokens == 10
         assert ctx.output_tokens == 5
 
-    async def test_multi_turn_usage_accumulates_not_last_wins(self) -> None:
+    async def test_multi_turn_usage_accumulates_not_last_wins(self, tmp_path: Path) -> None:
         """CodexStreamParser lifts its terminal latch between turns, so a stream
         with more than one turn.completed event must sum their usage rather than
         keep only the last one's, matching the sibling consumers of the same
@@ -2211,6 +2219,7 @@ class TestReviewerGatherRepoContext:
         from sova.utils.shell import ShellResult
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2240,7 +2249,7 @@ class TestReviewerGatherRepoContext:
         assert ctx.input_tokens == 30
         assert ctx.output_tokens == 13
 
-    async def test_usage_logged_as_unbudgeted_since_cost_is_always_zero(self) -> None:
+    async def test_usage_logged_as_unbudgeted_since_cost_is_always_zero(self, tmp_path: Path) -> None:
         """Codex's LLMResult always reports cost_usd=$0/CostSource.UNKNOWN, so this
         sub-call's spend is invisible to every dollar-based budget guard. A distinct
         warning must fire so the gap is at least traceable from the run log."""
@@ -2249,6 +2258,7 @@ class TestReviewerGatherRepoContext:
         from sova.utils.shell import ShellResult
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2277,7 +2287,7 @@ class TestReviewerGatherRepoContext:
         assert ctx.cost_usd == 0
         assert mock_log.warning.call_args.args[0] == "reviewer.repo_context_cost_unbudgeted"
 
-    async def test_passes_configured_codex_model(self) -> None:
+    async def test_passes_configured_codex_model(self, tmp_path: Path) -> None:
         """A project that pins codex.model for cost/availability reasons must have the
         sub-call honour it instead of whatever the codex CLI defaults to."""
         from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
@@ -2285,6 +2295,7 @@ class TestReviewerGatherRepoContext:
         from sova.utils.shell import ShellResult
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2306,7 +2317,7 @@ class TestReviewerGatherRepoContext:
         args = mock_run.call_args.args
         assert args[5:7] == ("--model", "gpt-5-codex")
 
-    async def test_returns_empty_on_failed_turn(self) -> None:
+    async def test_returns_empty_on_failed_turn(self, tmp_path: Path) -> None:
         """A turn.failed/error terminal event must never be folded into the review
         prompt as if it were repository context."""
         from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
@@ -2314,6 +2325,7 @@ class TestReviewerGatherRepoContext:
         from sova.utils.shell import ShellResult
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2336,7 +2348,7 @@ class TestReviewerGatherRepoContext:
 
         assert result == ""
 
-    async def test_appends_truncation_marker_when_cap_hit(self) -> None:
+    async def test_appends_truncation_marker_when_cap_hit(self, tmp_path: Path) -> None:
         """The terminal event's text is capped at review.repo_context_max_chars; a
         result that hits the cap must say so rather than silently ending mid-sentence."""
         import json as _json
@@ -2347,6 +2359,7 @@ class TestReviewerGatherRepoContext:
 
         max_chars = 2000
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=max_chars),
@@ -2376,7 +2389,7 @@ class TestReviewerGatherRepoContext:
         assert result.startswith("x" * max_chars)
         assert result.endswith("[context truncated]")
 
-    async def test_repo_context_max_chars_decoupled_from_display_cap(self) -> None:
+    async def test_repo_context_max_chars_decoupled_from_display_cap(self, tmp_path: Path) -> None:
         """review.repo_context_max_chars must not be tied to codex.py's unrelated
         terminal-display cap (_MAX_CONTENT_CHARS, 2000): a message longer than that
         display cap but within the configured repo-context budget must survive whole."""
@@ -2389,6 +2402,7 @@ class TestReviewerGatherRepoContext:
 
         text = "y" * (_MAX_CONTENT_CHARS + 500)
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=_MAX_CONTENT_CHARS + 1000),
@@ -2417,7 +2431,7 @@ class TestReviewerGatherRepoContext:
         assert result == text
         assert "[context truncated]" not in result
 
-    async def test_appends_truncation_marker_on_secret_dense_whitespace_free_message(self) -> None:
+    async def test_appends_truncation_marker_on_secret_dense_whitespace_free_message(self, tmp_path: Path) -> None:
         """A raw message that redacts down below the cap must still get the
         truncation marker: inferring truncation from len(text) against the cap (the
         pre-fix check) misses this case entirely, since redaction can shrink a long,
@@ -2429,6 +2443,7 @@ class TestReviewerGatherRepoContext:
         from sova.utils.shell import ShellResult
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True, repo_context_max_chars=2000),
@@ -2459,12 +2474,13 @@ class TestReviewerGatherRepoContext:
         assert "aaaa" not in result
         assert result.endswith("[context truncated]")
 
-    async def test_returns_empty_on_timeout(self) -> None:
+    async def test_returns_empty_on_timeout(self, tmp_path: Path) -> None:
         from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
         from sova.utils.shell import ShellResult
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2485,11 +2501,12 @@ class TestReviewerGatherRepoContext:
 
         assert result == ""
 
-    async def test_returns_empty_on_spawn_failure(self) -> None:
+    async def test_returns_empty_on_spawn_failure(self, tmp_path: Path) -> None:
         from sova.config.models import CodexConfig, ProjectConfig, ReviewConfig
         from sova.roles.reviewer import ReviewerRole
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2511,7 +2528,7 @@ class TestReviewerGatherRepoContext:
         assert result == ""
 
     async def test_env_excludes_untrusted_vars_but_includes_allowlisted_and_codex_key(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The sub-call must never inherit a GitHub token or DB URL, even if present in
         the process environment, but must get the allowlisted vars and CODEX_API_KEY."""
@@ -2527,6 +2544,7 @@ class TestReviewerGatherRepoContext:
         monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg-config")
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2553,7 +2571,7 @@ class TestReviewerGatherRepoContext:
         assert sub_env["CODEX_HOME"] == "/custom/codex-home"
         assert sub_env["XDG_CONFIG_HOME"] == "/custom/xdg-config"
 
-    async def test_env_includes_proxy_and_tls_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_env_includes_proxy_and_tls_vars(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A corporate-proxy or custom-CA setup must not silently break the sub-call:
         none of these carry a GitHub token or DB URL, so allowlisting them does not
         weaken the allowlist's safety property."""
@@ -2565,6 +2583,7 @@ class TestReviewerGatherRepoContext:
         monkeypatch.setenv("SSL_CERT_FILE", "/custom/ca-bundle.pem")
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2587,7 +2606,7 @@ class TestReviewerGatherRepoContext:
         assert sub_env["HTTPS_PROXY"] == "http://proxy.internal:8080"
         assert sub_env["SSL_CERT_FILE"] == "/custom/ca-bundle.pem"
 
-    async def test_env_passthrough_is_not_unioned_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_env_passthrough_is_not_unioned_in(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """agent.env_passthrough must never widen the sub-call's environment.
 
         That field is a user-editable config list whose documented purpose is
@@ -2604,6 +2623,7 @@ class TestReviewerGatherRepoContext:
         monkeypatch.setenv("GH_TOKEN", "super-secret-token")
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             config=ProjectConfig(
                 review=ReviewConfig(repo_context_agent=True),
@@ -2781,7 +2801,7 @@ class TestSpecAnchoredReview:
         )
         write_handoff_file(tmp_path, h)
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW)
         ctx.project_dir = tmp_path
         ctx.issue_number = "42"
 
@@ -2790,7 +2810,7 @@ class TestSpecAnchoredReview:
         assert len(result) == 1
         assert result[0]["source"] == "sonarcloud"
 
-    async def test_load_addressed_findings_from_resume_run(self) -> None:
+    async def test_load_addressed_findings_from_resume_run(self, tmp_path: Path) -> None:
         from sova.db.models import TaskRun
         from sova.db.session import get_session
         from sova.ipc.handoff import AgentHandoff, write_handoff
@@ -2814,7 +2834,7 @@ class TestSpecAnchoredReview:
         )
         await write_handoff(run_id, handoff)
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW)
         ctx.resume_run_id = run_id
         ctx.project_dir = Path("/nonexistent")  # force file source to fail
 
@@ -2823,7 +2843,7 @@ class TestSpecAnchoredReview:
         assert len(result) == 1
         assert result[0]["source"] == "sonarcloud"
 
-    async def test_load_addressed_findings_from_db_skips_empty_runs(self) -> None:
+    async def test_load_addressed_findings_from_db_skips_empty_runs(self, tmp_path: Path) -> None:
         from sova.db.models import TaskRun
         from sova.db.session import get_session
         from sova.roles.reviewer import ReviewerRole
@@ -2850,7 +2870,7 @@ class TestSpecAnchoredReview:
             )
             session.add(tr2)
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW)
         ctx.issue_number = "42"
         ctx.project_dir = Path("/nonexistent")
 
@@ -2859,10 +2879,10 @@ class TestSpecAnchoredReview:
         assert len(result) == 1
         assert result[0]["message"] == "Found"
 
-    async def test_load_addressed_findings_empty_issue(self) -> None:
+    async def test_load_addressed_findings_empty_issue(self, tmp_path: Path) -> None:
         from sova.roles.reviewer import ReviewerRole
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW)
         ctx.issue_number = ""
         ctx.project_dir = Path("/nonexistent")
 
@@ -2870,10 +2890,10 @@ class TestSpecAnchoredReview:
         result = await role._load_addressed_findings(ctx)
         assert result == []
 
-    async def test_load_addressed_findings_all_sources_fail(self) -> None:
+    async def test_load_addressed_findings_all_sources_fail(self, tmp_path: Path) -> None:
         from sova.roles.reviewer import ReviewerRole
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW)
         ctx.issue_number = "999"
         ctx.project_dir = Path("/nonexistent")
 
@@ -2906,18 +2926,18 @@ class TestSpecAnchoredReview:
         assert findings[0].category == "spec_alignment"
         assert findings[0].severity == 6
 
-    def test_load_spec_sections_no_spec(self) -> None:
+    def test_load_spec_sections_no_spec(self, tmp_path: Path) -> None:
         from sova.roles.reviewer import ReviewerRole
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=99)
         role = ReviewerRole()
         result = role._load_spec_sections(ctx)
         assert result is None
 
-    def test_load_spec_sections_non_numeric_issue(self) -> None:
+    def test_load_spec_sections_non_numeric_issue(self, tmp_path: Path) -> None:
         from sova.roles.reviewer import ReviewerRole
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=99, issue_number="pr-42")
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=99, issue_number="pr-42")
         role = ReviewerRole()
         result = role._load_spec_sections(ctx)
         assert result is None
@@ -2932,11 +2952,12 @@ class TestSpecAnchoredReview:
         spec_file.write_text("## Solution\nDo X.\n\n## Edge Cases\nHandle Y.\n")
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             state=TaskState.IN_REVIEW,
             pr_number=99,
             worktree_dir=tmp_path,
-            project_dir=Path("/nonexistent"),
+            project_dir=tmp_path / "nonexistent",
         )
         role = ReviewerRole()
         result = role._load_spec_sections(ctx)
@@ -2950,6 +2971,7 @@ class TestSpecAnchoredReview:
         from sova.roles.reviewer import ReviewerRole
 
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             state=TaskState.IN_REVIEW,
             pr_number=99,
@@ -2984,7 +3006,7 @@ class TestSpecAnchoredReview:
         assert result["Solution"].endswith("... (see full spec in chunk 1)")
         assert result["Edge Cases"] == "Short."
 
-    def test_run_review_uses_compact_spec_for_subsequent_chunks(self) -> None:
+    def test_run_review_uses_compact_spec_for_subsequent_chunks(self, tmp_path: Path) -> None:
         """Verify that multi-chunk reviews send full spec only for chunk 1."""
         from unittest.mock import patch
 
@@ -2994,7 +3016,7 @@ class TestSpecAnchoredReview:
         task = Task(id="1", title="Test", body="desc", state=TaskState.IN_REVIEW)
         adapter = _mock_adapter(TaskState.IN_REVIEW)
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
 
         spec = {"Solution": "X" * 500, "Edge Cases": "Short."}
         # Build a diff with 2 file boundaries so _chunk_diff splits it
@@ -3029,7 +3051,7 @@ class TestSpecAnchoredReview:
         # Second chunk has truncated spec
         assert "... (see full spec in chunk 1)" in captured_prompts[1]
 
-    def test_run_review_attaches_repo_context_to_first_chunk_only(self) -> None:
+    def test_run_review_attaches_repo_context_to_first_chunk_only(self, tmp_path: Path) -> None:
         """Repo context is background, not a finding source: it must reach the
         prompt on chunk 0 only, mirroring spec/addressed-findings treatment. This
         covers the _execute -> _run_review -> _run_single_review -> _build_review_prompt
@@ -3044,7 +3066,7 @@ class TestSpecAnchoredReview:
         task = Task(id="1", title="Test", body="desc", state=TaskState.IN_REVIEW)
         adapter = _mock_adapter(TaskState.IN_REVIEW)
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
 
         chunk1 = "diff --git a/a.py b/a.py\n" + "+" * DIFF_CHUNK_SIZE
         chunk2 = "\ndiff --git a/b.py b/b.py\n" + "+" * 100
@@ -3071,7 +3093,7 @@ class TestSpecAnchoredReview:
         assert "SENTINEL_REPO_CONTEXT" in captured_prompts[0]
         assert "SENTINEL_REPO_CONTEXT" not in captured_prompts[1]
 
-    async def test_execute_skips_repo_context_sub_call_when_panel_enabled(self) -> None:
+    async def test_execute_skips_repo_context_sub_call_when_panel_enabled(self, tmp_path: Path) -> None:
         """The panel path never consumes repo_context (see _run_review's panel
         branch), so _execute must not even pay for the sub-call's wall clock and
         Codex turn when review.panel.enabled is set. A regression that drops this
@@ -3081,6 +3103,7 @@ class TestSpecAnchoredReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             state=TaskState.IN_REVIEW,
             adapter=adapter,
@@ -3180,33 +3203,33 @@ class TestRoleDispatcher:
         names = {r.name for r in roles}
         assert names == {"triage", "researcher", "developer", "reviewer", "planner"}
 
-    async def test_dispatch_auto_selects_role(self) -> None:
+    async def test_dispatch_auto_selects_role(self, tmp_path: Path) -> None:
         from sova.roles.dispatcher import dispatch
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, state=TaskState.BACKLOG, adapter=adapter)
 
         role, result = await dispatch(ctx)
 
         assert role.name == "triage"
         assert result.success
 
-    async def test_dispatch_explicit_role(self) -> None:
+    async def test_dispatch_explicit_role(self, tmp_path: Path) -> None:
         from sova.roles.dispatcher import dispatch
 
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter)
 
         role, result = await dispatch(ctx, role_name="triage")
 
         assert role.name == "triage"
         assert result.success
 
-    async def test_dispatch_explicit_wrong_state_fails(self) -> None:
+    async def test_dispatch_explicit_wrong_state_fails(self, tmp_path: Path) -> None:
         from sova.roles.dispatcher import dispatch
 
         adapter = _mock_adapter(TaskState.IN_PROGRESS)
-        ctx = _make_ctx(role="triage", state=TaskState.IN_PROGRESS, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.IN_PROGRESS, adapter=adapter)
 
         role, result = await dispatch(ctx, role_name="triage")
 
@@ -3524,7 +3547,7 @@ class TestAssessTask:
 
 
 class TestTriageLabelApplication:
-    async def test_applies_ready_label(self) -> None:
+    async def test_applies_ready_label(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         body = (
@@ -3540,14 +3563,14 @@ class TestTriageLabelApplication:
             body=body,
             state=TaskState.BACKLOG,
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()
 
         await role.execute(ctx)
 
         adapter.add_label.assert_awaited_once_with("42", "agent:ready")
 
-    async def test_applies_needs_spec_label(self) -> None:
+    async def test_applies_needs_spec_label(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
@@ -3557,7 +3580,7 @@ class TestTriageLabelApplication:
             body="",
             state=TaskState.BACKLOG,
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()
 
         await role.execute(ctx)
@@ -3982,7 +4005,7 @@ class TestTriageHeuristicEdgeCases:
 class TestTriageAssessWithLLM:
     """Tests for assess_task_with_llm (covers the simplified resolve_model call)."""
 
-    async def test_successful_llm_assessment(self) -> None:
+    async def test_successful_llm_assessment(self, tmp_path: Path) -> None:
         import json
         from decimal import Decimal
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -3994,7 +4017,7 @@ class TestTriageAssessWithLLM:
         task = MagicMock(
             id="42", title="Add caching", body="Implement Redis caching layer.", labels=["feature"], state="backlog"
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG)
 
         llm_response = json.dumps(
             {
@@ -4014,7 +4037,7 @@ class TestTriageAssessWithLLM:
         assert assessment.suitability == "ready"
         assert assessment.confidence == 0.9
 
-    async def test_successful_llm_assessment_records_cost_with_reason(self) -> None:
+    async def test_successful_llm_assessment_records_cost_with_reason(self, tmp_path: Path) -> None:
         """assess_task_with_llm passes model_selection_reason to record_cost."""
         import json
         from decimal import Decimal
@@ -4027,7 +4050,7 @@ class TestTriageAssessWithLLM:
         task = MagicMock(
             id="42", title="Add caching", body="Implement Redis caching layer.", labels=["feature"], state="backlog"
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG)
 
         llm_response = json.dumps(
             {
@@ -4060,14 +4083,14 @@ class TestTriageAssessWithLLM:
         assert call_kwargs.kwargs["issue"] == "42"
         assert call_kwargs.kwargs["model_selection_reason"] == "role:triage->haiku"
 
-    async def test_llm_failure_falls_back_to_heuristic(self) -> None:
+    async def test_llm_failure_falls_back_to_heuristic(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.roles.triage import TriageRole
 
         role = TriageRole()
         task = MagicMock(id="42", title="Fix bug", body="Description of the bug.", labels=[], state="backlog")
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG)
 
         mock_invoke = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
@@ -4077,14 +4100,14 @@ class TestTriageAssessWithLLM:
         # Falls back to heuristic (body exists but short, no criteria)
         assert assessment.suitability in ("ready", "needs_spec")
 
-    async def test_empty_body_skips_llm(self) -> None:
+    async def test_empty_body_skips_llm(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock
 
         from sova.roles.triage import TriageRole
 
         role = TriageRole()
         task = MagicMock(id="42", title="No body", body="", labels=[], state="backlog")
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG)
 
         assessment = await role.assess_task_with_llm(task, ctx)
 
@@ -4227,7 +4250,7 @@ class TestQualityScore:
 class TestQualityGateIntegration:
     """Tests for quality gate integration in TriageRole.execute."""
 
-    async def test_execute_includes_quality_score_in_dry_run(self) -> None:
+    async def test_execute_includes_quality_score_in_dry_run(self, tmp_path: Path) -> None:
         from sova.config.models import ProjectConfig, TriageConfig
         from sova.roles.triage import TriageRole
 
@@ -4240,14 +4263,14 @@ class TestQualityGateIntegration:
             body="Short body",
             state=TaskState.BACKLOG,
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         role = TriageRole()
         result = await role.execute(ctx)
         assert result.success
         assert "quality" in result.summary.lower()
 
-    async def test_quality_gate_blocks_ready_without_ac(self) -> None:
+    async def test_quality_gate_blocks_ready_without_ac(self, tmp_path: Path) -> None:
         from sova.config.models import ProjectConfig, TriageConfig
         from sova.roles.triage import TriageRole
 
@@ -4263,14 +4286,14 @@ class TestQualityGateIntegration:
             body=body,
             state=TaskState.BACKLOG,
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         role = TriageRole()
         result = await role.execute(ctx)
         assert result.success
         assert "needs_spec" in result.summary
 
-    async def test_quality_gate_passes_with_full_template(self) -> None:
+    async def test_quality_gate_passes_with_full_template(self, tmp_path: Path) -> None:
         from sova.config.models import ProjectConfig, TriageConfig
         from sova.roles.triage import TriageRole
 
@@ -4291,14 +4314,14 @@ class TestQualityGateIntegration:
             body=body,
             state=TaskState.BACKLOG,
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         role = TriageRole()
         result = await role.execute(ctx)
         assert result.success
         assert "ready" in result.summary or "triaged" in result.summary.lower()
 
-    async def test_enrichment_updates_body_on_success(self) -> None:
+    async def test_enrichment_updates_body_on_success(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, patch
 
         from sova.config.models import ProjectConfig, TriageConfig
@@ -4315,7 +4338,7 @@ class TestQualityGateIntegration:
             body=body,
             state=TaskState.BACKLOG,
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         enriched = (
             "## Objective\nUpdate the handler.\n\n"
@@ -4354,7 +4377,7 @@ class TestQualityGateIntegration:
         first_edit_body = edit_calls[0][0][1] if edit_calls[0][0] else edit_calls[0][1].get("body", "")
         assert "## Objective" in first_edit_body
 
-    async def test_enrichment_write_survives_add_label_failure(self) -> None:
+    async def test_enrichment_write_survives_add_label_failure(self, tmp_path: Path) -> None:
         """A failed add_label must not discard a successful, deferred enrichment write.
 
         Round-4 finding: `defer_write` skips the quality gate's own
@@ -4376,7 +4399,7 @@ class TestQualityGateIntegration:
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
         adapter.add_label.side_effect = RuntimeError("gh rate limited")
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         enriched = (
             "## Objective\nUpdate the handler.\n\n"
@@ -4415,7 +4438,7 @@ class TestQualityGateIntegration:
         written_body = edit_calls[0][0][1] if edit_calls[0][0] else edit_calls[0][1].get("body", "")
         assert "## Objective" in written_body
 
-    async def test_enrichment_failure_falls_back_to_needs_spec(self) -> None:
+    async def test_enrichment_failure_falls_back_to_needs_spec(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, patch
 
         from sova.config.models import ProjectConfig, TriageConfig
@@ -4431,7 +4454,7 @@ class TestQualityGateIntegration:
             body=body,
             state=TaskState.BACKLOG,
         )
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         mock_invoke = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
@@ -4454,7 +4477,7 @@ class TestQualityGateIntegration:
 class TestAssessAndEnrich:
     """Tests for the combined LLM call that assesses AND enriches in one shot."""
 
-    async def test_combined_call_enriches_and_uses_original_assessment(self) -> None:
+    async def test_combined_call_enriches_and_uses_original_assessment(self, tmp_path: Path) -> None:
         """Successful enrichment returns original heuristic assessment (quality gate is authority)."""
         from unittest.mock import AsyncMock, patch
 
@@ -4467,7 +4490,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         enriched = (
             "## Objective\nUpdate the handler.\n\n"
@@ -4524,7 +4547,9 @@ class TestAssessAndEnrich:
         mock_record.assert_called_once()
         assert mock_record.call_args[1]["phase"] == "triage_assess_enrich"
 
-    async def test_combined_call_honors_llm_interactive_verdict_even_on_enrichment_success(self) -> None:
+    async def test_combined_call_honors_llm_interactive_verdict_even_on_enrichment_success(
+        self, tmp_path: Path
+    ) -> None:
         """An LLM "interactive"/"human_only" verdict wins even when enrichment succeeds.
 
         Fixing the body's structure does not make a ticket that needs a human
@@ -4542,7 +4567,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         enriched = (
             "## Objective\nUpdate the handler.\n\n"
@@ -4587,7 +4612,7 @@ class TestAssessAndEnrich:
         last_edit_body = edit_calls[-1][0][1] if edit_calls[-1][0] else edit_calls[-1][1].get("body", "")
         assert "## Objective" in last_edit_body
 
-    async def test_combined_call_uses_llm_assessment_on_enrichment_failure(self) -> None:
+    async def test_combined_call_uses_llm_assessment_on_enrichment_failure(self, tmp_path: Path) -> None:
         """When enriched_body is too short, LLM assessment is used for the needs_spec downgrade."""
         from unittest.mock import AsyncMock, patch
 
@@ -4600,7 +4625,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         llm_response = json.dumps(
             {
@@ -4629,7 +4654,7 @@ class TestAssessAndEnrich:
         assert result.success
         assert "needs_spec" in result.summary
 
-    async def test_combined_call_malformed_json_falls_back_to_heuristic(self) -> None:
+    async def test_combined_call_malformed_json_falls_back_to_heuristic(self, tmp_path: Path) -> None:
         """Malformed JSON from LLM falls back to heuristic needs_spec."""
         from unittest.mock import AsyncMock, patch
 
@@ -4642,7 +4667,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         mock_result = LLMResult(text="not valid json {{{", cost_usd=Decimal("0.01"), model="sonnet")
         mock_invoke = AsyncMock(return_value=mock_result)
@@ -4659,7 +4684,7 @@ class TestAssessAndEnrich:
         assert result.success
         assert "needs_spec" in result.summary
 
-    async def test_combined_call_strips_markdown_fencing(self) -> None:
+    async def test_combined_call_strips_markdown_fencing(self, tmp_path: Path) -> None:
         """LLM response wrapped in markdown fencing is parsed correctly."""
         from unittest.mock import AsyncMock, patch
 
@@ -4672,7 +4697,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         enriched = (
             "## Objective\nDo it.\n\n"
@@ -4710,7 +4735,7 @@ class TestAssessAndEnrich:
         edit_calls = [c for c in adapter.edit_body.call_args_list]
         assert len(edit_calls) >= 1
 
-    async def test_combined_call_no_enriched_body_uses_llm_assessment(self) -> None:
+    async def test_combined_call_no_enriched_body_uses_llm_assessment(self, tmp_path: Path) -> None:
         """LLM returns assessment fields but no enriched_body: uses LLM assessment for downgrade."""
         from unittest.mock import AsyncMock, patch
 
@@ -4723,7 +4748,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         llm_response = json.dumps(
             {
@@ -4752,7 +4777,7 @@ class TestAssessAndEnrich:
         assert result.success
         assert "needs_spec" in result.summary
 
-    async def test_auto_enrich_false_skips_llm_call(self) -> None:
+    async def test_auto_enrich_false_skips_llm_call(self, tmp_path: Path) -> None:
         """auto_enrich=False uses pure heuristic downgrade, no LLM call."""
         from unittest.mock import AsyncMock, patch
 
@@ -4764,7 +4789,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         mock_invoke = AsyncMock()
 
@@ -4792,7 +4817,7 @@ class TestAssessAndEnrich:
         with pytest.raises(AttributeError):
             ea.enriched_body = "changed"  # type: ignore[misc]
 
-    async def test_assess_and_enrich_missing_suitability_defaults_to_needs_spec(self) -> None:
+    async def test_assess_and_enrich_missing_suitability_defaults_to_needs_spec(self, tmp_path: Path) -> None:
         """Missing 'suitability' key in assessment defaults to needs_spec."""
         from unittest.mock import AsyncMock, patch
 
@@ -4805,7 +4830,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         llm_response = json.dumps({"enriched_body": "text", "assessment": {}})
         mock_result = LLMResult(text=llm_response, cost_usd=Decimal("0.01"), model="sonnet")
@@ -4823,7 +4848,7 @@ class TestAssessAndEnrich:
         assert result.success
         assert "needs_spec" in result.summary
 
-    async def test_assess_and_enrich_generic_exception_returns_none(self) -> None:
+    async def test_assess_and_enrich_generic_exception_returns_none(self, tmp_path: Path) -> None:
         """Generic exception from LLM invoke falls back to heuristic."""
         from unittest.mock import AsyncMock, patch
 
@@ -4835,7 +4860,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         mock_invoke = AsyncMock(side_effect=RuntimeError("LLM timeout"))
         with (
@@ -4848,7 +4873,7 @@ class TestAssessAndEnrich:
         assert result.success
         assert "needs_spec" in result.summary
 
-    async def test_enrichment_insufficient_still_uses_llm_assessment(self) -> None:
+    async def test_enrichment_insufficient_still_uses_llm_assessment(self, tmp_path: Path) -> None:
         """Enriched body exists but doesn't meet quality threshold: uses LLM assessment fields."""
         from unittest.mock import AsyncMock, patch
 
@@ -4861,7 +4886,7 @@ class TestAssessAndEnrich:
         body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         enriched = (
             "## Objective\nUpdate handler.\n\n"
@@ -5010,7 +5035,7 @@ class TestEstimateComplexity:
 class TestTriageExecuteEdgeCases:
     """Tests for execute() branches not covered by other test classes."""
 
-    async def test_below_confidence_threshold_logs(self) -> None:
+    async def test_below_confidence_threshold_logs(self, tmp_path: Path) -> None:
         """Low confidence triggers the below_confidence log path."""
         from sova.config.models import ProjectConfig, TriageConfig
         from sova.roles.triage import TriageRole
@@ -5020,7 +5045,7 @@ class TestTriageExecuteEdgeCases:
         body = "Simple issue with no structured sections."
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         role = TriageRole()
         result = await role.execute(ctx)
@@ -5028,7 +5053,7 @@ class TestTriageExecuteEdgeCases:
         assert result.success
         assert "dry run" in result.summary
 
-    async def test_comment_mode_posts_comment(self) -> None:
+    async def test_comment_mode_posts_comment(self, tmp_path: Path) -> None:
         """mode='comment' calls post_comment instead of edit_body."""
         from sova.config.models import ProjectConfig, TriageConfig
         from sova.roles.triage import TriageRole
@@ -5045,7 +5070,7 @@ class TestTriageExecuteEdgeCases:
         )
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(id="42", title="Test", body=body, state=TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         role = TriageRole()
         result = await role.execute(ctx)
@@ -5100,7 +5125,7 @@ class TestBuildAssessmentComment:
 class TestAssessTasksBatch:
     """Tests for the batch assessment path and sequential fallback."""
 
-    async def test_all_heuristic_no_llm_batch(self) -> None:
+    async def test_all_heuristic_no_llm_batch(self, tmp_path: Path) -> None:
         """Tasks with empty bodies skip LLM, returning heuristic assessments."""
         from sova.config.models import ProjectConfig, TriageConfig
         from sova.roles.triage import TriageRole
@@ -5108,7 +5133,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full")
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(id="1", title="Empty body", body="", state=TaskState.BACKLOG),
@@ -5121,7 +5146,7 @@ class TestAssessTasksBatch:
         for task, assessment in results:
             assert assessment.suitability is not None
 
-    async def test_batch_exception_falls_back_to_sequential(self) -> None:
+    async def test_batch_exception_falls_back_to_sequential(self, tmp_path: Path) -> None:
         """Batch API failure falls back to sequential assess_task_with_llm."""
         from unittest.mock import AsyncMock, patch
 
@@ -5131,7 +5156,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full")
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(id="10", title="Real issue", body="A real description here.", state=TaskState.BACKLOG),
@@ -5156,7 +5181,7 @@ class TestAssessTasksBatch:
         assert results[0][1].suitability == "ready"
         mock_assess.assert_called_once()
 
-    async def test_batch_success_parses_results(self) -> None:
+    async def test_batch_success_parses_results(self, tmp_path: Path) -> None:
         """Successful batch returns parsed assessments."""
         from unittest.mock import AsyncMock, patch
 
@@ -5167,7 +5192,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full")
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(id="10", title="Issue A", body="Description for A.", state=TaskState.BACKLOG),
@@ -5199,7 +5224,7 @@ class TestAssessTasksBatch:
         assert len(results) == 1
         assert results[0][1].suitability == "ready"
 
-    async def test_batch_item_error_falls_back_to_heuristic(self) -> None:
+    async def test_batch_item_error_falls_back_to_heuristic(self, tmp_path: Path) -> None:
         """Batch item with error gets heuristic assessment."""
         from unittest.mock import AsyncMock, patch
 
@@ -5210,7 +5235,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full")
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(id="10", title="Issue", body="Some body text.", state=TaskState.BACKLOG),
@@ -5233,7 +5258,7 @@ class TestAssessTasksBatch:
         assert len(results) == 1
         assert results[0][1].suitability is not None
 
-    async def test_batch_unknown_custom_id_skipped(self) -> None:
+    async def test_batch_unknown_custom_id_skipped(self, tmp_path: Path) -> None:
         """Batch result with unknown custom_id is logged and skipped."""
         from unittest.mock import AsyncMock, patch
 
@@ -5244,7 +5269,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full")
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(id="10", title="Issue", body="Some body text.", state=TaskState.BACKLOG),
@@ -5270,7 +5295,7 @@ class TestAssessTasksBatch:
         assert len(results) == 1
         assert results[0][1].suitability is not None
 
-    async def test_batch_missing_result_gets_heuristic(self) -> None:
+    async def test_batch_missing_result_gets_heuristic(self, tmp_path: Path) -> None:
         """Task with no batch result (missing from response) gets heuristic fallback."""
         from unittest.mock import AsyncMock, patch
 
@@ -5280,7 +5305,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full")
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(id="10", title="Issue A", body="Body A.", state=TaskState.BACKLOG),
@@ -5300,7 +5325,7 @@ class TestAssessTasksBatch:
         for _, assessment in results:
             assert assessment.suitability is not None
 
-    async def test_batch_cost_record_failure_non_fatal(self) -> None:
+    async def test_batch_cost_record_failure_non_fatal(self, tmp_path: Path) -> None:
         """record_cost failure during batch processing is non-fatal."""
         from unittest.mock import AsyncMock, patch
 
@@ -5311,7 +5336,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full")
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(id="10", title="Issue", body="Some body text.", state=TaskState.BACKLOG),
@@ -5339,7 +5364,7 @@ class TestAssessTasksBatch:
         assert len(results) == 1
         assert results[0][1].suitability == "ready"
 
-    async def test_batch_human_only_heuristic_skip(self) -> None:
+    async def test_batch_human_only_heuristic_skip(self, tmp_path: Path) -> None:
         """Tasks that heuristic marks human_only skip LLM batch."""
         from unittest.mock import AsyncMock, patch
 
@@ -5349,7 +5374,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full")
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(
@@ -5373,7 +5398,7 @@ class TestAssessTasksBatch:
         assert results[0][1].suitability == "human_only"
         mock_batch.assert_not_called()
 
-    async def test_batch_bodyless_interactive_label_not_overridden(self) -> None:
+    async def test_batch_bodyless_interactive_label_not_overridden(self, tmp_path: Path) -> None:
         """A bodyless issue already labelled interactive must stay interactive.
 
         Round-4 finding: the empty-body branch called the private,
@@ -5391,7 +5416,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full")
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(
@@ -5415,7 +5440,7 @@ class TestAssessTasksBatch:
         assert results[0][1].suitability == "interactive"
         mock_batch.assert_not_called()
 
-    async def test_batch_bodyless_spike_title_classified_interactive(self) -> None:
+    async def test_batch_bodyless_spike_title_classified_interactive(self, tmp_path: Path) -> None:
         """A bodyless `[Spike]` issue must resolve to `interactive`, not `needs_spec`.
 
         Covers the other round-4 repro: `interactive_title_prefixes` is a
@@ -5430,7 +5455,7 @@ class TestAssessTasksBatch:
         triage_cfg = TriageConfig(mode="full", interactive_title_prefixes=["[Spike]"])
         config = ProjectConfig(triage=triage_cfg)
         adapter = _mock_adapter(TaskState.BACKLOG)
-        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
 
         tasks = [
             Task(id="11", title="[Spike] Explore caching", body="", state=TaskState.BACKLOG),
@@ -5538,7 +5563,7 @@ class TestReviewerLLMReview:
         data = {"findings": findings or [], "summary": summary}
         return json.dumps(data)
 
-    async def test_successful_review_with_findings(self) -> None:
+    async def test_successful_review_with_findings(self, tmp_path: Path) -> None:
         from decimal import Decimal
         from unittest.mock import patch
 
@@ -5546,7 +5571,7 @@ class TestReviewerLLMReview:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
 
         findings = [
             {
@@ -5583,7 +5608,7 @@ class TestReviewerLLMReview:
         assert "Null check missing" in call_kwargs["body"]
         assert ctx.cost_usd == Decimal("0.01")
 
-    async def test_review_no_findings(self) -> None:
+    async def test_review_no_findings(self, tmp_path: Path) -> None:
         from decimal import Decimal
         from unittest.mock import patch
 
@@ -5591,7 +5616,7 @@ class TestReviewerLLMReview:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
 
         llm_result = LLMResult(text=self._llm_response([], "Clean code"), model="sonnet", cost_usd=Decimal("0.005"))
 
@@ -5613,13 +5638,13 @@ class TestReviewerLLMReview:
         assert "No issues found" in body
         assert "## Review: APPROVE" in body
 
-    async def test_llm_failure_graceful_fallback(self) -> None:
+    async def test_llm_failure_graceful_fallback(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
 
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
@@ -5637,7 +5662,7 @@ class TestReviewerLLMReview:
         body = adapter.post_pr_review.call_args[1]["body"]
         assert "manual review" in body.lower() or "no issues found" in body.lower()
 
-    async def test_large_diff_chunking(self) -> None:
+    async def test_large_diff_chunking(self, tmp_path: Path) -> None:
         from decimal import Decimal
         from unittest.mock import patch
 
@@ -5645,7 +5670,7 @@ class TestReviewerLLMReview:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
 
         # Create a diff larger than DIFF_CHUNK_SIZE (100KB)
         large_diff = "diff --git a/a.py b/a.py\n" + ("+" + "x" * 200 + "\n") * 600
@@ -5681,7 +5706,7 @@ class TestReviewerLLMReview:
         assert "2 findings" in result.summary
         assert ctx.cost_usd == Decimal("0.02")
 
-    async def test_handoff_address_review_when_actionable(self) -> None:
+    async def test_handoff_address_review_when_actionable(self, tmp_path: Path) -> None:
         from decimal import Decimal
         from unittest.mock import patch
 
@@ -5689,7 +5714,7 @@ class TestReviewerLLMReview:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
         ctx.task_run_id = 1
 
         findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Bad"}]
@@ -5715,7 +5740,7 @@ class TestReviewerLLMReview:
         dashboard_handoff = mock_file_handoff.call_args[0][1]
         assert dashboard_handoff.next_actions[0].id == "address_review"
 
-    async def test_handoff_low_severity_finding_is_advisory_not_blocking(self) -> None:
+    async def test_handoff_low_severity_finding_is_advisory_not_blocking(self, tmp_path: Path) -> None:
         """A single low-severity finding (below the default revise_severity of 3) is
 
         advisory: it approves rather than triggering address_review, but it is
@@ -5729,7 +5754,7 @@ class TestReviewerLLMReview:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
         ctx.task_run_id = 1
 
         findings = [{"file": "x.py", "severity": 1, "category": "style", "description": "Minor"}]
@@ -5754,7 +5779,7 @@ class TestReviewerLLMReview:
         dashboard_handoff = mock_file_handoff.call_args[0][1]
         assert dashboard_handoff.next_actions[0].id == "integrate"
 
-    async def test_handoff_blocking_finding_triggers_address_review(self) -> None:
+    async def test_handoff_blocking_finding_triggers_address_review(self, tmp_path: Path) -> None:
         """A finding at or above the default revise_severity (3) still blocks and
 
         auto-spawns the address_review handoff action, exactly like before.
@@ -5766,7 +5791,7 @@ class TestReviewerLLMReview:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
         ctx.task_run_id = 1
 
         findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Moderate"}]
@@ -5792,7 +5817,7 @@ class TestReviewerLLMReview:
         assert dashboard_handoff.next_actions[0].id == "address_review"
         assert dashboard_handoff.next_actions[0].label == "Address Review"
 
-    async def test_handoff_auto_execute_disabled_by_config(self) -> None:
+    async def test_handoff_auto_execute_disabled_by_config(self, tmp_path: Path) -> None:
         """When pipeline.auto_address_review is False, handoff action has auto_execute=False."""
         from decimal import Decimal
         from unittest.mock import patch
@@ -5803,7 +5828,9 @@ class TestReviewerLLMReview:
 
         config = ProjectConfig(pipeline=PipelineConfig(auto_address_review=False))
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10, config=config)
+        ctx = _make_ctx(
+            tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10, config=config
+        )
         ctx.task_run_id = 1
 
         findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Bad"}]
@@ -5824,7 +5851,7 @@ class TestReviewerLLMReview:
         assert dashboard_handoff.next_actions[0].id == "address_review"
         assert dashboard_handoff.next_actions[0].auto_execute is False
 
-    async def test_handoff_approve_when_zero_findings(self) -> None:
+    async def test_handoff_approve_when_zero_findings(self, tmp_path: Path) -> None:
         """With zero findings, handoff recommends approve."""
         from decimal import Decimal
         from unittest.mock import patch
@@ -5833,7 +5860,7 @@ class TestReviewerLLMReview:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
         ctx.task_run_id = 1
 
         llm_result = LLMResult(text=self._llm_response([]), model="sonnet", cost_usd=Decimal("0"))
@@ -5858,13 +5885,13 @@ class TestReviewerLLMReview:
         assert dashboard_handoff.next_actions[0].id == "integrate"
         assert dashboard_handoff.next_actions[0].label == "Integrate PR"
 
-    async def test_diff_fetch_failure(self) -> None:
+    async def test_diff_fetch_failure(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
 
         err = RuntimeError("Network error")
         with patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, side_effect=err):
@@ -5874,7 +5901,7 @@ class TestReviewerLLMReview:
         assert not result.success
         assert "Network error" in result.error
 
-    async def test_clears_current_step_sentinel(self) -> None:
+    async def test_clears_current_step_sentinel(self, tmp_path: Path) -> None:
         """After execute(), current_step should be cleared from 'agent' to None."""
         from decimal import Decimal
         from unittest.mock import patch
@@ -5899,6 +5926,7 @@ class TestReviewerLLMReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             state=TaskState.IN_REVIEW,
             adapter=adapter,
@@ -5930,7 +5958,7 @@ class TestReviewerLLMReview:
             task_run = await session.get(TaskRun, run_id)
             assert task_run.current_step is None
 
-    async def test_clear_current_step_db_failure_non_fatal(self) -> None:
+    async def test_clear_current_step_db_failure_non_fatal(self, tmp_path: Path) -> None:
         """DB errors in _clear_current_step should not block the review."""
         from decimal import Decimal
         from unittest.mock import patch
@@ -5940,6 +5968,7 @@ class TestReviewerLLMReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             state=TaskState.IN_REVIEW,
             adapter=adapter,
@@ -5968,7 +5997,7 @@ class TestReviewerLLMReview:
         # Should still succeed despite DB error
         assert result.success
 
-    async def test_no_clear_without_task_run_id(self) -> None:
+    async def test_no_clear_without_task_run_id(self, tmp_path: Path) -> None:
         """When task_run_id is None, _clear_current_step is not called."""
         from decimal import Decimal
         from unittest.mock import MagicMock, patch
@@ -5978,6 +6007,7 @@ class TestReviewerLLMReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             state=TaskState.IN_REVIEW,
             adapter=adapter,
@@ -6018,7 +6048,7 @@ class TestReviewerLLMReview:
         # _clear_current_step should not have been called when task_run_id is None
         mock_clear_step.assert_not_awaited()
 
-    async def test_sentinel_cleared_on_precondition_failure(self) -> None:
+    async def test_sentinel_cleared_on_precondition_failure(self, tmp_path: Path) -> None:
         """Sentinel is cleared even when preconditions fail (try/finally)."""
         from sova.db.models import TaskRun
         from sova.db.session import get_session
@@ -6039,6 +6069,7 @@ class TestReviewerLLMReview:
         # Task is in BACKLOG, not IN_REVIEW: precondition will fail
         adapter = _mock_adapter(TaskState.BACKLOG)
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             state=TaskState.BACKLOG,
             adapter=adapter,
@@ -6054,7 +6085,7 @@ class TestReviewerLLMReview:
             task_run = await session.get(TaskRun, run_id)
             assert task_run.current_step is None
 
-    async def test_sentinel_cleared_on_pr_not_found(self) -> None:
+    async def test_sentinel_cleared_on_pr_not_found(self, tmp_path: Path) -> None:
         """Sentinel is cleared when no PR is found for the issue."""
         from unittest.mock import patch
 
@@ -6076,6 +6107,7 @@ class TestReviewerLLMReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             state=TaskState.IN_REVIEW,
             adapter=adapter,
@@ -6095,7 +6127,7 @@ class TestReviewerLLMReview:
             task_run = await session.get(TaskRun, run_id)
             assert task_run.current_step is None
 
-    async def test_sentinel_cleared_on_diff_fetch_failure(self) -> None:
+    async def test_sentinel_cleared_on_diff_fetch_failure(self, tmp_path: Path) -> None:
         """Sentinel is cleared when diff fetch raises an exception."""
         from unittest.mock import patch
 
@@ -6117,6 +6149,7 @@ class TestReviewerLLMReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(
+            tmp_path,
             role="reviewer",
             state=TaskState.IN_REVIEW,
             adapter=adapter,
@@ -6436,14 +6469,14 @@ class TestReviewerParsing:
 class TestReviewerExceptionPaths:
     """Cover except-Exception branches in ReviewerRole methods."""
 
-    async def test_discover_pr_branch_exception_non_fatal(self) -> None:
+    async def test_discover_pr_branch_exception_non_fatal(self, tmp_path: Path) -> None:
         """_discover_pr handles get_pr_branch_and_head_sha failure gracefully (lines 534-535)."""
         from unittest.mock import patch
 
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
         ctx.branch_name = None  # trigger branch discovery path
         role = ReviewerRole()
 
@@ -6459,14 +6492,14 @@ class TestReviewerExceptionPaths:
         assert ctx.branch_name is None
         assert head_sha == ""
 
-    async def test_extract_review_memories_exception_non_fatal(self) -> None:
+    async def test_extract_review_memories_exception_non_fatal(self, tmp_path: Path) -> None:
         """_extract_review_memories handles extraction failure gracefully (lines 564-565)."""
         from unittest.mock import patch
 
         from sova.roles.reviewer import ReviewerRole, ReviewResult
 
         role = ReviewerRole()
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
         review = ReviewResult(findings=[], summary="OK", total_cost=0)
 
         with patch(
@@ -6477,14 +6510,14 @@ class TestReviewerExceptionPaths:
             # Should not raise
             await role._extract_review_memories(ctx, ctx.adapter.get_task.return_value, review)
 
-    async def test_extract_review_memories_is_noop(self) -> None:
+    async def test_extract_review_memories_is_noop(self, tmp_path: Path) -> None:
         """_extract_review_memories is a no-op (extraction disabled for reviewer)."""
         from unittest.mock import patch
 
         from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
 
         role = ReviewerRole()
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
         finding = ReviewFinding(
             file="src/app.py",
             line=10,
@@ -6502,14 +6535,14 @@ class TestReviewerExceptionPaths:
             await role._extract_review_memories(ctx, ctx.adapter.get_task.return_value, review)
             mock_extract.assert_not_awaited()
 
-    async def test_append_review_rationale_exception_non_fatal(self) -> None:
+    async def test_append_review_rationale_exception_non_fatal(self, tmp_path: Path) -> None:
         """_append_review_rationale handles spec write failure gracefully (lines 699-700)."""
         from unittest.mock import patch
 
         from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
 
         role = ReviewerRole()
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
         finding = ReviewFinding(file="a.py", severity=8, category="bug", description="Bad")
         review = ReviewResult(findings=[finding], summary="Issues found", total_cost=0)
 
@@ -6520,13 +6553,13 @@ class TestReviewerExceptionPaths:
             # Should not raise
             role._append_review_rationale(ctx, review)
 
-    async def test_write_verdict_label_calls_adapter(self) -> None:
+    async def test_write_verdict_label_calls_adapter(self, tmp_path: Path) -> None:
         """_write_verdict_label adds sova:{verdict} label and removes stale ones."""
         from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
 
         role = ReviewerRole()
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
         finding = ReviewFinding(file="a.py", severity=5, category="bug", description="X")
         review = ReviewResult(findings=[finding], summary="Issues", total_cost=0)
 
@@ -6538,26 +6571,26 @@ class TestReviewerExceptionPaths:
         assert (ctx.issue_number, "sova:block") in remove_calls
         adapter.add_label.assert_called_once_with(ctx.issue_number, "sova:revise")
 
-    async def test_write_verdict_label_exception_non_fatal(self) -> None:
+    async def test_write_verdict_label_exception_non_fatal(self, tmp_path: Path) -> None:
         """_write_verdict_label handles adapter failure gracefully."""
         from sova.roles.reviewer import ReviewerRole, ReviewResult
 
         role = ReviewerRole()
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         adapter.add_label = AsyncMock(side_effect=RuntimeError("API down"))
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
         review = ReviewResult(findings=[], summary="OK", total_cost=0)
 
         # Should not raise
         await role._write_verdict_label(ctx, review)
 
-    async def test_write_verdict_label_skipped_when_no_issue(self) -> None:
+    async def test_write_verdict_label_skipped_when_no_issue(self, tmp_path: Path) -> None:
         """_write_verdict_label is a no-op when issue_number is missing."""
         from sova.roles.reviewer import ReviewerRole, ReviewResult
 
         role = ReviewerRole()
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
         ctx.issue_number = None
         review = ReviewResult(findings=[], summary="OK", total_cost=0)
 
@@ -6566,14 +6599,14 @@ class TestReviewerExceptionPaths:
         adapter.add_label.assert_not_called()
         adapter.remove_label.assert_not_called()
 
-    async def test_write_handoff_db_exception_non_fatal(self) -> None:
+    async def test_write_handoff_db_exception_non_fatal(self, tmp_path: Path) -> None:
         """_write_handoff handles DB write failure gracefully (lines 733-734)."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.roles.reviewer import ReviewerRole, ReviewResult
 
         role = ReviewerRole()
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
         ctx.task_run_id = 42
         review = ReviewResult(findings=[], summary="OK", total_cost=0)
 
@@ -6584,21 +6617,21 @@ class TestReviewerExceptionPaths:
             # Should not raise
             await role._write_handoff(ctx, review)
 
-    async def test_write_handoff_file_exception_non_fatal(self) -> None:
+    async def test_write_handoff_file_exception_non_fatal(self, tmp_path: Path) -> None:
         """_write_handoff handles file write failure gracefully (lines 783-784)."""
         from unittest.mock import patch
 
         from sova.roles.reviewer import ReviewerRole, ReviewResult
 
         role = ReviewerRole()
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
         review = ReviewResult(findings=[], summary="OK", total_cost=0)
 
         with patch("sova.roles.reviewer.write_handoff_file", side_effect=OSError("disk full")):
             # Should not raise
             await role._write_handoff(ctx, review)
 
-    async def test_write_handoff_advisory_only_approves_but_keeps_pending_findings(self) -> None:
+    async def test_write_handoff_advisory_only_approves_but_keeps_pending_findings(self, tmp_path: Path) -> None:
         """A review whose only findings are advisory (below revise_severity) must
 
         approve and skip auto-address, but pending_findings (built from
@@ -6610,7 +6643,7 @@ class TestReviewerExceptionPaths:
         from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
 
         role = ReviewerRole()
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
         finding = ReviewFinding(file="a.py", severity=1, category="style", description="nit")
         review = ReviewResult(findings=[finding], summary="minor nit")
 
@@ -6637,14 +6670,14 @@ class TestReviewerExceptionPaths:
         action_ids = [a.id for a in file_handoff.next_actions]
         assert action_ids == ["integrate"]
 
-    async def test_write_handoff_persists_verdict_in_metadata(self) -> None:
+    async def test_write_handoff_persists_verdict_in_metadata(self, tmp_path: Path) -> None:
         """metadata.verdict is computed from blocking findings, not actionable."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
 
         role = ReviewerRole()
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
         ctx.task_run_id = 1
         # One blocking (severity 8 >= block_severity 7) and one advisory finding.
         findings = [
@@ -6663,7 +6696,7 @@ class TestReviewerExceptionPaths:
         assert db_handoff.metadata["verdict"] == "block"
         assert db_handoff.next_action == "address_review"
 
-    async def test_execute_total_posting_failure_writes_post_failed_handoff(self) -> None:
+    async def test_execute_total_posting_failure_writes_post_failed_handoff(self, tmp_path: Path) -> None:
         """When all posting attempts fail, execute() succeeds and handoff signals review_post_failed.
 
         Verifies the full chain: _post_review() returns False -> review.post_failed=True ->
@@ -6680,7 +6713,7 @@ class TestReviewerExceptionPaths:
         adapter.post_pr_review = AsyncMock(side_effect=RuntimeError("review API down"))
         adapter.post_pr_comment = AsyncMock(side_effect=RuntimeError("comment API down"))
 
-        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=55)
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=55)
         ctx.task_run_id = 10
         role = ReviewerRole()
 
@@ -6756,7 +6789,7 @@ class TestCustomRole:
         assessment = await role.assess_task(task)
         assert assessment.suitability == "ready"
 
-    async def test_custom_role_rejects_wrong_state(self) -> None:
+    async def test_custom_role_rejects_wrong_state(self, tmp_path: Path) -> None:
         """CustomRole.execute rejects tasks in wrong state."""
         from sova.db.models import WorkflowDefinition
         from sova.roles.custom import CustomRole
@@ -6770,12 +6803,12 @@ class TestCustomRole:
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
         role = CustomRole(defn)
-        ctx = _make_ctx(state=TaskState.BACKLOG, force=False)
+        ctx = _make_ctx(tmp_path, state=TaskState.BACKLOG, force=False)
         result = await role.execute(ctx)
         assert not result.success
         assert "not ready" in result.summary.lower()
 
-    async def test_custom_role_execute_success(self) -> None:
+    async def test_custom_role_execute_success(self, tmp_path: Path) -> None:
         """CustomRole.execute returns success when DAG completes."""
         from decimal import Decimal
         from unittest.mock import patch
@@ -6793,7 +6826,7 @@ class TestCustomRole:
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
         role = CustomRole(defn)
-        ctx = _make_ctx(state=TaskState.RESEARCHED)
+        ctx = _make_ctx(tmp_path, state=TaskState.RESEARCHED)
 
         mock_result = DAGResult(success=True, summary="DAG completed: 1 nodes executed", total_cost_usd=Decimal("0.5"))
         with patch.object(DAGExecutor, "execute", new=AsyncMock(return_value=mock_result)):
@@ -6803,7 +6836,7 @@ class TestCustomRole:
         assert result.output_state == TaskState.IN_REVIEW
         assert "1 nodes" in result.summary
 
-    async def test_custom_role_execute_dag_failure(self) -> None:
+    async def test_custom_role_execute_dag_failure(self, tmp_path: Path) -> None:
         """CustomRole.execute returns failure when DAG fails."""
         from unittest.mock import patch
 
@@ -6820,7 +6853,7 @@ class TestCustomRole:
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
         role = CustomRole(defn)
-        ctx = _make_ctx(state=TaskState.RESEARCHED)
+        ctx = _make_ctx(tmp_path, state=TaskState.RESEARCHED)
 
         mock_result = DAGResult(success=False, summary="DAG failed at node n1", error="develop step crashed")
         with patch.object(DAGExecutor, "execute", new=AsyncMock(return_value=mock_result)):
@@ -6946,7 +6979,7 @@ class TestPlannerRole:
         assert assessment.suitability == "ready"
         assert assessment.suggested_role == "planner"
 
-    async def test_execute_happy_path(self) -> None:
+    async def test_execute_happy_path(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.llm.models import LLMResult
@@ -6979,7 +7012,7 @@ class TestPlannerRole:
         adapter.list_tasks.return_value = [
             Task(id="10", title="Existing issue", state=TaskState.BACKLOG),
         ]
-        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", adapter=adapter, issue_number="")
 
         mock_result = LLMResult(text=llm_response, model="test", cost_usd=Decimal("0.01"))
         with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)) as mock_invoke:
@@ -6992,7 +7025,7 @@ class TestPlannerRole:
         assert "feat(cli): add health check command" in result.findings[0]
         assert "timeout" not in mock_invoke.call_args.kwargs
 
-    async def test_execute_passes_no_explicit_timeout_regardless_of_configured_value(self) -> None:
+    async def test_execute_passes_no_explicit_timeout_regardless_of_configured_value(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.config.models import LLMConfig
@@ -7002,7 +7035,7 @@ class TestPlannerRole:
         adapter = _mock_adapter()
         adapter.list_tasks.return_value = []
         config = ProjectConfig(llm=LLMConfig(cli_timeout=1800))
-        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="", config=config)
+        ctx = _make_ctx(tmp_path, role="planner", adapter=adapter, issue_number="", config=config)
 
         mock_result = LLMResult(text="[]", model="test", cost_usd=Decimal("0.005"))
         with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)) as mock_invoke:
@@ -7011,7 +7044,7 @@ class TestPlannerRole:
 
         assert "timeout" not in mock_invoke.call_args.kwargs
 
-    async def test_execute_empty_response(self) -> None:
+    async def test_execute_empty_response(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.llm.models import LLMResult
@@ -7019,7 +7052,7 @@ class TestPlannerRole:
 
         adapter = _mock_adapter()
         adapter.list_tasks.return_value = []
-        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", adapter=adapter, issue_number="")
 
         mock_result = LLMResult(text="[]", model="test", cost_usd=Decimal("0.005"))
         with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
@@ -7030,14 +7063,14 @@ class TestPlannerRole:
         assert "No tasks proposed" in result.summary
         assert result.findings == []
 
-    async def test_execute_llm_failure(self) -> None:
+    async def test_execute_llm_failure(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.roles.planner import PlannerRole
 
         adapter = _mock_adapter()
         adapter.list_tasks.return_value = []
-        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", adapter=adapter, issue_number="")
 
         with patch("sova.llm.client.invoke", new=AsyncMock(side_effect=RuntimeError("LLM down"))):
             role = PlannerRole()
@@ -7046,7 +7079,7 @@ class TestPlannerRole:
         assert not result.success
         assert "LLM" in result.error
 
-    async def test_execute_prose_response_returns_empty(self) -> None:
+    async def test_execute_prose_response_returns_empty(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.llm.models import LLMResult
@@ -7054,7 +7087,7 @@ class TestPlannerRole:
 
         adapter = _mock_adapter()
         adapter.list_tasks.return_value = []
-        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", adapter=adapter, issue_number="")
 
         mock_result = LLMResult(text="not valid json at all", model="test", cost_usd=Decimal("0.005"))
         with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
@@ -7075,7 +7108,7 @@ class TestPlannerRole:
 
         assert "planner" in BUILTIN_ROLE_NAMES
 
-    async def test_dispatch_issueless_with_planner(self) -> None:
+    async def test_dispatch_issueless_with_planner(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.llm.models import LLMResult
@@ -7083,7 +7116,7 @@ class TestPlannerRole:
 
         adapter = _mock_adapter()
         adapter.list_tasks.return_value = []
-        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", adapter=adapter, issue_number="")
 
         mock_result = LLMResult(text="[]", model="test", cost_usd=Decimal("0.005"))
         with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
@@ -7239,7 +7272,7 @@ class TestPlannerRole:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_execute_empty_llm_response_succeeds_with_no_tasks(self) -> None:
+    async def test_execute_empty_llm_response_succeeds_with_no_tasks(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
         from sova.llm.models import LLMResult
@@ -7247,7 +7280,7 @@ class TestPlannerRole:
 
         adapter = _mock_adapter()
         adapter.list_tasks.return_value = []
-        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", adapter=adapter, issue_number="")
 
         mock_result = LLMResult(text="", model="test", cost_usd=Decimal("0.005"))
         with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
@@ -7257,12 +7290,12 @@ class TestPlannerRole:
         assert result.success
         assert "No tasks proposed" in result.summary
 
-    async def test_gather_open_issues_exception_returns_empty(self) -> None:
+    async def test_gather_open_issues_exception_returns_empty(self, tmp_path: Path) -> None:
         from sova.roles.planner import PlannerRole
 
         adapter = _mock_adapter()
         adapter.list_tasks.side_effect = RuntimeError("API down")
-        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", adapter=adapter, issue_number="")
 
         role = PlannerRole()
         result = await role._gather_open_issues(ctx)
@@ -7274,7 +7307,7 @@ class TestPlannerRole:
         docs = tmp_path / "docs"
         docs.mkdir()
         (docs / "VISION.md").write_text("# Vision\nGoals here.")
-        ctx = _make_ctx(role="planner", issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
         ctx.project_dir = tmp_path
 
         role = PlannerRole()
@@ -7289,7 +7322,7 @@ class TestPlannerRole:
         docs = tmp_path / "docs"
         docs.mkdir()
         (docs / "VISION.md").write_text("content")
-        ctx = _make_ctx(role="planner", issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
         ctx.project_dir = tmp_path
 
         role = PlannerRole()
@@ -7300,20 +7333,20 @@ class TestPlannerRole:
     def test_read_vision_returns_empty_when_missing(self, tmp_path: Path) -> None:
         from sova.roles.planner import PlannerRole
 
-        ctx = _make_ctx(role="planner", issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
         ctx.project_dir = tmp_path
 
         role = PlannerRole()
         result = role._read_vision(ctx)
         assert result == ""
 
-    async def test_write_handoff_file_exception_non_fatal(self) -> None:
+    async def test_write_handoff_file_exception_non_fatal(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch
 
         from sova.roles.planner import PlannedTask, PlannerRole
 
         role = PlannerRole()
-        ctx = _make_ctx(role="planner", issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
         tasks = [
             PlannedTask(
                 title="t",
@@ -7328,13 +7361,13 @@ class TestPlannerRole:
             # Should not raise
             await role._write_handoff(ctx, tasks)
 
-    async def test_write_handoff_db_path(self) -> None:
+    async def test_write_handoff_db_path(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.roles.planner import PlannedTask, PlannerRole
 
         role = PlannerRole()
-        ctx = _make_ctx(role="planner", issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
         ctx.task_run_id = 99
         tasks = [
             PlannedTask(
@@ -7358,13 +7391,13 @@ class TestPlannerRole:
         call_args = mock_write_handoff.call_args
         assert call_args[0][0] == 99
 
-    async def test_write_handoff_db_exception_non_fatal(self) -> None:
+    async def test_write_handoff_db_exception_non_fatal(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.roles.planner import PlannedTask, PlannerRole
 
         role = PlannerRole()
-        ctx = _make_ctx(role="planner", issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
         ctx.task_run_id = 99
         tasks = [
             PlannedTask(
@@ -7383,7 +7416,7 @@ class TestPlannerRole:
             # Should not raise
             await role._write_handoff(ctx, tasks)
 
-    async def test_execute_happy_path_writes_handoff_with_issue(self) -> None:
+    async def test_execute_happy_path_writes_handoff_with_issue(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch
 
         from sova.ipc.handoff import DashboardHandoff
@@ -7406,7 +7439,7 @@ class TestPlannerRole:
 
         adapter = _mock_adapter()
         adapter.list_tasks.return_value = []
-        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", adapter=adapter, issue_number="")
 
         mock_result = LLMResult(text=llm_response, model="test", cost_usd=Decimal("0.01"))
         mock_write_file = MagicMock()
@@ -7433,14 +7466,14 @@ class TestPlannerRole:
         assert result is not None
         assert result == []
 
-    async def test_write_handoff_includes_create_issues_action(self) -> None:
+    async def test_write_handoff_includes_create_issues_action(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch
 
         from sova.ipc.handoff import DashboardHandoff
         from sova.roles.planner import PlannedTask, PlannerRole
 
         role = PlannerRole()
-        ctx = _make_ctx(role="planner", issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
         tasks = [
             PlannedTask(
                 title="feat(cli): new cmd",
@@ -7463,14 +7496,14 @@ class TestPlannerRole:
         assert handoff_arg.next_actions[0].id == "create-issues"
         assert handoff_arg.next_actions[0].style == "approve"
 
-    async def test_write_handoff_no_action_when_no_tasks(self) -> None:
+    async def test_write_handoff_no_action_when_no_tasks(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch
 
         from sova.ipc.handoff import DashboardHandoff
         from sova.roles.planner import PlannerRole
 
         role = PlannerRole()
-        ctx = _make_ctx(role="planner", issue_number="")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
         mock_write_file = MagicMock()
         with patch("sova.roles.planner.write_handoff_file", mock_write_file):
             await role._write_handoff(ctx, [])

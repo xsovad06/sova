@@ -40,7 +40,7 @@ class TestReadSnapshot:
             "timestamp": time.time(),
             "pid": 2_000_000_000,  # PID that certainly does not exist
             "project_name": "dead",
-            "project_dir": "/tmp/dead",
+            "project_dir": str(tmp_path / "dead"),
         }
         path = tmp_path / "dead.json"
         path.write_text(json.dumps(snapshot))
@@ -53,7 +53,7 @@ class TestReadSnapshot:
             "timestamp": time.time(),
             "pid": os.getpid(),
             "project_name": "test-project",
-            "project_dir": "/tmp/test",
+            "project_dir": str(tmp_path),
             "dashboard_port": 8111,
             "system": {"cpu_percent": 45.0},
             "agents": [],
