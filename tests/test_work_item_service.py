@@ -133,6 +133,28 @@ class TestComputeWorkItemState:
             == WorkItemState.PR_SOVA_PENDING
         )
 
+    def test_anchored_approve_verdict_stale_once_pr_head_advances(self) -> None:
+        """An approve anchored to an old SHA must not unlock integration of a newer head.
+
+        Issue #1251: an address-pr squash that pushes new commits after an approve
+        would otherwise ship content the reviewer never saw. Every other input here
+        satisfies rule 12, so only the stale anchor keeps it from PR_READY_TO_MERGE.
+        """
+        assert (
+            _state(
+                pr_data={
+                    "computed_state": "approved_ci_green",
+                    "state": "OPEN",
+                    "is_draft": False,
+                    "mergeable": "MERGEABLE",
+                    "ci_status": "passed",
+                    "head_sha": "new_sha_after_push",
+                },
+                sova_verdict={"verdict": "approve", "has_sova_review": True, "review_head_sha": "old_sha"},
+            )
+            == WorkItemState.PR_SOVA_PENDING
+        )
+
     # Priority 3: PR state
 
     def test_pr_ready_to_merge(self) -> None:
