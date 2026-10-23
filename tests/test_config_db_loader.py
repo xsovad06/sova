@@ -547,3 +547,18 @@ class TestMigrateDeprecatedKeys:
         flat: dict[str, Any] = {"github_repo": "user/repo"}
         _migrate_deprecated_keys(flat)
         assert flat == {"github_repo": "user/repo"}
+
+    def test_drops_dead_pipeline_retry_fields(self) -> None:
+        """pipeline.max_retries/retry_delay_seconds are silently dropped (auto-retry system removed)."""
+        from sova.config.loader import _migrate_deprecated_keys
+
+        flat: dict[str, Any] = {"pipeline": {"max_retries": 3, "retry_delay_seconds": 10, "auto_handoff": False}}
+        _migrate_deprecated_keys(flat)
+        assert flat == {"pipeline": {"auto_handoff": False}}
+
+    def test_noop_when_no_pipeline_section(self) -> None:
+        from sova.config.loader import _migrate_deprecated_keys
+
+        flat: dict[str, Any] = {"github_repo": "user/repo"}
+        _migrate_deprecated_keys(flat)
+        assert flat == {"github_repo": "user/repo"}
