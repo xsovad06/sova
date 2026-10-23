@@ -35,16 +35,16 @@ All tests live in `tests/` as flat modules, with one subdirectory: `tests/runtim
 
 | Test file | Source package | Approx tests |
 |-----------|---------------|--------------|
-| `test_dashboard.py` | `sova/dashboard/` | ~775 |
-| `test_core.py` | `sova/core/` | ~444 |
-| `test_roles.py` | `sova/roles/` | ~322 |
-| `test_agent_recovery.py` | `sova/dashboard/services/agent_recovery.py` | ~131 |
-| `test_git.py` | `sova/git/` | ~150 |
-| `test_cli.py` | `sova/cli/` | ~127 |
-| `test_ipc.py` | `sova/ipc/` | ~119 |
-| `test_adapters.py` | `sova/adapters/` | ~90 |
-| `test_config.py` | `sova/config/` | ~109 |
-| `test_agent_handoff.py` | `sova/dashboard/services/agent_handoff.py` | ~23 |
+| `test_dashboard.py` | `sova/dashboard/` | ~1064 |
+| `test_core.py` | `sova/core/` | ~563 |
+| `test_roles.py` | `sova/roles/` | ~381 |
+| `test_agent_recovery.py` | `sova/dashboard/services/agent_recovery.py` | ~92 |
+| `test_git.py` | `sova/git/` | ~219 |
+| `test_cli.py` | `sova/cli/` | ~137 |
+| `test_ipc.py` | `sova/ipc/` | ~251 |
+| `test_adapters.py` | `sova/adapters/` | ~104 |
+| `test_config.py` | `sova/config/` | ~147 |
+| `test_agent_handoff.py` | `sova/dashboard/services/agent_handoff.py` | ~24 |
 | `test_agent_pool.py` | `sova/dashboard/services/agent_pool.py` | ~17 |
 
 Plus: `test_batch_service.py`, `test_commands.py`, `test_dag.py`, `test_db.py`, `test_external_reviews.py`, `test_extraction.py`, `test_harden.py`, `test_jira_adapter.py`, `test_knowledge.py`, `test_knowledge_sharing.py`, `test_lifecycle.py`, `test_llm.py`, `test_mcp.py`, `test_scheduler.py`, `test_settings_meta.py`, `test_spec.py`, `test_utils.py`.
