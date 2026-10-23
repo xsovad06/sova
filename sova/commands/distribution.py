@@ -268,6 +268,21 @@ def _install_files(
     return result
 
 
+def _log_overwrite(target_dir: Path, filename: str, old_hash: str | None, new_hash: str) -> None:
+    """Record that a sync replaced an installed file, so the overwrite is traceable afterwards.
+
+    ``old_hash`` is the replaced on-disk content's hash (None when it was
+    unreadable), not the manifest's: that is what the project actually lost.
+    """
+    log.info(
+        "commands.sync.overwritten",
+        target_dir=str(target_dir),
+        filename=filename,
+        old_hash=old_hash,
+        new_hash=new_hash,
+    )
+
+
 def _update_files(
     source_files: list[tuple[str, Path]],
     target_dir: Path,
@@ -356,6 +371,7 @@ def _update_files(
                 if not force:
                     result.conflicts.append(filename)
                     continue
+                _log_overwrite(target_dir, filename, installed_hash, new_hash)
             target_path.parent.mkdir(parents=True, exist_ok=True)
             _write_rendered(target_dir, target_path, rendered)
             working.commands[filename] = ManifestEntry(hash=new_hash, managed=True)
@@ -401,6 +417,8 @@ def _update_files(
                 result.conflicts.append(filename)
                 continue
 
+        if file_exists:
+            _log_overwrite(target_dir, filename, installed_hash, new_hash)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         _write_rendered(target_dir, target_path, rendered)
         working.commands[filename] = ManifestEntry(hash=new_hash, managed=True)
