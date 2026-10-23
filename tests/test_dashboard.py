@@ -9824,11 +9824,14 @@ class TestCommandOutcomeValidation:
         result = await _validate_command_outcome(1, agent)
         assert result.failure_reason is None
 
-    async def test_rearrange_commits_dispatches_to_diff_guard(self) -> None:
-        """rearrange-commits never pushes on its own, so unlike address-pr it has no push
+    @pytest.mark.parametrize("command", ["rearrange-commits", "pr"])
+    async def test_squash_command_dispatches_to_diff_guard(self, command: str) -> None:
+        """rearrange-commits and pr both rewrite history by soft-resetting and recommitting.
 
-        tier to confirm first: _COMMAND_VALIDATORS must route it straight to
-        _check_pr_diff_guard rather than leaving it unguarded like an unknown command.
+        Neither has an address-pr-style push tier to confirm first (rearrange-commits
+        never pushes, and pr may be creating the PR), so _COMMAND_VALIDATORS must route
+        each straight to _check_pr_diff_guard rather than leaving it unguarded like an
+        unknown command (issue #1251).
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9836,12 +9839,12 @@ class TestCommandOutcomeValidation:
         from sova.dashboard.services.agent_pool import AgentState
 
         agent = MagicMock(spec=AgentState)
-        agent.role = "command:rearrange-commits"
+        agent.role = f"command:{command}"
 
         with patch(
             "sova.dashboard.services.agent_db._check_pr_diff_guard",
             new_callable=AsyncMock,
-            return_value=OutcomeValidation("rearrange-commits possible silent revert: shared.py"),
+            return_value=OutcomeValidation(f"{command} possible silent revert: shared.py"),
         ) as mock_guard:
             result = await _validate_command_outcome(1, agent)
 
