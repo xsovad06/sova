@@ -114,6 +114,8 @@ class TestScopeAndProse:
         ("path", "seed_lines", "message", "env", "expected"),
         [
             pytest.param("sova/db/models.py", 80, "fix(db): simplify", {}, 0, id="in-scope deletion passes"),
+            pytest.param("pyproject.toml", 80, "chore(deps): bump", {}, 0, id="deps scope owns pyproject.toml"),
+            pytest.param("sova/db/models.py", 80, "chore(deps): bump", {}, 1, id="deps scope does not own code"),
             pytest.param(ADAPTER, 80, "fix(db): simplify", {}, 1, id="out-of-scope deletion over threshold fails"),
             pytest.param(ADAPTER, 30, "fix(db): tweak", {}, 0, id="out-of-scope deletion below threshold passes"),
             pytest.param(

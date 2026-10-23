@@ -95,6 +95,7 @@ scope_paths() {
     commands) echo ".claude/commands/ .agents/ plugins/ sova/commands/ .claude-plugin/" ;;
     config) echo "sova/config/ sova/dashboard/ sova/llm/ sova.toml sova.toml.default" ;;
     db) echo "sova/db/" ;;
+    deps) echo "pyproject.toml uv.lock" ;;
     docs) echo "docs/" ;;
     invariants) echo "invariants/ .githooks/" ;;
     ipc) echo "sova/ipc/ sova/dashboard/" ;;
