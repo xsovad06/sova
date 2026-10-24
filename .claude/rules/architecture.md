@@ -271,6 +271,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - An issue type label is not a size signal, and a triage- or spec-written complexity line outranks the heuristic vote that reads it
 - A safety-critical command runs only from an installed copy verified current, because a fix to its recipe reaches a project only through a sync
 - A fix loop gets one cheap try and its escalation reason is step-scoped, never the run-wide one
+- One shared priority registry replaces per-tracker rank tables; a default label is never sent to a call that validates labels atomically
 
 ## Cross-References (domain-specific details)
 

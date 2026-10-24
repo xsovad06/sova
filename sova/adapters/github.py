@@ -497,6 +497,16 @@ class GitHubAdapter(TaskAdapter):
         if not issue_number.isdigit():
             raise RuntimeError(f"Failed to parse issue number from URL: {url!r}")
 
+        if not Priority.has_label(labels or []):
+            # Applied after creation, through the tolerant _add_label path (which
+            # auto-creates the label if the repo doesn't have it yet), rather than
+            # passed to `gh issue create --label`, which aborts the whole creation
+            # on any label the repo doesn't already have.
+            try:
+                await self._add_label(issue_number, Priority.UNDEFINED.github_label)
+            except Exception:  # noqa: BLE001 (the issue already exists; a label failure must not lose it)
+                log.warning("create_issue.default_priority_label_failed", issue=issue_number, exc_info=True)
+
         return await self.get_task(issue_number)
 
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:

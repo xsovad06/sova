@@ -1584,7 +1584,7 @@ class TestCreateIssue:
     @respx.mock
     async def test_create_issue_basic(self) -> None:
         adapter = _adapter()
-        respx.post("https://test.atlassian.net/rest/api/3/issue").mock(
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue").mock(
             return_value=Response(201, json={"id": "10042", "key": "TEST-42", "self": "..."}),
         )
         respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-42").mock(
@@ -1593,6 +1593,11 @@ class TestCreateIssue:
         task = await adapter.create_issue("New task", "Description text")
         assert task.id == "42"
         assert task.title == "New task"
+        body = json.loads(route.calls[0].request.content)
+        # No priority label is injected here: GitHub's "priority: undefined" default
+        # is GitHub-canonical (space-containing) and Jira rejects labels with spaces;
+        # Jira derives priority from its native priority field instead.
+        assert "labels" not in body["fields"]
 
     @respx.mock
     async def test_create_issue_with_parent_key(self) -> None:
