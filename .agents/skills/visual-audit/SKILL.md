@@ -21,15 +21,15 @@ Invoke this skill when:
 
 Determine which templates to audit:
 - **Full audit**: All templates in `sova/dashboard/templates/` and `sova/dashboard/static/`
-- **Targeted audit**: Specific templates (e.g., `agents.html`, `dashboard.html`)
-- **Diff audit**: Only templates changed in the current branch (`git diff --name-only main: sova/dashboard/templates/ sova/dashboard/static/`)
+- **Targeted audit**: Specific templates (e.g., `agents.html`, `queue.html`)
+- **Diff audit**: Only templates changed in the current branch (`git diff --name-only main -- sova/dashboard/templates/ sova/dashboard/static/`)
 
 ### Step 2: Read References
 
 Before auditing, read these files to understand the baseline:
 1. `docs/design-system.md`: palette, typography, components
 2. `sova/dashboard/static/style.css`: CSS variables, component classes
-3. `.Codex/skills/dashboard-design/SKILL.md`: quality rules and anti-slop bans
+3. `.agents/skills/dashboard-design/SKILL.md`: quality rules and anti-slop bans
 
 ### Step 3: Run Automated Checks
 
