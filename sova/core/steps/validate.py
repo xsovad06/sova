@@ -165,7 +165,7 @@ class ValidateStep(BaseStep):
                 f"The project's pre-push hook failed with the following output:\n\n"
                 f"```\n{_truncate_hook_output(hook_output)}\n```\n\n"
                 f"Fix ALL issues reported by the hook. After fixing, stage and commit "
-                f"the changes with message 'fix: address pre-push hook violations'. "
+                f"the changes with message 'fix(core): address pre-push hook violations'. "
                 f"Do not modify or disable the hook itself."
             )
 

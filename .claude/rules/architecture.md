@@ -125,6 +125,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Gate checks between steps
 - Complexity-based timeout multipliers
 - Partial work preservation on timeout
+- A failed agent dispatch still owns the edits it already made
 - Ephemeral agents
 - Worktree isolation
 - Adapter pattern for task sources
