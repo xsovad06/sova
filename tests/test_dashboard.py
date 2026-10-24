@@ -3635,22 +3635,38 @@ class TestRouterLevelCsrfCoverage:
     _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
     @staticmethod
-    def _unguarded_mutating_routes(app, *, exempt: frozenset[str] = frozenset()) -> list[str]:
-        from fastapi.routing import APIRoute
+    def _effective_routes(app) -> list:
+        """Every endpoint route the app serves, with its include-time dependencies.
 
+        FastAPI 0.156 stopped copying an included router's routes onto
+        ``app.routes``: they sit behind one wrapper per ``include_router`` call,
+        reachable through ``fastapi.routing.iter_route_contexts()``. Older
+        releases flattened them into ``APIRoute`` objects directly.
+        """
+        from fastapi import routing
+
+        if hasattr(routing, "iter_route_contexts"):
+            return list(routing.iter_route_contexts(app.routes))
+        return [route for route in app.routes if isinstance(route, routing.APIRoute)]
+
+    @staticmethod
+    def _unguarded_mutating_routes(app, *, exempt: frozenset[str] = frozenset()) -> list[str]:
         from sova.dashboard.security import require_same_origin_csrf
 
         unguarded = []
-        for route in app.routes:
-            if not isinstance(route, APIRoute):
+        mutating = 0
+        for route in TestRouterLevelCsrfCoverage._effective_routes(app):
+            if not (TestRouterLevelCsrfCoverage._MUTATING & (route.methods or set())):
                 continue
-            if not (TestRouterLevelCsrfCoverage._MUTATING & route.methods):
-                continue
+            mutating += 1
             if route.path in exempt:
                 continue
             guarded = any(dep.call is require_same_origin_csrf for dep in route.dependant.dependencies)
             if not guarded:
                 unguarded.append(route.path)
+        # An empty walk would pass every "nothing unguarded" assertion: FastAPI
+        # 0.156 hid the routes from the old walk and these tests stayed green.
+        assert mutating > 0, "found no mutating routes to check; the route walk no longer sees them"
         return unguarded
 
     def test_single_api_prefix_guards_every_mutating_route(self) -> None:
