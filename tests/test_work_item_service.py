@@ -1390,6 +1390,22 @@ class TestBuildPrItem:
         item = _build_pr_item(pr, running=None, handoff=None, issue_num=None)
         assert item["state"] == "merged"
 
+    def test_issue_priority_derived_from_pr_labels(self) -> None:
+        pr = {
+            "number": 200,
+            "title": "Quick fix",
+            "computed_state": "awaiting_review",
+            "state": "OPEN",
+            "labels": ["priority: high"],
+        }
+        item = _build_pr_item(pr, running=None, handoff=None, issue_num=None)
+        assert item["issue_priority"] == "high"
+
+    def test_issue_priority_defaults_to_undefined_without_priority_label(self) -> None:
+        pr = {"number": 200, "title": "Quick fix", "computed_state": "awaiting_review", "state": "OPEN"}
+        item = _build_pr_item(pr, running=None, handoff=None, issue_num=None)
+        assert item["issue_priority"] == "undefined"
+
     def test_secondary_integrate_carries_merge_blockers_end_to_end(self) -> None:
         """_attach_merge_blockers() is wired into _build_pr_item() before the item is
         returned: deleting that call site would leave this green on every other test

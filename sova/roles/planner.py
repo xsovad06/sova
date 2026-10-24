@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
+from sova.core.planning import PLANNER_PRIORITY_CHOICES
 from sova.ipc.handoff import (
     AgentHandoff,
     DashboardHandoff,
@@ -34,7 +35,7 @@ class PlannedTask(BaseModel):
 
     title: str
     description: str
-    priority: Literal["critical", "high", "medium", "low"]
+    priority: Literal[PLANNER_PRIORITY_CHOICES]
     complexity: Literal["trivial", "simple", "moderate", "complex"]
     component: str
     rationale: str
@@ -67,7 +68,7 @@ Based on the open issues and project vision, propose new tasks that:
 Respond with a JSON array of task objects. Each object has these fields:
 - "title": string (use conventional commit prefix, e.g. "feat(dashboard): ...")
 - "description": string (full issue body in markdown, using the section structure below)
-- "priority": "critical" | "high" | "medium" | "low"
+- "priority": {priority_levels}
 - "complexity": "trivial" | "simple" | "moderate" | "complex"
 - "component": string (area label, e.g. "dashboard", "cli", "orchestrator")
 - "rationale": string (why this task matters now)
@@ -123,6 +124,7 @@ class PlannerRole(AgentRole):
             task_source=ctx.config.task_source.type,
             open_issues=issue_lines,
             vision=vision or "(no VISION.md found)",
+            priority_levels=" | ".join(f'"{level}"' for level in PLANNER_PRIORITY_CHOICES),
         )
 
         # Invoke LLM (no explicit timeout: inherits cfg.llm.cli_timeout via _resolve_timeout())

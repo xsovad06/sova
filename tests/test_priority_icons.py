@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sova.dashboard.app import create_app
+from sova.adapters.priority import Priority
+from sova.dashboard.app import create_app, priorities_json, priority_icon
 from sova.db.session import close_db, init_db
 
-_ICON_NAMES = ["blocker", "critical", "high", "medium", "low", "undefined"]
+# Derived from the registry, so a new Priority level fails these tests until its icon ships.
+_ICON_NAMES = [p.icon for p in Priority]
 
 
 @pytest.fixture(autouse=True)
@@ -75,16 +78,40 @@ class TestPriorityIconFiles:
         assert 'viewBox="0 0 16 16"' in content
 
 
-class TestPriorityIconMacro:
-    """Test the priority_icon Jinja2 macro renders correctly in components."""
+class TestPriorityIconGlobal:
+    """Test the priority_icon Jinja global (registered in app.py) renders correctly."""
 
-    def test_macro_exists_in_components(self) -> None:
+    @pytest.mark.parametrize(
+        "priority,expected_icon,expected_alt",
+        [
+            (None, "undefined", "Undefined"),
+            ("", "undefined", "Undefined"),
+            ("blocker", "blocker", "Blocker"),
+            ("critical", "critical", "Critical"),
+            ("high", "high", "High"),
+            ("medium", "medium", "Medium"),
+            ("low", "low", "Low"),
+            ("unknown_value", "undefined", "Undefined"),
+        ],
+    )
+    def test_renders_correct_icon(self, priority: str | None, expected_icon: str, expected_alt: str) -> None:
+        html = priority_icon(priority)
+        assert f"/static/priority/{expected_icon}.svg" in html
+        assert f'alt="{expected_alt} priority"' in html
+
+    def test_case_insensitive(self) -> None:
+        html = priority_icon("CRITICAL")
+        assert "/static/priority/critical.svg" in html
+
+    def test_custom_size(self) -> None:
+        html = priority_icon("high", "12")
+        assert 'width="12" height="12"' in html
+
+    def test_not_a_macro_import(self) -> None:
+        """priority_icon is a registered Jinja global, not a _components.html macro."""
         components_path = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / "_components.html"
         content = components_path.read_text()
-
-        assert "macro priority_icon" in content
-        assert "/static/priority/" in content
-        assert "critical" in content
+        assert "macro priority_icon" not in content
 
     @pytest.mark.parametrize("template", ["supervisor.html", "agents.html", "queue.html"])
     def test_template_uses_shared_priorityIconUrl(self, template: str) -> None:
@@ -94,41 +121,36 @@ class TestPriorityIconMacro:
         assert "priorityIconUrl(" in content
         assert "function priorityIconUrl" not in content
 
-    def test_shared_helpers_in_app_js(self) -> None:
-        """Verify priorityIconUrl and _extractPriority are defined in app.js."""
+    def test_shared_helper_in_app_js(self) -> None:
+        """priorityIconUrl is defined in app.js and sourced from window.SOVA_PRIORITIES."""
         app_js = Path(__file__).parent.parent / "sova" / "dashboard" / "static" / "app.js"
         content = app_js.read_text()
         assert "function priorityIconUrl(" in content
-        assert "function _extractPriority(" in content
+        assert "SOVA_PRIORITIES" in content
 
 
-class TestPriorityIconMacroRendering:
-    """Test priority_icon Jinja2 macro renders correct HTML for all inputs."""
+class TestPrioritiesJson:
+    """Test the priorities_json Jinja global that feeds window.SOVA_PRIORITIES."""
 
-    @pytest.fixture
-    def jinja_env(self):
-        from jinja2 import Environment, FileSystemLoader
+    def test_includes_all_six_levels(self) -> None:
+        payload = json.loads(priorities_json())
+        values = {entry["value"] for entry in payload}
+        assert values == {p.value for p in Priority}
 
-        templates_dir = Path(__file__).parent.parent / "sova" / "dashboard" / "templates"
-        return Environment(loader=FileSystemLoader(str(templates_dir)))
+    def test_entries_have_expected_shape(self) -> None:
+        payload = json.loads(priorities_json())
+        for entry in payload:
+            assert set(entry) == {"value", "rank", "display_name", "icon"}
 
-    @pytest.mark.parametrize(
-        "priority,expected_icon,expected_alt",
-        [
-            (None, "undefined.svg", "Undefined"),
-            ("", "undefined.svg", "Undefined"),
-            ("critical", "critical.svg", "Critical"),
-            ("high", "high.svg", "High"),
-            ("medium", "medium.svg", "Medium"),
-            ("low", "low.svg", "Low"),
-            ("unknown_value", "undefined.svg", "Unknown_value"),
-        ],
-    )
-    def test_macro_renders_correct_icon(self, jinja_env, priority, expected_icon, expected_alt) -> None:
-        template = jinja_env.from_string('{%- from "_components.html" import priority_icon -%}{{ priority_icon(p) }}')
-        html = template.render(p=priority)
-        assert expected_icon in html
-        assert f'alt="{expected_alt} priority"' in html
+    def test_declaration_order_is_rank_order(self) -> None:
+        payload = json.loads(priorities_json())
+        ranks = [entry["rank"] for entry in payload]
+        assert ranks == sorted(ranks)
+
+    def test_base_html_renders_window_sova_priorities(self) -> None:
+        base_path = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / "base.html"
+        content = base_path.read_text()
+        assert "window.SOVA_PRIORITIES = " in content
 
 
 class TestUndefinedPriorityRendering:
@@ -152,24 +174,3 @@ class TestUndefinedPriorityRendering:
         content = path.read_text()
         assert "priorityIconUrl(t.priority)" in content, "Agents template must call priorityIconUrl for planner tasks"
         assert "t.priority ? '<img" not in content, "Agents planner conditionally renders priority icon"
-
-    def test_mapping_consistency(self) -> None:
-        import re
-
-        app_js = Path(__file__).parent.parent / "sova" / "dashboard" / "static" / "app.js"
-        js_content = app_js.read_text()
-
-        components = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / "_components.html"
-        jinja_content = components.read_text()
-
-        js_start = js_content.find("_PRIORITY_ICON_MAP")
-        js_map = {}
-        for m in re.finditer(r"(\w+):\s*'(\w+)'", js_content[js_start : js_start + 200]):
-            js_map[m.group(1)] = m.group(2)
-
-        jinja_start = jinja_content.find("priority_map")
-        jinja_map = {}
-        for m in re.finditer(r"'(\w+)':\s*'(\w+)'", jinja_content[jinja_start : jinja_start + 200]):
-            jinja_map[m.group(1)] = m.group(2)
-
-        assert js_map == jinja_map, f"JS map {js_map} != Jinja2 map {jinja_map}"

@@ -10,6 +10,7 @@ import pytest
 
 from sova.adapters.base import Milestone, Task, TaskAdapter, TaskFilters, TaskState
 from sova.adapters.github import _STATE_LABELS, _STATE_TO_BOARD_NAMES, GitHubAdapter, _parse_issue
+from sova.adapters.priority import Priority
 from sova.config.models import _VALID_TASK_STATES
 
 # ---------------------------------------------------------------------------
@@ -911,6 +912,30 @@ class TestGitHubAdapter:
         state = await self.adapter.get_state("42")
         assert state == TaskState.BACKLOG
 
+    def test_parse_issue_sets_priority_from_label(self) -> None:
+        task = _parse_issue(
+            {
+                "number": 591,
+                "title": "Blocking issue",
+                "state": "OPEN",
+                "labels": [{"name": "priority: blocker"}],
+                "url": "https://github.com/example/repo/issues/591",
+            }
+        )
+        assert task.priority == Priority.BLOCKER
+
+    def test_parse_issue_defaults_priority_to_undefined(self) -> None:
+        task = _parse_issue(
+            {
+                "number": 592,
+                "title": "No priority label",
+                "state": "OPEN",
+                "labels": [],
+                "url": "https://github.com/example/repo/issues/592",
+            }
+        )
+        assert task.priority == Priority.UNDEFINED
+
     def test_merged_pr_dependency_is_done_despite_stale_label(self) -> None:
         task = _parse_issue(
             {
@@ -950,9 +975,11 @@ class TestGitHubAdapter:
             }
         )
         # First call: gh issue create returns the issue URL
-        # Second call: gh issue view returns full JSON
+        # Second call: gh issue edit --add-label for the default priority label
+        # Third call: gh issue view returns full JSON
         mock_run.side_effect = [
             _shell_result(stdout="https://github.com/user/repo/issues/99\n"),
+            _shell_result(),
             _shell_result(stdout=view_json),
         ]
 
@@ -966,7 +993,93 @@ class TestGitHubAdapter:
         assert "--title" in create_args
         assert "New issue" in create_args
         assert "--label" in create_args
-        assert "bug" in create_args
+        # The default priority label is never part of the create call: `gh issue
+        # create` aborts the whole creation on any label the repo doesn't
+        # already have, so it is applied afterward via the tolerant add-label path.
+        label_arg = create_args[create_args.index("--label") + 1]
+        assert label_arg.split(",") == ["bug"]
+        add_label_args = mock_run.call_args_list[1][0]
+        assert "--add-label" in add_label_args
+        assert "priority: undefined" in add_label_args
+
+    async def test_create_issue_with_explicit_priority_label_skips_default(self, mock_run: AsyncMock) -> None:
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [{"name": "priority: high"}],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),
+            _shell_result(stdout=view_json),
+        ]
+
+        await self.adapter.create_issue("New issue", "", ["priority: high"])
+
+        # No default-label add-label call: only create + view.
+        assert mock_run.call_count == 2
+
+    async def test_create_issue_default_priority_label_missing_on_repo(self, mock_run: AsyncMock) -> None:
+        """The repo may not yet have the 'priority: undefined' label (e.g. an
+        existing install that predates the new taxonomy). The add-label call
+        must auto-create it rather than losing the issue.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),
+            _shell_result(returncode=1, stderr="label 'priority: undefined' not found"),
+            _shell_result(),  # label create succeeds
+            _shell_result(),  # retry add-label succeeds
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "", [])
+
+        assert task.id == "99"
+        assert mock_run.call_count == 5
+
+    async def test_create_issue_default_priority_label_failure_does_not_lose_issue(self, mock_run: AsyncMock) -> None:
+        """A persistent failure to apply the default priority label must not
+        abort issue creation: the issue itself already exists on the tracker.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),
+            _shell_result(returncode=1, stderr="Network timeout"),
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "", [])
+
+        assert task.id == "99"
 
     async def test_create_issue_failure_raises(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(returncode=1, stderr="Permission denied")

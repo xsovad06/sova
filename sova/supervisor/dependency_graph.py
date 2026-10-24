@@ -14,7 +14,6 @@ from sova.adapters.base import Task, TaskAdapter, TaskState
 # is_ready: used by callers importing it from here rather than from its
 # canonical home in sova.supervisor.labels (kept for backward compatibility).
 from sova.supervisor.labels import (  # noqa: F401
-    extract_priority,
     is_epic,
     is_human_only,
     is_interactive_recommended,
@@ -394,7 +393,7 @@ class DependencyGraph:
                 "dependencies": sorted(self._deps.get(tid, set())),
                 "body_excerpt": excerpt,
                 "available_actions": actions,
-                "priority": extract_priority(task.labels),
+                "priority": task.priority.value,
                 "is_epic": is_epic(task.labels),
                 "is_human_only": task_is_human_only,
                 "is_interactive_recommended": task_is_interactive and not task_is_human_only,

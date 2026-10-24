@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task, TaskState
+from sova.adapters.priority import Priority
 from sova.knowledge.assessments import get_latest_assessments
-from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph, extract_priority
+from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph
 from sova.supervisor.gates.connectivity import check_connectivity_gate
 from sova.supervisor.gates.rate_limit import check_github_rate_limit_gate
 from sova.supervisor.labels import local_assessment_applies
@@ -244,9 +245,6 @@ def _prune_done(queue: list[int], task_map: dict[int, TaskState]) -> list[int]:
     return result
 
 
-_PRIORITY_RANK: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-
-
 def _remaining_capacity(max_queue_size: int, current_queue_len: int) -> int | None:
     """Slots left in the queue, or None when `max_queue_size` is unlimited (<=0)."""
     if max_queue_size > 0:
@@ -369,7 +367,7 @@ def _discover_ready(
 ) -> tuple[int, ...]:
     """Find issues in RESEARCHED state not already in the queue.
 
-    Sorts by priority (critical > high > medium > low > unlabelled),
+    Sorts by priority (blocker > critical > high > medium > low > undefined),
     then by issue number (lowest first) as a tie-breaker.
 
     Issues classified `epic`, `human`, `interactive`, or `blocked` by
@@ -437,10 +435,9 @@ def _discover_ready(
 
     def _sort_key(issue_id: int) -> tuple[int, int]:
         if task_objects and issue_id in task_objects:
-            pri = extract_priority(task_objects[issue_id].labels)
+            rank = task_objects[issue_id].priority.rank
         else:
-            pri = ""
-        rank = _PRIORITY_RANK.get(pri, len(_PRIORITY_RANK))
+            rank = Priority.UNDEFINED.rank
         return (rank, issue_id)
 
     candidates.sort(key=_sort_key)

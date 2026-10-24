@@ -284,7 +284,7 @@ function renderQueueCard(item) {
 
   var typeBadge = issueTypeBadge(item.issue_type);
 
-  var priority = _extractPriority(item.labels || []);
+  var priority = item.issue_priority;
   var priorityIcon = '<img src="' + priorityIconUrl(priority) + '" alt="' + escapeHtml(priority || 'undefined') + ' priority" width="14" height="14" class="inline-block align-middle shrink-0">';
 
   var displayLabels = (item.labels || []).filter(function(l) {

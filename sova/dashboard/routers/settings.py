@@ -92,10 +92,12 @@ _REQUIRED_LABELS = [
     {"name": "type: bug", "color": "d73a4a", "description": "Something isn't working"},
     {"name": "type: epic", "color": "bfd4f2", "description": "Multi-issue tracking container"},
     # Priority labels
+    {"name": "priority: blocker", "color": "5319e7", "description": "Blocks all other work"},
     {"name": "priority: critical", "color": "b60205", "description": "Critical priority"},
     {"name": "priority: high", "color": "d93f0b", "description": "High priority"},
     {"name": "priority: medium", "color": "fbca04", "description": "Medium priority"},
     {"name": "priority: low", "color": "0e8a16", "description": "Low priority"},
+    {"name": "priority: undefined", "color": "cccccc", "description": "No priority set"},
     # Area labels
     {"name": "area: agent", "color": "c5def5", "description": "Agent core and roles"},
     {"name": "area: dashboard", "color": "c5def5", "description": "Web UI"},
