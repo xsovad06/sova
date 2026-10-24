@@ -1685,38 +1685,6 @@ function formatTokenCount(tokens) {
   return String(n);
 }
 
-function renderRunsTable(runs, targetId) {
-  var el = document.getElementById(targetId);
-  if (runs.length === 0) {
-    el.innerHTML = '<p class="text-gray-500 text-sm p-4">No runs recorded</p>';
-    return;
-  }
-  var hasResources = runs.some(function(r) { return r.peak_cpu_percent != null; });
-  el.innerHTML = '<table class="w-full text-sm">' +
-    '<thead><tr class="text-gray-500 text-xs uppercase">' +
-    '<th class="text-left p-3">Issue / PR</th>' +
-    '<th class="text-left p-3">Role</th>' +
-    '<th class="text-left p-3">Status</th>' +
-    '<th class="text-left p-3">Step</th>' +
-    '<th class="text-right p-3">Cost</th>' +
-    (hasResources ? '<th class="text-right p-3">Peak CPU</th><th class="text-right p-3">Peak Mem</th>' : '') +
-    '<th class="text-left p-3">Started</th>' +
-    '</tr></thead>' +
-    '<tbody>' + runs.map(function(r) {
-      var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
-      return '<tr class="border-t border-gray-700/30 hover:bg-surface-hover cursor-pointer" onclick="window.location=\'' + prefix + '/runs/' + r.id + '\'">' +
-        '<td class="p-3">' + issueOrPrLink(r.issue_number, r.pr_number) + '</td>' +
-        '<td class="p-3 text-gray-300">' + escapeHtml(r.role) + '</td>' +
-        '<td class="p-3"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ' + statusDot(r.status) + '"></span><span class="' + statusColor(r.status) + '">' + escapeHtml(r.status) + '</span></span></td>' +
-        '<td class="p-3 text-gray-400">' + escapeHtml(r.current_step || '--') + '</td>' +
-        '<td class="p-3 text-right text-accent-green">$' + (parseFloat(r.total_cost_usd) || 0).toFixed(4) + '</td>' +
-        (hasResources ? '<td class="p-3 text-right text-accent">' + (r.peak_cpu_percent != null ? parseFloat(r.peak_cpu_percent).toFixed(1) + '%' : '--') + '</td>' +
-        '<td class="p-3 text-right text-accent-green">' + formatBytes(r.peak_memory_rss_bytes, true) + '</td>' : '') +
-        '<td class="p-3 text-gray-500 text-xs">' + (r.started_at ? new Date(r.started_at).toLocaleString() : '--') + '</td>' +
-        '</tr>';
-    }).join('') + '</tbody></table>';
-}
-
 /* ============================================================
    SOVA STATUS CHANNEL (WebSocket + polling fallback)
    ============================================================ */

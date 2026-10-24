@@ -11,6 +11,24 @@
   </button>
 </div>
 
+<!-- Stat Row -->
+<div class="flex flex-wrap items-center gap-4 mb-6 px-4 py-3 bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="flex items-baseline gap-2">
+    <span class="text-xs text-gray-500 uppercase tracking-wide">Cost (today)</span>
+    <span class="text-lg font-semibold text-accent-green" id="stat-today-cost">--</span>
+  </div>
+  <div class="w-px h-5 bg-gray-700/50"></div>
+  <div class="flex items-baseline gap-2">
+    <span class="text-xs text-gray-500 uppercase tracking-wide">Invocations (all time)</span>
+    <span class="text-lg font-semibold" id="stat-invocations">--</span>
+  </div>
+  <div class="w-px h-5 bg-gray-700/50"></div>
+  <div class="flex items-baseline gap-2">
+    <span class="text-xs text-gray-500 uppercase tracking-wide">Completion (all time)</span>
+    <span class="text-lg font-semibold text-accent-purple" id="stat-completion">--</span>
+  </div>
+</div>
+
 <!-- Task Browser -->
 <div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
   <!-- Header bar -->
@@ -400,6 +418,63 @@ async function loadWorkItems() {
 }
 
 function loadTaskCards() { loadWorkItems(); }
+
+var _STAT_ACCENTS = {
+  'stat-today-cost': 'text-accent-green',
+  'stat-invocations': '',
+  'stat-completion': 'text-accent-purple'
+};
+
+async function loadAgentsStatRow() {
+  try {
+    var overview = await fetchAPI(apiUrl('/overview'));
+    var costs = overview.costs;
+    var runs = overview.runs;
+
+    _restoreAgentsStatRow();
+
+    document.getElementById('stat-today-cost').textContent =
+      '$' + parseFloat(costs.today_cost_usd || 0).toFixed(2);
+    document.getElementById('stat-invocations').textContent =
+      costs.total_invocations != null ? costs.total_invocations : '--';
+
+    var finished = runs.done + runs.failed;
+    var completionEl = document.getElementById('stat-completion');
+    completionEl.textContent = finished > 0 ? Math.round((runs.done / finished) * 100) + '%' : 'N/A';
+    completionEl.setAttribute('data-tooltip', runs.done + ' done, ' + runs.failed + ' failed');
+    completionEl.setAttribute('data-tooltip-pos', 'bottom');
+  } catch (e) {
+    console.error('Failed to load stat row:', e);
+    // A failed refresh must not leave the previous poll's numbers on screen
+    // looking current. Use a distinct "Error" marker rather than the "--"
+    // placeholder: "--" also means "hasn't loaded yet", so reusing it here
+    // would make a persistent fetch failure indistinguishable from a page
+    // that simply hasn't finished its first load.
+    _clearAgentsStatRow();
+  }
+}
+
+function _restoreAgentsStatRow() {
+  // stat-completion's tooltip is set by the success path itself below, not here.
+  Object.keys(_STAT_ACCENTS).forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.classList.remove('text-red-400');
+    if (id !== 'stat-completion') el.removeAttribute('data-tooltip');
+    if (_STAT_ACCENTS[id]) el.classList.add(_STAT_ACCENTS[id]);
+  });
+}
+
+function _clearAgentsStatRow() {
+  Object.keys(_STAT_ACCENTS).forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = 'Error';
+    el.setAttribute('data-tooltip', 'Failed to load');
+    if (_STAT_ACCENTS[id]) el.classList.remove(_STAT_ACCENTS[id]);
+    el.classList.add('text-red-400');
+  });
+}
 
 function filterTaskCards() {
   renderTaskCards();
@@ -2580,6 +2655,7 @@ loadAgents();
 loadPrTracker();
 checkMemoryPressure();
 loadHistory();
+visibilityAwarePoll(loadAgentsStatRow, 60000);
 
 // Real-time agent status: WebSocket with polling fallback, via the shared
 // SovaStatusChannel helper (app.js).

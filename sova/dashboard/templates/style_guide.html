@@ -240,7 +240,7 @@
   <div class="sova-card">
     <div class="sova-card-body">
       <div class="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-7 gap-4">
-        {% set icon_names = ["dashboard", "agents", "work", "queue", "costs", "logs", "memory", "plus-circle", "settings", "bell", "check", "warning", "error", "info"] %}
+        {% set icon_names = ["agents", "work", "queue", "costs", "logs", "memory", "plus-circle", "settings", "bell", "check", "warning", "error", "info"] %}
         {% for name in icon_names %}
         <div class="flex flex-col items-center gap-2 p-3 rounded-lg bg-surface-hover/30">
           {{ icon(name, "w-6 h-6 text-gray-300") }}

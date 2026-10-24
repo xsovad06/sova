@@ -21,7 +21,7 @@ Invoke this skill when:
 
 Determine which templates to audit:
 - **Full audit**: All templates in `sova/dashboard/templates/` and `sova/dashboard/static/`
-- **Targeted audit**: Specific templates (e.g., `agents.html`, `dashboard.html`)
+- **Targeted audit**: Specific templates (e.g., `agents.html`, `queue.html`)
 - **Diff audit**: Only templates changed in the current branch (`git diff --name-only main -- sova/dashboard/templates/ sova/dashboard/static/`)
 
 ### Step 2: Read References
