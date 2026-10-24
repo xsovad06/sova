@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -148,12 +148,16 @@ class TestReadProjectTool:
         assert "Architecture" in result
 
     def test_rejects_nonexistent_dir(self) -> None:
+        from mcp.server.mcpserver.exceptions import ToolError
+
         from sova.mcp.tools import _read_project_context
 
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(ToolError, match="Project directory not found"):
             _read_project_context("/nonexistent/dir/xyz")
 
     def test_rejects_path_traversal(self, tmp_path: Path) -> None:
+        from mcp.server.mcpserver.exceptions import ToolError
+
         from sova.mcp.tools import _read_project_context
 
         allowed = tmp_path / "project"
@@ -161,7 +165,7 @@ class TestReadProjectTool:
         outside = tmp_path / "other"
         outside.mkdir()
 
-        with pytest.raises(ValueError, match="outside the allowed root"):
+        with pytest.raises(ToolError, match="outside the allowed root"):
             _read_project_context(str(outside), allowed_root=allowed)
 
 
@@ -221,16 +225,18 @@ class TestRunCommand:
                 await _run_command("/develop", "42", str(tmp_path))
 
     async def test_invalid_project_dir(self) -> None:
+        from mcp.server.mcpserver.exceptions import ToolError
+
         from sova.mcp.tools import _run_command
 
-        with pytest.raises(FileNotFoundError, match="Project directory not found"):
+        with pytest.raises(ToolError, match="Project directory not found"):
             await _run_command("/develop", "42", "/nonexistent/path/abc")
 
     async def test_load_config_failure(self, tmp_path: Path) -> None:
         with patch("sova.mcp.tools.load_config", side_effect=RuntimeError("bad config")):
             from sova.mcp.tools import _run_command
 
-            with pytest.raises(ValueError, match="Failed to load SOVA config"):
+            with pytest.raises(RuntimeError, match="Failed to load SOVA config"):
                 await _run_command("/develop", "42", str(tmp_path))
 
 
@@ -241,7 +247,7 @@ class TestRunCommand:
 
 class TestDevelopValidation:
     async def test_zero_issue_number(self, tmp_path: Path) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
+        from mcp.server.mcpserver.exceptions import ToolError
 
         from sova.mcp.server import create_server
 
@@ -250,7 +256,7 @@ class TestDevelopValidation:
             await server.call_tool("sova_develop", {"issue_number": 0, "project_dir": str(tmp_path)})
 
     async def test_negative_issue_number(self, tmp_path: Path) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
+        from mcp.server.mcpserver.exceptions import ToolError
 
         from sova.mcp.server import create_server
 
@@ -261,7 +267,7 @@ class TestDevelopValidation:
 
 class TestAddressReviewValidation:
     async def test_zero_pr_number(self, tmp_path: Path) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
+        from mcp.server.mcpserver.exceptions import ToolError
 
         from sova.mcp.server import create_server
 
@@ -270,13 +276,79 @@ class TestAddressReviewValidation:
             await server.call_tool("sova_address_review", {"pr_number": 0, "project_dir": str(tmp_path)})
 
     async def test_negative_pr_number(self, tmp_path: Path) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
+        from mcp.server.mcpserver.exceptions import ToolError
 
         from sova.mcp.server import create_server
 
         server = create_server()
         with pytest.raises(ToolError, match="Must be positive"):
             await server.call_tool("sova_address_review", {"pr_number": -3, "project_dir": str(tmp_path)})
+
+
+class TestClientVisibleErrors:
+    """mcp 2.x shows a client only a ``ToolError``'s text; anything else arrives
+    as a bare "Error executing tool <name>". A caller's own mistake must keep its
+    message so the calling model can correct it. Every other failure must stay
+    opaque, including a ValueError raised past the caller validation, whose text
+    can carry config or LLM-client internals."""
+
+    @pytest.mark.parametrize("tool", ["sova_read_project", "sova_review"])
+    async def test_path_outside_allowed_root_keeps_its_message(self, tmp_path: Path, tool: str) -> None:
+        from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+
+        from sova.mcp.server import create_server
+
+        bound = tmp_path / "bound"
+        bound.mkdir()
+        server = create_server(project_dir=bound)
+        with pytest.raises(ToolError, match="outside the allowed root") as exc_info:
+            await server.call_tool(tool, {"project_dir": str(tmp_path)})
+        assert not isinstance(exc_info.value, UnexpectedToolError)
+
+    async def test_missing_project_dir_keeps_its_message(self, tmp_path: Path) -> None:
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        from sova.mcp.server import create_server
+
+        with pytest.raises(ToolError, match="Project directory not found"):
+            await create_server().call_tool("sova_test", {"project_dir": str(tmp_path / "missing")})
+
+    async def test_crash_stays_opaque(self, tmp_path: Path) -> None:
+        from mcp.server.mcpserver.exceptions import UnexpectedToolError
+
+        from sova.mcp.server import create_server
+
+        with (
+            patch("sova.mcp.tools.invoke_command", new_callable=AsyncMock, side_effect=RuntimeError("secret detail")),
+            patch("sova.mcp.tools.load_config"),
+        ):
+            with pytest.raises(UnexpectedToolError) as exc_info:
+                await create_server().call_tool("sova_develop", {"issue_number": 1, "project_dir": str(tmp_path)})
+        assert "secret detail" not in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("patch_target", "mock_class"),
+        [
+            pytest.param("sova.mcp.tools.load_config", MagicMock, id="config load failure"),
+            pytest.param("sova.mcp.tools.invoke_command", AsyncMock, id="value error inside the command run"),
+        ],
+    )
+    async def test_value_error_past_validation_stays_opaque(
+        self, tmp_path: Path, patch_target: str, mock_class: type
+    ) -> None:
+        from mcp.server.mcpserver.exceptions import UnexpectedToolError
+
+        from sova.mcp.server import create_server
+
+        failing = mock_class(side_effect=ValueError("secret detail"))
+        with (
+            patch("sova.mcp.tools.load_config"),
+            patch(patch_target, failing),
+        ):
+            with pytest.raises(UnexpectedToolError) as exc_info:
+                await create_server().call_tool("sova_develop", {"issue_number": 1, "project_dir": str(tmp_path)})
+        assert "secret detail" not in str(exc_info.value)
+        failing.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -291,10 +363,10 @@ class TestToolCallIntegration:
         from sova.mcp.server import create_server
 
         server = create_server()
-        content, _structured = await server.call_tool("sova_read_project", {"project_dir": str(tmp_path)})
+        result = await server.call_tool("sova_read_project", {"project_dir": str(tmp_path)})
 
-        assert len(content) > 0
-        assert "Conventions" in content[0].text
+        assert len(result.content) > 0
+        assert "Conventions" in result.content[0].text
 
     async def test_call_develop_tool(self, tmp_path: Path) -> None:
         mock_result = LLMResult(text="Done", model="sonnet", cost_usd=Decimal("0.10"))
@@ -311,13 +383,13 @@ class TestToolCallIntegration:
             from sova.mcp.server import create_server
 
             server = create_server()
-            content, _structured = await server.call_tool(
+            result = await server.call_tool(
                 "sova_develop",
                 {"issue_number": 42, "project_dir": str(tmp_path)},
             )
 
-        assert len(content) > 0
-        assert "Done" in content[0].text
+        assert len(result.content) > 0
+        assert "Done" in result.content[0].text
 
     async def test_bound_project_dir(self, tmp_path: Path) -> None:
         (tmp_path / "AGENTS.md").write_text("# Bound project")
@@ -325,10 +397,10 @@ class TestToolCallIntegration:
         from sova.mcp.server import create_server
 
         server = create_server(project_dir=tmp_path)
-        content, _structured = await server.call_tool("sova_read_project", {})
+        result = await server.call_tool("sova_read_project", {})
 
-        assert len(content) > 0
-        assert "Bound project" in content[0].text
+        assert len(result.content) > 0
+        assert "Bound project" in result.content[0].text
 
     async def test_call_review_tool(self, tmp_path: Path) -> None:
         mock_result = LLMResult(text="Review done", model="sonnet", cost_usd=Decimal("0.05"))
@@ -345,9 +417,9 @@ class TestToolCallIntegration:
             from sova.mcp.server import create_server
 
             server = create_server()
-            content, _ = await server.call_tool("sova_review", {"project_dir": str(tmp_path)})
+            result = await server.call_tool("sova_review", {"project_dir": str(tmp_path)})
 
-        assert "Review done" in content[0].text
+        assert "Review done" in result.content[0].text
 
     async def test_call_test_tool(self, tmp_path: Path) -> None:
         mock_result = LLMResult(text="Tests passed", model="sonnet", cost_usd=Decimal("0.05"))
@@ -364,9 +436,9 @@ class TestToolCallIntegration:
             from sova.mcp.server import create_server
 
             server = create_server()
-            content, _ = await server.call_tool("sova_test", {"project_dir": str(tmp_path)})
+            result = await server.call_tool("sova_test", {"project_dir": str(tmp_path)})
 
-        assert "Tests passed" in content[0].text
+        assert "Tests passed" in result.content[0].text
 
     async def test_call_simplify_tool(self, tmp_path: Path) -> None:
         mock_result = LLMResult(text="Simplified", model="sonnet", cost_usd=Decimal("0.05"))
@@ -383,9 +455,9 @@ class TestToolCallIntegration:
             from sova.mcp.server import create_server
 
             server = create_server()
-            content, _ = await server.call_tool("sova_simplify", {"project_dir": str(tmp_path)})
+            result = await server.call_tool("sova_simplify", {"project_dir": str(tmp_path)})
 
-        assert "Simplified" in content[0].text
+        assert "Simplified" in result.content[0].text
 
     async def test_call_address_review_tool(self, tmp_path: Path) -> None:
         mock_result = LLMResult(text="Addressed", model="sonnet", cost_usd=Decimal("0.05"))
@@ -402,12 +474,12 @@ class TestToolCallIntegration:
             from sova.mcp.server import create_server
 
             server = create_server()
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "sova_address_review",
                 {"pr_number": 5, "project_dir": str(tmp_path)},
             )
 
-        assert "Addressed" in content[0].text
+        assert "Addressed" in result.content[0].text
 
     async def test_call_create_pr_tool(self, tmp_path: Path) -> None:
         mock_result = LLMResult(text="PR created", model="sonnet", cost_usd=Decimal("0.05"))
@@ -424,9 +496,9 @@ class TestToolCallIntegration:
             from sova.mcp.server import create_server
 
             server = create_server()
-            content, _ = await server.call_tool("sova_create_pr", {"project_dir": str(tmp_path)})
+            result = await server.call_tool("sova_create_pr", {"project_dir": str(tmp_path)})
 
-        assert "PR created" in content[0].text
+        assert "PR created" in result.content[0].text
 
 
 # ---------------------------------------------------------------------------
