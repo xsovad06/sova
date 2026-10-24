@@ -222,7 +222,7 @@ jobs:
         id: artifact
         if: github.event.workflow_run.conclusion == 'success'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: coverage-xml
           path: ${{ runner.temp }}/sova-coverage
@@ -254,7 +254,7 @@ jobs:
       # exists to make cheap. The coverage artifact lives outside the
       # workspace (see above), so this checkout can use its normal defaults
       # without risking that file.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.coverage.outputs.present == 'true'
         with:
           fetch-depth: 0
@@ -448,7 +448,7 @@ jobs:
         # check run as "superseded, nothing to see" and is indistinguishable
         # from a concurrency-group supersede.
         timeout-minutes: 15
-        uses: SonarSource/sonarqube-scan-action@v6
+        uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
