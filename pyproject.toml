@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "typer[all]>=0.12,<1.0",
+    "typer[all]>=0.27.3,<1.0",
     "fastapi>=0.115,<0.137",
     "starlette>=0.46,<2.0",
     "uvicorn[standard]>=0.30,<1.0",
