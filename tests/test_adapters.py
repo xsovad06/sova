@@ -10,6 +10,7 @@ import pytest
 
 from sova.adapters.base import Milestone, Task, TaskAdapter, TaskFilters, TaskState
 from sova.adapters.github import _STATE_LABELS, _STATE_TO_BOARD_NAMES, GitHubAdapter, _parse_issue
+from sova.adapters.priority import Priority
 from sova.config.models import _VALID_TASK_STATES
 
 # ---------------------------------------------------------------------------
@@ -910,6 +911,30 @@ class TestGitHubAdapter:
 
         state = await self.adapter.get_state("42")
         assert state == TaskState.BACKLOG
+
+    def test_parse_issue_sets_priority_from_label(self) -> None:
+        task = _parse_issue(
+            {
+                "number": 591,
+                "title": "Blocking issue",
+                "state": "OPEN",
+                "labels": [{"name": "priority: blocker"}],
+                "url": "https://github.com/example/repo/issues/591",
+            }
+        )
+        assert task.priority == Priority.BLOCKER
+
+    def test_parse_issue_defaults_priority_to_undefined(self) -> None:
+        task = _parse_issue(
+            {
+                "number": 592,
+                "title": "No priority label",
+                "state": "OPEN",
+                "labels": [],
+                "url": "https://github.com/example/repo/issues/592",
+            }
+        )
+        assert task.priority == Priority.UNDEFINED
 
     def test_merged_pr_dependency_is_done_despite_stale_label(self) -> None:
         task = _parse_issue(

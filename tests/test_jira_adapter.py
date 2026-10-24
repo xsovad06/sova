@@ -18,6 +18,7 @@ from sova.adapters.jira import (
     _STATE_LABELS,
     JiraAdapter,
 )
+from sova.adapters.priority import Priority
 from sova.roles.triage import compute_quality_score
 
 
@@ -667,6 +668,11 @@ class TestParseIssue:
         task = adapter._parse_issue(_issue_json(priority="Critical"))
         assert task.metadata["jira_priority"] == "Critical"
 
+    def test_jira_priority_maps_to_priority_field(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(priority="Critical"))
+        assert task.priority == Priority.CRITICAL
+
     def test_created_at_in_metadata(self) -> None:
         adapter = _adapter()
         task = adapter._parse_issue(_issue_json(created="2024-06-01T12:00:00.000+0000"))
@@ -690,6 +696,7 @@ class TestParseIssue:
         del raw["fields"]["priority"]
         task = adapter._parse_issue(raw)
         assert task.metadata["jira_priority"] == ""
+        assert task.priority == Priority.UNDEFINED
 
     def test_null_priority_defaults_empty(self) -> None:
         adapter = _adapter()
@@ -697,6 +704,7 @@ class TestParseIssue:
         raw["fields"]["priority"] = None
         task = adapter._parse_issue(raw)
         assert task.metadata["jira_priority"] == ""
+        assert task.priority == Priority.UNDEFINED
 
 
 class TestJiraStatusMapping:

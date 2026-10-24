@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass, field
 
 from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.priority import Priority
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run
@@ -495,6 +496,7 @@ class GitHubAdapter(TaskAdapter):
         issue_number = url.rstrip("/").split("/")[-1]
         if not issue_number.isdigit():
             raise RuntimeError(f"Failed to parse issue number from URL: {url!r}")
+
         return await self.get_task(issue_number)
 
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
@@ -931,4 +933,5 @@ def _parse_issue(data: dict) -> Task:
         url=data.get("url", ""),
         milestone=milestone,
         metadata=metadata,
+        priority=Priority.from_labels(labels),
     )

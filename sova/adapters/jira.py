@@ -11,6 +11,7 @@ from urllib.parse import quote
 import httpx
 
 from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.priority import Priority
 from sova.utils.logging import get_logger
 
 log = get_logger(component="adapter.jira")
@@ -695,6 +696,7 @@ class JiraAdapter(TaskAdapter):
             sprint=sprint_name,
             components=component_names,
             fix_versions=fix_version_names,
+            priority=Priority.from_jira(priority_name),
         )
 
     @staticmethod

@@ -9,7 +9,7 @@ The dashboard Priority Queue reads the **milestone** field from each issue (via 
 1. **Badge label**: extracted from the milestone title before the colon (e.g., `Phase 2: Dashboard Polish` -> `Phase 2`)
 2. **Sort order**: numeric phase extracted via regex (`Phase N` or `PN`), lower numbers appear first
 3. **Color**: each phase number (1-7) has a distinct color in the dashboard theme
-4. **Within-phase sort**: issues within the same phase are sorted by priority labels (`priority:critical` > `priority:high` > `priority:medium` > `priority:low`)
+4. **Within-phase sort**: issues within the same phase are sorted by `Priority.rank` (`sova/adapters/priority.py`), six levels from most to least urgent: `blocker` > `critical` > `high` > `medium` > `low` > `undefined` (an unlabelled issue sorts after `low`, never ahead of a labelled one)
 
 Issues without a milestone show as `--` (gray) in a "No phase" section at the bottom.
 
