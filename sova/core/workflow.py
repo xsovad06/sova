@@ -608,6 +608,8 @@ class WorkflowEngine:
         self._ctx.runtime_usage = None
         self._ctx.runtime_cost_usd = Decimal("0")
         self._ctx.cost_source = None
+        self._ctx.step_model_selection_reason = None
+        self._ctx.routed_spend = {}
         try:
             async with asyncio.timeout(timeout_seconds):
                 result = await step.execute(self._ctx)
@@ -1195,6 +1197,27 @@ class WorkflowEngine:
                     provider_usage = total_usage - runtime_usage if result.usage is not None else TokenUsage()
                     provider_cost = max(result.cost_usd - self._ctx.runtime_cost_usd, Decimal("0"))
 
+                # Spend a step routed to a model other than resolved_model
+                # (the fix loops' task-type route) gets a record per model
+                # that ran, subtracted from the provider share, so a cheap
+                # routed attempt and the dev-model attempt that escalated
+                # past it are never merged under one model id (issue #780).
+                for routed in self._ctx.routed_spend.values():
+                    session.add(
+                        self._build_cost_record(
+                            record.step_name,
+                            elapsed_ms,
+                            model=routed.model,
+                            cost_usd=routed.cost_usd,
+                            cost_source=routed.cost_source,
+                            model_selection_reason=routed.reason,
+                            usage=routed.usage,
+                        )
+                    )
+                    if result.usage is not None:
+                        provider_usage = provider_usage - routed.usage
+                    provider_cost = max(provider_cost - routed.cost_usd, Decimal("0"))
+
                 if provider_cost > 0 or self._usage_has_tokens(provider_usage):
                     session.add(
                         self._build_cost_record(
@@ -1203,7 +1226,9 @@ class WorkflowEngine:
                             model=self._ctx.resolved_model or "claude",
                             cost_usd=provider_cost,
                             cost_source=self._ctx.cost_source,
-                            model_selection_reason=self._ctx.model_selection_reason,
+                            model_selection_reason=(
+                                self._ctx.step_model_selection_reason or self._ctx.model_selection_reason
+                            ),
                             usage=provider_usage,
                         )
                     )

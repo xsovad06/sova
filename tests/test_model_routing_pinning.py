@@ -27,6 +27,7 @@ from sova.llm.routing import (
     get_model_family,
     resolve_extraction_model,
     route_model,
+    task_type_model_compatible,
 )
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,73 @@ class TestPinToConfiguredModel:
 
     def test_pins_haiku_family(self) -> None:
         assert _pin_to_configured_model("haiku", "claude-haiku-4-5") == "claude-haiku-4-5"
+
+
+class TestTaskTypeModelCompatible:
+    """Issue #780: the runtime-compatibility check for a configured task-type route."""
+
+    def test_none_model_is_compatible(self) -> None:
+        assert task_type_model_compatible(None, ["claude-opus-5"]) is True
+
+    def test_no_cached_catalog_fails_open(self) -> None:
+        assert task_type_model_compatible("ollama/qwen3", None) is True
+
+    def test_empty_catalog_fails_open(self) -> None:
+        assert task_type_model_compatible("ollama/qwen3", []) is True
+
+    def test_exact_id_in_catalog_is_compatible(self) -> None:
+        catalog = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+        assert task_type_model_compatible("claude-sonnet-5", catalog) is True
+
+    def test_same_family_as_a_catalog_entry_is_compatible(self) -> None:
+        catalog = ["claude-haiku-4-5-20251001"]
+        assert task_type_model_compatible("haiku", catalog) is True
+
+    def test_different_family_is_incompatible(self) -> None:
+        catalog = ["claude-opus-5", "claude-sonnet-5"]
+        assert task_type_model_compatible("haiku", catalog) is False
+
+    def test_unrecognized_vendor_prefix_is_incompatible(self) -> None:
+        catalog = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+        assert task_type_model_compatible("ollama/qwen3:30b", catalog) is False
+
+    def test_foreign_vendor_sharing_a_family_name_is_incompatible(self) -> None:
+        """Issue #780 review: "ollama/sonnet" contains "sonnet" but is not a Claude CLI id."""
+        catalog = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+        assert task_type_model_compatible("ollama/sonnet", catalog) is False
+
+    def test_same_vendor_prefix_and_family_is_compatible(self) -> None:
+        catalog = ["vertex_ai/claude-sonnet-5"]
+        assert task_type_model_compatible("vertex_ai/claude-sonnet-4-5", catalog) is True
+
+    def test_dated_fable_id_is_compatible_with_curated_catalog(self) -> None:
+        """Issue #780 review: a dated, pinned id in a recognized family (the
+        configuration AGENTS.md recommends) must not be judged incompatible."""
+        from sova.llm.models import CURATED_MODELS
+
+        catalog = [m.id for m in CURATED_MODELS]
+        assert task_type_model_compatible("claude-fable-5-1-20260301", catalog) is True
+
+    def test_unrecognized_family_falls_open_on_matching_vendor_prefix(self) -> None:
+        """A model whose family this module doesn't yet know about (e.g. a new
+        first-party family released ahead of _MODEL_FAMILIES) must fall open
+        rather than be judged incompatible for lack of family recognition."""
+        catalog = ["claude-opus-5", "claude-sonnet-5"]
+        assert task_type_model_compatible("claude-nova-1", catalog) is True
+
+    def test_unrecognized_family_with_foreign_vendor_prefix_stays_incompatible(self) -> None:
+        catalog = ["claude-opus-5", "claude-sonnet-5"]
+        assert task_type_model_compatible("ollama/some-unknown-model", catalog) is False
+
+    def test_regression_every_curated_model_id_is_self_compatible(self) -> None:
+        """A future CURATED_MODELS addition must stay compatible with itself:
+        guards against a new family silently regressing this check (issue #780
+        review)."""
+        from sova.llm.models import CURATED_MODELS
+
+        catalog = [m.id for m in CURATED_MODELS]
+        for model_id in catalog:
+            assert task_type_model_compatible(model_id, catalog) is True, model_id
 
 
 # ---------------------------------------------------------------------------

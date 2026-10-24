@@ -476,24 +476,29 @@ The harness that produces those numbers lives under `tests/evaluation/`:
 
 - `fixtures.py`: `FIXTURES`, one or more fixtures per workload named in issue #1129 (triage,
   extraction, planning, research, spec drafting, development, review, validation and CI fixes,
-  PR-body drafting, and oversight; ten fixtures total, since the researcher role contributes both
-  a `research` and a `spec` fixture). Each carries the prompt and the `accept_marker` that decides
+  PR-body drafting, and oversight; eleven fixtures total, since the researcher role contributes both
+  a `research` and a `spec` fixture and `validate`/`monitor_ci` each get their own). Each carries
+  the prompt and the `accept_marker` that decides
   pass or fail, plus (for most fixtures) `required_content`, substrings a genuinely correct answer
   must contain, not merely a correctly-formatted one (e.g. `self_review`'s diff has a real
-  `ZeroDivisionError` the response must name). Three fixtures use a custom `accept` override instead
+  `ZeroDivisionError` the response must name). Four fixtures use a custom `accept` override instead
   of `required_content` specifically to avoid a prompt-echo false accept: `research` and `triage`
   word-boundary/negative-match the classification instead of a plain substring (their prompts hand
   the model the exact value, "45", or list "bug, feature, or task" outright, so a naive substring
-  check also accepts a restated prompt, or "450"), and `develop` counts `assert` occurrences since
-  "three test cases" has no fixed string to check for. `validate`'s prompt deliberately withholds the
+  check also accepts a restated prompt, or "450"), `develop` counts `assert` occurrences since
+  "three test cases" has no fixed string to check for, and `monitor_ci` requires a conditional guard
+  on the zero case because its prompt's CI log already contains both "ZeroDivisionError" and
+  "division by zero". `validate`'s prompt deliberately withholds the
   diagnosis term (`StopIteration`) it requires in the answer, for the same reason. Three fixtures
   (`generate_tasks`, `extract_memory`, `oversight/analysis`) stay heading-only: their prompts have no
   single correct answer to verify against, so those three rows' `cost_per_accepted_result()` reflects
   format compliance, not answer quality, and should be read that way when comparing candidates. The
   `role`/`step` pair is the pipeline's own naming, so a result maps straight back to the
   `roles.*_model` / `agent.model` setting it stands in for; `oversight` is the one exception, a
-  background daemon configured by `oversight.analysis_model` rather than a pipeline role. CI-fix
-  coverage is approximated by the `validate` fixture alone; there is no separate `monitor_ci` fixture.
+  background daemon configured by `oversight.analysis_model` rather than a pipeline role. `validate`
+  and `monitor_ci` have separate fixtures as of #780, since a default worth adopting for
+  `llm.routing["monitor_ci"]` needs its own measured cost per accepted fix rather than borrowing
+  `validate`'s.
 - `harness.py`: provider-independent attempt recording and aggregation. `run_fixture()` times one
   call and records tokens, cost, acceptance, the served model snapshot (`LLMResult.model`, which
   litellm routinely resolves away from the requested alias) and the verbatim response text, so a
@@ -569,6 +574,116 @@ left to the PR's human reviewer rather than this change.
 The harness produces evidence; it does not change any model-routing default beyond making
 `roles.researcher_model` default to unset (above). Adopting a mapping, or any deferred item above,
 is a separate, explicit config or code change, which is what makes it rollback-able.
+
+### 2.12 Fix-loop task-type routing and escalation (#780)
+
+`ValidateStep` and `MonitorCIStep` are the two steps whose LLM call is a *repair* attempt against a
+known-failing tree, so they are the two where a cheap model is worth one try before the dev model.
+Both now resolve each attempt through one shared helper, `resolve_fix_attempt_route()`
+(`sova/core/steps/base.py`), rather than duplicating the decision:
+
+- **Attempt 1** passes the step's `TASK_TYPE` (`"validate"` / `"monitor_ci"`) through
+  `ctx.routing_task_type()`, so a configured `llm.routing[task_type]` route outranks the passed dev
+  model exactly as `_resolve_task_type_model()` already specifies, and a model fallback already in
+  flight (`fallback_model_index > 0`) still suppresses the route rather than being pinned back to
+  the model it is escaping.
+- **Every later attempt** passes `task_type=None`. The model argument is the dev model on every
+  attempt; dropping the task type is what changes which model runs, because a configured route
+  resolves ahead of that argument. One cheap try, then the model the rest of the developer pipeline
+  uses.
+- **The escalation is recorded step-scoped**, on `ExecutionContext.step_model_selection_reason`,
+  which `WorkflowEngine` resets before every step attempt and prefers over the run-wide
+  `model_selection_reason` when writing the provider `CostRecord`. `model_selection_reason` itself
+  is written once by `AssessStep` and read by every later step's record, so a step writing its own
+  reason there would relabel every subsequent step's cost row. The string names the real attempt
+  number (`f"task_type:{task_type} fix attempt {attempt - 1} failed, escalated to dev model
+  {dev_model}"`, not a hardcoded "1"). The reason is written only when
+  `ExecutionContext.routed_spend` is non-empty, i.e. only when attempt 1 is *observed* to have
+  actually run a different model, not merely because a route was configured for that task type.
+  Config alone is not enough: a route can be configured and still never take effect on attempt 1
+  (the default empty `llm.routing`; a fallback already in flight suppressing the route;
+  `_ensure_task_type_model_compatible()` already swapping the route back to the dev model because
+  the runtime cannot honour it; a role-level runtime pin (`roles.developer_runtime_model`, #1039)
+  overriding it; a runtime whose `honours_model_override` is `False`, e.g. Codex; or a route that
+  pins back to the same model as `agent.model`), and in every one of those cases claiming an
+  escalation happened would be a false cost-analysis record. The evidence for "actually run a
+  different model" is the *dispatch layer's own report* (`LLMResult.routed_task_type_model`,
+  `sova/llm/models.py`, set by `dispatch_command()`/`dispatch_prompt()` only when a configured
+  route survives both checks described below), not an after-the-fact comparison of the reported
+  model id against `resolved_model`: that comparison cannot distinguish a route already swapped back
+  to the dev model, or one that merely spells it differently, from a route that genuinely ran
+  something else (issue #780 review).
+- **The routed attempt's spend gets its own `CostRecord`**. The fix loops pass `routed_reason` (from
+  `fix_attempt_routed_reason()`, non-`None` only when the `LLMResult` attempt 1 actually dispatched
+  carries `routed_task_type_model`, read from the result itself rather than re-derived from
+  `ctx.config.llm.routing`'s run-start snapshot, so a mid-run `llm.routing` edit is reflected
+  identically to how dispatch itself saw it) to `ctx.add_usage()`, which buckets that result in
+  `ExecutionContext.routed_spend` (one `RoutedSpend` per model that ran, keyed by `result.model`,
+  falling back to `routed_task_type_model` only when the provider reported no model name at all)
+  instead of the step's provider totals. `WorkflowEngine` resets it before every step attempt,
+  writes one record per bucket labelled with that model and the escalation reason, and subtracts
+  each bucket from the provider record, so a cheap attempt and the dev-model attempt that escalated
+  past it are never merged under one model id.
+
+No default route ships. `llm.routing` stays empty, so a deployment that configures nothing keeps
+today's behaviour (every attempt on the dev model) and the cost-per-accepted-fix evidence for
+choosing a value comes from the `validate` and `monitor_ci` fixtures in 2.11.
+
+On the dispatch side, a role-level runtime pin (`_apply_runtime_model_pin()`, #1039) is resolved
+*first*. When `roles.developer_runtime_model` applies, it outranks a task-type route by design
+(both run under the `developer` role), so the compatibility check below is skipped entirely, along
+with its warning log: a route that was never going to be spawned must not be judged, or logged as
+incompatible, against a dispatch it had no bearing on (issue #780 review).
+
+Only when no pin applies does `_ensure_task_type_model_compatible()` (`sova/core/agent_dispatch.py`)
+run, stopping a configured route from reaching a runtime that cannot serve it. It returns
+`(model_to_dispatch, route_honoured)`, and `route_honoured` is the single source `dispatch_command()`/
+`dispatch_prompt()` use to tag the eventual `LLMResult.routed_task_type_model` (see above). The check
+is scoped to `_TASK_TYPE_MODEL_COMPATIBILITY_SCOPE` (`{"validate", "monitor_ci"}`, the only task
+types with a dev-model escalation path to fall back to): every other tool-using task type
+(`develop`, `self_review`, `simplify`, ...) falls through unchanged here and keeps hitting the
+pre-existing fail-loud `_sanitize_model_for_runtime()` check inside `_dispatch_to_runtime()`, so a
+misrouted model there still raises an actionable `AgentRuntimeUnavailableError` instead of silently
+downgrading. Within that scope it fires only when a route exists for the task type, and falls the
+dispatch back to the step's dev model, resolved through `client.select_model()` (the same
+`llm.model_aliases` / backend-aware chokepoint every other model on this path goes through, not the
+raw, possibly-bare-alias argument `dispatch_command()`/`dispatch_prompt()` was called with) and
+logged at warning so a misconfiguration is visible, when either the runtime's
+`honours_model_override` is False (the route could not change what runs anyway) or the routed
+model, *sanitized to the form the spawn will actually receive* (`_sanitize_model_for_runtime()`, so
+a `vertex_ai/`-prefixed route is compared with that prefix already stripped, matching what a
+`claude-code` runtime is actually handed), shares no id and no model family with the runtime's own
+catalog (`task_type_model_compatible()` in `sova/llm/routing.py`). A route the sanitizer itself
+rejects (a foreign vendor prefix `agent.runtime="claude-code"` cannot serve under any spelling) is
+incompatible by construction, with no catalog lookup needed. `route_honoured` is `True` only when
+the route is additionally compatible *and* differs from the dev model: a route in the same family
+as `agent.model` collapses to that literal string via `sova.llm.routing._pin_to_configured_model()`'s
+pinning, so both attempts would run one model under one spelling, and treating that as "routed"
+would split identical spend into two `CostRecord`s (issue #780 review).
+
+Family matching is a substring test, so it also requires the litellm-style `<vendor>/` prefix to
+match the catalog entry's own (none for a bare id): `"ollama/sonnet"` shares the `sonnet` family
+with every Claude id but names a model the Claude CLI cannot parse. `_MODEL_FAMILIES` covers
+`opus`/`sonnet`/`haiku`/`fable`; a model whose family isn't in that list at all falls open to
+compatible whenever some catalog entry shares its vendor prefix, rather than incompatible outright,
+since an unrecognized family is evidence the list itself is stale, not evidence the model can't run:
+a dated, pinned id in a not-yet-catalogued first-party family is exactly the configuration this
+doc's own guidance recommends, and judging it incompatible for lack of family recognition was the
+silent-downgrade failure mode this check exists to prevent (issue #780 review). That catalog comes
+from `AgentRuntime.cached_models()`, which never probes: a warm enumeration entry when one exists,
+else the runtime's static `declared_models()` (`ClaudeCodeRuntime` declares `CURATED_MODELS`' ids, a
+statement about the dialect `claude --model` parses, not about availability), else `None`, which
+fails open. The static declaration is what makes the check work at all inside a `sova run` process,
+where nothing ever calls `list_available_models()` (the dashboard's enumeration builds a separate
+project-scoped instance) and the per-instance cache is therefore permanently cold.
+
+`MonitorCIStep._try_fix_ci()` accumulates its own fix-loop cost (`total_fix_cost`) across every
+attempt and returns it on every exit path, including the two paths that return another helper's
+`StepResult` (`_validate_fix()`, `_poll_ci()`) rather than building one directly, mirroring
+`ValidateStep`'s long-standing handling: without it, the most common failure exit (attempts
+exhausted) reported `cost_usd=0`, and `WorkflowEngine`'s `provider_cost = max(result.cost_usd -
+routed.cost_usd, 0)` subtraction floored the dev-model attempt's real spend to `$0` whenever a
+routed attempt 1 preceded it (issue #780 review).
 
 ---
 

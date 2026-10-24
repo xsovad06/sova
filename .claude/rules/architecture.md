@@ -270,6 +270,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A full check's reuse marker must exclude itself from the worktree-state hash it is keyed to, or writing it invalidates it
 - An issue type label is not a size signal, and a triage- or spec-written complexity line outranks the heuristic vote that reads it
 - A safety-critical command runs only from an installed copy verified current, because a fix to its recipe reaches a project only through a sync
+- A fix loop gets one cheap try and its escalation reason is step-scoped, never the run-wide one
 
 ## Cross-References (domain-specific details)
 

@@ -10,11 +10,18 @@ by CaptureBaselineStep (issue #233).
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
-from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.core.steps.base import (
+    BaseStep,
+    GateCheckResult,
+    StepResult,
+    fix_attempt_routed_reason,
+    resolve_fix_attempt_route,
+)
 from sova.core.test_baseline import diff_results, load_baseline, run_test_suite
 from sova.git.branch import get_current_branch
 from sova.llm.errors import format_fix_llm_failure
@@ -94,6 +101,7 @@ async def find_pre_push_hook(cwd: Path | str | None) -> str | None:
 
 class ValidateStep(BaseStep):
     name = "validate"
+    TASK_TYPE = "validate"
     max_retries = 0
     requires_tools = True
 
@@ -125,6 +133,7 @@ class ValidateStep(BaseStep):
         log.warning("step.validate.hook_failed", output=hook_output[:500])
 
         max_fix_attempts = ctx.config.validation.max_fix_attempts
+        total_fix_cost = Decimal("0")
         for attempt in range(1, max_fix_attempts + 1):
             # Check budget before attempting fix
             if ctx.is_budget_exceeded:
@@ -132,6 +141,7 @@ class ValidateStep(BaseStep):
                     success=False,
                     summary=f"Pre-push hook failed; budget exceeded after {attempt - 1} fix attempt(s)",
                     error="budget_exceeded",
+                    cost_usd=total_fix_cost,
                 )
 
             if ctx.resource_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
@@ -146,6 +156,7 @@ class ValidateStep(BaseStep):
                         f"Pre-push hook failed; stopping fix retries at "
                         f"{ctx.resource_remaining_fraction:.0%} budget remaining ({attempt - 1} attempt(s) made)"
                     ),
+                    cost_usd=total_fix_cost,
                 )
 
             log.info("step.validate.fix_attempt", attempt=attempt)
@@ -158,24 +169,30 @@ class ValidateStep(BaseStep):
                 f"Do not modify or disable the hook itself."
             )
 
+            attempt_model, attempt_task_type = resolve_fix_attempt_route(ctx, self.TASK_TYPE, attempt)
+
             try:
                 llm_result = await dispatch_prompt(
                     self,
                     prompt,
-                    model=ctx.resolved_model or ctx.config.agent.model,
-                    task_type="validate",
+                    model=attempt_model,
+                    task_type=attempt_task_type,
                     cwd=ctx.working_dir,
                     max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                     timeout=ctx.config.validation.fix_timeout,
                     ctx=ctx,
                 )
-                ctx.add_usage(llm_result)
+                ctx.add_usage(
+                    llm_result, routed_reason=fix_attempt_routed_reason(llm_result, self.TASK_TYPE, attempt_task_type)
+                )
+                total_fix_cost += llm_result.cost_usd
             except RuntimeError as exc:
                 log.error("step.validate.llm_failed", error=str(exc))
                 return StepResult(
                     success=False,
                     summary=f"Pre-push hook failed and auto-fix failed: {exc}",
                     error=format_fix_llm_failure(exc, attempt),
+                    cost_usd=total_fix_cost,
                 )
 
             retry_stdin = await build_pre_push_stdin(cwd, ctx.branch_name)
@@ -184,7 +201,7 @@ class ValidateStep(BaseStep):
                 return StepResult(
                     success=True,
                     summary=f"Pre-push hook passed after {attempt} fix attempt(s)",
-                    cost_usd=llm_result.cost_usd,
+                    cost_usd=total_fix_cost,
                 )
 
             if retry.timed_out:
@@ -193,7 +210,7 @@ class ValidateStep(BaseStep):
                     success=False,
                     summary=f"Pre-push hook exceeded {hook_timeout}s and was killed",
                     error="hook_timeout",
-                    cost_usd=llm_result.cost_usd,
+                    cost_usd=total_fix_cost,
                 )
 
             hook_output = (retry.stdout + "\n" + retry.stderr).strip()
@@ -203,6 +220,7 @@ class ValidateStep(BaseStep):
             success=False,
             summary=f"Pre-push hook still failing after {max_fix_attempts} fix attempts",
             error=hook_output[:1000],
+            cost_usd=total_fix_cost,
         )
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:

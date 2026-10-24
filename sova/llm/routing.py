@@ -31,7 +31,7 @@ _DEFAULT_ROUTING: dict[ComplexityTier, str] = {
     ComplexityTier.EPIC: "opus",
 }
 
-_MODEL_FAMILIES: tuple[str, ...] = ("opus", "sonnet", "haiku")
+_MODEL_FAMILIES: tuple[str, ...] = ("opus", "sonnet", "haiku", "fable")
 
 # Known task-type keys (disjoint from complexity-tier keys).
 # Used to disambiguate when both namespaces share the routing dict.
@@ -68,8 +68,9 @@ TASK_TYPE_KEYS: frozenset[str] = frozenset(
 def get_model_family(model_id: str) -> str | None:
     """Extract the family name from a model ID or alias.
 
-    Returns the family (``"opus"``, ``"sonnet"``, ``"haiku"``) if recognized,
-    or ``None`` for unrecognized models (e.g. local/third-party).
+    Returns the family (``"opus"``, ``"sonnet"``, ``"haiku"``, ``"fable"``) if
+    recognized, or ``None`` for unrecognized models (e.g. local/third-party,
+    or a future first-party family this list hasn't caught up to yet).
     """
     lower = model_id.lower()
     for family in _MODEL_FAMILIES:
@@ -154,6 +155,59 @@ def _apply_pin(model: str, agent_model: str | None, reason: str) -> tuple[str, s
     if pinned != model:
         return pinned, f"{reason},pinned->{pinned}"
     return model, reason
+
+
+def _vendor_prefix(model_id: str) -> str | None:
+    """Return a litellm-style ``<vendor>/`` prefix from *model_id*, or ``None`` for a bare id.
+
+    The vendor dialect a model id is written in, which family matching alone
+    cannot see: ``"ollama/sonnet"`` and ``"claude-sonnet-5"`` share the
+    ``sonnet`` family but not a dialect any one CLI parses.
+    """
+    vendor, _, rest = model_id.partition("/")
+    return vendor.lower() if rest else None
+
+
+def task_type_model_compatible(model: str | None, catalog: list[str] | None) -> bool:
+    """Return whether *model* is one a runtime's own *catalog* can serve.
+
+    ``catalog`` is ``None`` (the runtime states no catalog of its own) or
+    empty (reachable, but with no catalog of its own) when there is
+    nothing confirmed to check against: the caller must fail open and treat
+    *model* as compatible rather than block it for lack of information, same
+    as every other availability check in this project. An exact id match, or
+    a shared model family (``get_model_family``) with any catalog entry,
+    counts as compatible, but only within one vendor dialect: a family name
+    is a substring test, so ``"ollama/sonnet"`` shares a family with every
+    Claude ``sonnet`` id while naming a model the Claude CLI cannot parse.
+    A litellm-style ``<vendor>/<model>`` prefix therefore has to match the
+    catalog's own prefix (``None`` for a bare id), which leaves a model with
+    no recognized family (``"ollama/qwen3"``) and a foreign-vendor one
+    (``"ollama/sonnet"``) both incompatible with a Claude-only catalog.
+
+    A model whose family ``get_model_family()`` does not recognize at all
+    (e.g. a new first-party family released before ``_MODEL_FAMILIES`` is
+    updated for it) falls open on vendor dialect alone: compatible whenever
+    some catalog entry shares its vendor prefix, since an unrecognized family
+    is evidence this function's own family list is stale, not evidence the
+    model is actually incompatible with the runtime. A dated, pinned model id
+    in exactly this situation is the configuration AGENTS.md's model-selection
+    guidance recommends (explicit IDs over generic aliases), so judging it
+    incompatible for lack of family recognition is the silent-downgrade
+    failure mode this check exists to prevent (issue #780 review).
+
+    Pure: takes the already-fetched catalog rather than a runtime instance,
+    so this module never imports ``sova.ipc.runtime`` (see module docstring).
+    """
+    if not model or not catalog:
+        return True
+    if model in catalog:
+        return True
+    vendor = _vendor_prefix(model)
+    family = get_model_family(model)
+    if family is None:
+        return any(_vendor_prefix(candidate) == vendor for candidate in catalog)
+    return any(get_model_family(candidate) == family and _vendor_prefix(candidate) == vendor for candidate in catalog)
 
 
 def resolve_extraction_model(cfg: LLMConfig | None) -> str:

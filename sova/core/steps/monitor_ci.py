@@ -15,7 +15,13 @@ from typing import Any
 
 from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
-from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.core.steps.base import (
+    BaseStep,
+    GateCheckResult,
+    StepResult,
+    fix_attempt_routed_reason,
+    resolve_fix_attempt_route,
+)
 from sova.git.operations import (
     CheckConclusion,
     CICheck,
@@ -45,6 +51,7 @@ def _redact_logs(text: str) -> str:
 
 class MonitorCIStep(BaseStep):
     name = "monitor_ci"
+    TASK_TYPE = "monitor_ci"
     max_retries = 0
     requires_tools = True
 
@@ -480,6 +487,7 @@ class MonitorCIStep(BaseStep):
                     success=False,
                     summary=f"CI fix aborted: budget exceeded after {attempt - 1} attempt(s)",
                     error=f"Budget exceeded. Remaining failures: {names}",
+                    cost_usd=total_fix_cost,
                 )
 
             if ctx.resource_remaining_fraction < BUDGET_STOP_RETRY_THRESHOLD:
@@ -501,14 +509,20 @@ class MonitorCIStep(BaseStep):
 
             log.info("step.monitor_ci.fix_attempt", attempt=attempt, max=max_attempts)
 
-            fix_cost, error = await self._invoke_fix(ctx, failed_checks, invoke, run)
+            fix_cost, error = await self._invoke_fix(ctx, failed_checks, invoke, run, attempt)
             total_fix_cost += fix_cost
             if error:
                 msg = f"CI fix LLM invocation failed on attempt {attempt}: {error}"
-                return StepResult(success=False, summary=msg, error=format_fix_llm_failure(error, attempt))
+                return StepResult(
+                    success=False,
+                    summary=msg,
+                    error=format_fix_llm_failure(error, attempt),
+                    cost_usd=total_fix_cost,
+                )
 
             skip, result = await self._validate_fix(ctx, attempt, max_attempts, run)
             if result:
+                result.cost_usd += total_fix_cost
                 return result
             if skip:
                 continue
@@ -526,7 +540,7 @@ class MonitorCIStep(BaseStep):
             except RuntimeError as exc:
                 log.error("step.monitor_ci.push_failed", error=str(exc), exc_info=True)
                 msg = f"CI fix push failed on attempt {attempt}: {exc}"
-                return StepResult(success=False, summary=msg, error=str(exc))
+                return StepResult(success=False, summary=msg, error=str(exc), cost_usd=total_fix_cost)
 
             result, new_failed = await self._poll_ci(ctx, expected_sha=head_sha)
             if result.success:
@@ -536,6 +550,7 @@ class MonitorCIStep(BaseStep):
                     cost_usd=total_fix_cost,
                 )
             if not new_failed:
+                result.cost_usd += total_fix_cost
                 return result
 
             failed_checks = new_failed
@@ -550,6 +565,7 @@ class MonitorCIStep(BaseStep):
             success=False,
             summary=f"CI still failing after {max_attempts} fix attempt(s): {names}",
             error=f"Failed checks after {max_attempts} fix attempt(s): {names}",
+            cost_usd=total_fix_cost,
         )
 
     async def _invoke_fix(
@@ -558,8 +574,14 @@ class MonitorCIStep(BaseStep):
         failed_checks: list[CICheck],
         invoke: _LLMInvoker,
         run: _ShellRunner,
+        attempt: int,
     ) -> tuple:
-        """Invoke Claude to fix CI failures. Returns (cost, error_or_None)."""
+        """Invoke Claude to fix CI failures. Returns (cost, error_or_None).
+
+        *attempt* selects the model through ``resolve_fix_attempt_route()``,
+        shared with ``ValidateStep``: attempt 1 routes by task type, every
+        later attempt escalates to the step's dev model.
+        """
         from decimal import Decimal
 
         sonar_checks, other_checks = self._split_sonarcloud_checks(failed_checks)
@@ -588,17 +610,22 @@ class MonitorCIStep(BaseStep):
         budget = ctx.config.agent.max_budget - ctx.cost_usd
         if budget <= 0:
             return Decimal("0"), RuntimeError("Budget exhausted")
+
+        attempt_model, attempt_task_type = resolve_fix_attempt_route(ctx, self.TASK_TYPE, attempt)
+
         try:
             llm_result = await invoke(
                 prompt,
-                model=ctx.resolved_model or ctx.config.agent.model,
-                task_type="monitor_ci",
+                model=attempt_model,
+                task_type=attempt_task_type,
                 cwd=ctx.working_dir,
                 max_budget_usd=budget,
                 timeout=ctx.config.validation.fix_timeout,
                 ctx=ctx,
             )
-            ctx.add_usage(llm_result)
+            ctx.add_usage(
+                llm_result, routed_reason=fix_attempt_routed_reason(llm_result, self.TASK_TYPE, attempt_task_type)
+            )
             return llm_result.cost_usd, None
         except RuntimeError as exc:
             log.error("step.monitor_ci.llm_failed", error=str(exc), exc_info=True)

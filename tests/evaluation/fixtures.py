@@ -5,8 +5,10 @@ enough to run repeatedly against several candidate models. The set covers the
 workloads issue #1129 names (triage, extraction, planning, research, spec
 drafting, development, review, validation and CI fixes, PR-body drafting, and
 oversight), not every step in the pipeline. The researcher role contributes
-two fixtures (research, spec); CI-fix coverage is approximated by the
-``validate`` fixture alone, with no separate ``monitor_ci`` fixture.
+two fixtures (research, spec); ``validate`` and ``monitor_ci`` each get their
+own fixture (issue #780), since a default worth adopting for
+``llm.routing["monitor_ci"]`` needs its own measured cost-per-accepted-fix
+rather than borrowing ``validate``'s.
 
 Most fixtures check more than the marker heading: ``required_content`` names
 substrings a genuinely correct answer must contain (not merely a
@@ -93,6 +95,62 @@ def _accept_develop(fixture: EvalFixture, result: LLMResult) -> bool:
     without hardcoding the exact values a correct test would use.
     """
     return fixture.accept_marker in result.text and result.text.count("assert") >= 3
+
+
+# Requires the zero-check/guard and the raise to be close to each other
+# (within 120 characters, DOTALL so the gap may cross lines), not merely
+# both present anywhere in the response: a prose sentence like "the test
+# expects b == 0 to raise a ValueError" would satisfy a bare co-occurrence
+# check without the code actually doing it. ``_accept_monitor_ci`` additionally
+# scopes the search to the function body alone (see ``_function_body_from()``),
+# so a restated requirement in prose *before or after* the code block can't
+# substitute for the code itself.
+_GUARD_THEN_RAISE_RE = re.compile(r"(?s)(?:b\s*(?:==|!=)\s*0|not\s+b|if\s+b\s*:).{0,120}?raise\s+ValueError")
+
+
+def _function_body_from(text: str, marker: str) -> str:
+    """Return *text* from *marker* through the end of that function's body.
+
+    The body ends at the first subsequent line that is non-blank and starts
+    with no leading whitespace: a blank line inside the function does not
+    end it, but prose or a second code block following it (a common "code
+    block, then an explanation" LLM response shape) must not be mistaken for
+    part of the function (issue #780 review). Falls back to the whole text
+    when *marker* is not found, matching the caller's own pre-existing
+    fallback.
+    """
+    start = text.find(marker)
+    if start == -1:
+        return text
+    lines = text[start:].splitlines(keepends=True)
+    body = lines[:1]
+    for line in lines[1:]:
+        content = line.rstrip("\n")
+        if content.strip() and not content[0].isspace():
+            break
+        body.append(line)
+    return "".join(body)
+
+
+def _accept_monitor_ci(fixture: EvalFixture, result: LLMResult) -> bool:
+    """The marker, plus the zero-input behaviour the prompt specifies, not just a repeated log line.
+
+    The prompt's CI log already contains "ZeroDivisionError" and "division by
+    zero", so a substring check for either would also pass a response that
+    merely echoes the failure. A bare conditional is not enough either: both
+    ``"if b == 0: return a / b"`` and a comment containing "if b" read as a
+    guard while still dividing by zero. The prompt states the required
+    behaviour (raise ``ValueError`` when ``b`` is zero), so acceptance needs
+    the comparison against zero (or the equivalent ``if b:`` positive form)
+    to be immediately followed by the raise, within the actual function
+    body: a restated diagnosis, a guard that does not change the outcome,
+    and prose that merely describes the required fix either ahead of or
+    after unchanged code all fail.
+    """
+    if fixture.accept_marker not in result.text:
+        return False
+    code = _function_body_from(result.text, "def divide")
+    return _GUARD_THEN_RAISE_RE.search(code) is not None
 
 
 FIXTURES: tuple[EvalFixture, ...] = (
@@ -185,6 +243,21 @@ FIXTURES: tuple[EvalFixture, ...] = (
         ),
         accept_marker="## Fix",
         required_content=("StopIteration",),
+    ),
+    EvalFixture(
+        role="developer",
+        step="monitor_ci",
+        prompt=(
+            "CI failed with this pytest output. Diagnose the cause and give "
+            "the corrected function under a '## Fix' heading. The corrected "
+            "function must raise ValueError when b is zero instead of "
+            "dividing:\n\n"
+            "FAILED tests/test_math.py::test_divide_by_zero\n"
+            "ZeroDivisionError: division by zero\n\n"
+            "def divide(a, b):\n    return a / b\n"
+        ),
+        accept_marker="## Fix",
+        accept=_accept_monitor_ci,
     ),
     EvalFixture(
         role="developer",

@@ -1326,6 +1326,47 @@ class TestAgentRuntimeABC:
         # And the cache it lazily created is still a real cache.
         assert await rt.list_available_models() == ["model-a"]
 
+    def test_cached_models_cold_cache_returns_none_without_probing(self) -> None:
+        """A cache miss must never trigger a probe (see TestNoModelProbeOnSpawnHotPath)."""
+        rt = _minimal_runtime()
+        assert rt.declared_models() is None
+        assert rt.cached_models() is None
+
+    def test_claude_code_declares_its_catalog_without_any_probe(self) -> None:
+        """The pipeline's only catalog source: cached_models() with a cold cache."""
+        from sova.ipc.runtime import ClaudeCodeRuntime
+        from sova.llm.models import CURATED_MODELS
+
+        rt = ClaudeCodeRuntime()
+        expected = [m.id for m in CURATED_MODELS]
+        assert rt.declared_models() == expected
+        assert rt.cached_models() == expected
+
+    async def test_cached_models_reflects_a_warm_positive_entry(self) -> None:
+        async def probe() -> list[str]:
+            return ["model-a"]
+
+        rt = _minimal_runtime(probe=probe)
+        await rt.list_available_models()
+        assert rt.cached_models() == ["model-a"]
+
+    async def test_cached_models_reflects_a_warm_unavailable_entry_as_none(self) -> None:
+        rt = _minimal_runtime(available=False)
+        await rt.list_available_models()
+        assert rt.cached_models() is None
+
+    async def test_cached_models_falls_back_to_the_declared_catalog_on_an_unavailable_entry(self) -> None:
+        """Issue #780 review: a cached "unavailable" answer must not hide the static
+        dialect declaration, or dispatch skips the route compatibility check until
+        that negative entry expires."""
+        from sova.ipc.runtime import ClaudeCodeRuntime
+        from sova.llm.models import CURATED_MODELS
+
+        rt = ClaudeCodeRuntime()
+        with patch.object(ClaudeCodeRuntime, "check_available", AsyncMock(return_value=(False, "not logged in"))):
+            assert await rt.list_available_models() is None
+        assert rt.cached_models() == [m.id for m in CURATED_MODELS]
+
     def test_aider_stream_reader_drain_timeout_defaults_to_none(self) -> None:
         from sova.ipc.runtime import AiderRuntime
 
