@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 from sova.core.context import ExecutionContext
-from sova.core.planning import PlannedTask
+from sova.core.planning import PLANNER_PRIORITY_CHOICES, PlannedTask
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
@@ -28,7 +28,7 @@ For each task, provide:
 - "title": string (use conventional commit prefix, e.g. "feat(dashboard): ...")
 - "body": string (full issue body in markdown with Acceptance Criteria section including checkboxes)
 - "labels": list of strings (type:, priority:, area: labels)
-- "priority": "critical" | "high" | "medium" | "low"
+- "priority": {priority_levels}
 - "complexity": "small" | "medium" | "large" | "xlarge"
 - "rationale": string (why this task matters, 1-2 sentences)
 
@@ -108,7 +108,10 @@ class GenerateTasksStep(BaseStep):
         if ctx.is_budget_exceeded:
             return StepResult(success=False, summary="Budget exceeded", error="Budget limit reached")
 
-        prompt = _GENERATE_PROMPT.format(scan_summary=ctx.plan_result.scan.raw_summary)
+        prompt = _GENERATE_PROMPT.format(
+            scan_summary=ctx.plan_result.scan.raw_summary,
+            priority_levels=" | ".join(f'"{level}"' for level in PLANNER_PRIORITY_CHOICES),
+        )
 
         try:
             from sova.llm.client import invoke
