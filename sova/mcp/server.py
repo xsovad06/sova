@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from sova.mcp.tools import register_tools
 
 
-def create_server(*, project_dir: Path | None = None) -> FastMCP:
+def create_server(*, project_dir: Path | None = None) -> MCPServer:
     """Create and configure the SOVA MCP server.
 
     Args:
@@ -17,9 +17,9 @@ def create_server(*, project_dir: Path | None = None) -> FastMCP:
             directory and path-traversal protection is enabled.
 
     Returns:
-        A FastMCP server instance with all SOVA tools registered.
+        An MCPServer instance with all SOVA tools registered.
     """
-    server = FastMCP(
+    server = MCPServer(
         name="sova",
         instructions=(
             "SOVA (Software Orchestration Via Agents) provides tools for "
