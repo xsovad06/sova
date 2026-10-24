@@ -120,4 +120,9 @@ async def propose_issue(req: ProposeIssueRequest) -> dict[str, object]:
         log.warning("propose_issue.create_failed", error=error_msg, exc_info=True)
         return {"ok": False, "error": error_msg}
 
-    return {"ok": True, "issue_number": int(task.id), "issue_url": task.url}
+    return {
+        "ok": True,
+        "issue_number": int(task.id),
+        "issue_url": task.url,
+        "dropped_labels": task.metadata.get("dropped_labels", []),
+    }

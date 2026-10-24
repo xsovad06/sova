@@ -37,7 +37,7 @@ Review your assigned GitHub Issues, prioritize them, and manage your sprint queu
    - What needs refinement before starting
 
 5. **If the user wants to re-prioritize**:
-   - Add/remove labels: `gh issue edit <NUMBER> --add-label "priority:high"`
+   - Add/remove labels: `gh issue edit <NUMBER> --add-label "priority: high"`
    - Unassign to defer: `gh issue edit <NUMBER> --remove-assignee @me`
 
 6. **If `$ARGUMENTS` contains an issue number**, fetch its details with `gh issue view <NUMBER>` and provide a deeper analysis.

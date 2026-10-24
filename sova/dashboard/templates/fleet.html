@@ -114,6 +114,7 @@
         <p class="text-sm text-gray-400 mb-2">Issue created successfully</p>
         <a id="propose-issue-link" href="#" target="_blank" rel="noopener"
            class="text-accent hover:underline text-sm"></a>
+        <p id="propose-dropped-labels" class="hidden text-xs text-accent-yellow mt-2"></p>
       </div>
     </div>
     <div class="px-6 py-4 border-t border-gray-700/50 flex justify-end gap-3">
@@ -325,6 +326,7 @@ async function openProposeDraft(stepName) {
   document.getElementById('propose-title').value = '';
   document.getElementById('propose-body').value = '';
   document.getElementById('propose-labels').innerHTML = '';
+  document.getElementById('propose-dropped-labels').classList.add('hidden');
   modal.classList.remove('hidden');
 
   try {
@@ -390,6 +392,12 @@ async function submitProposal() {
     link.textContent = result.issue_url;
     successEl.classList.remove('hidden');
     submitBtn.classList.add('hidden');
+
+    const droppedEl = document.getElementById('propose-dropped-labels');
+    if (result.dropped_labels && result.dropped_labels.length) {
+      droppedEl.textContent = 'Label(s) not applied: ' + result.dropped_labels.join(', ');
+      droppedEl.classList.remove('hidden');
+    }
   } catch (err) {
     errorEl.textContent = 'Request failed: ' + err.message;
     errorEl.classList.remove('hidden');

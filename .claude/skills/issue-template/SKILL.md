@@ -158,13 +158,18 @@ Title: imperative and specific, with no issue number and no type prefix.
 SOVA's label taxonomy:
 
 - `type:` one of `feature`, `task`, `infra`, `bug`, `epic`
-- `priority:` one of `critical`, `high`, `medium`, `low`
+- `priority:` one of `blocker`, `critical`, `high`, `medium`, `low`,
+  `undefined` (see `sova.adapters.priority.Priority`); `blocker` means
+  blocks all other work, not merely critical
 - `area:` one of `agent`, `dashboard`, `commands`, `personas`, `invariants`,
   `knowledge`, `docs`
 - `agent:` applied by the pipeline, not by hand, except `agent:human-only`
 
-Apply `type:` and `area:` on creation and `priority:` when it is known. Leave
-`agent:` labels to triage. A multi-issue tracking container gets
-`type: epic` plus `agent:human-only`: epics are excluded from
-`get_ready_tasks()`, skipped by the dependency gate, and closed automatically
-once every child reaches DONE.
+Apply `type:` and `area:` on creation, always with a `priority:` label: the
+real level when known, `priority: undefined` otherwise (an issue created
+through the dashboard or oversight agent gets `priority: undefined` applied
+automatically when none is given; `gh issue create` does not, so apply it by
+hand here to keep both creation paths consistent). Leave `agent:` labels to
+triage. A multi-issue tracking container gets `type: epic` plus
+`agent:human-only`: epics are excluded from `get_ready_tasks()`, skipped by
+the dependency gate, and closed automatically once every child reaches DONE.

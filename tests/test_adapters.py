@@ -10,6 +10,7 @@ import pytest
 
 from sova.adapters.base import Milestone, Task, TaskAdapter, TaskFilters, TaskState
 from sova.adapters.github import _STATE_LABELS, _STATE_TO_BOARD_NAMES, GitHubAdapter, _parse_issue
+from sova.adapters.priority import Priority
 from sova.config.models import _VALID_TASK_STATES
 
 # ---------------------------------------------------------------------------
@@ -911,6 +912,30 @@ class TestGitHubAdapter:
         state = await self.adapter.get_state("42")
         assert state == TaskState.BACKLOG
 
+    def test_parse_issue_sets_priority_from_label(self) -> None:
+        task = _parse_issue(
+            {
+                "number": 591,
+                "title": "Blocking issue",
+                "state": "OPEN",
+                "labels": [{"name": "priority: blocker"}],
+                "url": "https://github.com/example/repo/issues/591",
+            }
+        )
+        assert task.priority == Priority.BLOCKER
+
+    def test_parse_issue_defaults_priority_to_undefined(self) -> None:
+        task = _parse_issue(
+            {
+                "number": 592,
+                "title": "No priority label",
+                "state": "OPEN",
+                "labels": [],
+                "url": "https://github.com/example/repo/issues/592",
+            }
+        )
+        assert task.priority == Priority.UNDEFINED
+
     def test_merged_pr_dependency_is_done_despite_stale_label(self) -> None:
         task = _parse_issue(
             {
@@ -950,9 +975,11 @@ class TestGitHubAdapter:
             }
         )
         # First call: gh issue create returns the issue URL
-        # Second call: gh issue view returns full JSON
+        # Second call: gh issue edit --add-label for the default priority label
+        # Third call: gh issue view returns full JSON
         mock_run.side_effect = [
             _shell_result(stdout="https://github.com/user/repo/issues/99\n"),
+            _shell_result(),
             _shell_result(stdout=view_json),
         ]
 
@@ -966,13 +993,320 @@ class TestGitHubAdapter:
         assert "--title" in create_args
         assert "New issue" in create_args
         assert "--label" in create_args
-        assert "bug" in create_args
+        # The default priority label is never part of the create call: `gh issue
+        # create` aborts the whole creation on any label the repo doesn't
+        # already have, so it is applied afterward via the tolerant add-label path.
+        label_arg = create_args[create_args.index("--label") + 1]
+        assert label_arg.split(",") == ["bug"]
+        add_label_args = mock_run.call_args_list[1][0]
+        assert "--add-label" in add_label_args
+        assert "priority: undefined" in add_label_args
+
+    async def test_create_issue_with_explicit_priority_label_skips_default(self, mock_run: AsyncMock) -> None:
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [{"name": "priority: high"}],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),
+            _shell_result(stdout=view_json),
+        ]
+
+        await self.adapter.create_issue("New issue", "", ["priority: high"])
+
+        # No default-label add-label call: only create + view.
+        assert mock_run.call_count == 2
+
+    async def test_create_issue_with_missing_explicit_label_auto_creates_and_retries(self, mock_run: AsyncMock) -> None:
+        """An explicit caller-supplied label (e.g. 'priority: blocker', 'area: x')
+        that doesn't exist on the repo yet must not abort the whole creation:
+        gh issue create aborts on the first unknown label, so the adapter
+        auto-creates it and retries the create call, mirroring _add_label()'s
+        own not-found retry fallback.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [{"name": "priority: blocker"}],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="could not add label: 'priority: blocker' not found"),
+            _shell_result(),  # label create succeeds
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),  # retried create succeeds
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "", ["priority: blocker"])
+
+        assert task.id == "99"
+        assert mock_run.call_count == 4
+        label_create_args = mock_run.call_args_list[1][0]
+        assert "label" in label_create_args
+        assert "create" in label_create_args
+        assert "priority: blocker" in label_create_args
+
+    async def test_create_issue_missing_label_match_is_exact_not_substring(self, mock_run: AsyncMock) -> None:
+        """When one supplied label is a substring of another (e.g. 'high' and
+        'priority: high'), the retry must create the label gh actually
+        reported, not whichever one happens to match first in caller order.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [{"name": "priority: high"}],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="could not add label: 'priority: high' not found"),
+            _shell_result(),  # label create succeeds
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),  # retried create succeeds
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "", ["high", "priority: high"])
+
+        assert task.id == "99"
+        label_create_args = mock_run.call_args_list[1][0]
+        assert "priority: high" in label_create_args
+        assert "high" not in label_create_args
+
+    async def test_create_issue_unknown_label_dropped_instead_of_created(self, mock_run: AsyncMock) -> None:
+        """A label outside SOVA's own taxonomy (e.g. a planner free-text
+        component) must never be minted on the repo: it is dropped from the
+        retry and the issue is still created with the surviving labels.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="could not add label: 'area: made-up-component' not found"),
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),  # retried create, label dropped
+            _shell_result(),  # default priority label add-label succeeds
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "", ["area: made-up-component"])
+
+        assert task.id == "99"
+        assert mock_run.call_count == 4
+        for call in mock_run.call_args_list:
+            args = call[0]
+            assert not ("label" in args and "create" in args), f"unexpected label create call: {args}"
+
+    async def test_create_issue_label_auto_create_failure_surfaces_original_error(self, mock_run: AsyncMock) -> None:
+        """A _create_label() failure during the retry (e.g. no write access)
+        must not mask the original gh issue create error.
+        """
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="could not add label: 'priority: blocker' not found"),
+            _shell_result(returncode=1, stderr="Permission denied"),  # label create fails
+        ]
+
+        with pytest.raises(RuntimeError, match="Failed to create issue"):
+            await self.adapter.create_issue("New issue", "", ["priority: blocker"])
+
+    async def test_create_issue_default_priority_label_missing_on_repo(self, mock_run: AsyncMock) -> None:
+        """The repo may not yet have the 'priority: undefined' label (e.g. an
+        existing install that predates the new taxonomy). The add-label call
+        must auto-create it rather than losing the issue.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),
+            _shell_result(returncode=1, stderr="label 'priority: undefined' not found"),
+            _shell_result(),  # label create succeeds
+            _shell_result(),  # retry add-label succeeds
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "", [])
+
+        assert task.id == "99"
+        assert mock_run.call_count == 5
+
+    async def test_create_issue_default_priority_label_failure_does_not_lose_issue(self, mock_run: AsyncMock) -> None:
+        """A persistent failure to apply the default priority label must not
+        abort issue creation: the issue itself already exists on the tracker.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),
+            _shell_result(returncode=1, stderr="Network timeout"),
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "", [])
+
+        assert task.id == "99"
 
     async def test_create_issue_failure_raises(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(returncode=1, stderr="Permission denied")
 
         with pytest.raises(RuntimeError, match="Failed to create issue"):
             await self.adapter.create_issue("Test", "body")
+
+    def test_build_create_issue_args_uses_one_flag_per_label(self) -> None:
+        """gh (cobra StringSlice) re-splits a comma-joined --label value on
+        commas, so a label containing a comma (e.g. the planner's free-text
+        component) must never be joined into one flag with the others.
+        """
+        args = self.adapter._build_create_issue_args("Title", "", ["area: dashboard, cli", "priority: high"])
+
+        assert args.count("--label") == 2
+        assert "area: dashboard, cli" in args
+        assert "priority: high" in args
+
+    async def test_create_issue_skips_retry_when_issue_already_created(self, mock_run: AsyncMock) -> None:
+        """A failed create whose stdout already carries an issue URL means gh
+        created the issue and only failed resolving a label afterward. Retrying
+        would create a second, orphaned issue.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [{"name": "priority: blocker"}],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(
+                returncode=1,
+                stdout="https://github.com/user/repo/issues/99\n",
+                stderr="could not add label: 'priority: blocker' not found",
+            ),
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "", ["priority: blocker"])
+
+        assert task.id == "99"
+        assert mock_run.call_count == 2
+        # Only one `gh issue create` call: no retry despite the label error.
+        create_calls = [c for c in mock_run.call_args_list if "create" in c[0] and "issue" in c[0]]
+        assert len(create_calls) == 1
+
+    async def test_create_issue_default_applies_when_requested_priority_label_dropped(
+        self, mock_run: AsyncMock
+    ) -> None:
+        """The default-priority check must read the labels the issue actually
+        ended up with, not the originally requested ones: a priority-prefixed
+        label that gets dropped as unknown (e.g. an unrecognized value) must
+        not be mistaken for an existing priority.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="could not add label: 'priority: urgent' not found"),
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),  # retried create, label dropped
+            _shell_result(),  # default priority label add-label
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "", ["priority: urgent"])
+
+        assert task.id == "99"
+        assert task.metadata["dropped_labels"] == ["priority: urgent"]
+        add_label_args = mock_run.call_args_list[2][0]
+        assert "--add-label" in add_label_args
+        assert "priority: undefined" in add_label_args
+
+    async def test_create_label_uses_catalog_color_and_description(self, mock_run: AsyncMock) -> None:
+        """An auto-created label must reuse the catalog's own color and
+        description, so it looks identical to one created via the settings
+        page instead of permanently grey with no description.
+        """
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "",
+                "state": "OPEN",
+                "labels": [{"name": "priority: blocker"}],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="could not add label: 'priority: blocker' not found"),
+            _shell_result(),  # label create succeeds
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),  # retried create succeeds
+            _shell_result(stdout=view_json),
+        ]
+
+        await self.adapter.create_issue("New issue", "", ["priority: blocker"])
+
+        label_create_args = mock_run.call_args_list[1][0]
+        assert "--color" in label_create_args
+        assert "5319e7" in label_create_args
+        assert "Blocks all other work" in label_create_args
 
     # get_available_transitions
 

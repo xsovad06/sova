@@ -328,6 +328,32 @@ class TestAdapterEgressIntegration:
             with pytest.raises(RuntimeError, match="Egress filter blocked issue body"):
                 await mock_adapter.create_issue("Clean title", body="password=hunter2abc")
 
+    @pytest.mark.asyncio
+    async def test_create_issue_does_not_inject_default_priority_label(self, mock_adapter: AsyncMock) -> None:
+        """The shared template method passes labels through unchanged: default-priority
+        injection is GitHub-specific (GitHubAdapter._do_create_issue(), applied after
+        creation via the tolerant add-label path) since Jira rejects space-containing
+        labels and `gh issue create` aborts on a label the repo doesn't already have.
+        See tests/test_adapters.py for the GitHub-specific coverage.
+        """
+        from sova.adapters.base import Task
+
+        mock_adapter._do_create_issue.return_value = Task(id="1", title="Test")
+        with patch("sova.adapters.base._get_egress_mode", return_value="warn"):
+            await mock_adapter.create_issue("New task", labels=["bug"])
+            call_labels = mock_adapter._do_create_issue.call_args[0][2]
+            assert call_labels == ["bug"]
+
+    @pytest.mark.asyncio
+    async def test_create_issue_does_not_duplicate_existing_priority_label(self, mock_adapter: AsyncMock) -> None:
+        from sova.adapters.base import Task
+
+        mock_adapter._do_create_issue.return_value = Task(id="1", title="Test")
+        with patch("sova.adapters.base._get_egress_mode", return_value="warn"):
+            await mock_adapter.create_issue("New task", labels=["priority: high"])
+            call_labels = mock_adapter._do_create_issue.call_args[0][2]
+            assert call_labels == ["priority: high"]
+
 
 # ---------------------------------------------------------------------------
 # _get_egress_mode caching

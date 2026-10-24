@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 
 from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.label_catalog import LABEL_CATALOG, REQUIRED_LABELS
+from sova.adapters.priority import Priority
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run
@@ -16,6 +19,19 @@ log = get_logger(component="adapter.github")
 _COL_TODO = "to do"  # with space; "todo" (no space) is a separate board column name
 _COL_BACKLOG = "backlog"
 _COL_READY = "ready"
+
+# Labels the not-found retry in `_do_create_issue()` is permitted to mint on
+# the repo: SOVA's own priority levels plus the settings page's required
+# taxonomy. Anything else (e.g. the planner's free-text `area: <component>`)
+# is dropped from the retry instead of being created, since the repo's label
+# set must never be mutated by unvalidated caller-supplied text.
+_AUTO_CREATABLE_LABELS: frozenset[str] = frozenset(
+    {p.github_label for p in Priority} | {label["name"] for label in REQUIRED_LABELS}
+)
+
+# Matches the label name gh reports as missing, e.g. "label 'X' not found" or
+# "could not add label: 'X' not found".
+_LABEL_NOT_FOUND_RE = re.compile(r"'([^']+)' not found", re.IGNORECASE)
 
 # Maps TaskState to the GitHub label used to represent it.
 _STATE_LABELS: dict[TaskState, str] = {
@@ -463,14 +479,7 @@ class GitHubAdapter(TaskAdapter):
             if c.get("body")
         ]
 
-    async def _do_create_issue(
-        self,
-        title: str,
-        body: str = "",
-        labels: list[str] | None = None,
-        issue_type: str = "",
-        parent_key: str = "",
-    ) -> Task:
+    def _build_create_issue_args(self, title: str, body: str, labels: list[str]) -> list[str]:
         args = [
             "issue",
             "create",
@@ -481,11 +490,73 @@ class GitHubAdapter(TaskAdapter):
         ]
         if body:
             args.extend(["--body", body])
-        if labels:
-            args.extend(["--label", ",".join(labels)])
+        for label in labels:
+            # One --label flag per label, never a comma-joined value: gh's
+            # StringSlice flag re-splits a joined value on commas, so a label
+            # containing a comma (e.g. the planner's free-text component)
+            # would silently become two labels gh never received as written.
+            args.extend(["--label", label])
+        return args
 
+    async def _do_create_issue(
+        self,
+        title: str,
+        body: str = "",
+        labels: list[str] | None = None,
+        issue_type: str = "",
+        parent_key: str = "",
+    ) -> Task:
+        labels = labels or []
+        applied = list(labels)
+        dropped: list[str] = []
+        args = self._build_create_issue_args(title, body, applied)
         result = await self._gh(*args)
-        if not result.success:
+        # A failed create whose stdout already carries an issue URL means gh
+        # created the issue and only failed resolving a label afterwards (the
+        # "could not add label" stderr reads like a post-creation failure,
+        # not a create-time abort). Retrying in that case would create a
+        # second, orphaned issue and return the wrong one, so the retry loop
+        # below only runs when there is no URL to fall through to.
+        already_created = result.stdout.strip().startswith("https://github.com/")
+        if not result.success and applied and not already_created:
+            # gh issue create resolves every label before creating and aborts
+            # the whole creation on the first one the repo doesn't already have
+            # (e.g. a caller-supplied 'priority: blocker' label that predates
+            # this repo's label set). Auto-create the missing label and retry
+            # if it's one SOVA owns; otherwise drop it from the retry rather
+            # than minting unvalidated caller-supplied text (e.g. the
+            # planner's free-text component) as a permanent repo label.
+            # Bounded by len(labels) so a persistent unrelated failure cannot
+            # loop forever.
+            attempted: set[str] = set()
+            for _ in labels:
+                match = _LABEL_NOT_FOUND_RE.search(result.stderr)
+                if match is None:
+                    break
+                reported = match.group(1)
+                missing = next(
+                    (lbl for lbl in applied if lbl.lower() == reported.lower() and lbl not in attempted),
+                    None,
+                )
+                if missing is None:
+                    break
+                attempted.add(missing)
+                if missing in _AUTO_CREATABLE_LABELS:
+                    try:
+                        await self._create_label(missing)
+                    except RuntimeError:
+                        log.warning("create_issue.label_auto_create_failed", label=missing, exc_info=True)
+                        break
+                else:
+                    log.warning("create_issue.unknown_label_dropped", label=missing, repo=self.repo)
+                    applied.remove(missing)
+                    dropped.append(missing)
+                args = self._build_create_issue_args(title, body, applied)
+                result = await self._gh(*args)
+                if result.success:
+                    break
+
+        if not result.success and not already_created:
             raise RuntimeError(f"Failed to create issue: {result.stderr[:200]}")
 
         # gh issue create outputs the issue URL; extract the number and fetch full details.
@@ -495,7 +566,25 @@ class GitHubAdapter(TaskAdapter):
         issue_number = url.rstrip("/").split("/")[-1]
         if not issue_number.isdigit():
             raise RuntimeError(f"Failed to parse issue number from URL: {url!r}")
-        return await self.get_task(issue_number)
+
+        if not Priority.has_label(applied):
+            # Checked against `applied` (the labels the issue actually ended up
+            # with), not the originally requested `labels`: the retry loop above
+            # can drop a priority-prefixed label that was never recognized or
+            # was removed as unknown, in which case a default must still apply.
+            # Applied after creation, through the tolerant _add_label path (which
+            # auto-creates the label if the repo doesn't have it yet), rather than
+            # passed to `gh issue create --label`, which aborts the whole creation
+            # on any label the repo doesn't already have.
+            try:
+                await self._add_label(issue_number, Priority.UNDEFINED.github_label)
+            except Exception:  # noqa: BLE001 (the issue already exists; a label failure must not lose it)
+                log.warning("create_issue.default_priority_label_failed", issue=issue_number, exc_info=True)
+
+        task = await self.get_task(issue_number)
+        if dropped:
+            task.metadata["dropped_labels"] = dropped
+        return task
 
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
         # GitHub uses labels for state, not workflow transitions.
@@ -638,6 +727,12 @@ class GitHubAdapter(TaskAdapter):
         creator (or a human) set.
         """
         log.info("label.auto_create", label=label, repo=self.repo)
+        # Minted labels reuse the catalog's own color/description when this is
+        # a catalog-owned name, so a label this path auto-creates (e.g. the
+        # first time the planner picks a priority or area not yet on the
+        # repo) looks identical to one created via the settings page, rather
+        # than permanently grey with no description.
+        catalog_entry = LABEL_CATALOG.get(label, {})
         create = await self._gh(
             "label",
             "create",
@@ -645,9 +740,9 @@ class GitHubAdapter(TaskAdapter):
             "--repo",
             self.repo,
             "--description",
-            "",
+            catalog_entry.get("description", ""),
             "--color",
-            "ededed",
+            catalog_entry.get("color", "ededed"),
         )
         if create.success:
             return
@@ -931,4 +1026,5 @@ def _parse_issue(data: dict) -> Task:
         url=data.get("url", ""),
         milestone=milestone,
         metadata=metadata,
+        priority=Priority.from_labels(labels),
     )

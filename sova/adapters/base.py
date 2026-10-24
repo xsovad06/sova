@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from sova.adapters.priority import Priority
 from sova.llm.egress import EgressMode, filter_egress
 from sova.utils.logging import get_logger
 
@@ -55,6 +56,7 @@ class Task:
     sprint: str = ""
     components: list[str] = field(default_factory=list)
     fix_versions: list[str] = field(default_factory=list)
+    priority: Priority = Priority.UNDEFINED
 
 
 @dataclass

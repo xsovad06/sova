@@ -14,6 +14,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
+from sova.adapters.label_catalog import AREA_CHOICES
+from sova.adapters.priority import Priority
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services import control_service
@@ -222,7 +224,8 @@ class RunCommandRequest(BaseModel):
 class PlannedTaskRequest(BaseModel):
     title: str
     description: str = ""
-    labels: list[str] | None = None
+    component: str = ""
+    priority: str = ""
 
 
 class CreateIssuesRequest(BaseModel):
@@ -232,6 +235,30 @@ class CreateIssuesRequest(BaseModel):
 class DismissInterruptedRequest(BaseModel):
     run_ids: list[int] = Field(min_length=1, max_length=100)
     superseded_by_relaunch: bool = False
+
+
+def _planner_task_labels(task: PlannedTaskRequest, *, is_github: bool) -> list[str] | None:
+    """Build tracker-specific labels for a planner-proposed task.
+
+    GitHub-style 'area: x' / 'priority: y' labels contain spaces Jira
+    rejects outright, and Jira derives priority from its own native field,
+    so only a GitHub-backed project gets labels built here at all.
+    """
+    if not is_github:
+        return None
+    labels = []
+    if task.component:
+        component = task.component.strip().lower()
+        if component in AREA_CHOICES:
+            labels.append(f"area: {component}")
+        else:
+            log.warning("planner.unknown_component", component=task.component)
+    if task.priority:
+        try:
+            labels.append(Priority(task.priority.strip().lower()).github_label)
+        except ValueError:
+            log.warning("planner.unknown_priority", priority=task.priority)
+    return labels or None
 
 
 @router.post("/agents/planner/create-issues")
@@ -247,6 +274,7 @@ async def create_planner_issues(req: CreateIssuesRequest) -> dict:
     project_dir = get_project_dir()
     cfg = load_config(project_dir)
     adapter = create_adapter(cfg)
+    is_github = cfg.task_source.type == "github"
 
     sem = asyncio.Semaphore(4)
 
@@ -256,15 +284,22 @@ async def create_planner_issues(req: CreateIssuesRequest) -> dict:
                 result = await adapter.create_issue(
                     title=task.title,
                     body=task.description,
-                    labels=task.labels,
+                    labels=_planner_task_labels(task, is_github=is_github),
                 )
-            return {"ok": True, "number": result.id, "title": result.title}
+            return {
+                "ok": True,
+                "number": result.id,
+                "title": result.title,
+                "dropped_labels": result.metadata.get("dropped_labels", []),
+            }
         except Exception as exc:  # noqa: BLE001 (one failed issue must not abort the rest of the batch)
             log.warning("planner.create_issue_failed", title=task.title, error=str(exc), exc_info=True)
             return {"ok": False, "title": task.title, "error": str(exc)}
 
     results = await asyncio.gather(*[_create_one(t) for t in req.tasks])
-    created = [{"number": r["number"], "title": r["title"]} for r in results if r["ok"]]
+    created = [
+        {"number": r["number"], "title": r["title"], "dropped_labels": r["dropped_labels"]} for r in results if r["ok"]
+    ]
     errors = [{"title": r["title"], "error": r["error"]} for r in results if not r["ok"]]
 
     return {"created": created, "errors": errors}

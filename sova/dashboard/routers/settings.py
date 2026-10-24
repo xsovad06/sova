@@ -11,6 +11,7 @@ from typing import Protocol
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from sova.adapters.label_catalog import REQUIRED_LABELS as _REQUIRED_LABELS
 from sova.config.models import ProjectConfig
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.security import require_same_origin_csrf
@@ -82,43 +83,6 @@ _MAX_ERROR_MESSAGE_LENGTH = 200
 
 # Concurrency limit for parallel label creation requests
 _LABEL_CREATE_CONCURRENCY = 5
-
-# SOVA required labels with their colors (GitHub format)
-_REQUIRED_LABELS = [
-    # Type labels
-    {"name": "type: feature", "color": "a2eeef", "description": "New feature or request"},
-    {"name": "type: task", "color": "d4c5f9", "description": "General task"},
-    {"name": "type: infra", "color": "0e8a16", "description": "Infrastructure or tooling"},
-    {"name": "type: bug", "color": "d73a4a", "description": "Something isn't working"},
-    {"name": "type: epic", "color": "bfd4f2", "description": "Multi-issue tracking container"},
-    # Priority labels
-    {"name": "priority: critical", "color": "b60205", "description": "Critical priority"},
-    {"name": "priority: high", "color": "d93f0b", "description": "High priority"},
-    {"name": "priority: medium", "color": "fbca04", "description": "Medium priority"},
-    {"name": "priority: low", "color": "0e8a16", "description": "Low priority"},
-    # Area labels
-    {"name": "area: agent", "color": "c5def5", "description": "Agent core and roles"},
-    {"name": "area: dashboard", "color": "c5def5", "description": "Web UI"},
-    {"name": "area: commands", "color": "c5def5", "description": "Claude Code commands"},
-    {"name": "area: personas", "color": "c5def5", "description": "Persona guidance files"},
-    {"name": "area: invariants", "color": "c5def5", "description": "Pre-push checks"},
-    {"name": "area: knowledge", "color": "c5def5", "description": "Knowledge system"},
-    {"name": "area: docs", "color": "c5def5", "description": "Documentation"},
-    # Agent state labels
-    {"name": "agent:triaged", "color": "ededed", "description": "Triaged by agent"},
-    {"name": "agent:researched", "color": "ededed", "description": "Research complete"},
-    {"name": "agent:ready", "color": "ededed", "description": "Ready for development"},
-    {"name": "agent:in-progress", "color": "ededed", "description": "Agent working"},
-    {"name": "agent:in-review", "color": "ededed", "description": "Under review"},
-    {"name": "agent:needs-spec", "color": "ededed", "description": "Needs specification"},
-    {"name": "agent:needs-research", "color": "ededed", "description": "Needs research"},
-    {"name": "agent:human-only", "color": "ededed", "description": "Human intervention required"},
-    {"name": "agent:interactive-recommended", "color": "ededed", "description": "Manual start only"},
-    # SOVA review verdict labels
-    {"name": "sova:approved", "color": "0e8a16", "description": "SOVA review approved"},
-    {"name": "sova:revise", "color": "fbca04", "description": "SOVA review requests changes"},
-    {"name": "sova:block", "color": "d73a4a", "description": "SOVA review blocks merge"},
-]
 
 
 def _extract_validation_detail(exc: Exception) -> str:
