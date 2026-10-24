@@ -1068,7 +1068,12 @@ def _setup_single_project(
     # Page routes
     @app.get("/")
     async def home(request: Request) -> RedirectResponse:
-        return RedirectResponse(url="/dashboard")
+        # Non-permanent: unlike /dashboard and /overview below, "/" is a real
+        # route in multi-project mode too (the Fleet Manager home page), and
+        # the mode is re-detected on every launch. A cached 301 here would
+        # keep sending a browser to "/agents" after a restart into
+        # multi-project mode, where bare "/agents" is never registered.
+        return RedirectResponse(url=_AGENTS_URL, status_code=307)
 
     _register_page_routes(app, templates)
     _register_api_routers(app, prefix="/api")
@@ -1150,15 +1155,15 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     # Project-scoped page routes (new)
     @app.get("/p/{slug}")
     async def project_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/dashboard")
+        # Non-permanent like "/" above: this is the live project entry point
+        # (home.html and base.html's sidebar logo both link here), not a
+        # retired URL, so a cached 301 would survive any later change to
+        # what this route redirects to.
+        return RedirectResponse(url=f"/p/{slug}/agents", status_code=307)
 
     @app.get("/p/{slug}/briefing")
     async def project_briefing(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "briefing.html", "briefing"))
-
-    @app.get("/p/{slug}/dashboard")
-    async def project_dashboard(request: Request, slug: str) -> Response:
-        return _with_csrf_cookie(request, _project_page(request, templates, slug, "dashboard.html", "dashboard"))
 
     @app.get("/p/{slug}/agents")
     async def project_agents(request: Request, slug: str) -> Response:
@@ -1178,9 +1183,13 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         )
 
     # Old routes as redirects
+    @app.get("/p/{slug}/dashboard")
+    async def project_dashboard_redirect(slug: str) -> RedirectResponse:
+        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+
     @app.get("/p/{slug}/overview")
     async def project_overview_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/dashboard", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
     @app.get("/p/{slug}/control")
     async def project_control_redirect(slug: str) -> RedirectResponse:
@@ -1342,10 +1351,6 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def briefing_page(request: Request) -> Response:
         return _with_csrf_cookie(request, templates.TemplateResponse(request, "briefing.html", {"page": "briefing"}))
 
-    @app.get("/dashboard")
-    async def dashboard_page(request: Request) -> Response:
-        return _with_csrf_cookie(request, templates.TemplateResponse(request, "dashboard.html", {"page": "dashboard"}))
-
     @app.get("/agents")
     async def agents_page(request: Request) -> Response:
         return _with_csrf_cookie(
@@ -1364,9 +1369,13 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         )
 
     # Old pages kept as redirects
+    @app.get("/dashboard")
+    async def dashboard_redirect() -> RedirectResponse:
+        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+
     @app.get("/overview")
     async def overview_redirect() -> RedirectResponse:
-        return RedirectResponse(url="/dashboard", status_code=301)
+        return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/control")
     async def control_redirect() -> RedirectResponse:

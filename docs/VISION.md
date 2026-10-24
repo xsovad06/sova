@@ -144,8 +144,7 @@ FastAPI web UI with Catppuccin dark theme, Tailwind CSS, and SVG icon system.
 
 ### Pages (14 active)
 - **Home**: project list (command center) for multi-project installations
-- **Dashboard**: overview with agent strip, pipeline progress, recent activity
-- **Agents**: multi-agent control panel (start/stop, status, handoff actions)
+- **Agents**: multi-agent control panel (start/stop, status, handoff actions, task browser, cost/completion stats)
 - **Work**: issue-centric view linking issues to their TaskRuns and lifecycle
 - **Run Detail**: per-run step pipeline, logs, cost breakdown
 - **Lifecycle**: issue lifecycle rail (development -> post_pr -> review -> address_review -> integrate -> post_merge)

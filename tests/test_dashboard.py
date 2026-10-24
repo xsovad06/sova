@@ -347,15 +347,15 @@ class TestDashboardHealth:
         assert resp.status_code == 200
         assert resp.json()["checks"]["scheduler"] == "ok"
 
-    async def test_root_redirects_to_dashboard(self, client: AsyncClient) -> None:
+    async def test_root_redirects_to_agents(self, client: AsyncClient) -> None:
         resp = await client.get("/", follow_redirects=False)
         assert resp.status_code == 307
-        assert resp.headers["location"] == "/dashboard"
+        assert resp.headers["location"] == "/agents"
 
-    async def test_dashboard_page_loads(self, client: AsyncClient) -> None:
-        resp = await client.get("/dashboard")
-        assert resp.status_code == 200
-        assert "Dashboard" in resp.text
+    async def test_dashboard_redirects_to_agents(self, client: AsyncClient) -> None:
+        resp = await client.get("/dashboard", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/agents"
 
     async def test_agents_page_loads(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
@@ -397,10 +397,10 @@ class TestDashboardHealth:
         assert "cost-energy-detail" in body
         assert "cost-co2-detail" in body
 
-    async def test_overview_redirects_to_dashboard(self, client: AsyncClient) -> None:
+    async def test_overview_redirects_to_agents(self, client: AsyncClient) -> None:
         resp = await client.get("/overview", follow_redirects=False)
         assert resp.status_code == 301
-        assert resp.headers["location"] == "/dashboard"
+        assert resp.headers["location"] == "/agents"
 
     async def test_control_redirects_to_agents(self, client: AsyncClient) -> None:
         resp = await client.get("/control", follow_redirects=False)
@@ -630,6 +630,40 @@ class TestOverviewAPI:
         assert data["runs"]["failed"] == 1
         assert data["costs"]["total_cost_usd"] > 0
         assert data["memory_count"] == 1
+
+    async def test_overview_api_today_cost_includes_todays_run(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        # Anchored to datetime.now() rather than a fixed offset from it, so the
+        # assertion holds regardless of what time of day (UTC) the suite runs.
+        # A second run outside today's window exercises the today_start filter
+        # itself: without it, today_cost_usd would pass this test identically
+        # if the filter were dropped or the key swapped for total_cost_usd.
+        session.add(
+            TaskRun(
+                issue_number="99",
+                role="developer",
+                status="done",
+                total_cost_usd=Decimal("3.00"),
+                started_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            TaskRun(
+                issue_number="100",
+                role="developer",
+                status="done",
+                total_cost_usd=Decimal("7.00"),
+                started_at=datetime.now(timezone.utc) - timedelta(days=3),
+            )
+        )
+        await session.commit()
+
+        resp = await client.get("/api/overview")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert float(data["costs"]["today_cost_usd"]) == pytest.approx(3.0)
+        assert float(data["costs"]["total_cost_usd"]) == pytest.approx(10.0)
 
 
 # ---------------------------------------------------------------------------
@@ -3480,6 +3514,66 @@ class TestHandoffAPI:
         body = resp.text[idx : idx + 2000]
         assert "data-run-id=" in body
 
+    async def test_agents_page_has_stat_row(self, client: AsyncClient) -> None:
+        """The stat row absorbed the removed dashboard page's summary cards, so both the
+        markup and its poller must be present (source-level check, same pattern as above).
+        """
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        assert 'id="stat-today-cost"' in resp.text
+        assert 'id="stat-invocations"' in resp.text
+        assert 'id="stat-completion"' in resp.text
+        idx = resp.text.find("async function loadAgentsStatRow()")
+        assert idx != -1, "loadAgentsStatRow() not found in agents.html"
+        body = resp.text[idx : idx + 800]
+        assert "apiUrl('/overview')" in body
+        assert "visibilityAwarePoll(loadAgentsStatRow" in resp.text
+
+    async def test_agents_stat_row_clears_on_refresh_failure(self, client: AsyncClient) -> None:
+        """A failed poll must blank the stat row rather than leave the previous poll's
+        numbers on screen looking current (source-level check, same pattern as above).
+        """
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        idx = resp.text.find("async function loadAgentsStatRow()")
+        assert idx != -1, "loadAgentsStatRow() not found in agents.html"
+        body = resp.text[idx : idx + 1400]
+        catch_idx = body.find("} catch (e) {")
+        assert catch_idx != -1, "loadAgentsStatRow() has no catch block"
+        assert "_clearAgentsStatRow();" in body[catch_idx:], "catch block does not reset the stat row"
+
+        accents_idx = resp.text.find("var _STAT_ACCENTS")
+        assert accents_idx != -1, "_STAT_ACCENTS map not found in agents.html"
+        accents_body = resp.text[accents_idx : accents_idx + 400]
+        for stat_id in ("stat-today-cost", "stat-invocations", "stat-completion"):
+            assert stat_id in accents_body, f"{stat_id} not registered in _STAT_ACCENTS"
+
+        clear_idx = resp.text.find("function _clearAgentsStatRow()")
+        assert clear_idx != -1, "_clearAgentsStatRow() not found in agents.html"
+        clear_body = resp.text[clear_idx : clear_idx + 400]
+        # The failure marker must differ from the "--" pre-fetch placeholder
+        # (lines 18/23/28), or an operator cannot tell "data unavailable"
+        # from "still loading".
+        assert "'Error'" in clear_body
+        assert "text-red-400" in clear_body
+
+    async def test_agents_stat_row_restores_on_refresh_success(self, client: AsyncClient) -> None:
+        """A successful poll after a prior failure must restore the accent styling,
+        not leave the stat row permanently painted red (source-level check, same
+        pattern as above)."""
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        idx = resp.text.find("async function loadAgentsStatRow()")
+        assert idx != -1, "loadAgentsStatRow() not found in agents.html"
+        body = resp.text[idx : idx + 400]
+        assert "_restoreAgentsStatRow();" in body, "success path does not restore stat row styling"
+
+        restore_idx = resp.text.find("function _restoreAgentsStatRow()")
+        assert restore_idx != -1, "_restoreAgentsStatRow() not found in agents.html"
+        restore_body = resp.text[restore_idx : restore_idx + 400]
+        assert "text-red-400" in restore_body
+        assert "removeAttribute('data-tooltip')" in restore_body
+
     async def test_agents_page_has_kanban_view(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
         assert resp.status_code == 200
@@ -3761,12 +3855,17 @@ class TestMultiProject:
     async def test_project_redirect(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha", follow_redirects=False)
         assert resp.status_code == 307
-        assert resp.headers["location"] == "/p/alpha/dashboard"
+        assert resp.headers["location"] == "/p/alpha/agents"
 
-    async def test_project_dashboard(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/p/alpha/dashboard")
-        assert resp.status_code == 200
-        assert "Dashboard" in resp.text
+    async def test_project_dashboard_redirects_to_agents(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/dashboard", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/p/alpha/agents"
+
+    async def test_project_overview_redirects_to_agents(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/overview", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/p/alpha/agents"
 
     async def test_project_api(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha/api/overview")
