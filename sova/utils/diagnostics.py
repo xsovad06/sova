@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import platform
 import shutil
 import sys
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sova.utils.files import read_text_or_none
 from sova.utils.shell import ShellResult, check_git_identity, run
 
 if TYPE_CHECKING:
@@ -504,7 +506,49 @@ def _check_install_completeness(project_dir: Path) -> list[DiagnosticCheck]:
         detail = f"missing {', '.join(missing)}, run: sova install --update"
         checks.append(DiagnosticCheck("agent permissions", False, detail, False))
 
+    checks.append(_check_settings_hooks(claude_dir / "settings.json"))
+
     return checks
+
+
+def _check_settings_hooks(settings_path: Path) -> DiagnosticCheck:
+    """Flag hook entries that make Claude Code ignore the whole settings.json.
+
+    Every entry under a hook event must be ``{"matcher": ..., "hooks": [...]}``;
+    a single entry without a ``hooks`` list makes Claude Code drop the file,
+    permissions included. SOVA's RTK injection used to write its entry that
+    way, and ``sova install --update`` now rewrites it; any other entry needs a
+    hand edit.
+    """
+    name = "settings hooks"
+    if not settings_path.is_file():
+        return DiagnosticCheck(name, True, "no settings.json", False)
+
+    text = read_text_or_none(settings_path)
+    try:
+        data = json.loads(text) if text is not None else None
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict):
+        return DiagnosticCheck(name, False, "settings.json is unreadable or not a JSON object", False)
+
+    hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return DiagnosticCheck(name, False, '"hooks" in settings.json is not an object', False)
+
+    invalid_events = sorted(
+        event
+        for event, entries in hooks.items()
+        if not isinstance(entries, list)
+        or any(not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list) for entry in entries)
+    )
+    if invalid_events:
+        detail = (
+            f"entries without a hooks list under {', '.join(invalid_events)}, so Claude Code ignores the whole file;"
+            " run: sova install --update (fixes the RTK entry), edit any other entry by hand"
+        )
+        return DiagnosticCheck(name, False, detail, False)
+    return DiagnosticCheck(name, True, "matcher format", False)
 
 
 async def _check_database_schema(project_dir: Path) -> list[DiagnosticCheck]:
