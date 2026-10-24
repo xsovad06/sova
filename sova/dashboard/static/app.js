@@ -539,11 +539,14 @@ function sovaConfirm(message, options) {
    ============================================================ */
 
 function visibilityAwarePoll(fn, intervalMs) {
-  fn();
-  var state = { id: setInterval(fn, intervalMs) };
+  var state = { id: null };
+  if (!document.hidden) {
+    fn();
+    state.id = setInterval(fn, intervalMs);
+  }
   document.addEventListener('visibilitychange', function() {
+    clearInterval(state.id);
     if (document.hidden) {
-      clearInterval(state.id);
       state.id = null;
     } else {
       fn();
