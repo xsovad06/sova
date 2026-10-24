@@ -698,7 +698,7 @@ fix_timeout = 300
                     ]
 
                     # Call _invoke_fix directly to verify timeout is passed
-                    await step._invoke_fix(ctx, failed_checks, mock_invoke, mock_run)
+                    await step._invoke_fix(ctx, failed_checks, mock_invoke, mock_run, 1)
 
                     # Verify timeout was passed to invoke
                     assert mock_invoke.call_count == 1

@@ -1173,6 +1173,217 @@ class TestStopQuietlyShieldsCleanupFromCancellation:
             await _stop_quietly(_HangingProc(), runtime, cause="agent_dispatch_timeout")
 
 
+class TestTaskTypeModelCompatibilityFallback:
+    """Issue #780: a configured ``llm.routing[task_type]`` model the active runtime
+    cannot actually honour must fail open to the dev model, not crash or no-op."""
+
+    @staticmethod
+    def _cfg_with_route(task_type: str, model: str) -> ProjectConfig:
+        return ProjectConfig(llm=LLMConfig(routing={task_type: model}, resolve_tier_aliases=False))
+
+    @staticmethod
+    def _prepare_invocation_stub(cfg: ProjectConfig, model: str | None, timeout: float = 30.0):
+        return patch(
+            "sova.core.agent_dispatch.client.prepare_invocation",
+            new_callable=AsyncMock,
+            return_value=(cfg, model, timeout),
+        )
+
+    async def test_incompatible_route_falls_back_to_dev_model(self, tmp_path: Path) -> None:
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with patch.object(runtime, "_probe_models", AsyncMock(return_value=["claude-opus-5", "claude-sonnet-5"])):
+            await runtime.list_available_models()
+
+        cfg = self._cfg_with_route("validate", "ollama/qwen3")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "ollama/qwen3"),
+        ):
+            await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path)
+
+        assert runtime.spawn_calls[0]["model"] == "dev-model"
+
+    async def test_compatible_route_is_used_as_is(self, tmp_path: Path) -> None:
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with patch.object(
+            runtime, "_probe_models", AsyncMock(return_value=["claude-opus-5", "claude-haiku-4-5-20251001"])
+        ):
+            await runtime.list_available_models()
+
+        cfg = self._cfg_with_route("validate", "claude-haiku-4-5-20251001")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "claude-haiku-4-5-20251001"),
+        ):
+            result = await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path)
+
+        assert runtime.spawn_calls[0]["model"] == "claude-haiku-4-5-20251001"
+        # The authoritative signal ExecutionContext.add_usage() splits spend
+        # on (issue #780 review): a route that genuinely survived must be
+        # tagged.
+        assert result.routed_task_type_model == "claude-haiku-4-5-20251001"
+
+    async def test_incompatible_route_result_is_not_tagged_as_routed(self, tmp_path: Path) -> None:
+        """Issue #780 review: a route the runtime cannot honour falls back to the
+        dev model and must not be tagged as routed, or add_usage() would wrongly
+        split spend into its own CostRecord and a later attempt would record a
+        false escalation off a route that never actually ran."""
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with patch.object(runtime, "_probe_models", AsyncMock(return_value=["claude-opus-5", "claude-sonnet-5"])):
+            await runtime.list_available_models()
+
+        cfg = self._cfg_with_route("validate", "ollama/qwen3")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "ollama/qwen3"),
+        ):
+            result = await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path)
+
+        assert runtime.spawn_calls[0]["model"] == "dev-model"
+        assert result.routed_task_type_model is None
+
+    async def test_route_resolving_to_the_dev_model_verbatim_is_not_tagged_as_routed(self, tmp_path: Path) -> None:
+        """Issue #780 review: a route in the same family as agent.model collapses
+        (via sova.llm.routing._pin_to_configured_model) to the literal dev-model
+        string. Both attempts then run one model, so tagging this as routed would
+        split identical spend into two CostRecords under different spellings and
+        could record a false escalation."""
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with patch.object(runtime, "_probe_models", AsyncMock(return_value=["claude-opus-5"])):
+            await runtime.list_available_models()
+
+        cfg = self._cfg_with_route("validate", "opus")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "dev-model"),
+        ):
+            result = await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path)
+
+        assert runtime.spawn_calls[0]["model"] == "dev-model"
+        assert result.routed_task_type_model is None
+
+    async def test_no_cached_catalog_fails_open_and_uses_routed_model(self, tmp_path: Path) -> None:
+        """An unwarmed model cache must not be probed from this path; it just fails open."""
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+
+        cfg = self._cfg_with_route("validate", "ollama/qwen3")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "ollama/qwen3"),
+        ):
+            await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path)
+
+        assert runtime.spawn_calls[0]["model"] == "ollama/qwen3"
+
+    async def test_cold_cache_still_checks_a_statically_declared_catalog(self, tmp_path: Path) -> None:
+        """A pipeline process never warms the enumeration cache, so the check has to
+        read the runtime's static declaration or it would never fire at all."""
+
+        class _DeclaringRuntime(_StubRuntime):
+            def declared_models(self) -> list[str]:
+                return ["claude-opus-5", "claude-sonnet-5"]
+
+        runtime = _DeclaringRuntime(_StubProcess(stdout=["__RESULT__"]))
+        assert runtime.cached_models() == ["claude-opus-5", "claude-sonnet-5"]
+
+        cfg = self._cfg_with_route("validate", "ollama/qwen3")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "ollama/qwen3"),
+        ):
+            await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path)
+
+        assert runtime.spawn_calls[0]["model"] == "dev-model"
+
+    async def test_no_route_configured_is_unaffected(self, tmp_path: Path) -> None:
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with patch.object(runtime, "_probe_models", AsyncMock(return_value=["claude-opus-5"])):
+            await runtime.list_available_models()
+
+        cfg = ProjectConfig()
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "dev-model"),
+        ):
+            await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path)
+
+        assert runtime.spawn_calls[0]["model"] == "dev-model"
+
+    async def test_runtime_that_ignores_model_override_falls_back(self, tmp_path: Path) -> None:
+        """honours_model_override=False means a configured route never changes
+        what runs, so it is treated as incompatible and the dev model wins."""
+        runtime = _ModelIgnoringRuntime(_StubProcess(stdout=["__RESULT__"]))
+        cfg = self._cfg_with_route("validate", "claude-haiku-4-5-20251001")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "claude-haiku-4-5-20251001"),
+        ):
+            await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path)
+
+        assert runtime.spawn_calls[0]["model"] == "dev-model"
+
+    async def test_vertex_prefixed_route_survives_a_bare_claude_code_catalog(self, tmp_path: Path) -> None:
+        """A vertex_ai/-prefixed route is compared to the catalog in the form
+        claude-code will actually spawn (prefix stripped), not the raw id, so
+        it is not wrongly flagged incompatible against a bare-id catalog."""
+
+        class _ClaudeCodeDeclaringRuntime(_ClaudeCodeNamedRuntime):
+            def declared_models(self) -> list[str]:
+                return ["claude-haiku-4-5-20251001"]
+
+        runtime = _ClaudeCodeDeclaringRuntime(_StubProcess(stdout=["__RESULT__"]))
+        cfg = self._cfg_with_route("validate", "vertex_ai/claude-haiku-4-5-20251001")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "vertex_ai/claude-haiku-4-5-20251001"),
+        ):
+            await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path)
+
+        # Survived as the routed model (then sanitized to a bare id for the
+        # actual spawn), not replaced by the dev model.
+        assert runtime.spawn_calls[0]["model"] == "claude-haiku-4-5-20251001"
+
+    async def test_incompatible_route_falls_back_through_select_model_not_the_raw_arg(self, tmp_path: Path) -> None:
+        """The dev-model fallback must be the resolved model (client.select_model's
+        backend-aware chokepoint), not the bare alias argument dispatch_prompt
+        was called with: on Vertex, a bare tier name is not servable as-is."""
+
+        class _ClaudeCodeDeclaringRuntime(_ClaudeCodeNamedRuntime):
+            def declared_models(self) -> list[str]:
+                return ["claude-sonnet-5"]
+
+        runtime = _ClaudeCodeDeclaringRuntime(_StubProcess(stdout=["__RESULT__"]))
+        cfg = ProjectConfig(
+            llm=LLMConfig(provider="vertex", model="vertex_ai/claude-sonnet-4-5", routing={"validate": "ollama/qwen3"})
+        )
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "ollama/qwen3"),
+        ):
+            await dispatch_prompt(_ToolStep(), "fix it", model="opus", task_type="validate", cwd=tmp_path)
+
+        # Not the bare, unresolved "opus" the fallback would otherwise hand
+        # to a Vertex-routed backend (the #1033 failure mode); resolved to a
+        # Vertex-servable, fully-qualified id instead.
+        spawned_model = runtime.spawn_calls[0]["model"]
+        assert spawned_model != "opus"
+        assert spawned_model.startswith("claude-opus-")
+
+    async def test_scope_excludes_task_types_without_an_escalation_path(self, tmp_path: Path) -> None:
+        """A task type outside {validate, monitor_ci} (e.g. develop) must keep
+        failing loudly on an incompatible route, not silently downgrade to
+        the dev model."""
+        runtime = _ClaudeCodeNamedRuntime(_StubProcess(stdout=["__RESULT__"]))
+        cfg = self._cfg_with_route("develop", "ollama/qwen3")
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            self._prepare_invocation_stub(cfg, "ollama/qwen3"),
+        ):
+            with pytest.raises(AgentRuntimeUnavailableError, match="cannot serve"):
+                await dispatch_prompt(_ToolStep(), "fix it", model="dev-model", task_type="develop", cwd=tmp_path)
+        assert not runtime.spawn_calls
+
+
 class TestRoleRuntimeModelPin:
     """roles.<role>_runtime_model and the per-run SOVA_RUNTIME_MODEL_OVERRIDE (#1039).
 
@@ -1209,6 +1420,34 @@ class TestRoleRuntimeModelPin:
             await dispatch_command(_ToolStep(), "/develop", args="42", cwd=tmp_path, ctx=ctx)
 
         assert runtime.spawn_calls[0]["model"] == "claude-sonnet-5"
+
+    async def test_role_pin_skips_the_compatibility_check_and_is_not_tagged_as_routed(self, tmp_path: Path) -> None:
+        """Issue #780 review: when a role-level runtime pin applies, the
+        task-type compatibility check must not run at all, so a route the
+        runtime cannot actually honour never logs its incompatibility
+        warning (the pin has already decided what gets spawned), and the
+        result must not be tagged as a routed attempt."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = self._ctx(tmp_path, pin="claude-sonnet-5")
+        cfg = ProjectConfig(
+            roles=RolesConfig(developer_runtime_model="claude-sonnet-5"),
+            llm=LLMConfig(routing={"validate": "ollama/qwen3"}, resolve_tier_aliases=False),
+        )
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            patch(
+                "sova.core.agent_dispatch.client.prepare_invocation",
+                new_callable=AsyncMock,
+                return_value=(cfg, "ollama/qwen3", 30.0),
+            ),
+        ):
+            result = await dispatch_command(
+                _ToolStep(), "/develop", args="42", task_type="validate", cwd=tmp_path, ctx=ctx
+            )
+
+        assert runtime.spawn_calls[0]["model"] == "claude-sonnet-5"
+        assert result.routed_task_type_model is None
 
     async def test_pinned_spend_is_attributed_to_the_model_that_ran(self, tmp_path: Path) -> None:
         """The provider CostRecord is labelled ctx.resolved_model, which a pin does not

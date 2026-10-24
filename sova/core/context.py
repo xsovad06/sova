@@ -108,6 +108,22 @@ class TokenUsage:
 
 
 @dataclass
+class RoutedSpend:
+    """One step-scoped provider spend bucket, for calls a step routed off ``resolved_model``.
+
+    Carries everything ``WorkflowEngine._build_cost_record()`` needs to write
+    that bucket as its own CostRecord: the model that ran, why it ran, the
+    tokens, the dollars, and the provenance of those dollars.
+    """
+
+    model: str
+    reason: str | None = None
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    cost_usd: Decimal = Decimal("0")
+    cost_source: CostSource | None = None
+
+
+@dataclass
 class ExecutionContext:
     """Mutable context passed through every workflow step."""
 
@@ -192,6 +208,29 @@ class ExecutionContext:
     resolved_model: str | None = None
     model_selection_reason: str | None = None
 
+    # Step-scoped override for model_selection_reason, for a step that made
+    # its own per-attempt routing decision (today only the validate and
+    # monitor_ci fix loops' escalation off llm.routing[task_type], issue
+    # #780). model_selection_reason itself is run-wide: AssessStep writes it
+    # once and every later step's CostRecord reads it, so a step writing its
+    # own reason there would relabel every subsequent step's record too.
+    # WorkflowEngine resets this before every step attempt and prefers it
+    # over model_selection_reason when writing the provider CostRecord, the
+    # same split runtime_model/runtime_model_reason use below.
+    step_model_selection_reason: str | None = None
+
+    # Step-scoped provider spend a step deliberately routed to a model other
+    # than resolved_model, keyed by the model that actually ran (today only
+    # the validate and monitor_ci fix loops' attempt-1 llm.routing[task_type]
+    # route, issue #780). Mirrors the runtime_usage split: without it, a cheap
+    # routed attempt and the dev-model attempt that escalated past it land in
+    # one CostRecord labelled with resolved_model, so per-model spend (the
+    # whole point of measuring a cheap route) is unattributable, and the
+    # escalation reason describes a record holding both models' tokens.
+    # WorkflowEngine writes one CostRecord per entry, subtracting each from
+    # the step's provider record, and resets this before every step attempt.
+    routed_spend: dict[str, RoutedSpend] = field(default_factory=dict)
+
     # Step-scoped: what the AgentRuntime itself reported running, for a
     # runtime whose honours_model_override is False (today only Codex),
     # whose spawn() ignores the model override entirely so resolved_model
@@ -268,7 +307,7 @@ class ExecutionContext:
         """Accumulate cost from an LLM invocation."""
         self.cost_usd += amount
 
-    def add_usage(self, result: LLMResult) -> None:
+    def add_usage(self, result: LLMResult, *, routed_reason: str | None = None) -> None:
         """Accumulate cost and token usage from one LLM invocation.
 
         Prefer this over add_cost() wherever an LLMResult is in hand. Recording
@@ -277,6 +316,19 @@ class ExecutionContext:
         ``runtime_name`` also accumulates into the step's runtime share
         (``runtime_usage``, ``runtime_cost_usd``, ``runtime_cost_source``);
         any other result's provenance goes to ``cost_source``.
+
+        *routed_reason* is passed by a step that asked for a model other than
+        ``resolved_model`` for this one call (the fix loops' task-type route).
+        Its share goes to ``routed_spend`` only when ``result`` itself carries
+        ``routed_task_type_model`` (set by ``sova.core.agent_dispatch`` only
+        when a configured route actually survived the runtime-compatibility
+        check and any role-level runtime pin), so the step's own CostRecord
+        keeps only what ran on ``resolved_model``. Gating on that dispatch-side
+        flag rather than on "did ``result.model`` differ from
+        ``resolved_model``" avoids a false split: the reported id can differ
+        from ``resolved_model`` in spelling alone (an undated alias vs. a
+        dated id, a ``vertex_ai/`` prefix) even when the route was never
+        actually honoured.
         """
         runtime_before = self.usage_snapshot() if result.runtime_name is not None else None
         self.cost_usd += result.cost_usd
@@ -294,12 +346,41 @@ class ExecutionContext:
             self.compressed_calls += 1
 
         if runtime_before is None:
+            if routed_reason is not None and result.routed_task_type_model is not None:
+                self._add_routed_spend(result, routed_reason)
+                return
             self.cost_source = combine_cost_sources(self.cost_source, result.cost_source)
             return
         delta = self.usage_snapshot() - runtime_before
         self.runtime_usage = delta if self.runtime_usage is None else self.runtime_usage + delta
         self.runtime_cost_usd += result.cost_usd
         self.runtime_cost_source = combine_cost_sources(self.runtime_cost_source, result.cost_source)
+
+    def _add_routed_spend(self, result: LLMResult, reason: str) -> None:
+        """Bucket one off-``resolved_model`` provider result under the model that ran.
+
+        Labelled with ``result.model`` (what the provider actually reported),
+        falling back to ``routed_task_type_model`` (what was asked for) only
+        when the provider reported nothing at all.
+        """
+        model_key = result.model or result.routed_task_type_model
+        bucket = self.routed_spend.get(model_key)
+        if bucket is None:
+            bucket = RoutedSpend(model=model_key, reason=reason)
+            self.routed_spend[model_key] = bucket
+        bucket.usage = bucket.usage + TokenUsage(
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens,
+            cache_write_tokens=result.cache_creation_tokens or 0,
+            tokens_saved=result.tokens_saved,
+            compressed_calls=1 if result.tokens_saved is not None else 0,
+            cache_write_reported_calls=1 if result.cache_creation_tokens is not None else 0,
+            reasoning_tokens=result.reasoning_output_tokens or 0,
+            reasoning_reported_calls=1 if result.reasoning_output_tokens is not None else 0,
+        )
+        bucket.cost_usd += result.cost_usd
+        bucket.cost_source = combine_cost_sources(bucket.cost_source, result.cost_source)
 
     def usage_snapshot(self) -> TokenUsage:
         """Accumulated token counters as an immutable snapshot."""

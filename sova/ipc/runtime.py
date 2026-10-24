@@ -244,6 +244,17 @@ class _RuntimeModelCache:
         self._entry: tuple[float, list[str] | None] | None = None
         self._lock = asyncio.Lock()
 
+    def peek(self) -> list[str] | None:
+        """Return the live cached catalog, or ``None`` for a miss, an expired entry, or a cached unavailable answer.
+
+        The read-only, never-computing view ``AgentRuntime.cached_models()``
+        needs. Public so that caller does not reach into ``_cached()``: a
+        ``# noqa`` for the private access there was itself rejected by
+        SonarCloud's suppression-comment syntax rule (S7632).
+        """
+        _hit, value = self._cached()
+        return value
+
     def _cached(self) -> tuple[bool, list[str] | None]:
         """Return ``(hit, value)``, dropping and reporting a miss for an expired entry."""
         entry = self._entry
@@ -500,6 +511,45 @@ class AgentRuntime(ABC):
         """
         return await self._models_cache().get_or_compute(self._enumerate_models)
 
+    def cached_models(self) -> list[str] | None:
+        """Return this runtime's model catalog without probing, or ``None`` if unknown.
+
+        Unlike ``list_available_models()``, never calls ``_enumerate_models()``:
+        a caller that must not pay a probe's cost on this path
+        (``sova.core.agent_dispatch``'s task-type model compatibility check,
+        see ``tests/test_ipc.py::TestNoModelProbeOnSpawnHotPath``) gets the
+        warm cache entry when there is one, else whatever the runtime can
+        state statically (``declared_models()``), else ``None`` so the caller
+        fails open. A confirmed-unavailable cache entry (``None``) falls
+        through to the static declaration on purpose, rather than reporting
+        "no catalog" until that negative entry expires: the question this
+        check asks is which model dialect the runtime's CLI parses, which an
+        uninstalled or unauthenticated CLI does not change. An empty list (a
+        reachable runtime with no catalog of its own) is returned as-is,
+        since that is a confirmed answer and the caller fails open on it too.
+        """
+        cached = self._models_cache().peek()
+        return cached if cached is not None else self.declared_models()
+
+    def declared_models(self) -> list[str] | None:
+        """Return the model IDs this runtime's CLI accepts, known without any probe.
+
+        The fallback behind ``cached_models()``, and the only source of a
+        catalog inside a ``sova run`` pipeline process: nothing there ever
+        calls ``list_available_models()`` (the dashboard's own enumeration
+        builds a separate project-scoped instance via ``create_runtime()``),
+        so the per-instance cache is permanently cold and a compatibility
+        check keyed to it alone would never fire.
+
+        ``None`` (the default) means this runtime declares nothing statically,
+        so such a check must fail open. Only a runtime whose accepted model
+        dialect is a fixed, locally-known set overrides this; it is a
+        statement about dialect, not about availability, so it stays correct
+        for an uninstalled or unauthenticated CLI (which ``check_available()``
+        and the spawn itself report) and needs no I/O.
+        """
+        return None
+
     async def _enumerate_models(self) -> list[str] | None:
         """Apply the availability gate once for every runtime, then delegate to ``_probe_models()``.
 
@@ -638,6 +688,16 @@ class ClaudeCodeRuntime(AgentRuntime):
         ``LLMProvider`` default returns) rather than hand-rolling a second
         catalog: Claude Code runs whatever Anthropic model it is passed, so
         the reachable set is the same one SOVA already curates.
+        """
+        return self.declared_models()
+
+    def declared_models(self) -> list[str]:
+        """The curated Anthropic IDs, the one catalog knowable without a probe.
+
+        ``claude --model`` accepts exactly this dialect whether or not the CLI
+        is installed or authenticated, which is what lets the task-type
+        compatibility check in ``sova.core.agent_dispatch`` work inside a
+        pipeline process with a cold enumeration cache.
         """
         return [m.id for m in CURATED_MODELS]
 

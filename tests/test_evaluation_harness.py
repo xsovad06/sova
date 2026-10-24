@@ -97,6 +97,40 @@ class TestAcceptOnMarker:
         assert not accept_on_marker(fixture, _result("## Findings\nnone", "0.01"))
 
 
+class TestMonitorCIFixtureAcceptance:
+    """Issue #780 review: the monitor_ci fixture accepts only a fix that stops dividing by zero."""
+
+    @staticmethod
+    def _fixture() -> EvalFixture:
+        from tests.evaluation.fixtures import FIXTURES
+
+        return next(f for f in FIXTURES if f.step == "monitor_ci")
+
+    def test_accepts_a_guard_that_raises_value_error(self) -> None:
+        fixture = self._fixture()
+        text = "## Fix\ndef divide(a, b):\n    if b == 0:\n        raise ValueError('b is zero')\n    return a / b"
+        assert fixture.accept(fixture, _result(text, "0.01"))
+
+    def test_accepts_the_positive_if_b_guard_form(self) -> None:
+        fixture = self._fixture()
+        text = "## Fix\ndef divide(a, b):\n    if b:\n        return a / b\n    raise ValueError('b is zero')"
+        assert fixture.accept(fixture, _result(text, "0.01"))
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "## Fix\nif b == 0: return a / b",
+            "## Fix\n# if b is zero this fails\nreturn a / b",
+            "## Fix\nZeroDivisionError: division by zero",
+            ("## Fix\nThe fix makes divide raise a ValueError when b == 0.\ndef divide(a, b):\n    return a / b"),
+            ("## Fix\ndef divide(a, b):\n    return a / b\n\nNow if b == 0 we raise ValueError."),
+        ],
+    )
+    def test_rejects_a_response_that_still_divides_by_zero(self, text: str) -> None:
+        fixture = self._fixture()
+        assert not fixture.accept(fixture, _result(text, "0.01"))
+
+
 class TestFixtureAcceptOverride:
     def test_fixture_accept_override_replaces_the_default_check(self) -> None:
         fixture = EvalFixture(

@@ -141,6 +141,20 @@ class LLMResult:
     # provider call never merges the two (issue #1128).
     runtime_name: str | None = None
 
+    # The model a fix-loop attempt's configured task-type route (llm.routing)
+    # actually dispatched to, set by agent_dispatch.py only when that route
+    # survived both the runtime-compatibility check and a role-level runtime
+    # pin, and differs from the step's dev model (issue #780 review). This is
+    # the authoritative signal ExecutionContext.add_usage() gates its
+    # routed_spend split on, rather than inferring "was this attempt routed"
+    # from comparing the provider's reported `model` against resolved_model:
+    # that comparison cannot tell a route the runtime already swapped back to
+    # the dev model, or one that merely pins to it under a different
+    # spelling, from a route that genuinely dispatched to a different model.
+    # None for every non-fix-loop call and for an attempt that was not
+    # actually routed.
+    routed_task_type_model: str | None = None
+
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens

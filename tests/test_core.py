@@ -889,6 +889,127 @@ class TestWorkflowEngine:
         assert claude_record.cost_usd == Decimal("0.05")
         assert claude_record.cost_source == "priced"
 
+    async def test_update_step_execution_splits_routed_fix_attempt_by_model(self, tmp_path: Path) -> None:
+        """Issue #780 review: a routed cheap attempt and the dev-model attempt that
+        escalated past it are written as one CostRecord per model that ran, each
+        with its own reason, never merged under resolved_model."""
+        from sova.llm.models import CostSource, LLMResult
+
+        ctx = _make_ctx(tmp_path)
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        engine._task_run_id = await engine._create_task_run()
+        step_exec_id = await engine._create_step_execution("validate")
+        ctx.resolved_model = "claude-opus-5"
+        ctx.model_selection_reason = "complexity:high"
+        ctx.step_model_selection_reason = (
+            "task_type:validate fix attempt 1 failed, escalated to dev model claude-opus-5"
+        )
+        cost_before, usage_before = ctx.cost_usd, ctx.usage_snapshot()
+
+        reason = "task_type:validate fix attempt 1 routed to claude-haiku-4-5"
+        ctx.add_usage(
+            LLMResult(
+                text="",
+                model="claude-haiku-4-5",
+                cost_usd=Decimal("0.01"),
+                cost_source=CostSource.PRICED,
+                input_tokens=100,
+                output_tokens=40,
+                routed_task_type_model="claude-haiku-4-5",
+            ),
+            routed_reason=reason,
+        )
+        ctx.add_usage(
+            LLMResult(
+                text="",
+                model="claude-opus-5",
+                cost_usd=Decimal("0.20"),
+                cost_source=CostSource.PRICED,
+                input_tokens=300,
+                output_tokens=90,
+            ),
+            routed_reason=None,
+        )
+
+        result = StepResult(
+            success=True,
+            summary="Validation passed",
+            cost_usd=ctx.cost_usd - cost_before,
+            usage=ctx.usage_snapshot() - usage_before,
+        )
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=100)
+
+        async with await get_session(ctx.project_dir) as session:
+            rows = await session.execute(select(CostRecord).where(CostRecord.task_run_id == engine._task_run_id))
+            records = {r.model: r for r in rows.scalars().all()}
+
+        assert set(records) == {"claude-haiku-4-5", "claude-opus-5"}
+        routed = records["claude-haiku-4-5"]
+        assert (routed.input_tokens, routed.output_tokens) == (100, 40)
+        assert routed.cost_usd == Decimal("0.01")
+        assert routed.model_selection_reason == reason
+        dev = records["claude-opus-5"]
+        assert (dev.input_tokens, dev.output_tokens) == (300, 90)
+        assert dev.cost_usd == Decimal("0.20")
+        assert "escalated to dev model" in dev.model_selection_reason
+
+    async def test_update_step_execution_successful_routed_attempt_writes_only_the_routed_record(
+        self, tmp_path: Path
+    ) -> None:
+        """A routed attempt that fixed the tree on its own is labelled with the routed
+        model, not resolved_model, and leaves no empty dev-model record behind."""
+        from sova.llm.models import CostSource, LLMResult
+
+        ctx = _make_ctx(tmp_path)
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        engine._task_run_id = await engine._create_task_run()
+        step_exec_id = await engine._create_step_execution("monitor_ci")
+        ctx.resolved_model = "claude-opus-5"
+        cost_before, usage_before = ctx.cost_usd, ctx.usage_snapshot()
+
+        ctx.add_usage(
+            LLMResult(
+                text="",
+                model="claude-haiku-4-5",
+                cost_usd=Decimal("0.01"),
+                cost_source=CostSource.PRICED,
+                input_tokens=100,
+                output_tokens=40,
+                routed_task_type_model="claude-haiku-4-5",
+            ),
+            routed_reason="task_type:monitor_ci fix attempt 1 routed to claude-haiku-4-5",
+        )
+
+        result = StepResult(
+            success=True,
+            summary="CI fixed",
+            cost_usd=ctx.cost_usd - cost_before,
+            usage=ctx.usage_snapshot() - usage_before,
+        )
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=100)
+
+        async with await get_session(ctx.project_dir) as session:
+            rows = await session.execute(select(CostRecord).where(CostRecord.task_run_id == engine._task_run_id))
+            records = rows.scalars().all()
+
+        assert [r.model for r in records] == ["claude-haiku-4-5"]
+        assert records[0].cost_usd == Decimal("0.01")
+
+    def test_add_usage_keeps_a_routed_result_echoing_resolved_model_on_the_provider_path(self, tmp_path: Path) -> None:
+        """A route that resolved to the dev model itself must not duplicate that model
+        into a second record."""
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path)
+        ctx.resolved_model = "claude-opus-5"
+        ctx.add_usage(
+            LLMResult(text="", model="claude-opus-5", cost_usd=Decimal("0.02"), input_tokens=10),
+            routed_reason="task_type:validate fix attempt 1 routed to claude-opus-5",
+        )
+
+        assert ctx.routed_spend == {}
+        assert ctx.cost_usd == Decimal("0.02")
+
     async def test_update_step_execution_runtime_only_step_writes_one_runtime_record(self, tmp_path: Path) -> None:
         """A step whose only call was a Codex dispatch writes exactly one record,
         attributed to the runtime, even with no tokens reported (a dispatch killed
@@ -2594,6 +2715,182 @@ class TestValidateStep:
         assert not result.success
         assert "still failing" in result.summary.lower()
         assert mock_invoke.await_count == 2
+
+    async def test_fix_loop_escalates_to_dev_model_after_first_failed_attempt(self, tmp_path: Path) -> None:
+        """Issue #780: attempt 1 uses llm.routing["validate"]; a failed attempt 1
+        escalates every remaining attempt to the step's dev model directly,
+        bypassing task-type routing, and records why on the step-scoped reason."""
+        from sova.config.models import LLMConfig, ProjectConfig
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
+            config=ProjectConfig(llm=LLMConfig(routing={"validate": "haiku"})),
+        )
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
+                MagicMock(success=True, stdout=""),  # test -x
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # hook fails
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # still fails after fix 1
+                MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),  # fix 2 passes
+            ]
+            # routed_task_type_model simulates what the real dispatch_prompt()
+            # (mocked out here) would set on an attempt whose configured
+            # route survived the compatibility check (issue #780 review):
+            # only attempt 1 carries a task_type, so this has no bearing on
+            # attempt 2, which never routes regardless of the field.
+            mock_invoke.return_value = LLMResult(
+                text="Attempted fix", model="sonnet", cost_usd=Decimal("0.01"), routed_task_type_model="haiku"
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert mock_invoke.await_count == 2
+        first_call, second_call = mock_invoke.call_args_list
+        assert first_call.kwargs["task_type"] == "validate"
+        assert second_call.kwargs["task_type"] is None
+        assert first_call.kwargs["model"] == second_call.kwargs["model"]
+        assert "escalated to dev model" in ctx.step_model_selection_reason
+        assert ctx.model_selection_reason is None
+
+    async def test_fix_loop_buckets_the_routed_attempt_spend_under_the_model_that_ran(self, tmp_path: Path) -> None:
+        """Issue #780 review: attempt 1's routed spend lands in routed_spend under the
+        model that ran; attempt 2 on the dev model stays on the step's provider totals."""
+        from sova.config.models import LLMConfig, ProjectConfig
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
+            config=ProjectConfig(llm=LLMConfig(routing={"validate": "claude-haiku-4-5"})),
+        )
+        ctx.resolved_model = "claude-opus-5"
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+            ]
+            mock_invoke.side_effect = [
+                LLMResult(
+                    text="Attempted fix",
+                    model="claude-haiku-4-5",
+                    cost_usd=Decimal("0.01"),
+                    routed_task_type_model="claude-haiku-4-5",
+                ),
+                LLMResult(text="Fixed", model="claude-opus-5", cost_usd=Decimal("0.20")),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert set(ctx.routed_spend) == {"claude-haiku-4-5"}
+        routed = ctx.routed_spend["claude-haiku-4-5"]
+        assert routed.cost_usd == Decimal("0.01")
+        assert routed.reason == "task_type:validate fix attempt 1 routed to claude-haiku-4-5"
+
+    async def test_fix_loop_without_a_route_never_splits_spend(self, tmp_path: Path) -> None:
+        """With no route configured, a result whose id differs from resolved_model
+        (an alias spelled differently) still stays on the provider path."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        ctx.resolved_model = "claude-opus-5"
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+            ]
+            mock_invoke.return_value = LLMResult(text="Fixed", model="claude-opus-5-20261001", cost_usd=Decimal("0.2"))
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.routed_spend == {}
+
+    async def test_fix_loop_records_no_escalation_while_a_fallback_is_in_flight(self, tmp_path: Path) -> None:
+        """ctx.routing_task_type() suppresses the route once a fallback is walking the
+        chain, so attempt 1 never used it and attempt 2 is not an escalation off it."""
+        from sova.config.models import LLMConfig, ProjectConfig
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
+            config=ProjectConfig(llm=LLMConfig(routing={"validate": "haiku"})),
+            fallback_model_index=1,
+        )
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+            ]
+            mock_invoke.return_value = LLMResult(text="Attempted fix", model="sonnet", cost_usd=Decimal("0.01"))
+            result = await step.execute(ctx)
+
+        assert result.success
+        first_call, second_call = mock_invoke.call_args_list
+        assert first_call.kwargs["task_type"] is None
+        assert second_call.kwargs["task_type"] is None
+        assert ctx.step_model_selection_reason is None
+
+    async def test_fix_loop_records_no_escalation_without_a_configured_route(self, tmp_path: Path) -> None:
+        """With the default empty llm.routing both attempts resolve to the same
+        model, so recording an escalation would be a false cost-analysis record."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+            ]
+            mock_invoke.return_value = LLMResult(text="Attempted fix", model="sonnet", cost_usd=Decimal("0.01"))
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert mock_invoke.await_count == 2
+        assert ctx.step_model_selection_reason is None
 
     async def test_llm_timeout_produces_distinct_marker(self, tmp_path: Path) -> None:
         """A fix-LLM timeout must be tagged distinctly from a generic RuntimeError
@@ -5813,7 +6110,7 @@ class TestCILogTruncation:
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=short_log),
             patch("sova.core.steps.monitor_ci._redact_logs", side_effect=lambda t: t),
         ):
-            await step._invoke_fix(ctx, [check], invoke, run)
+            await step._invoke_fix(ctx, [check], invoke, run, 1)
 
         prompt = invoke.call_args[0][0]
         assert short_log in prompt
@@ -5835,7 +6132,7 @@ class TestCILogTruncation:
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=long_log),
             patch("sova.core.steps.monitor_ci._redact_logs", side_effect=lambda t: t),
         ):
-            await step._invoke_fix(ctx, [check], invoke, run)
+            await step._invoke_fix(ctx, [check], invoke, run, 1)
 
         prompt = invoke.call_args[0][0]
         assert "...(truncated)" in prompt
@@ -5858,7 +6155,7 @@ class TestCILogTruncation:
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=exact_log),
             patch("sova.core.steps.monitor_ci._redact_logs", side_effect=lambda t: t),
         ):
-            await step._invoke_fix(ctx, [check], invoke, run)
+            await step._invoke_fix(ctx, [check], invoke, run, 1)
 
         prompt = invoke.call_args[0][0]
         assert "...(truncated)" not in prompt
@@ -5883,7 +6180,7 @@ class TestCILogTruncation:
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=raw_log),
             patch("sova.core.steps.monitor_ci._redact_logs", return_value=redacted_log),
         ):
-            await step._invoke_fix(ctx, [check], invoke, run)
+            await step._invoke_fix(ctx, [check], invoke, run, 1)
 
         prompt = invoke.call_args[0][0]
         assert redacted_tail in prompt
@@ -5904,7 +6201,7 @@ class TestCILogTruncation:
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=""),
             patch("sova.core.steps.monitor_ci._redact_logs", side_effect=lambda t: t),
         ):
-            await step._invoke_fix(ctx, [check], invoke, run)
+            await step._invoke_fix(ctx, [check], invoke, run, 1)
 
         prompt = invoke.call_args[0][0]
         assert "...(truncated)" not in prompt
@@ -6633,6 +6930,66 @@ class TestMonitorCIFixLoop:
         assert mock_invoke.await_count == 2
         assert ctx.cost_usd == Decimal("1.00")
 
+    async def test_fix_loop_escalates_to_dev_model_after_first_failed_attempt(self, tmp_path: Path) -> None:
+        """Issue #780: attempt 1 uses llm.routing["monitor_ci"]; a failed attempt 1
+        escalates attempt 2 to the step's dev model directly, bypassing task-type
+        routing, and records why on the step-scoped reason."""
+        from sova.config.models import LLMConfig, ProjectConfig
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(
+            tmp_path,
+            pr_number=10,
+            branch_name="feat/test",
+            worktree_dir=tmp_path / "wt",
+            config=ProjectConfig(llm=LLMConfig(routing={"monitor_ci": "haiku"})),
+        )
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check(
+            "Tests", passed=False, details_url="https://github.com/o/r/actions/runs/123/job/456"
+        )
+        passed_check = _make_ci_check("Tests", passed=True)
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.side_effect = [
+                [failed_check],  # initial poll
+                [failed_check],  # re-poll after fix 1 (still fails)
+                [passed_check],  # re-poll after fix 2 (passes)
+            ]
+            mock_logs.return_value = "ERROR: test failure"
+
+            with (
+                patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.operations.push", new_callable=AsyncMock),
+                patch("sova.core.steps.monitor_ci.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+            ):
+                # routed_task_type_model simulates what the real
+                # dispatch_prompt() (mocked out here) would set on an attempt
+                # whose configured route survived the compatibility check
+                # (issue #780 review); attempt 2 never routes regardless.
+                mock_invoke.return_value = LLMResult(
+                    text="Fixed", model="opus", cost_usd=Decimal("0.50"), routed_task_type_model="haiku"
+                )
+                mock_run.side_effect = _shell_side_effect
+                result = await step.execute(ctx)
+
+        assert result.success
+        assert mock_invoke.await_count == 2
+        first_call, second_call = mock_invoke.call_args_list
+        assert first_call.kwargs["task_type"] == "monitor_ci"
+        assert second_call.kwargs["task_type"] is None
+        assert first_call.kwargs["model"] == second_call.kwargs["model"]
+        assert "escalated to dev model" in ctx.step_model_selection_reason
+        assert ctx.model_selection_reason is None
+
     async def test_ci_fails_all_attempts_exhausted(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
         from sova.llm.models import LLMResult
@@ -6669,6 +7026,12 @@ class TestMonitorCIFixLoop:
         assert "2 fix attempt" in result.summary
         assert "Tests" in result.summary
         assert mock_invoke.await_count == 2
+        # Issue #780 review: every fix attempt's cost must be carried on the
+        # final StepResult, or the CostRecord split in workflow.py's
+        # provider_cost = max(result.cost_usd - routed.cost_usd, 0) silently
+        # floors the dev-model attempt's spend to $0 on the most common
+        # failure exit (attempts exhausted).
+        assert result.cost_usd == Decimal("1.00")
 
     async def test_llm_timeout_produces_distinct_marker(self, tmp_path: Path) -> None:
         """A CI fix-LLM timeout must be tagged distinctly from a generic
@@ -7037,7 +7400,7 @@ class TestMonitorCISonarCloud:
             ),
             patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=""),
         ):
-            cost, error = await step._invoke_fix(ctx, [sonar_check], mock_invoke, mock_run)
+            cost, error = await step._invoke_fix(ctx, [sonar_check], mock_invoke, mock_run, 1)
 
         assert error is None
         prompt_arg = mock_invoke.call_args[0][0]
@@ -7079,7 +7442,7 @@ class TestMonitorCISonarCloud:
                 return_value="test failure logs",
             ) as mock_logs,
         ):
-            cost, error = await step._invoke_fix(ctx, [sonar, tests], mock_invoke, mock_run)
+            cost, error = await step._invoke_fix(ctx, [sonar, tests], mock_invoke, mock_run, 1)
 
         assert error is None
         mock_logs.assert_called_once()

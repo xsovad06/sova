@@ -51,6 +51,7 @@ from sova.llm.egress import scan_and_redact
 from sova.llm.errors import BillingError, LLMInvocationError, LLMTimeoutError, classify_error
 from sova.llm.models import LLMResult, accumulate_llm_result
 from sova.llm.provider import _assert_command_exists
+from sova.llm.routing import task_type_model_compatible
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
@@ -82,6 +83,16 @@ _ARGUMENTS_PLACEHOLDER_RE = re.compile(r"(?<!`)" + re.escape(_ARGUMENTS_PLACEHOL
 # llm.routing entry naming a local model).
 _LITELLM_VERTEX_PREFIX = "vertex_ai/"
 _LITELLM_FOREIGN_VENDOR_PREFIXES = ("openai/", "ollama/", "gemini/", "mistral/", "cohere/", "bedrock/", "azure/")
+
+# Task types _ensure_task_type_model_compatible() applies to: only the fix
+# loops that have a dev-model escalation path to fall back to (issue #780).
+# Every other tool-using task type (develop, self_review, simplify, ...)
+# stays on the pre-existing fail-loud _sanitize_model_for_runtime() check
+# inside _dispatch_to_runtime(): an operator who misroutes one of those to a
+# model the runtime cannot serve gets an immediate, actionable
+# AgentRuntimeUnavailableError naming the config keys to fix, rather than a
+# silent downgrade to the dev model buried in a log line.
+_TASK_TYPE_MODEL_COMPATIBILITY_SCOPE: frozenset[str] = frozenset({"validate", "monitor_ci"})
 
 
 class AgentRuntimeUnavailableError(RuntimeError):
@@ -445,6 +456,88 @@ async def _dispatch_to_runtime(
     )
 
 
+def _ensure_task_type_model_compatible(
+    runtime: AgentRuntime,
+    cfg: ProjectConfig | None,
+    task_type: str | None,
+    dev_model: str | None,
+    routed_model: str | None,
+) -> tuple[str | None, bool]:
+    """Fall back *routed_model* to *dev_model* when *runtime* cannot honour a configured task-type route.
+
+    Catches what ``_sanitize_model_for_runtime()`` would otherwise raise or
+    silently no-op on: a route naming a model family the runtime's own
+    (already-cached) catalog does not carry, or a runtime whose
+    ``honours_model_override`` is False, for which a configured route would
+    never actually change what runs anyway. Scoped to the models an operator
+    actually routed: the default empty ``llm.routing`` (and a *cfg* that
+    failed to load) leaves every dispatch byte-identical to today.
+
+    Compatibility is judged on the form the spawn will actually receive, not
+    the raw routed id: *routed_model* is run through
+    ``_sanitize_model_for_runtime()`` first (the same sanitizer
+    ``_dispatch_to_runtime()`` applies right before spawning), so a
+    ``vertex_ai/``-prefixed route is compared to the runtime's catalog with
+    that prefix already stripped, matching what the Claude CLI is actually
+    handed. A route the sanitizer itself rejects (a foreign vendor prefix
+    ``agent.runtime="claude-code"`` cannot serve at all) is incompatible by
+    construction, with no catalog lookup needed.
+
+    Never probes the runtime's catalog: ``AgentRuntime.cached_models()``, not
+    ``list_available_models()``, so this hot path pays no probe. A pipeline
+    process never warms that cache, so the answer there comes from the
+    runtime's static ``declared_models()``; a runtime that declares nothing
+    reports no catalog at all and *routed_model* fails open as compatible.
+
+    The fallback itself is resolved through ``client.select_model()``, the
+    same ``llm.model_aliases``/backend-aware chokepoint every other model on
+    this path goes through: *dev_model* is the raw ``model`` argument passed
+    into ``dispatch_command()``/``dispatch_prompt()``, which can be a bare,
+    unresolved alias (e.g. ``agent.model = "opus"``), and handing that
+    straight to a Vertex/Bedrock-routed backend is the #1033 failure mode
+    ``client.prepare_invocation()`` exists to prevent.
+
+    Scoped to ``_TASK_TYPE_MODEL_COMPATIBILITY_SCOPE``: a task type outside
+    it (every tool-using step other than the validate/monitor_ci fix loops)
+    falls through unchanged here and keeps hitting the fail-loud
+    ``_sanitize_model_for_runtime()`` check downstream in
+    ``_dispatch_to_runtime()`` instead of silently downgrading to the dev
+    model.
+
+    Returns ``(model_to_dispatch, route_honoured)``. *route_honoured* is the
+    single source of truth ``dispatch_command()``/``dispatch_prompt()`` tag
+    onto the eventual ``LLMResult.routed_task_type_model`` for
+    ``ExecutionContext.add_usage()`` to split spend on (issue #780 review):
+    comparing the *reported* model id against ``resolved_model`` after the
+    fact cannot tell a route this function already swapped back to
+    *dev_model* from one that merely resolves to *dev_model* verbatim under
+    a route/agent-model family pin (``sova.llm.routing._pin_to_configured_model``),
+    so it is False in both of those cases, not just the swapped-back one.
+    """
+    if (
+        cfg is None
+        or not task_type
+        or task_type not in _TASK_TYPE_MODEL_COMPATIBILITY_SCOPE
+        or cfg.llm.routing.get(task_type) is None
+    ):
+        return routed_model, False
+    if runtime.honours_model_override:
+        try:
+            spawn_candidate = _sanitize_model_for_runtime(runtime, routed_model)
+        except AgentRuntimeUnavailableError:
+            spawn_candidate = None
+        if spawn_candidate is not None and task_type_model_compatible(spawn_candidate, runtime.cached_models()):
+            return routed_model, routed_model != dev_model
+    log.warning(
+        "agent_dispatch.task_type_model_incompatible",
+        runtime=runtime.name,
+        task_type=task_type,
+        routed_model=routed_model,
+        dev_model=dev_model,
+    )
+    return client.select_model(dev_model, cfg), False
+
+
 def _apply_runtime_model_pin(
     runtime: AgentRuntime,
     cfg: ProjectConfig | None,
@@ -731,7 +824,17 @@ async def dispatch_command(
         args = client.maybe_compress(args, cwd, cfg=cfg)
 
     prompt = _assemble_prompt(body, args)
+    # Pin resolved first: a role-level roles.developer_runtime_model pin
+    # outranks a task-type route for a tool-using step (design decision 6,
+    # issue #780), so when one applies the compatibility check never runs
+    # and never logs a warning about a route that had no bearing on what
+    # actually gets spawned (issue #780 review).
     resolved_model, pin = _apply_runtime_model_pin(runtime, cfg, ctx, resolved_model)
+    route_honoured = False
+    if pin is None:
+        resolved_model, route_honoured = _ensure_task_type_model_compatible(
+            runtime, cfg, task_type, model, resolved_model
+        )
     log.info("agent_dispatch.invoke", step=step.name, command=command, runtime=runtime.name)
     result = await _dispatch_to_runtime(
         runtime,
@@ -745,6 +848,8 @@ async def dispatch_command(
         ctx=ctx,
     )
     _attribute_pinned_result(result, runtime, ctx, pin)
+    if route_honoured:
+        result.routed_task_type_model = resolved_model
     # original_args vs args (not the assembled prompt): compression ran only
     # on args, and record_compression_savings()'s identity check needs the
     # exact pre/post pair maybe_compress() saw, not the whole templated body.
@@ -796,7 +901,13 @@ async def dispatch_prompt(
     original_prompt = prompt
     prompt = client.maybe_compress(prompt, cwd, cfg=cfg)
 
+    # Pin resolved first: see the matching comment in dispatch_command().
     resolved_model, pin = _apply_runtime_model_pin(runtime, cfg, ctx, resolved_model)
+    route_honoured = False
+    if pin is None:
+        resolved_model, route_honoured = _ensure_task_type_model_compatible(
+            runtime, cfg, task_type, model, resolved_model
+        )
     log.info("agent_dispatch.invoke_prompt", step=step.name, runtime=runtime.name, prompt_len=len(prompt))
     result = await _dispatch_to_runtime(
         runtime,
@@ -810,5 +921,7 @@ async def dispatch_prompt(
         ctx=ctx,
     )
     _attribute_pinned_result(result, runtime, ctx, pin)
+    if route_honoured:
+        result.routed_task_type_model = resolved_model
     client.record_compression_savings(result, original_prompt, prompt)
     return result
