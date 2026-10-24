@@ -8,6 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sova.adapters.priority import Priority
+
+# Both planner prompts (the issueless PlannerRole and the scan-based
+# GenerateTasksStep) always assign an explicit priority, so UNDEFINED
+# (which means "no priority label present") is excluded by design here,
+# not by omission in either prompt.
+PLANNER_PRIORITY_CHOICES: tuple[str, ...] = tuple(p.value for p in Priority if p is not Priority.UNDEFINED)
+
 
 @dataclass
 class ProjectScanResult:
